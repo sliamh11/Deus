@@ -1,0 +1,14 @@
+# NanoClaw Evolution Loop dependencies
+# Core (always required)
+google-genai>=1.0.0       # Gemini API (same as memory_indexer.py)
+sqlite-vec>=0.1.0         # Vector search in SQLite
+
+# DeepEval integration (judge for eval layer)
+deepeval>=2.0.0
+
+# MCP server (optional — for external agent integration)
+mcp>=1.0.0
+
+# DSPy optimizer (optional — install when running `evolve optimize`)
+# dspy-ai>=2.5.0
+# google-generativeai>=0.8.0   # DSPy's Gemini backend uses the older SDK
