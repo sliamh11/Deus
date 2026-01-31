@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.npm-cache/
+# Build output
+dist/
+
+# Local data & auth
+store/
+data/
+logs/
+
+# Groups - only track base structure and specific CLAUDE.md files
+groups/*
+!groups/main/
+!groups/global/
+groups/main/*
+groups/global/*
+!groups/main/CLAUDE.md
+!groups/global/CLAUDE.md
+
+# Secrets — never commit credentials, tokens, or keys
+*.keys.json
+.env
+.env.local
+integrations/gcal/credentials.json
+integrations/gcal/tokens.json
+
+# Personal/one-time scripts
+scripts/rename-repo.sh
+
+# Python virtual env
+.venv/
+
+# Temp files
+.tmp-*
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Skills system (local per-installation state)
+.deus/
+
+agents-sdk-docs
