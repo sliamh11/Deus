@@ -157,13 +157,13 @@ Key files:
 
 Because I use WhatsApp. Fork it and run a skill to change it. That's the whole point.
 
-**Why Apple Container instead of Docker?**
+**Why Docker?**
 
-On macOS, Apple Container is lightweight, fast, and optimized for Apple silicon. But Docker is also fully supported—during `/setup`, you can choose which runtime to use. On Linux, Docker is used automatically.
+Docker provides cross-platform support (macOS and Linux) and a mature ecosystem. On macOS, you can optionally switch to Apple Container via `/convert-to-apple-container` for a lighter-weight native runtime.
 
 **Can I run this on Linux?**
 
-Yes. Run `/setup` and it will automatically configure Docker as the container runtime. Thanks to [@dotsetgreg](https://github.com/dotsetgreg) for contributing the `/convert-to-docker` skill.
+Yes. Docker is the default runtime and works on both macOS and Linux. Just run `/setup`.
 
 **Is this secure?**
 
