@@ -80,7 +80,9 @@ export class GroupQueue {
       return;
     }
 
-    this.runForGroup(groupJid, 'messages');
+    this.runForGroup(groupJid, 'messages').catch((err) =>
+      logger.error({ groupJid, err }, 'Unhandled error in runForGroup'),
+    );
   }
 
   enqueueTask(groupJid: string, taskId: string, fn: () => Promise<void>): void {
@@ -116,7 +118,9 @@ export class GroupQueue {
     }
 
     // Run immediately
-    this.runTask(groupJid, { id: taskId, groupJid, fn });
+    this.runTask(groupJid, { id: taskId, groupJid, fn }).catch((err) =>
+      logger.error({ groupJid, taskId, err }, 'Unhandled error in runTask'),
+    );
   }
 
   registerProcess(groupJid: string, proc: ChildProcess, containerName: string, groupFolder?: string): void {
@@ -273,13 +277,17 @@ export class GroupQueue {
     // Tasks first (they won't be re-discovered from SQLite like messages)
     if (state.pendingTasks.length > 0) {
       const task = state.pendingTasks.shift()!;
-      this.runTask(groupJid, task);
+      this.runTask(groupJid, task).catch((err) =>
+        logger.error({ groupJid, taskId: task.id, err }, 'Unhandled error in runTask (drain)'),
+      );
       return;
     }
 
     // Then pending messages
     if (state.pendingMessages) {
-      this.runForGroup(groupJid, 'drain');
+      this.runForGroup(groupJid, 'drain').catch((err) =>
+        logger.error({ groupJid, err }, 'Unhandled error in runForGroup (drain)'),
+      );
       return;
     }
 
@@ -298,9 +306,13 @@ export class GroupQueue {
       // Prioritize tasks over messages
       if (state.pendingTasks.length > 0) {
         const task = state.pendingTasks.shift()!;
-        this.runTask(nextJid, task);
+        this.runTask(nextJid, task).catch((err) =>
+          logger.error({ groupJid: nextJid, taskId: task.id, err }, 'Unhandled error in runTask (waiting)'),
+        );
       } else if (state.pendingMessages) {
-        this.runForGroup(nextJid, 'drain');
+        this.runForGroup(nextJid, 'drain').catch((err) =>
+          logger.error({ groupJid: nextJid, err }, 'Unhandled error in runForGroup (waiting)'),
+        );
       }
       // If neither pending, skip this group
     }
