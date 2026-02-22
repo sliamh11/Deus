@@ -1,8 +1,8 @@
 /**
  * Setup CLI entry point.
- * Usage: npx tsx src/setup/index.ts --step <name> [args...]
+ * Usage: npx tsx setup/index.ts --step <name> [args...]
  */
-import { logger } from '../logger.js';
+import { logger } from '../src/logger.js';
 import { emitStatus } from './status.js';
 
 const STEPS: Record<string, () => Promise<{ run: (args: string[]) => Promise<void> }>> = {
@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   const stepIdx = args.indexOf('--step');
 
   if (stepIdx === -1 || !args[stepIdx + 1]) {
-    console.error(`Usage: npx tsx src/setup/index.ts --step <${Object.keys(STEPS).join('|')}> [args...]`);
+    console.error(`Usage: npx tsx setup/index.ts --step <${Object.keys(STEPS).join('|')}> [args...]`);
     process.exit(1);
   }
 

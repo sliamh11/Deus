@@ -6,7 +6,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
-import { logger } from '../logger.js';
+import { logger } from '../src/logger.js';
 import { isRoot } from './platform.js';
 import { emitStatus } from './status.js';
 

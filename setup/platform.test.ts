@@ -20,10 +20,6 @@ describe('getPlatform', () => {
     expect(['macos', 'linux', 'unknown']).toContain(result);
   });
 
-  it('returns linux on this system', () => {
-    // This test runs on Linux
-    expect(getPlatform()).toBe('linux');
-  });
 });
 
 // --- isWSL ---
@@ -81,10 +77,14 @@ describe('getServiceManager', () => {
     expect(['launchd', 'systemd', 'none']).toContain(result);
   });
 
-  it('returns systemd or none on Linux', () => {
+  it('matches the detected platform', () => {
+    const platform = getPlatform();
     const result = getServiceManager();
-    // On Linux, should be systemd if available, else none
-    expect(['systemd', 'none']).toContain(result);
+    if (platform === 'macos') {
+      expect(result).toBe('launchd');
+    } else {
+      expect(['systemd', 'none']).toContain(result);
+    }
   });
 });
 

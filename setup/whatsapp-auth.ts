@@ -6,7 +6,7 @@ import { execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { logger } from '../logger.js';
+import { logger } from '../src/logger.js';
 import { openBrowser, isHeadless } from './platform.js';
 import { emitStatus } from './status.js';
 

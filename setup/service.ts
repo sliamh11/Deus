@@ -9,7 +9,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import { logger } from '../logger.js';
+import { logger } from '../src/logger.js';
 import {
   getPlatform,
   getNodePath,
