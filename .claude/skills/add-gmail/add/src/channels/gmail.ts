@@ -5,7 +5,7 @@ import path from 'path';
 import { google, gmail_v1 } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
 
-import { ASSISTANT_NAME, MAIN_GROUP_FOLDER } from '../config.js';
+import { MAIN_GROUP_FOLDER } from '../config.js';
 import { logger } from '../logger.js';
 import {
   Channel,
@@ -39,10 +39,7 @@ export class GmailChannel implements Channel {
   private threadMeta = new Map<string, ThreadMeta>();
   private userEmail = '';
 
-  constructor(
-    opts: GmailChannelOpts,
-    pollIntervalMs = 60000,
-  ) {
+  constructor(opts: GmailChannelOpts, pollIntervalMs = 60000) {
     this.opts = opts;
     this.pollIntervalMs = pollIntervalMs;
   }
@@ -87,16 +84,14 @@ export class GmailChannel implements Channel {
     // Verify connection
     const profile = await this.gmail.users.getProfile({ userId: 'me' });
     this.userEmail = profile.data.emailAddress || '';
-    logger.info(
-      { email: this.userEmail },
-      'Gmail channel connected',
-    );
+    logger.info({ email: this.userEmail }, 'Gmail channel connected');
 
     // Start polling
     this.pollTimer = setInterval(
-      () => this.pollForMessages().catch((err) =>
-        logger.error({ err }, 'Gmail poll error'),
-      ),
+      () =>
+        this.pollForMessages().catch((err) =>
+          logger.error({ err }, 'Gmail poll error'),
+        ),
       this.pollIntervalMs,
     );
 
@@ -218,7 +213,8 @@ export class GmailChannel implements Channel {
 
     const headers = msg.data.payload?.headers || [];
     const getHeader = (name: string) =>
-      headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value || '';
+      headers.find((h) => h.name?.toLowerCase() === name.toLowerCase())
+        ?.value || '';
 
     const from = getHeader('From');
     const subject = getHeader('Subject');
@@ -259,10 +255,15 @@ export class GmailChannel implements Channel {
 
     // Find the main group to deliver the email notification
     const groups = this.opts.registeredGroups();
-    const mainEntry = Object.entries(groups).find(([, g]) => g.folder === MAIN_GROUP_FOLDER);
+    const mainEntry = Object.entries(groups).find(
+      ([, g]) => g.folder === MAIN_GROUP_FOLDER,
+    );
 
     if (!mainEntry) {
-      logger.debug({ chatJid, subject }, 'No main group registered, skipping email');
+      logger.debug(
+        { chatJid, subject },
+        'No main group registered, skipping email',
+      );
       return;
     }
 
