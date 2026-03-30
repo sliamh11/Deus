@@ -21,9 +21,21 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+# Allow running as a direct script — add project root to sys.path
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
+
 import sqlite_vec
 from google import genai
 from google.genai import types as genai_types
+
+from evolution.config import (
+    EMBED_DIM,
+    EMBED_MODELS,
+    GEN_MODELS,
+    load_api_key as _load_api_key,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -58,21 +70,6 @@ def _load_vault_path() -> Path:
 _vault_root = _load_vault_path()
 VAULT_SESSION_LOGS = _vault_root / "Session-Logs"
 VAULT_ATOMS = _vault_root / "Atoms"
-EMBED_DIM = 768
-# Embedding model fallback chain — tried in order on failure.
-EMBED_MODELS = [
-    "gemini-embedding-2-preview",  # newer, better multilingual (Hebrew)
-    "gemini-embedding-001",        # stable fallback
-]
-# Generative model fallback chain — tried in order on quota exhaustion (429).
-# Each model has its own free-tier RPD bucket, so falling back multiplies capacity.
-# Order: highest-quota first, then by generation (newest best), then by cost.
-GEN_MODELS = [
-    "models/gemini-3.1-flash-lite-preview",  # ~500 RPD preview quota
-    "models/gemini-3-flash-preview",          # separate preview quota
-    "models/gemini-2.5-flash",                # stable, ~250 RPD free tier
-    "models/gemini-2.5-flash-lite",           # cheapest stable, ~20 RPD free tier
-]
 DEDUP_L2_THRESHOLD = 0.55  # ≈ cosine similarity 0.85 for unit-normalized vectors
 # Recency boost for --query --recency-boost (subtracted from L2 distance).
 RECENCY_BOOST_7D = 0.3    # last 7 days — strong boost
@@ -84,16 +81,11 @@ _client: genai.Client | None = None
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def load_api_key() -> str:
-    env_file = Path("~/.config/deus/.env").expanduser()
-    if env_file.exists():
-        for line in env_file.read_text().splitlines():
-            if line.startswith("GEMINI_API_KEY="):
-                return line.split("=", 1)[1].strip()
-    key = os.environ.get("GEMINI_API_KEY", "")
-    if not key:
-        print("ERROR: GEMINI_API_KEY not found in ~/.config/deus/.env or env", file=sys.stderr)
+    try:
+        return _load_api_key()
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
-    return key
 
 
 def embed(text: str) -> list[float]:

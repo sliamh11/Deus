@@ -11,17 +11,15 @@
  */
 import { execSync } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
+import { HOME_DIR, CONFIG_DIR } from '../src/config.js';
 import { logger } from '../src/logger.js';
 import { emitStatus } from './status.js';
 
-const HOME = process.env.HOME || os.homedir();
-const CONFIG_DIR = path.join(HOME, '.config', 'deus');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
-const DEUS_ENV_PATH = path.join(CONFIG_DIR, '.env');
-const DEFAULT_VAULT_PATH = path.join(HOME, '.deus', 'vault');
+const DEUS_ENV_PATH = path.join(process.cwd(), '.env');
+const DEFAULT_VAULT_PATH = path.join(HOME_DIR, '.deus', 'vault');
 const MEMORY_INDEXER = path.join(process.cwd(), 'scripts', 'memory_indexer.py');
 
 const VAULT_SUBDIRS = [
@@ -96,7 +94,7 @@ export async function run(args: string[]): Promise<void> {
 
   // Expand ~ if needed
   if (vaultPath.startsWith('~')) {
-    vaultPath = path.join(HOME, vaultPath.slice(1));
+    vaultPath = path.join(HOME_DIR, vaultPath.slice(1));
   }
   vaultPath = path.resolve(vaultPath);
 

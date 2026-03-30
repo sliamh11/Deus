@@ -4,8 +4,8 @@
  */
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
 
+import { CONFIG_DIR } from '../src/config.js';
 import { logger } from '../src/logger.js';
 import { isRoot } from './platform.js';
 import { emitStatus } from './status.js';
@@ -25,9 +25,7 @@ function parseArgs(args: string[]): { empty: boolean; json: string } {
 
 export async function run(args: string[]): Promise<void> {
   const { empty, json } = parseArgs(args);
-  const homeDir = os.homedir();
-  const configDir = path.join(homeDir, '.config', 'deus');
-  const configFile = path.join(configDir, 'mount-allowlist.json');
+  const configFile = path.join(CONFIG_DIR, 'mount-allowlist.json');
 
   if (isRoot()) {
     logger.warn(
@@ -35,7 +33,7 @@ export async function run(args: string[]): Promise<void> {
     );
   }
 
-  fs.mkdirSync(configDir, { recursive: true });
+  fs.mkdirSync(CONFIG_DIR, { recursive: true });
 
   let allowedRoots = 0;
   let nonMainReadOnly = 'true';

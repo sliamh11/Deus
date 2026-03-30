@@ -93,7 +93,7 @@ registerStartupCheck({
     name: 'Gemini API key',
     level: 'suggest',
     ok: hasGeminiApiKey(),
-    hint: 'Memory search disabled. Get a free key at https://aistudio.google.com/apikey → add to ~/.config/deus/.env',
+    hint: 'Memory search disabled. Get a free key at https://aistudio.google.com/apikey → add to .env',
   }),
 });
 

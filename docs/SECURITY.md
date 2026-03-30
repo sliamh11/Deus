@@ -89,7 +89,7 @@ The following local files contain sensitive data and are never committed to git:
 |------|----------|------------|
 | `store/auth/creds.json` | WhatsApp session credentials (encrypted by Baileys) | `.gitignore`, host-only (never mounted) |
 | `store/messages.db` | Full message history across all groups | `.gitignore`, host-only |
-| `~/.config/deus/.env` | GEMINI_API_KEY and other secrets | Outside project, `umask 077` on write |
+| `.env` | API keys and channel tokens (GEMINI, Telegram, OAuth) | `.gitignore`, `umask 077` on write |
 | `~/.config/deus/mount-allowlist.json` | Allowed mount paths | Outside project, never mounted |
 | `data/sessions/*/` | Per-group Claude session state (full conversation history) | `.gitignore`, group-isolated mounts |
 

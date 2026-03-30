@@ -5,6 +5,7 @@
 import { execSync } from 'child_process';
 import path from 'path';
 
+import { CONTAINER_IMAGE } from '../src/config.js';
 import { logger } from '../src/logger.js';
 import { commandExists } from './platform.js';
 import { emitStatus } from './status.js';
@@ -23,7 +24,7 @@ function parseArgs(args: string[]): { runtime: string } {
 export async function run(args: string[]): Promise<void> {
   const projectRoot = process.cwd();
   const { runtime } = parseArgs(args);
-  const image = 'deus-agent:latest';
+  const image = CONTAINER_IMAGE;
   const logFile = path.join(projectRoot, 'logs', 'setup.log');
 
   if (!runtime) {

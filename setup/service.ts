@@ -6,9 +6,9 @@
  */
 import { execSync } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
+import { HOME_DIR } from '../src/config.js';
 import { logger } from '../src/logger.js';
 import {
   getPlatform,
@@ -24,7 +24,7 @@ export async function run(_args: string[]): Promise<void> {
   const projectRoot = process.cwd();
   const platform = getPlatform();
   const nodePath = getNodePath();
-  const homeDir = os.homedir();
+  const homeDir = HOME_DIR;
 
   logger.info({ platform, nodePath, projectRoot }, 'Setting up service');
 

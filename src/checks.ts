@@ -9,14 +9,12 @@
 
 import { execSync } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
+import { HOME_DIR, CONFIG_DIR } from './config.js';
 import { readEnvFile } from './env.js';
 
-const HOME_DIR = process.env.HOME || os.homedir();
-const DEUS_CONFIG_PATH = path.join(HOME_DIR, '.config', 'deus', 'config.json');
-const DEUS_ENV_PATH = path.join(HOME_DIR, '.config', 'deus', '.env');
+const DEUS_CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const MEMORY_DB_PATH = path.join(HOME_DIR, '.deus', 'memory.db');
 
 /** Check if Anthropic API credentials are configured (API key or OAuth token). */
@@ -38,18 +36,8 @@ export function hasApiCredentials(): boolean {
 
 /** Check if a Gemini API key is configured for memory embeddings. */
 export function hasGeminiApiKey(): boolean {
-  // Check ~/.config/deus/.env (primary location for memory_indexer.py)
-  try {
-    const content = fs.readFileSync(DEUS_ENV_PATH, 'utf-8');
-    for (const line of content.split('\n')) {
-      if (line.startsWith('GEMINI_API_KEY=') && line.split('=', 2)[1]?.trim()) {
-        return true;
-      }
-    }
-  } catch {
-    // File doesn't exist
-  }
-  return !!process.env.GEMINI_API_KEY;
+  const env = readEnvFile(['GEMINI_API_KEY']);
+  return !!(env.GEMINI_API_KEY || process.env.GEMINI_API_KEY);
 }
 
 /** Read the Deus config file (~/.config/deus/config.json). */

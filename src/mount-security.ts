@@ -7,17 +7,11 @@
  * Allowlist location: ~/.config/deus/mount-allowlist.json
  */
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
-import pino from 'pino';
 
-import { MOUNT_ALLOWLIST_PATH } from './config.js';
+import { HOME_DIR, MOUNT_ALLOWLIST_PATH } from './config.js';
+import { logger } from './logger.js';
 import { AdditionalMount, AllowedRoot, MountAllowlist } from './types.js';
-
-const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  transport: { target: 'pino-pretty', options: { colorize: true } },
-});
 
 // Cache the allowlist in memory - only reloads on process restart
 let cachedAllowlist: MountAllowlist | null = null;
@@ -122,12 +116,11 @@ export function loadMountAllowlist(): MountAllowlist | null {
  * Expand ~ to home directory and resolve to absolute path
  */
 function expandPath(p: string): string {
-  const homeDir = process.env.HOME || os.homedir();
   if (p.startsWith('~/')) {
-    return path.join(homeDir, p.slice(2));
+    return path.join(HOME_DIR, p.slice(2));
   }
   if (p === '~') {
-    return homeDir;
+    return HOME_DIR;
   }
   return path.resolve(p);
 }

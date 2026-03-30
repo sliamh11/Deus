@@ -126,6 +126,8 @@ async function readStdin(): Promise<string> {
   });
 }
 
+// SYNC-REQUIRED: Duplicated in src/container-runner.ts (host side).
+// Cannot be shared via import — this package runs inside an isolated container.
 const OUTPUT_START_MARKER = '---DEUS_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---DEUS_OUTPUT_END---';
 

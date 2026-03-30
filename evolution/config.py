@@ -10,7 +10,7 @@ from pathlib import Path
 EVOLUTION_DIR = Path(__file__).parent
 ARTIFACTS_DIR = EVOLUTION_DIR / "artifacts"
 DB_PATH = Path(os.environ.get("DEUS_DB", "~/.deus/memory.db")).expanduser()
-CONFIG_ENV = Path("~/.config/deus/.env").expanduser()
+CONFIG_ENV = Path(__file__).resolve().parent.parent / ".env"
 
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
@@ -40,7 +40,7 @@ DSPY_NUM_CANDIDATES = int(os.environ.get("EVOLUTION_DSPY_NUM_CANDIDATES", "4"))
 
 
 def load_api_key() -> str:
-    """Load GEMINI_API_KEY from ~/.config/deus/.env or environment."""
+    """Load GEMINI_API_KEY from project .env or environment."""
     if CONFIG_ENV.exists():
         for line in CONFIG_ENV.read_text().splitlines():
             if line.startswith("GEMINI_API_KEY="):
@@ -48,6 +48,6 @@ def load_api_key() -> str:
     key = os.environ.get("GEMINI_API_KEY", "")
     if not key:
         raise RuntimeError(
-            "GEMINI_API_KEY not found in ~/.config/deus/.env or environment"
+            "GEMINI_API_KEY not found in .env or environment"
         )
     return key

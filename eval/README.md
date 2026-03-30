@@ -41,7 +41,7 @@ The judge model scores agent responses. Configured in `judge_model.py`.
 
 | Priority | Judge | Requires |
 |----------|-------|----------|
-| 1 | GeminiJudge | `GEMINI_API_KEY` in `~/.config/deus/.env` |
+| 1 | GeminiJudge | `GEMINI_API_KEY` in `.env` |
 | 2 | ClaudeProxyJudge (fallback) | Credential proxy on localhost:3001. Currently blocked by Anthropic OAuth auth issue. |
 
 Override the judge model name with `DEEPEVAL_JUDGE_MODEL` (default: `claude-sonnet-4-5`).

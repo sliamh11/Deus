@@ -29,7 +29,8 @@ import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 import { getReflections, logInteraction } from './evolution-client.js';
 
-// Sentinel markers for robust output parsing (must match agent-runner)
+// SYNC-REQUIRED: Duplicated in container/agent-runner/src/index.ts.
+// Cannot be shared via import — agent-runner is a separate package inside an isolated container.
 const OUTPUT_START_MARKER = '---DEUS_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---DEUS_OUTPUT_END---';
 
