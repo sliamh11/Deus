@@ -79,9 +79,9 @@ export function ensureContainerRuntimeRunning(): void {
     logger.error({ err }, 'Failed to reach container runtime');
     logger.error(
       'FATAL: Container runtime failed to start. ' +
-      'Agents cannot run without a container runtime. ' +
-      'To fix: 1) Ensure Docker is installed and running, ' +
-      '2) Run: docker info, 3) Restart Deus',
+        'Agents cannot run without a container runtime. ' +
+        'To fix: 1) Ensure Docker is installed and running, ' +
+        '2) Run: docker info, 3) Restart Deus',
     );
     throw new Error('Container runtime is required but failed to start');
   }
