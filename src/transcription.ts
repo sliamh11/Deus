@@ -10,6 +10,8 @@ import {
   WASocket,
 } from '@whiskeysockets/baileys';
 
+import { logger } from './logger.js';
+
 const execFileAsync = promisify(execFile);
 
 const WHISPER_BIN = process.env.WHISPER_BIN || 'whisper-cli';
@@ -56,7 +58,7 @@ async function transcribeWithWhisperCpp(
     const transcript = stdout.trim();
     return transcript || null;
   } catch (err) {
-    console.error('whisper.cpp transcription failed:', err);
+    logger.error({ err }, 'whisper.cpp transcription failed');
     return null;
   } finally {
     for (const f of [tmpOgg, tmpWav]) {
@@ -85,11 +87,11 @@ export async function transcribeAudioMessage(
     )) as Buffer;
 
     if (!buffer || buffer.length === 0) {
-      console.error('Failed to download audio message');
+      logger.error('Failed to download audio message');
       return FALLBACK_MESSAGE;
     }
 
-    console.log(`Downloaded audio message: ${buffer.length} bytes`);
+    logger.debug({ bytes: buffer.length }, 'Downloaded audio message');
 
     const transcript = await transcribeWithWhisperCpp(buffer);
 
@@ -97,10 +99,10 @@ export async function transcribeAudioMessage(
       return FALLBACK_MESSAGE;
     }
 
-    console.log(`Transcribed voice message: ${transcript.length} chars`);
+    logger.info({ chars: transcript.length }, 'Transcribed voice message');
     return transcript.trim();
   } catch (err) {
-    console.error('Transcription error:', err);
+    logger.error({ err }, 'Transcription error');
     return FALLBACK_MESSAGE;
   }
 }

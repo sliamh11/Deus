@@ -18,6 +18,7 @@ import {
   hasAnyChannelAuth,
   countRegisteredGroups,
 } from './checks.js';
+import { logger } from './logger.js';
 
 // ── Check Registry ──────────────────────────────────────────────────────────
 
@@ -249,6 +250,6 @@ export function printStartupReport(report: StartupCheckReport): void {
   lines.push(BORDER_BOT);
 
   for (const line of lines) {
-    console.error(line);
+    logger.error(line);
   }
 }
