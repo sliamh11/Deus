@@ -363,11 +363,11 @@ groups/
 
 ---
 
-## Built on Deus
+## Built on NanoClaw
 
-Deus is a personal fork of **[Deus](https://github.com/qwibitai/nanoclaw)** by [qwibitai](https://github.com/qwibitai). Deus provides the core: a single Node.js process, container-isolated Claude agents, multi-channel messaging, and a skill system for safe customization. Everything added here is built on top of that foundation.
+Deus is built on **[NanoClaw](https://github.com/qwibitai/nanoclaw)** by [qwibitai](https://github.com/qwibitai) — the core framework providing container-isolated Claude agents, multi-channel messaging, and a skill system for safe customization. This repo extends NanoClaw with semantic memory, voice transcription, an evolution loop, and more.
 
-If you want to build your own setup, start from the official Deus repo.
+Want to start from scratch? Fork the [NanoClaw repo](https://github.com/qwibitai/nanoclaw) and build your own setup.
 
 ---
 

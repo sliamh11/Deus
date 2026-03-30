@@ -33,7 +33,7 @@ case "$1" in
       echo "Error: could not read token from ~/.claude/.credentials.json"
       exit 1
     fi
-    echo "CLAUDE_CODE_OAUTH_TOKEN=$TOKEN" > "$HOME/deus/.env"
+    (umask 077 && echo "CLAUDE_CODE_OAUTH_TOKEN=$TOKEN" > "$HOME/deus/.env")
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     echo "Auth token refreshed and Deus restarted."
     ;;
@@ -43,7 +43,7 @@ case "$1" in
       echo "Error: could not read token from ~/.claude/.credentials.json"
       exit 1
     fi
-    echo "CLAUDE_CODE_OAUTH_TOKEN=$TOKEN" > "$HOME/deus/.env"
+    (umask 077 && echo "CLAUDE_CODE_OAUTH_TOKEN=$TOKEN" > "$HOME/deus/.env")
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
     # Resolve vault path from config (DEUS_VAULT_PATH env var → ~/.config/deus/config.json)

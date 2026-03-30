@@ -2,14 +2,15 @@
  * Container runtime abstraction for Deus.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
 import { logger } from './logger.js';
 
 /** The container runtime binary name. */
-export const CONTAINER_RUNTIME_BIN = 'docker';
+export const CONTAINER_RUNTIME_BIN =
+  process.env.CONTAINER_RUNTIME || 'docker';
 
 /** Hostname containers use to reach the host machine. */
 export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
@@ -59,9 +60,12 @@ export function readonlyMountArgs(
   return ['-v', `${hostPath}:${containerPath}:ro`];
 }
 
-/** Returns the shell command to stop a container by name. */
-export function stopContainer(name: string): string {
-  return `${CONTAINER_RUNTIME_BIN} stop -t 1 ${name}`;
+/** Stop a container by name using execFileSync (no shell interpolation). */
+export function stopContainerSync(name: string): void {
+  execFileSync(CONTAINER_RUNTIME_BIN, ['stop', '-t', '1', name], {
+    stdio: 'pipe',
+    timeout: 15000,
+  });
 }
 
 /** Ensure the container runtime is running, starting it if needed. */
@@ -112,7 +116,7 @@ export function cleanupOrphans(): void {
     const orphans = output.trim().split('\n').filter(Boolean);
     for (const name of orphans) {
       try {
-        execSync(stopContainer(name), { stdio: 'pipe' });
+        stopContainerSync(name);
       } catch {
         /* already stopped */
       }

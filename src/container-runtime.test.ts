@@ -10,16 +10,18 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-// Mock child_process — store the mock fn so tests can configure it
+// Mock child_process — store the mock fns so tests can configure them
 const mockExecSync = vi.fn();
+const mockExecFileSync = vi.fn();
 vi.mock('child_process', () => ({
   execSync: (...args: unknown[]) => mockExecSync(...args),
+  execFileSync: (...args: unknown[]) => mockExecFileSync(...args),
 }));
 
 import {
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,
-  stopContainer,
+  stopContainerSync,
   ensureContainerRuntimeRunning,
   cleanupOrphans,
 } from './container-runtime.js';
@@ -38,10 +40,13 @@ describe('readonlyMountArgs', () => {
   });
 });
 
-describe('stopContainer', () => {
-  it('returns stop command using CONTAINER_RUNTIME_BIN', () => {
-    expect(stopContainer('deus-test-123')).toBe(
-      `${CONTAINER_RUNTIME_BIN} stop -t 1 deus-test-123`,
+describe('stopContainerSync', () => {
+  it('calls execFileSync with correct args', () => {
+    stopContainerSync('deus-test-123');
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      CONTAINER_RUNTIME_BIN,
+      ['stop', '-t', '1', 'deus-test-123'],
+      { stdio: 'pipe', timeout: 15000 },
     );
   });
 });
@@ -87,17 +92,21 @@ describe('cleanupOrphans', () => {
 
     cleanupOrphans();
 
-    // ps + 2 stop calls
-    expect(mockExecSync).toHaveBeenCalledTimes(3);
-    expect(mockExecSync).toHaveBeenNthCalledWith(
-      2,
-      `${CONTAINER_RUNTIME_BIN} stop -t 1 deus-group1-111`,
-      { stdio: 'pipe' },
+    // ps call via execSync
+    expect(mockExecSync).toHaveBeenCalledTimes(1);
+    // 2 stop calls via execFileSync
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    expect(mockExecFileSync).toHaveBeenNthCalledWith(
+      1,
+      CONTAINER_RUNTIME_BIN,
+      ['stop', '-t', '1', 'deus-group1-111'],
+      { stdio: 'pipe', timeout: 15000 },
     );
-    expect(mockExecSync).toHaveBeenNthCalledWith(
-      3,
-      `${CONTAINER_RUNTIME_BIN} stop -t 1 deus-group2-222`,
-      { stdio: 'pipe' },
+    expect(mockExecFileSync).toHaveBeenNthCalledWith(
+      2,
+      CONTAINER_RUNTIME_BIN,
+      ['stop', '-t', '1', 'deus-group2-222'],
+      { stdio: 'pipe', timeout: 15000 },
     );
     expect(logger.info).toHaveBeenCalledWith(
       { count: 2, names: ['deus-group1-111', 'deus-group2-222'] },
@@ -130,15 +139,16 @@ describe('cleanupOrphans', () => {
   it('continues stopping remaining containers when one stop fails', () => {
     mockExecSync.mockReturnValueOnce('deus-a-1\ndeus-b-2\n');
     // First stop fails
-    mockExecSync.mockImplementationOnce(() => {
+    mockExecFileSync.mockImplementationOnce(() => {
       throw new Error('already stopped');
     });
     // Second stop succeeds
-    mockExecSync.mockReturnValueOnce('');
+    mockExecFileSync.mockReturnValueOnce('');
 
     cleanupOrphans(); // should not throw
 
-    expect(mockExecSync).toHaveBeenCalledTimes(3);
+    expect(mockExecSync).toHaveBeenCalledTimes(1);
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
     expect(logger.info).toHaveBeenCalledWith(
       { count: 2, names: ['deus-a-1', 'deus-b-2'] },
       'Stopped orphaned containers',
