@@ -655,7 +655,11 @@ async function main(): Promise<void> {
       // Truncate oversized messages to prevent abuse / memory exhaustion
       if (msg.content.length > MAX_MESSAGE_LENGTH) {
         logger.warn(
-          { chatJid, originalLength: msg.content.length, maxLength: MAX_MESSAGE_LENGTH },
+          {
+            chatJid,
+            originalLength: msg.content.length,
+            maxLength: MAX_MESSAGE_LENGTH,
+          },
           'Message truncated',
         );
         msg.content =
