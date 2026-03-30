@@ -5,6 +5,7 @@ import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
+  MAX_MESSAGE_LENGTH,
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
@@ -651,6 +652,17 @@ async function main(): Promise<void> {
           return;
         }
       }
+      // Truncate oversized messages to prevent abuse / memory exhaustion
+      if (msg.content.length > MAX_MESSAGE_LENGTH) {
+        logger.warn(
+          { chatJid, originalLength: msg.content.length, maxLength: MAX_MESSAGE_LENGTH },
+          'Message truncated',
+        );
+        msg.content =
+          msg.content.slice(0, MAX_MESSAGE_LENGTH) +
+          '\n\n[Message truncated — exceeded maximum length]';
+      }
+
       storeMessage(msg);
     },
     onChatMetadata: (

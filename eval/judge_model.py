@@ -32,6 +32,15 @@ except ImportError:
     _GEMINI_AVAILABLE = False
     GeminiJudge = None  # type: ignore
 
+try:
+    from evolution.judge.ollama_judge import OllamaJudge, is_ollama_available
+    _OLLAMA_IMPORTABLE = True
+except ImportError:
+    _OLLAMA_IMPORTABLE = False
+    OllamaJudge = None  # type: ignore
+    def is_ollama_available() -> bool:  # type: ignore
+        return False
+
 # ── Claude proxy judge (fallback) ─────────────────────────────────────────────
 
 PROXY_BASE_URL = os.environ.get("CREDENTIAL_PROXY_URL", "http://localhost:3001")
@@ -92,10 +101,29 @@ class ClaudeProxyJudge(DeepEvalBaseLLM):
 def make_judge(model: Optional[str] = None) -> DeepEvalBaseLLM:
     """
     Return the best available judge:
-    - GeminiJudge if GEMINI_API_KEY is available (preferred)
-    - ClaudeProxyJudge otherwise (may fail due to OAuth auth issue)
+    - EVAL_JUDGE=ollama → OllamaJudge
+    - EVAL_JUDGE=gemini → GeminiJudge
+    - If not set, auto-detect: Ollama if reachable, then Gemini, then ClaudeProxy
     """
+    eval_judge = os.environ.get("EVAL_JUDGE", "").lower()
+
+    if eval_judge == "ollama":
+        if not _OLLAMA_IMPORTABLE:
+            raise RuntimeError("OllamaJudge not importable — check evolution package")
+        return OllamaJudge(model=model or os.environ.get("OLLAMA_MODEL", "qwen3.5:4b"))
+
+    if eval_judge == "gemini":
+        if not _GEMINI_AVAILABLE:
+            raise RuntimeError("GeminiJudge not importable — check google-genai package")
+        from evolution.config import JUDGE_MODEL as GEMINI_JUDGE_MODEL
+        return GeminiJudge(model=model or GEMINI_JUDGE_MODEL)
+
+    # Auto-detect: try Ollama first, then Gemini, then Claude proxy
+    if _OLLAMA_IMPORTABLE and is_ollama_available():
+        return OllamaJudge(model=model or os.environ.get("OLLAMA_MODEL", "qwen3.5:4b"))
+
     if _GEMINI_AVAILABLE:
         from evolution.config import JUDGE_MODEL as GEMINI_JUDGE_MODEL
         return GeminiJudge(model=model or GEMINI_JUDGE_MODEL)
+
     return ClaudeProxyJudge(model=model or JUDGE_MODEL)

@@ -62,6 +62,11 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+export const MAX_MESSAGE_LENGTH = parseInt(
+  process.env.MAX_MESSAGE_LENGTH || '50000',
+  10,
+);
+
 export const TRIGGER_PATTERN = new RegExp(
   `^@${escapeRegex(ASSISTANT_NAME)}\\b`,
   'i',

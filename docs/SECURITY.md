@@ -81,6 +81,23 @@ Real API credentials **never enter containers**. Instead, the host runs an HTTP 
 - Any credentials matching blocked patterns
 - `.env` is shadowed with `/dev/null` in the project root mount
 
+### 6. Sensitive Local Files
+
+The following local files contain sensitive data and are never committed to git:
+
+| File | Contents | Protection |
+|------|----------|------------|
+| `store/auth/creds.json` | WhatsApp session credentials (encrypted by Baileys) | `.gitignore`, host-only (never mounted) |
+| `store/messages.db` | Full message history across all groups | `.gitignore`, host-only |
+| `~/.config/deus/.env` | GEMINI_API_KEY and other secrets | Outside project, `umask 077` on write |
+| `~/.config/deus/mount-allowlist.json` | Allowed mount paths | Outside project, never mounted |
+| `data/sessions/*/` | Per-group Claude session state (full conversation history) | `.gitignore`, group-isolated mounts |
+
+**Recommendations:**
+- Back up `store/auth/` if you want to avoid WhatsApp re-authentication
+- The `messages.db` file grows unbounded — consider periodic cleanup for long-running installations
+- If you suspect credential compromise, delete `store/auth/` and re-authenticate with `/add-whatsapp`
+
 ## Privilege Comparison
 
 | Capability | Main Group | Non-Main Group |

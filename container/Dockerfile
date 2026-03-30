@@ -1,7 +1,8 @@
 # Deus Agent Container
 # Runs Claude Agent SDK in isolated Linux VM with browser automation
 
-FROM node:22-slim
+# Pin versions for reproducible builds — update periodically
+FROM node:22-slim@sha256:80fdb3f57c815e1b638d221f30a826823467c4a56c8f6a8d7aa091cd9b1675ea
 
 # Install system dependencies for Chromium
 RUN apt-get update && apt-get install -y \
@@ -30,8 +31,8 @@ RUN apt-get update && apt-get install -y \
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Install agent-browser and claude-code globally
-RUN npm install -g agent-browser @anthropic-ai/claude-code
+# Install agent-browser and claude-code globally (pinned)
+RUN npm install -g agent-browser@0.23.0 @anthropic-ai/claude-code@2.1.87
 
 # Create app directory
 WORKDIR /app
