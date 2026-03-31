@@ -145,6 +145,9 @@ Use the skill system: `/add-whatsapp`, `/add-telegram`, `/add-slack`, `/add-disc
 **How do I customize behavior?**
 Tell Claude Code directly ("change the trigger word to @Max", "make responses shorter") or run `/customize` for guided changes. No config files — the codebase is small enough for Claude to modify safely.
 
+**Where are all the environment variables documented?**
+See [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) for the full reference with defaults and descriptions.
+
 ---
 
 ## Comparison
