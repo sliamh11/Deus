@@ -2,6 +2,7 @@
 DeepEval judge model for Deus eval suites.
 
 Priority order:
+0. MockJudge   — fixed score, no API calls; for CI smoke tests (EVAL_JUDGE=mock).
 1. GeminiJudge  — uses GEMINI_API_KEY; same Gemini client as memory_indexer.
 2. ClaudeProxyJudge — OAuth Bearer via localhost:3001 credential proxy.
                       Blocked on Anthropic API (returns 401); kept as fallback
@@ -17,6 +18,32 @@ from pathlib import Path
 from typing import Any, Optional, Tuple
 
 from deepeval.models import DeepEvalBaseLLM
+
+
+# ── Mock judge (CI / PR gate) ────────────────────────────────────────────────
+
+class MockJudge(DeepEvalBaseLLM):
+    """
+    Returns a fixed score without calling any external API.
+    Useful for CI smoke tests where you want to validate the eval pipeline
+    without burning API credits.  Activated via EVAL_JUDGE=mock.
+    """
+
+    def __init__(self, score: float = 0.75):
+        self._score = score
+
+    def load_model(self):
+        return None
+
+    def generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
+        return str(self._score), self._score
+
+    async def a_generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
+        return str(self._score), self._score
+
+    def get_model_name(self) -> str:
+        return f"mock:{self._score}"
+
 
 # ── Gemini judge ───────────────────────────────────────────────────────────────
 
@@ -101,11 +128,15 @@ class ClaudeProxyJudge(DeepEvalBaseLLM):
 def make_judge(model: Optional[str] = None) -> DeepEvalBaseLLM:
     """
     Return the best available judge:
+    - EVAL_JUDGE=mock   → MockJudge (fixed score, no API calls)
     - EVAL_JUDGE=ollama → OllamaJudge
     - EVAL_JUDGE=gemini → GeminiJudge
     - If not set, auto-detect: Ollama if reachable, then Gemini, then ClaudeProxy
     """
     eval_judge = os.environ.get("EVAL_JUDGE", "").lower()
+
+    if eval_judge == "mock":
+        return MockJudge()
 
     if eval_judge == "ollama":
         if not _OLLAMA_IMPORTABLE:

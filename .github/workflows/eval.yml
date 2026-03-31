@@ -45,6 +45,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPEVAL_API_KEY: ${{ secrets.DEEPEVAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EVAL_JUDGE: mock
           DEUS_EVAL_TIMEOUT: "180"
         run: |
           cd eval && python -m pytest test_core_qa.py::test_correctness \
@@ -56,6 +58,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPEVAL_API_KEY: ${{ secrets.DEEPEVAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EVAL_JUDGE: gemini
           DEUS_EVAL_TIMEOUT: "300"
         run: cd eval && python -m pytest test_core_qa.py -v --tb=short
 
@@ -64,6 +68,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPEVAL_API_KEY: ${{ secrets.DEEPEVAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EVAL_JUDGE: gemini
           DEUS_EVAL_TIMEOUT: "300"
         run: cd eval && python -m pytest test_tool_use.py -v --tb=short
 
@@ -72,6 +78,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPEVAL_API_KEY: ${{ secrets.DEEPEVAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EVAL_JUDGE: gemini
           DEUS_EVAL_TIMEOUT: "180"
         run: cd eval && python -m pytest test_safety.py -v --tb=short
 
@@ -80,5 +88,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPEVAL_API_KEY: ${{ secrets.DEEPEVAL_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EVAL_JUDGE: gemini
           DEUS_EVAL_TIMEOUT: "300"
         run: cd eval && python -m pytest -v --tb=short
