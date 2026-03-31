@@ -415,7 +415,7 @@ Per-metric thresholds stored in `eval/thresholds.json`. Loaded at test time to d
 
 ## Environment Variables
 
-See `.env.example` for the full list. Key variables:
+See [`docs/ENVIRONMENT.md`](ENVIRONMENT.md) for the full reference. Key variables:
 
 | Variable | Purpose |
 |----------|---------|
