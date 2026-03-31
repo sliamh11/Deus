@@ -32,6 +32,22 @@ export interface ContainerConfig {
   timeout?: number; // Default: 300000 (5 minutes)
 }
 
+export interface ProjectType {
+  language: string; // "typescript" | "python" | "rust" | "go" | "ruby" | "java" | "unknown"
+  framework?: string; // "next.js" | "react" | "express" | "django" | "flask" | etc.
+  packageManager?: string; // "npm" | "yarn" | "pnpm" | "pip" | "cargo" | etc.
+  testRunner?: string; // "jest" | "vitest" | "pytest" | "cargo test" | etc.
+}
+
+export interface ProjectConfig {
+  id: string;
+  name: string;
+  path: string; // Absolute host path
+  type: ProjectType | null; // Detected project type, null if unknown
+  readonly: boolean; // Whether the mount is read-only (default: false)
+  created_at: string;
+}
+
 export interface RegisteredGroup {
   name: string;
   folder: string;
@@ -40,6 +56,7 @@ export interface RegisteredGroup {
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  projectId?: string; // Associated project for external environment mode
 }
 
 export interface NewMessage {

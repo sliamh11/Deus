@@ -7,6 +7,7 @@ import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
   NewMessage,
+  ProjectConfig,
   RegisteredGroup,
   ScheduledTask,
   TaskRunLog,
@@ -82,6 +83,15 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      path TEXT NOT NULL UNIQUE,
+      type TEXT,
+      readonly INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -118,6 +128,27 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* column already exists */
   }
+
+  // Add project_id column to registered_groups (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE registered_groups ADD COLUMN project_id TEXT REFERENCES projects(id)`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Create projects table if it doesn't exist (migration for existing DBs)
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      path TEXT NOT NULL UNIQUE,
+      type TEXT,
+      readonly INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+  `);
 
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
@@ -554,6 +585,7 @@ export function getRegisteredGroup(
         container_config: string | null;
         requires_trigger: number | null;
         is_main: number | null;
+        project_id: string | null;
       }
     | undefined;
   if (!row) return undefined;
@@ -576,6 +608,7 @@ export function getRegisteredGroup(
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
     isMain: row.is_main === 1 ? true : undefined,
+    projectId: row.project_id ?? undefined,
   };
 }
 
@@ -584,8 +617,8 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
   }
   db.prepare(
-    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO registered_groups (jid, name, folder, trigger_pattern, added_at, container_config, requires_trigger, is_main, project_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     jid,
     group.name,
@@ -595,6 +628,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
     group.isMain ? 1 : 0,
+    group.projectId ?? null,
   );
 }
 
@@ -608,6 +642,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     container_config: string | null;
     requires_trigger: number | null;
     is_main: number | null;
+    project_id: string | null;
   }>;
   const result: Record<string, RegisteredGroup> = {};
   for (const row of rows) {
@@ -629,9 +664,110 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
       isMain: row.is_main === 1 ? true : undefined,
+      projectId: row.project_id ?? undefined,
     };
   }
   return result;
+}
+
+// --- Project accessors ---
+
+export function createProject(project: ProjectConfig): void {
+  db.prepare(
+    `INSERT INTO projects (id, name, path, type, readonly, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    project.id,
+    project.name,
+    project.path,
+    project.type ? JSON.stringify(project.type) : null,
+    project.readonly ? 1 : 0,
+    project.created_at,
+  );
+}
+
+export function getProjectById(id: string): ProjectConfig | undefined {
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as
+    | {
+        id: string;
+        name: string;
+        path: string;
+        type: string | null;
+        readonly: number;
+        created_at: string;
+      }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    name: row.name,
+    path: row.path,
+    type: row.type ? JSON.parse(row.type) : null,
+    readonly: row.readonly === 1,
+    created_at: row.created_at,
+  };
+}
+
+export function getProjectByPath(hostPath: string): ProjectConfig | undefined {
+  const row = db
+    .prepare('SELECT * FROM projects WHERE path = ?')
+    .get(hostPath) as
+    | {
+        id: string;
+        name: string;
+        path: string;
+        type: string | null;
+        readonly: number;
+        created_at: string;
+      }
+    | undefined;
+  if (!row) return undefined;
+  return {
+    id: row.id,
+    name: row.name,
+    path: row.path,
+    type: row.type ? JSON.parse(row.type) : null,
+    readonly: row.readonly === 1,
+    created_at: row.created_at,
+  };
+}
+
+export function getAllProjects(): ProjectConfig[] {
+  const rows = db
+    .prepare('SELECT * FROM projects ORDER BY created_at DESC')
+    .all() as Array<{
+    id: string;
+    name: string;
+    path: string;
+    type: string | null;
+    readonly: number;
+    created_at: string;
+  }>;
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    path: row.path,
+    type: row.type ? JSON.parse(row.type) : null,
+    readonly: row.readonly === 1,
+    created_at: row.created_at,
+  }));
+}
+
+export function deleteProject(id: string): void {
+  // Dissociate all groups first
+  db.prepare(
+    `UPDATE registered_groups SET project_id = NULL WHERE project_id = ?`,
+  ).run(id);
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+}
+
+export function setGroupProject(
+  groupFolder: string,
+  projectId: string | null,
+): void {
+  db.prepare(
+    `UPDATE registered_groups SET project_id = ? WHERE folder = ?`,
+  ).run(projectId, groupFolder);
 }
 
 // --- JSON migration ---

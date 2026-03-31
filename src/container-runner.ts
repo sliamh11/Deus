@@ -26,6 +26,11 @@ import {
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { getProjectById } from './db.js';
+import {
+  SENSITIVE_FILE_PATTERNS,
+  SENSITIVE_DIR_PATTERNS,
+} from './project-registry.js';
 import { RegisteredGroup } from './types.js';
 import { detectAndLoad } from './domain-presets.js';
 import { getReflections, logInteraction } from './evolution-client.js';
@@ -114,6 +119,112 @@ function buildVolumeMounts(
         containerPath: '/workspace/global',
         readonly: true,
       });
+    }
+  }
+
+  // External project mount: when a group has an associated project,
+  // mount it at /workspace/project so the agent works on the external codebase.
+  // Security: project path was validated against mount-allowlist at registration time.
+  // We re-validate the real path hasn't changed (symlink TOCTOU defense) and
+  // shadow sensitive files to prevent credential exfiltration.
+  if (group.projectId) {
+    const project = getProjectById(group.projectId);
+    if (project && fs.existsSync(project.path)) {
+      // TOCTOU defense: re-resolve symlinks at mount time.
+      // The path was validated at registration, but a symlink target
+      // could have been swapped between registration and now.
+      let realProjectPath: string;
+      try {
+        realProjectPath = fs.realpathSync(project.path);
+      } catch {
+        logger.warn(
+          { projectId: group.projectId, path: project.path },
+          'Project path no longer resolvable, skipping mount',
+        );
+        realProjectPath = ''; // Will skip the mount below
+      }
+
+      if (realProjectPath && realProjectPath === project.path) {
+        // Determine effective readonly: project config + non-main override
+        const effectiveReadonly = project.readonly || !isMain;
+
+        mounts.push({
+          hostPath: realProjectPath,
+          containerPath: '/workspace/project',
+          readonly: effectiveReadonly,
+        });
+
+        // Shadow sensitive files to prevent credential leakage.
+        // The container will see /dev/null instead of the real file.
+        for (const pattern of SENSITIVE_FILE_PATTERNS) {
+          const filePath = path.join(realProjectPath, pattern);
+          if (fs.existsSync(filePath)) {
+            mounts.push({
+              hostPath: '/dev/null',
+              containerPath: `/workspace/project/${pattern}`,
+              readonly: true,
+            });
+          }
+        }
+
+        // Shadow sensitive directories
+        for (const dirPattern of SENSITIVE_DIR_PATTERNS) {
+          const dirPath = path.join(realProjectPath, dirPattern);
+          if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
+            // Can't shadow a directory with /dev/null — use an empty tmpdir instead.
+            // Create a project-specific empty dir that persists across runs.
+            const shadowDir = path.join(
+              DATA_DIR,
+              'project-shadows',
+              group.projectId!,
+              dirPattern,
+            );
+            fs.mkdirSync(shadowDir, { recursive: true, mode: 0o700 });
+            mounts.push({
+              hostPath: shadowDir,
+              containerPath: `/workspace/project/${dirPattern}`,
+              readonly: true,
+            });
+          }
+        }
+
+        // Security note: symlinks WITHIN the mounted project can escape the
+        // project boundary (e.g., project/data -> /etc/passwd). Docker/Apple
+        // Container bind mounts follow symlinks by default. This is mitigated
+        // by container isolation (the container process can only access
+        // what's mounted) and the mount-allowlist blocking sensitive roots
+        // (.ssh, .gnupg, .aws, etc). For maximum safety, users should:
+        // 1. Only register trusted project directories
+        // 2. Use readonly mode for untrusted projects
+        // 3. Review projects for suspicious symlinks before registering
+
+        logger.info(
+          {
+            group: group.name,
+            projectId: group.projectId,
+            projectName: project.name,
+            readonly: effectiveReadonly,
+          },
+          'Project mounted as primary workspace',
+        );
+      } else if (realProjectPath) {
+        // Symlink target changed since registration — block the mount.
+        // This prevents an attack where someone registers ~/projects/legit,
+        // then replaces it with a symlink to /etc or ~/.ssh before the next run.
+        logger.error(
+          {
+            projectId: group.projectId,
+            registeredPath: project.path,
+            currentRealPath: realProjectPath,
+          },
+          'Project real path changed since registration — mount BLOCKED (possible symlink swap attack)',
+        );
+      }
+    } else if (project) {
+      logger.warn(
+        { projectId: group.projectId, path: project.path },
+        'Associated project path does not exist, skipping mount',
+      );
     }
   }
 
@@ -293,6 +404,26 @@ export async function runContainerAgent(
   const { domains, presetBlock } = detectAndLoad(input.prompt);
   if (presetBlock) {
     input = { ...input, prompt: `${presetBlock}\n\n${input.prompt}` };
+  }
+
+  // Pre-dispatch: inject project type hint if group has an associated project.
+  // This gives the agent immediate context about the project without waiting
+  // for it to inspect files. The hint is kept brief to minimize token overhead.
+  if (group.projectId) {
+    const project = getProjectById(group.projectId);
+    if (project?.type) {
+      const parts = [project.type.language];
+      if (project.type.framework) parts.push(project.type.framework);
+      if (project.type.packageManager)
+        parts.push(`pkg:${project.type.packageManager}`);
+      if (project.type.testRunner)
+        parts.push(`test:${project.type.testRunner}`);
+      const hint = `[Project: ${project.name} (${parts.join(', ')}) at /workspace/project${project.readonly ? ' — READ-ONLY' : ''}]`;
+      input = { ...input, prompt: `${hint}\n\n${input.prompt}` };
+    } else if (project) {
+      const hint = `[Project: ${project.name} at /workspace/project${project.readonly ? ' — READ-ONLY' : ''}]`;
+      input = { ...input, prompt: `${hint}\n\n${input.prompt}` };
+    }
   }
 
   const groupDir = resolveGroupFolderPath(group.folder);

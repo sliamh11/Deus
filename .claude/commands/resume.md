@@ -1,5 +1,7 @@
 Load context from the Obsidian vault before starting work.
 
+NOTE: This is the home-mode (~/deus) version. For external projects, the user-level /resume skill at ~/.claude/skills/resume/ handles project-focused context loading automatically.
+
 First, resolve the vault path by reading `~/.config/deus/config.json` and using the `vault_path` value. If the env var `DEUS_VAULT_PATH` is set, use that instead. All paths below use `$VAULT` to mean this resolved path.
 
 1. Always read core memory:

@@ -20,6 +20,7 @@ A personal AI assistant that lives in your messaging apps, remembers everything,
 8. **Self-improvement** — Scores its own responses over time and learns from both failures and successes. Low-scoring responses generate corrective reflections; high-scoring ones extract positive patterns. Uses DSPy to optimize its own system prompt per domain once enough samples accumulate.
 9. **Domain presets** — Lightweight topic-specific guidance (marketing, engineering, study, writing, strategy) that activates automatically based on your message. Presets are user-editable markdown files and improve over time through the self-improvement loop.
 10. **Sandboxed & secure** — Every conversation runs in an isolated Linux container. The AI can't access your host system beyond what you explicitly allow.
+11. **External projects** — Run `deus` in any project directory to get a coding agent with your full Deus memory and preferences. Or register a project and work on it through your messaging apps — Deus mounts it into an isolated container, auto-detects the tech stack, and shadows sensitive files automatically.
 
 ---
 

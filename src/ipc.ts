@@ -8,6 +8,14 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import {
+  registerProject,
+  associateProject,
+  dissociateProject,
+  removeProject,
+  getAllProjects,
+  getProjectById,
+} from './project-registry.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -172,6 +180,10 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For project management
+    projectPath?: string;
+    projectId?: string;
+    readonly?: boolean;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -452,6 +464,132 @@ export async function processTaskIpc(
           { data },
           'Invalid register_group request - missing required fields',
         );
+      }
+      break;
+
+    case 'register_project':
+      // Main-only: register an external project for container mounting.
+      // The agent provides a name and host path; we validate against the
+      // mount allowlist and detect the project type.
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized register_project attempt blocked',
+        );
+        break;
+      }
+      if (data.name && data.projectPath) {
+        try {
+          const project = registerProject(data.name, data.projectPath, {
+            readonly: data.readonly,
+          });
+          logger.info(
+            { projectId: project.id, name: project.name, path: project.path },
+            'Project registered via IPC',
+          );
+        } catch (err) {
+          logger.error(
+            { name: data.name, path: data.projectPath, err },
+            'Failed to register project via IPC',
+          );
+        }
+      } else {
+        logger.warn(
+          { data },
+          'Invalid register_project request - missing name or path',
+        );
+      }
+      break;
+
+    case 'associate_project':
+      // Main-only: link a project to a group so its container mounts the project.
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized associate_project attempt blocked',
+        );
+        break;
+      }
+      if (data.projectId && data.folder) {
+        try {
+          associateProject(data.projectId, data.folder);
+          logger.info(
+            { projectId: data.projectId, folder: data.folder },
+            'Project associated with group via IPC',
+          );
+        } catch (err) {
+          logger.error(
+            { projectId: data.projectId, folder: data.folder, err },
+            'Failed to associate project via IPC',
+          );
+        }
+      } else {
+        logger.warn(
+          { data },
+          'Invalid associate_project request - missing projectId or folder',
+        );
+      }
+      break;
+
+    case 'dissociate_project':
+      // Main-only: remove project association from a group.
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized dissociate_project attempt blocked',
+        );
+        break;
+      }
+      if (data.folder) {
+        dissociateProject(data.folder);
+        logger.info(
+          { folder: data.folder },
+          'Project dissociated from group via IPC',
+        );
+      }
+      break;
+
+    case 'delete_project':
+      // Main-only: unregister a project (dissociates all groups automatically).
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized delete_project attempt blocked',
+        );
+        break;
+      }
+      if (data.projectId) {
+        try {
+          removeProject(data.projectId);
+          logger.info({ projectId: data.projectId }, 'Project deleted via IPC');
+        } catch (err) {
+          logger.error(
+            { projectId: data.projectId, err },
+            'Failed to delete project via IPC',
+          );
+        }
+      }
+      break;
+
+    case 'list_projects':
+      // Main-only: list all registered projects.
+      // Response written to IPC output for the agent to read.
+      if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized list_projects attempt blocked',
+        );
+        break;
+      }
+      {
+        const projects = getAllProjects();
+        const ipcDir = path.join(DATA_DIR, 'ipc', sourceGroup);
+        fs.mkdirSync(ipcDir, { recursive: true });
+        fs.writeFileSync(
+          path.join(ipcDir, 'projects.json'),
+          JSON.stringify({ projects }, null, 2),
+        );
+        logger.info({ count: projects.length }, 'Projects list written to IPC');
       }
       break;
 

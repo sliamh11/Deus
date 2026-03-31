@@ -431,6 +431,30 @@ async function runQuery(
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
 
+  // Detect external project mount: if /workspace/project exists and has content,
+  // use it as the primary cwd. The agent works in the user's project directory
+  // while /workspace/group stays available as an additional directory for
+  // Deus-specific memory, conversation archives, and CLAUDE.md.
+  const projectDir = '/workspace/project';
+  let hasProject = false;
+  try {
+    // Validate the project dir is a real directory (not a symlink to elsewhere).
+    // The host already validates this, but defense-in-depth inside the container.
+    const stat = fs.statSync(projectDir);
+    if (stat.isDirectory()) {
+      const realProjectDir = fs.realpathSync(projectDir);
+      hasProject = realProjectDir.startsWith('/workspace/') &&
+        fs.readdirSync(projectDir).some(f => !f.startsWith('.'));
+    }
+  } catch {
+    // projectDir doesn't exist — not an error, just no project mounted
+  }
+  const cwd = hasProject ? projectDir : '/workspace/group';
+
+  if (hasProject) {
+    log(`External project detected at ${projectDir}, using as cwd`);
+  }
+
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
   const extraDirs: string[] = [];
@@ -443,6 +467,13 @@ async function runQuery(
       }
     }
   }
+
+  // When working on an external project, add /workspace/group as an additional
+  // directory so the SDK loads its CLAUDE.md (Deus-specific memory for this group)
+  if (hasProject) {
+    extraDirs.push('/workspace/group');
+  }
+
   if (extraDirs.length > 0) {
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
@@ -450,7 +481,7 @@ async function runQuery(
   for await (const message of query({
     prompt: stream,
     options: {
-      cwd: '/workspace/group',
+      cwd,
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
