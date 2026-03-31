@@ -98,7 +98,7 @@ A stop hook auto-saves a checkpoint at the end of every Claude Code session with
 | **Machine-adaptive** | Never hardcode thread counts or resource limits. Scale to available CPU/RAM with env var overrides. |
 | **Modular** | Components connect and disconnect cleanly. Adding or removing a channel or integration shouldn't touch unrelated code. |
 | **Token-efficient** | Minimize redundant API calls. Cache aggressively. Prefer local models (Ollama) for workloads where quality allows it. |
-| **Secure by default** | Credentials never appear in code or git history. Use `.env` files + `.gitignore`. Design as if the repo is public. |
+| **Secure by default** | Credentials never appear in code or git history. Use .env files + .gitignore. Designed as if the repo is already public. |
 
 ---
 
@@ -209,8 +209,6 @@ groups/
 ## Built on NanoClaw
 
 Deus is built on **[NanoClaw](https://github.com/qwibitai/nanoclaw)** by [qwibitai](https://github.com/qwibitai) — the core framework providing container-isolated Claude agents, multi-channel messaging, and a skill system for safe customization. This repo extends NanoClaw with semantic memory, voice transcription, a self-improvement loop, and more.
-
-Want to start from scratch? Fork the [NanoClaw repo](https://github.com/qwibitai/nanoclaw) and build your own setup.
 
 ---
 
