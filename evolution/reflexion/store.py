@@ -6,26 +6,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from ..config import EMBED_MODELS, EMBED_DIM, load_api_key
 from ..db import open_db, serialize_vec
-
-
-def _embed(text: str) -> list[float]:
-    from google import genai
-    from google.genai import types as genai_types
-    client = genai.Client(api_key=load_api_key())
-    last_exc = None
-    for model in EMBED_MODELS:
-        try:
-            result = client.models.embed_content(
-                model=model,
-                contents=text,
-                config=genai_types.EmbedContentConfig(output_dimensionality=EMBED_DIM),
-            )
-            return result.embeddings[0].values
-        except Exception as exc:
-            last_exc = exc
-    raise RuntimeError(f"All embedding models failed. Last: {last_exc}")
+from ..providers.embeddings import embed as _embed
 
 
 def save_reflection(

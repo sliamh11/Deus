@@ -11,8 +11,8 @@ The core agent uses the [Claude Agent SDK](https://github.com/anthropic-ai/claud
 
 **What IS swappable:**
 - **Eval/evolution judges** — can use Ollama (local, free), Gemini, or Claude
-- **Embedding model** — currently Gemini, could be abstracted to any provider
-- **Memory indexer** — uses Gemini embeddings but the interface is generic
+- **Embedding model** — pluggable via `EMBEDDING_PROVIDER` env var (default: Gemini). See `evolution/providers/embeddings.py` to add providers
+- **Memory indexer** — uses the pluggable embedding provider
 - **Transcription** — local Whisper, independent of any API
 
 This lock-in is a deliberate trade-off: the Claude Agent SDK provides session management, tool orchestration, and MCP integration that would take significant effort to replicate with a generic LLM client.

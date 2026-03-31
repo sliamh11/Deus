@@ -4,27 +4,10 @@ Returns a formatted <reflections> block ready to prepend to the agent prompt.
 """
 from typing import Optional
 
-from ..config import EMBED_DIM, EMBED_MODELS, MAX_REFLECTIONS_PER_QUERY, load_api_key
+from ..config import MAX_REFLECTIONS_PER_QUERY
 from ..db import open_db, serialize_vec
+from ..providers.embeddings import embed as _embed
 from .store import increment_retrieved
-
-
-def _embed(text: str) -> list[float]:
-    from google import genai
-    from google.genai import types as genai_types
-    client = genai.Client(api_key=load_api_key())
-    last_exc = None
-    for model in EMBED_MODELS:
-        try:
-            result = client.models.embed_content(
-                model=model,
-                contents=text,
-                config=genai_types.EmbedContentConfig(output_dimensionality=EMBED_DIM),
-            )
-            return result.embeddings[0].values
-        except Exception as exc:
-            last_exc = exc
-    raise RuntimeError(f"All embedding models failed. Last: {last_exc}")
 
 
 def get_reflections(
