@@ -32,7 +32,6 @@ from google.genai import types as genai_types
 
 from evolution.config import (
     EMBED_DIM,
-    EMBED_MODELS,
     GEN_MODELS,
     load_api_key as _load_api_key,
 )
@@ -89,18 +88,8 @@ def load_api_key() -> str:
 
 
 def embed(text: str) -> list[float]:
-    last_exc = None
-    for model in EMBED_MODELS:
-        try:
-            result = _client.models.embed_content(
-                model=model,
-                contents=text,
-                config=genai_types.EmbedContentConfig(output_dimensionality=EMBED_DIM),
-            )
-            return result.embeddings[0].values
-        except Exception as exc:
-            last_exc = exc
-    raise RuntimeError(f"All embedding models failed. Last error: {last_exc}")
+    from evolution.providers.embeddings import embed as _provider_embed
+    return _provider_embed(text)
 
 
 def serialize(vec: list[float]) -> bytes:
