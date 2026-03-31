@@ -28,19 +28,25 @@ export interface LogInteractionParams {
   sessionId?: string;
   domainPresets?: string[];
   userSignal?: string;
+  retrievedReflectionIds?: string[];
+}
+
+export interface ReflectionsResult {
+  block: string;
+  reflectionIds: string[];
 }
 
 /**
  * Retrieve relevant reflections for the given query.
- * Returns a formatted block string (empty if none found or evolution disabled).
+ * Returns a formatted block string and the IDs of retrieved reflections.
  * Blocks for up to 3 seconds — designed for pre-dispatch injection.
  */
 export async function getReflections(
   query: string,
   groupFolder: string,
   toolsPlanned?: string[],
-): Promise<string> {
-  if (!EVOLUTION_ENABLED) return '';
+): Promise<ReflectionsResult> {
+  if (!EVOLUTION_ENABLED) return { block: '', reflectionIds: [] };
   try {
     const payload = JSON.stringify({
       query,
@@ -49,12 +55,15 @@ export async function getReflections(
       top_k: 3,
     });
     const result = await _runPython(['get_reflections', payload], 3000);
-    if (!result) return '';
+    if (!result) return { block: '', reflectionIds: [] };
     const parsed = JSON.parse(result);
-    return parsed.reflections_block ?? '';
+    return {
+      block: parsed.reflections_block ?? '',
+      reflectionIds: parsed.reflection_ids ?? [],
+    };
   } catch (err) {
     logger.debug({ err }, 'evolution: get_reflections failed (non-fatal)');
-    return '';
+    return { block: '', reflectionIds: [] };
   }
 }
 
@@ -74,6 +83,7 @@ export function logInteraction(params: LogInteractionParams): void {
     session_id: params.sessionId,
     domain_presets: params.domainPresets ?? [],
     user_signal: params.userSignal ?? null,
+    retrieved_reflection_ids: params.retrievedReflectionIds ?? [],
   });
 
   // Spawn detached so it survives even if the host process exits quickly

@@ -120,7 +120,73 @@ def cmd_get_reflections(query_json: str) -> None:
         top_k=params.get("top_k", 3),
     )
     block = format_reflections_block(refs)
-    print(json.dumps({"reflections_block": block, "count": len(refs)}))
+    ref_ids = [r["id"] for r in refs]
+    print(json.dumps({"reflections_block": block, "count": len(refs), "reflection_ids": ref_ids}))
+
+
+def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> None:
+    """Auto-trigger principles extraction if enough new data exists."""
+    from .config import PRINCIPLES_COOLDOWN_HOURS
+    from .reflexion.principles import extract_principles, _count_new_scored
+    from .db import open_db
+    from datetime import datetime, timezone, timedelta
+
+    domains_to_check = list(domain_presets or []) + [None]  # domain-specific + cross-domain
+    for domain in domains_to_check:
+        domain_key = domain or "cross-domain"
+        # Cooldown check
+        db = open_db()
+        last = db.execute(
+            "SELECT extracted_at FROM principle_extractions "
+            "WHERE domain = ? ORDER BY extracted_at DESC LIMIT 1",
+            (domain_key,),
+        ).fetchone()
+        db.close()
+        if last:
+            last_dt = datetime.fromisoformat(last["extracted_at"])
+            if datetime.now(timezone.utc) - last_dt < timedelta(hours=PRINCIPLES_COOLDOWN_HOURS):
+                continue
+        # Data-count check + extraction (extract_principles handles its own min_new gate)
+        try:
+            extract_principles(domain=domain)
+        except Exception:
+            pass  # Non-fatal — principles are supplementary
+
+
+def _maybe_auto_optimize(domain_presets: Optional[list] = None) -> None:
+    """Auto-trigger DSPy optimization if enough new scored interactions exist."""
+    from .config import AUTO_OPTIMIZE_THRESHOLD, DSPY_MIN_SAMPLES, DSPY_MIN_DOMAIN_SAMPLES
+    if AUTO_OPTIMIZE_THRESHOLD <= 0:
+        return
+
+    from .ilog.interaction_log import get_recent
+    from .db import open_db
+
+    # Check total scored count vs last optimization
+    db = open_db()
+    last_artifact = db.execute(
+        "SELECT created_at FROM prompt_artifacts ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    last_ts = last_artifact["created_at"] if last_artifact else "1970-01-01"
+
+    scored_since = db.execute(
+        "SELECT COUNT(*) FROM interactions "
+        "WHERE judge_score IS NOT NULL AND timestamp > ?",
+        (last_ts,),
+    ).fetchone()[0]
+    db.close()
+
+    if scored_since < AUTO_OPTIMIZE_THRESHOLD:
+        return
+
+    try:
+        from .optimizer.dspy_optimizer import optimize
+        optimize(module="qa")
+        # Domain-specific optimization if enough domain data
+        for domain in (domain_presets or []):
+            optimize(module="qa", domain=domain)
+    except Exception:
+        pass  # Non-fatal
 
 
 def cmd_log_interaction(json_str: str) -> None:
@@ -141,6 +207,7 @@ def cmd_log_interaction(json_str: str) -> None:
 
     domain_presets = params.get("domain_presets") or None
     user_signal = params.get("user_signal") or None
+    retrieved_reflection_ids = params.get("retrieved_reflection_ids") or []
 
     iid = log_interaction(
         prompt=params.get("prompt", ""),
@@ -204,33 +271,52 @@ def cmd_log_interaction(json_str: str) -> None:
                     group_folder=params.get("group_folder"),
                 )
 
-            # User signal: generate a reflection for the *previous* interaction
+            # User signal: generate a reflection for the *previous* interaction.
+            # Only if the previous interaction has an actual judge score — don't
+            # assume scores, as that can reinforce incorrect patterns.
             if user_signal and params.get("session_id"):
                 from .ilog.interaction_log import get_previous_in_session
                 prev = get_previous_in_session(params["session_id"], iid)
-                if prev:
+                if prev and prev.get("judge_score") is not None:
                     if user_signal == "positive":
                         from .reflexion.generator import generate_positive_reflection
                         content, category = generate_positive_reflection(
                             prompt=prev["prompt"],
                             response=prev.get("response") or "",
-                            score=prev.get("judge_score") or 0.8,
-                            rationale=f"User explicitly praised this response",
+                            score=prev["judge_score"],
+                            rationale="User explicitly praised this response",
                         )
                     else:
                         content, category = generate_reflection(
                             prompt=prev["prompt"],
                             response=prev.get("response") or "",
-                            score=prev.get("judge_score") or 0.4,
-                            rationale=f"User explicitly rejected this response",
+                            score=prev["judge_score"],
+                            rationale="User explicitly rejected this response",
                         )
                     save_reflection(
                         content=content,
                         category=category,
-                        score_at_gen=prev.get("judge_score") or 0.5,
+                        score_at_gen=prev["judge_score"],
                         interaction_id=prev["id"],
                         group_folder=prev.get("group_folder"),
                     )
+
+            # Close feedback loop: if reflections were retrieved and the
+            # interaction scored well, mark those reflections as helpful.
+            if retrieved_reflection_ids and result.score >= POSITIVE_THRESHOLD:
+                from .reflexion.store import increment_helpful
+                for ref_id in retrieved_reflection_ids:
+                    try:
+                        increment_helpful(ref_id)
+                    except Exception:
+                        pass  # Non-fatal
+
+            # Auto-trigger: principles extraction (post-judge hook)
+            _maybe_auto_extract_principles(domain_presets)
+
+            # Auto-trigger: DSPy optimization
+            _maybe_auto_optimize(domain_presets)
+
         except Exception as exc:
             import traceback
             traceback.print_exc(file=sys.stderr)

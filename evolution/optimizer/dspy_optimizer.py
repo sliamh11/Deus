@@ -14,7 +14,6 @@ from ..config import (
     DSPY_MAX_LABELED,
     DSPY_MIN_DOMAIN_SAMPLES,
     DSPY_MIN_SAMPLES,
-    DSPY_NUM_CANDIDATES,
     JUDGE_MODEL,
     load_api_key,
 )
@@ -51,7 +50,11 @@ def _setup_dspy(model: str = JUDGE_MODEL) -> None:
 
 
 def _build_examples(module: str, interactions: list[dict]) -> list:
-    """Convert logged interactions into DSPy Example objects."""
+    """
+    Convert logged interactions into DSPy Example objects.
+    Interactions with positive user signals are duplicated (2x weight)
+    so the optimizer gives them more influence during training.
+    """
     import dspy
     examples = []
     for row in interactions:
@@ -87,6 +90,9 @@ def _build_examples(module: str, interactions: list[dict]) -> list:
                 continue
 
             examples.append(ex)
+            # 2x weight for user-praised interactions
+            if row.get("user_signal") == "positive":
+                examples.append(ex)
         except Exception:
             continue
     return examples

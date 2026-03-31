@@ -53,7 +53,7 @@ vi.mock('./mount-security.js', () => ({
 
 // Mock evolution-client (spawns Python subprocess with 3s timeout — incompatible with fake timers)
 vi.mock('./evolution-client.js', () => ({
-  getReflections: vi.fn(async () => ''),
+  getReflections: vi.fn(async () => ({ block: '', reflectionIds: [] })),
   logInteraction: vi.fn(),
 }));
 

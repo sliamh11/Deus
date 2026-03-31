@@ -390,12 +390,9 @@ export async function runContainerAgent(
   // Pre-dispatch: inject relevant reflections from the evolution loop.
   // getReflections returns '' when evolution is disabled or nothing is found —
   // no tokens are added in that case.
-  const reflectionsBlock = await getReflections(
-    input.prompt,
-    input.groupFolder,
-  );
-  if (reflectionsBlock) {
-    input = { ...input, prompt: `${reflectionsBlock}\n\n${input.prompt}` };
+  const reflections = await getReflections(input.prompt, input.groupFolder);
+  if (reflections.block) {
+    input = { ...input, prompt: `${reflections.block}\n\n${input.prompt}` };
   }
 
   // Detect domain tags for evolution loop metadata (no prompt injection).
@@ -747,6 +744,10 @@ export async function runContainerAgent(
             sessionId: input.sessionId,
             domainPresets: domains.length > 0 ? domains : undefined,
             userSignal: userSignal ?? undefined,
+            retrievedReflectionIds:
+              reflections.reflectionIds.length > 0
+                ? reflections.reflectionIds
+                : undefined,
           });
           resolve({
             status: 'success',
@@ -796,6 +797,10 @@ export async function runContainerAgent(
           sessionId: input.sessionId ?? output.newSessionId,
           domainPresets: domains.length > 0 ? domains : undefined,
           userSignal: userSignal ?? undefined,
+          retrievedReflectionIds:
+            reflections.reflectionIds.length > 0
+              ? reflections.reflectionIds
+              : undefined,
         });
 
         resolve(output);

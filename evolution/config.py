@@ -39,7 +39,13 @@ DSPY_MIN_SAMPLES = int(os.environ.get("EVOLUTION_DSPY_MIN_SAMPLES", "20"))
 DSPY_MIN_DOMAIN_SAMPLES = int(os.environ.get("EVOLUTION_DSPY_MIN_DOMAIN_SAMPLES", "10"))
 DSPY_MAX_BOOTSTRAPPED = int(os.environ.get("EVOLUTION_DSPY_MAX_BOOTSTRAPPED", "4"))
 DSPY_MAX_LABELED = int(os.environ.get("EVOLUTION_DSPY_MAX_LABELED", "8"))
-DSPY_NUM_CANDIDATES = int(os.environ.get("EVOLUTION_DSPY_NUM_CANDIDATES", "4"))
+
+# ── Auto-triggers ────────────────────────────────────────────────────────────
+
+# Auto-optimize after this many new scored interactions (0 = disabled).
+AUTO_OPTIMIZE_THRESHOLD = int(os.environ.get("EVOLUTION_AUTO_OPTIMIZE_THRESHOLD", "50"))
+# Cooldown between principle extractions (hours).
+PRINCIPLES_COOLDOWN_HOURS = int(os.environ.get("EVOLUTION_PRINCIPLES_COOLDOWN_HOURS", "24"))
 
 
 def load_api_key() -> str:

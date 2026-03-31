@@ -151,8 +151,13 @@ def _parse_result(raw: str) -> JudgeResult:
             raw_response=raw,
             **dims,
         )
-    except (json.JSONDecodeError, KeyError, ValueError):
+    except (json.JSONDecodeError, KeyError, ValueError) as exc:
         # Fallback: partial parse failure → neutral score
+        import sys
+        print(
+            f"[judge] Parse error: {exc.__class__.__name__}: {exc} | raw={raw[:200]}",
+            file=sys.stderr,
+        )
         return JudgeResult(
             score=0.5,
             quality=0.5,

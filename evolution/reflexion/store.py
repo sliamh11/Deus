@@ -1,13 +1,37 @@
 """
 Reflection store: persists reflections + embeddings for semantic retrieval.
 """
-import struct
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from ..config import REFLECTION_DEDUP_L2
 from ..db import open_db, serialize_vec
 from ..providers.embeddings import embed as _embed
+
+
+def _is_duplicate(vec: list[float], group_folder: Optional[str], threshold: float = REFLECTION_DEDUP_L2) -> bool:
+    """Check if a semantically similar reflection already exists."""
+    db = open_db()
+    blob = serialize_vec(vec)
+    try:
+        row = db.execute(
+            """
+            SELECT re.distance
+            FROM reflection_embeddings re
+            JOIN reflections r ON r.rowid = re.rowid
+            WHERE re.embedding MATCH ? AND k = 1
+              AND (r.group_folder = ? OR r.group_folder IS NULL)
+            """,
+            [blob, group_folder],
+        ).fetchone()
+        if row and row[0] < threshold:
+            return True
+    except Exception:
+        pass  # vec0 table empty or unavailable — allow insert
+    finally:
+        db.close()
+    return False
 
 
 def save_reflection(
@@ -16,14 +40,19 @@ def save_reflection(
     score_at_gen: float,
     interaction_id: Optional[str] = None,
     group_folder: Optional[str] = None,
-) -> str:
+) -> Optional[str]:
     """
-    Embed and persist a reflection.  Returns the reflection ID.
+    Embed and persist a reflection.  Returns the reflection ID,
+    or None if a semantically similar reflection already exists.
     group_folder=None means the reflection applies cross-group.
     """
     rid = str(uuid.uuid4())
     ts = datetime.now(timezone.utc).isoformat()
     vec = _embed(content)
+
+    # Dedup: skip if a near-duplicate reflection already exists
+    if _is_duplicate(vec, group_folder):
+        return None
 
     db = open_db()
     # Insert reflection row
