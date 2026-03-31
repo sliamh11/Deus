@@ -291,9 +291,14 @@ def cmd_optimize(module: str = "all", domain: Optional[str] = None) -> None:
             print(f"  Skipped (insufficient samples or error)")
 
 
-def cmd_principles(domain: Optional[str] = None, top_k: int = 5) -> None:
+def cmd_principles(
+    domain: Optional[str] = None,
+    top_k: int = 5,
+    min_new: int = 5,
+    force: bool = False,
+) -> None:
     from .reflexion.principles import extract_principles
-    result = extract_principles(domain=domain, top_k=top_k)
+    result = extract_principles(domain=domain, top_k=top_k, min_new=min_new, force=force)
     if result:
         print(result)
     else:
@@ -337,6 +342,8 @@ def main() -> None:
     p_princ = sub.add_parser("principles", help="Extract top principles from scored interactions")
     p_princ.add_argument("--domain", help="Filter by domain preset")
     p_princ.add_argument("--top-k", type=int, default=5, help="Number of best/worst interactions to analyze")
+    p_princ.add_argument("--min-new", type=int, default=5, help="Min new scored interactions to trigger extraction (default: 5)")
+    p_princ.add_argument("--force", action="store_true", help="Bypass data-count check and extract immediately")
 
     # serve
     sub.add_parser("serve", help="Start MCP stdio server")
@@ -366,7 +373,7 @@ def main() -> None:
     elif args.cmd == "optimize":
         cmd_optimize(args.module, domain=args.domain)
     elif args.cmd == "principles":
-        cmd_principles(domain=args.domain, top_k=args.top_k)
+        cmd_principles(domain=args.domain, top_k=args.top_k, min_new=args.min_new, force=args.force)
     elif args.cmd == "serve":
         cmd_serve()
     elif args.cmd == "backfill":
