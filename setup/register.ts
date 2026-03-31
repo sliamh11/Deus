@@ -68,6 +68,45 @@ function parseArgs(args: string[]): RegisterArgs {
   return result;
 }
 
+/** Channel name to display format mapping */
+const CHANNEL_FORMATS: Record<string, string> = {
+  whatsapp: 'WhatsApp',
+  telegram: 'Telegram',
+  slack: 'Slack',
+  discord: 'Discord',
+};
+
+/**
+ * Generate a CLAUDE.md from a .template file, replacing placeholders.
+ * Only writes if the target CLAUDE.md does not already exist (never overwrite customizations).
+ */
+function generateClaudeMdFromTemplate(
+  templatePath: string,
+  outputPath: string,
+  vars: { assistantName: string; channelFormat?: string },
+): boolean {
+  if (fs.existsSync(outputPath)) {
+    logger.info({ file: outputPath }, 'CLAUDE.md already exists, skipping generation');
+    return false;
+  }
+
+  if (!fs.existsSync(templatePath)) {
+    logger.warn({ file: templatePath }, 'Template file not found, skipping');
+    return false;
+  }
+
+  let content = fs.readFileSync(templatePath, 'utf-8');
+  content = content.replace(/\{\{ASSISTANT_NAME\}\}/g, vars.assistantName);
+  if (vars.channelFormat) {
+    content = content.replace(/\{\{CHANNEL_FORMAT\}\}/g, vars.channelFormat);
+  }
+
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  fs.writeFileSync(outputPath, content);
+  logger.info({ file: outputPath }, 'Generated CLAUDE.md from template');
+  return true;
+}
+
 export async function run(args: string[]): Promise<void> {
   const projectRoot = process.cwd();
   const parsed = parseArgs(args);
@@ -116,31 +155,29 @@ export async function run(args: string[]): Promise<void> {
     recursive: true,
   });
 
-  // Update assistant name in CLAUDE.md files if different from default
+  // Generate CLAUDE.md files from templates (never overwrites existing)
+  const channelFormat = CHANNEL_FORMATS[parsed.channel] || parsed.channel;
+
+  generateClaudeMdFromTemplate(
+    path.join(projectRoot, 'groups', 'global', 'CLAUDE.md.template'),
+    path.join(projectRoot, 'groups', 'global', 'CLAUDE.md'),
+    { assistantName: parsed.assistantName },
+  );
+
+  // Use the main template for group-specific CLAUDE.md (channel-aware)
+  generateClaudeMdFromTemplate(
+    path.join(projectRoot, 'groups', 'main', 'CLAUDE.md.template'),
+    path.join(projectRoot, 'groups', parsed.folder, 'CLAUDE.md'),
+    { assistantName: parsed.assistantName, channelFormat },
+  );
+
+  // Update assistant name in .env if different from default
   let nameUpdated = false;
   if (parsed.assistantName !== 'Deus') {
     logger.info(
       { from: 'Deus', to: parsed.assistantName },
       'Updating assistant name',
     );
-
-    const mdFiles = [
-      path.join(projectRoot, 'groups', 'global', 'CLAUDE.md'),
-      path.join(projectRoot, 'groups', parsed.folder, 'CLAUDE.md'),
-    ];
-
-    for (const mdFile of mdFiles) {
-      if (fs.existsSync(mdFile)) {
-        let content = fs.readFileSync(mdFile, 'utf-8');
-        content = content.replace(/^# Deus$/m, `# ${parsed.assistantName}`);
-        content = content.replace(
-          /You are Deus/g,
-          `You are ${parsed.assistantName}`,
-        );
-        fs.writeFileSync(mdFile, content);
-        logger.info({ file: mdFile }, 'Updated CLAUDE.md');
-      }
-    }
 
     // Update .env
     const envFile = path.join(projectRoot, '.env');
