@@ -9,14 +9,18 @@ store/
 data/
 logs/
 
-# Groups - only track base structure and specific CLAUDE.md files
+# Groups - only track base structure and template files
 groups/*
 !groups/main/
 !groups/global/
 groups/main/*
 groups/global/*
-!groups/main/CLAUDE.md
-!groups/global/CLAUDE.md
+!groups/main/CLAUDE.md.template
+!groups/global/CLAUDE.md.template
+
+# Generated group CLAUDE.md files (local customizations, like .env)
+groups/*/CLAUDE.md
+!groups/*/CLAUDE.md.template
 
 # Secrets — never commit credentials, tokens, or keys
 *.keys.json
