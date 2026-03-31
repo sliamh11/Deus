@@ -391,6 +391,13 @@ def cmd_principles(
         print("Not enough scored interactions to extract principles.")
 
 
+def cmd_archive_reflections(days: int = 30, dry_run: bool = False) -> None:
+    from .reflexion.store import archive_stale_reflections
+    count = archive_stale_reflections(days=days, dry_run=dry_run)
+    prefix = "[dry-run] Would archive" if dry_run else "Archived"
+    print(f"{prefix} {count} stale reflections (threshold: {days} days)")
+
+
 def cmd_serve() -> None:
     from .mcp_server import _run_mcp_server
     _run_mcp_server()
@@ -431,6 +438,11 @@ def main() -> None:
     p_princ.add_argument("--min-new", type=int, default=5, help="Min new scored interactions to trigger extraction (default: 5)")
     p_princ.add_argument("--force", action="store_true", help="Bypass data-count check and extract immediately")
 
+    # archive-reflections
+    p_archive = sub.add_parser("archive-reflections", help="Archive stale reflections (soft-delete)")
+    p_archive.add_argument("--days", type=int, default=30, help="Age threshold in days (default: 30)")
+    p_archive.add_argument("--dry-run", action="store_true", help="Preview without archiving")
+
     # serve
     sub.add_parser("serve", help="Start MCP stdio server")
 
@@ -460,6 +472,8 @@ def main() -> None:
         cmd_optimize(args.module, domain=args.domain)
     elif args.cmd == "principles":
         cmd_principles(domain=args.domain, top_k=args.top_k, min_new=args.min_new, force=args.force)
+    elif args.cmd == "archive-reflections":
+        cmd_archive_reflections(days=args.days, dry_run=args.dry_run)
     elif args.cmd == "serve":
         cmd_serve()
     elif args.cmd == "backfill":
