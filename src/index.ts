@@ -619,7 +619,15 @@ async function main(): Promise<void> {
         process.cwd(),
       );
       if (result.ok) {
-        await channel.sendMessage(chatJid, result.url);
+        // Send URL via DM to the sender — never expose it in a group chat
+        const dmJid = msg.sender !== chatJid ? msg.sender : chatJid;
+        await channel.sendMessage(dmJid, result.url);
+        if (dmJid !== chatJid) {
+          await channel.sendMessage(
+            chatJid,
+            'Remote Control URL sent to your DMs.',
+          );
+        }
       } else {
         await channel.sendMessage(
           chatJid,
