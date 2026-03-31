@@ -1,90 +1,25 @@
-# Deus Specification
+# Deus — User & Operator Guide
 
 A personal Claude assistant with multi-channel support, persistent memory per conversation, scheduled tasks, and container-isolated agent execution.
+
+> For architecture details, see [docs/architecture.md](architecture.md). For the security model, see [docs/SECURITY.md](SECURITY.md).
 
 ---
 
 ## Table of Contents
 
-1. [Architecture](#architecture)
-2. [Architecture: Channel System](#architecture-channel-system)
-3. [Folder Structure](#folder-structure)
-4. [Configuration](#configuration)
-5. [Memory System](#memory-system)
-6. [Session Management](#session-management)
-7. [Message Flow](#message-flow)
-8. [Commands](#commands)
-9. [Scheduled Tasks](#scheduled-tasks)
-10. [MCP Servers](#mcp-servers)
-11. [Deployment](#deployment)
-12. [Security Considerations](#security-considerations)
+1. [Channel System](#channel-system)
+2. [Folder Structure](#folder-structure)
+3. [Configuration](#configuration)
+4. [Commands](#commands)
+5. [Scheduled Tasks](#scheduled-tasks)
+6. [MCP Servers](#mcp-servers)
+7. [Deployment](#deployment)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
-## Architecture
-
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        HOST (macOS / Linux)                           │
-│                     (Main Node.js Process)                            │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                       │
-│  ┌──────────────────┐                  ┌────────────────────┐        │
-│  │ Channels         │─────────────────▶│   SQLite Database  │        │
-│  │ (self-register   │◀────────────────│   (messages.db)    │        │
-│  │  at startup)     │  store/send      └─────────┬──────────┘        │
-│  └──────────────────┘                            │                   │
-│                                                   │                   │
-│         ┌─────────────────────────────────────────┘                   │
-│         │                                                             │
-│         ▼                                                             │
-│  ┌──────────────────┐    ┌──────────────────┐    ┌───────────────┐   │
-│  │  Message Loop    │    │  Scheduler Loop  │    │  IPC Watcher  │   │
-│  │  (polls SQLite)  │    │  (checks tasks)  │    │  (file-based) │   │
-│  └────────┬─────────┘    └────────┬─────────┘    └───────────────┘   │
-│           │                       │                                   │
-│           └───────────┬───────────┘                                   │
-│                       │ spawns container                              │
-│                       ▼                                               │
-├──────────────────────────────────────────────────────────────────────┤
-│                     CONTAINER (Linux VM)                               │
-├──────────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────────────────────────────────────────────────┐    │
-│  │                    AGENT RUNNER                               │    │
-│  │                                                                │    │
-│  │  Working directory: /workspace/group (mounted from host)       │    │
-│  │  Volume mounts:                                                │    │
-│  │    • groups/{name}/ → /workspace/group                         │    │
-│  │    • groups/global/ → /workspace/global/ (non-main only)       │    │
-│  │    • data/sessions/{group}/.claude/ → /home/node/.claude/      │    │
-│  │    • Additional dirs → /workspace/extra/*                      │    │
-│  │                                                                │    │
-│  │  Tools (all groups):                                           │    │
-│  │    • Bash (safe - sandboxed in container!)                     │    │
-│  │    • Read, Write, Edit, Glob, Grep (file operations)           │    │
-│  │    • WebSearch, WebFetch (internet access)                     │    │
-│  │    • agent-browser (browser automation)                        │    │
-│  │    • mcp__deus__* (scheduler tools via IPC)                │    │
-│  │                                                                │    │
-│  └──────────────────────────────────────────────────────────────┘    │
-│                                                                       │
-└───────────────────────────────────────────────────────────────────────┘
-```
-
-### Technology Stack
-
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Channel System | Channel registry (`src/channels/registry.ts`) | Channels self-register at startup |
-| Message Storage | SQLite (better-sqlite3) | Store messages for polling |
-| Container Runtime | Containers (Linux VMs) | Isolated environments for agent execution |
-| Agent | @anthropic-ai/claude-agent-sdk (0.2.29) | Run Claude with tools and MCP servers |
-| Browser Automation | agent-browser + Chromium | Web interaction and screenshots |
-| Runtime | Node.js 20+ | Host process for routing and scheduling |
-
----
-
-## Architecture: Channel System
+## Channel System
 
 The core ships with no channels built in — each channel (WhatsApp, Telegram, Slack, Discord, Gmail) is installed as a [Claude Code skill](https://code.claude.com/docs/en/skills) that adds the channel code to your fork. Channels self-register at startup; installed channels with missing credentials emit a WARN log and are skipped.
 
@@ -132,47 +67,6 @@ graph LR
     style New stroke-dasharray: 5 5,stroke-width:2px
 ```
 
-### Channel Registry
-
-The channel system is built on a factory registry in `src/channels/registry.ts`:
-
-```typescript
-export type ChannelFactory = (opts: ChannelOpts) => Channel | null;
-
-const registry = new Map<string, ChannelFactory>();
-
-export function registerChannel(name: string, factory: ChannelFactory): void {
-  registry.set(name, factory);
-}
-
-export function getChannelFactory(name: string): ChannelFactory | undefined {
-  return registry.get(name);
-}
-
-export function getRegisteredChannelNames(): string[] {
-  return [...registry.keys()];
-}
-```
-
-Each factory receives `ChannelOpts` (callbacks for `onMessage`, `onChatMetadata`, and `registeredGroups`) and returns either a `Channel` instance or `null` if that channel's credentials are not configured.
-
-### Channel Interface
-
-Every channel implements this interface (defined in `src/types.ts`):
-
-```typescript
-interface Channel {
-  name: string;
-  connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
-  isConnected(): boolean;
-  ownsJid(jid: string): boolean;
-  disconnect(): Promise<void>;
-  setTyping?(jid: string, isTyping: boolean): Promise<void>;
-  syncGroups?(force: boolean): Promise<void>;
-}
-```
-
 ### Self-Registration Pattern
 
 Channels self-register using a barrel-import pattern:
@@ -212,6 +106,23 @@ Channels self-register using a barrel-import pattern:
      }
    }
    ```
+
+### Channel Interface
+
+Every channel implements this interface (defined in `src/types.ts`):
+
+```typescript
+interface Channel {
+  name: string;
+  connect(): Promise<void>;
+  sendMessage(jid: string, text: string): Promise<void>;
+  isConnected(): boolean;
+  ownsJid(jid: string): boolean;
+  disconnect(): Promise<void>;
+  setTyping?(jid: string, isTyping: boolean): Promise<void>;
+  syncGroups?(force: boolean): Promise<void>;
+}
+```
 
 ### Key Files
 
@@ -326,7 +237,7 @@ deus/
 
 ## Configuration
 
-Configuration constants are in `src/config.ts`:
+Configuration constants are in `src/config.ts`. For a full description of the host process internals, see [architecture.md](architecture.md).
 
 ```typescript
 import path from 'path';
@@ -411,114 +322,13 @@ Or edit the default in `src/config.ts`. This changes:
 - The trigger pattern (messages must start with `@YourName`)
 - The response prefix (`YourName:` added automatically)
 
-### Placeholder Values in launchd
-
-Files with `{{PLACEHOLDER}}` values need to be configured:
-- `{{PROJECT_ROOT}}` - Absolute path to your deus installation
-- `{{NODE_PATH}}` - Path to node binary (detected via `which node`)
-- `{{HOME}}` - User's home directory
-
----
-
-## Memory System
-
-Deus uses a hierarchical memory system based on CLAUDE.md files.
-
-### Memory Hierarchy
-
-| Level | Location | Read By | Written By | Purpose |
-|-------|----------|---------|------------|---------|
-| **Global** | `groups/CLAUDE.md` | All groups | Main only | Preferences, facts, context shared across all conversations |
-| **Group** | `groups/{name}/CLAUDE.md` | That group | That group | Group-specific context, conversation memory |
-| **Files** | `groups/{name}/*.md` | That group | That group | Notes, research, documents created during conversation |
-
-### How Memory Works
-
-1. **Agent Context Loading**
-   - Agent runs with `cwd` set to `groups/{group-name}/`
-   - Claude Agent SDK with `settingSources: ['project']` automatically loads:
-     - `../CLAUDE.md` (parent directory = global memory)
-     - `./CLAUDE.md` (current directory = group memory)
-
-2. **Writing Memory**
-   - When user says "remember this", agent writes to `./CLAUDE.md`
-   - When user says "remember this globally" (main channel only), agent writes to `../CLAUDE.md`
-   - Agent can create files like `notes.md`, `research.md` in the group folder
-
-3. **Main Channel Privileges**
-   - Only the "main" group (self-chat) can write to global memory
-   - Main can manage registered groups and schedule tasks for any group
-   - Main can configure additional directory mounts for any group
-   - All groups have Bash access (safe because it runs inside container)
-
----
-
-## Session Management
-
-Sessions enable conversation continuity - Claude remembers what you talked about.
-
-### How Sessions Work
-
-1. Each group has a session ID stored in SQLite (`sessions` table, keyed by `group_folder`)
-2. Session ID is passed to Claude Agent SDK's `resume` option
-3. Claude continues the conversation with full context
-4. Session transcripts are stored as JSONL files in `data/sessions/{group}/.claude/`
-
----
-
-## Message Flow
-
-### Incoming Message Flow
-
-```
-1. User sends a message via any connected channel
-   │
-   ▼
-2. Channel receives message (e.g. Baileys for WhatsApp, Bot API for Telegram)
-   │
-   ▼
-3. Message stored in SQLite (store/messages.db)
-   │
-   ▼
-4. Message loop polls SQLite (every 2 seconds)
-   │
-   ▼
-5. Router checks:
-   ├── Is chat_jid in registered groups (SQLite)? → No: ignore
-   └── Does message match trigger pattern? → No: store but don't process
-   │
-   ▼
-6. Router catches up conversation:
-   ├── Fetch all messages since last agent interaction
-   ├── Format with timestamp and sender name
-   └── Build prompt with full conversation context
-   │
-   ▼
-7. Router invokes Claude Agent SDK:
-   ├── cwd: groups/{group-name}/
-   ├── prompt: conversation history + current message
-   ├── resume: session_id (for continuity)
-   └── mcpServers: deus (scheduler)
-   │
-   ▼
-8. Claude processes message:
-   ├── Reads CLAUDE.md files for context
-   └── Uses tools as needed (search, email, etc.)
-   │
-   ▼
-9. Router prefixes response with assistant name and sends via the owning channel
-   │
-   ▼
-10. Router updates last agent timestamp and saves session ID
-```
-
 ### Trigger Word Matching
 
 Messages must start with the trigger pattern (default: `@Andy`):
-- `@Andy what's the weather?` → ✅ Triggers Claude
-- `@andy help me` → ✅ Triggers (case insensitive)
-- `Hey @Andy` → ❌ Ignored (trigger not at start)
-- `What's up?` → ❌ Ignored (no trigger)
+- `@Andy what's the weather?` — triggers
+- `@andy help me` — triggers (case insensitive)
+- `Hey @Andy` — ignored (trigger not at start)
+- `What's up?` — ignored (no trigger)
 
 ### Conversation Catch-Up
 
@@ -531,6 +341,13 @@ When a triggered message arrives, the agent receives all messages since its last
 ```
 
 This allows the agent to understand the conversation context even if it wasn't mentioned in every message.
+
+### Placeholder Values in launchd
+
+Files with `{{PLACEHOLDER}}` values need to be configured:
+- `{{PROJECT_ROOT}}` - Absolute path to your deus installation
+- `{{NODE_PATH}}` - Path to node binary (detected via `which node`)
+- `{{HOME}}` - User's home directory
 
 ---
 
@@ -616,9 +433,7 @@ From main channel:
 
 ## MCP Servers
 
-### Deus MCP (built-in)
-
-The `deus` MCP server is created dynamically per agent call with the current group's context.
+The `deus` MCP server is created dynamically per agent call with the current group's context. For the full list of MCP tools and how they integrate with the container system, see [architecture.md](architecture.md).
 
 **Available Tools:**
 | Tool | Purpose |
@@ -707,51 +522,6 @@ launchctl list | grep deus
 
 # View logs
 tail -f logs/deus.log
-```
-
----
-
-## Security Considerations
-
-### Container Isolation
-
-All agents run inside containers (lightweight Linux VMs), providing:
-- **Filesystem isolation**: Agents can only access mounted directories
-- **Safe Bash access**: Commands run inside the container, not on your Mac
-- **Network isolation**: Can be configured per-container if needed
-- **Process isolation**: Container processes can't affect the host
-- **Non-root user**: Container runs as unprivileged `node` user (uid 1000)
-
-### Prompt Injection Risk
-
-WhatsApp messages could contain malicious instructions attempting to manipulate Claude's behavior.
-
-**Mitigations:**
-- Container isolation limits blast radius
-- Only registered groups are processed
-- Trigger word required (reduces accidental processing)
-- Agents can only access their group's mounted directories
-- Main can configure additional directories per group
-- Claude's built-in safety training
-
-**Recommendations:**
-- Only register trusted groups
-- Review additional directory mounts carefully
-- Review scheduled tasks periodically
-- Monitor logs for unusual activity
-
-### Credential Storage
-
-| Credential | Storage Location | Notes |
-|------------|------------------|-------|
-| Claude CLI Auth | data/sessions/{group}/.claude/ | Per-group isolation, mounted to /home/node/.claude/ |
-| WhatsApp Session | store/auth/ | Auto-created, persists ~20 days |
-
-### File Permissions
-
-The groups/ folder contains personal memory and should be protected:
-```bash
-chmod 700 groups/
 ```
 
 ---
