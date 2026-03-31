@@ -242,7 +242,7 @@ Configuration constants are in `src/config.ts`. For a full description of the ho
 ```typescript
 import path from 'path';
 
-export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Andy';
+export const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Deus';
 export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
@@ -272,7 +272,7 @@ Groups can have additional directories mounted via `containerConfig` in the SQLi
 setRegisteredGroup("1234567890@g.us", {
   name: "Dev Team",
   folder: "whatsapp_dev-team",
-  trigger: "@Andy",
+  trigger: "@Deus",
   added_at: new Date().toISOString(),
   containerConfig: {
     additionalMounts: [
@@ -324,10 +324,10 @@ Or edit the default in `src/config.ts`. This changes:
 
 ### Trigger Word Matching
 
-Messages must start with the trigger pattern (default: `@Andy`):
-- `@Andy what's the weather?` — triggers
+Messages must start with the trigger pattern (default: `@Deus`):
+- `@Deus what's the weather?` — triggers
 - `@andy help me` — triggers (case insensitive)
-- `Hey @Andy` — ignored (trigger not at start)
+- `Hey @Deus` — ignored (trigger not at start)
 - `What's up?` — ignored (no trigger)
 
 ### Conversation Catch-Up
@@ -337,7 +337,7 @@ When a triggered message arrives, the agent receives all messages since its last
 ```
 [Jan 31 2:32 PM] John: hey everyone, should we do pizza tonight?
 [Jan 31 2:33 PM] Sarah: sounds good to me
-[Jan 31 2:35 PM] John: @Andy what toppings do you recommend?
+[Jan 31 2:35 PM] John: @Deus what toppings do you recommend?
 ```
 
 This allows the agent to understand the conversation context even if it wasn't mentioned in every message.
@@ -357,16 +357,16 @@ Files with `{{PLACEHOLDER}}` values need to be configured:
 
 | Command | Example | Effect |
 |---------|---------|--------|
-| `@Assistant [message]` | `@Andy what's the weather?` | Talk to Claude |
+| `@Assistant [message]` | `@Deus what's the weather?` | Talk to Claude |
 
 ### Commands Available in Main Channel Only
 
 | Command | Example | Effect |
 |---------|---------|--------|
-| `@Assistant add group "Name"` | `@Andy add group "Family Chat"` | Register a new group |
-| `@Assistant remove group "Name"` | `@Andy remove group "Work Team"` | Unregister a group |
-| `@Assistant list groups` | `@Andy list groups` | Show registered groups |
-| `@Assistant remember [fact]` | `@Andy remember I prefer dark mode` | Add to global memory |
+| `@Assistant add group "Name"` | `@Deus add group "Family Chat"` | Register a new group |
+| `@Assistant remove group "Name"` | `@Deus remove group "Work Team"` | Unregister a group |
+| `@Assistant list groups` | `@Deus list groups` | Show registered groups |
+| `@Assistant remember [fact]` | `@Deus remember I prefer dark mode` | Add to global memory |
 
 ---
 
@@ -392,7 +392,7 @@ Deus has a built-in scheduler that runs tasks as full agents in their group's co
 ### Creating a Task
 
 ```
-User: @Andy remind me every Monday at 9am to review the weekly metrics
+User: @Deus remind me every Monday at 9am to review the weekly metrics
 
 Claude: [calls mcp__deus__schedule_task]
         {
@@ -407,7 +407,7 @@ Claude: Done! I'll remind you every Monday at 9am.
 ### One-Time Tasks
 
 ```
-User: @Andy at 5pm today, send me a summary of today's emails
+User: @Deus at 5pm today, send me a summary of today's emails
 
 Claude: [calls mcp__deus__schedule_task]
         {
@@ -420,14 +420,14 @@ Claude: [calls mcp__deus__schedule_task]
 ### Managing Tasks
 
 From any group:
-- `@Andy list my scheduled tasks` - View tasks for this group
-- `@Andy pause task [id]` - Pause a task
-- `@Andy resume task [id]` - Resume a paused task
-- `@Andy cancel task [id]` - Delete a task
+- `@Deus list my scheduled tasks` - View tasks for this group
+- `@Deus pause task [id]` - Pause a task
+- `@Deus resume task [id]` - Resume a paused task
+- `@Deus cancel task [id]` - Delete a task
 
 From main channel:
-- `@Andy list all tasks` - View tasks from all groups
-- `@Andy schedule task for "Family Chat": [prompt]` - Schedule for another group
+- `@Deus list all tasks` - View tasks from all groups
+- `@Deus schedule task for "Family Chat": [prompt]` - Schedule for another group
 
 ---
 
@@ -495,7 +495,7 @@ When Deus starts, it:
         <key>HOME</key>
         <string>{{HOME}}</string>
         <key>ASSISTANT_NAME</key>
-        <string>Andy</string>
+        <string>Deus</string>
     </dict>
     <key>StandardOutPath</key>
     <string>{{PROJECT_ROOT}}/logs/deus.log</string>
@@ -538,7 +538,7 @@ tail -f logs/deus.log
 | Session not continuing | Session ID not saved | Check SQLite: `sqlite3 store/messages.db "SELECT * FROM sessions"` |
 | Session not continuing | Mount path mismatch | Container user is `node` with HOME=/home/node; sessions must be at `/home/node/.claude/` |
 | "QR code expired" | WhatsApp session expired | Delete store/auth/ and restart |
-| "No groups registered" | Haven't added groups | Use `@Andy add group "Name"` in main |
+| "No groups registered" | Haven't added groups | Use `@Deus add group "Name"` in main |
 
 ### Log Location
 

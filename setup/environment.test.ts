@@ -48,7 +48,7 @@ describe('registered groups DB query', () => {
       '123@g.us',
       'Group 1',
       'group-1',
-      '@Andy',
+      '@Deus',
       '2024-01-01T00:00:00.000Z',
       1,
     );
@@ -60,7 +60,7 @@ describe('registered groups DB query', () => {
       '456@g.us',
       'Group 2',
       'group-2',
-      '@Andy',
+      '@Deus',
       '2024-01-01T00:00:00.000Z',
       1,
     );
@@ -89,7 +89,7 @@ describe('credentials detection', () => {
   });
 
   it('returns false when no credentials', () => {
-    const content = 'ASSISTANT_NAME="Andy"\nOTHER=foo';
+    const content = 'ASSISTANT_NAME="Deus"\nOTHER=foo';
     const hasCredentials =
       /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=/m.test(content);
     expect(hasCredentials).toBe(false);

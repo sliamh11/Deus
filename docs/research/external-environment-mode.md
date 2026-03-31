@@ -119,7 +119,7 @@ if (fs.existsSync(extraBase)) {
 
 #### How It Works
 
-1. User registers: `@Andy project add ~/client-repo` or via main group
+1. User registers: `@Deus project add ~/client-repo` or via main group
 2. Deus stores project config in SQLite (path, name, type, read-write flag)
 3. When a group is associated with a project, `buildVolumeMounts()` changes:
    - External project mounts at `/workspace/project` (read-write or read-only)
@@ -145,7 +145,7 @@ if (fs.existsSync(extraBase)) {
 
 **Implementation complexity:** Medium. Most infrastructure exists (mount system, mount security, additional directories). Main work is the project registry, modifying `buildVolumeMounts`, and adding project-aware cwd switching in the agent runner. Estimated ~300-500 lines of new code.
 
-**User experience:** Natural for messaging-first users. "Register a project, talk about it." Works well from WhatsApp/Telegram -- "hey Andy, look at the tests in client-repo and fix the failing ones." The agent knows which project you mean because the group is associated with it.
+**User experience:** Natural for messaging-first users. "Register a project, talk about it." Works well from WhatsApp/Telegram -- "hey Deus, look at the tests in client-repo and fix the failing ones." The agent knows which project you mean because the group is associated with it.
 
 **Security:** Leverages the existing mount-allowlist system. Projects must be under an allowed root. Read-write access controlled per-root. The `.env` shadow pattern can be extended to shadow sensitive files in external projects too. Risk: if the user grants read-write access to a project root and the agent misbehaves, it can corrupt the project. Mitigation: git integration (always work on branches, never force-push to main).
 
@@ -574,14 +574,14 @@ OpenHands allows mounting local repos via `SANDBOX_VOLUMES=host_path:container_p
 **User workflow after Phase 1:**
 
 ```
-User (WhatsApp): @Andy register project ~/projects/client-api as "Client API"
-Andy: Registered "Client API" (Node.js/Express, Jest tests). Associated with this group.
+User (WhatsApp): @Deus register project ~/projects/client-api as "Client API"
+Deus: Registered "Client API" (Node.js/Express, Jest tests). Associated with this group.
 
 User: fix the failing tests in the auth module
-Andy: [works in ~/projects/client-api, runs tests, fixes code, reports back]
+Deus: [works in ~/projects/client-api, runs tests, fixes code, reports back]
 
 User: what did you change?
-Andy: [reviews git diff, summarizes changes]
+Deus: [reviews git diff, summarizes changes]
 ```
 
 #### Phase 2: Git Safety Layer -- Shortly After MVP
@@ -645,7 +645,7 @@ The project registration model generalizes naturally beyond code repositories.
 
 Register a Figma export directory or asset folder:
 ```
-@Andy register project ~/Design/client-brand as "Client Brand"
+@Deus register project ~/Design/client-brand as "Client Brand"
 ```
 
 Project type detection sees image files, `.fig` exports, style guides. Domain preset activates "design" mode. Agent can browse assets, compare versions, organize files, generate documentation.
@@ -654,7 +654,7 @@ Project type detection sees image files, `.fig` exports, style guides. Domain pr
 
 Register a manuscript directory:
 ```
-@Andy register project ~/Writing/novel as "Novel Draft"
+@Deus register project ~/Writing/novel as "Novel Draft"
 ```
 
 Agent sees `.md`, `.docx`, `.tex` files. Can help with editing, continuity checking ("did I mention this character's eye color before?"), word count tracking, outline management.
@@ -663,7 +663,7 @@ Agent sees `.md`, `.docx`, `.tex` files. Can help with editing, continuity check
 
 Register a notebook/dataset directory:
 ```
-@Andy register project ~/Research/climate-data as "Climate Analysis"
+@Deus register project ~/Research/climate-data as "Climate Analysis"
 ```
 
 Agent sees `.ipynb`, `.csv`, `.parquet` files. Can run analysis in the container (Python is available), generate visualizations, summarize findings.
