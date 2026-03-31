@@ -105,6 +105,19 @@ def _migrate(db: sqlite3.Connection) -> None:
             ON interactions(domain_presets) WHERE domain_presets IS NOT NULL
     """)
 
+    # Principle extraction tracking (added in v1.4)
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS principle_extractions (
+            id              TEXT PRIMARY KEY,
+            domain          TEXT NOT NULL,
+            extracted_at    TEXT NOT NULL,
+            interaction_count INTEGER,
+            principles_count  INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS ix_principle_extractions_domain_time
+            ON principle_extractions(domain, extracted_at);
+    """)
+
     db.commit()
 
 
