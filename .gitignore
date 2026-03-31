@@ -30,6 +30,7 @@ scripts/rename-repo.sh
 
 # Python virtual env
 .venv/
+__pycache__/
 
 # Temp files
 .tmp-*
