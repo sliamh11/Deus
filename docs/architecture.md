@@ -2,7 +2,7 @@
 
 ## Overview
 
-Deus is a personal AI assistant built on NanoClaw. A single Node.js host process orchestrates container-isolated Claude agents across messaging channels (WhatsApp, Telegram, Slack, Discord, Gmail). Each conversation group runs in its own Linux container with an isolated filesystem. A semantic memory layer (sqlite-vec + Gemini embeddings) provides cross-session recall. A self-improvement loop scores every production interaction, generates reflections for low-scoring responses, and optimizes the system prompt via DSPy. An evaluation layer (DeepEval) tests the agent against curated datasets before merges.
+Deus is a personal AI assistant. A single Node.js host process orchestrates container-isolated Claude agents across messaging channels (WhatsApp, Telegram, Slack, Discord, Gmail). Each conversation group runs in its own Linux container with an isolated filesystem. A semantic memory layer (sqlite-vec + Gemini embeddings) provides cross-session recall. A self-improvement loop scores every production interaction, generates reflections for low-scoring responses, extracts positive patterns from high-scoring ones, and optimizes the system prompt via DSPy. An evaluation layer (DeepEval) tests the agent against curated datasets before merges.
 
 ## System Architecture
 
@@ -40,7 +40,8 @@ Deus is a personal AI assistant built on NanoClaw. A single Node.js host process
               │                                                          │
               │   Claude Agent SDK (claude-code CLI)                     │
               │       ├── MCP: Google Calendar, YouTube Transcript       │
-              │       ├── Filesystem: /workspace/group (rw)              │
+              │       ├── /workspace/group (rw), /workspace/global (ro)  │
+              │       ├── /workspace/ipc (IPC), /app/src (ro)            │
               │       ├── Agent Browser (Chromium)                       │
               │       └── IPC input poller (follow-up messages)          │
               └──────────────────────────────────────────────────────────┘
@@ -61,7 +62,11 @@ Deus is a personal AI assistant built on NanoClaw. A single Node.js host process
               │                                                          │
               │   Interaction Log ──▶ Judge (Gemini or Ollama)           │
               │        ├── Score < 0.6 ──▶ Reflexion (critique + fix)    │
-              │        └── N >= 20 samples ──▶ DSPy Optimize             │
+              │        ├── Score ≥ 0.85 ──▶ Positive Pattern extraction  │
+              │        ├── Auto-extract Principles (24h cooldown/domain) │
+              │        ├── Auto-optimize DSPy (every 50 interactions)    │
+              │        ├── Reflection dedup (L2 < 0.4)                   │
+              │        └── times_helpful feedback loop                   │
               └──────────────────────────────────────────────────────────┘
                                               │
               ┌───────────────────────────────▼──────────────────────────┐
@@ -199,7 +204,10 @@ Checks defined in `src/checks.ts`.
 - `mount-security.ts` — validates additional volume mounts against an allowlist at `~/.config/deus/mount-allowlist.json`, enforces blocked patterns (`.ssh`, `.env`, credentials, private keys)
 - `sender-allowlist.ts` — per-group sender filtering (allow/drop modes)
 - `session-commands.ts` — intercepts `/compact`, `/resume`, `/compress` slash commands
+- `domain-presets.ts` — keyword-based domain detection for evolution loop tagging (zero API cost)
+- `user-signal.ts` — detects explicit user feedback signals (positive/negative) in short follow-up messages
 - `evolution-client.ts` — bridges Node.js host to the Python evolution package via child_process
+- `project-registry.ts` — manages external project registration for external environment mode (CLI mode); projects are mounted into containers as the primary workspace
 - `remote-control.ts` — remote Claude Code session management
 - `transcription.ts` — voice message transcription (Whisper on Apple Silicon)
 - `image.ts` — image attachment parsing for multimodal content
@@ -300,10 +308,14 @@ Commands:
 
 ### Data Flow
 
-1. **Interaction logging** (`evolution-client.ts` on host, `ilog/` in Python): every agent response is logged with prompt, response, latency, tools used, group, and session ID.
-2. **Judge scoring** (`judge/`): a judge LLM scores each interaction on quality (0.0-1.0).
-3. **Reflexion** (`reflexion/`): scores below the threshold (default 0.6, configurable via `EVOLUTION_REFLECTION_THRESHOLD`) trigger reflexion — the system generates a self-critique and a corrected response, stored for future retrieval.
-4. **DSPy optimization** (`optimizer/`): once 20+ scored samples accumulate, DSPy can tune the system prompt using the scored interactions as a training set.
+1. **Interaction logging** (`evolution-client.ts` on host, `ilog/` in Python): every agent response is logged with prompt, response, latency, tools used, group, session ID, domain presets, and user signal.
+2. **Domain detection** (`src/domain-presets.ts`): keyword-based domain tagging (e.g. "engineering", "marketing", "study") at zero API cost. Domains are metadata only — not injected into the agent prompt.
+3. **User signal detection** (`src/user-signal.ts`): short follow-up messages like "perfect" or "wrong" are detected as explicit user feedback and attached to the previous interaction.
+4. **Judge scoring** (`judge/`): a judge LLM scores each interaction on quality (0.0-1.0).
+5. **Reflexion** (`reflexion/`): scores below the threshold (default 0.6, configurable via `EVOLUTION_REFLECTION_THRESHOLD`) trigger reflexion — the system generates a self-critique and a corrected response, stored for future retrieval. Scores above `POSITIVE_SCORE_THRESHOLD` (default 0.85) trigger positive pattern extraction. New reflections are deduplicated via L2 distance against existing embeddings to avoid storing near-duplicate lessons.
+6. **Principles extraction** (`reflexion/principles.py`): auto-triggered after judge scoring when enough new data exists. Extracts 3-5 actionable per-domain principles from the best and worst interactions using Gemini.
+7. **DSPy optimization** (`optimizer/`): once 20+ scored samples accumulate, DSPy tunes the system prompt per domain. Interactions with positive user signals receive 2x weight in the training set.
+8. **`times_helpful` tracking** (`reflexion/store.py`): each time a reflection is retrieved and used, its `times_helpful` counter increments, allowing the system to surface the most useful reflections.
 
 ### Judges
 
@@ -317,14 +329,16 @@ Auto-detection: pings `localhost:11434`. Uses Ollama if reachable, Gemini otherw
 ### CLI (`evolution/cli.py`)
 
 ```
-python3 evolution/cli.py score --prompt "..." --response "..."
-python3 evolution/cli.py optimize
+python3 evolution/cli.py status [--domain <domain>]
+python3 evolution/cli.py log_interaction <json>
+python3 evolution/cli.py optimize [--module qa|tool_selection|summarization|all]
 python3 evolution/cli.py get_reflections <query>
+python3 evolution/cli.py principles [--domain <domain>]
 ```
 
 ### Supporting Modules
 
-- `db.py` — evolution SQLite database (interactions, scores, reflections)
+- `db.py` — evolution SQLite database (interactions, scores, reflections, principle extractions)
 - `config.py` — evolution configuration
 - `backfill.py` — score all historical interactions in bulk
 - `mcp_server.py` — MCP server exposing evolution tools to Claude Code
@@ -388,6 +402,11 @@ Per-metric thresholds stored in `eval/thresholds.json`. Loaded at test time to d
 - Allowlist stored outside the project root so container agents cannot modify it
 - Default blocked patterns: `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.env`, `credentials`, private keys
 - Path traversal prevention via `path.resolve` normalization
+
+### Message Size Limits
+
+- Inbound messages truncated at `MAX_MESSAGE_LENGTH` (default 50,000 chars, configurable via env var)
+- Prevents oversized payloads from consuming agent context or causing OOM
 
 ### Sender Allowlist
 

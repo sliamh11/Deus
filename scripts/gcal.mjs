@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * gcal - Google Calendar CLI tool for NanoClaw container agents
+ * gcal - Google Calendar CLI tool for Deus container agents
  *
  * Usage (from inside the container):
  *   node /workspace/project/scripts/gcal.mjs <command> [options]

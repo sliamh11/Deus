@@ -1,5 +1,5 @@
 # Pinned versions — update periodically with: pip install --upgrade <pkg>
-# NanoClaw Evolution Loop dependencies
+# Deus Evolution Loop dependencies
 # Core (always required)
 google-genai==1.14.0       # Gemini API (same as memory_indexer.py)
 sqlite-vec==0.1.6          # Vector search in SQLite

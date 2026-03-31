@@ -34,7 +34,7 @@ if (!fs.existsSync(CREDS_PATH)) {
   console.error('  3. APIs & Services > Enable APIs > search "Google Calendar API" > Enable');
   console.error('  4. APIs & Services > Credentials > Create Credentials > OAuth client ID');
   console.error('     - Application type: Desktop app');
-  console.error('     - Name: NanoClaw');
+  console.error('     - Name: Deus');
   console.error('  5. Download JSON and save to: integrations/gcal/credentials.json');
   process.exit(1);
 }
@@ -49,7 +49,7 @@ const authUrl = oAuth2Client.generateAuthUrl({
   prompt: 'consent', // Force refresh_token to be returned
 });
 
-console.log('Open this URL in your browser to authorize NanoClaw:');
+console.log('Open this URL in your browser to authorize Deus:');
 console.log('');
 console.log(authUrl);
 console.log('');

@@ -60,6 +60,8 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `EVOLUTION_MAX_REFLECTIONS` | `3` | Max reflections retrieved per agent query |
 | `EVOLUTION_REFLECTION_DEDUP_L2` | `0.4` | L2 distance threshold for deduplicating similar reflections |
 | `DEUS_EVAL_CONCURRENT` | — | Override eval pre-warm concurrency |
+| `EVOLUTION_AUTO_OPTIMIZE_THRESHOLD` | `50` | Auto-optimize after this many new scored interactions (0 = disabled) |
+| `EVOLUTION_PRINCIPLES_COOLDOWN_HOURS` | `24` | Cooldown between principle extractions in hours |
 | `DEUS_DB` | `~/.deus/memory.db` | Path to the SQLite database for interactions, reflections, and embeddings |
 
 ## DSPy Optimizer

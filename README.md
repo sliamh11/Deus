@@ -175,6 +175,7 @@ src/
   container-runner.ts   # Spawns and streams agent containers
   domain-presets.ts     # Keyword-based domain detection for evolution loop tagging
   user-signal.ts        # Detects user feedback signals (positive/negative)
+  project-registry.ts   # External project registration for CLI mode
   task-scheduler.ts     # Runs scheduled tasks
   db.ts                 # SQLite operations
   router.ts             # Outbound message routing
@@ -203,11 +204,9 @@ groups/
 
 ---
 
-## Built on NanoClaw
+## Acknowledgments
 
-Deus is built on **[NanoClaw](https://github.com/qwibitai/nanoclaw)** by [qwibitai](https://github.com/qwibitai) — the core framework providing container-isolated Claude agents, multi-channel messaging, and a skill system for safe customization. This repo extends NanoClaw with semantic memory, voice transcription, a self-improvement loop, and more.
-
----
+Deus is built on [NanoClaw](https://github.com/qwibitai/nanoclaw) — thanks to the NanoClaw team for the foundation.
 
 ## License
 
