@@ -22,7 +22,7 @@ A personal AI assistant that lives in your messaging apps, remembers everything,
 6. **Web & video** — Fetch YouTube transcripts, summarize videos, or browse the web — all from a chat message.
 7. **Scheduled tasks** — Set it to do things automatically on a schedule (daily summaries, weekly recaps, reminders).
 8. **Self-improvement** — Scores its own responses over time and learns from both failures and successes. Low-scoring responses generate corrective reflections; high-scoring ones extract positive patterns. Uses DSPy to optimize its own system prompt per domain once enough samples accumulate.
-9. **Domain presets** — Lightweight topic-specific guidance (marketing, engineering, study, writing, strategy) that activates automatically based on your message. Presets are user-editable markdown files and improve over time through the self-improvement loop.
+9. **Domain detection** — Automatically tags conversations by topic (marketing, engineering, study, writing, strategy) so the self-improvement loop can learn per-domain patterns and optimize accordingly.
 10. **Sandboxed & secure** — Every conversation runs in an isolated Linux container. The AI can't access your host system beyond what you explicitly allow.
 11. **External projects** — Run `deus` in any project directory to get a coding agent with your full Deus memory and preferences. Or register a project and work on it through your messaging apps — Deus mounts it into an isolated container, auto-detects the tech stack, and shadows sensitive files automatically.
 
@@ -36,7 +36,7 @@ A personal AI assistant that lives in your messaging apps, remembers everything,
 
 - One Node.js process on the host. No microservices.
 - Each conversation group runs in its own container with an isolated filesystem.
-- Domain detection activates topic-specific presets (marketing, engineering, study, etc.) that get injected into the agent's system prompt.
+- Domain detection tags conversations by topic so the self-improvement loop learns per-domain patterns.
 
 ---
 
@@ -173,18 +173,12 @@ src/
   index.ts              # Orchestrator: state, message loop, agent invocation
   channels/             # WhatsApp and Telegram channel implementations
   container-runner.ts   # Spawns and streams agent containers
-  domain-presets.ts     # Keyword-based domain detection + preset loading
+  domain-presets.ts     # Keyword-based domain detection for evolution loop tagging
   user-signal.ts        # Detects user feedback signals (positive/negative)
   task-scheduler.ts     # Runs scheduled tasks
   db.ts                 # SQLite operations
   router.ts             # Outbound message routing
   ipc.ts                # File-based IPC watcher
-presets/
-  marketing.md          # Marketing domain preset (AIDA, KPIs, output format)
-  engineering.md        # Engineering domain preset (debugging, architecture)
-  study.md              # Study domain preset (Feynman, retrieval practice)
-  writing.md            # Writing domain preset (structure, audience, clarity)
-  strategy.md           # Strategy domain preset (frameworks, trade-offs)
 scripts/
   memory_indexer.py     # Semantic memory: index, query, extract, wander
   stop_hook.py          # Auto-checkpoint on session end

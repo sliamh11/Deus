@@ -57,9 +57,9 @@ vi.mock('./evolution-client.js', () => ({
   logInteraction: vi.fn(),
 }));
 
-// Mock domain-presets and user-signal (synchronous, but no presets/ dir in test)
+// Mock domain-presets and user-signal
 vi.mock('./domain-presets.js', () => ({
-  detectAndLoad: vi.fn(() => ({ domains: [], presetBlock: '' })),
+  detectDomains: vi.fn(() => []),
 }));
 
 vi.mock('./user-signal.js', () => ({

@@ -32,7 +32,7 @@ import {
   SENSITIVE_DIR_PATTERNS,
 } from './project-registry.js';
 import { RegisteredGroup } from './types.js';
-import { detectAndLoad } from './domain-presets.js';
+import { detectDomains } from './domain-presets.js';
 import { getReflections, logInteraction } from './evolution-client.js';
 import { detectUserSignal } from './user-signal.js';
 
@@ -398,13 +398,9 @@ export async function runContainerAgent(
     input = { ...input, prompt: `${reflectionsBlock}\n\n${input.prompt}` };
   }
 
-  // Pre-dispatch: detect domain presets and inject into prompt.
-  // detectAndLoad returns empty when presets/ doesn't exist or no keywords match.
+  // Detect domain tags for evolution loop metadata (no prompt injection).
   const userSignal = detectUserSignal(input.prompt);
-  const { domains, presetBlock } = detectAndLoad(input.prompt);
-  if (presetBlock) {
-    input = { ...input, prompt: `${presetBlock}\n\n${input.prompt}` };
-  }
+  const domains = detectDomains(input.prompt);
 
   // Pre-dispatch: inject project type hint if group has an associated project.
   // This gives the agent immediate context about the project without waiting
