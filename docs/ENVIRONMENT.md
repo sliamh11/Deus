@@ -7,6 +7,8 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | Variable | Description |
 |----------|-------------|
 | `CLAUDE_CODE_OAUTH_TOKEN` | OAuth token for Claude Code (or use `ANTHROPIC_API_KEY`) |
+| `ANTHROPIC_API_KEY` | Alternative to OAuth token for Claude auth |
+| `TZ` | Timezone override (e.g. `Asia/Jerusalem`) |
 
 ## Channels
 
@@ -15,6 +17,9 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `TELEGRAM_BOT_TOKEN` | — | Telegram bot token from @BotFather |
 | `ASSISTANT_NAME` | `Deus` | Display name used in Telegram and logs |
 | `ASSISTANT_HAS_OWN_NUMBER` | `false` | Whether the assistant has its own WhatsApp number |
+| `SLACK_BOT_TOKEN` | — | Slack bot token |
+| `SLACK_APP_TOKEN` | — | Slack app-level token |
+| `DISCORD_BOT_TOKEN` | — | Discord bot token |
 
 ## AI / API Keys
 
@@ -49,11 +54,21 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `CREDENTIAL_PROXY_PORT` | `3001` | Port for the credential injection proxy |
 | `CREDENTIAL_PROXY_HOST` | — | Bind address for proxy (empty = auto-detect) |
 
+## Ollama / Local Models
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+| `OLLAMA_MODEL` | `qwen3.5:4b` | Ollama judge model |
+| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model |
+| `EMBEDDING_PROVIDER` | `auto` | Embedding backend: `auto`, `gemini`, or `ollama` |
+
 ## Evolution / Eval
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `EVAL_JUDGE` | auto-detect | Force judge backend: `ollama` or `gemini`. Auto-detects Ollama at localhost:11434 |
+| `EVOLUTION_ENABLED` | `1` | Toggle evolution loop: `1` or `0` |
+| `EVOLUTION_PYTHON` | `python3` | Python binary path for evolution subprocess |
 | `EVOLUTION_REFLECTION_THRESHOLD` | `0.6` | Interactions scoring below this trigger corrective reflections |
 | `EVOLUTION_POSITIVE_THRESHOLD` | `0.85` | Interactions scoring above this trigger positive pattern extraction |
 | `EVOLUTION_JUDGE_MODEL` | `models/gemini-3.1-flash-lite-preview` | Gemini model used for judging and principle extraction |
@@ -64,6 +79,15 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `EVOLUTION_PRINCIPLES_COOLDOWN_HOURS` | `24` | Cooldown between principle extractions in hours |
 | `DEUS_DB` | `~/.deus/memory.db` | Path to the SQLite database for interactions, reflections, and embeddings |
 
+## Eval
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEUS_EVAL_IMAGE` | — | Docker image for eval containers |
+| `DEUS_EVAL_TIMEOUT` | — | Eval container timeout in seconds |
+| `EVAL_JUDGE` | auto-detect | Judge backend: `ollama`, `gemini`, or `mock` |
+| `CREDENTIAL_PROXY_URL` | `http://localhost:3001` | Full proxy URL override |
+
 ## DSPy Optimizer
 
 | Variable | Default | Description |
@@ -72,7 +96,7 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `EVOLUTION_DSPY_MIN_DOMAIN_SAMPLES` | `10` | Minimum domain-specific samples for domain optimization |
 | `EVOLUTION_DSPY_MAX_BOOTSTRAPPED` | `4` | Max bootstrapped demos for DSPy |
 | `EVOLUTION_DSPY_MAX_LABELED` | `8` | Max labeled demos for DSPy |
-| `EVOLUTION_DSPY_NUM_CANDIDATES` | `4` | Number of candidate prompts DSPy evaluates |
+| `DSPY_OLLAMA_MODEL` | `qwen3.5:4b` | Ollama model for DSPy optimization |
 
 ## Memory
 
