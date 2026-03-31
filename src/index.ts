@@ -582,6 +582,18 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 
+  // Debug: log any unexpected exits
+  process.on('exit', (code) => {
+    logger.info({ code }, 'Process exiting');
+  });
+  process.on('uncaughtException', (err) => {
+    logger.error({ err }, 'Uncaught exception');
+    process.exit(1);
+  });
+  process.on('unhandledRejection', (reason) => {
+    logger.error({ reason }, 'Unhandled rejection');
+  });
+
   // Handle /remote-control and /remote-control-end commands
   async function handleRemoteControl(
     command: string,

@@ -687,9 +687,7 @@ export function createProject(project: ProjectConfig): void {
 }
 
 export function getProjectById(id: string): ProjectConfig | undefined {
-  const row = db
-    .prepare('SELECT * FROM projects WHERE id = ?')
-    .get(id) as
+  const row = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as
     | {
         id: string;
         name: string;
@@ -735,7 +733,9 @@ export function getProjectByPath(hostPath: string): ProjectConfig | undefined {
 }
 
 export function getAllProjects(): ProjectConfig[] {
-  const rows = db.prepare('SELECT * FROM projects ORDER BY created_at DESC').all() as Array<{
+  const rows = db
+    .prepare('SELECT * FROM projects ORDER BY created_at DESC')
+    .all() as Array<{
     id: string;
     name: string;
     path: string;

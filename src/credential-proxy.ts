@@ -13,7 +13,6 @@
 import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
-
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
@@ -109,12 +108,32 @@ export function startCredentialProxy(
       });
     });
 
-    server.listen(port, host, () => {
-      logger.info({ port, host, authMode }, 'Credential proxy started');
-      resolve(server);
+    let retries = 0;
+    const maxRetries = 10;
+    const retryDelay = 2000;
+
+    const tryListen = () => {
+      server.listen(port, host, () => {
+        logger.info({ port, host, authMode }, 'Credential proxy started');
+        resolve(server);
+      });
+    };
+
+    server.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code === 'EADDRINUSE' && retries < maxRetries) {
+        retries++;
+        logger.warn(
+          { port, attempt: retries, maxRetries },
+          'Port in use, retrying...',
+        );
+        server.close();
+        setTimeout(tryListen, retryDelay);
+      } else {
+        reject(err);
+      }
     });
 
-    server.on('error', reject);
+    tryListen();
   });
 }
 

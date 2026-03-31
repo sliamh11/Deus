@@ -494,7 +494,10 @@ export async function processTaskIpc(
           );
         }
       } else {
-        logger.warn({ data }, 'Invalid register_project request - missing name or path');
+        logger.warn(
+          { data },
+          'Invalid register_project request - missing name or path',
+        );
       }
       break;
 
@@ -558,10 +561,7 @@ export async function processTaskIpc(
       if (data.projectId) {
         try {
           removeProject(data.projectId);
-          logger.info(
-            { projectId: data.projectId },
-            'Project deleted via IPC',
-          );
+          logger.info({ projectId: data.projectId }, 'Project deleted via IPC');
         } catch (err) {
           logger.error(
             { projectId: data.projectId, err },
@@ -589,10 +589,7 @@ export async function processTaskIpc(
           path.join(ipcDir, 'projects.json'),
           JSON.stringify({ projects }, null, 2),
         );
-        logger.info(
-          { count: projects.length },
-          'Projects list written to IPC',
-        );
+        logger.info({ count: projects.length }, 'Projects list written to IPC');
       }
       break;
 

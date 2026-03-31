@@ -146,7 +146,7 @@ function buildVolumeMounts(
 
       if (realProjectPath && realProjectPath === project.path) {
         // Determine effective readonly: project config + non-main override
-        const effectiveReadonly = project.readonly || (!isMain);
+        const effectiveReadonly = project.readonly || !isMain;
 
         mounts.push({
           hostPath: realProjectPath,
@@ -414,8 +414,10 @@ export async function runContainerAgent(
     if (project?.type) {
       const parts = [project.type.language];
       if (project.type.framework) parts.push(project.type.framework);
-      if (project.type.packageManager) parts.push(`pkg:${project.type.packageManager}`);
-      if (project.type.testRunner) parts.push(`test:${project.type.testRunner}`);
+      if (project.type.packageManager)
+        parts.push(`pkg:${project.type.packageManager}`);
+      if (project.type.testRunner)
+        parts.push(`test:${project.type.testRunner}`);
       const hint = `[Project: ${project.name} (${parts.join(', ')}) at /workspace/project${project.readonly ? ' — READ-ONLY' : ''}]`;
       input = { ...input, prompt: `${hint}\n\n${input.prompt}` };
     } else if (project) {

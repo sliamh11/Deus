@@ -52,7 +52,11 @@ export function detectProjectType(projectPath: string): ProjectType | null {
 
   // Rust
   if (exists('Cargo.toml')) {
-    return { language: 'rust', packageManager: 'cargo', testRunner: 'cargo test' };
+    return {
+      language: 'rust',
+      packageManager: 'cargo',
+      testRunner: 'cargo test',
+    };
   }
 
   // Go
@@ -61,7 +65,11 @@ export function detectProjectType(projectPath: string): ProjectType | null {
   }
 
   // Python
-  if (exists('pyproject.toml') || exists('setup.py') || exists('requirements.txt')) {
+  if (
+    exists('pyproject.toml') ||
+    exists('setup.py') ||
+    exists('requirements.txt')
+  ) {
     const pt: ProjectType = { language: 'python' };
     if (exists('pyproject.toml')) pt.packageManager = 'pip';
     if (exists('Pipfile')) pt.packageManager = 'pipenv';
@@ -80,16 +88,25 @@ export function detectProjectType(projectPath: string): ProjectType | null {
   // Ruby
   if (exists('Gemfile')) {
     const pt: ProjectType = { language: 'ruby', packageManager: 'bundler' };
-    if (exists('Rakefile') || exists('config/application.rb')) pt.framework = 'rails';
+    if (exists('Rakefile') || exists('config/application.rb'))
+      pt.framework = 'rails';
     return pt;
   }
 
   // Java / Kotlin
   if (exists('pom.xml')) {
-    return { language: 'java', packageManager: 'maven', testRunner: 'maven test' };
+    return {
+      language: 'java',
+      packageManager: 'maven',
+      testRunner: 'maven test',
+    };
   }
   if (exists('build.gradle') || exists('build.gradle.kts')) {
-    return { language: 'java', packageManager: 'gradle', testRunner: 'gradle test' };
+    return {
+      language: 'java',
+      packageManager: 'gradle',
+      testRunner: 'gradle test',
+    };
   }
 
   // Node.js / TypeScript / JavaScript (checked last — many projects have package.json)
@@ -148,10 +165,7 @@ export const SENSITIVE_FILE_PATTERNS = [
  * Sensitive directory patterns to check within the project.
  * Files matching these globs under the project root are shadowed.
  */
-export const SENSITIVE_DIR_PATTERNS = [
-  'credentials',
-  'secrets',
-];
+export const SENSITIVE_DIR_PATTERNS = ['credentials', 'secrets'];
 
 /**
  * Register a new external project.
@@ -168,7 +182,9 @@ export function registerProject(
 
   // Verify path exists and is a directory
   if (!fs.existsSync(resolvedPath)) {
-    throw new Error(`Path does not exist: ${hostPath} (resolved: ${resolvedPath})`);
+    throw new Error(
+      `Path does not exist: ${hostPath} (resolved: ${resolvedPath})`,
+    );
   }
   if (!fs.statSync(resolvedPath).isDirectory()) {
     throw new Error(`Path is not a directory: ${resolvedPath}`);
@@ -190,7 +206,7 @@ export function registerProject(
   if (!validation.allowed) {
     throw new Error(
       `Project path not allowed by mount allowlist: ${validation.reason}. ` +
-      `Add the parent directory to ~/.config/deus/mount-allowlist.json`,
+        `Add the parent directory to ~/.config/deus/mount-allowlist.json`,
     );
   }
 
@@ -231,10 +247,7 @@ export function registerProject(
  * Associate a project with a group folder.
  * The group's container will mount the project as its primary workspace.
  */
-export function associateProject(
-  projectId: string,
-  groupFolder: string,
-): void {
+export function associateProject(projectId: string, groupFolder: string): void {
   const project = getProjectById(projectId);
   if (!project) {
     throw new Error(`Project not found: ${projectId}`);
