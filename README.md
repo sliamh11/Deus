@@ -106,9 +106,9 @@ Inside the Claude Code prompt:
 Start talking:
 
 ```
-@Andy what's on my calendar tomorrow?
-@Andy summarize the YouTube video at <url>
-@Andy remind me every Monday morning what I worked on last week
+@Deus what's on my calendar tomorrow?
+@Deus summarize the YouTube video at <url>
+@Deus remind me every Monday morning what I worked on last week
 ```
 
 ---
