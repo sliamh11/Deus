@@ -1,6 +1,7 @@
 """
 Reflection store: persists reflections + embeddings for semantic retrieval.
 """
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -8,6 +9,8 @@ from typing import Optional
 from ..config import REFLECTION_DEDUP_L2
 from ..db import open_db, serialize_vec
 from ..providers.embeddings import embed as _embed
+
+log = logging.getLogger(__name__)
 
 
 def _is_duplicate(vec: list[float], group_folder: Optional[str], threshold: float = REFLECTION_DEDUP_L2) -> bool:
@@ -86,6 +89,43 @@ def increment_retrieved(reflection_id: str) -> None:
     )
     db.commit()
     db.close()
+
+
+def archive_stale_reflections(days: int = 30, dry_run: bool = False) -> int:
+    """
+    Archive reflections that have never been retrieved and are older than
+    `days` days.  Sets archived_at = now (soft-delete).
+    Returns the count of archived (or would-be-archived) reflections.
+    """
+    db = open_db()
+    rows = db.execute(
+        """
+        SELECT id FROM reflections
+        WHERE times_retrieved = 0
+          AND timestamp < datetime('now', ? || ' days')
+          AND archived_at IS NULL
+        """,
+        [f"-{days}"],
+    ).fetchall()
+    count = len(rows)
+
+    if count > 0 and not dry_run:
+        db.execute(
+            """
+            UPDATE reflections
+            SET archived_at = datetime('now')
+            WHERE times_retrieved = 0
+              AND timestamp < datetime('now', ? || ' days')
+              AND archived_at IS NULL
+            """,
+            [f"-{days}"],
+        )
+        db.commit()
+
+    db.close()
+    action = "Would archive" if dry_run else "Archived"
+    log.info("%s %d stale reflections (threshold: %d days)", action, count, days)
+    return count
 
 
 def increment_helpful(reflection_id: str) -> None:

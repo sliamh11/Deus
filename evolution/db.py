@@ -105,6 +105,17 @@ def _migrate(db: sqlite3.Connection) -> None:
             ON interactions(domain_presets) WHERE domain_presets IS NOT NULL
     """)
 
+    # Reflection lifecycle: soft-delete archival column (added in v1.5)
+    try:
+        db.execute("ALTER TABLE reflections ADD COLUMN archived_at TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS ix_reflections_stale
+            ON reflections(times_retrieved, timestamp)
+    """)
+
     # Principle extraction tracking (added in v1.4)
     db.executescript("""
         CREATE TABLE IF NOT EXISTS principle_extractions (

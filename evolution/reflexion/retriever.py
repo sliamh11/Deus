@@ -37,6 +37,7 @@ def get_reflections(
         FROM reflection_embeddings re
         JOIN reflections r ON r.rowid = re.rowid
         WHERE (r.group_folder = ? OR r.group_folder IS NULL)
+          AND r.archived_at IS NULL
         ORDER BY re.distance, r.times_helpful DESC
         LIMIT ?
         """,
@@ -58,6 +59,7 @@ def get_reflections(
             JOIN reflections r ON r.rowid = re.rowid
             WHERE re.embedding MATCH ? AND k = ?
               AND (r.group_folder = ? OR r.group_folder IS NULL)
+              AND r.archived_at IS NULL
             ORDER BY re.distance, r.times_helpful DESC
             """,
             [blob, top_k * 2, group_folder],
