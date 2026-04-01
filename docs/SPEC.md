@@ -326,7 +326,7 @@ Or edit the default in `src/config.ts`. This changes:
 
 Messages must start with the trigger pattern (default: `@Deus`):
 - `@Deus what's the weather?` — triggers
-- `@andy help me` — triggers (case insensitive)
+- `@deus help me` — triggers (case insensitive)
 - `Hey @Deus` — ignored (trigger not at start)
 - `What's up?` — ignored (no trigger)
 
