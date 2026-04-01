@@ -3,7 +3,7 @@
 How Deus can work on external projects beyond its own `~/deus` folder.
 
 **Date:** 2026-03-31
-**Status:** Research / Pre-Implementation
+**Status:** Implemented (merged 2026-03-31)
 **Author:** Research collaboration (Liam + Claude)
 
 ---

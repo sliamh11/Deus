@@ -3,7 +3,7 @@
 How Deus should handle memory, privacy, and data when operating in external project directories via CLI.
 
 **Date:** 2026-03-31
-**Status:** Research / Pre-Implementation
+**Status:** Implemented (merged 2026-03-31)
 **Author:** Research collaboration (Liam + Claude)
 
 ---

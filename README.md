@@ -15,7 +15,7 @@ A personal AI assistant that lives in your messaging apps, remembers everything,
 ## Features
 
 1. **Memory** — Remembers everything across all your conversations. Ask it something you discussed weeks ago and it'll recall it precisely, using semantic search to find the most relevant context.
-2. **Messaging apps** — Works inside WhatsApp, Telegram, Slack, Discord, and more. Switch between them freely — memory and context follow you everywhere.
+2. **Messaging apps** — Built-in WhatsApp and Telegram support. Slack, Discord, and Gmail available as optional add-ons. Switch between them freely — memory and context follow you everywhere.
 3. **Voice** — Send a voice message and it transcribes and responds. Runs locally on Apple Silicon — nothing leaves your machine.
 4. **Vision** — Send a photo or screenshot and it sees and responds to it.
 5. **Calendar** — Reads and creates Google Calendar events. Ask what's on your schedule, or tell it to book something.
@@ -154,7 +154,7 @@ See [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) for the full reference with def
 
 |  | **Deus** | **[OpenClaw](https://github.com/openclaw/openclaw)** | **[NemoClaw](https://github.com/NVIDIA/NemoClaw)** | **[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)** | **Plain Claude** |
 |---|---|---|---|---|---|
-| **Channels** | 4 (WhatsApp, Telegram, Slack, Discord) | 10+ (Signal, iMessage, Teams...) | Via OpenClaw | 20+ | None |
+| **Channels** | 2 built-in (WhatsApp, Telegram) + optional (Slack, Discord, Gmail) | 10+ (Signal, iMessage, Teams...) | Via OpenClaw | 20+ | None |
 | **Agent isolation** | Container per conversation (default) | Opt-in Docker | Landlock + seccomp | Rust sandbox | None |
 | **Memory** | Semantic vector search + tiered retrieval | Markdown files | Via OpenClaw | Basic persistence | Conversation only |
 | **Self-improvement** | Judge → reflexion → DSPy optimization | No | No | No | No |
