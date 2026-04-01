@@ -16,6 +16,7 @@ import {
   hasMemoryVault,
   hasPythonDeps,
   hasAnyChannelAuth,
+  hasContainerImage,
   countRegisteredGroups,
 } from './checks.js';
 import { logger } from './logger.js';
@@ -84,6 +85,17 @@ registerStartupCheck({
         : `Missing: ${result.missing.join(', ')}. Run: pip install ${result.missing.join(' ')}`,
     };
   },
+});
+
+registerStartupCheck({
+  name: 'Agent container image',
+  level: 'warn',
+  run: () => ({
+    name: 'Agent container image',
+    level: 'warn',
+    ok: hasContainerImage(),
+    hint: 'Agent container image not built. Run: ./container/build.sh',
+  }),
 });
 
 registerStartupCheck({

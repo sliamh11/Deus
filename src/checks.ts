@@ -128,6 +128,21 @@ export function hasAnyChannelAuth(): boolean {
   return false;
 }
 
+/** Check if the agent container image has been built. */
+export function hasContainerImage(): boolean {
+  const runtime = process.env.CONTAINER_RUNTIME || 'docker';
+  const bin = runtime === 'container' ? 'container' : 'docker';
+  try {
+    execSync(`${bin} image inspect deus-agent 2>/dev/null`, {
+      stdio: 'pipe',
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Count registered groups in the database (opens readonly, safe before initDatabase). */
 export function countRegisteredGroups(): number {
   const dbPath = path.join(process.cwd(), 'store', 'messages.db');

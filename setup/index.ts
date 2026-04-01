@@ -2,6 +2,9 @@
  * Setup CLI entry point.
  * Usage: npx tsx setup/index.ts --step <name> [args...]
  */
+import fs from 'fs';
+import path from 'path';
+
 import { logger } from '../src/logger.js';
 import { emitStatus } from './status.js';
 
@@ -21,6 +24,15 @@ const STEPS: Record<
 };
 
 async function main(): Promise<void> {
+  // Scaffold .env from .env.example if it doesn't exist yet.
+  const projectRoot = process.cwd();
+  const envPath = path.join(projectRoot, '.env');
+  const envExamplePath = path.join(projectRoot, '.env.example');
+  if (!fs.existsSync(envPath) && fs.existsSync(envExamplePath)) {
+    fs.copyFileSync(envExamplePath, envPath);
+    logger.info('Created .env from .env.example — fill in your API credentials.');
+  }
+
   const args = process.argv.slice(2);
   const stepIdx = args.indexOf('--step');
 
