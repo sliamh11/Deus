@@ -18,6 +18,14 @@ let cachedAllowlist: MountAllowlist | null = null;
 let allowlistLoadError: string | null = null;
 
 /**
+ * Reset the allowlist cache — for use in tests only.
+ */
+export function _resetAllowlistCacheForTests(): void {
+  cachedAllowlist = null;
+  allowlistLoadError = null;
+}
+
+/**
  * Default blocked patterns - paths that should never be mounted
  */
 const DEFAULT_BLOCKED_PATTERNS = [
