@@ -205,6 +205,69 @@ Run `npx tsx setup/index.ts --step verify` and parse the status block.
 
 Tell user to test: send a message in their registered chat. Show: `tail -f logs/deus.log`
 
+## 9. Personality Kickstarter (Optional)
+
+AskUserQuestion: "Deus works best when it knows your preferences. Want to load battle-tested defaults from real usage?" Options: "Yes, show me" / "Skip"
+
+**If Skip:** Continue to step 10.
+
+**If Yes, show me:** Present the following three bundles as a multi-select AskUserQuestion. The user can pick any combination.
+
+AskUserQuestion (multiSelect): "Which default bundles would you like to enable?" Options:
+- "Bundle A — Universal Defaults (recommended for everyone)"
+- "Bundle B — Developer Workflow (for users who code with Deus)"
+- "Bundle C — Student/Learner Mode (for users who study with Deus)"
+
+Read `groups/main/CLAUDE.md` first to see the current contents. If the file does not exist, create it. Append selected bundle content under a `## Behavioral Defaults` heading — create the heading at the end of the file if it is not already present.
+
+**Bundle A — Universal Defaults** content to append under `## Behavioral Defaults`:
+- Never execute after asking a confirmation question — stop and wait for explicit response. No exceptions for destructive/irreversible actions.
+- Long-running tasks (>30s) start in the background immediately. Say "started in background" and return control. Don't ask first.
+- Default to the simplest solution. Don't add features, abstraction, or complexity beyond what was asked.
+- Push back and verify before implementing. If something has a non-obvious tradeoff, flag it and discuss before acting.
+- Session start: give a 2-bullet catch-up ("Previous session: ..." + "Pending: ...") then wait.
+
+**Bundle B — Developer Workflow** content to append under `## Behavioral Defaults`:
+- Before implementing any planned change: verify git working tree is clean, create a feature branch, then implement.
+- Every code change cycle: Plan (brief) → Branch → Implement → Verify/test → Propose commit message → Wait for approval → Commit.
+- When debugging: read the full pipeline end-to-end before touching anything. Follow data flow across file/language boundaries. Grep all consumers before modifying a function signature.
+- For system exploration: do a full read-everything pass first, synthesize into structured findings, get agreement on priorities before writing code.
+
+**Bundle C — Student/Learner Mode** content to append under `## Behavioral Defaults`:
+- 3-minute rule: if stuck for 3 min with no path forward — look at the solution, understand every step, close it, rewrite from scratch.
+- Retrieval practice over re-reading: quiz first, explain after. Every act of retrieval is the learning.
+- Spaced review schedule: next day → 3 days → 1 week → 2 weeks.
+- Interleave problem types — don't block. Demand the reason for every step.
+- Explain with specific example first, then generalize. Never just state the formula.
+
+**How to append:** If `## Behavioral Defaults` heading already exists in the file, append the bullet points after the last item under that heading. If the heading does not exist, append it and the selected bullets at the end of the file.
+
+After updating `groups/main/CLAUDE.md`, tell the user: "Defaults saved to your main agent. You can edit groups/main/CLAUDE.md anytime to customize."
+
+## 10. First Steps
+
+Tell the user: "Deus is ready. Here are three quick wins to get the most out of it fast:"
+
+**Quick Win 1 — Import knowledge from your previous AI tools**
+
+Tell the user: "If you've been using ChatGPT, Gemini, or Claude.ai, your history there is a goldmine. Paste this prompt to any of them and send the result to Deus:"
+
+Present this prompt in a code block for the user to copy:
+
+```
+I'm setting up a new AI assistant. Please write a detailed personal profile of me based on our conversations. Include: who I am (profession, role, location if known), my current projects and ongoing work, my technical background and expertise areas, my communication style and preferences, topics I bring up regularly, how I like problems approached and explained, any personal context that's relevant, and anything else that would help a new assistant skip the "getting to know you" phase. Be thorough — this will be used to onboard my new assistant. Format it as a first-person profile I can paste directly.
+```
+
+Tell the user: "Send that profile here in a message and I'll remember it."
+
+**Quick Win 2 — Tell Deus about your current project**
+
+Tell the user: "Send a message like: 'I'm working on [project name]. It's [brief description]. The main challenge right now is [X].' Deus will remember this and you won't have to re-explain context every session."
+
+**Quick Win 3 — Start with something real**
+
+Tell the user: "Don't start with test messages. Give Deus a real task from your actual work — a bug to fix, a question you've been sitting on, a document to draft. That's how the memory and evolution loop start building useful patterns."
+
 ## Troubleshooting
 
 **Service not starting:** Check `logs/deus.error.log`. Common: wrong Node path (re-run step 7), missing `.env` (step 4), missing channel credentials (re-invoke channel skill).

@@ -64,6 +64,9 @@ async function listGroups(limit: number): Promise<void> {
 }
 
 async function syncGroups(projectRoot: string): Promise<void> {
+  // Ensure the groups/ directory exists before any group folder logic.
+  fs.mkdirSync(path.join(projectRoot, 'groups'), { recursive: true });
+
   // Only WhatsApp needs an upfront group sync; other channels resolve names at runtime.
   // Detect WhatsApp by checking for auth credentials on disk.
   const authDir = path.join(projectRoot, 'store', 'auth');

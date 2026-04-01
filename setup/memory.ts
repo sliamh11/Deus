@@ -65,14 +65,58 @@ export async function run(args: string[]): Promise<void> {
   }
 
   if (missing.length > 0) {
-    // Report what's missing — the Claude Code skill will ask the user for permission
-    emitStatus('MEMORY', {
-      STATUS: 'needs_install',
-      MISSING_PACKAGES: missing.join(', '),
-      INSTALL_COMMAND: `pip install ${missing.join(' ')}`,
-      STEP: 'python_deps',
-    });
-    return;
+    // Attempt to auto-install missing packages.
+    logger.info({ missing }, 'Installing missing Python dependencies');
+    const requirementsPath = path.join(process.cwd(), 'evolution', 'requirements.txt');
+    const installCmd = fs.existsSync(requirementsPath)
+      ? `pip install -r "${requirementsPath}"`
+      : `pip install ${missing.join(' ')}`;
+    try {
+      execSync(installCmd, {
+        encoding: 'utf-8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: 120000,
+      });
+      logger.info('Python dependencies installed');
+    } catch (pipErr) {
+      const pipMsg =
+        pipErr instanceof Error
+          ? (pipErr as { stderr?: string }).stderr || pipErr.message
+          : String(pipErr);
+      logger.warn({ err: pipMsg }, 'pip install failed');
+      emitStatus('MEMORY', {
+        STATUS: 'warn',
+        WARNING: `Could not install Python dependencies automatically: ${pipMsg.slice(0, 200)}`,
+        MISSING_PACKAGES: missing.join(', '),
+        INSTALL_COMMAND: installCmd,
+        STEP: 'python_deps',
+      });
+      return;
+    }
+
+    // Re-check after install.
+    const stillMissing: string[] = [];
+    try {
+      execSync('python3 -c "import sqlite_vec"', { stdio: 'pipe', timeout: 5000 });
+    } catch {
+      stillMissing.push('sqlite-vec');
+    }
+    try {
+      execSync('python3 -c "from google import genai"', { stdio: 'pipe', timeout: 5000 });
+    } catch {
+      stillMissing.push('google-genai');
+    }
+
+    if (stillMissing.length > 0) {
+      emitStatus('MEMORY', {
+        STATUS: 'warn',
+        WARNING: `Packages still missing after install attempt: ${stillMissing.join(', ')}`,
+        MISSING_PACKAGES: stillMissing.join(', '),
+        INSTALL_COMMAND: installCmd,
+        STEP: 'python_deps',
+      });
+      return;
+    }
   }
 
   logger.info('Python dependencies OK');
