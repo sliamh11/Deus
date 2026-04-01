@@ -11,7 +11,18 @@ vi.mock('./logger.js', () => ({
   logger: { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() },
 }));
 
-import { startCredentialProxy } from './credential-proxy.js';
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
+
+import { readFileSync } from 'fs';
+import {
+  startCredentialProxy,
+  _resetCredentialsCacheForTest,
+} from './credential-proxy.js';
+
+const mockReadFileSync = readFileSync as ReturnType<typeof vi.fn>;
 
 function makeRequest(
   port: number,
@@ -52,6 +63,11 @@ describe('credential-proxy', () => {
 
   beforeEach(async () => {
     lastUpstreamHeaders = {};
+    _resetCredentialsCacheForTest();
+    // Default: credentials file missing — existing tests are unaffected
+    mockReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
 
     upstreamServer = http.createServer((req, res) => {
       lastUpstreamHeaders = { ...req.headers };
@@ -68,6 +84,8 @@ describe('credential-proxy', () => {
     await new Promise<void>((r) => proxyServer?.close(() => r()));
     await new Promise<void>((r) => upstreamServer?.close(() => r()));
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+    mockReadFileSync.mockReset();
+    _resetCredentialsCacheForTest();
   });
 
   async function startProxy(env: Record<string, string>): Promise<number> {
@@ -188,5 +206,114 @@ describe('credential-proxy', () => {
 
     expect(res.statusCode).toBe(502);
     expect(res.body).toBe('Bad Gateway');
+  });
+
+  it('OAuth mode reads token from credentials file when env token absent', async () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'creds-file-token',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        },
+      }),
+    );
+
+    proxyPort = await startProxy({});
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/api/oauth/claude_cli/create_api_key',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer placeholder' },
+      },
+      '{}',
+    );
+
+    expect(lastUpstreamHeaders['authorization']).toBe('Bearer creds-file-token');
+  });
+
+  it('OAuth mode: env CLAUDE_CODE_OAUTH_TOKEN takes priority over credentials file', async () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'creds-file-token',
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        },
+      }),
+    );
+
+    proxyPort = await startProxy({ CLAUDE_CODE_OAUTH_TOKEN: 'env-token' });
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/api/oauth/claude_cli/create_api_key',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer placeholder' },
+      },
+      '{}',
+    );
+
+    expect(lastUpstreamHeaders['authorization']).toBe('Bearer env-token');
+  });
+
+  it('OAuth mode: re-reads credentials file when cached token is about to expire', async () => {
+    // First call: token expiring in 2 min (within 5-min early-expire window)
+    mockReadFileSync.mockReturnValueOnce(
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'expiring-token', expiresAt: Date.now() + 2 * 60 * 1000 },
+      }),
+    );
+    // Second call: refreshed token
+    mockReadFileSync.mockReturnValueOnce(
+      JSON.stringify({
+        claudeAiOauth: { accessToken: 'refreshed-token', expiresAt: Date.now() + 60 * 60 * 1000 },
+      }),
+    );
+
+    proxyPort = await startProxy({});
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/api/oauth/claude_cli/create_api_key',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer placeholder' },
+      },
+      '{}',
+    );
+    expect(lastUpstreamHeaders['authorization']).toBe('Bearer expiring-token');
+
+    // Cache is stale (token about to expire) — re-read on next request
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/api/oauth/claude_cli/create_api_key',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer placeholder' },
+      },
+      '{}',
+    );
+    expect(lastUpstreamHeaders['authorization']).toBe('Bearer refreshed-token');
+  });
+
+  it('OAuth mode: no crash when credentials file is missing', async () => {
+    // mockReadFileSync already throws ENOENT by default
+
+    proxyPort = await startProxy({});
+
+    const res = await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/api/oauth/claude_cli/create_api_key',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer placeholder' },
+      },
+      '{}',
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(lastUpstreamHeaders['authorization']).toBeUndefined();
   });
 });
