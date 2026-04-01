@@ -204,6 +204,12 @@ groups/
 
 ---
 
+## Support
+
+If Deus is useful to you, consider sponsoring the project — it helps fund continued development, new channel integrations, and documentation.
+
+[![GitHub Sponsors](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=github)](https://github.com/sponsors/sliamh11)
+
 ## Acknowledgments
 
 Deus is built on [NanoClaw](https://github.com/qwibitai/nanoclaw) — thanks to the NanoClaw team for the foundation.

@@ -177,18 +177,21 @@ const INNER = 64; // visible text width between ║ borders
 const BORDER_TOP = '╔' + '═'.repeat(INNER + 2) + '╗';
 const BORDER_BOT = '╚' + '═'.repeat(INNER + 2) + '╝';
 
-function pad(text: string): string {
+// @internal — exported for unit tests only
+export function pad(text: string): string {
   const truncated = text.length > INNER ? text.slice(0, INNER - 1) + '…' : text;
   const padding = Math.max(0, INNER - truncated.length);
   return '║ ' + truncated + ' '.repeat(padding) + ' ║';
 }
 
-function emptyLine(): string {
+// @internal — exported for unit tests only
+export function emptyLine(): string {
   return '║' + ' '.repeat(INNER + 2) + '║';
 }
 
 /** Word-wrap a hint string into lines that fit the box. */
-function wrapHint(hint: string, indent: number): string[] {
+// @internal — exported for unit tests only
+export function wrapHint(hint: string, indent: number): string[] {
   const maxLen = INNER - indent;
   if (hint.length <= maxLen) return [hint];
   const words = hint.split(' ');
@@ -206,7 +209,8 @@ function wrapHint(hint: string, indent: number): string[] {
   return lines;
 }
 
-function formatResult(r: CheckResult): string[] {
+// @internal — exported for unit tests only
+export function formatResult(r: CheckResult): string[] {
   const icon = r.ok ? ICON.pass : ICON[r.level];
   if (r.ok) {
     return [`${icon} ${r.name.padEnd(22)} OK`];
