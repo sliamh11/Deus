@@ -62,7 +62,7 @@ vi.mock('grammy', () => ({
     }
 
     start(opts: { onStart: (botInfo: any) => void }) {
-      opts.onStart({ username: 'andy_ai_bot', id: 12345 });
+      opts.onStart({ username: 'deus_ai_bot', id: 12345 });
     }
 
     stop() {}
@@ -122,7 +122,7 @@ function createTextCtx(overrides: {
       message_id: overrides.messageId ?? 1,
       entities: overrides.entities ?? [],
     },
-    me: { username: 'andy_ai_bot' },
+    me: { username: 'deus_ai_bot' },
     reply: vi.fn(),
   };
 }
@@ -155,7 +155,7 @@ function createMediaCtx(overrides: {
       caption: overrides.caption,
       ...(overrides.extra || {}),
     },
-    me: { username: 'andy_ai_bot' },
+    me: { username: 'deus_ai_bot' },
   };
 }
 
@@ -443,7 +443,7 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       const ctx = createTextCtx({
-        text: '@andy_ai_bot what time is it?',
+        text: '@deus_ai_bot what time is it?',
         entities: [{ type: 'mention', offset: 0, length: 12 }],
       });
       await triggerTextMessage(ctx);
@@ -451,7 +451,7 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '@Deus @andy_ai_bot what time is it?',
+          content: '@Deus @deus_ai_bot what time is it?',
         }),
       );
     });
@@ -462,7 +462,7 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       const ctx = createTextCtx({
-        text: '@Deus @andy_ai_bot hello',
+        text: '@Deus @deus_ai_bot hello',
         entities: [{ type: 'mention', offset: 6, length: 12 }],
       });
       await triggerTextMessage(ctx);
@@ -471,7 +471,7 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '@Deus @andy_ai_bot hello',
+          content: '@Deus @deus_ai_bot hello',
         }),
       );
     });
@@ -501,7 +501,7 @@ describe('TelegramChannel', () => {
       await channel.connect();
 
       const ctx = createTextCtx({
-        text: 'hey @andy_ai_bot check this',
+        text: 'hey @deus_ai_bot check this',
         entities: [{ type: 'mention', offset: 4, length: 12 }],
       });
       await triggerTextMessage(ctx);
@@ -510,7 +510,7 @@ describe('TelegramChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'tg:100200300',
         expect.objectContaining({
-          content: '@Deus hey @andy_ai_bot check this',
+          content: '@Deus hey @deus_ai_bot check this',
         }),
       );
     });
