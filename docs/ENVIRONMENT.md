@@ -104,6 +104,12 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 |----------|---------|-------------|
 | `DEUS_VAULT_PATH` | — | Obsidian vault path for session logs and memory |
 
+## Sessions
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SESSION_IDLE_RESET_HOURS` | `8` | Reset a group's session after N idle hours (0 = never reset). Per-channel override via `/settings session_idle_hours=N`. |
+
 ## Safety
 
 | Variable | Default | Description |

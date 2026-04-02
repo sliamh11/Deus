@@ -18,7 +18,7 @@ Deus is a personal AI assistant. A single Node.js host process orchestrates cont
 │                                                                          │
 │   ┌──────────────┐    ┌─────────┐    ┌───────────────┐                  │
 │   │ Channel       │───▶│ SQLite  │───▶│ Message Loop  │                  │
-│   │ Registry      │    │ (db.ts) │    │ (index.ts)    │                  │
+│   │ Registry      │    │ (db.ts) │    │ (orchestrator)│                  │
 │   └──────────────┘    └─────────┘    └───────┬───────┘                  │
 │                                              │                           │
 │   ┌──────────────┐    ┌───────────┐          │                          │
@@ -82,17 +82,25 @@ Deus is a personal AI assistant. A single Node.js host process orchestrates cont
 
 The host is a single Node.js process. No microservices. All coordination happens in-process.
 
-### `index.ts` — Main Orchestrator
+### `index.ts` — Entry Point
 
-The entry point. Responsibilities:
+Bootstrap and lifecycle. Responsibilities:
 
-- **Message loop**: polls SQLite for new messages across all registered groups. Runs on `POLL_INTERVAL` (configurable). Groups messages by chat JID.
-- **Group queue**: ensures one container per group at a time. Messages arriving while a container is active are piped to it via stdin; otherwise a new container is spawned.
-- **Session command interception**: intercepts `/compact`, `/resume`, `/compress` before they reach the container. Requires fresh container (not piped) for SDK recognition.
+- **Startup gate**: validates prerequisites (API keys, container runtime, channels) before heavy initialization.
+- **Channel connect**: iterates registered channel factories, connects available channels with shared callbacks.
 - **IPC watcher startup**: initializes the file-based IPC system for cross-group communication.
 - **Scheduler startup**: starts the cron/interval task dispatch loop.
-- **Startup recovery**: on boot, scans for messages that arrived between the last cursor advance and the crash, re-enqueues them.
 - **Graceful shutdown**: SIGTERM/SIGINT handlers stop the credential proxy, drain the group queue (10s timeout), and disconnect all channels.
+
+### `message-orchestrator.ts` — Message Processing Loop
+
+Extracted from `index.ts`. Owns message processing. Responsibilities:
+
+- **Message loop**: polls SQLite for new messages across all registered groups. Runs on `POLL_INTERVAL` (configurable). Groups messages by chat JID.
+- **Host command dispatch**: intercepts host-side slash commands (`/settings`, etc.) via the `HOST_COMMAND_HANDLERS` registry in `session-commands.ts` — handled on the host before the trigger check, never reaches the container.
+- **Session command interception**: intercepts `/compact` before it reaches the container. Requires fresh container (not piped) for SDK recognition.
+- **Group queue**: ensures one container per group at a time. Messages arriving while a container is active are piped to it via stdin; otherwise a new container is spawned.
+- **Startup recovery**: on boot, scans for messages that arrived between the last cursor advance and the crash, re-enqueues them.
 
 ### `channels/` — Channel Registry
 
@@ -205,7 +213,7 @@ Checks defined in `src/checks.ts`.
 - `group-folder.ts` — resolves and validates group folder paths
 - `mount-security.ts` — validates additional volume mounts against an allowlist at `~/.config/deus/mount-allowlist.json`, enforces blocked patterns (`.ssh`, `.env`, credentials, private keys)
 - `sender-allowlist.ts` — per-group sender filtering (allow/drop modes)
-- `session-commands.ts` — intercepts `/compact`, `/resume`, `/compress` slash commands
+- `session-commands.ts` — host-side slash command registry (`HOST_COMMAND_HANDLERS`) and `/compact` session command handling. New host-side commands (like `/settings`) register here via `{ extract, handle }` pairs — the orchestrator needs no changes.
 - `domain-presets.ts` — keyword-based domain detection for evolution loop tagging (zero API cost)
 - `user-signal.ts` — detects explicit user feedback signals (positive/negative) in short follow-up messages
 - `evolution-client.ts` — bridges Node.js host to the Python evolution package via child_process
@@ -414,24 +422,25 @@ Per-metric thresholds stored in `eval/thresholds.json`. Loaded at test time to d
 
 - Per-group sender filtering with allow and drop modes
 - Controls who can trigger the agent in non-main groups
-- Session commands (`/compact`, etc.) restricted to main group or `is_from_me`
+- Session commands (`/compact`, etc.) and host commands (`/settings`, etc.) restricted to main group or `is_from_me`
 
 ## Data Flow
 
 ```
 1. Message arrives at channel (WhatsApp/Telegram/Slack/Discord)
 2. Channel callback stores message in SQLite (db.ts)
-3. Message loop detects new messages (index.ts, POLL_INTERVAL)
-4. Trigger check: main group always triggers; non-main requires trigger word
-5. Sender allowlist check: verify sender is permitted
-6. Session command interception: /compact, /resume, /compress handled specially
-7. Group queue: serialize per-group, pipe to active container or spawn new one
-8. Container runner: build volume mounts, fetch reflections, spawn container
-9. Agent runner (in container): read stdin JSON, call Claude Agent SDK
-10. Agent response: streamed via stdout markers back to host
-11. Host sends response to user via channel
-12. Evolution client: log interaction, trigger async judge scoring
-13. Memory indexer: session logs indexed on /compress or stop hook
+3. Message loop detects new messages (message-orchestrator.ts, POLL_INTERVAL)
+4. Host command dispatch: /settings and other host-side commands handled immediately, never reach container
+5. Session command interception: /compact handled specially (needs fresh container)
+6. Trigger check: main group always triggers; non-main requires trigger word
+7. Sender allowlist check: verify sender is permitted
+8. Group queue: serialize per-group, pipe to active container or spawn new one
+9. Container runner: build volume mounts, fetch reflections, spawn container
+10. Agent runner (in container): read stdin JSON, call Claude Agent SDK
+11. Agent response: streamed via stdout markers back to host
+12. Host sends response to user via channel
+13. Evolution client: log interaction, trigger async judge scoring
+14. Memory indexer: session logs indexed on /compress or stop hook
 ```
 
 ## Environment Variables
@@ -450,6 +459,7 @@ See [`docs/ENVIRONMENT.md`](ENVIRONMENT.md) for the full reference. Key variable
 | `EVAL_JUDGE` | Force judge: `ollama` or `gemini` |
 | `DEUS_EVAL_CONCURRENT` | Override eval pre-warm concurrency |
 | `CREDENTIAL_PROXY_HOST` | Override proxy bind address |
+| `SESSION_IDLE_RESET_HOURS` | Reset session after N idle hours (default: 8, 0 = never) |
 | `LOG_LEVEL` | Logging level (default: `info`) |
 
 ## Key Design Decisions

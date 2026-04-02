@@ -5,7 +5,7 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/Node-%3E%3D20-green.svg" alt="Node"></a>
-  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey.svg" alt="Platform">
+  <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg" alt="Platform">
 </p>
 
 A personal AI assistant that lives in your messaging apps, remembers everything, and gets smarter over time. Built for developers who want a private, self-hosted assistant with container isolation, semantic memory, and a self-improvement loop — all running locally on your machine.
@@ -140,7 +140,7 @@ See [docs/benchmarks.md](docs/benchmarks.md#token-efficiency) for the full break
 ## Self-Improvement
 
 <p align="center">
-  <img src="assets/brand-production/diagrams/deus-optimization-loop-diagram.png" alt="Evolution loop: Score → Reflexion/Positive Pattern → Domain Principles → DSPy Optimizer" width="700">
+  <img src="assets/brand-production/diagrams/deus-evolution-diagram.png" alt="Evolution loop: Score → Reflexion/Positive Pattern → Domain Principles → DSPy Optimizer" width="700">
 </p>
 
 Every production interaction is scored by a local judge (Ollama or Gemini). Low scores trigger corrective reflexions; high scores extract positive patterns. Both feed into per-domain principles that accumulate over time. Once enough samples exist, DSPy optimizes the system prompt automatically.
@@ -166,7 +166,7 @@ Every production interaction is scored by a local judge (Ollama or Gemini). Low 
 Claude API usage (for the agent) plus optionally Gemini (free tier is sufficient for memory and scoring). Voice transcription is local and free. Deus adds ~920 tokens at session start compared to vanilla Claude Code — that covers the per-group persona and memory context. The self-improvement loop, container isolation, and eval suite add zero tokens (they run outside the agent context). See [docs/benchmarks.md](docs/benchmarks.md#token-efficiency) for the full breakdown.
 
 **What platforms are supported?**
-macOS (Apple Silicon recommended) and Linux. Windows is not supported.
+macOS (Apple Silicon recommended), Linux, and Windows (via Docker Desktop). Windows uses NSSM or Servy for service management instead of pm2/launchd.
 
 **Can I use a different LLM?**
 The core agent uses the Claude Agent SDK — this is architectural and not swappable. The evolution/eval judges can use Ollama (local, free) or Gemini.
@@ -205,36 +205,41 @@ See [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) for the full reference with def
 
 ```
 src/
-  index.ts              # Orchestrator: state, message loop, agent invocation
-  channels/             # WhatsApp and Telegram channel implementations
-  container-runner.ts   # Spawns and streams agent containers
-  domain-presets.ts     # Keyword-based domain detection for evolution loop tagging
-  user-signal.ts        # Detects user feedback signals (positive/negative)
-  project-registry.ts   # External project registration for CLI mode
-  task-scheduler.ts     # Runs scheduled tasks
-  db.ts                 # SQLite operations
-  router.ts             # Outbound message routing
-  ipc.ts                # File-based IPC watcher
+  index.ts                # Entry point: startup gate, channel connect, IPC, scheduler
+  message-orchestrator.ts # Message loop, trigger detection, cursor management, agent dispatch
+  session-commands.ts     # Host-side slash command registry (/settings, /compact)
+  channels/               # WhatsApp and Telegram channel implementations
+  container-runner.ts     # Spawns and streams agent containers
+  domain-presets.ts       # Keyword-based domain detection for evolution loop tagging
+  user-signal.ts          # Detects user feedback signals (positive/negative)
+  project-registry.ts     # External project registration for CLI mode
+  task-scheduler.ts       # Runs scheduled tasks
+  db.ts                   # SQLite operations
+  router.ts               # Outbound message routing
+  ipc.ts                  # File-based IPC watcher
 scripts/
-  memory_indexer.py     # Semantic memory: index, query, extract, wander
-  stop_hook.py          # Auto-checkpoint on session end
-  gcal.mjs              # Google Calendar MCP server
+  memory_indexer.py       # Semantic memory: index, query, extract, wander
+  import_seeds.py         # Import curated seed reflections into evolution DB
+  stop_hook.py            # Auto-checkpoint on session end
+  gcal.mjs                # Google Calendar MCP server
+seeds/
+  reflections.json        # Curated seed reflections for onboarding
 evolution/
-  judge/                # OllamaJudge + GeminiJudge (DeepEvalBaseLLM wrappers)
-  reflexion/            # Reflexion + positive patterns + principles extraction
-  optimizer/            # DSPy optimizer: per-domain prompt tuning
-  ilog/                 # Interaction log: domain-tagged scored interactions
-  db.py                 # Evolution database (SQLite)
-  cli.py                # CLI: status, optimize, principles (with --domain)
+  judge/                  # OllamaJudge + GeminiJudge (DeepEvalBaseLLM wrappers)
+  reflexion/              # Reflexion + positive patterns + principles extraction
+  optimizer/              # DSPy optimizer: per-domain prompt tuning
+  ilog/                   # Interaction log: domain-tagged scored interactions
+  db.py                   # Evolution database (SQLite)
+  cli.py                  # CLI: status, optimize, principles (with --domain)
 eval/
-  conftest.py           # Fixtures: agent cache, parallel pre-warm, dynamic concurrency
-  judge_model.py        # make_judge(): auto-detect Ollama → Gemini → ClaudeProxy
-  test_core_qa.py       # Factual Q&A tests
-  test_tool_use.py      # Tool-calling tests
-  test_safety.py        # Refusal and safety tests
-  datasets/             # JSONL test cases
+  conftest.py             # Fixtures: agent cache, parallel pre-warm, dynamic concurrency
+  judge_model.py          # make_judge(): auto-detect Ollama → Gemini → ClaudeProxy
+  test_core_qa.py         # Factual Q&A tests
+  test_tool_use.py        # Tool-calling tests
+  test_safety.py          # Refusal and safety tests
+  datasets/               # JSONL test cases
 groups/
-  */CLAUDE.md           # Per-group memory (isolated per conversation)
+  */CLAUDE.md             # Per-group memory (isolated per conversation)
 ```
 
 ---
@@ -244,6 +249,7 @@ groups/
 If Deus is useful to you, consider sponsoring the project — it helps fund continued development, new channel integrations, and documentation.
 
 [![GitHub Sponsors](https://img.shields.io/badge/Sponsor-%E2%9D%A4-ea4aaa?logo=github)](https://github.com/sponsors/sliamh11)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Support-ff5e5b?logo=ko-fi)](https://ko-fi.com/liamsteiner)
 
 ## Acknowledgments
 
