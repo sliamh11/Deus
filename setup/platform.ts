@@ -5,13 +5,14 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
-export type Platform = 'macos' | 'linux' | 'unknown';
-export type ServiceManager = 'launchd' | 'systemd' | 'none';
+export type Platform = 'macos' | 'linux' | 'windows' | 'unknown';
+export type ServiceManager = 'launchd' | 'systemd' | 'nssm' | 'servy' | 'none';
 
 export function getPlatform(): Platform {
   const platform = os.platform();
   if (platform === 'darwin') return 'macos';
   if (platform === 'linux') return 'linux';
+  if (platform === 'win32') return 'windows';
   return 'unknown';
 }
 
@@ -60,6 +61,10 @@ export function openBrowser(url: string): boolean {
       execSync(`open ${JSON.stringify(url)}`, { stdio: 'ignore' });
       return true;
     }
+    if (platform === 'windows') {
+      execSync(`start "" ${JSON.stringify(url)}`, { stdio: 'ignore' });
+      return true;
+    }
     if (platform === 'linux') {
       // Try xdg-open first, then wslview for WSL
       if (commandExists('xdg-open')) {
@@ -95,11 +100,23 @@ export function getServiceManager(): ServiceManager {
     if (hasSystemd()) return 'systemd';
     return 'none';
   }
+  if (platform === 'windows') {
+    if (commandExists('servy-cli')) return 'servy';
+    if (commandExists('nssm')) return 'nssm';
+    return 'none';
+  }
   return 'none';
 }
 
 export function getNodePath(): string {
   try {
+    if (os.platform() === 'win32') {
+      // `where` returns one path per line; take the first
+      return execSync('where node', { encoding: 'utf-8' })
+        .trim()
+        .split('\n')[0]
+        .trim();
+    }
     return execSync('command -v node', { encoding: 'utf-8' }).trim();
   } catch {
     return process.execPath;
@@ -108,7 +125,9 @@ export function getNodePath(): string {
 
 export function commandExists(name: string): boolean {
   try {
-    execSync(`command -v ${name}`, { stdio: 'ignore' });
+    const check =
+      os.platform() === 'win32' ? `where ${name}` : `command -v ${name}`;
+    execSync(check, { stdio: 'ignore' });
     return true;
   } catch {
     return false;
