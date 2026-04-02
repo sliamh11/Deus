@@ -1,5 +1,8 @@
 import fs from 'fs';
+import os from 'os';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+const isWindows = os.platform() === 'win32';
 
 // Mock config before importing the module under test
 vi.mock('./config.js', () => ({
@@ -8,8 +11,10 @@ vi.mock('./config.js', () => ({
 
 // Mock child_process
 const spawnMock = vi.fn();
+const execSyncMock = vi.fn();
 vi.mock('child_process', () => ({
   spawn: (...args: any[]) => spawnMock(...args),
+  execSync: (...args: any[]) => execSyncMock(...args),
 }));
 
 import {
@@ -261,8 +266,13 @@ describe('remote-control', () => {
 
       const result = stopRemoteControl();
       expect(result).toEqual({ ok: true });
-      // Unix: killProcess sends SIGTERM to process group (-pid) first
-      expect(killSpy).toHaveBeenCalledWith(-55555, 'SIGTERM');
+      if (isWindows) {
+        expect(execSyncMock).toHaveBeenCalledWith('taskkill /F /T /PID 55555', {
+          stdio: 'pipe',
+        });
+      } else {
+        expect(killSpy).toHaveBeenCalledWith(-55555, 'SIGTERM');
+      }
       expect(unlinkSyncSpy).toHaveBeenCalledWith(STATE_FILE);
       expect(getActiveSession()).toBeNull();
     });
@@ -363,8 +373,13 @@ describe('remote-control', () => {
 
       const result = stopRemoteControl();
       expect(result).toEqual({ ok: true });
-      // Unix: killProcess sends SIGTERM to process group (-pid) first
-      expect(killSpy).toHaveBeenCalledWith(-77777, 'SIGTERM');
+      if (isWindows) {
+        expect(execSyncMock).toHaveBeenCalledWith('taskkill /F /T /PID 77777', {
+          stdio: 'pipe',
+        });
+      } else {
+        expect(killSpy).toHaveBeenCalledWith(-77777, 'SIGTERM');
+      }
       expect(unlinkSyncSpy).toHaveBeenCalled();
       expect(getActiveSession()).toBeNull();
     });
