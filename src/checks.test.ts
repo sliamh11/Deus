@@ -85,6 +85,13 @@ describe('hasApiCredentials', () => {
     expect(hasApiCredentials()).toBe(true);
   });
 
+  it('returns true when ~/.claude/.credentials.json has a valid OAuth token', () => {
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ claudeAiOauth: { accessToken: 'oauth-from-file' } }),
+    );
+    expect(hasApiCredentials()).toBe(true);
+  });
+
   it('returns false when no credentials are configured', () => {
     expect(hasApiCredentials()).toBe(false);
   });
