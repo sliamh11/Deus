@@ -111,6 +111,19 @@ Commands require admin access (sent from the owner account, or from any sender i
 
 ---
 
+## CLI Commands
+
+| Command | What it does |
+|---|---|
+| `deus` | Launch Claude Code in the current directory (external project mode if not `~/deus`) |
+| `deus home` | Launch in home mode (`~/deus`) regardless of current directory |
+| `deus auth` | Rebuild and restart background services |
+| `deus listen` | Record from mic, transcribe with whisper.cpp, copy to clipboard |
+
+`deus listen` requires `sox`, `whisper-cpp`, and `ffmpeg`. On first run it auto-downloads the base Whisper model. Configure language and model path via `WHISPER_LANG` and `WHISPER_MODEL` environment variables.
+
+---
+
 ## Design Principles
 
 | Principle | What it means |
