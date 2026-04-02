@@ -205,9 +205,9 @@ describe('validateMount', () => {
       true,
     );
     expect(result.allowed).toBe(true);
-    // path.resolve adds a drive letter on Windows; normalize for comparison
-    expect(path.normalize(result.realHostPath!)).toBe(
-      path.normalize('/home/testuser/projects/myapp'),
+    // path.resolve adds a drive letter on Windows; resolve both sides so they match
+    expect(path.resolve(result.realHostPath!)).toBe(
+      path.resolve('/home/testuser/projects/myapp'),
     );
   });
 
