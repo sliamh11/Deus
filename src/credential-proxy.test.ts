@@ -318,6 +318,30 @@ describe('credential-proxy', () => {
     expect(lastUpstreamHeaders['authorization']).toBe('Bearer refreshed-token');
   });
 
+  it('OAuth mode replaces Bearer token on session endpoints', async () => {
+    proxyPort = await startProxy({
+      CLAUDE_CODE_OAUTH_TOKEN: 'real-oauth-token',
+    });
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/v1/sessions',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+          'anthropic-beta': 'ccr-byoc-2025-07-29',
+        },
+      },
+      '{}',
+    );
+
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      'Bearer real-oauth-token',
+    );
+  });
+
   it('OAuth mode: no crash when credentials file is missing', async () => {
     // mockReadFileSync already throws ENOENT by default
 
