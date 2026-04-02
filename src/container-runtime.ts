@@ -93,8 +93,10 @@ export function ensureContainerRuntimeRunning(): void {
 /** Kill orphaned Deus containers from previous runs. */
 export function cleanupOrphans(): void {
   try {
+    // No shell quoting around the Go template: single quotes don't work on
+    // Windows cmd.exe and are unnecessary here since there are no spaces.
     const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=deus- --format '{{.Names}}'`,
+      `${CONTAINER_RUNTIME_BIN} ps --filter name=deus- --format {{.Names}}`,
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);

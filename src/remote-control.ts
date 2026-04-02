@@ -1,5 +1,6 @@
-import { spawn } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
@@ -41,6 +42,32 @@ function isProcessAlive(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Terminate a process cross-platform.
+ * - Unix: sends SIGTERM to the process group first (-pid), falls back to SIGTERM on the PID.
+ * - Windows: SIGTERM is unsupported; uses `taskkill /F /T /PID` to kill the process tree.
+ */
+function killProcess(pid: number): void {
+  if (os.platform() === 'win32') {
+    try {
+      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'pipe' });
+    } catch {
+      // already dead
+    }
+    return;
+  }
+  // Unix: try process group first, then individual PID
+  try {
+    process.kill(-pid, 'SIGTERM');
+  } catch {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      // already dead
+    }
   }
 }
 
@@ -179,15 +206,7 @@ export async function startRemoteControl(
 
       // Timeout check
       if (Date.now() - startTime >= URL_TIMEOUT_MS) {
-        try {
-          process.kill(-pid, 'SIGTERM');
-        } catch {
-          try {
-            process.kill(pid, 'SIGTERM');
-          } catch {
-            // already dead
-          }
-        }
+        killProcess(pid);
         resolve({
           ok: false,
           error: 'Timed out waiting for Remote Control URL',
@@ -212,11 +231,7 @@ export function stopRemoteControl():
   }
 
   const { pid } = activeSession;
-  try {
-    process.kill(pid, 'SIGTERM');
-  } catch {
-    // already dead
-  }
+  killProcess(pid);
   activeSession = null;
   clearState();
   logger.info({ pid }, 'Remote Control session stopped');

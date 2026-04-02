@@ -261,7 +261,8 @@ describe('remote-control', () => {
 
       const result = stopRemoteControl();
       expect(result).toEqual({ ok: true });
-      expect(killSpy).toHaveBeenCalledWith(55555, 'SIGTERM');
+      // Unix: killProcess sends SIGTERM to process group (-pid) first
+      expect(killSpy).toHaveBeenCalledWith(-55555, 'SIGTERM');
       expect(unlinkSyncSpy).toHaveBeenCalledWith(STATE_FILE);
       expect(getActiveSession()).toBeNull();
     });
@@ -362,7 +363,8 @@ describe('remote-control', () => {
 
       const result = stopRemoteControl();
       expect(result).toEqual({ ok: true });
-      expect(killSpy).toHaveBeenCalledWith(77777, 'SIGTERM');
+      // Unix: killProcess sends SIGTERM to process group (-pid) first
+      expect(killSpy).toHaveBeenCalledWith(-77777, 'SIGTERM');
       expect(unlinkSyncSpy).toHaveBeenCalled();
       expect(getActiveSession()).toBeNull();
     });

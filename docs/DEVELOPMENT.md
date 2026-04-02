@@ -1,5 +1,7 @@
 # Development Reference
 
+> **Contributing?** Read [`docs/CROSS_PLATFORM.md`](CROSS_PLATFORM.md) before opening a PR — every change must work on macOS, Linux, and Windows.
+
 ## Key Files
 
 | File | Purpose |

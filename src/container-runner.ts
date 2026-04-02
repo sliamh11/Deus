@@ -4,6 +4,7 @@
  */
 import { ChildProcess, execFile, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -87,10 +88,11 @@ function buildVolumeMounts(
 
     // Shadow .env so the agent cannot read secrets from the mounted project root.
     // Credentials are injected by the credential proxy, never exposed to containers.
+    // os.devNull is '/dev/null' on Unix and '\\.\nul' on Windows.
     const envFile = path.join(projectRoot, '.env');
     if (fs.existsSync(envFile)) {
       mounts.push({
-        hostPath: '/dev/null',
+        hostPath: os.devNull,
         containerPath: '/workspace/project/.env',
         readonly: true,
       });
