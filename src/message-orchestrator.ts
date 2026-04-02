@@ -38,10 +38,9 @@ import { findChannel, formatMessages } from './router.js';
 import { RouterState, getAvailableGroups } from './router-state.js';
 import { isTriggerAllowed, loadSenderAllowlist } from './sender-allowlist.js';
 import {
+  dispatchHostCommand,
   extractSessionCommand,
-  extractSettingsCommand,
   handleSessionCommand,
-  handleSettingsCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -184,40 +183,28 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
 
     if (missedMessages.length === 0) return true;
 
-    // --- /settings command (host-side, no container spawn) ---
-    const settingsMsg = missedMessages.find(
-      (m) => extractSettingsCommand(m.content, TRIGGER_PATTERN) !== null,
+    // --- Host slash commands (host-side, no container spawn) ---
+    const hostResult = dispatchHostCommand(
+      missedMessages,
+      TRIGGER_PATTERN,
+      group,
+      SESSION_IDLE_RESET_HOURS,
+      isMainGroup,
     );
-    if (settingsMsg) {
-      if (
-        !isSessionCommandAllowed(isMainGroup, settingsMsg.is_from_me === true)
-      ) {
-        await channel.sendMessage(
-          chatJid,
-          'Settings commands require admin access.',
-        );
-      } else {
-        const cmd = extractSettingsCommand(
-          settingsMsg.content,
-          TRIGGER_PATTERN,
-        )!;
-        const result = handleSettingsCommand(
-          cmd,
-          group,
-          SESSION_IDLE_RESET_HOURS,
-        );
-        if (result.updatedGroup) {
-          setRegisteredGroup(chatJid, result.updatedGroup);
-          state.registeredGroups[chatJid] = result.updatedGroup;
-          logger.info({ group: group.name, cmd }, 'Group setting updated');
-        }
-        await channel.sendMessage(chatJid, result.response);
+    if (hostResult.matched) {
+      if (hostResult.updatedGroup) {
+        setRegisteredGroup(chatJid, hostResult.updatedGroup);
+        state.registeredGroups[chatJid] = hostResult.updatedGroup;
+        logger.info({ group: group.name }, 'Group setting updated');
       }
-      state.setLastAgentTimestamp(chatJid, settingsMsg.timestamp);
+      if (hostResult.response) {
+        await channel.sendMessage(chatJid, hostResult.response);
+      }
+      state.setLastAgentTimestamp(chatJid, hostResult.timestamp!);
       state.save();
       return true;
     }
-    // --- End /settings ---
+    // --- End host slash commands ---
 
     // --- Session command interception (before trigger check) ---
     const cmdResult = await handleSessionCommand({
@@ -412,6 +399,29 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
             }
 
             const isMainGroup = group.isControlGroup === true;
+
+            // --- Host slash commands (message loop — host-side, no container spawn) ---
+            const loopHostResult = dispatchHostCommand(
+              groupMessages,
+              TRIGGER_PATTERN,
+              group,
+              SESSION_IDLE_RESET_HOURS,
+              isMainGroup,
+            );
+            if (loopHostResult.matched) {
+              if (loopHostResult.updatedGroup) {
+                setRegisteredGroup(chatJid, loopHostResult.updatedGroup);
+                state.registeredGroups[chatJid] = loopHostResult.updatedGroup;
+                logger.info({ group: group.name }, 'Group setting updated');
+              }
+              if (loopHostResult.response) {
+                await channel.sendMessage(chatJid, loopHostResult.response);
+              }
+              state.setLastAgentTimestamp(chatJid, loopHostResult.timestamp!);
+              state.save();
+              continue;
+            }
+            // --- End host slash commands ---
 
             // --- Session command interception (message loop) ---
             // Scan ALL messages in the batch for a session command.

@@ -121,6 +121,75 @@ export function handleSettingsCommand(
   }
 }
 
+// ── Host slash command registry ───────────────────────────────────────────────
+
+/**
+ * A host-side slash command handler.
+ *
+ * `extract` — returns the normalised command string if the message matches,
+ *             null otherwise. Strips the trigger prefix before checking.
+ * `handle`  — pure: returns response text and an optional updated group.
+ *             Caller persists updatedGroup to DB + state.
+ */
+export interface HostCommandHandler {
+  extract(content: string, triggerPattern: RegExp): string | null;
+  handle(
+    cmd: string,
+    group: RegisteredGroup,
+    globalIdleHours: number,
+  ): { response: string; updatedGroup?: RegisteredGroup };
+}
+
+/** All host-side slash commands. Add new entries here to register a command. */
+export const HOST_COMMAND_HANDLERS: HostCommandHandler[] = [
+  {
+    extract: extractSettingsCommand,
+    handle: handleSettingsCommand,
+  },
+];
+
+export interface HostDispatchResult {
+  /** true if any handler matched (regardless of auth outcome) */
+  matched: boolean;
+  response?: string;
+  updatedGroup?: RegisteredGroup;
+  /** Timestamp of the matching message — advance the agent cursor to this */
+  timestamp?: string;
+}
+
+/**
+ * Scan `messages` for any registered host slash command and dispatch it.
+ * Returns `matched: false` when no message matches any handler.
+ * Auth check (admin-only) is applied uniformly before calling `handle`.
+ */
+export function dispatchHostCommand(
+  messages: NewMessage[],
+  triggerPattern: RegExp,
+  group: RegisteredGroup,
+  globalIdleHours: number,
+  isMainGroup: boolean,
+): HostDispatchResult {
+  for (const handler of HOST_COMMAND_HANDLERS) {
+    const msg = messages.find(
+      (m) => handler.extract(m.content, triggerPattern) !== null,
+    );
+    if (!msg) continue;
+
+    if (!isSessionCommandAllowed(isMainGroup, msg.is_from_me === true)) {
+      return {
+        matched: true,
+        response: 'This command requires admin access.',
+        timestamp: msg.timestamp,
+      };
+    }
+
+    const cmd = handler.extract(msg.content, triggerPattern)!;
+    const result = handler.handle(cmd, group, globalIdleHours);
+    return { matched: true, ...result, timestamp: msg.timestamp };
+  }
+  return { matched: false };
+}
+
 // ── /compact command ───────────────────────────────────────────────────────────
 
 /**
