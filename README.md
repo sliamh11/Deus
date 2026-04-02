@@ -91,13 +91,31 @@ A stop hook auto-saves a checkpoint at the end of every Claude Code session with
 
 ---
 
+## Channel Commands
+
+These commands work inside any connected messaging app (WhatsApp, Telegram, etc.). Send them as a message — no Claude Code required.
+
+| Command | What it does |
+|---|---|
+| `/settings` | Show current settings for this channel |
+| `/settings session_idle_hours=N` | Reset session after N idle hours (0 = never) |
+| `/settings timeout=N` | Set container timeout in seconds (min 30) |
+| `/settings requires_trigger=true/false` | Toggle whether `@Deus` prefix is required |
+| `/compact` | Compact the current conversation to free up context |
+
+**Settings are per-channel** — each WhatsApp or Telegram group has independent settings. The global default for `session_idle_hours` can be set via `SESSION_IDLE_RESET_HOURS` in your `.env` file (default: 8 hours). Setting it to `0` disables idle reset entirely for that channel.
+
+Commands require admin access (sent from the owner account, or from any sender in the main/control group).
+
+---
+
 ## Design Principles
 
 | Principle | What it means |
 |---|---|
 | **Machine-adaptive** | Never hardcode thread counts or resource limits. Scale to available CPU/RAM with env var overrides. |
 | **Modular** | Components connect and disconnect cleanly. Adding or removing a channel or integration shouldn't touch unrelated code. |
-| **Token-efficient** | Minimize redundant API calls. Cache aggressively. Prefer local models (Ollama) for workloads where quality allows it. |
+| **Token-efficient** | Minimize redundant API calls. Cache aggressively. Prefer local models (Ollama) for workloads where quality allows it. Tool lists are filtered per-query — Deus uses ~600 fewer tool tokens than vanilla Claude Code on personal-assistant queries. |
 | **Secure by default** | Credentials never appear in code or git history. Use .env files + .gitignore. Designed as if the repo is already public. |
 
 ---
@@ -128,7 +146,7 @@ Every production interaction is scored by a local judge (Ollama or Gemini). Low 
 ## FAQ
 
 **How much does it cost?**
-Claude API usage (for the agent) plus optionally Gemini (free tier is sufficient for memory and scoring). Voice transcription is local and free.
+Claude API usage (for the agent) plus optionally Gemini (free tier is sufficient for memory and scoring). Voice transcription is local and free. Deus adds ~920 tokens at session start compared to vanilla Claude Code — that covers the per-group persona and memory context. The self-improvement loop, container isolation, and eval suite add zero tokens (they run outside the agent context). See [docs/benchmarks.md](docs/benchmarks.md#token-efficiency) for the full breakdown.
 
 **What platforms are supported?**
 macOS (Apple Silicon recommended) and Linux. Windows is not supported.
@@ -143,7 +161,7 @@ All local. Memory in SQLite, session logs optionally in an Obsidian vault, no cl
 Use the skill system: `/add-whatsapp`, `/add-telegram`, `/add-slack`, `/add-discord`, `/add-gmail`. Or build your own channel skill.
 
 **How do I customize behavior?**
-Tell Claude Code directly ("change the trigger word to @Max", "make responses shorter") or run `/customize` for guided changes. No config files — the codebase is small enough for Claude to modify safely.
+Send `/settings` in any connected chat to view and edit per-channel settings (idle reset, timeout, trigger requirement). For deeper changes — personas, trigger words, response style — tell Claude Code directly or run `/customize`.
 
 **Where are all the environment variables documented?**
 See [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) for the full reference with defaults and descriptions.

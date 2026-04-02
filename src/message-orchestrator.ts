@@ -28,6 +28,7 @@ import {
   getMessagesSince,
   getNewMessages,
   getSessionLastUsedAt,
+  setRegisteredGroup,
   setSession,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
@@ -38,7 +39,9 @@ import { RouterState, getAvailableGroups } from './router-state.js';
 import { isTriggerAllowed, loadSenderAllowlist } from './sender-allowlist.js';
 import {
   extractSessionCommand,
+  extractSettingsCommand,
   handleSessionCommand,
+  handleSettingsCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -65,14 +68,18 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     const isControlGroup = group.isControlGroup === true;
     let sessionId = state.getSession(group.folder);
 
-    // Idle session reset: if the session hasn't been used within the configured
-    // threshold, start fresh so context doesn't accumulate indefinitely.
-    if (sessionId && SESSION_IDLE_RESET_HOURS > 0) {
+    // Idle session reset: per-group setting takes precedence over global default.
+    const effectiveIdleHours =
+      group.containerConfig?.sessionIdleResetHours !== undefined
+        ? group.containerConfig.sessionIdleResetHours
+        : SESSION_IDLE_RESET_HOURS;
+
+    if (sessionId && effectiveIdleHours > 0) {
       const lastUsed = getSessionLastUsedAt(group.folder);
       const idleMs = lastUsed
         ? Date.now() - new Date(lastUsed).getTime()
         : Infinity;
-      if (idleMs > SESSION_IDLE_RESET_HOURS * 3_600_000) {
+      if (idleMs > effectiveIdleHours * 3_600_000) {
         logger.info(
           { group: group.name, idleHours: (idleMs / 3_600_000).toFixed(1) },
           'Session idle too long — starting fresh',
@@ -176,6 +183,29 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     );
 
     if (missedMessages.length === 0) return true;
+
+    // --- /settings command (host-side, no container spawn) ---
+    const settingsMsg = missedMessages.find(
+      (m) => extractSettingsCommand(m.content, TRIGGER_PATTERN) !== null,
+    );
+    if (settingsMsg) {
+      if (!isSessionCommandAllowed(isMainGroup, settingsMsg.is_from_me === true)) {
+        await channel.sendMessage(chatJid, 'Settings commands require admin access.');
+      } else {
+        const cmd = extractSettingsCommand(settingsMsg.content, TRIGGER_PATTERN)!;
+        const result = handleSettingsCommand(cmd, group, SESSION_IDLE_RESET_HOURS);
+        if (result.updatedGroup) {
+          setRegisteredGroup(chatJid, result.updatedGroup);
+          state.registeredGroups[chatJid] = result.updatedGroup;
+          logger.info({ group: group.name, cmd }, 'Group setting updated');
+        }
+        await channel.sendMessage(chatJid, result.response);
+      }
+      state.setLastAgentTimestamp(chatJid, settingsMsg.timestamp);
+      state.save();
+      return true;
+    }
+    // --- End /settings ---
 
     // --- Session command interception (before trigger check) ---
     const cmdResult = await handleSessionCommand({

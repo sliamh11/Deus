@@ -1,5 +1,116 @@
-import type { NewMessage } from './types.js';
+import type { NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+
+// ── /settings command ─────────────────────────────────────────────────────────
+
+/**
+ * Extract a /settings command from a message content, stripping the trigger prefix.
+ * Returns the full command string (e.g. '/settings' or '/settings timeout=600')
+ * or null if not a settings command.
+ */
+export function extractSettingsCommand(
+  content: string,
+  triggerPattern: RegExp,
+): string | null {
+  let text = content.trim();
+  text = text.replace(triggerPattern, '').trim();
+  if (text === '/settings' || text.startsWith('/settings ')) return text;
+  return null;
+}
+
+export interface SettingsCommandResult {
+  response: string;
+  updatedGroup?: RegisteredGroup; // Present when a setting was changed
+}
+
+const SETTINGS_HELP =
+  'Available settings:\n' +
+  '  session_idle_hours=N  — reset session after N idle hours (0 = never)\n' +
+  '  timeout=N             — container timeout in seconds (min 30)\n' +
+  '  requires_trigger=true/false  — whether @Name prefix is required';
+
+/**
+ * Parse and apply a /settings command.
+ * Pure function — returns the response text and an optionally updated group.
+ * Caller is responsible for persisting updatedGroup to the DB and state.
+ */
+export function handleSettingsCommand(
+  command: string,
+  group: RegisteredGroup,
+  globalIdleHours: number,
+): SettingsCommandResult {
+  const args = command.slice('/settings'.length).trim();
+
+  if (!args) {
+    const idleHours = group.containerConfig?.sessionIdleResetHours;
+    const timeoutMs = group.containerConfig?.timeout;
+    const lines = [
+      `Settings — ${group.name}`,
+      `  session_idle_hours: ${
+        idleHours !== undefined
+          ? idleHours === 0
+            ? '0 (never reset)'
+            : String(idleHours)
+          : `${globalIdleHours} (global default)`
+      }`,
+      `  timeout: ${timeoutMs !== undefined ? `${Math.round(timeoutMs / 1000)}s` : '300s (default)'}`,
+      `  requires_trigger: ${group.requiresTrigger !== false}`,
+      '',
+      SETTINGS_HELP,
+    ];
+    return { response: lines.join('\n') };
+  }
+
+  const eqIdx = args.indexOf('=');
+  if (eqIdx === -1) {
+    return { response: `Invalid syntax. Use: /settings key=value\n\n${SETTINGS_HELP}` };
+  }
+
+  const key = args.slice(0, eqIdx).trim().toLowerCase();
+  const value = args.slice(eqIdx + 1).trim();
+
+  if (!value) {
+    return { response: `Missing value for ${key}.\n\n${SETTINGS_HELP}` };
+  }
+
+  const updatedGroup: RegisteredGroup = {
+    ...group,
+    containerConfig: { ...group.containerConfig },
+  };
+
+  switch (key) {
+    case 'session_idle_hours': {
+      const n = parseInt(value, 10);
+      if (isNaN(n) || n < 0) {
+        return { response: 'session_idle_hours must be a non-negative integer (0 = never reset).' };
+      }
+      updatedGroup.containerConfig = { ...updatedGroup.containerConfig, sessionIdleResetHours: n };
+      return {
+        response: `session_idle_hours set to ${n === 0 ? '0 (session never resets)' : `${n}h`}`,
+        updatedGroup,
+      };
+    }
+    case 'timeout': {
+      const n = parseInt(value, 10);
+      if (isNaN(n) || n < 30) {
+        return { response: 'timeout must be at least 30 seconds.' };
+      }
+      updatedGroup.containerConfig = { ...updatedGroup.containerConfig, timeout: n * 1000 };
+      return { response: `timeout set to ${n}s`, updatedGroup };
+    }
+    case 'requires_trigger': {
+      if (value !== 'true' && value !== 'false') {
+        return { response: 'requires_trigger must be true or false.' };
+      }
+      updatedGroup.requiresTrigger = value === 'true';
+      return { response: `requires_trigger set to ${value}`, updatedGroup };
+    }
+    default:
+      return { response: `Unknown setting: ${key}\n\n${SETTINGS_HELP}` };
+  }
+}
+
+// ── /compact command ───────────────────────────────────────────────────────────
 
 /**
  * Extract a session slash command from a message, stripping the trigger prefix if present.

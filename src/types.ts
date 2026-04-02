@@ -29,7 +29,8 @@ export interface AllowedRoot {
 
 export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
-  timeout?: number; // Default: 300000 (5 minutes)
+  timeout?: number; // Default: 300000ms (5 minutes). Configurable via /settings timeout=N (seconds).
+  sessionIdleResetHours?: number; // Override global SESSION_IDLE_RESET_HOURS. 0 = never reset.
 }
 
 export interface ProjectType {
