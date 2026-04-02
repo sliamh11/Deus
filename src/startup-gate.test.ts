@@ -450,7 +450,7 @@ describe('printStartupReport', () => {
     ];
     printStartupReport(makeReport({ warnings }));
     const calls = mockLogger.error.mock.calls.flat();
-    const widths = calls.map((line) => [...line].length);
+    const widths = calls.map((line) => [...(line as string)].length);
     const first = widths[0];
     for (const w of widths) {
       expect(w).toBe(first);
@@ -491,7 +491,7 @@ describe('printStartupReport', () => {
     ];
     printStartupReport(makeReport({ warnings }));
     const calls = mockLogger.error.mock.calls.flat();
-    const widths = calls.map((line) => [...line].length);
+    const widths = calls.map((line) => [...(line as string)].length);
     const expectedWidth = widths[0]; // take from border line
     for (const w of widths) {
       expect(w).toBe(expectedWidth);

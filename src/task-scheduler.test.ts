@@ -231,7 +231,7 @@ describe('startSchedulerLoop execution path', () => {
       getSessions: () => overrides.sessions ?? {},
       queue: { enqueueTask, notifyIdle, closeStdin } as any,
       onProcess: () => {},
-      sendMessage,
+      sendMessage: sendMessage as unknown as (jid: string, text: string) => Promise<void>,
     };
   }
 
@@ -254,7 +254,7 @@ describe('startSchedulerLoop execution path', () => {
 
     expect(enqueueTask).toHaveBeenCalledTimes(2);
     const enqueuedIds = enqueueTask.mock.calls.map(
-      (call: [string, string, unknown]) => call[1],
+      (call: any[]) => call[1] as string,
     );
     expect(enqueuedIds).toContain('task-a');
     expect(enqueuedIds).toContain('task-b');

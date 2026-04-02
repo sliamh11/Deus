@@ -62,7 +62,7 @@ beforeEach(() => {
     resolvedContainerPath: 'project',
     effectiveReadonly: false,
   });
-  mockGetProjectByPath.mockReturnValue(null);
+  mockGetProjectByPath.mockReturnValue(null as any);
 });
 
 // ── detectProjectType ─────────────────────────────────────────────────────
@@ -72,7 +72,7 @@ describe('detectProjectType', () => {
     mockExistsSync.mockImplementation((p: fs.PathLike) => {
       return files.some((f) => String(p).endsWith(f));
     });
-    mockReadFileSync.mockImplementation((p: fs.PathLike) => {
+    mockReadFileSync.mockImplementation((p: fs.PathOrFileDescriptor) => {
       if (String(p).endsWith('package.json') && packageJson) {
         return JSON.stringify(packageJson);
       }

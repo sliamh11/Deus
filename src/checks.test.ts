@@ -277,7 +277,7 @@ describe('countRegisteredGroups', () => {
   it('parses count from sqlite3 output', () => {
     mockExistsSync.mockReturnValue(true);
     // The source uses { encoding: 'utf-8' } so execSync returns a string
-    mockExecSync.mockReturnValue('3\n' as unknown as Buffer);
+    mockExecSync.mockReturnValue('3\n' as unknown as string);
     expect(countRegisteredGroups()).toBe(3);
   });
 });
