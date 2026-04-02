@@ -14,11 +14,7 @@ import {
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
-import {
-  initDatabase,
-  storeChatMetadata,
-  storeMessage,
-} from './db.js';
+import { initDatabase, storeChatMetadata, storeMessage } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
 import { createMessageOrchestrator } from './message-orchestrator.js';
@@ -155,7 +151,11 @@ async function main(): Promise<void> {
       }
 
       // Sender allowlist drop mode: discard messages from denied senders before storing
-      if (!msg.is_from_me && !msg.is_bot_message && state.registeredGroups[chatJid]) {
+      if (
+        !msg.is_from_me &&
+        !msg.is_bot_message &&
+        state.registeredGroups[chatJid]
+      ) {
         const cfg = loadSenderAllowlist();
         if (
           shouldDropMessage(chatJid, cfg) &&
@@ -271,7 +271,11 @@ async function main(): Promise<void> {
         next_run: t.next_run,
       }));
       for (const group of Object.values(state.registeredGroups)) {
-        writeTasksSnapshot(group.folder, group.isControlGroup === true, taskRows);
+        writeTasksSnapshot(
+          group.folder,
+          group.isControlGroup === true,
+          taskRows,
+        );
       }
     },
   });

@@ -10,6 +10,8 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 
 ## Skills
 
+> **Note for container agents:** These skills run in Claude Code on the host machine — they are not chat commands. Never suggest these to users via WhatsApp, Telegram, or any chat channel.
+
 | Skill | When to Use |
 |-------|-------------|
 | `/setup` | First-time installation, authentication, service configuration |

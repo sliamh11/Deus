@@ -329,7 +329,12 @@ describe('runContainerAgent mock: response handling', () => {
     const onOutput = vi.fn(async () => {});
     await runContainerAgent(
       MAIN_GROUP,
-      { prompt: 'Hi', groupFolder: 'main', chatJid: 'main@g.us', isControlGroup: true },
+      {
+        prompt: 'Hi',
+        groupFolder: 'main',
+        chatJid: 'main@g.us',
+        isControlGroup: true,
+      },
       () => {},
       onOutput,
     );

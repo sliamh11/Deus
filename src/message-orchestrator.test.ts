@@ -38,12 +38,27 @@ vi.mock('./db.js', () => ({
 }));
 
 vi.mock('./container-runner.js', () => ({
-  runContainerAgent: vi.fn(async (_g: unknown, _i: unknown, _op: unknown, onOutput: ((...args: unknown[]) => Promise<void>) | undefined) => {
-    if (onOutput) {
-      await onOutput({ status: 'success', result: 'Agent response', newSessionId: 'sess-1' });
-    }
-    return { status: 'success', result: 'Agent response', newSessionId: 'sess-1' };
-  }),
+  runContainerAgent: vi.fn(
+    async (
+      _g: unknown,
+      _i: unknown,
+      _op: unknown,
+      onOutput: ((...args: unknown[]) => Promise<void>) | undefined,
+    ) => {
+      if (onOutput) {
+        await onOutput({
+          status: 'success',
+          result: 'Agent response',
+          newSessionId: 'sess-1',
+        });
+      }
+      return {
+        status: 'success',
+        result: 'Agent response',
+        newSessionId: 'sess-1',
+      };
+    },
+  ),
   writeTasksSnapshot: vi.fn(),
   writeGroupsSnapshot: vi.fn(),
 }));
@@ -123,7 +138,10 @@ import { getMessagesSince, getNewMessages } from './db.js';
 import { runContainerAgent } from './container-runner.js';
 import type { ContainerOutput } from './container-runner.js';
 import { findChannel } from './router.js';
-import { handleSessionCommand, extractSessionCommand } from './session-commands.js';
+import {
+  handleSessionCommand,
+  extractSessionCommand,
+} from './session-commands.js';
 import type { RegisteredGroup } from './types.js';
 
 const mockGetMessagesSince = vi.mocked(getMessagesSince);
@@ -176,7 +194,10 @@ function makeMsg(
 function makeState(group: RegisteredGroup, initialCursor = '') {
   let cursor = initialCursor;
   return {
-    registeredGroups: { 'group@g.us': group } as Record<string, RegisteredGroup>,
+    registeredGroups: { 'group@g.us': group } as Record<
+      string,
+      RegisteredGroup
+    >,
     getLastAgentTimestamp: vi.fn(() => cursor),
     setLastAgentTimestamp: vi.fn((_jid: string, ts: string) => {
       cursor = ts;
@@ -223,11 +244,24 @@ beforeEach(() => {
   mockHandleSessionCommand.mockResolvedValue({ handled: false });
   mockExtractSessionCommand.mockReturnValue(null);
   mockRunContainerAgent.mockImplementation(
-    async (_g: unknown, _i: unknown, _op: unknown, onOutput: ((output: ContainerOutput) => Promise<void>) | undefined) => {
+    async (
+      _g: unknown,
+      _i: unknown,
+      _op: unknown,
+      onOutput: ((output: ContainerOutput) => Promise<void>) | undefined,
+    ) => {
       if (onOutput) {
-        await onOutput({ status: 'success', result: 'Agent response', newSessionId: 'sess-1' });
+        await onOutput({
+          status: 'success',
+          result: 'Agent response',
+          newSessionId: 'sess-1',
+        });
       }
-      return { status: 'success', result: 'Agent response', newSessionId: 'sess-1' };
+      return {
+        status: 'success',
+        result: 'Agent response',
+        newSessionId: 'sess-1',
+      };
     },
   );
 });
@@ -293,8 +327,16 @@ describe('processGroupMessages', () => {
 
     expect(result).toBe(false);
     // First advance to ts-1, then roll back to ts-prev
-    expect(state.setLastAgentTimestamp).toHaveBeenNthCalledWith(1, 'group@g.us', 'ts-1');
-    expect(state.setLastAgentTimestamp).toHaveBeenNthCalledWith(2, 'group@g.us', 'ts-prev');
+    expect(state.setLastAgentTimestamp).toHaveBeenNthCalledWith(
+      1,
+      'group@g.us',
+      'ts-1',
+    );
+    expect(state.setLastAgentTimestamp).toHaveBeenNthCalledWith(
+      2,
+      'group@g.us',
+      'ts-prev',
+    );
   });
 
   it('does NOT roll back cursor when output was already sent to the user', async () => {
@@ -303,14 +345,16 @@ describe('processGroupMessages', () => {
     mockFindChannel.mockReturnValue(channel as any);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
     // Agent sends output first, then errors
-    mockRunContainerAgent.mockImplementation(
-      async (_g, _i, _op, onOutput) => {
-        if (onOutput) {
-          await onOutput({ status: 'success', result: 'Partial response', newSessionId: undefined });
-        }
-        return { status: 'error', result: null, error: 'crashed after output' };
-      },
-    );
+    mockRunContainerAgent.mockImplementation(async (_g, _i, _op, onOutput) => {
+      if (onOutput) {
+        await onOutput({
+          status: 'success',
+          result: 'Partial response',
+          newSessionId: undefined,
+        });
+      }
+      return { status: 'error', result: null, error: 'crashed after output' };
+    });
 
     const orchestrator = createMessageOrchestrator({
       state: state as any,
@@ -322,9 +366,15 @@ describe('processGroupMessages', () => {
 
     expect(result).toBe(true); // success because output was sent
     // Cursor advanced to ts-1 — no rollback
-    expect(state.setLastAgentTimestamp).toHaveBeenCalledWith('group@g.us', 'ts-1');
+    expect(state.setLastAgentTimestamp).toHaveBeenCalledWith(
+      'group@g.us',
+      'ts-1',
+    );
     expect(state.setLastAgentTimestamp).toHaveBeenCalledTimes(1);
-    expect(channel.sendMessage).toHaveBeenCalledWith('group@g.us', 'Partial response');
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      'Partial response',
+    );
   });
 
   it('skips non-main group when trigger is required but not present', async () => {
@@ -388,8 +438,13 @@ describe('processGroupMessages', () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
     mockFindChannel.mockReturnValue(channel as any);
-    mockGetMessagesSince.mockReturnValue([makeMsg({ content: '@Deus /compact' })]);
-    mockHandleSessionCommand.mockResolvedValue({ handled: true, success: true });
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: '@Deus /compact' }),
+    ]);
+    mockHandleSessionCommand.mockResolvedValue({
+      handled: true,
+      success: true,
+    });
 
     const orchestrator = createMessageOrchestrator({
       state: state as any,
@@ -408,8 +463,17 @@ describe('processGroupMessages', () => {
     mockFindChannel.mockReturnValue(channel as any);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
     mockRunContainerAgent.mockImplementation(async (_g, _i, _op, onOutput) => {
-      if (onOutput) await onOutput({ status: 'success', result: 'Hello user!', newSessionId: undefined });
-      return { status: 'success', result: 'Hello user!', newSessionId: undefined };
+      if (onOutput)
+        await onOutput({
+          status: 'success',
+          result: 'Hello user!',
+          newSessionId: undefined,
+        });
+      return {
+        status: 'success',
+        result: 'Hello user!',
+        newSessionId: undefined,
+      };
     });
 
     const orchestrator = createMessageOrchestrator({
@@ -419,7 +483,10 @@ describe('processGroupMessages', () => {
     });
 
     await orchestrator.processGroupMessages('group@g.us');
-    expect(channel.sendMessage).toHaveBeenCalledWith('group@g.us', 'Hello user!');
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      'Hello user!',
+    );
   });
 
   it('strips <internal> blocks before sending to user', async () => {
@@ -445,7 +512,10 @@ describe('processGroupMessages', () => {
     });
 
     await orchestrator.processGroupMessages('group@g.us');
-    expect(channel.sendMessage).toHaveBeenCalledWith('group@g.us', 'Visible reply');
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      'Visible reply',
+    );
   });
 });
 
@@ -493,15 +563,19 @@ describe('startMessageLoop', () => {
     let lastTs = '';
     Object.defineProperty(state, 'lastTimestamp', {
       get: () => lastTs,
-      set: (v) => { lastTs = v; },
+      set: (v) => {
+        lastTs = v;
+      },
     });
 
     const channel = makeChannel();
     mockFindChannel.mockReturnValue(channel as any);
-    mockGetNewMessages.mockReturnValueOnce({
-      messages: [{ ...makeMsg(), chat_jid: 'group@g.us' }],
-      newTimestamp: 'ts-new',
-    }).mockReturnValue({ messages: [], newTimestamp: '' });
+    mockGetNewMessages
+      .mockReturnValueOnce({
+        messages: [{ ...makeMsg(), chat_jid: 'group@g.us' }],
+        newTimestamp: 'ts-new',
+      })
+      .mockReturnValue({ messages: [], newTimestamp: '' });
 
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
@@ -526,10 +600,12 @@ describe('startMessageLoop', () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
     mockFindChannel.mockReturnValue(channel as any);
-    mockGetNewMessages.mockReturnValueOnce({
-      messages: [{ ...makeMsg(), chat_jid: 'group@g.us' }],
-      newTimestamp: 'ts-1',
-    }).mockReturnValue({ messages: [], newTimestamp: '' });
+    mockGetNewMessages
+      .mockReturnValueOnce({
+        messages: [{ ...makeMsg(), chat_jid: 'group@g.us' }],
+        newTimestamp: 'ts-1',
+      })
+      .mockReturnValue({ messages: [], newTimestamp: '' });
     mockGetMessagesSince.mockReturnValue([makeMsg()]);
 
     const queue = makeQueue();
@@ -553,10 +629,12 @@ describe('startMessageLoop', () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
     mockFindChannel.mockReturnValue(channel as any);
-    mockGetNewMessages.mockReturnValueOnce({
-      messages: [{ ...makeMsg(), chat_jid: 'group@g.us' }],
-      newTimestamp: 'ts-1',
-    }).mockReturnValue({ messages: [], newTimestamp: '' });
+    mockGetNewMessages
+      .mockReturnValueOnce({
+        messages: [{ ...makeMsg(), chat_jid: 'group@g.us' }],
+        newTimestamp: 'ts-1',
+      })
+      .mockReturnValue({ messages: [], newTimestamp: '' });
     mockGetMessagesSince.mockReturnValue([makeMsg()]);
 
     const queue = makeQueue();
@@ -579,10 +657,14 @@ describe('startMessageLoop', () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
     mockFindChannel.mockReturnValue(channel as any);
-    mockGetNewMessages.mockReturnValueOnce({
-      messages: [{ ...makeMsg({ content: '@Deus /compact' }), chat_jid: 'group@g.us' }],
-      newTimestamp: 'ts-1',
-    }).mockReturnValue({ messages: [], newTimestamp: '' });
+    mockGetNewMessages
+      .mockReturnValueOnce({
+        messages: [
+          { ...makeMsg({ content: '@Deus /compact' }), chat_jid: 'group@g.us' },
+        ],
+        newTimestamp: 'ts-1',
+      })
+      .mockReturnValue({ messages: [], newTimestamp: '' });
     mockExtractSessionCommand.mockReturnValue('/compact' as any);
 
     const queue = makeQueue();

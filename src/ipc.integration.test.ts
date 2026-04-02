@@ -332,7 +332,9 @@ describe('IPC authorization logic (replicated from startIpcWatcher)', () => {
     targetChatJid: string,
   ): boolean {
     const targetGroup = groups[targetChatJid];
-    return isControlGroup || (!!targetGroup && targetGroup.folder === sourceGroup);
+    return (
+      isControlGroup || (!!targetGroup && targetGroup.folder === sourceGroup)
+    );
   }
 
   it('main group can send to any chat JID', () => {

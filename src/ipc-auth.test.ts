@@ -395,7 +395,9 @@ describe('IPC message authorization', () => {
     registeredGroups: Record<string, RegisteredGroup>,
   ): boolean {
     const targetGroup = registeredGroups[targetChatJid];
-    return isControlGroup || (!!targetGroup && targetGroup.folder === sourceGroup);
+    return (
+      isControlGroup || (!!targetGroup && targetGroup.folder === sourceGroup)
+    );
   }
 
   it('main group can send to any group', () => {

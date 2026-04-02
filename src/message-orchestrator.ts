@@ -32,10 +32,7 @@ import { parseImageReferences } from './image.js';
 import { logger } from './logger.js';
 import { findChannel, formatMessages } from './router.js';
 import { RouterState, getAvailableGroups } from './router-state.js';
-import {
-  isTriggerAllowed,
-  loadSenderAllowlist,
-} from './sender-allowlist.js';
+import { isTriggerAllowed, loadSenderAllowlist } from './sender-allowlist.js';
 import {
   extractSessionCommand,
   handleSessionCommand,
@@ -253,7 +250,10 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           const text = raw
             .replace(/<internal>[\s\S]*?<\/internal>/g, '')
             .trim();
-          logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+          logger.info(
+            { group: group.name },
+            `Agent output: ${raw.length} chars`,
+          );
           if (text) {
             await channel.sendMessage(chatJid, text);
             outputSentToUser = true;
@@ -353,8 +353,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
             // --- Session command interception (message loop) ---
             // Scan ALL messages in the batch for a session command.
             const loopCmdMsg = groupMessages.find(
-              (m) =>
-                extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
+              (m) => extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
             );
 
             if (loopCmdMsg) {

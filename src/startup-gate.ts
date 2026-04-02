@@ -96,9 +96,10 @@ registerStartupCheck({
     name: 'Agent container image',
     level: 'warn',
     ok: hasContainerImage(),
-    hint: os.platform() === 'win32'
-      ? 'Agent container image not built. Run: docker build -t deus-agent ./container'
-      : 'Agent container image not built. Run: ./container/build.sh',
+    hint:
+      os.platform() === 'win32'
+        ? 'Agent container image not built. Run: docker build -t deus-agent ./container'
+        : 'Agent container image not built. Run: ./container/build.sh',
   }),
 });
 
