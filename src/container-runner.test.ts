@@ -358,7 +358,8 @@ describe('buildVolumeMounts — main group', () => {
       isDirectory: () => false,
     } as ReturnType<typeof fsMod.statSync>);
     if ('cpSync' in fsMocked) {
-      (fsMocked as unknown as Record<string, ReturnType<typeof vi.fn>>).cpSync = vi.fn();
+      (fsMocked as unknown as Record<string, ReturnType<typeof vi.fn>>).cpSync =
+        vi.fn();
     }
 
     vi.mocked(getProjectById).mockReturnValue(undefined);
@@ -674,7 +675,9 @@ describe('buildVolumeMounts — non-main group', () => {
       () => {},
     );
 
-    const mkdirCalls = fsMocked.mkdirSync.mock.calls.map((c: unknown[]) => c[0] as string);
+    const mkdirCalls = fsMocked.mkdirSync.mock.calls.map(
+      (c: unknown[]) => c[0] as string,
+    );
     expect(mkdirCalls.some((p: string) => p.endsWith('/messages'))).toBe(true);
     expect(mkdirCalls.some((p: string) => p.endsWith('/tasks'))).toBe(true);
     expect(mkdirCalls.some((p: string) => p.endsWith('/input'))).toBe(true);
@@ -735,9 +738,7 @@ describe('buildVolumeMounts — external project mounts', () => {
     });
 
     fsMocked.existsSync.mockImplementation((p: unknown) => p === PROJECT_PATH);
-    (fsMocked as any).realpathSync = vi
-      .fn()
-      .mockReturnValue(PROJECT_PATH);
+    (fsMocked as any).realpathSync = vi.fn().mockReturnValue(PROJECT_PATH);
 
     const group: RegisteredGroup = {
       name: 'App Group',
@@ -773,9 +774,7 @@ describe('buildVolumeMounts — external project mounts', () => {
     });
 
     fsMocked.existsSync.mockImplementation((p: unknown) => p === PROJECT_PATH);
-    (fsMocked as any).realpathSync = vi
-      .fn()
-      .mockReturnValue(SYMLINK_TARGET);
+    (fsMocked as any).realpathSync = vi.fn().mockReturnValue(SYMLINK_TARGET);
 
     const group: RegisteredGroup = {
       name: 'App Group',
@@ -840,9 +839,7 @@ describe('buildVolumeMounts — external project mounts', () => {
     });
 
     fsMocked.existsSync.mockImplementation((p: unknown) => p === PROJECT_PATH);
-    (fsMocked as any).realpathSync = vi
-      .fn()
-      .mockReturnValue(PROJECT_PATH);
+    (fsMocked as any).realpathSync = vi.fn().mockReturnValue(PROJECT_PATH);
 
     const group: RegisteredGroup = {
       name: 'App Group',
@@ -890,9 +887,7 @@ describe('buildVolumeMounts — sensitive file shadowing', () => {
       readonly: false,
       created_at: new Date().toISOString(),
     });
-    (fsMocked as any).realpathSync = vi
-      .fn()
-      .mockReturnValue(PROJECT_PATH);
+    (fsMocked as any).realpathSync = vi.fn().mockReturnValue(PROJECT_PATH);
   });
 
   it('shadows .env file in the project with /dev/null', async () => {
@@ -1003,8 +998,12 @@ describe('buildVolumeMounts — sensitive file shadowing', () => {
       () => {},
     );
 
-    const mkdirCalls = fsMocked.mkdirSync.mock.calls.map((c: unknown[]) => c[0] as string);
-    expect(mkdirCalls.some((p: string) => p.includes('project-shadows'))).toBe(true);
+    const mkdirCalls = fsMocked.mkdirSync.mock.calls.map(
+      (c: unknown[]) => c[0] as string,
+    );
+    expect(mkdirCalls.some((p: string) => p.includes('project-shadows'))).toBe(
+      true,
+    );
   });
 });
 

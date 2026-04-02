@@ -231,7 +231,10 @@ describe('startSchedulerLoop execution path', () => {
       getSessions: () => overrides.sessions ?? {},
       queue: { enqueueTask, notifyIdle, closeStdin } as any,
       onProcess: () => {},
-      sendMessage: sendMessage as unknown as (jid: string, text: string) => Promise<void>,
+      sendMessage: sendMessage as unknown as (
+        jid: string,
+        text: string,
+      ) => Promise<void>,
     };
   }
 
