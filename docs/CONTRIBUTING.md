@@ -1,8 +1,10 @@
-# Contributing to Deus
+# Contributing to Deus — Architecture Patterns
 
-This guide explains how to add new features to Deus without breaking existing behavior.
+For workflow rules, commit conventions, and ground rules, see the root [CONTRIBUTING.md](../CONTRIBUTING.md).
 For cross-platform rules, see [CROSS_PLATFORM.md](CROSS_PLATFORM.md).
 For architecture decisions, see [decisions/INDEX.md](decisions/INDEX.md).
+
+This guide explains how to add new components to Deus without breaking existing behavior.
 
 ---
 
@@ -188,19 +190,4 @@ remote-control.ts   — Claude Code remote control session management
 
 ## Commit and PR conventions
 
-```
-feat(scope): add X        — new capability
-fix(scope): fix Y         — bug fix
-refactor(scope): extract Z — code restructure, no behavior change
-test(scope): add tests for W
-docs(scope): update D
-```
-
-Scope is the module name (e.g., `channels`, `ipc`, `startup-gate`, `container`, `orchestration`).
-
-**Pre-PR checklist:**
-- [ ] `npm run build` passes
-- [ ] `npm test` passes (all 569+ tests)
-- [ ] Cross-platform rules followed (see [CROSS_PLATFORM.md](CROSS_PLATFORM.md))
-- [ ] ADR index consulted for changed modules (see [decisions/INDEX.md](decisions/INDEX.md))
-- [ ] New credentials added to `.env.example` with comments (never in code)
+See root [CONTRIBUTING.md](../CONTRIBUTING.md) for commit message format, PR checklist, and ground rules.

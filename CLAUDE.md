@@ -25,6 +25,20 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 
 **REQUIRED: Before making any change to `eval/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `scripts/memory_indexer.py`, read `docs/decisions/INDEX.md` in full.** Do not skip this step, even for small changes. The index is short (one line per decision) and tells you which full ADR file to load if the topic is relevant. Past decisions have non-obvious constraints (e.g. a "revert this" that looks like an improvement is documented as permanently rejected). Skipping the index has caused regressions before.
 
+## Version Control Workflow
+
+**These rules apply to everyone — maintainers and Claude included. No exceptions.**
+
+1. **Never push directly to `main`** — always branch, PR, and merge.
+2. **Branch naming:** `feat/...`, `fix/...`, `docs/...`, `refactor/...`, `chore/...`
+3. **Commit messages:** [Conventional Commits](https://www.conventionalcommits.org/) — `feat(scope):`, `fix(scope):`, etc.
+4. **Before merging:** `npm run build` and `npm test` must pass.
+5. **Tests required:** Every source code change must include unit tests. No exceptions.
+6. **Releases:** Automated via release-please. Never manually bump `package.json` version.
+7. **Changelog:** Maintained automatically from conventional commit messages. Don't edit `CHANGELOG.md` manually.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide.
+
 ## Development
 
 Run commands directly—don't tell the user to run them.

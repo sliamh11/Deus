@@ -244,6 +244,16 @@ groups/
 
 ---
 
+## Contributing
+
+Every change goes through a pull request — no direct pushes to `main`. We use [Conventional Commits](https://www.conventionalcommits.org/) for automated changelogs and versioning.
+
+New features should be [skills](https://code.claude.com/docs/en/skills) (markdown files in `.claude/skills/`). Source code PRs are accepted for bug fixes, security fixes, and simplifications.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+
+---
+
 ## Support
 
 If Deus is useful to you, consider sponsoring the project — it helps fund continued development, new channel integrations, and documentation.

@@ -2,7 +2,28 @@
 
 All notable changes to Deus will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
+
 ## [Unreleased]
+
+### Added
+- Windows support via Docker Desktop + NSSM/Servy service management
+- Personality kickstarter in `/setup` (behavioral bundles, seed reflections)
+- `/settings` channel command with per-channel `session_idle_hours`, `timeout`, `requires_trigger`
+- Idle-based session reset for all channels
+- Host slash command registry (`HOST_COMMAND_HANDLERS`) for extensible command dispatch
+- Ko-fi as additional sponsor platform
+
+### Fixed
+- OAuth token no longer written to `.env`, preventing login loop on auto-refresh
+- Host slash commands (`/settings`, `/compact`) intercepted before container dispatch
+- 8 critical flaws in reflexion loop
+- Cross-platform path handling in tests
+
+### Changed
+- Tool filtering excludes swarm tools for non-orchestration queries (~600 token savings)
+- Orchestration logic extracted to `message-orchestrator.ts` and `router-state.ts`
+- Container mount logic extracted to `container-mounter.ts`
 
 ## [1.2.19] - 2026-03-30
 

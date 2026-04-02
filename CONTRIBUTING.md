@@ -1,35 +1,75 @@
 # Contributing to Deus
 
-## Source Code Changes
+## Ground Rules
 
-**Accepted:** Bug fixes, security fixes, simplifications, reducing code.
+Every change — from maintainers and contributors alike — follows this workflow:
 
-**Not accepted:** Features, capabilities, compatibility, enhancements. These should be skills.
+1. **Branch from `main`** — create a feature branch (`feat/...`, `fix/...`, etc.)
+2. **Develop and test** — ensure `npm run build` and `npm test` pass
+3. **Open a PR** — CI runs automatically; all checks must pass
+4. **Review and merge** — maintainer approves, then merges to `main`
 
-## Skills
+No direct pushes to `main`. No exceptions.
 
-A [skill](https://code.claude.com/docs/en/skills) is a markdown file in `.claude/skills/` that teaches Claude Code how to transform a Deus installation.
+## Commit Messages
 
-A PR that contributes a skill should not modify any source files.
+We use [Conventional Commits](https://www.conventionalcommits.org/). This drives automated changelogs and versioning via [release-please](https://github.com/googleapis/release-please).
 
-Your skill should contain the **instructions** Claude follows to add the feature — not pre-built code. See `/add-telegram` for a good example.
+| Prefix | Meaning | Version bump |
+|--------|---------|-------------|
+| `feat(scope):` | New feature | minor |
+| `fix(scope):` | Bug fix | patch |
+| `docs(scope):` | Documentation only | none |
+| `chore(scope):` | Maintenance, deps | none |
+| `refactor(scope):` | Restructure, no behavior change | none |
+| `test(scope):` | Test changes only | none |
+| `perf(scope):` | Performance improvement | patch |
+| `BREAKING CHANGE:` | Breaking change (in commit footer) | major |
 
-### Why?
+Scope is the module name: `channels`, `ipc`, `orchestration`, `container`, `startup-gate`, `evolution`, `eval`, `memory`, etc.
 
-Every user should have clean and minimal code that does exactly what they need. Skills let users selectively add features to their fork without inheriting code for features they don't want.
+## What's Accepted
 
-### Testing
+**Source code changes (`src/`, `container/`, `scripts/`):**
+Bug fixes, security fixes, simplifications, performance improvements. These go through maintainer review via CODEOWNERS. Every source code change must include unit tests — PRs without tests will not be merged.
 
-Test your skill by running it on a fresh clone before submitting.
+**Skills (`.claude/skills/`):**
+New features should be skills — markdown files that teach Claude Code how to add a capability. A skill PR should not modify source files. See `/add-telegram` for a good example.
+
+**Not accepted as source changes:** New features, enhancements, or capabilities. These should be skills.
+
+### Why skills?
+
+Every user should have clean, minimal code that does exactly what they need. Skills let users selectively add features without inheriting code for features they don't want.
 
 ## Development
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for setup, key files, and service management.
+See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for architecture patterns (adding channels, commands, IPC types, startup checks).
+
+## Pre-PR Checklist
+
+- [ ] `npm run build` passes
+- [ ] `npm test` passes
+- [ ] Unit tests included for all source code changes
+- [ ] Commit messages follow Conventional Commits
+- [ ] Cross-platform rules followed (see [docs/CROSS_PLATFORM.md](docs/CROSS_PLATFORM.md))
+- [ ] ADR index consulted for changed modules (see [docs/decisions/INDEX.md](docs/decisions/INDEX.md))
+- [ ] New credentials added to `.env.example` with comments (never in code)
+- [ ] No secrets, API keys, or credentials in code or git history
+
+## Testing Skills
+
+Test your skill by running it on a fresh clone before submitting.
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/sliamh11/Deus/issues) for bug reports and feature requests.
+Use [GitHub Issues](https://github.com/sliamh11/Deus/issues) with the provided templates.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for reporting security vulnerabilities.
+Report security vulnerabilities privately via [GitHub Security Advisories](https://github.com/sliamh11/Deus/security/advisories/new).
+
+## Code of Conduct
+
+See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).

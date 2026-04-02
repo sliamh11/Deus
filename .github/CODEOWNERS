@@ -1,10 +1,16 @@
 # Core code - maintainer only
-/src/ @gavrielc @gabi-simons
-/container/ @gavrielc @gabi-simons
-/groups/ @gavrielc @gabi-simons
-/launchd/ @gavrielc @gabi-simons
-/package.json @gavrielc @gabi-simons
-/package-lock.json @gavrielc @gabi-simons
+/src/ @sliamh11
+/container/ @sliamh11
+/groups/ @sliamh11
+/launchd/ @sliamh11
+/evolution/ @sliamh11
+/eval/ @sliamh11
+/scripts/ @sliamh11
+/package.json @sliamh11
+/package-lock.json @sliamh11
+
+# CI/CD and repo governance
+/.github/ @sliamh11
 
 # Skills - open to contributors
 /.claude/skills/
