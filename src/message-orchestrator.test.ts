@@ -18,6 +18,7 @@ vi.mock('./config.js', () => ({
   POLL_INTERVAL: 1_000,
   TIMEZONE: 'UTC',
   TRIGGER_PATTERN: /^@deus\b/i,
+  SESSION_IDLE_RESET_HOURS: 8,
 }));
 
 vi.mock('./logger.js', () => ({
@@ -72,6 +73,8 @@ vi.mock('./session-commands.js', () => ({
   handleSessionCommand: vi.fn(async () => ({ handled: false, success: false })),
   extractSessionCommand: vi.fn(() => null),
   isSessionCommandAllowed: vi.fn(() => true),
+  dispatchHostCommand: vi.fn(() => ({ matched: false })),
+  HOST_COMMAND_HANDLERS: [],
 }));
 
 vi.mock('./sender-allowlist.js', () => ({

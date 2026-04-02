@@ -109,6 +109,10 @@ The following local files contain sensitive data and are never committed to git:
 | Network access | Unrestricted | Unrestricted |
 | MCP tools | All | All |
 
+## Reporting Vulnerabilities
+
+Report security vulnerabilities privately via [GitHub Security Advisories](https://github.com/sliamh11/Deus/security/advisories/new). Do not open a public issue for security bugs.
+
 ## Security Architecture Diagram
 
 ```
