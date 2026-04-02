@@ -856,11 +856,17 @@ $STARTUP_INSTRUCTION" "Catch me up."
       cd "$HOME/deus" && exec claude --dangerously-skip-permissions
     fi
     ;;
+  listen)
+    # Record from mic, transcribe with whisper.cpp, copy to clipboard.
+    shift
+    exec "$HOME/deus/scripts/deus-listen.sh" "$@"
+    ;;
   *)
-    echo "Usage: deus [home|auth]"
+    echo "Usage: deus [home|auth|listen]"
     echo ""
     echo "  deus        Launch in current directory (external project mode if not ~/deus)"
     echo "  deus home   Launch in home mode (~/deus) regardless of current directory"
     echo "  deus auth   Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
+    echo "  deus listen Record from mic, transcribe, and copy to clipboard"
     ;;
 esac
