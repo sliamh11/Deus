@@ -138,6 +138,13 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
+  // Add last_used_at to sessions for idle-reset tracking (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE sessions ADD COLUMN last_used_at TEXT`);
+  } catch {
+    /* column already exists */
+  }
+
   // Create projects table if it doesn't exist (migration for existing DBs)
   database.exec(`
     CREATE TABLE IF NOT EXISTS projects (
@@ -553,8 +560,19 @@ export function getSession(groupFolder: string): string | undefined {
 
 export function setSession(groupFolder: string, sessionId: string): void {
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
-  ).run(groupFolder, sessionId);
+    'INSERT OR REPLACE INTO sessions (group_folder, session_id, last_used_at) VALUES (?, ?, ?)',
+  ).run(groupFolder, sessionId, new Date().toISOString());
+}
+
+export function clearSession(groupFolder: string): void {
+  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+}
+
+export function getSessionLastUsedAt(groupFolder: string): string | undefined {
+  const row = db
+    .prepare('SELECT last_used_at FROM sessions WHERE group_folder = ?')
+    .get(groupFolder) as { last_used_at: string | null } | undefined;
+  return row?.last_used_at ?? undefined;
 }
 
 export function getAllSessions(): Record<string, string> {

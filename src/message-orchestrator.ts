@@ -12,6 +12,7 @@ import {
   ASSISTANT_NAME,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
+  SESSION_IDLE_RESET_HOURS,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
@@ -22,9 +23,11 @@ import {
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
+  clearSession,
   getAllTasks,
   getMessagesSince,
   getNewMessages,
+  getSessionLastUsedAt,
   setSession,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
@@ -60,7 +63,25 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     onOutput?: (output: ContainerOutput) => Promise<void>,
   ): Promise<'success' | 'error'> {
     const isControlGroup = group.isControlGroup === true;
-    const sessionId = state.getSession(group.folder);
+    let sessionId = state.getSession(group.folder);
+
+    // Idle session reset: if the session hasn't been used within the configured
+    // threshold, start fresh so context doesn't accumulate indefinitely.
+    if (sessionId && SESSION_IDLE_RESET_HOURS > 0) {
+      const lastUsed = getSessionLastUsedAt(group.folder);
+      const idleMs = lastUsed
+        ? Date.now() - new Date(lastUsed).getTime()
+        : Infinity;
+      if (idleMs > SESSION_IDLE_RESET_HOURS * 3_600_000) {
+        logger.info(
+          { group: group.name, idleHours: (idleMs / 3_600_000).toFixed(1) },
+          'Session idle too long — starting fresh',
+        );
+        clearSession(group.folder);
+        state.clearSession(group.folder);
+        sessionId = undefined;
+      }
+    }
 
     const tasks = getAllTasks();
     writeTasksSnapshot(
