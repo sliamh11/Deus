@@ -18,6 +18,7 @@ import { DATA_DIR, GROUPS_DIR } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { getProjectById } from './db.js';
+import { detectAuthMode } from './credential-proxy.js';
 import {
   SENSITIVE_FILE_PATTERNS,
   SENSITIVE_DIR_PATTERNS,
@@ -225,6 +226,31 @@ export function buildVolumeMounts(
         null,
         2,
       ) + '\n',
+    );
+  }
+
+  // OAuth session auth: write placeholder credentials so the SDK uses
+  // session-based auth (Bearer token). The credential proxy swaps the
+  // placeholder with the real token. Written into the session .claude dir
+  // (which is already mounted at /home/node/.claude) to avoid Docker
+  // mount conflicts with overlapping bind mounts.
+  if (detectAuthMode() === 'oauth') {
+    const credsFile = path.join(groupSessionsDir, '.credentials.json');
+    fs.writeFileSync(
+      credsFile,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'placeholder',
+          expiresAt: 4102444800000, // 2100-01-01
+          scopes: [
+            'user:file_upload',
+            'user:inference',
+            'user:mcp_servers',
+            'user:profile',
+            'user:sessions:claude_code',
+          ],
+        },
+      }),
     );
   }
 
