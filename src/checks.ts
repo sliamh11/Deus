@@ -16,6 +16,20 @@ import { readEnvFile } from './env.js';
 
 const DEUS_CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const MEMORY_DB_PATH = path.join(HOME_DIR, '.deus', 'memory.db');
+const CLAUDE_CREDENTIALS_PATH = path.join(HOME_DIR, '.claude', '.credentials.json');
+
+/** Check if ~/.claude/.credentials.json has a valid OAuth access token. */
+function hasClaudeCredentialsFile(): boolean {
+  try {
+    const raw = fs.readFileSync(CLAUDE_CREDENTIALS_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as {
+      claudeAiOauth?: { accessToken?: string };
+    };
+    return !!parsed?.claudeAiOauth?.accessToken;
+  } catch {
+    return false;
+  }
+}
 
 /** Check if Anthropic API credentials are configured (API key or OAuth token). */
 export function hasApiCredentials(): boolean {
@@ -30,7 +44,8 @@ export function hasApiCredentials(): boolean {
     env.ANTHROPIC_AUTH_TOKEN ||
     process.env.ANTHROPIC_API_KEY ||
     process.env.CLAUDE_CODE_OAUTH_TOKEN ||
-    process.env.ANTHROPIC_AUTH_TOKEN
+    process.env.ANTHROPIC_AUTH_TOKEN ||
+    hasClaudeCredentialsFile()
   );
 }
 
