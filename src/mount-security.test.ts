@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import os from 'os';
+import path from 'path';
 
 // Mock config before importing the module
 vi.mock('./config.js', () => ({
@@ -203,7 +205,10 @@ describe('validateMount', () => {
       true,
     );
     expect(result.allowed).toBe(true);
-    expect(result.realHostPath).toBe('/home/testuser/projects/myapp');
+    // path.resolve adds a drive letter on Windows; resolve both sides so they match
+    expect(path.resolve(result.realHostPath!)).toBe(
+      path.resolve('/home/testuser/projects/myapp'),
+    );
   });
 
   it('defaults to readonly when mount.readonly is not explicitly false', () => {

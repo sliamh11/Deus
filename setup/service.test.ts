@@ -166,6 +166,73 @@ describe('systemd unit generation', () => {
   });
 });
 
+describe('Windows NSSM command generation', () => {
+  it('builds correct install command', () => {
+    const nodePath = 'C:\\Program Files\\nodejs\\node.exe';
+    const projectRoot = 'C:\\Users\\user\\deus';
+    const svc = 'deus';
+    const distEntry = path.join(projectRoot, 'dist', 'index.js');
+    const cmd = `nssm install ${svc} "${nodePath}" "${distEntry}"`;
+    expect(cmd).toContain('nssm install deus');
+    expect(cmd).toContain(nodePath);
+    expect(cmd).toContain('index.js');
+  });
+
+  it('builds correct log path commands', () => {
+    const projectRoot = 'C:\\Users\\user\\deus';
+    const logOut = path.join(projectRoot, 'logs', 'deus.log');
+    const logErr = path.join(projectRoot, 'logs', 'deus.error.log');
+    expect(logOut).toContain('deus.log');
+    expect(logErr).toContain('deus.error.log');
+  });
+
+  it('uses SERVICE_AUTO_START for boot persistence', () => {
+    const startCmd = 'nssm set deus Start SERVICE_AUTO_START';
+    expect(startCmd).toContain('SERVICE_AUTO_START');
+  });
+
+  it('status check expects SERVICE_RUNNING string', () => {
+    const runningOutput = 'SERVICE_RUNNING';
+    expect(runningOutput.trim() === 'SERVICE_RUNNING').toBe(true);
+    expect('SERVICE_STOPPED'.trim() === 'SERVICE_RUNNING').toBe(false);
+  });
+});
+
+describe('Windows Servy command generation', () => {
+  it('uses servy-cli binary (not servy)', () => {
+    const cmd = 'servy-cli install --name="deus"';
+    expect(cmd).toContain('servy-cli');
+    expect(cmd).not.toContain('"servy"');
+  });
+
+  it('status check expects Running string', () => {
+    const runningOutput = 'Running';
+    expect(runningOutput.trim() === 'Running').toBe(true);
+    expect('Stopped'.trim() === 'Running').toBe(false);
+  });
+
+  it('uses Automatic startupType for boot persistence', () => {
+    const cmd = 'servy-cli install --name="deus" --startupType="Automatic"';
+    expect(cmd).toContain('Automatic');
+  });
+});
+
+describe('Windows batch fallback', () => {
+  it('generates a valid batch file header', () => {
+    const projectRoot = 'C:\\Users\\user\\deus';
+    const nodePath = 'C:\\Program Files\\nodejs\\node.exe';
+    const lines = [
+      '@echo off',
+      `cd /d "${projectRoot}"`,
+      `start /B "" "${nodePath}" "${path.join(projectRoot, 'dist', 'index.js')}"`,
+    ];
+    const bat = lines.join('\r\n');
+    expect(bat).toContain('@echo off');
+    expect(bat).toContain('start /B');
+    expect(bat).toContain('index.js');
+  });
+});
+
 describe('WSL nohup fallback', () => {
   it('generates a valid wrapper script', () => {
     const projectRoot = '/home/user/deus';

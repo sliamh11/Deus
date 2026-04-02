@@ -17,6 +17,7 @@ import {
   hasSystemd,
   isRoot,
   isWSL,
+  commandExists,
 } from './platform.js';
 import { emitStatus } from './status.js';
 
@@ -55,6 +56,8 @@ export async function run(_args: string[]): Promise<void> {
     setupLaunchd(projectRoot, nodePath, homeDir);
   } else if (platform === 'linux') {
     setupLinux(projectRoot, nodePath, homeDir);
+  } else if (platform === 'windows') {
+    setupWindows(projectRoot, nodePath, homeDir);
   } else {
     emitStatus('SETUP_SERVICE', {
       SERVICE_TYPE: 'unknown',
@@ -165,12 +168,19 @@ function setupLinux(
  */
 function killOrphanedProcesses(projectRoot: string): void {
   try {
-    execSync(`pkill -f '${projectRoot}/dist/index\\.js' || true`, {
-      stdio: 'ignore',
-    });
+    if (process.platform === 'win32') {
+      // Windows: taskkill by image name (best-effort, may affect other node processes)
+      execSync('taskkill /F /IM node.exe /FI "STATUS eq RUNNING" 2>nul', {
+        stdio: 'ignore',
+      });
+    } else {
+      execSync(`pkill -f '${projectRoot}/dist/index\\.js' || true`, {
+        stdio: 'ignore',
+      });
+    }
     logger.info('Stopped any orphaned deus processes');
   } catch {
-    // pkill not available or no orphans
+    // pkill/taskkill not available or no orphans
   }
 }
 
@@ -301,6 +311,189 @@ WantedBy=${runningAsRoot ? 'multi-user.target' : 'default.target'}`;
     UNIT_PATH: unitPath,
     SERVICE_LOADED: serviceLoaded,
     ...(dockerGroupStale ? { DOCKER_GROUP_STALE: true } : {}),
+    STATUS: 'success',
+    LOG: 'logs/setup.log',
+  });
+}
+
+function setupWindows(
+  projectRoot: string,
+  nodePath: string,
+  homeDir: string,
+): void {
+  const mgr = getServiceManager();
+
+  if (mgr === 'servy') {
+    setupServy(projectRoot, nodePath, homeDir);
+  } else if (mgr === 'nssm') {
+    setupNssm(projectRoot, nodePath, homeDir);
+  } else {
+    logger.warn(
+      'No Windows service manager found (nssm/servy-cli). ' +
+        'Generating a batch launcher. Install NSSM (choco install nssm) for auto-start and crash recovery.',
+    );
+    setupWindowsBatchFallback(projectRoot, nodePath, homeDir);
+  }
+}
+
+function setupNssm(
+  projectRoot: string,
+  nodePath: string,
+  _homeDir: string,
+): void {
+  const svc = 'deus';
+  const logOut = path.join(projectRoot, 'logs', 'deus.log');
+  const logErr = path.join(projectRoot, 'logs', 'deus.error.log');
+
+  // Remove existing service if present (ignore errors — may not exist)
+  try {
+    execSync(`nssm stop ${svc}`, { stdio: 'ignore', timeout: 10000 });
+  } catch { /* not running */ }
+  try {
+    execSync(`nssm remove ${svc} confirm`, { stdio: 'ignore', timeout: 10000 });
+  } catch { /* does not exist */ }
+
+  // Install and configure
+  execSync(
+    `nssm install ${svc} "${nodePath}" "${path.join(projectRoot, 'dist', 'index.js')}"`,
+    { stdio: 'pipe' },
+  );
+  execSync(`nssm set ${svc} AppDirectory "${projectRoot}"`, { stdio: 'pipe' });
+  execSync(`nssm set ${svc} AppStdout "${logOut}"`, { stdio: 'pipe' });
+  execSync(`nssm set ${svc} AppStderr "${logErr}"`, { stdio: 'pipe' });
+  execSync(`nssm set ${svc} AppRestartDelay 5000`, { stdio: 'pipe' });
+  execSync(`nssm set ${svc} Start SERVICE_AUTO_START`, { stdio: 'pipe' });
+
+  logger.info('NSSM service configured');
+
+  try {
+    execSync(`nssm start ${svc}`, { stdio: 'pipe', timeout: 15000 });
+    logger.info('NSSM service started');
+  } catch (err) {
+    logger.warn({ err }, 'NSSM start failed — service may need manual start');
+  }
+
+  let serviceLoaded = false;
+  try {
+    const out = execSync(`nssm status ${svc}`, {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    serviceLoaded = out.trim() === 'SERVICE_RUNNING';
+  } catch { /* status check failed */ }
+
+  emitStatus('SETUP_SERVICE', {
+    SERVICE_TYPE: 'windows-nssm',
+    NODE_PATH: nodePath,
+    PROJECT_PATH: projectRoot,
+    SERVICE_NAME: svc,
+    SERVICE_LOADED: serviceLoaded,
+    STATUS: 'success',
+    LOG: 'logs/setup.log',
+  });
+}
+
+function setupServy(
+  projectRoot: string,
+  nodePath: string,
+  _homeDir: string,
+): void {
+  const svc = 'deus';
+  const logOut = path.join(projectRoot, 'logs', 'deus.log');
+  const logErr = path.join(projectRoot, 'logs', 'deus.error.log');
+
+  // Remove existing service if present
+  try {
+    execSync(`servy-cli stop --name="${svc}" --quiet`, {
+      stdio: 'ignore',
+      timeout: 10000,
+    });
+  } catch { /* not running */ }
+  try {
+    execSync(`servy-cli uninstall --name="${svc}" --quiet`, {
+      stdio: 'ignore',
+      timeout: 10000,
+    });
+  } catch { /* does not exist */ }
+
+  // Install with crash recovery via health monitor
+  execSync(
+    [
+      `servy-cli install`,
+      `--name="${svc}"`,
+      `--path="${nodePath}"`,
+      `--params="${path.join(projectRoot, 'dist', 'index.js')}"`,
+      `--startupDir="${projectRoot}"`,
+      `--startupType="Automatic"`,
+      `--stdout="${logOut}"`,
+      `--stderr="${logErr}"`,
+      `--enableHealth`,
+      `--recoveryAction="RestartService"`,
+      `--maxRestartAttempts=5`,
+      `--quiet`,
+    ].join(' '),
+    { stdio: 'pipe' },
+  );
+
+  logger.info('Servy service configured');
+
+  try {
+    execSync(`servy-cli start --name="${svc}" --quiet`, {
+      stdio: 'pipe',
+      timeout: 15000,
+    });
+    logger.info('Servy service started');
+  } catch (err) {
+    logger.warn({ err }, 'Servy start failed — service may need manual start');
+  }
+
+  let serviceLoaded = false;
+  try {
+    const out = execSync(`servy-cli status --name="${svc}"`, {
+      encoding: 'utf-8',
+      stdio: 'pipe',
+    });
+    serviceLoaded = out.trim() === 'Running';
+  } catch { /* status check failed */ }
+
+  emitStatus('SETUP_SERVICE', {
+    SERVICE_TYPE: 'windows-servy',
+    NODE_PATH: nodePath,
+    PROJECT_PATH: projectRoot,
+    SERVICE_NAME: svc,
+    SERVICE_LOADED: serviceLoaded,
+    STATUS: 'success',
+    LOG: 'logs/setup.log',
+  });
+}
+
+function setupWindowsBatchFallback(
+  projectRoot: string,
+  nodePath: string,
+  _homeDir: string,
+): void {
+  const batPath = path.join(projectRoot, 'start-deus.bat');
+  const logOut = path.join(projectRoot, 'logs', 'deus.log');
+  const logErr = path.join(projectRoot, 'logs', 'deus.error.log');
+
+  const lines = [
+    '@echo off',
+    `cd /d "${projectRoot}"`,
+    `start /B "" "${nodePath}" "${path.join(projectRoot, 'dist', 'index.js')}" >> "${logOut}" 2>> "${logErr}"`,
+    'echo Deus started.',
+    `echo Logs: ${logOut}`,
+    `echo To stop: taskkill /IM node.exe /FI "WINDOWTITLE eq deus*"`,
+  ];
+  fs.writeFileSync(batPath, lines.join('\r\n') + '\r\n');
+  logger.info({ batPath }, 'Wrote Windows batch launcher (no crash recovery)');
+
+  emitStatus('SETUP_SERVICE', {
+    SERVICE_TYPE: 'windows-batch',
+    NODE_PATH: nodePath,
+    PROJECT_PATH: projectRoot,
+    WRAPPER_PATH: batPath,
+    SERVICE_LOADED: false,
+    FALLBACK: 'no_service_manager',
     STATUS: 'success',
     LOG: 'logs/setup.log',
   });

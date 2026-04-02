@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import path from 'path';
+import os from 'os';
+
+// buildVolumeMounts tests use hardcoded Unix paths (/tmp, /home) that
+// path.resolve() converts to drive-letter paths on Windows. These tests
+// exercise Docker mount logic (Linux containers), not Windows behavior.
+const onWindows = os.platform() === 'win32';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---DEUS_OUTPUT_START---';
@@ -287,7 +294,19 @@ function parseMountsFromSpawnArgs(
   for (let i = 0; i < spawnArgs.length; i++) {
     if (spawnArgs[i] === '-v' && i + 1 < spawnArgs.length) {
       const parts = spawnArgs[i + 1].split(':');
-      if (parts.length === 3 && parts[2] === 'ro') {
+      // Windows drive-letter path: C:\path\to\host:/container/path[:ro]
+      // split(':') produces ['C', '\\path', '/container/path'] or ['C', '\\path', '/container/path', 'ro']
+      if (
+        parts.length >= 3 &&
+        parts[0].length === 1 &&
+        /^[a-zA-Z]$/.test(parts[0])
+      ) {
+        mounts.push({
+          hostPath: parts[0] + ':' + parts[1],
+          containerPath: parts[2],
+          readonly: parts[3] === 'ro',
+        });
+      } else if (parts.length === 3 && parts[2] === 'ro') {
         mounts.push({
           hostPath: parts[0],
           containerPath: parts[1],
@@ -341,7 +360,7 @@ async function runAndCaptureMounts(
   return parseMountsFromSpawnArgs(args);
 }
 
-describe('buildVolumeMounts — main group', () => {
+describe.skipIf(onWindows)('buildVolumeMounts — main group', () => {
   beforeEach(() => {
     vi.useRealTimers();
     fakeProc = createFakeProcess();
@@ -495,7 +514,7 @@ describe('buildVolumeMounts — main group', () => {
 
   it('syncs skills directory when container/skills/ exists', async () => {
     const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-    const skillsSrc = `${process.cwd()}/container/skills`;
+    const skillsSrc = path.join(process.cwd(), 'container', 'skills');
 
     fsMocked.existsSync.mockImplementation((p: unknown) => {
       if (p === skillsSrc) return true;
@@ -549,7 +568,7 @@ describe('buildVolumeMounts — main group', () => {
   });
 });
 
-describe('buildVolumeMounts — non-main group', () => {
+describe.skipIf(onWindows)('buildVolumeMounts — non-main group', () => {
   beforeEach(() => {
     vi.useRealTimers();
     fakeProc = createFakeProcess();
@@ -678,9 +697,9 @@ describe('buildVolumeMounts — non-main group', () => {
     const mkdirCalls = fsMocked.mkdirSync.mock.calls.map(
       (c: unknown[]) => c[0] as string,
     );
-    expect(mkdirCalls.some((p: string) => p.endsWith('/messages'))).toBe(true);
-    expect(mkdirCalls.some((p: string) => p.endsWith('/tasks'))).toBe(true);
-    expect(mkdirCalls.some((p: string) => p.endsWith('/input'))).toBe(true);
+    expect(mkdirCalls.some((p: string) => /[/\\]messages$/.test(p))).toBe(true);
+    expect(mkdirCalls.some((p: string) => /[/\\]tasks$/.test(p))).toBe(true);
+    expect(mkdirCalls.some((p: string) => /[/\\]input$/.test(p))).toBe(true);
   });
 
   it('mounts IPC directory at /workspace/ipc (writable)', async () => {
@@ -700,389 +719,412 @@ describe('buildVolumeMounts — non-main group', () => {
   });
 });
 
-describe('buildVolumeMounts — external project mounts', () => {
-  const PROJECT_PATH = '/home/user/projects/myapp';
+describe.skipIf(onWindows)(
+  'buildVolumeMounts — external project mounts',
+  () => {
+    const PROJECT_PATH = '/home/user/projects/myapp';
 
-  beforeEach(() => {
-    vi.useRealTimers();
-    fakeProc = createFakeProcess();
+    beforeEach(() => {
+      vi.useRealTimers();
+      fakeProc = createFakeProcess();
 
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-    fsMocked.existsSync.mockReset();
-    fsMocked.existsSync.mockReturnValue(false);
-    fsMocked.mkdirSync.mockReset();
-    fsMocked.writeFileSync.mockReset();
-    fsMocked.readdirSync.mockReset();
-    fsMocked.readdirSync.mockReturnValue([]);
-    fsMocked.statSync.mockReset();
-    fsMocked.statSync.mockReturnValue({
-      isDirectory: () => false,
-    } as ReturnType<typeof fsMod.statSync>);
-    fsMocked.realpathSync.mockReset?.();
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      fsMocked.existsSync.mockReset();
+      fsMocked.existsSync.mockReturnValue(false);
+      fsMocked.mkdirSync.mockReset();
+      fsMocked.writeFileSync.mockReset();
+      fsMocked.readdirSync.mockReset();
+      fsMocked.readdirSync.mockReturnValue([]);
+      fsMocked.statSync.mockReset();
+      fsMocked.statSync.mockReturnValue({
+        isDirectory: () => false,
+      } as ReturnType<typeof fsMod.statSync>);
+      fsMocked.realpathSync.mockReset?.();
 
-    vi.mocked(childProcess.spawn).mockReturnValue(
-      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
-    );
-  });
-
-  it('mounts real project path when realpath matches registered path', async () => {
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-
-    vi.mocked(getProjectById).mockReturnValue({
-      id: 'proj-1',
-      name: 'My App',
-      path: PROJECT_PATH,
-      type: null,
-      readonly: false,
-      created_at: new Date().toISOString(),
+      vi.mocked(childProcess.spawn).mockReturnValue(
+        fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+      );
     });
 
-    fsMocked.existsSync.mockImplementation((p: unknown) => p === PROJECT_PATH);
-    (fsMocked as any).realpathSync = vi.fn().mockReturnValue(PROJECT_PATH);
+    it('mounts real project path when realpath matches registered path', async () => {
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
 
-    const group: RegisteredGroup = {
-      name: 'App Group',
-      folder: 'app-group',
-      trigger: '@Bot',
-      added_at: new Date().toISOString(),
-      projectId: 'proj-1',
-    };
+      vi.mocked(getProjectById).mockReturnValue({
+        id: 'proj-1',
+        name: 'My App',
+        path: PROJECT_PATH,
+        type: null,
+        readonly: false,
+        created_at: new Date().toISOString(),
+      });
 
-    // Use isMain: false — non-main groups don't mount process.cwd() at
-    // /workspace/project, so the only /workspace/project entry comes from
-    // the external project mount. This keeps the assertion unambiguous.
-    const mounts = await runAndCaptureMounts(group, false);
+      fsMocked.existsSync.mockImplementation(
+        (p: unknown) => p === PROJECT_PATH,
+      );
+      (fsMocked as any).realpathSync = vi.fn().mockReturnValue(PROJECT_PATH);
 
-    const projectMount = mounts.find(
-      (m) => m.containerPath === '/workspace/project',
-    );
-    expect(projectMount).toBeDefined();
-    expect(projectMount!.hostPath).toBe(PROJECT_PATH);
-  });
+      const group: RegisteredGroup = {
+        name: 'App Group',
+        folder: 'app-group',
+        trigger: '@Bot',
+        added_at: new Date().toISOString(),
+        projectId: 'proj-1',
+      };
 
-  it('blocks mount when realpath differs from registered path (symlink swap)', async () => {
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-    const SYMLINK_TARGET = '/etc/passwd-dir';
+      // Use isMain: false — non-main groups don't mount process.cwd() at
+      // /workspace/project, so the only /workspace/project entry comes from
+      // the external project mount. This keeps the assertion unambiguous.
+      const mounts = await runAndCaptureMounts(group, false);
 
-    vi.mocked(getProjectById).mockReturnValue({
-      id: 'proj-symlink',
-      name: 'Legit App',
-      path: PROJECT_PATH,
-      type: null,
-      readonly: false,
-      created_at: new Date().toISOString(),
+      const projectMount = mounts.find(
+        (m) => m.containerPath === '/workspace/project',
+      );
+      expect(projectMount).toBeDefined();
+      expect(projectMount!.hostPath).toBe(PROJECT_PATH);
     });
 
-    fsMocked.existsSync.mockImplementation((p: unknown) => p === PROJECT_PATH);
-    (fsMocked as any).realpathSync = vi.fn().mockReturnValue(SYMLINK_TARGET);
+    it('blocks mount when realpath differs from registered path (symlink swap)', async () => {
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      const SYMLINK_TARGET = '/etc/passwd-dir';
 
-    const group: RegisteredGroup = {
-      name: 'App Group',
-      folder: 'app-group',
-      trigger: '@Bot',
-      added_at: new Date().toISOString(),
-      projectId: 'proj-symlink',
-    };
+      vi.mocked(getProjectById).mockReturnValue({
+        id: 'proj-symlink',
+        name: 'Legit App',
+        path: PROJECT_PATH,
+        type: null,
+        readonly: false,
+        created_at: new Date().toISOString(),
+      });
 
-    // Use isMain: false so we can assert no external project at /workspace/project
-    const mounts = await runAndCaptureMounts(group, false);
+      fsMocked.existsSync.mockImplementation(
+        (p: unknown) => p === PROJECT_PATH,
+      );
+      (fsMocked as any).realpathSync = vi.fn().mockReturnValue(SYMLINK_TARGET);
 
-    // Mount should be blocked — no /workspace/project with the symlink target
-    const projectMount = mounts.find(
-      (m) => m.containerPath === '/workspace/project',
-    );
-    expect(projectMount).toBeUndefined();
-  });
+      const group: RegisteredGroup = {
+        name: 'App Group',
+        folder: 'app-group',
+        trigger: '@Bot',
+        added_at: new Date().toISOString(),
+        projectId: 'proj-symlink',
+      };
 
-  it('skips mount and warns when project path does not exist', async () => {
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      // Use isMain: false so we can assert no external project at /workspace/project
+      const mounts = await runAndCaptureMounts(group, false);
 
-    vi.mocked(getProjectById).mockReturnValue({
-      id: 'proj-missing',
-      name: 'Gone App',
-      path: '/gone/path',
-      type: null,
-      readonly: false,
-      created_at: new Date().toISOString(),
+      // Mount should be blocked — no /workspace/project with the symlink target
+      const projectMount = mounts.find(
+        (m) => m.containerPath === '/workspace/project',
+      );
+      expect(projectMount).toBeUndefined();
     });
 
-    // existsSync returns false for project path
-    fsMocked.existsSync.mockReturnValue(false);
+    it('skips mount and warns when project path does not exist', async () => {
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
 
-    const group: RegisteredGroup = {
-      name: 'App Group',
-      folder: 'app-group',
-      trigger: '@Bot',
-      added_at: new Date().toISOString(),
-      projectId: 'proj-missing',
-    };
+      vi.mocked(getProjectById).mockReturnValue({
+        id: 'proj-missing',
+        name: 'Gone App',
+        path: '/gone/path',
+        type: null,
+        readonly: false,
+        created_at: new Date().toISOString(),
+      });
 
-    // Use isMain: false to avoid the main group's process.cwd() mount
-    const mounts = await runAndCaptureMounts(group, false);
+      // existsSync returns false for project path
+      fsMocked.existsSync.mockReturnValue(false);
 
-    const projectMount = mounts.find(
-      (m) => m.containerPath === '/workspace/project',
-    );
-    expect(projectMount).toBeUndefined();
-  });
+      const group: RegisteredGroup = {
+        name: 'App Group',
+        folder: 'app-group',
+        trigger: '@Bot',
+        added_at: new Date().toISOString(),
+        projectId: 'proj-missing',
+      };
 
-  it('project is readonly when project.readonly is true', async () => {
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      // Use isMain: false to avoid the main group's process.cwd() mount
+      const mounts = await runAndCaptureMounts(group, false);
 
-    vi.mocked(getProjectById).mockReturnValue({
-      id: 'proj-ro',
-      name: 'ReadOnly App',
-      path: PROJECT_PATH,
-      type: null,
-      readonly: true,
-      created_at: new Date().toISOString(),
+      const projectMount = mounts.find(
+        (m) => m.containerPath === '/workspace/project',
+      );
+      expect(projectMount).toBeUndefined();
     });
 
-    fsMocked.existsSync.mockImplementation((p: unknown) => p === PROJECT_PATH);
-    (fsMocked as any).realpathSync = vi.fn().mockReturnValue(PROJECT_PATH);
+    it('project is readonly when project.readonly is true', async () => {
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
 
-    const group: RegisteredGroup = {
-      name: 'App Group',
-      folder: 'app-group',
-      trigger: '@Bot',
-      added_at: new Date().toISOString(),
-      projectId: 'proj-ro',
-    };
+      vi.mocked(getProjectById).mockReturnValue({
+        id: 'proj-ro',
+        name: 'ReadOnly App',
+        path: PROJECT_PATH,
+        type: null,
+        readonly: true,
+        created_at: new Date().toISOString(),
+      });
 
-    const mounts = await runAndCaptureMounts(group, true);
+      fsMocked.existsSync.mockImplementation(
+        (p: unknown) => p === PROJECT_PATH,
+      );
+      (fsMocked as any).realpathSync = vi.fn().mockReturnValue(PROJECT_PATH);
 
-    const projectMount = mounts.find(
-      (m) => m.containerPath === '/workspace/project',
-    );
-    expect(projectMount).toBeDefined();
-    expect(projectMount!.readonly).toBe(true);
-  });
-});
+      const group: RegisteredGroup = {
+        name: 'App Group',
+        folder: 'app-group',
+        trigger: '@Bot',
+        added_at: new Date().toISOString(),
+        projectId: 'proj-ro',
+      };
 
-describe('buildVolumeMounts — sensitive file shadowing', () => {
-  const PROJECT_PATH = '/home/user/projects/myapp';
+      const mounts = await runAndCaptureMounts(group, true);
 
-  beforeEach(() => {
-    vi.useRealTimers();
-    fakeProc = createFakeProcess();
-
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-    fsMocked.existsSync.mockReset();
-    fsMocked.mkdirSync.mockReset();
-    fsMocked.writeFileSync.mockReset();
-    fsMocked.readdirSync.mockReset();
-    fsMocked.readdirSync.mockReturnValue([]);
-    fsMocked.statSync.mockReset();
-
-    vi.mocked(childProcess.spawn).mockReturnValue(
-      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
-    );
-
-    // Default project setup for all shadowing tests
-    vi.mocked(getProjectById).mockReturnValue({
-      id: 'proj-shadow',
-      name: 'Shadow App',
-      path: PROJECT_PATH,
-      type: null,
-      readonly: false,
-      created_at: new Date().toISOString(),
+      const projectMount = mounts.find(
+        (m) => m.containerPath === '/workspace/project',
+      );
+      expect(projectMount).toBeDefined();
+      expect(projectMount!.readonly).toBe(true);
     });
-    (fsMocked as any).realpathSync = vi.fn().mockReturnValue(PROJECT_PATH);
-  });
+  },
+);
 
-  it('shadows .env file in the project with /dev/null', async () => {
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+describe.skipIf(onWindows)(
+  'buildVolumeMounts — sensitive file shadowing',
+  () => {
+    const PROJECT_PATH = '/home/user/projects/myapp';
 
-    fsMocked.existsSync.mockImplementation((p: unknown) => {
-      const s = p as string;
-      if (s === PROJECT_PATH) return true;
-      if (s === `${PROJECT_PATH}/.env`) return true;
-      return false;
-    });
-    fsMocked.statSync.mockReturnValue({
-      isDirectory: () => false,
-    } as ReturnType<typeof fsMod.statSync>);
+    beforeEach(() => {
+      vi.useRealTimers();
+      fakeProc = createFakeProcess();
 
-    const group: RegisteredGroup = {
-      name: 'App',
-      folder: 'app-group',
-      trigger: '@Bot',
-      added_at: new Date().toISOString(),
-      projectId: 'proj-shadow',
-    };
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      fsMocked.existsSync.mockReset();
+      fsMocked.mkdirSync.mockReset();
+      fsMocked.writeFileSync.mockReset();
+      fsMocked.readdirSync.mockReset();
+      fsMocked.readdirSync.mockReturnValue([]);
+      fsMocked.statSync.mockReset();
 
-    const mounts = await runAndCaptureMounts(group, true);
+      vi.mocked(childProcess.spawn).mockReturnValue(
+        fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+      );
 
-    const envShadow = mounts.find(
-      (m) => m.containerPath === '/workspace/project/.env',
-    );
-    expect(envShadow).toBeDefined();
-    expect(envShadow!.hostPath).toBe('/dev/null');
-    expect(envShadow!.readonly).toBe(true);
-  });
-
-  it('shadows .aws/credentials dir with empty tmpdir', async () => {
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-    const awsDir = `${PROJECT_PATH}/credentials`;
-
-    fsMocked.existsSync.mockImplementation((p: unknown) => {
-      const s = p as string;
-      if (s === PROJECT_PATH) return true;
-      if (s === awsDir) return true;
-      return false;
-    });
-    fsMocked.statSync.mockImplementation((p: unknown) => {
-      if (p === awsDir)
-        return { isDirectory: () => true } as ReturnType<typeof fsMod.statSync>;
-      return { isDirectory: () => false } as ReturnType<typeof fsMod.statSync>;
+      // Default project setup for all shadowing tests
+      vi.mocked(getProjectById).mockReturnValue({
+        id: 'proj-shadow',
+        name: 'Shadow App',
+        path: PROJECT_PATH,
+        type: null,
+        readonly: false,
+        created_at: new Date().toISOString(),
+      });
+      (fsMocked as any).realpathSync = vi.fn().mockReturnValue(PROJECT_PATH);
     });
 
-    const group: RegisteredGroup = {
-      name: 'App',
-      folder: 'app-group',
-      trigger: '@Bot',
-      added_at: new Date().toISOString(),
-      projectId: 'proj-shadow',
-    };
+    it('shadows .env file in the project with /dev/null', async () => {
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
 
-    const mounts = await runAndCaptureMounts(group, true);
+      fsMocked.existsSync.mockImplementation((p: unknown) => {
+        const s = p as string;
+        if (s === PROJECT_PATH) return true;
+        if (s === `${PROJECT_PATH}/.env`) return true;
+        return false;
+      });
+      fsMocked.statSync.mockReturnValue({
+        isDirectory: () => false,
+      } as ReturnType<typeof fsMod.statSync>);
 
-    const credShadow = mounts.find(
-      (m) => m.containerPath === '/workspace/project/credentials',
-    );
-    expect(credShadow).toBeDefined();
-    expect(credShadow!.readonly).toBe(true);
-    // Host path should be an empty shadow dir (not /dev/null for dirs)
-    expect(credShadow!.hostPath).not.toBe('/dev/null');
-    expect(credShadow!.hostPath).toContain('project-shadows');
-  });
+      const group: RegisteredGroup = {
+        name: 'App',
+        folder: 'app-group',
+        trigger: '@Bot',
+        added_at: new Date().toISOString(),
+        projectId: 'proj-shadow',
+      };
 
-  it('creates shadow dir with mkdirSync for sensitive directories', async () => {
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-    const secretsDir = `${PROJECT_PATH}/secrets`;
+      const mounts = await runAndCaptureMounts(group, true);
 
-    fsMocked.existsSync.mockImplementation((p: unknown) => {
-      const s = p as string;
-      if (s === PROJECT_PATH) return true;
-      if (s === secretsDir) return true;
-      return false;
-    });
-    fsMocked.statSync.mockImplementation((p: unknown) => {
-      if (p === secretsDir)
-        return { isDirectory: () => true } as ReturnType<typeof fsMod.statSync>;
-      return { isDirectory: () => false } as ReturnType<typeof fsMod.statSync>;
+      const envShadow = mounts.find(
+        (m) => m.containerPath === '/workspace/project/.env',
+      );
+      expect(envShadow).toBeDefined();
+      expect(envShadow!.hostPath).toBe('/dev/null');
+      expect(envShadow!.readonly).toBe(true);
     });
 
-    const group: RegisteredGroup = {
-      name: 'App',
-      folder: 'app-group',
-      trigger: '@Bot',
-      added_at: new Date().toISOString(),
-      projectId: 'proj-shadow',
-    };
+    it('shadows .aws/credentials dir with empty tmpdir', async () => {
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      const awsDir = `${PROJECT_PATH}/credentials`;
 
-    fakeProc = createFakeProcess();
-    setImmediate(() => fakeProc.emit('close', 0));
-    vi.mocked(childProcess.spawn).mockReturnValue(
-      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
-    );
+      fsMocked.existsSync.mockImplementation((p: unknown) => {
+        const s = p as string;
+        if (s === PROJECT_PATH) return true;
+        if (s === awsDir) return true;
+        return false;
+      });
+      fsMocked.statSync.mockImplementation((p: unknown) => {
+        if (p === awsDir)
+          return { isDirectory: () => true } as ReturnType<
+            typeof fsMod.statSync
+          >;
+        return { isDirectory: () => false } as ReturnType<
+          typeof fsMod.statSync
+        >;
+      });
 
-    await runContainerAgent(
-      group,
-      {
-        prompt: 'test',
-        groupFolder: group.folder,
-        chatJid: 'x@g.us',
-        isMain: true,
-      },
-      () => {},
-    );
+      const group: RegisteredGroup = {
+        name: 'App',
+        folder: 'app-group',
+        trigger: '@Bot',
+        added_at: new Date().toISOString(),
+        projectId: 'proj-shadow',
+      };
 
-    const mkdirCalls = fsMocked.mkdirSync.mock.calls.map(
-      (c: unknown[]) => c[0] as string,
-    );
-    expect(mkdirCalls.some((p: string) => p.includes('project-shadows'))).toBe(
-      true,
-    );
-  });
-});
+      const mounts = await runAndCaptureMounts(group, true);
 
-describe('buildVolumeMounts — agent-runner source mount', () => {
-  beforeEach(() => {
-    vi.useRealTimers();
-    fakeProc = createFakeProcess();
+      const credShadow = mounts.find(
+        (m) => m.containerPath === '/workspace/project/credentials',
+      );
+      expect(credShadow).toBeDefined();
+      expect(credShadow!.readonly).toBe(true);
+      // Host path should be an empty shadow dir (not /dev/null for dirs)
+      expect(credShadow!.hostPath).not.toBe('/dev/null');
+      expect(credShadow!.hostPath).toContain('project-shadows');
+    });
 
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-    fsMocked.existsSync.mockReset();
-    fsMocked.existsSync.mockReturnValue(false);
-    fsMocked.mkdirSync.mockReset();
-    fsMocked.writeFileSync.mockReset();
-    fsMocked.readdirSync.mockReset();
-    fsMocked.readdirSync.mockReturnValue([]);
-    fsMocked.statSync.mockReset();
-    fsMocked.statSync.mockReturnValue({
-      isDirectory: () => false,
-    } as ReturnType<typeof fsMod.statSync>);
+    it('creates shadow dir with mkdirSync for sensitive directories', async () => {
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      const secretsDir = `${PROJECT_PATH}/secrets`;
 
-    vi.mocked(getProjectById).mockReturnValue(undefined);
-    vi.mocked(childProcess.spawn).mockReturnValue(
-      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
-    );
-  });
+      fsMocked.existsSync.mockImplementation((p: unknown) => {
+        const s = p as string;
+        if (s === PROJECT_PATH) return true;
+        if (s === secretsDir) return true;
+        return false;
+      });
+      fsMocked.statSync.mockImplementation((p: unknown) => {
+        if (p === secretsDir)
+          return { isDirectory: () => true } as ReturnType<
+            typeof fsMod.statSync
+          >;
+        return { isDirectory: () => false } as ReturnType<
+          typeof fsMod.statSync
+        >;
+      });
 
-  it('mounts agent-runner source read-only at /app/src', async () => {
-    const group: RegisteredGroup = {
-      name: 'Main',
-      folder: 'main-group',
-      trigger: '@Deus',
-      added_at: new Date().toISOString(),
-    };
+      const group: RegisteredGroup = {
+        name: 'App',
+        folder: 'app-group',
+        trigger: '@Bot',
+        added_at: new Date().toISOString(),
+        projectId: 'proj-shadow',
+      };
 
-    const mounts = await runAndCaptureMounts(group, true);
+      fakeProc = createFakeProcess();
+      setImmediate(() => fakeProc.emit('close', 0));
+      vi.mocked(childProcess.spawn).mockReturnValue(
+        fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+      );
 
-    const appSrcMount = mounts.find((m) => m.containerPath === '/app/src');
-    expect(appSrcMount).toBeDefined();
-    expect(appSrcMount!.readonly).toBe(true);
-    expect(appSrcMount!.hostPath).toContain('agent-runner-src');
-  });
+      await runContainerAgent(
+        group,
+        {
+          prompt: 'test',
+          groupFolder: group.folder,
+          chatJid: 'x@g.us',
+          isMain: true,
+        },
+        () => {},
+      );
 
-  it('copies agent-runner source when source dir exists', async () => {
-    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-    const agentSrc = `${process.cwd()}/container/agent-runner/src`;
+      const mkdirCalls = fsMocked.mkdirSync.mock.calls.map(
+        (c: unknown[]) => c[0] as string,
+      );
+      expect(
+        mkdirCalls.some((p: string) => p.includes('project-shadows')),
+      ).toBe(true);
+    });
+  },
+);
 
-    fsMocked.existsSync.mockImplementation((p: unknown) => p === agentSrc);
+describe.skipIf(onWindows)(
+  'buildVolumeMounts — agent-runner source mount',
+  () => {
+    beforeEach(() => {
+      vi.useRealTimers();
+      fakeProc = createFakeProcess();
 
-    const cpSyncMock = vi.fn();
-    (fsMocked as Record<string, unknown>).cpSync = cpSyncMock;
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      fsMocked.existsSync.mockReset();
+      fsMocked.existsSync.mockReturnValue(false);
+      fsMocked.mkdirSync.mockReset();
+      fsMocked.writeFileSync.mockReset();
+      fsMocked.readdirSync.mockReset();
+      fsMocked.readdirSync.mockReturnValue([]);
+      fsMocked.statSync.mockReset();
+      fsMocked.statSync.mockReturnValue({
+        isDirectory: () => false,
+      } as ReturnType<typeof fsMod.statSync>);
 
-    const group: RegisteredGroup = {
-      name: 'Main',
-      folder: 'main-group',
-      trigger: '@Deus',
-      added_at: new Date().toISOString(),
-    };
+      vi.mocked(getProjectById).mockReturnValue(undefined);
+      vi.mocked(childProcess.spawn).mockReturnValue(
+        fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+      );
+    });
 
-    fakeProc = createFakeProcess();
-    setImmediate(() => fakeProc.emit('close', 0));
-    vi.mocked(childProcess.spawn).mockReturnValue(
-      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
-    );
+    it('mounts agent-runner source read-only at /app/src', async () => {
+      const group: RegisteredGroup = {
+        name: 'Main',
+        folder: 'main-group',
+        trigger: '@Deus',
+        added_at: new Date().toISOString(),
+      };
 
-    await runContainerAgent(
-      group,
-      {
-        prompt: 'test',
-        groupFolder: group.folder,
-        chatJid: 'x@g.us',
-        isMain: true,
-      },
-      () => {},
-    );
+      const mounts = await runAndCaptureMounts(group, true);
 
-    expect(cpSyncMock).toHaveBeenCalledWith(
-      agentSrc,
-      expect.stringContaining('agent-runner-src'),
-      { recursive: true },
-    );
-  });
-});
+      const appSrcMount = mounts.find((m) => m.containerPath === '/app/src');
+      expect(appSrcMount).toBeDefined();
+      expect(appSrcMount!.readonly).toBe(true);
+      expect(appSrcMount!.hostPath).toContain('agent-runner-src');
+    });
+
+    it('copies agent-runner source when source dir exists', async () => {
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      const agentSrc = `${process.cwd()}/container/agent-runner/src`;
+
+      fsMocked.existsSync.mockImplementation((p: unknown) => p === agentSrc);
+
+      const cpSyncMock = vi.fn();
+      (fsMocked as Record<string, unknown>).cpSync = cpSyncMock;
+
+      const group: RegisteredGroup = {
+        name: 'Main',
+        folder: 'main-group',
+        trigger: '@Deus',
+        added_at: new Date().toISOString(),
+      };
+
+      fakeProc = createFakeProcess();
+      setImmediate(() => fakeProc.emit('close', 0));
+      vi.mocked(childProcess.spawn).mockReturnValue(
+        fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+      );
+
+      await runContainerAgent(
+        group,
+        {
+          prompt: 'test',
+          groupFolder: group.folder,
+          chatJid: 'x@g.us',
+          isMain: true,
+        },
+        () => {},
+      );
+
+      expect(cpSyncMock).toHaveBeenCalledWith(
+        agentSrc,
+        expect.stringContaining('agent-runner-src'),
+        { recursive: true },
+      );
+    });
+  },
+);
