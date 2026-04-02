@@ -234,7 +234,7 @@ describe('validateMount', () => {
     setupAllowlist({ nonMainReadOnly: true });
     const result = validateMount(
       { hostPath: '/home/testuser/projects/myapp', readonly: false },
-      false, // isMain=false
+      false, // isControlGroup=false
     );
     expect(result.allowed).toBe(true);
     expect(result.effectiveReadonly).toBe(true);

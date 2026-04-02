@@ -129,7 +129,7 @@ const MAIN_GROUP: RegisteredGroup = {
   folder: 'whatsapp_main',
   trigger: 'always',
   added_at: '2024-01-01T00:00:00.000Z',
-  isMain: true,
+  isControlGroup: true,
 };
 
 const OTHER_GROUP: RegisteredGroup = {
@@ -300,7 +300,7 @@ describe('runContainerAgent mock: response handling', () => {
         prompt: 'Test prompt',
         groupFolder: 'main',
         chatJid: 'main@g.us',
-        isMain: true,
+        isControlGroup: true,
       },
       () => {},
     );
@@ -329,7 +329,7 @@ describe('runContainerAgent mock: response handling', () => {
     const onOutput = vi.fn(async () => {});
     await runContainerAgent(
       MAIN_GROUP,
-      { prompt: 'Hi', groupFolder: 'main', chatJid: 'main@g.us', isMain: true },
+      { prompt: 'Hi', groupFolder: 'main', chatJid: 'main@g.us', isControlGroup: true },
       () => {},
       onOutput,
     );
@@ -350,7 +350,7 @@ describe('runContainerAgent mock: response handling', () => {
         prompt: 'Test',
         groupFolder: 'main',
         chatJid: 'main@g.us',
-        isMain: true,
+        isControlGroup: true,
       },
       () => {},
     );
@@ -470,7 +470,7 @@ describe('Full pipeline simulation', () => {
         prompt: 'msg content',
         groupFolder: 'main',
         chatJid: 'main@g.us',
-        isMain: true,
+        isControlGroup: true,
       },
       () => {},
       onOutput,

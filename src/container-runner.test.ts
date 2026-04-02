@@ -137,7 +137,7 @@ const testInput = {
   prompt: 'Hello',
   groupFolder: 'test-group',
   chatJid: 'test@g.us',
-  isMain: false,
+  isControlGroup: false,
 };
 
 function emitOutputMarker(
@@ -329,7 +329,7 @@ function parseMountsFromSpawnArgs(
 // to resolve the promise without waiting for a real container.
 async function runAndCaptureMounts(
   group: RegisteredGroup,
-  isMain: boolean,
+  isControlGroup: boolean,
 ): Promise<
   Array<{ hostPath: string; containerPath: string; readonly: boolean }>
 > {
@@ -349,7 +349,7 @@ async function runAndCaptureMounts(
     prompt: 'test',
     groupFolder: group.folder,
     chatJid: 'test@g.us',
-    isMain,
+    isControlGroup,
   };
 
   await runContainerAgent(group, input, () => {});
@@ -393,7 +393,7 @@ describe.skipIf(onWindows)('buildVolumeMounts — main group', () => {
       folder: 'main-group',
       trigger: '@Deus',
       added_at: new Date().toISOString(),
-      isMain: true,
+      isControlGroup: true,
     };
 
     const mounts = await runAndCaptureMounts(group, true);
@@ -412,7 +412,7 @@ describe.skipIf(onWindows)('buildVolumeMounts — main group', () => {
       folder: 'main-group',
       trigger: '@Deus',
       added_at: new Date().toISOString(),
-      isMain: true,
+      isControlGroup: true,
     };
 
     const mounts = await runAndCaptureMounts(group, true);
@@ -437,7 +437,7 @@ describe.skipIf(onWindows)('buildVolumeMounts — main group', () => {
       folder: 'main-group',
       trigger: '@Deus',
       added_at: new Date().toISOString(),
-      isMain: true,
+      isControlGroup: true,
     };
 
     const mounts = await runAndCaptureMounts(group, true);
@@ -456,7 +456,7 @@ describe.skipIf(onWindows)('buildVolumeMounts — main group', () => {
       folder: 'main-group',
       trigger: '@Deus',
       added_at: new Date().toISOString(),
-      isMain: true,
+      isControlGroup: true,
     };
 
     // existsSync returns false by default (set in beforeEach)
@@ -478,7 +478,7 @@ describe.skipIf(onWindows)('buildVolumeMounts — main group', () => {
       folder: 'main-group',
       trigger: '@Deus',
       added_at: new Date().toISOString(),
-      isMain: true,
+      isControlGroup: true,
     };
 
     fakeProc = createFakeProcess();
@@ -493,7 +493,7 @@ describe.skipIf(onWindows)('buildVolumeMounts — main group', () => {
         prompt: 'test',
         groupFolder: group.folder,
         chatJid: 'x@g.us',
-        isMain: true,
+        isControlGroup: true,
       },
       () => {},
     );
@@ -540,7 +540,7 @@ describe.skipIf(onWindows)('buildVolumeMounts — main group', () => {
       folder: 'main-group',
       trigger: '@Deus',
       added_at: new Date().toISOString(),
-      isMain: true,
+      isControlGroup: true,
     };
 
     fakeProc = createFakeProcess();
@@ -555,7 +555,7 @@ describe.skipIf(onWindows)('buildVolumeMounts — main group', () => {
         prompt: 'test',
         groupFolder: group.folder,
         chatJid: 'x@g.us',
-        isMain: true,
+        isControlGroup: true,
       },
       () => {},
     );
@@ -689,7 +689,7 @@ describe.skipIf(onWindows)('buildVolumeMounts — non-main group', () => {
         prompt: 'test',
         groupFolder: group.folder,
         chatJid: 'x@g.us',
-        isMain: false,
+        isControlGroup: false,
       },
       () => {},
     );
@@ -771,7 +771,7 @@ describe.skipIf(onWindows)(
         projectId: 'proj-1',
       };
 
-      // Use isMain: false — non-main groups don't mount process.cwd() at
+      // Use isControlGroup: false — non-main groups don't mount process.cwd() at
       // /workspace/project, so the only /workspace/project entry comes from
       // the external project mount. This keeps the assertion unambiguous.
       const mounts = await runAndCaptureMounts(group, false);
@@ -809,7 +809,7 @@ describe.skipIf(onWindows)(
         projectId: 'proj-symlink',
       };
 
-      // Use isMain: false so we can assert no external project at /workspace/project
+      // Use isControlGroup: false so we can assert no external project at /workspace/project
       const mounts = await runAndCaptureMounts(group, false);
 
       // Mount should be blocked — no /workspace/project with the symlink target
@@ -842,7 +842,7 @@ describe.skipIf(onWindows)(
         projectId: 'proj-missing',
       };
 
-      // Use isMain: false to avoid the main group's process.cwd() mount
+      // Use isControlGroup: false to avoid the main group's process.cwd() mount
       const mounts = await runAndCaptureMounts(group, false);
 
       const projectMount = mounts.find(
@@ -1031,7 +1031,7 @@ describe.skipIf(onWindows)(
           prompt: 'test',
           groupFolder: group.folder,
           chatJid: 'x@g.us',
-          isMain: true,
+          isControlGroup: true,
         },
         () => {},
       );
@@ -1115,7 +1115,7 @@ describe.skipIf(onWindows)(
           prompt: 'test',
           groupFolder: group.folder,
           chatJid: 'x@g.us',
-          isMain: true,
+          isControlGroup: true,
         },
         () => {},
       );

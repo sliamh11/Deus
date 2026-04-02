@@ -20,7 +20,7 @@ interface RegisterArgs {
   folder: string;
   channel: string;
   requiresTrigger: boolean;
-  isMain: boolean;
+  isControlGroup: boolean;
   assistantName: string;
 }
 
@@ -32,7 +32,7 @@ function parseArgs(args: string[]): RegisterArgs {
     folder: '',
     channel: 'whatsapp', // backward-compat: pre-refactor installs omit --channel
     requiresTrigger: true,
-    isMain: false,
+    isControlGroup: false,
     assistantName: 'Deus',
   };
 
@@ -57,7 +57,7 @@ function parseArgs(args: string[]): RegisterArgs {
         result.requiresTrigger = false;
         break;
       case '--is-main':
-        result.isMain = true;
+        result.isControlGroup = true;
         break;
       case '--assistant-name':
         result.assistantName = args[++i] || 'Deus';
@@ -145,7 +145,7 @@ export async function run(args: string[]): Promise<void> {
     trigger: parsed.trigger,
     added_at: new Date().toISOString(),
     requiresTrigger: parsed.requiresTrigger,
-    isMain: parsed.isMain,
+    isControlGroup: parsed.isControlGroup,
   });
 
   logger.info('Wrote registration to SQLite');

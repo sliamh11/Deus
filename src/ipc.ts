@@ -26,7 +26,7 @@ export interface IpcDeps {
   getAvailableGroups: () => AvailableGroup[];
   writeGroupsSnapshot: (
     groupFolder: string,
-    isMain: boolean,
+    isControlGroup: boolean,
     availableGroups: AvailableGroup[],
     registeredJids: Set<string>,
   ) => void;
@@ -61,14 +61,14 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
     const registeredGroups = deps.registeredGroups();
 
-    // Build folder→isMain lookup from registered groups
+    // Build folder→isControlGroup lookup from registered groups
     const folderIsMain = new Map<string, boolean>();
     for (const group of Object.values(registeredGroups)) {
-      if (group.isMain) folderIsMain.set(group.folder, true);
+      if (group.isControlGroup) folderIsMain.set(group.folder, true);
     }
 
     for (const sourceGroup of groupFolders) {
-      const isMain = folderIsMain.get(sourceGroup) === true;
+      const isControlGroup = folderIsMain.get(sourceGroup) === true;
       const messagesDir = path.join(ipcBaseDir, sourceGroup, 'messages');
       const tasksDir = path.join(ipcBaseDir, sourceGroup, 'tasks');
 
@@ -86,7 +86,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
-                  isMain ||
+                  isControlGroup ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   await deps.sendMessage(data.chatJid, data.text);
@@ -134,7 +134,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
               // Pass source group identity to processTaskIpc for authorization
-              await processTaskIpc(data, sourceGroup, isMain, deps);
+              await processTaskIpc(data, sourceGroup, isControlGroup, deps);
               fs.unlinkSync(filePath);
             } catch (err) {
               logger.error(
@@ -186,7 +186,7 @@ export async function processTaskIpc(
     readonly?: boolean;
   },
   sourceGroup: string, // Verified identity from IPC directory
-  isMain: boolean, // Verified from directory path
+  isControlGroup: boolean, // Verified from directory path
   deps: IpcDeps,
 ): Promise<void> {
   const registeredGroups = deps.registeredGroups();
@@ -214,7 +214,7 @@ export async function processTaskIpc(
         const targetFolder = targetGroupEntry.folder;
 
         // Authorization: non-main groups can only schedule for themselves
-        if (!isMain && targetFolder !== sourceGroup) {
+        if (!isControlGroup && targetFolder !== sourceGroup) {
           logger.warn(
             { sourceGroup, targetFolder },
             'Unauthorized schedule_task attempt blocked',
@@ -290,7 +290,7 @@ export async function processTaskIpc(
     case 'pause_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
+        if (task && (isControlGroup || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'paused' });
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -309,7 +309,7 @@ export async function processTaskIpc(
     case 'resume_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
+        if (task && (isControlGroup || task.group_folder === sourceGroup)) {
           updateTask(data.taskId, { status: 'active' });
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -328,7 +328,7 @@ export async function processTaskIpc(
     case 'cancel_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isMain || task.group_folder === sourceGroup)) {
+        if (task && (isControlGroup || task.group_folder === sourceGroup)) {
           deleteTask(data.taskId);
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -354,7 +354,7 @@ export async function processTaskIpc(
           );
           break;
         }
-        if (!isMain && task.group_folder !== sourceGroup) {
+        if (!isControlGroup && task.group_folder !== sourceGroup) {
           logger.warn(
             { taskId: data.taskId, sourceGroup },
             'Unauthorized task update attempt',
@@ -411,7 +411,7 @@ export async function processTaskIpc(
 
     case 'refresh_groups':
       // Only main group can request a refresh
-      if (isMain) {
+      if (isControlGroup) {
         logger.info(
           { sourceGroup },
           'Group metadata refresh requested via IPC',
@@ -435,7 +435,7 @@ export async function processTaskIpc(
 
     case 'register_group':
       // Only main group can register new groups
-      if (!isMain) {
+      if (!isControlGroup) {
         logger.warn(
           { sourceGroup },
           'Unauthorized register_group attempt blocked',
@@ -450,7 +450,7 @@ export async function processTaskIpc(
           );
           break;
         }
-        // Defense in depth: agent cannot set isMain via IPC
+        // Defense in depth: agent cannot set isControlGroup via IPC
         deps.registerGroup(data.jid, {
           name: data.name,
           folder: data.folder,
@@ -471,7 +471,7 @@ export async function processTaskIpc(
       // Main-only: register an external project for container mounting.
       // The agent provides a name and host path; we validate against the
       // mount allowlist and detect the project type.
-      if (!isMain) {
+      if (!isControlGroup) {
         logger.warn(
           { sourceGroup },
           'Unauthorized register_project attempt blocked',
@@ -503,7 +503,7 @@ export async function processTaskIpc(
 
     case 'associate_project':
       // Main-only: link a project to a group so its container mounts the project.
-      if (!isMain) {
+      if (!isControlGroup) {
         logger.warn(
           { sourceGroup },
           'Unauthorized associate_project attempt blocked',
@@ -533,7 +533,7 @@ export async function processTaskIpc(
 
     case 'dissociate_project':
       // Main-only: remove project association from a group.
-      if (!isMain) {
+      if (!isControlGroup) {
         logger.warn(
           { sourceGroup },
           'Unauthorized dissociate_project attempt blocked',
@@ -551,7 +551,7 @@ export async function processTaskIpc(
 
     case 'delete_project':
       // Main-only: unregister a project (dissociates all groups automatically).
-      if (!isMain) {
+      if (!isControlGroup) {
         logger.warn(
           { sourceGroup },
           'Unauthorized delete_project attempt blocked',
@@ -574,7 +574,7 @@ export async function processTaskIpc(
     case 'list_projects':
       // Main-only: list all registered projects.
       // Response written to IPC output for the agent to read.
-      if (!isMain) {
+      if (!isControlGroup) {
         logger.warn(
           { sourceGroup },
           'Unauthorized list_projects attempt blocked',

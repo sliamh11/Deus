@@ -99,7 +99,7 @@ async function main(): Promise<void> {
     msg: NewMessage,
   ): Promise<void> {
     const group = state.registeredGroups[chatJid];
-    if (!group?.isMain) {
+    if (!group?.isControlGroup) {
       logger.warn(
         { chatJid, sender: msg.sender },
         'Remote control rejected: not main group',
@@ -271,7 +271,7 @@ async function main(): Promise<void> {
         next_run: t.next_run,
       }));
       for (const group of Object.values(state.registeredGroups)) {
-        writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
+        writeTasksSnapshot(group.folder, group.isControlGroup === true, taskRows);
       }
     },
   });

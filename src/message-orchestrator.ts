@@ -62,13 +62,13 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     imageAttachments: Array<{ relativePath: string; mediaType: string }>,
     onOutput?: (output: ContainerOutput) => Promise<void>,
   ): Promise<'success' | 'error'> {
-    const isMain = group.isMain === true;
+    const isControlGroup = group.isControlGroup === true;
     const sessionId = state.getSession(group.folder);
 
     const tasks = getAllTasks();
     writeTasksSnapshot(
       group.folder,
-      isMain,
+      isControlGroup,
       tasks.map((t) => ({
         id: t.id,
         groupFolder: t.group_folder,
@@ -83,7 +83,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     const availableGroups = getAvailableGroups(state.registeredGroups);
     writeGroupsSnapshot(
       group.folder,
-      isMain,
+      isControlGroup,
       availableGroups,
       new Set(Object.keys(state.registeredGroups)),
     );
@@ -106,7 +106,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           sessionId,
           groupFolder: group.folder,
           chatJid,
-          isMain,
+          isControlGroup,
           assistantName: ASSISTANT_NAME,
           ...(imageAttachments.length > 0 && { imageAttachments }),
         },
@@ -149,7 +149,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
       return true;
     }
 
-    const isMainGroup = group.isMain === true;
+    const isMainGroup = group.isControlGroup === true;
     const sinceTimestamp = state.getLastAgentTimestamp(chatJid);
     const missedMessages = getMessagesSince(
       chatJid,
@@ -348,7 +348,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
               continue;
             }
 
-            const isMainGroup = group.isMain === true;
+            const isMainGroup = group.isControlGroup === true;
 
             // --- Session command interception (message loop) ---
             // Scan ALL messages in the batch for a session command.
