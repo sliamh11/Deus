@@ -8,6 +8,8 @@ import { ChildProcess, execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
+import os from 'os';
+
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
@@ -31,6 +33,46 @@ import { detectDomains } from './domain-presets.js';
 import { getReflections, logInteraction } from './evolution-client.js';
 import { detectUserSignal } from './user-signal.js';
 import { getProjectById } from './db.js';
+
+// ---------------------------------------------------------------------------
+// OAuth: placeholder credentials file for session-based auth
+// ---------------------------------------------------------------------------
+// The Claude Agent SDK supports two OAuth flows:
+//   1. CLAUDE_CODE_OAUTH_TOKEN env var → exchanges token via create_api_key
+//      endpoint (requires org:create_api_key scope — no longer granted).
+//   2. ~/.claude/.credentials.json file → uses session-based auth with Bearer
+//      token (requires user:sessions:claude_code scope — standard for Max).
+//
+// We use flow (2): mount a placeholder credentials file into the container.
+// The SDK reads it, sends "Bearer placeholder" on API calls, and the
+// credential proxy swaps it with the real token before forwarding upstream.
+// ---------------------------------------------------------------------------
+const PLACEHOLDER_CREDENTIALS = JSON.stringify({
+  claudeAiOauth: {
+    accessToken: 'placeholder',
+    expiresAt: 4102444800000, // 2100-01-01
+    scopes: [
+      'user:file_upload',
+      'user:inference',
+      'user:mcp_servers',
+      'user:profile',
+      'user:sessions:claude_code',
+    ],
+  },
+});
+
+let placeholderCredentialsPath: string | null = null;
+
+/** Write the placeholder credentials file once (lazily, on first container). */
+function ensurePlaceholderCredentials(): string {
+  if (placeholderCredentialsPath) return placeholderCredentialsPath;
+  const dir = path.join(os.tmpdir(), 'deus-oauth');
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, '.credentials.json');
+  fs.writeFileSync(filePath, PLACEHOLDER_CREDENTIALS, { mode: 0o600 });
+  placeholderCredentialsPath = filePath;
+  return filePath;
+}
 
 // SYNC-REQUIRED: Duplicated in container/agent-runner/src/index.ts.
 // Cannot be shared via import — agent-runner is a separate package inside an isolated container.
@@ -72,13 +114,16 @@ function buildContainerArgs(
 
   // Mirror the host's auth method with a placeholder value.
   // API key mode: SDK sends x-api-key, proxy replaces with real key.
-  // OAuth mode:   SDK exchanges placeholder token for temp API key,
-  //               proxy injects real OAuth token on that exchange request.
+  // OAuth mode:   Mount placeholder credentials file so SDK uses session-based
+  //               auth (Bearer token). Proxy swaps placeholder with real token.
   const authMode = detectAuthMode();
   if (authMode === 'api-key') {
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
-    args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+    const credsPath = ensurePlaceholderCredentials();
+    args.push(
+      ...readonlyMountArgs(credsPath, '/home/node/.claude/.credentials.json'),
+    );
   }
 
   // Runtime-specific args for host gateway resolution
