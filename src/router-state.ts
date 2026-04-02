@@ -85,6 +85,10 @@ export class RouterState {
     this._sessions[folder] = sessionId;
   }
 
+  clearSession(folder: string): void {
+    delete this._sessions[folder];
+  }
+
   get registeredGroups(): Record<string, RegisteredGroup> {
     return this._registeredGroups;
   }
