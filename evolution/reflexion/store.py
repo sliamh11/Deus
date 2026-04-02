@@ -14,20 +14,42 @@ log = logging.getLogger(__name__)
 
 
 def _is_duplicate(vec: list[float], group_folder: Optional[str], threshold: float = REFLECTION_DEDUP_L2) -> bool:
-    """Check if a semantically similar reflection already exists."""
+    """
+    Check if a semantically similar reflection already exists.
+
+    Dedup scope:
+    - Cross-group (group_folder=None) reflections dedup against ALL reflections.
+    - Group-specific reflections dedup only against reflections in the SAME group,
+      so a cross-group principle never blocks a group-specific lesson.
+    """
     db = open_db()
     blob = serialize_vec(vec)
     try:
-        row = db.execute(
-            """
-            SELECT re.distance
-            FROM reflection_embeddings re
-            JOIN reflections r ON r.rowid = re.rowid
-            WHERE re.embedding MATCH ? AND k = 1
-              AND (r.group_folder = ? OR r.group_folder IS NULL)
-            """,
-            [blob, group_folder],
-        ).fetchone()
+        if group_folder is None:
+            # Cross-group: check globally
+            row = db.execute(
+                """
+                SELECT re.distance
+                FROM reflection_embeddings re
+                JOIN reflections r ON r.rowid = re.rowid
+                WHERE re.embedding MATCH ? AND k = 1
+                  AND r.archived_at IS NULL
+                """,
+                [blob],
+            ).fetchone()
+        else:
+            # Group-specific: only dedup within the same group
+            row = db.execute(
+                """
+                SELECT re.distance
+                FROM reflection_embeddings re
+                JOIN reflections r ON r.rowid = re.rowid
+                WHERE re.embedding MATCH ? AND k = 1
+                  AND r.group_folder = ?
+                  AND r.archived_at IS NULL
+                """,
+                [blob, group_folder],
+            ).fetchone()
         if row and row[0] < threshold:
             return True
     except Exception:

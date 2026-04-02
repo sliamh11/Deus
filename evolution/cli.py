@@ -235,9 +235,13 @@ def cmd_log_interaction(json_str: str) -> None:
                 "tool_use": result.tool_use,
                 "personalization": result.personalization,
             }
-            update_score(iid, result.score, dims)
+            update_score(iid, result.score, dims, parse_error=result.is_parse_error)
 
-            if result.score < REFLECTION_THRESHOLD:
+            # Skip reflection generation entirely for parse errors — the score is
+            # a meaningless fallback and would generate misleading lessons.
+            if result.is_parse_error:
+                pass
+            elif result.score < REFLECTION_THRESHOLD:
                 content, category = generate_reflection(
                     prompt=params.get("prompt", ""),
                     response=params.get("response") or "",
@@ -272,31 +276,34 @@ def cmd_log_interaction(json_str: str) -> None:
                 )
 
             # User signal: generate a reflection for the *previous* interaction.
-            # Only if the previous interaction has an actual judge score — don't
-            # assume scores, as that can reinforce incorrect patterns.
+            # Use the actual judge score if available; otherwise assume a score
+            # consistent with the user signal so feedback is never silently dropped.
             if user_signal and params.get("session_id"):
                 from .ilog.interaction_log import get_previous_in_session
                 prev = get_previous_in_session(params["session_id"], iid)
-                if prev and prev.get("judge_score") is not None:
+                if prev:
+                    prev_score = prev.get("judge_score")
                     if user_signal == "positive":
                         from .reflexion.generator import generate_positive_reflection
                         content, category = generate_positive_reflection(
                             prompt=prev["prompt"],
                             response=prev.get("response") or "",
-                            score=prev["judge_score"],
+                            score=prev_score if prev_score is not None else 0.8,
                             rationale="User explicitly praised this response",
                         )
                     else:
                         content, category = generate_reflection(
                             prompt=prev["prompt"],
                             response=prev.get("response") or "",
-                            score=prev["judge_score"],
+                            score=prev_score if prev_score is not None else 0.3,
                             rationale="User explicitly rejected this response",
                         )
                     save_reflection(
                         content=content,
                         category=category,
-                        score_at_gen=prev["judge_score"],
+                        score_at_gen=prev_score if prev_score is not None else (
+                            0.8 if user_signal == "positive" else 0.3
+                        ),
                         interaction_id=prev["id"],
                         group_folder=prev.get("group_folder"),
                     )

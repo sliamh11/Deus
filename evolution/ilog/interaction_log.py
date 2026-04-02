@@ -54,12 +54,13 @@ def update_score(
     interaction_id: str,
     score: float,
     dims: dict,
+    parse_error: bool = False,
 ) -> None:
     """Attach judge score and dimension breakdown to a logged interaction."""
     db = open_db()
     db.execute(
-        "UPDATE interactions SET judge_score = ?, judge_dims = ? WHERE id = ?",
-        (score, json.dumps(dims), interaction_id),
+        "UPDATE interactions SET judge_score = ?, judge_dims = ?, parse_error = ? WHERE id = ?",
+        (score, json.dumps(dims), int(parse_error), interaction_id),
     )
     db.commit()
     db.close()
