@@ -61,10 +61,12 @@ claude
 Inside the Claude Code prompt:
 
 ```
-/setup                  # Install deps, configure container runtime, authenticate
+/setup                  # Install deps, configure runtime, authenticate, onboard
 /add-whatsapp           # Scan QR code to connect WhatsApp
 /add-telegram           # Paste bot token to connect Telegram
 ```
+
+`/setup` includes a **Personality Kickstarter** at the end: choose from curated behavioral bundles (universal defaults, developer workflow, student/learner mode), pick individual behaviors à la carte, and optionally seed the self-improvement loop with battle-tested reflections so it isn't starting cold.
 
 Start talking:
 
@@ -117,6 +119,21 @@ Commands require admin access (sent from the owner account, or from any sender i
 | **Modular** | Components connect and disconnect cleanly. Adding or removing a channel or integration shouldn't touch unrelated code. |
 | **Token-efficient** | Minimize redundant API calls. Cache aggressively. Prefer local models (Ollama) for workloads where quality allows it. Tool lists are filtered per-query — Deus uses ~600 fewer tool tokens than vanilla Claude Code on personal-assistant queries. |
 | **Secure by default** | Credentials never appear in code or git history. Use .env files + .gitignore. Designed as if the repo is already public. |
+
+---
+
+## Token Efficiency
+
+Compared to vanilla Claude Code, Deus adds **~920 tokens once per session** (KV-cached after the first message, billed at ~10% of normal input cost). Per-turn overhead is effectively zero for most interactions — the only variable cost is the reflections block (+0–500 tokens), which fires only when the system has a relevant past learning to apply. Tool filtering saves ~600 tokens vs vanilla on every session. Self-improvement, container isolation, and the eval suite add **zero tokens** — they run outside the agent context entirely.
+
+| When | Token delta vs vanilla | What you get |
+|------|----------------------|-------------|
+| Session start (once) | +920T net | Per-group identity, memory context, formatting rules |
+| Per-turn (typical) | +0T | Nothing — CLAUDE.md is cached |
+| Per-turn (reflection fires) | +0–500T | Relevant past learning prepended to your message |
+| Tool definitions (every session) | −600T saved | Filtered tool list vs vanilla's unfiltered default |
+
+See [docs/benchmarks.md](docs/benchmarks.md#token-efficiency) for the full breakdown.
 
 ---
 

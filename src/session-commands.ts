@@ -63,7 +63,9 @@ export function handleSettingsCommand(
 
   const eqIdx = args.indexOf('=');
   if (eqIdx === -1) {
-    return { response: `Invalid syntax. Use: /settings key=value\n\n${SETTINGS_HELP}` };
+    return {
+      response: `Invalid syntax. Use: /settings key=value\n\n${SETTINGS_HELP}`,
+    };
   }
 
   const key = args.slice(0, eqIdx).trim().toLowerCase();
@@ -82,9 +84,15 @@ export function handleSettingsCommand(
     case 'session_idle_hours': {
       const n = parseInt(value, 10);
       if (isNaN(n) || n < 0) {
-        return { response: 'session_idle_hours must be a non-negative integer (0 = never reset).' };
+        return {
+          response:
+            'session_idle_hours must be a non-negative integer (0 = never reset).',
+        };
       }
-      updatedGroup.containerConfig = { ...updatedGroup.containerConfig, sessionIdleResetHours: n };
+      updatedGroup.containerConfig = {
+        ...updatedGroup.containerConfig,
+        sessionIdleResetHours: n,
+      };
       return {
         response: `session_idle_hours set to ${n === 0 ? '0 (session never resets)' : `${n}h`}`,
         updatedGroup,
@@ -95,7 +103,10 @@ export function handleSettingsCommand(
       if (isNaN(n) || n < 30) {
         return { response: 'timeout must be at least 30 seconds.' };
       }
-      updatedGroup.containerConfig = { ...updatedGroup.containerConfig, timeout: n * 1000 };
+      updatedGroup.containerConfig = {
+        ...updatedGroup.containerConfig,
+        timeout: n * 1000,
+      };
       return { response: `timeout set to ${n}s`, updatedGroup };
     }
     case 'requires_trigger': {

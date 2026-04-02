@@ -132,6 +132,62 @@ No other framework in this comparison ships with a built-in eval suite for the a
 
 ---
 
+## Token Efficiency
+
+> Deus adds ~920 tokens at session start compared to vanilla Claude Code. That buys persistent identity, semantic memory, and a self-improvement loop. The self-improvement loop itself adds zero tokens — it runs asynchronously.
+
+### How Deus compares to vanilla Claude Code
+
+Deus uses the exact same Claude Agent SDK and the same `claude_code` system prompt preset as vanilla Claude Code. The difference is in what Deus adds — and what it trims.
+
+#### Tool filtering (Deus *saves* tokens here)
+
+Vanilla Claude Code exposes all tools by default (~30+ tools). Deus explicitly enumerates `allowedTools`, restricting to only what each session needs:
+
+| Scenario | Tool count | Est. tool tokens |
+|----------|-----------|-----------------|
+| Vanilla Claude Code (no filter) | 30+ | ~3,000+ |
+| Deus — personal assistant query | 24 | ~2,400 |
+| Deus — coding / orchestration query | 27 | ~2,700 |
+
+The **SWARM_SIGNALS optimization** excludes `TeamCreate`, `TeamDelete`, and `SendMessage` from non-orchestration queries (no external project mounted, no swarm keywords in prompt). That's ~300 tokens saved on the majority of personal-assistant turns.
+
+#### Context injection (what Deus adds)
+
+| Source | Est. tokens | Frequency |
+|--------|-------------|-----------|
+| Group `CLAUDE.md` (persona, rules, memory paths) | ~960 | Once per session (KV-cached) |
+| Global `CLAUDE.md` (shared capabilities) | ~560 | Once per session, non-main groups only |
+| Reflections block (past learnings) | 0–500 | Per-turn, only when semantic match found |
+
+Skills (`/compress`, `/resume`, `/preserve`, etc.) are loaded on demand — zero per-turn cost unless a skill command is invoked.
+
+#### Net overhead vs vanilla
+
+```
+Tool savings:     -600 T  (filtered 30+ → 24 tools)
+Group CLAUDE.md:  +960 T
+Global CLAUDE.md: +560 T  (non-main groups)
+──────────────────────────────────────────────────
+Net per session:  +920 T  (one-time at session start, then KV-cached)
+Per-turn (avg):   ~+40 T  (reflections, amortized — most turns hit zero)
+```
+
+#### What +920 tokens buys you
+
+| Feature | What it is | Token cost |
+|---------|-----------|-----------|
+| Persistent identity | Per-group persona, name, tone, formatting rules (WhatsApp vs Telegram) | +960T session start |
+| Semantic memory | Recalls past conversations via 768-dim vector search with recency boost | 0–500T per-turn, on hit only |
+| Self-improvement loop | Judge → reflexion → DSPy prompt optimization | **0** — runs async, never in prompt |
+| Container isolation | Per-group Linux container, credential proxy, mount allowlist | **0** — host-side infrastructure |
+| Eval suite | DeepEval QA / tool-use / safety tests | **0** — CI only |
+| Skills system | 6 built-in skills (`/compress`, `/resume`, etc.) | **0** — loaded on demand |
+
+The self-improvement loop, eval suite, container isolation, and credential proxy add **zero tokens** to the agent context — they run asynchronously on the host or as a separate CI step.
+
+---
+
 ## What We Don't Claim
 
 - We don't claim to be better than OpenClaw at channel breadth or ecosystem size. OpenClaw has 250K stars for good reason.

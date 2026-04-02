@@ -1,0 +1,58 @@
+[
+  {
+    "id": "seed_wait_confirm",
+    "summary": "Never execute immediately after asking for confirmation",
+    "category": "general",
+    "score_at_gen": 0.2,
+    "content": "I asked the user to confirm before proceeding, then immediately ran the command without waiting for their response. The user flagged this as a critical violation. The rule is absolute: after posing a confirmation question, stop completely and wait for an explicit response before taking any action — no exceptions for 'obvious' cases or time-sensitive situations."
+  },
+  {
+    "id": "seed_minimal_impl",
+    "summary": "Minimal implementation preferred over over-engineered solution",
+    "category": "developer_workflow",
+    "score_at_gen": 0.9,
+    "content": "Proposed a minimal implementation that matched exactly what was asked, with no extra error handling, abstraction, or configurability. User accepted without pushback. Lean toward fewer lines and simpler logic by default. Propose extensions only if explicitly asked — never add 'just in case' features."
+  },
+  {
+    "id": "seed_dirty_branch",
+    "summary": "Always confirm clean working tree before branching",
+    "category": "developer_workflow",
+    "score_at_gen": 0.25,
+    "content": "Created a feature branch without checking the working tree state first. Uncommitted changes from unrelated work were mixed into the branch, creating confusion during review. Always run `git status` and confirm the tree is clean before creating a new branch — or explicitly stage/stash pending work with the user's knowledge."
+  },
+  {
+    "id": "seed_explore_first",
+    "summary": "Full codebase exploration before implementing surfaced a hidden dependency",
+    "category": "developer_workflow",
+    "score_at_gen": 0.88,
+    "content": "Before implementing a system change, ran a full read-everything pass and identified a non-obvious dependency between two modules that wasn't visible from the entry point. Flagged it before writing any code — saved a debugging cycle. For any system-level change, explore the full pipeline first and synthesize findings before proposing implementation."
+  },
+  {
+    "id": "seed_no_scope_creep",
+    "summary": "Don't touch surrounding code — only modify what was asked",
+    "category": "general",
+    "score_at_gen": 0.2,
+    "content": "Added type annotations and docstrings to functions adjacent to the one I was asked to modify, as a 'cleanup'. User pointed out this was unwanted scope creep and created noise in the diff. Only modify code that was explicitly requested — leave surrounding code exactly as found, including missing documentation, inconsistent style, or unrelated bugs."
+  },
+  {
+    "id": "seed_commit_approval",
+    "summary": "Propose commit message and wait for approval before committing",
+    "category": "developer_workflow",
+    "score_at_gen": 0.92,
+    "content": "Proposed a commit message and waited for explicit approval before running `git commit`. User approved and refined the message. This is the right pattern: never commit unilaterally. Show the proposed message, wait for a clear go-ahead (or a requested edit), then commit."
+  },
+  {
+    "id": "seed_background_tasks",
+    "summary": "Start long-running tasks in background without asking",
+    "category": "general",
+    "score_at_gen": 0.88,
+    "content": "Started a long-running process in the background immediately and returned control to the user, without asking for permission first. User confirmed this was the right behavior. For any task that will take more than ~30 seconds, default to background execution. Say 'started in background' and continue — don't wait and don't ask."
+  },
+  {
+    "id": "seed_tradeoff_flag",
+    "summary": "Flag non-obvious tradeoffs before implementing",
+    "category": "general",
+    "score_at_gen": 0.85,
+    "content": "Before implementing a requested approach, flagged a non-obvious performance tradeoff — the simple solution would work for small data but degrade at scale. User appreciated the heads-up and chose a different approach. Always surface non-obvious tradeoffs before writing code, even if the user didn't ask for analysis. One sentence is enough — then wait."
+  }
+]

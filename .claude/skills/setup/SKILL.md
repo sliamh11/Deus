@@ -203,38 +203,100 @@ AskUserQuestion: "Deus works best when it knows your preferences. Want to load b
 
 **If Skip:** Continue to step 10.
 
-**If Yes, show me:** Present the following three bundles as a multi-select AskUserQuestion. The user can pick any combination.
+**If Yes, show me:** Run steps 9a → 9b → 9c in order.
 
-AskUserQuestion (multiSelect): "Which default bundles would you like to enable?" Options:
+---
+
+### 9a. Bundles
+
+AskUserQuestion (multiSelect): "Which default bundles would you like to enable? Pick any combination." Options:
 - "Bundle A — Universal Defaults (recommended for everyone)"
 - "Bundle B — Developer Workflow (for users who code with Deus)"
 - "Bundle C — Student/Learner Mode (for users who study with Deus)"
+- "None — skip to individual behaviors"
 
-Read `groups/main/CLAUDE.md` first to see the current contents. If the file does not exist, create it. Append selected bundle content under a `## Behavioral Defaults` heading — create the heading at the end of the file if it is not already present.
+For each selected bundle (A, B, or C), display its bullet list to the user, then ask:
 
-**Bundle A — Universal Defaults** content to append under `## Behavioral Defaults`:
-- Never execute after asking a confirmation question — stop and wait for explicit response. No exceptions for destructive/irreversible actions.
+AskUserQuestion: "Here are the items in [Bundle Name]. Anything to add, remove, or rephrase? Describe changes or say 'looks good'."
+
+Apply any edits the user requests to the bullet list before writing. The user is the final author — only write what they approve.
+
+Read `groups/main/CLAUDE.md`. If the file does not exist, create it. Append each selected (and edited) bundle under a `## Behavioral Defaults` heading. If the heading already exists, append after the last item under it; otherwise add it at the end of the file.
+
+**Bundle A — Universal Defaults:**
+- Never execute after asking a confirmation question — stop and wait for explicit response. No exceptions for destructive or irreversible actions.
 - Long-running tasks (>30s) start in the background immediately. Say "started in background" and return control. Don't ask first.
-- Default to the simplest solution. Don't add features, abstraction, or complexity beyond what was asked.
+- Default to the simplest solution. Don't add features, abstraction, or complexity beyond what was asked. Don't add docstrings, comments, or type annotations to code you didn't change.
 - Push back and verify before implementing. If something has a non-obvious tradeoff, flag it and discuss before acting.
 - Session start: give a 2-bullet catch-up ("Previous session: ..." + "Pending: ...") then wait.
 
-**Bundle B — Developer Workflow** content to append under `## Behavioral Defaults`:
-- Before implementing any planned change: verify git working tree is clean, create a feature branch, then implement.
-- Every code change cycle: Plan (brief) → Branch → Implement → Verify/test → Propose commit message → Wait for approval → Commit.
+**Bundle B — Developer Workflow:**
+- At the start of every new feature or task: run `git status`, confirm the working tree is clean, then create a dedicated feature branch. Never start work on main directly.
+- Every code change cycle: Plan (brief) → Branch → Implement → Verify/test → Propose commit message → Wait for approval → Commit. Never commit without explicit approval.
 - When debugging: read the full pipeline end-to-end before touching anything. Follow data flow across file/language boundaries. Grep all consumers before modifying a function signature.
 - For system exploration: do a full read-everything pass first, synthesize into structured findings, get agreement on priorities before writing code.
 
-**Bundle C — Student/Learner Mode** content to append under `## Behavioral Defaults`:
+**Bundle C — Student/Learner Mode:**
 - 3-minute rule: if stuck for 3 min with no path forward — look at the solution, understand every step, close it, rewrite from scratch.
 - Retrieval practice over re-reading: quiz first, explain after. Every act of retrieval is the learning.
 - Spaced review schedule: next day → 3 days → 1 week → 2 weeks.
 - Interleave problem types — don't block. Demand the reason for every step.
 - Explain with specific example first, then generalize. Never just state the formula.
 
-**How to append:** If `## Behavioral Defaults` heading already exists in the file, append the bullet points after the last item under that heading. If the heading does not exist, append it and the selected bullets at the end of the file.
+---
 
-After updating `groups/main/CLAUDE.md`, tell the user: "Defaults saved to your main agent. You can edit groups/main/CLAUDE.md anytime to customize."
+### 9b. À la carte behaviors
+
+Present these as a multi-select — independent of bundle selection. Each is a single rule the user can add on top of whatever bundles they chose (or instead of any bundle).
+
+AskUserQuestion (multiSelect): "Any of these individual behaviors to add? Pick any that apply." Options:
+- "Image analysis — always route images to a vision model (Gemini) first, never analyze inline"
+- "Research saving — save significant research results to vault with searchable tags frontmatter"
+- "Deploy integrity — rebuild dist/ before restarting; never write rotating credentials (OAuth tokens) to .env"
+- "Deep research workflow — full codebase exploration pass + structured findings before implementing any system-level change"
+- "Code hygiene — only touch code you were asked to change; no docstrings, comments, or annotations added to surrounding functions"
+- "None"
+
+For each selected behavior, append its rule under `## Behavioral Defaults` in `groups/main/CLAUDE.md`:
+
+- **Image analysis:** Always route image/screenshot analysis to a vision model (e.g. Gemini) first. Do not analyze images inline.
+- **Research saving:** Any significant research result (architecture comparisons, platform decisions, tool evaluations) must be saved to the memory vault with `tags:` frontmatter for future retrieval.
+- **Deploy integrity:** Always rebuild `dist/` before restarting any service. Never write auto-rotating credentials (OAuth tokens, session tokens) to `.env` — doing so freezes the token and causes login loops on auto-refresh.
+- **Deep research workflow:** Before implementing any system-level change, run a full codebase exploration (Explore agent) and synthesize structured findings. Get alignment before writing code.
+- **Code hygiene:** Only modify code you were asked to modify. Don't add docstrings, comments, or type annotations to surrounding functions. Don't clean up adjacent code.
+
+---
+
+### 9c. Evolution seed reflections
+
+Seeds pre-warm the self-improvement loop so it isn't starting cold. Each seed is a past-learned lesson (corrective or positive) that will be retrieved and applied in relevant future conversations.
+
+First, check if the evolution package is available:
+```bash
+python3 -c "from evolution.reflexion.store import save_reflection; print('ok')" 2>/dev/null
+```
+If this fails, tell the user "Evolution package not set up — skipping seed import." and continue to step 10.
+
+If available, read `seeds/reflections.json` and display a numbered list to the user: show each seed's `summary` and `category` (not the full content, to keep it scannable).
+
+AskUserQuestion (multiSelect): "Which of these seed reflections would you like to import? Deselect any that don't apply to your workflow."
+
+After selection, ask:
+
+AskUserQuestion: "Any seed you'd like to edit before importing? Enter its number(s) (comma-separated), or say 'none'."
+
+For each seed the user wants to edit, show its full `content` and ask for the replacement text. Use their text verbatim.
+
+Then import the final set:
+```bash
+python3 scripts/import_seeds.py --seeds '<json_array_of_final_seeds>'
+```
+
+Report the result: "Imported N reflections (M skipped as near-duplicates)."
+
+---
+
+After all three sub-steps, tell the user: "Defaults saved. You can edit `groups/main/CLAUDE.md` anytime to add, remove, or rephrase any rule."
 
 ## 10. First Steps
 

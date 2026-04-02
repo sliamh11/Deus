@@ -189,11 +189,23 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
       (m) => extractSettingsCommand(m.content, TRIGGER_PATTERN) !== null,
     );
     if (settingsMsg) {
-      if (!isSessionCommandAllowed(isMainGroup, settingsMsg.is_from_me === true)) {
-        await channel.sendMessage(chatJid, 'Settings commands require admin access.');
+      if (
+        !isSessionCommandAllowed(isMainGroup, settingsMsg.is_from_me === true)
+      ) {
+        await channel.sendMessage(
+          chatJid,
+          'Settings commands require admin access.',
+        );
       } else {
-        const cmd = extractSettingsCommand(settingsMsg.content, TRIGGER_PATTERN)!;
-        const result = handleSettingsCommand(cmd, group, SESSION_IDLE_RESET_HOURS);
+        const cmd = extractSettingsCommand(
+          settingsMsg.content,
+          TRIGGER_PATTERN,
+        )!;
+        const result = handleSettingsCommand(
+          cmd,
+          group,
+          SESSION_IDLE_RESET_HOURS,
+        );
         if (result.updatedGroup) {
           setRegisteredGroup(chatJid, result.updatedGroup);
           state.registeredGroups[chatJid] = result.updatedGroup;
