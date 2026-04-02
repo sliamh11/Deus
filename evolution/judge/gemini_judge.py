@@ -14,7 +14,7 @@ from typing import Any, Optional, Tuple
 
 from deepeval.models import DeepEvalBaseLLM
 
-from ..config import GEN_MODELS, JUDGE_MODEL, load_api_key
+from ..config import GEN_MODELS, JUDGE_MODEL, JUDGE_RETRY_COUNT, load_api_key
 from .base import BaseJudge, JudgeResult
 from .criteria import RUBRIC, compose_score
 
@@ -102,7 +102,14 @@ class GeminiRuntimeJudge(BaseJudge):
     ) -> JudgeResult:
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context)
         raw = _call_gemini(eval_prompt, self.model)
-        return _parse_result(raw)
+        result = _parse_result(raw)
+        if result.is_parse_error:
+            for _ in range(JUDGE_RETRY_COUNT):
+                raw = _call_gemini(_build_eval_prompt(prompt, response, tools_used, context, strict_json=True), self.model)
+                result = _parse_result(raw)
+                if not result.is_parse_error:
+                    break
+        return result
 
     async def a_evaluate(
         self,
@@ -113,7 +120,16 @@ class GeminiRuntimeJudge(BaseJudge):
     ) -> JudgeResult:
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context)
         raw = await _call_gemini_async(eval_prompt, self.model)
-        return _parse_result(raw)
+        result = _parse_result(raw)
+        if result.is_parse_error:
+            for _ in range(JUDGE_RETRY_COUNT):
+                raw = await _call_gemini_async(
+                    _build_eval_prompt(prompt, response, tools_used, context, strict_json=True), self.model
+                )
+                result = _parse_result(raw)
+                if not result.is_parse_error:
+                    break
+        return result
 
 
 def _build_eval_prompt(
@@ -121,6 +137,7 @@ def _build_eval_prompt(
     response: str,
     tools_used: Optional[list[str]],
     context: Optional[str],
+    strict_json: bool = False,
 ) -> str:
     parts = [RUBRIC, "\n## Interaction to evaluate\n"]
     if context:
@@ -129,6 +146,11 @@ def _build_eval_prompt(
     if tools_used:
         parts.append(f"**Tools used:** {', '.join(tools_used)}\n")
     parts.append(f"**Agent response:**\n{response}\n")
+    if strict_json:
+        parts.append(
+            "\nIMPORTANT: Respond with ONLY a valid JSON object. "
+            "No markdown fences, no explanation, just the raw JSON.\n"
+        )
     return "\n".join(parts)
 
 
@@ -152,7 +174,6 @@ def _parse_result(raw: str) -> JudgeResult:
             **dims,
         )
     except (json.JSONDecodeError, KeyError, ValueError) as exc:
-        # Fallback: partial parse failure → neutral score
         import sys
         print(
             f"[judge] Parse error: {exc.__class__.__name__}: {exc} | raw={raw[:200]}",
@@ -166,6 +187,7 @@ def _parse_result(raw: str) -> JudgeResult:
             personalization=0.5,
             rationale="Parse error — neutral score assigned",
             raw_response=raw,
+            is_parse_error=True,
         )
 
 

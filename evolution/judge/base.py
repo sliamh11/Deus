@@ -17,6 +17,7 @@ class JudgeResult:
     personalization: float                # aligned with user style and context
     rationale: str                        # brief explanation of scores
     raw_response: Optional[str] = None   # full judge LLM output for debugging
+    is_parse_error: bool = False          # True if score is a fallback due to JSON parse failure
 
 
 class BaseJudge(ABC):

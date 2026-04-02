@@ -170,7 +170,7 @@ def extract_principles(
             save_reflection(
                 content=content,
                 category="principle",
-                score_at_gen=0.0,
+                score_at_gen=0.75,  # Neutral-positive — principles aren't failure-derived
                 group_folder=None,  # Cross-group
             )
             stored += 1

@@ -26,32 +26,14 @@ def get_reflections(
         search_text += " tools: " + ", ".join(tools_planned)
 
     vec = _embed(search_text)
+    blob = serialize_vec(vec)
     db = open_db()
 
-    # Group-scoped + cross-group (NULL), ordered by L2 distance then helpfulness
-    rows = db.execute(
-        f"""
-        SELECT r.id, r.content, r.category, r.score_at_gen,
-               r.times_helpful, r.times_retrieved,
-               re.distance
-        FROM reflection_embeddings re
-        JOIN reflections r ON r.rowid = re.rowid
-        WHERE (r.group_folder = ? OR r.group_folder IS NULL)
-          AND r.archived_at IS NULL
-        ORDER BY re.distance, r.times_helpful DESC
-        LIMIT ?
-        """,
-        [group_folder, top_k * 2],  # fetch extra, trim after
-        # Note: vec0 WHERE vec_distance_cosine(...) syntax below
-    ).fetchall()
-    db.close()
-
-    # Fallback: vec0 KNN syntax (requires passing the query vector)
-    if not rows:
-        db = open_db()
-        blob = serialize_vec(vec)
+    # KNN search via sqlite-vec MATCH syntax.
+    # Fetch 2× top_k so we can apply the group filter and still get enough results.
+    try:
         rows = db.execute(
-            f"""
+            """
             SELECT r.id, r.content, r.category, r.score_at_gen,
                    r.times_helpful, r.times_retrieved,
                    re.distance
@@ -64,6 +46,9 @@ def get_reflections(
             """,
             [blob, top_k * 2, group_folder],
         ).fetchall()
+    except Exception:
+        rows = []
+    finally:
         db.close()
 
     results = [dict(zip(

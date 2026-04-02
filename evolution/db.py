@@ -90,10 +90,11 @@ def _migrate(db: sqlite3.Connection) -> None:
     except Exception:
         pass  # Already exists or vec0 not available
 
-    # Domain presets and user signal columns (added in v1.3)
+    # Domain presets, user signal, parse_error columns (added in v1.3+)
     for col, coltype in [
         ("domain_presets", "TEXT"),    # JSON array: '["marketing","writing"]'
         ("user_signal", "TEXT"),       # "positive"|"negative"|null
+        ("parse_error", "INTEGER DEFAULT 0"),  # 1 if judge score is a parse-failure fallback
     ]:
         try:
             db.execute(f"ALTER TABLE interactions ADD COLUMN {col} {coltype}")
@@ -114,6 +115,10 @@ def _migrate(db: sqlite3.Connection) -> None:
     db.execute("""
         CREATE INDEX IF NOT EXISTS ix_reflections_stale
             ON reflections(times_retrieved, timestamp)
+    """)
+    db.execute("""
+        CREATE INDEX IF NOT EXISTS ix_reflections_archived
+            ON reflections(archived_at) WHERE archived_at IS NULL
     """)
 
     # Principle extraction tracking (added in v1.4)

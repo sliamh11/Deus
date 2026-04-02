@@ -46,6 +46,8 @@ DSPY_MAX_LABELED = int(os.environ.get("EVOLUTION_DSPY_MAX_LABELED", "8"))
 AUTO_OPTIMIZE_THRESHOLD = int(os.environ.get("EVOLUTION_AUTO_OPTIMIZE_THRESHOLD", "50"))
 # Cooldown between principle extractions (hours).
 PRINCIPLES_COOLDOWN_HOURS = int(os.environ.get("EVOLUTION_PRINCIPLES_COOLDOWN_HOURS", "24"))
+# How many times to retry Gemini judge on JSON parse failure before falling back to neutral score.
+JUDGE_RETRY_COUNT = int(os.environ.get("EVOLUTION_JUDGE_RETRY_COUNT", "1"))
 
 
 def load_api_key() -> str:
