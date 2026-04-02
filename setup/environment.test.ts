@@ -13,7 +13,7 @@ describe('environment detection', () => {
   it('detects platform correctly', async () => {
     const { getPlatform } = await import('./platform.js');
     const platform = getPlatform();
-    expect(['macos', 'linux', 'unknown']).toContain(platform);
+    expect(['macos', 'linux', 'windows', 'unknown']).toContain(platform);
   });
 });
 

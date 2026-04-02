@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import path from 'path';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---DEUS_OUTPUT_START---';
@@ -287,7 +288,19 @@ function parseMountsFromSpawnArgs(
   for (let i = 0; i < spawnArgs.length; i++) {
     if (spawnArgs[i] === '-v' && i + 1 < spawnArgs.length) {
       const parts = spawnArgs[i + 1].split(':');
-      if (parts.length === 3 && parts[2] === 'ro') {
+      // Windows drive-letter path: C:\path\to\host:/container/path[:ro]
+      // split(':') produces ['C', '\\path', '/container/path'] or ['C', '\\path', '/container/path', 'ro']
+      if (
+        parts.length >= 3 &&
+        parts[0].length === 1 &&
+        /^[a-zA-Z]$/.test(parts[0])
+      ) {
+        mounts.push({
+          hostPath: parts[0] + ':' + parts[1],
+          containerPath: parts[2],
+          readonly: parts[3] === 'ro',
+        });
+      } else if (parts.length === 3 && parts[2] === 'ro') {
         mounts.push({
           hostPath: parts[0],
           containerPath: parts[1],
@@ -495,7 +508,7 @@ describe('buildVolumeMounts — main group', () => {
 
   it('syncs skills directory when container/skills/ exists', async () => {
     const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
-    const skillsSrc = `${process.cwd()}/container/skills`;
+    const skillsSrc = path.join(process.cwd(), 'container', 'skills');
 
     fsMocked.existsSync.mockImplementation((p: unknown) => {
       if (p === skillsSrc) return true;
@@ -678,9 +691,9 @@ describe('buildVolumeMounts — non-main group', () => {
     const mkdirCalls = fsMocked.mkdirSync.mock.calls.map(
       (c: unknown[]) => c[0] as string,
     );
-    expect(mkdirCalls.some((p: string) => p.endsWith('/messages'))).toBe(true);
-    expect(mkdirCalls.some((p: string) => p.endsWith('/tasks'))).toBe(true);
-    expect(mkdirCalls.some((p: string) => p.endsWith('/input'))).toBe(true);
+    expect(mkdirCalls.some((p: string) => /[/\\]messages$/.test(p))).toBe(true);
+    expect(mkdirCalls.some((p: string) => /[/\\]tasks$/.test(p))).toBe(true);
+    expect(mkdirCalls.some((p: string) => /[/\\]input$/.test(p))).toBe(true);
   });
 
   it('mounts IPC directory at /workspace/ipc (writable)', async () => {
