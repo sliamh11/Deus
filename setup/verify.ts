@@ -61,6 +61,26 @@ export async function run(_args: string[]): Promise<void> {
         // systemctl not available
       }
     }
+  } else if (mgr === 'nssm') {
+    try {
+      const out = execSync('nssm status deus', {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+      service = out.trim() === 'SERVICE_RUNNING' ? 'running' : 'stopped';
+    } catch {
+      service = 'not_found';
+    }
+  } else if (mgr === 'servy') {
+    try {
+      const out = execSync('servy-cli status --name="deus"', {
+        encoding: 'utf-8',
+        stdio: 'pipe',
+      });
+      service = out.trim() === 'Running' ? 'running' : 'stopped';
+    } catch {
+      service = 'not_found';
+    }
   } else {
     // Check for nohup PID file
     const pidFile = path.join(projectRoot, 'deus.pid');
