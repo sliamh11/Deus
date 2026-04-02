@@ -1128,3 +1128,93 @@ describe.skipIf(onWindows)(
     });
   },
 );
+
+describe.skipIf(onWindows)('OAuth session-based auth', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    fakeProc = createFakeProcess();
+
+    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+    fsMocked.existsSync.mockReset();
+    fsMocked.existsSync.mockReturnValue(false);
+    fsMocked.mkdirSync.mockReset();
+    fsMocked.writeFileSync.mockReset();
+    fsMocked.readdirSync.mockReset();
+    fsMocked.readdirSync.mockReturnValue([]);
+    fsMocked.statSync.mockReset();
+    fsMocked.statSync.mockReturnValue({
+      isDirectory: () => false,
+    } as ReturnType<typeof fsMod.statSync>);
+
+    vi.mocked(getProjectById).mockReturnValue(undefined);
+    vi.mocked(childProcess.spawn).mockReturnValue(
+      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+    );
+  });
+
+  it('mounts placeholder credentials file in OAuth mode', async () => {
+    const { detectAuthMode } = await import('./credential-proxy.js');
+    vi.mocked(detectAuthMode).mockReturnValue('oauth');
+
+    const group: RegisteredGroup = {
+      name: 'Main',
+      folder: 'main-group',
+      trigger: '@Deus',
+      added_at: new Date().toISOString(),
+      isControlGroup: true,
+    };
+
+    const mounts = await runAndCaptureMounts(group, true);
+
+    const credsMount = mounts.find(
+      (m) => m.containerPath === '/home/node/.claude/.credentials.json',
+    );
+    expect(credsMount).toBeDefined();
+    expect(credsMount!.readonly).toBe(true);
+
+    // Restore default for other tests
+    vi.mocked(detectAuthMode).mockReturnValue('api-key');
+  });
+
+  it('does NOT set CLAUDE_CODE_OAUTH_TOKEN env var in OAuth mode', async () => {
+    const { detectAuthMode } = await import('./credential-proxy.js');
+    vi.mocked(detectAuthMode).mockReturnValue('oauth');
+
+    const group: RegisteredGroup = {
+      name: 'Main',
+      folder: 'main-group',
+      trigger: '@Deus',
+      added_at: new Date().toISOString(),
+      isControlGroup: true,
+    };
+
+    fakeProc = createFakeProcess();
+    setImmediate(() => fakeProc.emit('close', 0));
+    vi.mocked(childProcess.spawn).mockReturnValue(
+      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+    );
+
+    await runContainerAgent(
+      group,
+      {
+        prompt: 'test',
+        groupFolder: group.folder,
+        chatJid: 'x@g.us',
+        isControlGroup: true,
+      },
+      () => {},
+    );
+
+    const spawnMock = vi.mocked(childProcess.spawn);
+    const lastCall = spawnMock.mock.calls[spawnMock.mock.calls.length - 1];
+    const args = lastCall[1] as string[];
+
+    // Should NOT contain CLAUDE_CODE_OAUTH_TOKEN
+    expect(args.join(' ')).not.toContain('CLAUDE_CODE_OAUTH_TOKEN');
+    // Should NOT contain ANTHROPIC_API_KEY (that's api-key mode)
+    expect(args.join(' ')).not.toContain('ANTHROPIC_API_KEY');
+
+    // Restore default
+    vi.mocked(detectAuthMode).mockReturnValue('api-key');
+  });
+});
