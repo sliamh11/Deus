@@ -607,7 +607,7 @@ export function getRegisteredGroup(
       : undefined,
     requiresTrigger:
       row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-    isMain: row.is_main === 1 ? true : undefined,
+    isControlGroup: row.is_main === 1 ? true : undefined,
     projectId: row.project_id ?? undefined,
   };
 }
@@ -627,7 +627,7 @@ export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
     group.added_at,
     group.containerConfig ? JSON.stringify(group.containerConfig) : null,
     group.requiresTrigger === undefined ? 1 : group.requiresTrigger ? 1 : 0,
-    group.isMain ? 1 : 0,
+    group.isControlGroup ? 1 : 0,
     group.projectId ?? null,
   );
 }
@@ -663,7 +663,7 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
         : undefined,
       requiresTrigger:
         row.requires_trigger === null ? undefined : row.requires_trigger === 1,
-      isMain: row.is_main === 1 ? true : undefined,
+      isControlGroup: row.is_main === 1 ? true : undefined,
       projectId: row.project_id ?? undefined,
     };
   }

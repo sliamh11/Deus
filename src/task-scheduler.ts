@@ -130,11 +130,11 @@ async function runTask(
   }
 
   // Update tasks snapshot for container to read (filtered by group)
-  const isMain = group.isMain === true;
+  const isControlGroup = group.isControlGroup === true;
   const tasks = getAllTasks();
   writeTasksSnapshot(
     task.group_folder,
-    isMain,
+    isControlGroup,
     tasks.map((t) => ({
       id: t.id,
       groupFolder: t.group_folder,
@@ -176,7 +176,7 @@ async function runTask(
         sessionId,
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
-        isMain,
+        isControlGroup,
         isScheduledTask: true,
         assistantName: ASSISTANT_NAME,
       },

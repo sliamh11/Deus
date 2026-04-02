@@ -449,26 +449,26 @@ describe('message query LIMIT', () => {
   });
 });
 
-// --- RegisteredGroup isMain round-trip ---
+// --- RegisteredGroup isControlGroup round-trip ---
 
-describe('registered group isMain', () => {
-  it('persists isMain=true through set/get round-trip', () => {
+describe('registered group isControlGroup', () => {
+  it('persists isControlGroup=true through set/get round-trip', () => {
     setRegisteredGroup('main@s.whatsapp.net', {
       name: 'Main Chat',
       folder: 'whatsapp_main',
       trigger: '@Deus',
       added_at: '2024-01-01T00:00:00.000Z',
-      isMain: true,
+      isControlGroup: true,
     });
 
     const groups = getAllRegisteredGroups();
     const group = groups['main@s.whatsapp.net'];
     expect(group).toBeDefined();
-    expect(group.isMain).toBe(true);
+    expect(group.isControlGroup).toBe(true);
     expect(group.folder).toBe('whatsapp_main');
   });
 
-  it('omits isMain for non-main groups', () => {
+  it('omits isControlGroup for non-main groups', () => {
     setRegisteredGroup('group@g.us', {
       name: 'Family Chat',
       folder: 'whatsapp_family-chat',
@@ -479,6 +479,6 @@ describe('registered group isMain', () => {
     const groups = getAllRegisteredGroups();
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
-    expect(group.isMain).toBeUndefined();
+    expect(group.isControlGroup).toBeUndefined();
   });
 });

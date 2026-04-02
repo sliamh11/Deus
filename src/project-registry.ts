@@ -196,11 +196,11 @@ export function registerProject(
   const realPath = fs.realpathSync(resolvedPath);
 
   // Validate against mount allowlist (reuse existing security infrastructure).
-  // We check as isMain=true because project registration is main-only,
+  // We check as isControlGroup=true because project registration is main-only,
   // but the effective readonly is determined per-group at mount time.
   const validation = validateMount(
     { hostPath: realPath, readonly: options?.readonly ?? false },
-    true, // isMain — registration requires main privileges
+    true, // isControlGroup — registration requires main privileges
   );
 
   if (!validation.allowed) {

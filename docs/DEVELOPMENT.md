@@ -1,17 +1,20 @@
 # Development Reference
 
-> **Contributing?** Read [`docs/CROSS_PLATFORM.md`](CROSS_PLATFORM.md) before opening a PR — every change must work on macOS, Linux, and Windows.
+> **Contributing?** Read [`docs/CONTRIBUTING.md`](CONTRIBUTING.md) for how to add channels, commands, and IPC types. Read [`docs/CROSS_PLATFORM.md`](CROSS_PLATFORM.md) before opening a PR — every change must work on macOS, Linux, and Windows.
 
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | Orchestrator: state, message loop, agent invocation |
+| `src/index.ts` | Thin startup: DB init, channel connect, subsystem wiring |
+| `src/message-orchestrator.ts` | Poll loop, trigger detection, cursor management, agent dispatch |
+| `src/router-state.ts` | Mutable router state (timestamps, sessions, registered groups) |
+| `src/container-mounter.ts` | Volume mount assembly (security-critical) |
+| `src/container-runner.ts` | Container spawn, stdout streaming, evolution logging |
 | `src/channels/registry.ts` | Channel registry (self-registration at startup) |
 | `src/ipc.ts` | IPC watcher and task processing |
 | `src/router.ts` | Message formatting and outbound routing |
 | `src/config.ts` | Trigger pattern, paths, intervals |
-| `src/container-runner.ts` | Spawns agent containers with mounts |
 | `src/task-scheduler.ts` | Runs scheduled tasks |
 | `src/db.ts` | SQLite operations |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |

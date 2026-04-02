@@ -68,7 +68,7 @@ const MAIN_GROUP: RegisteredGroup = {
   folder: 'whatsapp_main',
   trigger: 'always',
   added_at: '2024-01-01T00:00:00.000Z',
-  isMain: true,
+  isControlGroup: true,
 };
 
 const OTHER_GROUP: RegisteredGroup = {
@@ -328,11 +328,11 @@ describe('processTaskIpc: authorization', () => {
 describe('IPC authorization logic (replicated from startIpcWatcher)', () => {
   function isMessageAuthorized(
     sourceGroup: string,
-    isMain: boolean,
+    isControlGroup: boolean,
     targetChatJid: string,
   ): boolean {
     const targetGroup = groups[targetChatJid];
-    return isMain || (!!targetGroup && targetGroup.folder === sourceGroup);
+    return isControlGroup || (!!targetGroup && targetGroup.folder === sourceGroup);
   }
 
   it('main group can send to any chat JID', () => {

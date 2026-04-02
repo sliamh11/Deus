@@ -55,7 +55,7 @@ export interface RegisteredGroup {
   added_at: string;
   containerConfig?: ContainerConfig;
   requiresTrigger?: boolean; // Default: true for groups, false for solo chats
-  isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
+  isControlGroup?: boolean; // True for the control group (no trigger required, elevated privileges)
   projectId?: string; // Associated project for external environment mode
 }
 
