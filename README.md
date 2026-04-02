@@ -46,7 +46,7 @@ A personal AI assistant that lives in your messaging apps, remembers everything,
 
 - macOS (Apple Silicon recommended) or Linux
 - [Claude Code](https://claude.ai/download) installed and authenticated
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/) or [Apple Container](https://github.com/apple/container)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 - Node.js 20+, Python 3.11+
 - A [Gemini API key](https://aistudio.google.com/apikey) (free tier is enough)
 
@@ -118,7 +118,7 @@ Every production interaction is scored by a local judge (Ollama or Gemini). Low 
   <img src="assets/brand-production/diagrams/deus-security-diagram.png" alt="Container isolation: Host vs Container security boundary" width="700">
 </p>
 
-- **Container isolation** — Every agent runs in a Linux container (Docker or Apple Container). Agents cannot access your host filesystem beyond explicitly mounted directories.
+- **Container isolation** — Every agent runs in a Linux container (Docker). Agents cannot access your host filesystem beyond explicitly mounted directories.
 - **No credentials in code** — All secrets live in `.env` files that are gitignored. The codebase is designed as if the repo is always public.
 - **Mount allowlist** — Only directories you explicitly configure are visible to the agent. Everything else is inaccessible.
 - **Local-first** — Memory lives in a local SQLite database. Voice transcription runs on-device. No data is sent to external services unless you configure it.

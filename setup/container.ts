@@ -41,49 +41,7 @@ export async function run(args: string[]): Promise<void> {
   }
 
   // Validate runtime availability
-  if (runtime === 'apple-container' && !commandExists('container')) {
-    emitStatus('SETUP_CONTAINER', {
-      RUNTIME: runtime,
-      IMAGE: image,
-      BUILD_OK: false,
-      TEST_OK: false,
-      STATUS: 'failed',
-      ERROR: 'runtime_not_available',
-      LOG: 'logs/setup.log',
-    });
-    process.exit(2);
-  }
-
-  if (runtime === 'docker') {
-    if (!commandExists('docker')) {
-      emitStatus('SETUP_CONTAINER', {
-        RUNTIME: runtime,
-        IMAGE: image,
-        BUILD_OK: false,
-        TEST_OK: false,
-        STATUS: 'failed',
-        ERROR: 'runtime_not_available',
-        LOG: 'logs/setup.log',
-      });
-      process.exit(2);
-    }
-    try {
-      execSync('docker info', { stdio: 'ignore' });
-    } catch {
-      emitStatus('SETUP_CONTAINER', {
-        RUNTIME: runtime,
-        IMAGE: image,
-        BUILD_OK: false,
-        TEST_OK: false,
-        STATUS: 'failed',
-        ERROR: 'runtime_not_available',
-        LOG: 'logs/setup.log',
-      });
-      process.exit(2);
-    }
-  }
-
-  if (!['apple-container', 'docker'].includes(runtime)) {
+  if (runtime !== 'docker') {
     emitStatus('SETUP_CONTAINER', {
       RUNTIME: runtime,
       IMAGE: image,
@@ -96,9 +54,36 @@ export async function run(args: string[]): Promise<void> {
     process.exit(4);
   }
 
-  const buildCmd =
-    runtime === 'apple-container' ? 'container build' : 'docker build';
-  const runCmd = runtime === 'apple-container' ? 'container' : 'docker';
+  if (!commandExists('docker')) {
+    emitStatus('SETUP_CONTAINER', {
+      RUNTIME: runtime,
+      IMAGE: image,
+      BUILD_OK: false,
+      TEST_OK: false,
+      STATUS: 'failed',
+      ERROR: 'runtime_not_available',
+      LOG: 'logs/setup.log',
+    });
+    process.exit(2);
+  }
+
+  try {
+    execSync('docker info', { stdio: 'ignore' });
+  } catch {
+    emitStatus('SETUP_CONTAINER', {
+      RUNTIME: runtime,
+      IMAGE: image,
+      BUILD_OK: false,
+      TEST_OK: false,
+      STATUS: 'failed',
+      ERROR: 'runtime_not_available',
+      LOG: 'logs/setup.log',
+    });
+    process.exit(2);
+  }
+
+  const buildCmd = 'docker build';
+  const runCmd = 'docker';
 
   // Build
   let buildOk = false;
