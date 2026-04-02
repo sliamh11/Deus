@@ -635,20 +635,17 @@ SKILLEOF
 
 case "$1" in
   auth)
-    TOKEN=$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["claudeAiOauth"]["accessToken"])' "$HOME/.claude/.credentials.json" 2>/dev/null)
-    if [ -z "$TOKEN" ]; then
+    # Validate credentials file is readable before restarting
+    python3 -c 'import sys,json; d=json.load(open(sys.argv[1])); assert d.get("claudeAiOauth",{}).get("accessToken")' "$HOME/.claude/.credentials.json" 2>/dev/null
+    if [ $? -ne 0 ]; then
       echo "Error: could not read token from ~/.claude/.credentials.json"
       exit 1
     fi
-    # Upsert token in .env without destroying other keys
-    _ENV_FILE="$HOME/deus/.env"
-    if [ -f "$_ENV_FILE" ] && grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' "$_ENV_FILE"; then
-      (umask 077 && sed -i '' "s|^CLAUDE_CODE_OAUTH_TOKEN=.*|CLAUDE_CODE_OAUTH_TOKEN=$TOKEN|" "$_ENV_FILE")
-    else
-      (umask 077 && echo "CLAUDE_CODE_OAUTH_TOKEN=$TOKEN" >> "$_ENV_FILE")
-    fi
+    # Do NOT write token to .env — the credential proxy reads credentials.json
+    # directly via getDynamicOAuthToken() with a 5-min cache. Writing to .env
+    # would permanently freeze the token and cause a login loop on next refresh.
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
-    echo "Auth token refreshed and Deus restarted."
+    echo "Deus restarted (credential proxy reads ~/.claude/.credentials.json directly)."
     ;;
   home|"")
     TOKEN=$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["claudeAiOauth"]["accessToken"])' "$HOME/.claude/.credentials.json" 2>/dev/null)
@@ -656,13 +653,9 @@ case "$1" in
       echo "Error: could not read token from ~/.claude/.credentials.json"
       exit 1
     fi
-    # Upsert token in .env without destroying other keys
-    _ENV_FILE="$HOME/deus/.env"
-    if [ -f "$_ENV_FILE" ] && grep -q '^CLAUDE_CODE_OAUTH_TOKEN=' "$_ENV_FILE"; then
-      (umask 077 && sed -i '' "s|^CLAUDE_CODE_OAUTH_TOKEN=.*|CLAUDE_CODE_OAUTH_TOKEN=$TOKEN|" "$_ENV_FILE")
-    else
-      (umask 077 && echo "CLAUDE_CODE_OAUTH_TOKEN=$TOKEN" >> "$_ENV_FILE")
-    fi
+    # Do NOT write token to .env — the credential proxy reads credentials.json
+    # directly via getDynamicOAuthToken() with a 5-min cache. Writing to .env
+    # would permanently freeze the token and cause a login loop on next refresh.
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
     # Resolve vault path from config (DEUS_VAULT_PATH env var → ~/.config/deus/config.json)
@@ -862,6 +855,6 @@ $STARTUP_INSTRUCTION" "Catch me up."
     echo ""
     echo "  deus        Launch in current directory (external project mode if not ~/deus)"
     echo "  deus home   Launch in home mode (~/deus) regardless of current directory"
-    echo "  deus auth   Refresh OAuth token and restart background services"
+    echo "  deus auth   Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
     ;;
 esac
