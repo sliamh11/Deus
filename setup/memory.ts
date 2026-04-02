@@ -14,6 +14,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { HOME_DIR, CONFIG_DIR } from '../src/config.js';
+import { resolvePython } from '../src/checks.js';
 import { logger } from '../src/logger.js';
 import { emitStatus } from './status.js';
 
@@ -33,9 +34,19 @@ export async function run(args: string[]): Promise<void> {
   logger.info('Starting memory system setup');
 
   // ── 1. Check Python ──────────────────────────────────────────────────────
+  // Resolve python3 or python (Windows may only have `python` in PATH)
+  const pythonCmd = resolvePython();
+  if (!pythonCmd) {
+    emitStatus('MEMORY', {
+      STATUS: 'failed',
+      ERROR: 'Python 3 not found. Install Python 3.11+ to enable the memory system.',
+      STEP: 'python_check',
+    });
+    return;
+  }
   let pythonVersion = '';
   try {
-    pythonVersion = execSync('python3 --version', {
+    pythonVersion = execSync(`${pythonCmd} --version`, {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 5000,
@@ -54,12 +65,12 @@ export async function run(args: string[]): Promise<void> {
   // ── 2. Check/install Python dependencies ─────────────────────────────────
   const missing: string[] = [];
   try {
-    execSync('python3 -c "import sqlite_vec"', { stdio: 'pipe', timeout: 5000 });
+    execSync('${pythonCmd} -c "import sqlite_vec"', { stdio: 'pipe', timeout: 5000 });
   } catch {
     missing.push('sqlite-vec');
   }
   try {
-    execSync('python3 -c "from google import genai"', { stdio: 'pipe', timeout: 5000 });
+    execSync('${pythonCmd} -c "from google import genai"', { stdio: 'pipe', timeout: 5000 });
   } catch {
     missing.push('google-genai');
   }
@@ -97,12 +108,12 @@ export async function run(args: string[]): Promise<void> {
     // Re-check after install.
     const stillMissing: string[] = [];
     try {
-      execSync('python3 -c "import sqlite_vec"', { stdio: 'pipe', timeout: 5000 });
+      execSync('${pythonCmd} -c "import sqlite_vec"', { stdio: 'pipe', timeout: 5000 });
     } catch {
       stillMissing.push('sqlite-vec');
     }
     try {
-      execSync('python3 -c "from google import genai"', { stdio: 'pipe', timeout: 5000 });
+      execSync('${pythonCmd} -c "from google import genai"', { stdio: 'pipe', timeout: 5000 });
     } catch {
       stillMissing.push('google-genai');
     }
@@ -179,7 +190,7 @@ export async function run(args: string[]): Promise<void> {
   // ── 5. Initialize memory database ────────────────────────────────────────
   try {
     execSync(
-      `python3 "${MEMORY_INDEXER}" --rebuild`,
+      `${pythonCmd} "${MEMORY_INDEXER}" --rebuild`,
       {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],

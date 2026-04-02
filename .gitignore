@@ -23,11 +23,20 @@ groups/*/CLAUDE.md
 !groups/*/CLAUDE.md.template
 
 # Secrets — never commit credentials, tokens, or keys
-*.keys.json
+# RULE: this project is designed to be public — treat every commit as if it will be public
 .env
 .env.local
+.env.*
+!.env.example        # allow .env.example (no real values)
+*.keys.json
+*.credentials.json   # catch any stray credentials file
+*.token              # raw token files
+*.pem                # TLS/SSH private keys
+*.p12
+*.pfx
 integrations/gcal/credentials.json
 integrations/gcal/tokens.json
+config.local.json    # local config overrides that may contain secrets
 
 # Personal/one-time scripts
 scripts/rename-repo.sh

@@ -185,9 +185,10 @@ describe('hasPythonDeps', () => {
     expect(result.missing).toHaveLength(0);
   });
 
-  it('returns ok=false with python3 missing when python3 check fails', () => {
+  it('returns ok=false with python3 missing when both python3 and python are absent', () => {
     mockExecSync.mockImplementation((cmd: string) => {
-      if (String(cmd).includes('python3 --version')) {
+      // Both python3 and python unavailable (Windows without Python in PATH)
+      if (String(cmd).includes('--version')) {
         throw new Error('not found');
       }
       return Buffer.from('');

@@ -89,20 +89,35 @@ export function hasMemoryVault(): { ok: boolean; path: string | null } {
   return { ok: true, path: resolved };
 }
 
+/**
+ * Resolve the Python executable name.
+ * Tries `python3` first (Unix standard), then `python` (Windows / some envs).
+ * Returns the working command, or null if Python is not available.
+ */
+export function resolvePython(): string | null {
+  for (const cmd of ['python3', 'python']) {
+    try {
+      execSync(`${cmd} --version`, { stdio: 'pipe', timeout: 5000 });
+      return cmd;
+    } catch {
+      // try next
+    }
+  }
+  return null;
+}
+
 /** Check if Python 3 and required packages (sqlite-vec, google-genai) are available. */
 export function hasPythonDeps(): { ok: boolean; missing: string[] } {
   const missing: string[] = [];
 
-  // Check Python 3 exists
-  try {
-    execSync('python3 --version', { stdio: 'pipe', timeout: 5000 });
-  } catch {
+  const python = resolvePython();
+  if (!python) {
     return { ok: false, missing: ['python3'] };
   }
 
   // Check sqlite-vec
   try {
-    execSync('python3 -c "import sqlite_vec"', {
+    execSync(`${python} -c "import sqlite_vec"`, {
       stdio: 'pipe',
       timeout: 5000,
     });
@@ -112,7 +127,7 @@ export function hasPythonDeps(): { ok: boolean; missing: string[] } {
 
   // Check google-genai
   try {
-    execSync('python3 -c "from google import genai"', {
+    execSync(`${python} -c "from google import genai"`, {
       stdio: 'pipe',
       timeout: 5000,
     });

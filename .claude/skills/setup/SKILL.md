@@ -75,10 +75,15 @@ Run `npx tsx setup/index.ts --step environment` and parse the status block.
 ### 3a. Install Docker
 
 - DOCKER=running → continue to 3b
-- DOCKER=installed_not_running → start Docker: `open -a Docker` (macOS) or `sudo systemctl start docker` (Linux). Wait 15s, re-check with `docker info`.
+- DOCKER=installed_not_running → start Docker:
+  - macOS: `open -a Docker`
+  - Linux: `sudo systemctl start docker`
+  - Windows: Docker Desktop auto-starts. Check the system tray icon — if it's not there, launch "Docker Desktop" from Start. Wait 15s then re-check with `docker info`.
+  - Wait 15s, re-check with `docker info`.
 - DOCKER=not_found → Use `AskUserQuestion: Docker is required for running agents. Would you like me to install it?` If confirmed:
   - macOS: install via `brew install --cask docker`, then `open -a Docker` and wait for it to start. If brew not available, direct to Docker Desktop download at https://docker.com/products/docker-desktop
   - Linux: install with `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`. Note: user may need to log out/in for group membership.
+  - Windows: direct to Docker Desktop download at https://docker.com/products/docker-desktop. Requires WSL 2 (auto-offered by Docker installer). After install, start Docker Desktop from Start menu.
 
 ### 3b. Build and test
 
@@ -92,11 +97,11 @@ Run `npx tsx setup/index.ts --step container -- --runtime docker` and parse the 
 
 ## 4. Claude Authentication (No Script)
 
-If HAS_ENV=true from step 2, read `.env` and check for `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`. If present, confirm with user: keep or reconfigure?
+If HAS_ENV=true from step 2, read `.env` and check for `ANTHROPIC_API_KEY`. If present, confirm with user: keep or reconfigure?
 
 AskUserQuestion: Claude subscription (Pro/Max) vs Anthropic API key?
 
-**Subscription:** Tell user to run `claude setup-token` in another terminal, copy the token, add `CLAUDE_CODE_OAUTH_TOKEN=<token>` to `.env`. Do NOT collect the token in chat.
+**Subscription (OAuth):** The credential proxy reads `~/.claude/.credentials.json` directly — no `.env` entry needed. Just ensure the user is logged in: `claude` (launches Claude Code, which authenticates). Do NOT add `CLAUDE_CODE_OAUTH_TOKEN` to `.env` — writing it there freezes it and causes a login loop when the token auto-rotates.
 
 **API key:** Tell user to add `ANTHROPIC_API_KEY=<key>` to `.env`.
 
@@ -141,13 +146,17 @@ AskUserQuestion: Agent access to external directories?
 
 ## 7. Start Service
 
-If service already running: unload first.
+If service already running: stop first.
 - macOS: `launchctl unload ~/Library/LaunchAgents/com.deus.plist`
 - Linux: `systemctl --user stop deus` (or `systemctl stop deus` if root)
+- Windows (NSSM): `nssm stop deus`
+- Windows (Servy): `servy-cli stop --name=deus`
 
 Run `npx tsx setup/index.ts --step service` and parse the status block.
 
 **If FALLBACK=wsl_no_systemd:** WSL without systemd detected. Tell user they can either enable systemd in WSL (`echo -e "[boot]\nsystemd=true" | sudo tee /etc/wsl.conf` then restart WSL) or use the generated `start-deus.sh` wrapper.
+
+**If PLATFORM=windows and FALLBACK=batch:** Windows without NSSM/Servy — a `start-deus.bat` launcher was generated. Tell user: run it from PowerShell as `.\start-deus.bat` or double-click it. For auto-start on login, add a shortcut to `shell:startup`.
 
 **If DOCKER_GROUP_STALE=true:** The user was added to the docker group after their session started — the systemd service can't reach the Docker socket. Ask user to run these two commands:
 
@@ -174,7 +183,12 @@ Replace `USERNAME` with the actual username (from `whoami`). Run the two `sudo` 
 Run `npx tsx setup/index.ts --step verify` and parse the status block.
 
 **If STATUS=failed, fix each:**
-- SERVICE=stopped → `npm run build`, then restart: `launchctl kickstart -k gui/$(id -u)/com.deus` (macOS) or `systemctl --user restart deus` (Linux) or `bash start-deus.sh` (WSL nohup)
+- SERVICE=stopped → `npm run build`, then restart:
+  - macOS: `launchctl kickstart -k gui/$(id -u)/com.deus`
+  - Linux: `systemctl --user restart deus`
+  - Windows (NSSM): `nssm restart deus`
+  - Windows (Servy): `servy-cli restart --name=deus`
+  - WSL nohup fallback: `bash start-deus.sh`
 - SERVICE=not_found → re-run step 7
 - CREDENTIALS=missing → re-run step 4
 - CHANNEL_AUTH shows `not_found` for any channel → re-invoke that channel's skill (e.g. `/add-telegram`)

@@ -644,8 +644,14 @@ case "$1" in
     # Do NOT write token to .env — the credential proxy reads credentials.json
     # directly via getDynamicOAuthToken() with a 5-min cache. Writing to .env
     # would permanently freeze the token and cause a login loop on next refresh.
+    #
+    # Always rebuild before restarting — prevents silent dist/src drift where
+    # a source fix is present but the running binary is stale (root cause of
+    # the login loop regression: fix was in src but never compiled into dist).
+    printf "  Building...\r"
+    (cd "$HOME/deus" && npm run build --silent) || { echo "Build failed — not restarting."; exit 1; }
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
-    echo "Deus restarted (credential proxy reads ~/.claude/.credentials.json directly)."
+    echo "Deus built and restarted."
     ;;
   home|"")
     TOKEN=$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["claudeAiOauth"]["accessToken"])' "$HOME/.claude/.credentials.json" 2>/dev/null)
