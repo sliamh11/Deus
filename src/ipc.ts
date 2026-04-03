@@ -4,6 +4,7 @@ import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { getSkillIpcHandlers } from './skills/registry.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
@@ -593,7 +594,29 @@ export async function processTaskIpc(
       }
       break;
 
-    default:
-      logger.warn({ type: data.type }, 'Unknown IPC task type');
+    default: {
+      // Delegate to registered skill handlers
+      let handled = false;
+      for (const [name, handler] of getSkillIpcHandlers()) {
+        try {
+          handled = await handler(
+            data as Record<string, unknown>,
+            sourceGroup,
+            isControlGroup,
+            deps,
+          );
+          if (handled) break;
+        } catch (err) {
+          logger.error(
+            { skill: name, type: data.type, err },
+            'Skill IPC handler error',
+          );
+        }
+      }
+      if (!handled) {
+        logger.warn({ type: data.type }, 'Unknown IPC task type');
+      }
+      break;
+    }
   }
 }

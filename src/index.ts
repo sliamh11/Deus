@@ -17,6 +17,7 @@ import {
 import { initDatabase, storeChatMetadata, storeMessage } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
+import { loadSkillIpcHandlers } from './skills/index.js';
 import { createMessageOrchestrator } from './message-orchestrator.js';
 import { findChannel, formatOutbound } from './router.js';
 import {
@@ -240,6 +241,9 @@ async function main(): Promise<void> {
       if (text) await channel.sendMessage(jid, text);
     },
   });
+
+  // Load skill IPC handlers before starting the IPC watcher
+  await loadSkillIpcHandlers();
 
   startIpcWatcher({
     sendMessage: (jid, text) => {

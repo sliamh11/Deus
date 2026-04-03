@@ -37,16 +37,32 @@ RUN npm install -g agent-browser@0.23.0 @anthropic-ai/claude-code@2.1.87
 # Create app directory
 WORKDIR /app
 
-# Copy package files first for better caching
-COPY agent-runner/package*.json ./
+# Copy package files first for better caching (build context is project root)
+COPY container/agent-runner/package*.json ./
 
 # Install dependencies
 RUN npm install
 
 # Copy source code
-COPY agent-runner/ ./
+COPY container/agent-runner/ ./
 
-# Build TypeScript
+# Copy skill agent-side definitions (community templates + local skills)
+# The build script stages skill agent files into container/skill-agents/
+# before building. This directory may be empty if no skills have agent.ts.
+COPY container/skill-agents/ /tmp/skill-agents/
+RUN mkdir -p /app/src/skills && \
+    for dir in /tmp/skill-agents/*/; do \
+      [ -d "$dir" ] || continue; \
+      name=$(basename "$dir"); \
+      if [ -f "$dir/agent.ts" ]; then \
+        mkdir -p "/app/src/skills/$name"; \
+        cp "$dir/agent.ts" "/app/src/skills/$name/"; \
+        echo "[skills] Copied: $name"; \
+      fi; \
+    done && \
+    rm -rf /tmp/skill-agents
+
+# Build TypeScript (includes skill agent files)
 RUN npm run build
 
 # Create workspace directories
