@@ -28,7 +28,7 @@ git fetch upstream skill/compact
 git merge upstream/skill/compact
 ```
 
-> **Note:** `upstream` is the remote pointing to `QWIBITAI_DEUS_PLACEHOLDER`. If using a different remote name, substitute accordingly.
+> **Note:** `upstream` is the remote pointing to `qwibitai/nanoclaw`. If using a different remote name, substitute accordingly.
 
 This adds:
 - `src/session-commands.ts` (extract and authorize session commands)

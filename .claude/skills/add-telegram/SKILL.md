@@ -32,7 +32,7 @@ git remote -v
 If `telegram` is missing, add it:
 
 ```bash
-git remote add telegram https://github.com/QWIBITAI_DEUS_PLACEHOLDER-telegram.git
+git remote add telegram https://github.com/qwibitai/nanoclaw-telegram.git
 ```
 
 ### Merge the skill branch

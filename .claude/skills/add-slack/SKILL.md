@@ -28,7 +28,7 @@ git remote -v
 If `slack` is missing, add it:
 
 ```bash
-git remote add slack https://github.com/QWIBITAI_DEUS_PLACEHOLDER-slack.git
+git remote add slack https://github.com/qwibitai/nanoclaw-slack.git
 ```
 
 ### Merge the skill branch
