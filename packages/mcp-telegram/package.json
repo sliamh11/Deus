@@ -1,0 +1,31 @@
+{
+  "name": "deus-mcp-telegram",
+  "version": "1.0.0",
+  "description": "Telegram MCP server — standalone Telegram bot integration for any MCP client",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "deus-mcp-telegram": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "deus-mcp-channel-core": "file:../mcp-channel-core",
+    "grammy": "^1.39.3",
+    "pino": "^10.3.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

@@ -72,5 +72,10 @@ __pycache__/
 container/skill-agents/*
 !container/skill-agents/.gitkeep
 
+# MCP channel packages (local dev artifacts)
+packages/*/node_modules/
+packages/*/dist/
+packages/*/package-lock.json
+
 agents-sdk-docs
 deus.db

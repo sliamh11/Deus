@@ -23,47 +23,33 @@ If they have one, collect it now. If not, we'll create one in Phase 3.
 
 ## Phase 2: Apply Code Changes
 
-### Ensure channel remote
+Check if `src/channels/mcp-telegram.ts` already exists in the channel barrel imports. If it does, skip to Phase 3 (Setup).
+
+### Install the Telegram MCP server package
 
 ```bash
-git remote -v
+npm install deus-mcp-telegram
 ```
 
-If `telegram` is missing, add it:
+This installs the standalone Telegram MCP server, which runs as a separate process and communicates via stdio.
 
-```bash
-git remote add telegram https://github.com/qwibitai/nanoclaw-telegram.git
+### Register the channel
+
+Add the Telegram import to `src/channels/index.ts`:
+
+```typescript
+import './mcp-telegram.js';
 ```
 
-### Merge the skill branch
-
-```bash
-git fetch telegram main
-git merge telegram/main || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
-```
-
-This merges in:
-- `src/channels/telegram.ts` (TelegramChannel class with self-registration via `registerChannel`)
-- `src/channels/telegram.test.ts` (unit tests with grammy mock)
-- `import './telegram.js'` appended to the channel barrel file `src/channels/index.ts`
-- `grammy` npm dependency in `package.json`
-- `TELEGRAM_BOT_TOKEN` in `.env.example`
-
-If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
+The `src/channels/mcp-telegram.ts` factory is already in the codebase — it spawns the MCP server and bridges it to the Deus Channel interface.
 
 ### Validate code changes
 
 ```bash
-npm install
 npm run build
-npx vitest run src/channels/telegram.test.ts
 ```
 
-All tests must pass (including the new Telegram tests) and build must be clean before proceeding.
+Build must be clean before proceeding.
 
 ## Phase 3: Setup
 

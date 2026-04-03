@@ -44,52 +44,41 @@ AskUserQuestion: What is your phone number? (Include country code without +, e.g
 
 ## Phase 2: Apply Code Changes
 
-Check if `src/channels/whatsapp.ts` already exists. If it does, skip to Phase 3 (Authentication).
+Check if `src/channels/mcp-whatsapp.ts` already exists in the channel barrel imports. If it does, skip to Phase 3 (Authentication).
 
-### Ensure channel remote
-
-```bash
-git remote -v
-```
-
-If `whatsapp` is missing, add it:
+### Install the WhatsApp MCP server package
 
 ```bash
-git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git
+npm install deus-mcp-whatsapp
 ```
 
-### Merge the skill branch
+This installs the standalone WhatsApp MCP server, which runs as a separate process and communicates via stdio.
 
-```bash
-git fetch whatsapp main
-git merge whatsapp/main || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
+### Register the channel
+
+Add the WhatsApp import to `src/channels/index.ts`:
+
+```typescript
+import './mcp-whatsapp.js';
 ```
 
-This merges in:
-- `src/channels/whatsapp.ts` (WhatsAppChannel class with self-registration via `registerChannel`)
-- `src/channels/whatsapp.test.ts` (41 unit tests)
-- `src/whatsapp-auth.ts` (standalone WhatsApp authentication script)
-- `setup/whatsapp-auth.ts` (WhatsApp auth setup step)
-- `import './whatsapp.js'` appended to the channel barrel file `src/channels/index.ts`
-- `'whatsapp-auth'` step added to `setup/index.ts`
-- `@whiskeysockets/baileys`, `qrcode`, `qrcode-terminal` npm dependencies in `package.json`
-- `ASSISTANT_HAS_OWN_NUMBER` in `.env.example`
+The `src/channels/mcp-whatsapp.ts` factory is already in the codebase — it spawns the MCP server and bridges it to the Deus Channel interface.
 
-If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
+### Configure environment
+
+Add `ASSISTANT_HAS_OWN_NUMBER` to `.env.example` if not already present:
+
+```
+ASSISTANT_HAS_OWN_NUMBER=false
+```
 
 ### Validate code changes
 
 ```bash
-npm install
 npm run build
-npx vitest run src/channels/whatsapp.test.ts
 ```
 
-All tests must pass and build must be clean before proceeding.
+Build must be clean before proceeding.
 
 ## Phase 3: Authentication
 
