@@ -333,6 +333,15 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+// Load skill MCP tools (auto-discovered from /app/skills/*/agent.js)
+import { loadSkillMcpTools } from './skill-mcp-registry.js';
+await loadSkillMcpTools(server, {
+  groupFolder,
+  chatJid,
+  isMain,
+  ipcDir: IPC_DIR,
+});
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);
