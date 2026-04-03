@@ -281,3 +281,105 @@ def test_cmd_recent_days_mtime_order_within_day(mi, fresh_vault, capsys):
     assert "late" in lines[0]
     assert "middle" in lines[1]
     assert "early" in lines[2]
+
+
+# ── cmd_learnings ────────────────────────────────────────────────────────
+
+
+def _create_atom(vault, name: str, body: str, category: str = "decision",
+                 corroborations: int = 1, confidence: float = 0.5,
+                 created_at: str = "2024-06-10", updated_at: str = "2024-06-15",
+                 ttl_days: str = "null"):
+    """Helper to create an atom file."""
+    atoms_dir = vault / "Atoms"
+    atoms_dir.mkdir(exist_ok=True)
+    p = atoms_dir / name
+    p.write_text(
+        f"---\ntype: atom\ncategory: {category}\ntags: []\n"
+        f"confidence: {confidence}\ncorroborations: {corroborations}\n"
+        f"source: /test/session.md\ncreated_at: {created_at}\n"
+        f"updated_at: {updated_at}\nttl_days: {ttl_days}\n---\n{body}\n"
+    )
+    return p
+
+
+def test_cmd_learnings_surfaces_strengthened_atoms(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """Atoms with updated_at > created_at and corroborations >= 2 show as 'Pattern confirmed'."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    from datetime import date, timedelta
+    today = date.today()
+    _create_atom(fresh_vault, "decision-branches.md", "Always use feature branches",
+                 corroborations=3, confidence=0.80,
+                 created_at=str(today - timedelta(days=10)),
+                 updated_at=str(today - timedelta(days=1)))
+
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert "Pattern confirmed" in output
+    assert "feature branches" in output
+    assert "seen across 3 sessions" in output
+
+
+def test_cmd_learnings_surfaces_new_insights(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """Atoms created recently with 1 corroboration show as 'New insight'."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    from datetime import date, timedelta
+    today = date.today()
+    _create_atom(fresh_vault, "fact-new-thing.md", "Playwright needs interactive stdin",
+                 category="fact", corroborations=1, confidence=0.50,
+                 created_at=str(today - timedelta(days=2)),
+                 updated_at=str(today - timedelta(days=2)))
+
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert "New insight" in output
+    assert "Playwright" in output
+
+
+def test_cmd_learnings_delta_tracking(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """Second run skips atoms already shown in first run."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    from datetime import date, timedelta
+    today = date.today()
+    _create_atom(fresh_vault, "decision-only-one.md", "Use sqlite-vec for search",
+                 corroborations=2, confidence=0.70,
+                 created_at=str(today - timedelta(days=5)),
+                 updated_at=str(today - timedelta(days=1)))
+
+    # First run — should show it
+    mi.cmd_learnings(since_days=7, max_items=3)
+    first_output = capsys.readouterr().out
+    assert "sqlite-vec" in first_output
+
+    # Second run — should NOT show it (delta tracking)
+    mi.cmd_learnings(since_days=7, max_items=3)
+    second_output = capsys.readouterr().out
+    assert "sqlite-vec" not in second_output
+
+
+def test_cmd_learnings_empty_when_nothing_new(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """No output when no atoms qualify (old atoms only)."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    _create_atom(fresh_vault, "decision-old.md", "Old decision",
+                 created_at="2020-01-01", updated_at="2020-01-01")
+
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert output == ""
+
+
+def test_cmd_learnings_skips_expired_atoms(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """Atoms past their TTL should not appear."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    from datetime import date, timedelta
+    today = date.today()
+    # Created 400 days ago with 365-day TTL — expired
+    _create_atom(fresh_vault, "constraint-expired.md", "Expired constraint",
+                 category="constraint", corroborations=5, confidence=0.90,
+                 created_at=str(today - timedelta(days=400)),
+                 updated_at=str(today - timedelta(days=1)),
+                 ttl_days="365")
+
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert "Expired constraint" not in output

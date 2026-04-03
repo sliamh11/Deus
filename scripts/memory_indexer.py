@@ -40,6 +40,7 @@ from evolution.config import (
 
 CONFIG_PATH = Path("~/.config/deus/config.json").expanduser()
 DB_PATH = Path("~/.deus/memory.db").expanduser()
+LAST_RESUME_LEARNINGS = Path("~/.deus/last_resume_learnings.txt").expanduser()
 
 
 def _load_vault_path() -> Path:
@@ -309,6 +310,129 @@ def cmd_recent(n: int = 3, days: bool = False):
         lines.append(f"  (full log: {path})")
 
     print("\n".join(lines))
+
+
+def cmd_learnings(since_days: int = 7, max_items: int = 3):
+    """Surface recently strengthened or new high-confidence atoms since last /resume.
+
+    Delta tracking: compares against ~/.deus/last_resume_learnings.txt to avoid
+    showing the same learnings twice. Outputs nothing if no new learnings exist.
+    """
+    if not VAULT_ATOMS.exists():
+        return
+
+    from datetime import date as _date, timedelta
+    today = _date.today()
+    cutoff = today - timedelta(days=since_days)
+
+    # Load previously shown learnings for delta tracking
+    previously_shown: set[str] = set()
+    if LAST_RESUME_LEARNINGS.exists():
+        previously_shown = set(LAST_RESUME_LEARNINGS.read_text().strip().splitlines())
+
+    # Scan all atoms
+    candidates: list[dict] = []
+    for atom_path in VAULT_ATOMS.glob("*.md"):
+        content = atom_path.read_text(encoding="utf-8")
+        fm = extract_frontmatter(content)
+        if not fm:
+            continue
+
+        created_at = fm.get("date") or fm.get("raw", "")
+        updated_at = ""
+        corroborations = 1
+        confidence = 0.5
+        category = "fact"
+        expired = False
+
+        # Parse frontmatter fields from raw block
+        raw = fm.get("raw", "")
+        for line in raw.splitlines():
+            if line.startswith("created_at:"):
+                created_at = line.split(":", 1)[1].strip()
+            elif line.startswith("updated_at:"):
+                updated_at = line.split(":", 1)[1].strip()
+            elif line.startswith("corroborations:"):
+                try:
+                    corroborations = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("confidence:"):
+                try:
+                    confidence = float(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("category:"):
+                category = line.split(":", 1)[1].strip()
+            elif line.startswith("ttl_days:"):
+                ttl_str = line.split(":", 1)[1].strip()
+                if ttl_str not in ("null", ""):
+                    try:
+                        ttl = int(ttl_str)
+                        if created_at and (today - _date.fromisoformat(created_at)).days > ttl:
+                            expired = True
+                    except (ValueError, TypeError):
+                        pass
+
+        if expired:
+            continue
+
+        if not updated_at:
+            updated_at = created_at
+
+        try:
+            update_date = _date.fromisoformat(updated_at)
+        except (ValueError, TypeError):
+            continue
+
+        if update_date < cutoff:
+            continue
+
+        # Extract body text (after second ---)
+        body = ""
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            body = parts[2].strip()
+        if not body:
+            continue
+
+        # Skip if already shown in a previous /resume
+        if atom_path.name in previously_shown:
+            continue
+
+        # Classify: strengthened (updated > created, 2+ corroborations) vs new insight
+        is_strengthened = (updated_at != created_at) and corroborations >= 2
+
+        candidates.append({
+            "path": atom_path,
+            "name": atom_path.name,
+            "body": body,
+            "category": category,
+            "corroborations": corroborations,
+            "confidence": confidence,
+            "is_strengthened": is_strengthened,
+            "updated_at": updated_at,
+        })
+
+    if not candidates:
+        return
+
+    # Sort: strengthened patterns first, then by confidence desc, then recency
+    candidates.sort(key=lambda x: (x["is_strengthened"], x["confidence"], x["updated_at"]), reverse=True)
+    selected = candidates[:max_items]
+
+    lines = ["## What's Emerging"]
+    for item in selected:
+        prefix = "Pattern confirmed" if item["is_strengthened"] else "New insight"
+        suffix = f" (seen across {item['corroborations']} sessions)" if item["corroborations"] >= 2 else ""
+        lines.append(f"- {prefix}: {item['body']}{suffix}")
+
+    print("\n".join(lines))
+
+    # Update delta tracking file
+    LAST_RESUME_LEARNINGS.parent.mkdir(parents=True, exist_ok=True)
+    shown_names = previously_shown | {item["name"] for item in selected}
+    LAST_RESUME_LEARNINGS.write_text("\n".join(sorted(shown_names)) + "\n")
 
 
 def cmd_query(query: str, top: int = 3, recency_boost: bool = False):
@@ -819,7 +943,11 @@ def main():
                        help="Return last N session frontmatters by date (no API call)")
     group.add_argument("--recent-days", type=int, metavar="N",
                        help="Return ALL sessions from the last N calendar days (no API call)")
+    group.add_argument("--learnings", action="store_true",
+                       help="Surface recently strengthened/new atoms since last /resume (no API call)")
     parser.add_argument("--top", type=int, default=3, help="Number of results for --query")
+    parser.add_argument("--since", type=int, default=7,
+                        help="Lookback window in days for --learnings (default: 7)")
     parser.add_argument("--steps", type=int, default=3, help="Activation steps for --wander")
     parser.add_argument("--recency-boost", action="store_true",
                         help="Boost recent results in --query (last 7d strong, 30d moderate)")
@@ -835,6 +963,9 @@ def main():
         return
     if args.recent_days is not None:
         cmd_recent(args.recent_days, days=True)
+        return
+    if args.learnings:
+        cmd_learnings(since_days=args.since, max_items=args.top)
         return
 
     _client = genai.Client(api_key=load_api_key())

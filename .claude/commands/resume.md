@@ -25,7 +25,12 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
     find "$VAULT/Session-Logs" -name "*.md" -not -path "*/.obsidian/*" | xargs ls -t 2>/dev/null | head -6
     Then read frontmatter only (lines between the two --- markers) of those files.
 
-4b. Load cold tier — semantically relevant older sessions:
+4b. Load learnings — what's new since last /resume (no API cost):
+    Run: python3 scripts/memory_indexer.py --learnings --since 7 --top 3
+    If output is non-empty, include it as a "What's Emerging" section after recent sessions.
+    If no output (nothing new), skip silently — silence signals stability.
+
+4c. Load cold tier — semantically relevant older sessions:
     Formulate a 1-sentence query based on the loaded context from steps 1–3 (e.g. "linear algebra exam prep" or "nanoclaw whatsapp debugging").
     Run: python3 scripts/memory_indexer.py --query "<your query>" --top 2 --recency-boost
     Include the output as additional context. Deduplicate: skip any session that already appeared in step 4a (compare by filename).
