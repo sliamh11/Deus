@@ -197,3 +197,248 @@ def test_delete_entries_removes_rows(mi):
     mi.delete_entries(db, "/test/path.md")
     assert not mi.entry_exists(db, "/test/path.md")
     db.close()
+
+
+# ── cmd_recent ───────────────────────────────────────────────────────────
+
+
+def _create_session(vault, date_folder: str, name: str, tldr: str, mtime_offset: float = 0):
+    """Helper to create a session log file with controlled mtime."""
+    day_dir = vault / "Session-Logs" / date_folder
+    day_dir.mkdir(parents=True, exist_ok=True)
+    p = day_dir / f"{name}.md"
+    p.write_text(
+        f"---\ntype: session\ndate: {date_folder}\ntldr: {tldr}\n---\n## Summary\n"
+    )
+    # Set mtime: base + offset (higher offset = newer)
+    import time
+    base_mtime = time.time() - 10000 + mtime_offset
+    os.utime(p, (base_mtime, base_mtime))
+    return p
+
+
+def test_cmd_recent_mtime_tiebreaker(mi, fresh_vault, capsys):
+    """Sessions on the same day should be ordered by mtime, newest first."""
+    _create_session(fresh_vault, "2024-06-15", "session-a", "first session", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "session-b", "second session", mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-15", "session-c", "third session", mtime_offset=300)
+
+    mi.cmd_recent(2)
+    output = capsys.readouterr().out
+    lines = [l for l in output.strip().split("\n") if l.startswith("- [")]
+
+    assert len(lines) == 2
+    # session-c (newest mtime) should be first, then session-b
+    assert "session c" in lines[0]
+    assert "session b" in lines[1]
+
+
+def test_cmd_recent_days_returns_all_from_day(mi, fresh_vault, capsys):
+    """--recent-days N should return ALL sessions from the last N calendar days."""
+    # 3 sessions on the same day
+    _create_session(fresh_vault, "2024-06-15", "session-a", "a", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "session-b", "b", mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-15", "session-c", "c", mtime_offset=300)
+    # 1 session on a different day
+    _create_session(fresh_vault, "2024-06-14", "session-old", "old", mtime_offset=50)
+
+    mi.cmd_recent(1, days=True)
+    output = capsys.readouterr().out
+    lines = [l for l in output.strip().split("\n") if l.startswith("- [")]
+
+    # Should return all 3 from 2024-06-15, NOT the one from 2024-06-14
+    assert len(lines) == 3
+    assert "session old" not in output
+
+
+def test_cmd_recent_days_spans_multiple_days(mi, fresh_vault, capsys):
+    """--recent-days 2 should return sessions from 2 distinct calendar days."""
+    _create_session(fresh_vault, "2024-06-15", "today-a", "a", mtime_offset=300)
+    _create_session(fresh_vault, "2024-06-15", "today-b", "b", mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-14", "yesterday", "y", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-13", "ancient-session", "o", mtime_offset=50)
+
+    mi.cmd_recent(2, days=True)
+    output = capsys.readouterr().out
+    lines = [l for l in output.strip().split("\n") if l.startswith("- [")]
+
+    # 2 from Jun 15 + 1 from Jun 14 = 3
+    assert len(lines) == 3
+    assert "ancient-session" not in output
+
+
+def test_cmd_recent_continuity_indicator(mi, fresh_vault, capsys):
+    """Output should include a continuity summary line."""
+    _create_session(fresh_vault, "2024-06-15", "session-a", "a", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "session-b", "b", mtime_offset=200)
+    # Create an atom so we can verify atom count
+    atoms_dir = fresh_vault / "Atoms"
+    atoms_dir.mkdir(exist_ok=True)
+    (atoms_dir / "test-atom.md").write_text("---\ntype: atom\n---\nTest atom\n")
+
+    mi.cmd_recent(1, days=True)
+    output = capsys.readouterr().out
+    assert "Continuity:" in output
+    assert "2 sessions across 1 day" in output
+    assert "1 atoms" in output
+
+
+def test_cmd_recent_clustering_on_busy_days(mi, fresh_vault, capsys):
+    """When 4+ sessions share a day, sessions with matching topics are clustered."""
+    _create_session(fresh_vault, "2024-06-15", "auth-login", "login fix", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "auth-oauth", "oauth fix", mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-15", "ui-dashboard", "dashboard", mtime_offset=300)
+    _create_session(fresh_vault, "2024-06-15", "ui-sidebar", "sidebar", mtime_offset=400)
+
+    # Patch the sessions to have topics
+    for name, topics in [("auth-login", "auth, security"), ("auth-oauth", "auth, oauth"),
+                         ("ui-dashboard", "ui, dashboard"), ("ui-sidebar", "ui, layout")]:
+        p = fresh_vault / "Session-Logs" / "2024-06-15" / f"{name}.md"
+        p.write_text(
+            f"---\ntype: session\ndate: 2024-06-15\ntldr: {name} work\ntopics: [{topics}]\n---\n## Summary\n"
+        )
+
+    mi.cmd_recent(1, days=True)
+    output = capsys.readouterr().out
+    # Should have at least one cluster header with "(2 sessions)"
+    assert "(2 sessions)" in output
+
+
+def test_cmd_recent_no_clustering_under_threshold(mi, fresh_vault, capsys):
+    """Fewer than 4 sessions on a day should NOT cluster."""
+    _create_session(fresh_vault, "2024-06-15", "session-a", "a", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "session-b", "b", mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-15", "session-c", "c", mtime_offset=300)
+
+    mi.cmd_recent(1, days=True)
+    output = capsys.readouterr().out
+    # No clustering — flat format
+    assert "(2 sessions)" not in output
+    assert "session a" in output
+
+
+def test_cmd_recent_days_mtime_order_within_day(mi, fresh_vault, capsys):
+    """Within a day, sessions should be ordered newest-first by mtime."""
+    _create_session(fresh_vault, "2024-06-15", "early", "e", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "middle", "m", mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-15", "late", "l", mtime_offset=300)
+
+    mi.cmd_recent(1, days=True)
+    output = capsys.readouterr().out
+    lines = [l for l in output.strip().split("\n") if l.startswith("- [")]
+
+    assert len(lines) == 3
+    assert "late" in lines[0]
+    assert "middle" in lines[1]
+    assert "early" in lines[2]
+
+
+# ── cmd_learnings ────────────────────────────────────────────────────────
+
+
+def _create_atom(vault, name: str, body: str, category: str = "decision",
+                 corroborations: int = 1, confidence: float = 0.5,
+                 created_at: str = "2024-06-10", updated_at: str = "2024-06-15",
+                 ttl_days: str = "null"):
+    """Helper to create an atom file."""
+    atoms_dir = vault / "Atoms"
+    atoms_dir.mkdir(exist_ok=True)
+    p = atoms_dir / name
+    p.write_text(
+        f"---\ntype: atom\ncategory: {category}\ntags: []\n"
+        f"confidence: {confidence}\ncorroborations: {corroborations}\n"
+        f"source: /test/session.md\ncreated_at: {created_at}\n"
+        f"updated_at: {updated_at}\nttl_days: {ttl_days}\n---\n{body}\n"
+    )
+    return p
+
+
+def test_cmd_learnings_surfaces_strengthened_atoms(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """Atoms with updated_at > created_at and corroborations >= 2 show as 'Pattern confirmed'."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    from datetime import date, timedelta
+    today = date.today()
+    _create_atom(fresh_vault, "decision-branches.md", "Always use feature branches",
+                 corroborations=3, confidence=0.80,
+                 created_at=str(today - timedelta(days=10)),
+                 updated_at=str(today - timedelta(days=1)))
+
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert "Pattern confirmed" in output
+    assert "feature branches" in output
+    assert "seen across 3 sessions" in output
+
+
+def test_cmd_learnings_surfaces_new_insights(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """Atoms created recently with 1 corroboration show as 'New insight'."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    from datetime import date, timedelta
+    today = date.today()
+    _create_atom(fresh_vault, "fact-new-thing.md", "Playwright needs interactive stdin",
+                 category="fact", corroborations=1, confidence=0.50,
+                 created_at=str(today - timedelta(days=2)),
+                 updated_at=str(today - timedelta(days=2)))
+
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert "New insight" in output
+    assert "Playwright" in output
+
+
+def test_cmd_learnings_delta_tracking(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """Second run skips atoms already shown in first run."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    from datetime import date, timedelta
+    today = date.today()
+    _create_atom(fresh_vault, "decision-only-one.md", "Use sqlite-vec for search",
+                 corroborations=2, confidence=0.70,
+                 created_at=str(today - timedelta(days=5)),
+                 updated_at=str(today - timedelta(days=1)))
+
+    # First run — should show it
+    mi.cmd_learnings(since_days=7, max_items=3)
+    first_output = capsys.readouterr().out
+    assert "sqlite-vec" in first_output
+
+    # Second run — should NOT show it (delta tracking)
+    mi.cmd_learnings(since_days=7, max_items=3)
+    second_output = capsys.readouterr().out
+    assert "sqlite-vec" not in second_output
+
+
+def test_cmd_learnings_empty_when_nothing_new(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """No output when no atoms qualify (old atoms only)."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    _create_atom(fresh_vault, "decision-old.md", "Old decision",
+                 created_at="2020-01-01", updated_at="2020-01-01")
+
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert output == ""
+
+
+def test_cmd_learnings_cold_start_welcome(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """When no atoms exist, show a welcome message."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    # fresh_vault has empty Atoms dir
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert "Your learnings will appear here" in output
+
+
+def test_cmd_learnings_skips_expired_atoms(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """Atoms past their TTL should not appear."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    from datetime import date, timedelta
+    today = date.today()
+    # Created 400 days ago with 365-day TTL — expired
+    _create_atom(fresh_vault, "constraint-expired.md", "Expired constraint",
+                 category="constraint", corroborations=5, confidence=0.90,
+                 created_at=str(today - timedelta(days=400)),
+                 updated_at=str(today - timedelta(days=1)),
+                 ttl_days="365")
+
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert "Expired constraint" not in output

@@ -40,6 +40,7 @@ from evolution.config import (
 
 CONFIG_PATH = Path("~/.config/deus/config.json").expanduser()
 DB_PATH = Path("~/.deus/memory.db").expanduser()
+LAST_RESUME_LEARNINGS = Path("~/.deus/last_resume_learnings.txt").expanduser()
 
 
 def _load_vault_path() -> Path:
@@ -259,8 +260,13 @@ def cmd_add(path_str: str):
     print(f"Indexed {indexed} chunk(s) from {path.name}")
 
 
-def cmd_recent(n: int = 3):
-    """Return the last N session frontmatters by date. Pure filesystem — no API calls."""
+def cmd_recent(n: int = 3, days: bool = False):
+    """Return recent session frontmatters. Pure filesystem — no API calls.
+
+    When days=False (legacy): return last N sessions, sorted by date then mtime.
+    When days=True: return ALL sessions from the last N calendar days, sorted by
+    date descending then mtime descending (newest first within each day).
+    """
     if not VAULT_SESSION_LOGS.exists():
         print(f"ERROR: session logs not found at {VAULT_SESSION_LOGS}", file=sys.stderr)
         sys.exit(1)
@@ -276,20 +282,220 @@ def cmd_recent(n: int = 3):
         return fm.get("date", "0000-00-00")
 
     dated = [(get_date(f), f) for f in log_files]
-    dated.sort(key=lambda x: x[0], reverse=True)
+    # Sort by date descending, then mtime descending (newest file first within same day)
+    dated.sort(key=lambda x: (x[0], x[1].stat().st_mtime), reverse=True)
 
-    lines = ["## Recent Sessions"]
-    for date, path in dated[:n]:
+    if days:
+        # Collect all unique dates, take the first N, return all sessions from those days
+        seen_dates: list[str] = []
+        for date, _ in dated:
+            if date not in seen_dates:
+                seen_dates.append(date)
+            if len(seen_dates) > n:
+                break
+        target_dates = set(seen_dates[:n])
+        selected = [(d, p) for d, p in dated if d in target_dates]
+    else:
+        selected = dated[:n]
+
+    # Group sessions by date for clustering on busy days
+    from collections import OrderedDict
+    by_date: OrderedDict[str, list[tuple[str, Path, dict]]] = OrderedDict()
+    for date, path in selected:
         content = path.read_text(encoding="utf-8")
         fm = extract_frontmatter(content)
-        name = path.stem.replace("-", " ")
-        tldr = (fm.get("tldr", "") or "").split(".")[0][:80]
-        decisions = fm.get("decisions", "") or ""
-        dec_part = f" | {decisions}" if decisions else ""
-        lines.append(f"- [{date} | {name}]{dec_part} — {tldr}")
-        lines.append(f"  (full log: {path})")
+        by_date.setdefault(date, []).append((date, path, fm))
+
+    lines = ["## Recent Sessions"]
+
+    for date, sessions in by_date.items():
+        if len(sessions) >= 4:
+            # Cluster by topics when 4+ sessions on the same day
+            clusters: dict[str, list[tuple[Path, dict]]] = {}
+            for _, path, fm in sessions:
+                topics = fm.get("topics", "") or ""
+                # Use first topic as cluster key, fallback to "General"
+                first_topic = topics.split(",")[0].strip() if topics else "General"
+                first_topic = first_topic.strip("[] ")
+                if not first_topic:
+                    first_topic = "General"
+                clusters.setdefault(first_topic, []).append((path, fm))
+
+            for topic, items in clusters.items():
+                if len(items) >= 2:
+                    # Clustered: group header + indented items
+                    lines.append(f"- [{date} | {topic}] ({len(items)} sessions)")
+                    for path, fm in items:
+                        name = path.stem.replace("-", " ")
+                        tldr = (fm.get("tldr", "") or "").split(".")[0][:80]
+                        lines.append(f"  - {name} — {tldr}")
+                        lines.append(f"    (full log: {path})")
+                else:
+                    # Single item — flat format
+                    path, fm = items[0]
+                    name = path.stem.replace("-", " ")
+                    tldr = (fm.get("tldr", "") or "").split(".")[0][:80]
+                    decisions = fm.get("decisions", "") or ""
+                    dec_part = f" | {decisions}" if decisions else ""
+                    lines.append(f"- [{date} | {name}]{dec_part} — {tldr}")
+                    lines.append(f"  (full log: {path})")
+        else:
+            for _, path, fm in sessions:
+                name = path.stem.replace("-", " ")
+                tldr = (fm.get("tldr", "") or "").split(".")[0][:80]
+                decisions = fm.get("decisions", "") or ""
+                dec_part = f" | {decisions}" if decisions else ""
+                lines.append(f"- [{date} | {name}]{dec_part} — {tldr}")
+                lines.append(f"  (full log: {path})")
+
+    # Continuity indicator
+    total_sessions = len(list(VAULT_SESSION_LOGS.rglob("*.md"))) if VAULT_SESSION_LOGS.exists() else 0
+    total_atoms = len(list(VAULT_ATOMS.glob("*.md"))) if VAULT_ATOMS.exists() else 0
+    total_days = len(by_date)
+    parts = [f"{len(selected)} sessions across {total_days} day{'s' if total_days != 1 else ''}"]
+    if total_atoms > 0:
+        parts.append(f"{total_atoms} atoms")
+    # Check for reflections in shared DB (optional — evolution may not be set up)
+    try:
+        if DB_PATH.exists():
+            _db = sqlite3.connect(DB_PATH)
+            reflection_count = _db.execute(
+                "SELECT COUNT(*) FROM reflections WHERE archived = 0"
+            ).fetchone()[0]
+            _db.close()
+            if reflection_count > 0:
+                parts.append(f"{reflection_count} active reflections")
+    except (sqlite3.OperationalError, Exception):
+        pass
+    lines.append(f"\nContinuity: {' · '.join(parts)} (total: {total_sessions} sessions, {total_atoms} atoms)")
 
     print("\n".join(lines))
+
+
+def cmd_learnings(since_days: int = 7, max_items: int = 3):
+    """Surface recently strengthened or new high-confidence atoms since last /resume.
+
+    Delta tracking: compares against ~/.deus/last_resume_learnings.txt to avoid
+    showing the same learnings twice. Outputs nothing if no new learnings exist.
+    """
+    atom_count = len(list(VAULT_ATOMS.glob("*.md"))) if VAULT_ATOMS.exists() else 0
+    if atom_count == 0:
+        print("## What's Emerging\n- Your learnings will appear here as you use Deus. "
+              "Each session extracts atomic facts that grow stronger through corroboration.")
+        return
+
+    from datetime import date as _date, timedelta
+    today = _date.today()
+    cutoff = today - timedelta(days=since_days)
+
+    # Load previously shown learnings for delta tracking
+    previously_shown: set[str] = set()
+    if LAST_RESUME_LEARNINGS.exists():
+        previously_shown = set(LAST_RESUME_LEARNINGS.read_text().strip().splitlines())
+
+    # Scan all atoms
+    candidates: list[dict] = []
+    for atom_path in VAULT_ATOMS.glob("*.md"):
+        content = atom_path.read_text(encoding="utf-8")
+        fm = extract_frontmatter(content)
+        if not fm:
+            continue
+
+        created_at = fm.get("date") or fm.get("raw", "")
+        updated_at = ""
+        corroborations = 1
+        confidence = 0.5
+        category = "fact"
+        expired = False
+
+        # Parse frontmatter fields from raw block
+        raw = fm.get("raw", "")
+        for line in raw.splitlines():
+            if line.startswith("created_at:"):
+                created_at = line.split(":", 1)[1].strip()
+            elif line.startswith("updated_at:"):
+                updated_at = line.split(":", 1)[1].strip()
+            elif line.startswith("corroborations:"):
+                try:
+                    corroborations = int(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("confidence:"):
+                try:
+                    confidence = float(line.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+            elif line.startswith("category:"):
+                category = line.split(":", 1)[1].strip()
+            elif line.startswith("ttl_days:"):
+                ttl_str = line.split(":", 1)[1].strip()
+                if ttl_str not in ("null", ""):
+                    try:
+                        ttl = int(ttl_str)
+                        if created_at and (today - _date.fromisoformat(created_at)).days > ttl:
+                            expired = True
+                    except (ValueError, TypeError):
+                        pass
+
+        if expired:
+            continue
+
+        if not updated_at:
+            updated_at = created_at
+
+        try:
+            update_date = _date.fromisoformat(updated_at)
+        except (ValueError, TypeError):
+            continue
+
+        if update_date < cutoff:
+            continue
+
+        # Extract body text (after second ---)
+        body = ""
+        parts = content.split("---", 2)
+        if len(parts) >= 3:
+            body = parts[2].strip()
+        if not body:
+            continue
+
+        # Skip if already shown in a previous /resume
+        if atom_path.name in previously_shown:
+            continue
+
+        # Classify: strengthened (updated > created, 2+ corroborations) vs new insight
+        is_strengthened = (updated_at != created_at) and corroborations >= 2
+
+        candidates.append({
+            "path": atom_path,
+            "name": atom_path.name,
+            "body": body,
+            "category": category,
+            "corroborations": corroborations,
+            "confidence": confidence,
+            "is_strengthened": is_strengthened,
+            "updated_at": updated_at,
+        })
+
+    if not candidates:
+        return
+
+    # Sort: strengthened patterns first, then by confidence desc, then recency
+    candidates.sort(key=lambda x: (x["is_strengthened"], x["confidence"], x["updated_at"]), reverse=True)
+    selected = candidates[:max_items]
+
+    lines = ["## What's Emerging"]
+    for item in selected:
+        prefix = "Pattern confirmed" if item["is_strengthened"] else "New insight"
+        suffix = f" (seen across {item['corroborations']} sessions)" if item["corroborations"] >= 2 else ""
+        lines.append(f"- {prefix}: {item['body']}{suffix}")
+
+    print("\n".join(lines))
+
+    # Update delta tracking file
+    LAST_RESUME_LEARNINGS.parent.mkdir(parents=True, exist_ok=True)
+    shown_names = previously_shown | {item["name"] for item in selected}
+    LAST_RESUME_LEARNINGS.write_text("\n".join(sorted(shown_names)) + "\n")
 
 
 def cmd_query(query: str, top: int = 3, recency_boost: bool = False):
@@ -798,7 +1004,13 @@ def main():
                        help="Extract atomic facts from a session log (uses Gemini Flash)")
     group.add_argument("--recent", type=int, metavar="N",
                        help="Return last N session frontmatters by date (no API call)")
+    group.add_argument("--recent-days", type=int, metavar="N",
+                       help="Return ALL sessions from the last N calendar days (no API call)")
+    group.add_argument("--learnings", action="store_true",
+                       help="Surface recently strengthened/new atoms since last /resume (no API call)")
     parser.add_argument("--top", type=int, default=3, help="Number of results for --query")
+    parser.add_argument("--since", type=int, default=7,
+                        help="Lookback window in days for --learnings (default: 7)")
     parser.add_argument("--steps", type=int, default=3, help="Activation steps for --wander")
     parser.add_argument("--recency-boost", action="store_true",
                         help="Boost recent results in --query (last 7d strong, 30d moderate)")
@@ -811,6 +1023,12 @@ def main():
         return
     if args.recent is not None:
         cmd_recent(args.recent)
+        return
+    if args.recent_days is not None:
+        cmd_recent(args.recent_days, days=True)
+        return
+    if args.learnings:
+        cmd_learnings(since_days=args.since, max_items=args.top)
         return
 
     _client = genai.Client(api_key=load_api_key())
