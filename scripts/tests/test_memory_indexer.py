@@ -267,6 +267,56 @@ def test_cmd_recent_days_spans_multiple_days(mi, fresh_vault, capsys):
     assert "ancient-session" not in output
 
 
+def test_cmd_recent_continuity_indicator(mi, fresh_vault, capsys):
+    """Output should include a continuity summary line."""
+    _create_session(fresh_vault, "2024-06-15", "session-a", "a", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "session-b", "b", mtime_offset=200)
+    # Create an atom so we can verify atom count
+    atoms_dir = fresh_vault / "Atoms"
+    atoms_dir.mkdir(exist_ok=True)
+    (atoms_dir / "test-atom.md").write_text("---\ntype: atom\n---\nTest atom\n")
+
+    mi.cmd_recent(1, days=True)
+    output = capsys.readouterr().out
+    assert "Continuity:" in output
+    assert "2 sessions across 1 day" in output
+    assert "1 atoms" in output
+
+
+def test_cmd_recent_clustering_on_busy_days(mi, fresh_vault, capsys):
+    """When 4+ sessions share a day, sessions with matching topics are clustered."""
+    _create_session(fresh_vault, "2024-06-15", "auth-login", "login fix", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "auth-oauth", "oauth fix", mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-15", "ui-dashboard", "dashboard", mtime_offset=300)
+    _create_session(fresh_vault, "2024-06-15", "ui-sidebar", "sidebar", mtime_offset=400)
+
+    # Patch the sessions to have topics
+    for name, topics in [("auth-login", "auth, security"), ("auth-oauth", "auth, oauth"),
+                         ("ui-dashboard", "ui, dashboard"), ("ui-sidebar", "ui, layout")]:
+        p = fresh_vault / "Session-Logs" / "2024-06-15" / f"{name}.md"
+        p.write_text(
+            f"---\ntype: session\ndate: 2024-06-15\ntldr: {name} work\ntopics: [{topics}]\n---\n## Summary\n"
+        )
+
+    mi.cmd_recent(1, days=True)
+    output = capsys.readouterr().out
+    # Should have at least one cluster header with "(2 sessions)"
+    assert "(2 sessions)" in output
+
+
+def test_cmd_recent_no_clustering_under_threshold(mi, fresh_vault, capsys):
+    """Fewer than 4 sessions on a day should NOT cluster."""
+    _create_session(fresh_vault, "2024-06-15", "session-a", "a", mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "session-b", "b", mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-15", "session-c", "c", mtime_offset=300)
+
+    mi.cmd_recent(1, days=True)
+    output = capsys.readouterr().out
+    # No clustering — flat format
+    assert "(2 sessions)" not in output
+    assert "session a" in output
+
+
 def test_cmd_recent_days_mtime_order_within_day(mi, fresh_vault, capsys):
     """Within a day, sessions should be ordered newest-first by mtime."""
     _create_session(fresh_vault, "2024-06-15", "early", "e", mtime_offset=100)
@@ -366,6 +416,15 @@ def test_cmd_learnings_empty_when_nothing_new(mi, fresh_vault, capsys, tmp_path,
     mi.cmd_learnings(since_days=7, max_items=3)
     output = capsys.readouterr().out
     assert output == ""
+
+
+def test_cmd_learnings_cold_start_welcome(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """When no atoms exist, show a welcome message."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    # fresh_vault has empty Atoms dir
+    mi.cmd_learnings(since_days=7, max_items=3)
+    output = capsys.readouterr().out
+    assert "Your learnings will appear here" in output
 
 
 def test_cmd_learnings_skips_expired_atoms(mi, fresh_vault, capsys, tmp_path, monkeypatch):

@@ -298,16 +298,76 @@ def cmd_recent(n: int = 3, days: bool = False):
     else:
         selected = dated[:n]
 
-    lines = ["## Recent Sessions"]
+    # Group sessions by date for clustering on busy days
+    from collections import OrderedDict
+    by_date: OrderedDict[str, list[tuple[str, Path, dict]]] = OrderedDict()
     for date, path in selected:
         content = path.read_text(encoding="utf-8")
         fm = extract_frontmatter(content)
-        name = path.stem.replace("-", " ")
-        tldr = (fm.get("tldr", "") or "").split(".")[0][:80]
-        decisions = fm.get("decisions", "") or ""
-        dec_part = f" | {decisions}" if decisions else ""
-        lines.append(f"- [{date} | {name}]{dec_part} — {tldr}")
-        lines.append(f"  (full log: {path})")
+        by_date.setdefault(date, []).append((date, path, fm))
+
+    lines = ["## Recent Sessions"]
+
+    for date, sessions in by_date.items():
+        if len(sessions) >= 4:
+            # Cluster by topics when 4+ sessions on the same day
+            clusters: dict[str, list[tuple[Path, dict]]] = {}
+            for _, path, fm in sessions:
+                topics = fm.get("topics", "") or ""
+                # Use first topic as cluster key, fallback to "General"
+                first_topic = topics.split(",")[0].strip() if topics else "General"
+                first_topic = first_topic.strip("[] ")
+                if not first_topic:
+                    first_topic = "General"
+                clusters.setdefault(first_topic, []).append((path, fm))
+
+            for topic, items in clusters.items():
+                if len(items) >= 2:
+                    # Clustered: group header + indented items
+                    lines.append(f"- [{date} | {topic}] ({len(items)} sessions)")
+                    for path, fm in items:
+                        name = path.stem.replace("-", " ")
+                        tldr = (fm.get("tldr", "") or "").split(".")[0][:80]
+                        lines.append(f"  - {name} — {tldr}")
+                        lines.append(f"    (full log: {path})")
+                else:
+                    # Single item — flat format
+                    path, fm = items[0]
+                    name = path.stem.replace("-", " ")
+                    tldr = (fm.get("tldr", "") or "").split(".")[0][:80]
+                    decisions = fm.get("decisions", "") or ""
+                    dec_part = f" | {decisions}" if decisions else ""
+                    lines.append(f"- [{date} | {name}]{dec_part} — {tldr}")
+                    lines.append(f"  (full log: {path})")
+        else:
+            for _, path, fm in sessions:
+                name = path.stem.replace("-", " ")
+                tldr = (fm.get("tldr", "") or "").split(".")[0][:80]
+                decisions = fm.get("decisions", "") or ""
+                dec_part = f" | {decisions}" if decisions else ""
+                lines.append(f"- [{date} | {name}]{dec_part} — {tldr}")
+                lines.append(f"  (full log: {path})")
+
+    # Continuity indicator
+    total_sessions = len(list(VAULT_SESSION_LOGS.rglob("*.md"))) if VAULT_SESSION_LOGS.exists() else 0
+    total_atoms = len(list(VAULT_ATOMS.glob("*.md"))) if VAULT_ATOMS.exists() else 0
+    total_days = len(by_date)
+    parts = [f"{len(selected)} sessions across {total_days} day{'s' if total_days != 1 else ''}"]
+    if total_atoms > 0:
+        parts.append(f"{total_atoms} atoms")
+    # Check for reflections in shared DB (optional — evolution may not be set up)
+    try:
+        if DB_PATH.exists():
+            _db = sqlite3.connect(DB_PATH)
+            reflection_count = _db.execute(
+                "SELECT COUNT(*) FROM reflections WHERE archived = 0"
+            ).fetchone()[0]
+            _db.close()
+            if reflection_count > 0:
+                parts.append(f"{reflection_count} active reflections")
+    except (sqlite3.OperationalError, Exception):
+        pass
+    lines.append(f"\nContinuity: {' · '.join(parts)} (total: {total_sessions} sessions, {total_atoms} atoms)")
 
     print("\n".join(lines))
 
@@ -318,7 +378,10 @@ def cmd_learnings(since_days: int = 7, max_items: int = 3):
     Delta tracking: compares against ~/.deus/last_resume_learnings.txt to avoid
     showing the same learnings twice. Outputs nothing if no new learnings exist.
     """
-    if not VAULT_ATOMS.exists():
+    atom_count = len(list(VAULT_ATOMS.glob("*.md"))) if VAULT_ATOMS.exists() else 0
+    if atom_count == 0:
+        print("## What's Emerging\n- Your learnings will appear here as you use Deus. "
+              "Each session extracts atomic facts that grow stronger through corroboration.")
         return
 
     from datetime import date as _date, timedelta
