@@ -1,0 +1,70 @@
+name: Validate PR
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize]
+
+jobs:
+  pr-title:
+    name: PR title follows Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: amannn/action-semantic-pull-request@v5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            chore
+            ci
+          requireScope: false
+          subjectPattern: ^[a-z].+$
+          subjectPatternError: |
+            PR title subject must start with a lowercase letter.
+            Example: "feat(skills): add Gmail skill template"
+
+  skill-boundary:
+    name: Skill boundary check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check skill PR doesn't modify core files
+        run: |
+          # Get all files changed in this PR
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD)
+
+          # Check if any skill files are modified
+          SKILL_FILES=$(echo "$CHANGED" | grep -E '^\.(claude/skills)/' || true)
+
+          if [ -z "$SKILL_FILES" ]; then
+            echo "✅ Not a skill PR — boundary check skipped"
+            exit 0
+          fi
+
+          echo "🔍 Skill files detected:"
+          echo "$SKILL_FILES"
+
+          # Define core paths that skill PRs must not touch
+          CORE_FILES=$(echo "$CHANGED" | grep -E '^(src/|container/agent-runner/src/|container/Dockerfile|container/build\.sh|package\.json|package-lock\.json|tsconfig\.json)' || true)
+
+          if [ -n "$CORE_FILES" ]; then
+            echo ""
+            echo "❌ This PR modifies both skill files and core source code:"
+            echo "$CORE_FILES"
+            echo ""
+            echo "Skill contributions must only touch .claude/skills/."
+            echo "If your skill requires core changes, open a separate PR first."
+            echo "See CONTRIBUTING.md for details."
+            exit 1
+          fi
+
+          echo "✅ Skill PR — no core files modified"

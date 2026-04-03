@@ -263,7 +263,7 @@ Every change goes through a pull request — no direct pushes to `main`. We use 
 
 New features should be [skills](https://code.claude.com/docs/en/skills) (markdown files in `.claude/skills/`). Source code PRs are accepted for bug fixes, security fixes, and simplifications.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
+Commit messages, formatting, and PR conventions are enforced automatically by pre-commit hooks and CI — `npm install` sets everything up. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
 ---
 
