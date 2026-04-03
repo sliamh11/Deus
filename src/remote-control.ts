@@ -1,4 +1,4 @@
-import { execSync, spawn } from 'child_process';
+import { execFileSync, execSync, spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -53,7 +53,9 @@ function isProcessAlive(pid: number): boolean {
 function killProcess(pid: number): void {
   if (os.platform() === 'win32') {
     try {
-      execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'pipe' });
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+        stdio: 'pipe',
+      });
     } catch {
       // already dead
     }

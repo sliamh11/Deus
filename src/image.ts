@@ -4,6 +4,7 @@ import sharp from 'sharp';
 import type { WAMessage } from '@whiskeysockets/baileys';
 
 const MAX_DIMENSION = 1024;
+const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 const IMAGE_REF_PATTERN = /\[Image: (attachments\/[^\]]+)\]/g;
 
 export interface ProcessedImage {
@@ -25,7 +26,8 @@ export async function processImage(
   groupDir: string,
   caption: string,
 ): Promise<ProcessedImage | null> {
-  if (!buffer || buffer.length === 0) return null;
+  if (!buffer || buffer.length === 0 || buffer.length > MAX_FILE_SIZE)
+    return null;
 
   const resized = await sharp(buffer)
     .resize(MAX_DIMENSION, MAX_DIMENSION, {

@@ -6,6 +6,7 @@ Uses a temp DB via monkeypatching evolution.db.DB_PATH.
 """
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -573,7 +574,7 @@ def test_main_status_exits_zero():
         [sys.executable, "-m", "evolution.cli", "status"],
         capture_output=True,
         text=True,
-        cwd="/Users/liam10play/deus",
+        cwd=str(Path(__file__).resolve().parents[2]),
     )
     assert result.returncode == 0, (
         f"Expected exit 0, got {result.returncode}.\nstdout={result.stdout}\nstderr={result.stderr}"
@@ -637,6 +638,6 @@ def test_main_unknown_subcommand_exits_nonzero():
         [sys.executable, "-m", "evolution.cli", "nonexistent_subcommand"],
         capture_output=True,
         text=True,
-        cwd="/Users/liam10play/deus",
+        cwd=str(Path(__file__).resolve().parents[2]),
     )
     assert result.returncode != 0
