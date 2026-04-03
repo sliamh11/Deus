@@ -9,11 +9,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
       - run: npm ci
+
+      - name: Lint
+        run: npm run lint
 
       - name: Format check
         run: npm run format:check
@@ -23,6 +28,11 @@ jobs:
 
       - name: Tests
         run: npx vitest run
+
+      - name: Validate commits
+        uses: wagoid/commitlint-github-action@v6
+        with:
+          configFile: commitlint.config.js
 
   test-windows:
     runs-on: windows-latest
