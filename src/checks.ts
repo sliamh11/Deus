@@ -145,21 +145,27 @@ export function hasMemoryDb(): boolean {
 
 /** Check if any messaging channel has credentials configured. */
 export function hasAnyChannelAuth(): boolean {
-  // WhatsApp: store/auth/creds.json
-  const whatsappAuth = path.join(process.cwd(), 'store', 'auth', 'creds.json');
-  if (fs.existsSync(whatsappAuth)) return true;
-
-  // Telegram: TELEGRAM_BOT_TOKEN in .env
-  const env = readEnvFile([
-    'TELEGRAM_BOT_TOKEN',
-    'SLACK_BOT_TOKEN',
-    'DISCORD_BOT_TOKEN',
-  ]);
-  if (env.TELEGRAM_BOT_TOKEN) return true;
-  if (env.SLACK_BOT_TOKEN) return true;
-  if (env.DISCORD_BOT_TOKEN) return true;
-
-  return false;
+  // Channels are installed via skills (/add-whatsapp, /add-telegram, etc.).
+  // Each skill leaves credentials on disk. Check for known credential patterns.
+  const checks: Array<() => boolean> = [
+    // WhatsApp: store/auth/creds.json
+    () =>
+      fs.existsSync(path.join(process.cwd(), 'store', 'auth', 'creds.json')),
+    // Token-based channels (Telegram, Slack, Discord, etc.)
+    () => {
+      const env = readEnvFile([
+        'TELEGRAM_BOT_TOKEN',
+        'SLACK_BOT_TOKEN',
+        'DISCORD_BOT_TOKEN',
+      ]);
+      return !!(
+        env.TELEGRAM_BOT_TOKEN ||
+        env.SLACK_BOT_TOKEN ||
+        env.DISCORD_BOT_TOKEN
+      );
+    },
+  ];
+  return checks.some((check) => check());
 }
 
 /** Check if the agent container image has been built. */

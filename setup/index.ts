@@ -20,7 +20,6 @@ const STEPS: Record<
   mounts: () => import('./mounts.js'),
   service: () => import('./service.js'),
   verify: () => import('./verify.js'),
-  'whatsapp-auth': () => import('./whatsapp-auth.js'),
 };
 
 async function main(): Promise<void> {
@@ -30,7 +29,9 @@ async function main(): Promise<void> {
   const envExamplePath = path.join(projectRoot, '.env.example');
   if (!fs.existsSync(envPath) && fs.existsSync(envExamplePath)) {
     fs.copyFileSync(envExamplePath, envPath);
-    logger.info('Created .env from .env.example — fill in your API credentials.');
+    logger.info(
+      'Created .env from .env.example — fill in your API credentials.',
+    );
   }
 
   const args = process.argv.slice(2);

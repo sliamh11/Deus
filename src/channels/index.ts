@@ -1,14 +1,6 @@
 // Channel self-registration barrel file.
-// Each import triggers the channel module's registerChannel() call.
-
-// discord
-
-// gmail
-
-// slack
-
-// telegram
-import './telegram.js';
-
-// whatsapp
-import './whatsapp.js';
+// Each channel skill adds its import here when installed (e.g., /add-whatsapp, /add-telegram).
+// A fresh clone has no channels — that's by design.
+//
+// Example (added by /add-whatsapp):
+//   import './whatsapp.js';

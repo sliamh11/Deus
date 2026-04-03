@@ -1,8 +1,6 @@
 import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
-import type { WAMessage } from '@whiskeysockets/baileys';
-
 const MAX_DIMENSION = 1024;
 const MAX_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
 const IMAGE_REF_PATTERN = /\[Image: (attachments\/[^\]]+)\]/g;
@@ -17,7 +15,10 @@ export interface ImageAttachment {
   mediaType: string;
 }
 
-export function isImageMessage(msg: WAMessage): boolean {
+/** Channel-agnostic check for image content in a message. */
+export function isImageMessage(msg: {
+  message?: { imageMessage?: unknown };
+}): boolean {
   return !!msg.message?.imageMessage;
 }
 
