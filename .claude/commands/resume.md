@@ -17,18 +17,25 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
    If a file is found → read it fully. Note "resuming mid-session checkpoint" in the summary.
 
 4a. Load warm tier — recent sessions (no API cost):
-    Run: python3 scripts/memory_indexer.py --recent 3
-    This returns the 3 most recent session frontmatters by date. Include as "Recent Sessions" context.
+    Run: python3 scripts/memory_indexer.py --recent-days 3
+    This returns ALL sessions from the last 3 calendar days, sorted newest-first.
+    Include as "Recent Sessions" context.
 
     FALLBACK — if the script fails, fall back to:
-    find "$VAULT/Session-Logs" -name "*.md" -not -path "*/.obsidian/*" | xargs ls -t 2>/dev/null | head -3
-    Then read frontmatter only (lines between the two --- markers) of those 3 files.
+    find "$VAULT/Session-Logs" -name "*.md" -not -path "*/.obsidian/*" | xargs ls -t 2>/dev/null | head -6
+    Then read frontmatter only (lines between the two --- markers) of those files.
 
-4b. Load cold tier — semantically relevant older sessions:
+4b. Load learnings — what's new since last /resume (no API cost):
+    Run: python3 scripts/memory_indexer.py --learnings --since 7 --top 3
+    If output is non-empty, include it as a "What's Emerging" section after recent sessions.
+    If no output (nothing new), skip silently — silence signals stability.
+
+4c. Load cold tier — semantically relevant older sessions:
     Formulate a 1-sentence query based on the loaded context from steps 1–3 (e.g. "linear algebra exam prep" or "nanoclaw whatsapp debugging").
     Run: python3 scripts/memory_indexer.py --query "<your query>" --top 2 --recency-boost
-    Include the output as additional context. Deduplicate: skip any session that already appeared in step 4a.
+    Include the output as additional context. Deduplicate: skip any session that already appeared in step 4a (compare by filename).
     If the script fails or returns nothing, skip silently — warm tier already provides continuity.
+    NOTE: Since warm tier now returns all sessions from 3 days, cold tier is purely for older context.
 
 5. If a search term was passed as argument, grep session logs for it and read frontmatters of matches.
 
