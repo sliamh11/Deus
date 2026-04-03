@@ -12,9 +12,11 @@ vi.mock('./config.js', () => ({
 // Mock child_process
 const spawnMock = vi.fn();
 const execSyncMock = vi.fn();
+const execFileSyncMock = vi.fn();
 vi.mock('child_process', () => ({
   spawn: (...args: any[]) => spawnMock(...args),
   execSync: (...args: any[]) => execSyncMock(...args),
+  execFileSync: (...args: any[]) => execFileSyncMock(...args),
 }));
 
 import {
@@ -267,9 +269,11 @@ describe('remote-control', () => {
       const result = stopRemoteControl();
       expect(result).toEqual({ ok: true });
       if (isWindows) {
-        expect(execSyncMock).toHaveBeenCalledWith('taskkill /F /T /PID 55555', {
-          stdio: 'pipe',
-        });
+        expect(execFileSyncMock).toHaveBeenCalledWith(
+          'taskkill',
+          ['/F', '/T', '/PID', '55555'],
+          { stdio: 'pipe' },
+        );
       } else {
         expect(killSpy).toHaveBeenCalledWith(-55555, 'SIGTERM');
       }
@@ -374,9 +378,11 @@ describe('remote-control', () => {
       const result = stopRemoteControl();
       expect(result).toEqual({ ok: true });
       if (isWindows) {
-        expect(execSyncMock).toHaveBeenCalledWith('taskkill /F /T /PID 77777', {
-          stdio: 'pipe',
-        });
+        expect(execFileSyncMock).toHaveBeenCalledWith(
+          'taskkill',
+          ['/F', '/T', '/PID', '77777'],
+          { stdio: 'pipe' },
+        );
       } else {
         expect(killSpy).toHaveBeenCalledWith(-77777, 'SIGTERM');
       }
