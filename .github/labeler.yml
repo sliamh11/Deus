@@ -1,0 +1,31 @@
+skill:
+  - changed-files:
+      - any-glob-to-any-file: ['.claude/skills/**']
+
+core:
+  - changed-files:
+      - any-glob-to-any-file: ['src/**']
+
+container:
+  - changed-files:
+      - any-glob-to-any-file: ['container/**']
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file: ['docs/**', '*.md']
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file: ['.github/**']
+
+evolution:
+  - changed-files:
+      - any-glob-to-any-file: ['evolution/**', 'eval/**']
+
+memory:
+  - changed-files:
+      - any-glob-to-any-file: ['scripts/memory_indexer.py', 'scripts/tests/test_memory_indexer.py']
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file: ['package.json', 'package-lock.json']

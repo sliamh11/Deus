@@ -47,6 +47,22 @@ Every user should have clean, minimal code that does exactly what they need. Ski
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for setup, key files, and service management.
 See [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) for architecture patterns (adding channels, commands, IPC types, startup checks).
 
+## Automated Enforcement
+
+These checks run automatically — you don't need to remember them:
+
+| When | What | Tool |
+|------|------|------|
+| `git commit` | Formatting (Prettier + ESLint) | lint-staged (pre-commit hook) |
+| `git commit` | Commit message format | commitlint (commit-msg hook) |
+| PR opened | Lint, typecheck, tests | CI workflow |
+| PR opened | Commit message validation | commitlint in CI |
+| PR opened | PR title format | semantic PR check |
+| PR opened | Skill/core boundary | skill boundary check |
+| PR opened | Auto-labeling | labeler |
+
+If a hook rejects your commit, read the error message — it tells you exactly what to fix. Hooks install automatically via `npm install` (husky).
+
 ## Pre-PR Checklist
 
 - [ ] `npm run build` passes
