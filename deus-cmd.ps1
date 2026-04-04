@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    Deus CLI for Windows — mirrors deus-cmd.sh on macOS/Linux.
+    Deus CLI for Windows - mirrors deus-cmd.sh on macOS/Linux.
 
 .DESCRIPTION
     Usage:
@@ -12,7 +12,7 @@
       deus logs         Tail the Deus service log
 
     The Deus background service runs under NSSM or Servy.
-    Credential proxy reads ~/.claude/.credentials.json directly — do NOT
+    Credential proxy reads ~/.claude/.credentials.json directly - do NOT
     write CLAUDE_CODE_OAUTH_TOKEN to .env (causes login loop on token rotation).
 #>
 
@@ -27,7 +27,7 @@ $ServiceName = "deus"
 $LogFile = "$DeusHome\logs\deus.log"
 $ErrorLog = "$DeusHome\logs\deus.error.log"
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# -- Helpers ------------------------------------------------------------------
 
 function Get-ServiceManager {
     if (Get-Command "servy-cli" -ErrorAction SilentlyContinue) { return "servy" }
@@ -80,7 +80,7 @@ function Build-Deus {
         & npm run build --silent
         if ($LASTEXITCODE -ne 0) {
             Write-Host " FAILED" -ForegroundColor Red
-            Write-Error "Build failed — not restarting."
+            Write-Error "Build failed - not restarting."
             return $false
         }
     } finally {
@@ -129,7 +129,7 @@ function Invoke-ClaudeWithContext {
         return
     }
 
-    # ── Load context (mirrors deus-cmd.sh context loading) ──────────────────
+    # -- Load context (mirrors deus-cmd.sh context loading) ------------------
     Write-Host "  Reading vault...`r" -NoNewline
     $claudeMd  = Read-VaultFile "$vault\CLAUDE.md"
     $studyMd   = Read-VaultFile "$vault\STUDY.md"
@@ -193,7 +193,7 @@ function Invoke-ClaudeWithContext {
     & claude --dangerously-skip-permissions
 }
 
-# ── Commands ─────────────────────────────────────────────────────────────────
+# -- Commands -----------------------------------------------------------------
 
 switch ($Command.ToLower()) {
     "auth" {

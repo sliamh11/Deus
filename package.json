@@ -54,6 +54,9 @@
     "*.ts": [
       "eslint --cache --fix",
       "prettier --write"
+    ],
+    "*.ps1": [
+      "scripts/check-ascii.sh"
     ]
   },
   "engines": {
