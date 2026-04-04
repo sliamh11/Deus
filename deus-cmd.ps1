@@ -29,6 +29,14 @@ $ErrorLog = "$DeusHome\logs\deus.error.log"
 
 # -- Helpers ------------------------------------------------------------------
 
+function Invoke-Claude {
+    param([string[]]$ExtraArgs)
+    & claude --dangerously-skip-permissions @ExtraArgs
+    if ($LASTEXITCODE -ne 0) {
+        & claude @ExtraArgs
+    }
+}
+
 function Get-ServiceManager {
     if (Get-Command "servy-cli" -ErrorAction SilentlyContinue) { return "servy" }
     if (Get-Command "nssm" -ErrorAction SilentlyContinue) { return "nssm" }
@@ -125,7 +133,7 @@ function Invoke-ClaudeWithContext {
     if (-not $vault) {
         Write-Host "Warning: No vault configured. Set DEUS_VAULT_PATH or vault_path in ~/.config/deus/config.json" -ForegroundColor Yellow
         Set-Location $WorkDir
-        & claude --dangerously-skip-permissions
+        Invoke-Claude
         return
     }
 
@@ -190,7 +198,7 @@ function Invoke-ClaudeWithContext {
     # Launch Claude with system prompt
     $env:CLAUDE_SYSTEM_PROMPT = $context
     Set-Location $WorkDir
-    & claude --dangerously-skip-permissions
+    Invoke-Claude
 }
 
 # -- Commands -----------------------------------------------------------------

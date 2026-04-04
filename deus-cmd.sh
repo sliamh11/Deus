@@ -664,6 +664,14 @@ case "$1" in
     # would permanently freeze the token and cause a login loop on next refresh.
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
+    # Launch claude with bypass mode; fall back to normal mode if user declines
+    launch_claude() {
+      claude --dangerously-skip-permissions "$@"
+      if [ $? -ne 0 ]; then
+        claude "$@"
+      fi
+    }
+
     # Resolve vault path from config (DEUS_VAULT_PATH env var → ~/.config/deus/config.json)
     VAULT="${DEUS_VAULT_PATH:-$(python3 -c "import json; from pathlib import Path; print(json.loads(Path('~/.config/deus/config.json').expanduser().read_text()).get('vault_path',''))" 2>/dev/null)}"
 
@@ -683,9 +691,9 @@ case "$1" in
     if [ -z "$VAULT" ]; then
       echo "Warning: No vault configured. Set DEUS_VAULT_PATH or vault_path in ~/.config/deus/config.json"
       if [ "$CURRENT_DIR" != "$DEUS_HOME" ]; then
-        exec claude --dangerously-skip-permissions
+        launch_claude
       else
-        cd "$HOME/deus" && exec claude --dangerously-skip-permissions
+        cd "$HOME/deus" && launch_claude
       fi
     fi
     CONTEXT=""
@@ -825,11 +833,11 @@ $STARTUP_GREETING"
       fi
 
       if [ -n "$CONTEXT" ]; then
-        exec claude --dangerously-skip-permissions --append-system-prompt "$(printf '%s' "$CONTEXT")
+        launch_claude --append-system-prompt "$(printf '%s' "$CONTEXT")
 
 $STARTUP_INSTRUCTION"
       else
-        exec claude --dangerously-skip-permissions --append-system-prompt "$STARTUP_INSTRUCTION"
+        launch_claude --append-system-prompt "$STARTUP_INSTRUCTION"
       fi
     fi
 
@@ -850,11 +858,11 @@ $STARTUP_INSTRUCTION"
 Then stop and wait for the user."
 
     if [ -n "$CONTEXT" ]; then
-      cd "$HOME/deus" && exec claude --dangerously-skip-permissions --append-system-prompt "$(printf '%s' "$CONTEXT")
+      cd "$HOME/deus" && launch_claude --append-system-prompt "$(printf '%s' "$CONTEXT")
 
 $STARTUP_INSTRUCTION" "Catch me up."
     else
-      cd "$HOME/deus" && exec claude --dangerously-skip-permissions
+      cd "$HOME/deus" && launch_claude
     fi
     ;;
   listen)
