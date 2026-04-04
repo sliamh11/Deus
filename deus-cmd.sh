@@ -667,7 +667,8 @@ case "$1" in
     # Resolve vault path from config (DEUS_VAULT_PATH env var → ~/.config/deus/config.json)
     VAULT="${DEUS_VAULT_PATH:-$(python3 -c "import json; from pathlib import Path; print(json.loads(Path('~/.config/deus/config.json').expanduser().read_text()).get('vault_path',''))" 2>/dev/null)}"
 
-    DEUS_HOME="$HOME/deus"
+    # Resolve from DEUS_HOME env var → script's own directory → fallback $HOME/deus
+    DEUS_HOME="${DEUS_HOME:-$(cd "$(dirname "$0")" && pwd)}"
     # "deus home" forces home mode regardless of cwd
     if [ "$1" = "home" ]; then
       CURRENT_DIR="$DEUS_HOME"

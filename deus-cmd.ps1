@@ -21,7 +21,8 @@ param(
     [string]$Command = ""
 )
 
-$DeusHome = "$env:USERPROFILE\deus"
+# Resolve DeusHome from script location (works regardless of clone path)
+$DeusHome = if ($env:DEUS_HOME) { $env:DEUS_HOME } else { Split-Path -Parent $PSCommandPath }
 $ServiceName = "deus"
 $LogFile = "$DeusHome\logs\deus.log"
 $ErrorLog = "$DeusHome\logs\deus.error.log"

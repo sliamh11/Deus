@@ -57,9 +57,42 @@ function setupUnixCli(projectRoot: string, homeDir: string): void {
   fs.symlinkSync(scriptPath, linkPath);
   logger.info({ linkPath, scriptPath }, 'Created deus CLI symlink');
 
-  // Check if ~/.local/bin is in PATH
+  // Check if ~/.local/bin is in PATH; if not, add it to shell config
   const pathEnv = process.env.PATH || '';
-  const inPath = pathEnv.split(':').some((p) => p === binDir);
+  let inPath = pathEnv.split(':').some((p) => p === binDir);
+
+  if (!inPath) {
+    const exportLine = `export PATH="$HOME/.local/bin:$PATH"`;
+    const shellConfigs = [
+      path.join(homeDir, '.zshrc'),
+      path.join(homeDir, '.bashrc'),
+    ];
+
+    for (const rc of shellConfigs) {
+      if (!fs.existsSync(rc)) continue;
+      const content = fs.readFileSync(rc, 'utf-8');
+      if (content.includes('.local/bin')) {
+        inPath = true;
+        break;
+      }
+    }
+
+    if (!inPath) {
+      // Detect user's shell and append to the appropriate config
+      const shell = process.env.SHELL || '/bin/bash';
+      const rcFile = shell.endsWith('zsh')
+        ? path.join(homeDir, '.zshrc')
+        : path.join(homeDir, '.bashrc');
+
+      try {
+        fs.appendFileSync(rcFile, `\n# Added by Deus setup\n${exportLine}\n`);
+        inPath = true;
+        logger.info({ rcFile }, 'Added ~/.local/bin to PATH in shell config');
+      } catch (err) {
+        logger.warn({ err, rcFile }, 'Could not update shell config');
+      }
+    }
+  }
 
   emitStatus('SETUP_CLI', {
     STATUS: 'success',

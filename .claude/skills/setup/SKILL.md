@@ -220,14 +220,13 @@ This creates a global `deus` command so the user can type `deus` from any termin
 - macOS/Linux: symlinks `deus-cmd.sh` → `~/.local/bin/deus`
 - Windows: creates `deus.cmd` shim → `%USERPROFILE%\.local\bin\` and adds it to user PATH
 
-**If IN_PATH=false (macOS/Linux only):** Tell user to add `~/.local/bin` to their PATH. Suggest:
+**If IN_PATH=false:** The setup step auto-appends `~/.local/bin` to the user's shell config. If it couldn't (permissions, etc.), tell user to add it manually:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
-source ~/.zshrc
 ```
 
-**If IN_PATH=true:** CLI is ready. Tell user they can now type `deus` from any terminal after reopening their shell (Windows) or immediately (macOS/Linux).
+**After CLI registration:** Tell user they can type `deus` from any terminal after reopening their shell (or running `source ~/.zshrc` / `source ~/.bashrc` to apply immediately).
 
 ## 8. Verify
 
