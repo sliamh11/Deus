@@ -78,22 +78,25 @@ Run `npx tsx setup/index.ts --step environment` and parse the status block.
 - DOCKER=installed_not_running → start Docker:
   - macOS: `open -a Docker`
   - Linux: `sudo systemctl start docker`
-  - Windows: Docker Desktop auto-starts. Check the system tray icon — if it's not there, launch "Docker Desktop" from Start. Wait 15s then re-check with `docker info`.
-  - Wait 15s, re-check with `docker info`.
+  - Windows: launch Docker Desktop from Start menu if not in system tray.
+  - After starting, check once with `docker info`. If it fails, **do NOT poll in a loop** — use AskUserQuestion: "Docker is starting up. Let me know when it's ready (you'll see the Docker icon in the system tray turn solid)." Then verify with `docker info`.
 - DOCKER=not_found → Use `AskUserQuestion: Docker is required for running agents. Would you like me to install it?` If confirmed:
   - macOS: install via `brew install --cask docker`, then `open -a Docker` and wait for it to start. If brew not available, direct to Docker Desktop download at https://docker.com/products/docker-desktop
   - Linux: install with `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`. Note: user may need to log out/in for group membership.
   - Windows: direct to Docker Desktop download at https://docker.com/products/docker-desktop. Requires WSL 2 (auto-offered by Docker installer). After install, start Docker Desktop from Start menu.
 
-### 3b. Build and test
+### 3b. Build and test (BACKGROUND)
 
-Run `npx tsx setup/index.ts --step container -- --runtime docker` and parse the status block.
+**Start the container build in the background** — it takes 3-5 minutes (up to 10 on Windows first run) and doesn't need user input. Continue with steps 4-6 while it runs.
 
-**If BUILD_OK=false:** Read `logs/setup.log` tail for the build error.
-- Cache issue (stale layers): `docker builder prune -f`. Retry.
-- Dockerfile syntax or missing files: diagnose from the log and fix, then retry.
+Run in background with **10 minute timeout**: `npx tsx setup/index.ts --step container -- --runtime docker`
 
-**If TEST_OK=false but BUILD_OK=true:** The image built but won't run. Check logs — common cause is runtime not fully started. Wait a moment and retry the test.
+**Do NOT wait for this to finish.** Immediately continue to step 4. You will check the result before step 7.
+
+**IMPORTANT — if build fails later:** Read the FULL error output before retrying. Common causes:
+- TypeScript compilation errors from skill agents → check which skill was staged and if it's compatible
+- Timeout → re-run with longer timeout, Docker layers are cached so retry is faster
+- Do NOT prune Docker cache unless you're certain the cache itself is the problem
 
 ## 4. Claude Authentication (No Script)
 
@@ -143,6 +146,18 @@ AskUserQuestion: Agent access to external directories?
 
 **No:** `npx tsx setup/index.ts --step mounts -- --empty`
 **Yes:** Collect paths/permissions. `npx tsx setup/index.ts --step mounts -- --json '{"allowedRoots":[...],"blockedPatterns":[],"nonMainReadOnly":true}'`
+
+## 6b. Wait for Container Build
+
+**Before proceeding to step 7, check the container build from step 3b.**
+
+If the background build is still running, wait for it to finish. Parse the status block.
+
+**If BUILD_OK=false:** Read `logs/setup.log` tail for the build error.
+- Cache issue (stale layers): `docker builder prune -f`. Retry.
+- Dockerfile syntax or missing files: diagnose from the log and fix, then retry.
+
+**If TEST_OK=false but BUILD_OK=true:** The image built but won't run. Check logs — common cause is runtime not fully started. Wait a moment and retry the test.
 
 ## 7. Start Service
 

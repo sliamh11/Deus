@@ -22,9 +22,22 @@ rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
 
 if [ -d ".claude/skills" ]; then
+  # Read local-only skills from .git/info/exclude (lines matching .claude/skills/<name>)
+  LOCAL_ONLY_SKILLS=""
+  if [ -f ".git/info/exclude" ]; then
+    LOCAL_ONLY_SKILLS=$(grep -oP '\.claude/skills/\K[^/]+' .git/info/exclude 2>/dev/null || true)
+  fi
+
   for skill_dir in .claude/skills/*/; do
     [ -d "$skill_dir" ] || continue
     skill_name=$(basename "$skill_dir")
+
+    # Skip local-only skills (not committed, would break container build)
+    if echo "$LOCAL_ONLY_SKILLS" | grep -qx "$skill_name" 2>/dev/null; then
+      echo "  Skipped local-only skill: $skill_name"
+      continue
+    fi
+
     if [ -f "$skill_dir/agent.ts" ]; then
       mkdir -p "$STAGING_DIR/$skill_name"
       cp "$skill_dir/agent.ts" "$STAGING_DIR/$skill_name/"
