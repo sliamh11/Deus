@@ -9,6 +9,7 @@ import path from 'path';
 import {
   ASSISTANT_HAS_OWN_NUMBER,
   ASSISTANT_NAME,
+  PROJECT_ROOT,
   STORE_DIR,
 } from '../config.js';
 import { McpChannelAdapter } from './mcp-adapter.js';
@@ -27,7 +28,13 @@ registerChannel('whatsapp', (opts) => {
       .replace('file://', '');
   } catch {
     // Fallback: local packages directory (monorepo dev)
-    serverPath = path.resolve('packages', 'mcp-whatsapp', 'dist', 'index.js');
+    serverPath = path.join(
+      PROJECT_ROOT,
+      'packages',
+      'mcp-whatsapp',
+      'dist',
+      'index.js',
+    );
   }
 
   return new McpChannelAdapter({

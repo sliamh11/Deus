@@ -5,7 +5,7 @@
 
 import path from 'path';
 
-import { ASSISTANT_NAME } from '../config.js';
+import { ASSISTANT_NAME, PROJECT_ROOT } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { McpChannelAdapter } from './mcp-adapter.js';
 import { registerChannel } from './registry.js';
@@ -22,7 +22,13 @@ registerChannel('telegram', (opts) => {
       .resolve('deus-mcp-telegram')
       .replace('file://', '');
   } catch {
-    serverPath = path.resolve('packages', 'mcp-telegram', 'dist', 'index.js');
+    serverPath = path.join(
+      PROJECT_ROOT,
+      'packages',
+      'mcp-telegram',
+      'dist',
+      'index.js',
+    );
   }
 
   return new McpChannelAdapter({

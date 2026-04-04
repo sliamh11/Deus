@@ -17,7 +17,7 @@ export const POLL_INTERVAL = 2000;
 export const SCHEDULER_POLL_INTERVAL = 60000;
 
 // Absolute paths needed for container mounts
-const PROJECT_ROOT = path.resolve(process.cwd());
+export const PROJECT_ROOT = path.resolve(process.cwd());
 export const HOME_DIR = process.env.HOME || os.homedir();
 export const CONFIG_DIR = path.join(HOME_DIR, '.config', 'deus');
 

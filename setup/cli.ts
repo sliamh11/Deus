@@ -59,7 +59,8 @@ function setupUnixCli(projectRoot: string, homeDir: string): void {
 
   // Check if ~/.local/bin is in PATH; if not, add it to shell config
   const pathEnv = process.env.PATH || '';
-  let inPath = pathEnv.split(':').some((p) => p === binDir);
+  const delimiter = process.platform === 'win32' ? ';' : ':';
+  let inPath = pathEnv.split(delimiter).some((p) => p === binDir);
 
   if (!inPath) {
     const exportLine = `export PATH="$HOME/.local/bin:$PATH"`;

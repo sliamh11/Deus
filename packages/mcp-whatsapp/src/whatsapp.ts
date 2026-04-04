@@ -38,7 +38,7 @@ import type {
 // ── Config from env vars ────────────────────────────────────────────────
 
 const AUTH_DIR =
-  process.env.WHATSAPP_AUTH_DIR || path.join(process.cwd(), 'store', 'auth');
+  process.env.WHATSAPP_AUTH_DIR || path.resolve(process.cwd(), 'store', 'auth');
 const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Deus';
 const ASSISTANT_HAS_OWN_NUMBER =
   process.env.ASSISTANT_HAS_OWN_NUMBER === 'true';
