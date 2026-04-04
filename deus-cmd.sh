@@ -633,6 +633,96 @@ SKILLEOF
   echo "$current_version" > "$marker"
 }
 
+_ensure_preferences_skill() {
+  local skill_dir="$DEUS_SKILLS_DIR/preferences"
+  local marker="$skill_dir/.deus-version"
+  local current_version="1"
+  if [ -f "$marker" ] && [ "$(cat "$marker")" = "$current_version" ]; then
+    return
+  fi
+  mkdir -p "$skill_dir"
+  cat > "$skill_dir/skill.md" <<'SKILLEOF'
+---
+name: preferences
+description: View or modify Deus user preferences (name, catch-me-up behavior, bypass permissions, persona)
+user_invocable: true
+---
+
+# /preferences
+
+Manage Deus user preferences. These are stored in `~/.config/deus/config.json` alongside the vault path.
+
+## Config location
+
+```bash
+~/.config/deus/config.json
+```
+
+## Available preferences
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | `""` | User's name - Deus uses it in greetings and context |
+| `catch_me_up` | boolean | `true` | Auto "Catch me up" greeting when launching in home mode |
+| `bypass_permissions` | boolean | `true` | Try `--dangerously-skip-permissions` on launch (falls back to normal if declined) |
+| `persona` | string | `""` | Free-text personality/behavior instructions appended to Deus identity |
+
+## When invoked with no arguments or `show`
+
+Read `~/.config/deus/config.json` and display current preferences:
+
+```
+Deus Preferences
+  name:               <value or "(not set)">
+  catch_me_up:        <on|off> (auto-greet with session summary on launch)
+  bypass_permissions:  <on|off> (skip permission prompts on launch)
+  persona:            <value or "(not set)">
+
+Set with: /preferences <key> <value>
+Examples:
+  /preferences name "Alex"
+  /preferences catch_me_up off
+  /preferences persona "Always respond in a casual tone"
+```
+
+## When invoked with arguments
+
+Parse the first argument as the key and the rest as the value.
+
+- For boolean keys (`catch_me_up`, `bypass_permissions`): accept `on/off`, `true/false`, `yes/no`
+- For string keys (`name`, `persona`): accept the remaining text as the value
+- To clear a string value: `/preferences name ""` or `/preferences persona clear`
+
+### Implementation
+
+Use Python to update the JSON file in-place (preserves other keys like `vault_path`):
+
+```bash
+python3 -c "
+import json, sys
+from pathlib import Path
+p = Path('~/.config/deus/config.json').expanduser()
+d = json.loads(p.read_text()) if p.exists() else {}
+key, val = sys.argv[1], sys.argv[2]
+if key in ('catch_me_up', 'bypass_permissions'):
+    d[key] = val.lower() in ('true', 'on', 'yes', '1')
+else:
+    d[key] = '' if val.lower() in ('clear', '\"\"', \"''\") else val
+p.write_text(json.dumps(d, indent=2))
+print(f'Set {key} = {d[key]}')
+" "<key>" "<value>"
+```
+
+Confirm the change and note that it takes effect on next `deus` launch (not mid-session).
+
+## Validation
+
+- Only allow the 4 documented keys. Reject unknown keys with a helpful message.
+- `persona` can be any text. Warn if it exceeds 500 characters (but still save it).
+SKILLEOF
+  echo "$current_version" > "$marker"
+}
+
 case "$1" in
   auth)
     # Validate credentials file is readable before restarting
@@ -684,6 +774,25 @@ case "$1" in
       CURRENT_DIR="$(pwd)"
     fi
 
+    # ─── LOAD USER PREFERENCES ───
+    PREFS_NAME=""
+    PREFS_CATCH_ME_UP="true"
+    PREFS_BYPASS="true"
+    PREFS_PERSONA=""
+    if [ -f "$HOME/.config/deus/config.json" ]; then
+      PREFS_NAME=$(python3 -c "import json; from pathlib import Path; print(json.loads(Path('~/.config/deus/config.json').expanduser().read_text()).get('name',''))" 2>/dev/null)
+      PREFS_CATCH_ME_UP=$(python3 -c "import json; from pathlib import Path; d=json.loads(Path('~/.config/deus/config.json').expanduser().read_text()); print(str(d.get('catch_me_up',True)).lower())" 2>/dev/null)
+      PREFS_BYPASS=$(python3 -c "import json; from pathlib import Path; d=json.loads(Path('~/.config/deus/config.json').expanduser().read_text()); print(str(d.get('bypass_permissions',True)).lower())" 2>/dev/null)
+      PREFS_PERSONA=$(python3 -c "import json; from pathlib import Path; print(json.loads(Path('~/.config/deus/config.json').expanduser().read_text()).get('persona',''))" 2>/dev/null)
+    fi
+
+    # Override launch_claude based on bypass preference
+    if [ "$PREFS_BYPASS" = "false" ]; then
+      launch_claude() {
+        claude "$@"
+      }
+    fi
+
     # ─── DEUS IDENTITY (always present, even without vault) ───
     DEUS_IDENTITY="You are Deus - the user's personal AI assistant. You are not a generic coding tool. You collaborate on everything: coding, studies, life decisions, recommendations, brainstorming, and anything the user brings to you.
 
@@ -701,6 +810,18 @@ Your personality:
 - Security-conscious: never commit credentials, design as if the repo is public.
 
 This repo (~/deus) is the infrastructure that powers you. See README.md for philosophy and CLAUDE.md for development rules."
+
+    # Inject user name and persona into identity
+    if [ -n "$PREFS_NAME" ]; then
+      DEUS_IDENTITY="$DEUS_IDENTITY
+
+The user's name is $PREFS_NAME."
+    fi
+    if [ -n "$PREFS_PERSONA" ]; then
+      DEUS_IDENTITY="$DEUS_IDENTITY
+
+Additional instructions from the user: $PREFS_PERSONA"
+    fi
 
     # ─── SHARED CONTEXT LOADING ───
     # Full vault + memory + sessions loaded identically regardless of mode.
@@ -766,6 +887,7 @@ This repo (~/deus) is the infrastructure that powers you. See README.md for phil
       _ensure_checkpoint_skill
       _ensure_compress_skill
       _ensure_preserve_skill
+      _ensure_preferences_skill
 
       # Check for existing project config or run onboarding
       PROJECT_CONFIG=$(_read_project_config "$CURRENT_DIR")
@@ -866,21 +988,33 @@ $STARTUP_INSTRUCTION"
     _ensure_checkpoint_skill
     _ensure_compress_skill
     _ensure_preserve_skill
+    _ensure_preferences_skill
 
-    # Running from ~/deus — full startup with catch-me-up greeting.
-    STARTUP_INSTRUCTION="STARTUP INSTRUCTION: Context from the memory vault has been pre-loaded above. Catch the user up using exactly this format:
+    # Running from ~/deus — full startup with optional catch-me-up greeting.
+    if [ "$PREFS_CATCH_ME_UP" = "false" ]; then
+      STARTUP_INSTRUCTION="STARTUP INSTRUCTION: Context from the memory vault has been pre-loaded above. Wait for the user's instructions."
+      if [ -n "$CONTEXT" ]; then
+        cd "$HOME/deus" && launch_claude --append-system-prompt "$(printf '%s' "$CONTEXT")
+
+$STARTUP_INSTRUCTION"
+      else
+        cd "$HOME/deus" && launch_claude
+      fi
+    else
+      STARTUP_INSTRUCTION="STARTUP INSTRUCTION: Context from the memory vault has been pre-loaded above. Catch the user up using exactly this format:
 
 • Previous session: [1-2 lines of ongoing context and last session topic]
 • Pending: [bullet list of pending tasks, max 3 items]
 
 Then stop and wait for the user."
 
-    if [ -n "$CONTEXT" ]; then
-      cd "$HOME/deus" && launch_claude --append-system-prompt "$(printf '%s' "$CONTEXT")
+      if [ -n "$CONTEXT" ]; then
+        cd "$HOME/deus" && launch_claude --append-system-prompt "$(printf '%s' "$CONTEXT")
 
 $STARTUP_INSTRUCTION" "Catch me up."
-    else
-      cd "$HOME/deus" && launch_claude
+      else
+        cd "$HOME/deus" && launch_claude
+      fi
     fi
     ;;
   listen)

@@ -31,8 +31,13 @@ $ErrorLog = "$DeusHome\logs\deus.error.log"
 
 function Invoke-Claude {
     param([string[]]$ExtraArgs)
-    & claude --dangerously-skip-permissions @ExtraArgs
-    if ($LASTEXITCODE -ne 0) {
+    $prefs = Get-DeusPreferences
+    if ($prefs.bypass_permissions) {
+        & claude --dangerously-skip-permissions @ExtraArgs
+        if ($LASTEXITCODE -ne 0) {
+            & claude @ExtraArgs
+        }
+    } else {
         & claude @ExtraArgs
     }
 }
@@ -142,8 +147,31 @@ This repo (~/deus) is the infrastructure that powers you. See README.md for phil
 "@
 }
 
+function Get-DeusPreferences {
+    $configPath = "$env:USERPROFILE\.config\deus\config.json"
+    $defaults = @{
+        name = ""
+        catch_me_up = $true
+        bypass_permissions = $true
+        persona = ""
+    }
+    if (-not (Test-Path $configPath)) { return $defaults }
+    try {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json
+        if ($cfg.name) { $defaults.name = $cfg.name }
+        if ($null -ne $cfg.catch_me_up) { $defaults.catch_me_up = [bool]$cfg.catch_me_up }
+        if ($null -ne $cfg.bypass_permissions) { $defaults.bypass_permissions = [bool]$cfg.bypass_permissions }
+        if ($cfg.persona) { $defaults.persona = $cfg.persona }
+    } catch { }
+    return $defaults
+}
+
 function Invoke-ClaudeWithContext {
     param([string]$WorkDir)
+
+    # Load preferences
+    Write-Status "Loading preferences..."
+    $prefs = Get-DeusPreferences
 
     # Load token for current shell session (service uses credentials.json directly)
     Write-Status "Loading credentials..."
@@ -176,6 +204,8 @@ function Invoke-ClaudeWithContext {
 
     # Build startup instruction
     $identity = Get-DeusIdentity
+    if ($prefs.name) { $identity += "`n`nThe user's name is $($prefs.name)." }
+    if ($prefs.persona) { $identity += "`n`nAdditional instructions from the user: $($prefs.persona)" }
 
     if (-not $vault) {
         Write-Host "`r  Ready.                                " -ForegroundColor Green
@@ -234,8 +264,8 @@ function Invoke-ClaudeWithContext {
     Write-Host "`r  Ready.                                " -ForegroundColor Green
     Write-Host ""
 
-    # Build startup instruction with catch-me-up greeting
-    if ($isHomeMode) {
+    # Build startup instruction with optional catch-me-up greeting
+    if ($isHomeMode -and $prefs.catch_me_up) {
         $startupInstruction = @"
 STARTUP INSTRUCTION:
 
@@ -247,6 +277,14 @@ Context from the memory vault has been pre-loaded above. Catch the user up using
 * Pending: [bullet list of pending tasks, max 3 items]
 
 Then stop and wait for the user.
+"@
+    } elseif ($isHomeMode) {
+        $startupInstruction = @"
+STARTUP INSTRUCTION:
+
+$identity
+
+Context from the memory vault has been pre-loaded above. Wait for the user's instructions.
 "@
     } else {
         $startupInstruction = @"
@@ -267,7 +305,7 @@ $gitContext
     $fullPrompt += $startupInstruction
 
     Set-Location $WorkDir
-    if ($isHomeMode) {
+    if ($isHomeMode -and $prefs.catch_me_up) {
         Invoke-Claude @("--append-system-prompt", $fullPrompt, "Catch me up.")
     } else {
         Invoke-Claude @("--append-system-prompt", $fullPrompt)
