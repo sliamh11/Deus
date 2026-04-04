@@ -50,6 +50,10 @@ def _migrate(db: sqlite3.Connection) -> None:
             ON interactions(group_folder);
         CREATE INDEX IF NOT EXISTS ix_interactions_score
             ON interactions(judge_score) WHERE judge_score IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_interactions_session
+            ON interactions(session_id) WHERE session_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS ix_interactions_group_ts
+            ON interactions(group_folder, timestamp);
 
         -- Reflexion memory: lessons generated from low-score interactions
         CREATE TABLE IF NOT EXISTS reflections (

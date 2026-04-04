@@ -1,6 +1,6 @@
 # Pinned versions — update periodically with: pip install --upgrade <pkg>
 anthropic==0.49.0
 deepeval==2.5.6
-pytest==8.3.5
+pytest>=7.4.3,<8.0.0
 google-genai==1.14.0
 sqlite-vec==0.1.6
