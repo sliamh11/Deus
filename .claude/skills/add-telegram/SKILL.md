@@ -147,6 +147,32 @@ Tell the user:
 >
 > The bot should respond within a few seconds.
 
+### Smoke test
+
+After confirming the service is running, verify end-to-end delivery:
+
+```bash
+npx tsx -e "
+import { getDb } from './dist/db.js';
+const db = getDb();
+const group = db.prepare('SELECT jid, name FROM registered_groups WHERE jid LIKE \"tg:%\" LIMIT 1').get();
+if (!group) { console.log('SMOKE_TEST: no registered Telegram chat found'); process.exit(1); }
+console.log('SMOKE_TEST: sending to ' + group.name + ' (' + group.jid + ')');
+"
+```
+
+If a registered chat is found, use the MCP tool `send_message` (if available) or tell the user:
+
+> Smoke test: Send any message to your registered Telegram chat now. I'll check the logs in 5 seconds.
+
+Wait 5 seconds, then check for delivery confirmation:
+
+```bash
+tail -20 logs/deus.log | grep -i "message\|received\|processing\|telegram"
+```
+
+Report the result: if log entries show message receipt/processing, tell the user "Telegram channel is working." If no relevant log entries, suggest checking the Troubleshooting section below.
+
 ### Check logs if needed
 
 ```bash
@@ -197,6 +223,23 @@ After completing the Telegram setup, use `AskUserQuestion`:
 AskUserQuestion: Would you like to add Agent Swarm support? Without it, Agent Teams still work — they just operate behind the scenes. With Swarm support, each subagent appears as a different bot in the Telegram group so you can see who's saying what and have interactive team sessions.
 
 If they say yes, invoke the `/add-telegram-swarm` skill.
+
+## Troubleshooting: Re-authentication
+
+If the bot stops responding or the token becomes invalid:
+
+1. Verify the token is still valid:
+   ```bash
+   curl -s "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getMe" | grep -q '"ok":true' && echo "Token valid" || echo "Token invalid"
+   ```
+2. If the token is invalid, generate a new one via `@BotFather` > `/mybots` > select bot > **API Token** > **Revoke current token**
+3. Update the token in `.env` and sync: `mkdir -p data/env && cp .env data/env/env`
+4. Restart the service — no re-registration needed (the chat ID stays the same)
+
+Common causes of bot failure:
+- Token was revoked via BotFather
+- Bot was deleted and recreated (new token needed, chat IDs may change for private chats)
+- Telegram API rate limiting (wait a few minutes and retry)
 
 ## Removal
 

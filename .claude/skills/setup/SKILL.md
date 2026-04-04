@@ -189,7 +189,37 @@ Run `npx tsx setup/index.ts --step service` and parse the status block.
 
 **If FALLBACK=wsl_no_systemd:** WSL without systemd detected. Tell user they can either enable systemd in WSL (`echo -e "[boot]\nsystemd=true" | sudo tee /etc/wsl.conf` then restart WSL) or use the generated `start-deus.sh` wrapper.
 
-**If PLATFORM=windows and FALLBACK=batch:** Windows without NSSM/Servy — a `start-deus.bat` launcher was generated for the background service. Tell user: the service can be started with `.\start-deus.bat` or by double-clicking it. For auto-start on login, add a shortcut to `shell:startup`. The `deus` CLI command will be set up in step 7b.
+**If PLATFORM=windows:** Detect whether NSSM is available for persistent service management:
+
+```bash
+where nssm 2>nul && echo "NSSM_AVAILABLE=true" || echo "NSSM_AVAILABLE=false"
+```
+
+**If NSSM_AVAILABLE=true:** Install and configure the Windows service with NSSM:
+
+```bash
+nssm install deus node <project-root>\dist\index.js
+nssm set deus AppDirectory <project-root>
+nssm set deus AppRestartDelay 5000
+nssm start deus
+```
+
+Replace `<project-root>` with the absolute path to the Deus project directory (from `cd` or `%CD%`).
+
+**If NSSM_AVAILABLE=false:** AskUserQuestion: NSSM is not installed. It's needed for running Deus as a persistent Windows service. How would you like to proceed?
+- **Install NSSM via winget** (Recommended) — run `winget install nssm`, then re-run this step
+- **Download NSSM manually** — download from https://nssm.cc/download and add it to your PATH, then re-run this step
+- **Use Windows Task Scheduler instead** — create a task that runs `node <project-root>\dist\index.js` at login (less reliable than NSSM for restarts)
+- **Use the batch launcher** — skip persistent service, use `.\start-deus.bat` manually
+
+If the user chose Task Scheduler: guide them to create a scheduled task:
+1. Open Task Scheduler (`taskschd.msc`)
+2. Create a Basic Task named "Deus"
+3. Trigger: "When I log on"
+4. Action: Start a Program — `node`, arguments: `<project-root>\dist\index.js`, start in: `<project-root>`
+5. Check "Run with highest privileges" if Docker requires it
+
+**If PLATFORM=windows and FALLBACK=batch (and user skipped NSSM/Task Scheduler):** A `start-deus.bat` launcher was generated for the background service. Tell user: the service can be started with `.\start-deus.bat` or by double-clicking it. For auto-start on login, add a shortcut to `shell:startup`. The `deus` CLI command will be set up in step 7b.
 
 **If DOCKER_GROUP_STALE=true:** The user was added to the docker group after their session started — the systemd service can't reach the Docker socket. Ask user to run these two commands:
 

@@ -9,7 +9,11 @@ This skill adds WhatsApp support to Deus. It builds the local MCP packages, regi
 
 **IMPORTANT:** Do NOT add git remotes, fetch from external repos, or install npm packages from the public registry during this skill. All channel code is already in the repo under `packages/` and `src/channels/`.
 
+---
+
 ## Phase 1: Pre-flight
+
+> **Recovery:** If something goes wrong in Phase 1, simply re-run the skill from the beginning.
 
 ### Check current state
 
@@ -43,7 +47,11 @@ If they chose pairing code:
 
 AskUserQuestion: What is your phone number? (Include country code without +, e.g., 1234567890)
 
+---
+
 ## Phase 2: Build Local Packages
+
+> **Recovery:** If the build fails, fix the error and re-run from Phase 2. No need to redo Phase 1.
 
 The WhatsApp channel is a local MCP server in `packages/`. Build the packages in order (core first, then whatsapp):
 
@@ -78,7 +86,11 @@ npm run build
 
 Build must be clean before proceeding.
 
+---
+
 ## Phase 3: Authentication
+
+> **Recovery:** If authentication fails, delete `store/auth/` and re-run from Phase 3. Phases 1-2 do not need to be repeated.
 
 ### Clean previous auth state (if re-authenticating)
 
@@ -160,7 +172,11 @@ Sync to container environment:
 mkdir -p data/env && cp .env data/env/env
 ```
 
+---
+
 ## Phase 4: Registration
+
+> **Recovery:** If registration fails or you chose the wrong group, re-run from Phase 4. Authentication (Phase 3) is preserved.
 
 ### Configure trigger and channel type
 
@@ -202,14 +218,27 @@ node -e "const c=JSON.parse(require('fs').readFileSync('store/auth/creds.json','
 
 **DM with bot:** Ask for the bot's phone number. JID = `NUMBER@s.whatsapp.net`
 
-**Group (solo, existing):** Run group sync and list available groups:
+**Group (solo, existing):** Run group sync first:
 
 ```bash
 npx tsx setup/index.ts --step groups
-npx tsx setup/index.ts --step groups --list
 ```
 
-The output shows `JID|GroupName` pairs. Present candidates as AskUserQuestion (names only, not JIDs).
+Then use a search-based picker (group lists can have 300+ entries):
+
+1. AskUserQuestion: Type the name (or part of the name) of the WhatsApp group you want to register.
+
+2. Filter groups using the search term:
+
+```bash
+npx tsx setup/index.ts --step groups --list | grep -i "<search-term>" | head -10
+```
+
+3. Present the top 10 matching groups as AskUserQuestion options (names only, not JIDs). Include two extra options at the bottom:
+   - **Show more results** — re-run the filter with `head -20` to show the next batch
+   - **Search again** — ask for a different search term and repeat from step 1
+
+4. Once the user picks a group, extract the JID from the matching line.
 
 ### Register the chat
 
@@ -236,7 +265,11 @@ npx tsx setup/index.ts --step register \
   --channel whatsapp
 ```
 
+---
+
 ## Phase 5: Verify
+
+> **Recovery:** If verification fails, check logs (`tail -50 logs/deus.log`). For service issues, re-run from Phase 5. For auth issues, re-run from Phase 3. For registration issues, re-run from Phase 4.
 
 ### Build and restart
 
@@ -267,6 +300,32 @@ Tell the user:
 > - For groups: Use the trigger word (e.g., "@Deus hello")
 >
 > The assistant should respond within a few seconds.
+
+### Smoke test
+
+After confirming the service is running, send a programmatic test message to verify end-to-end delivery:
+
+```bash
+npx tsx -e "
+import { getDb } from './dist/db.js';
+const db = getDb();
+const group = db.prepare('SELECT jid, name FROM registered_groups WHERE jid LIKE \"%@s.whatsapp.net\" OR jid LIKE \"%@g.us\" LIMIT 1').get();
+if (!group) { console.log('SMOKE_TEST: no registered WhatsApp chat found'); process.exit(1); }
+console.log('SMOKE_TEST: sending to ' + group.name + ' (' + group.jid + ')');
+"
+```
+
+If a registered chat is found, use the MCP tool `send_message` (if available) or tell the user:
+
+> Smoke test: Send any message to your registered chat now. I'll check the logs in 5 seconds.
+
+Wait 5 seconds, then check for delivery confirmation:
+
+```bash
+tail -20 logs/deus.log | grep -i "message\|received\|processing"
+```
+
+Report the result: if log entries show message receipt/processing, tell the user "WhatsApp channel is working." If no relevant log entries, suggest checking the Troubleshooting section below.
 
 ### Check logs if needed
 
@@ -340,6 +399,19 @@ launchctl load ~/Library/LaunchAgents/com.deus.plist
 # npm run dev
 # systemctl --user start deus
 ```
+
+## Troubleshooting: Re-authentication
+
+If WhatsApp disconnects (session revoked, "logged out" error in logs, or `store/auth/creds.json` becomes invalid):
+
+1. Delete the auth state: `rm -rf store/auth/`
+2. Re-run Phase 3 (Authentication) — Phases 1-2 do not need to be repeated
+3. After re-authentication, restart the service — no re-registration needed (the JID stays the same)
+
+Common causes of disconnection:
+- Linked the same WhatsApp account to another instance of Deus or another Baileys client
+- Manually removed the linked device from WhatsApp Settings > Linked Devices
+- WhatsApp server-side session expiry (rare, ~14 days of inactivity)
 
 ## Removal
 
