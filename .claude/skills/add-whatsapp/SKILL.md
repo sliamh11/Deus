@@ -5,7 +5,9 @@ description: Add WhatsApp as a channel. Can replace other channels entirely or r
 
 # Add WhatsApp Channel
 
-This skill adds WhatsApp support to Deus. It installs the WhatsApp channel code, dependencies, and guides through authentication, registration, and configuration.
+This skill adds WhatsApp support to Deus. It builds the local MCP packages, registers the channel, and guides through authentication.
+
+**IMPORTANT:** Do NOT add git remotes, fetch from external repos, or install npm packages from the public registry during this skill. All channel code is already in the repo under `packages/` and `src/channels/`.
 
 ## Phase 1: Pre-flight
 
@@ -33,46 +35,42 @@ If IS_HEADLESS=true AND not WSL → AskUserQuestion: How do you want to authenti
 - **Pairing code** (Recommended) - Enter a numeric code on your phone (no camera needed, requires phone number)
 - **QR code in terminal** - Displays QR code in the terminal (can be too small on some displays)
 
-Otherwise (macOS, desktop Linux, or WSL) → AskUserQuestion: How do you want to authenticate WhatsApp?
-- **QR code in browser** (Recommended) - Opens a browser window with a large, scannable QR code
+Otherwise (macOS, desktop Linux, Windows, or WSL) → AskUserQuestion: How do you want to authenticate WhatsApp?
+- **QR code in terminal** (Recommended) - Displays QR code in the terminal
 - **Pairing code** - Enter a numeric code on your phone (no camera needed, requires phone number)
-- **QR code in terminal** - Displays QR code in the terminal (can be too small on some displays)
 
 If they chose pairing code:
 
 AskUserQuestion: What is your phone number? (Include country code without +, e.g., 1234567890)
 
-## Phase 2: Apply Code Changes
+## Phase 2: Build Local Packages
 
-Check if `src/channels/mcp-whatsapp.ts` already exists in the channel barrel imports. If it does, skip to Phase 3 (Authentication).
-
-### Install the WhatsApp MCP server package
+The WhatsApp channel is a local MCP server in `packages/`. Build the packages in order (core first, then whatsapp):
 
 ```bash
-npm install deus-mcp-whatsapp
+cd packages/mcp-channel-core && npm install && npm run build && cd ../..
+cd packages/mcp-whatsapp && npm install && npm run build && cd ../..
 ```
 
-This installs the standalone WhatsApp MCP server, which runs as a separate process and communicates via stdio.
+### Register the channel import
 
-### Register the channel
-
-Add the WhatsApp import to `src/channels/index.ts`:
+Check if `src/channels/index.ts` already imports `./mcp-whatsapp.js`. If not, add it:
 
 ```typescript
 import './mcp-whatsapp.js';
 ```
 
-The `src/channels/mcp-whatsapp.ts` factory is already in the codebase — it spawns the MCP server and bridges it to the Deus Channel interface.
+The factory file `src/channels/mcp-whatsapp.ts` already exists in the codebase.
 
 ### Configure environment
 
-Add `ASSISTANT_HAS_OWN_NUMBER` to `.env.example` if not already present:
+Add `ASSISTANT_HAS_OWN_NUMBER` to `.env` if not already present:
 
 ```
 ASSISTANT_HAS_OWN_NUMBER=false
 ```
 
-### Validate code changes
+### Validate
 
 ```bash
 npm run build
@@ -90,41 +88,32 @@ rm -rf store/auth/
 
 ### Run WhatsApp authentication
 
-For QR code in browser (recommended):
+The auth script is at `scripts/whatsapp-auth.ts`. It uses baileys from the mcp-whatsapp workspace package.
+
+**For QR code in terminal:**
 
 ```bash
-npx tsx setup/index.ts --step whatsapp-auth -- --method qr-browser
+npx tsx scripts/whatsapp-auth.ts
 ```
 
-(Bash timeout: 150000ms)
+(Bash timeout: 120000ms)
 
 Tell the user:
 
-> A browser window will open with a QR code.
+> A QR code will appear in the terminal.
 >
 > 1. Open WhatsApp > **Settings** > **Linked Devices** > **Link a Device**
-> 2. Scan the QR code in the browser
-> 3. The page will show "Authenticated!" when done
-
-For QR code in terminal:
-
-```bash
-npx tsx setup/index.ts --step whatsapp-auth -- --method qr-terminal
-```
-
-Tell the user to run `npm run auth` in another terminal, then:
-
-> 1. Open WhatsApp > **Settings** > **Linked Devices** > **Link a Device**
 > 2. Scan the QR code displayed in the terminal
+> 3. Wait for "Authentication successful!" message
 
-For pairing code:
+**For pairing code:**
 
 Tell the user to have WhatsApp open on **Settings > Linked Devices > Link a Device**, ready to tap **"Link with phone number instead"** — the code expires in ~60 seconds and must be entered immediately.
 
 Run the auth process in the background and poll `store/pairing-code.txt` for the code:
 
 ```bash
-rm -f store/pairing-code.txt && npx tsx setup/index.ts --step whatsapp-auth -- --method pairing-code --phone <their-phone-number> > /tmp/wa-auth.log 2>&1 &
+rm -f store/pairing-code.txt && npx tsx scripts/whatsapp-auth.ts --pairing-code --phone <their-phone-number> > /tmp/wa-auth.log 2>&1 &
 ```
 
 Then immediately poll for the code (do NOT wait for the background command to finish):
@@ -258,8 +247,9 @@ launchctl kickstart -k gui/$(id -u)/com.deus
 # Linux (systemd)
 systemctl --user restart deus
 
-# Linux (nohup fallback)
-bash start-deus.sh
+# Windows (NSSM or Servy)
+nssm restart deus
+# or: servy-cli restart --name=deus
 ```
 
 ### Test the connection
@@ -282,10 +272,10 @@ tail -f logs/deus.log
 
 ### QR code expired
 
-QR codes expire after ~60 seconds. Re-run the auth command:
+QR codes expire after ~60 seconds. Re-run the auth script:
 
 ```bash
-rm -rf store/auth/ && npx tsx src/whatsapp-auth.ts
+rm -rf store/auth/ && npx tsx scripts/whatsapp-auth.ts
 ```
 
 ### Pairing code not working
@@ -293,19 +283,13 @@ rm -rf store/auth/ && npx tsx src/whatsapp-auth.ts
 Codes expire in ~60 seconds. To retry:
 
 ```bash
-rm -rf store/auth/ && npx tsx src/whatsapp-auth.ts --pairing-code --phone <phone>
+rm -rf store/auth/ && npx tsx scripts/whatsapp-auth.ts --pairing-code --phone <phone>
 ```
 
 Enter the code **immediately** when it appears. Also ensure:
 1. Phone number includes country code without `+` (e.g., `1234567890`)
 2. Phone has internet access
 3. WhatsApp is updated to the latest version
-
-If pairing code keeps failing, switch to QR-browser auth instead:
-
-```bash
-rm -rf store/auth/ && npx tsx setup/index.ts --step whatsapp-auth -- --method qr-browser
-```
 
 ### "conflict" disconnection
 
@@ -357,5 +341,6 @@ To remove WhatsApp integration:
 
 1. Delete auth credentials: `rm -rf store/auth/`
 2. Remove WhatsApp registrations: `sqlite3 store/messages.db "DELETE FROM registered_groups WHERE jid LIKE '%@g.us' OR jid LIKE '%@s.whatsapp.net'"`
-3. Sync env: `mkdir -p data/env && cp .env data/env/env`
-4. Rebuild and restart: `npm run build && launchctl kickstart -k gui/$(id -u)/com.deus` (macOS) or `npm run build && systemctl --user restart deus` (Linux)
+3. Remove import from `src/channels/index.ts`
+4. Sync env: `mkdir -p data/env && cp .env data/env/env`
+5. Rebuild and restart

@@ -7,11 +7,13 @@ description: Add Telegram as a channel. Can replace WhatsApp entirely or run alo
 
 This skill adds Telegram support to Deus, then walks through interactive setup.
 
+**IMPORTANT:** Do NOT add git remotes, fetch from external repos, or install npm packages from the public registry during this skill. All channel code is already in the repo under `packages/` and `src/channels/`.
+
 ## Phase 1: Pre-flight
 
 ### Check if already applied
 
-Check if `src/channels/telegram.ts` exists. If it does, skip to Phase 3 (Setup). The code changes are already in place.
+Check if `src/channels/index.ts` already imports `./mcp-telegram.js`. If it does, skip to Phase 3 (Setup).
 
 ### Ask the user
 
@@ -21,19 +23,16 @@ AskUserQuestion: Do you have a Telegram bot token, or do you need to create one?
 
 If they have one, collect it now. If not, we'll create one in Phase 3.
 
-## Phase 2: Apply Code Changes
+## Phase 2: Build Local Packages
 
-Check if `src/channels/mcp-telegram.ts` already exists in the channel barrel imports. If it does, skip to Phase 3 (Setup).
-
-### Install the Telegram MCP server package
+The Telegram channel is a local MCP server in `packages/`. Build the packages in order (core first, then telegram):
 
 ```bash
-npm install deus-mcp-telegram
+cd packages/mcp-channel-core && npm install && npm run build && cd ../..
+cd packages/mcp-telegram && npm install && npm run build && cd ../..
 ```
 
-This installs the standalone Telegram MCP server, which runs as a separate process and communicates via stdio.
-
-### Register the channel
+### Register the channel import
 
 Add the Telegram import to `src/channels/index.ts`:
 
@@ -41,9 +40,9 @@ Add the Telegram import to `src/channels/index.ts`:
 import './mcp-telegram.js';
 ```
 
-The `src/channels/mcp-telegram.ts` factory is already in the codebase — it spawns the MCP server and bridges it to the Deus Channel interface.
+The factory file `src/channels/mcp-telegram.ts` already exists in the codebase.
 
-### Validate code changes
+### Validate
 
 ```bash
 npm run build
@@ -101,9 +100,12 @@ Tell the user:
 
 ```bash
 npm run build
-launchctl kickstart -k gui/$(id -u)/com.deus  # macOS
-# Linux: systemctl --user restart deus
 ```
+
+Restart the service (platform-specific):
+- macOS: `launchctl kickstart -k gui/$(id -u)/com.deus`
+- Linux: `systemctl --user restart deus`
+- Windows: `nssm restart deus` or `servy-cli restart --name=deus`
 
 ## Phase 4: Registration
 
@@ -200,9 +202,7 @@ If they say yes, invoke the `/add-telegram-swarm` skill.
 
 To remove Telegram integration:
 
-1. Delete `src/channels/telegram.ts` and `src/channels/telegram.test.ts`
-2. Remove `import './telegram.js'` from `src/channels/index.ts`
-3. Remove `TELEGRAM_BOT_TOKEN` from `.env`
-4. Remove Telegram registrations from SQLite: `sqlite3 store/messages.db "DELETE FROM registered_groups WHERE jid LIKE 'tg:%'"`
-5. Uninstall: `npm uninstall grammy`
-6. Rebuild: `npm run build && launchctl kickstart -k gui/$(id -u)/com.deus` (macOS) or `npm run build && systemctl --user restart deus` (Linux)
+1. Remove import from `src/channels/index.ts`
+2. Remove `TELEGRAM_BOT_TOKEN` from `.env`
+3. Remove Telegram registrations: `sqlite3 store/messages.db "DELETE FROM registered_groups WHERE jid LIKE 'tg:%'"`
+4. Rebuild and restart

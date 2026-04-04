@@ -11,6 +11,8 @@ Run setup steps automatically. Only pause when user action is required (channel 
 
 **UX Note:** Use `AskUserQuestion` for all user-facing questions.
 
+**CRITICAL:** Do NOT add git remotes (`git remote add`), fetch from external repos, or install npm packages from the public registry outside of step 0. All channel code and packages are local in the repo. If something seems missing, check `packages/` and `src/channels/` before looking externally.
+
 ## 0. Git & Fork Setup
 
 Check the git remote configuration to ensure the user has a proper setup for receiving updates.
