@@ -125,7 +125,7 @@ rm -f store/pairing-code.txt && npx tsx scripts/whatsapp-auth.ts --pairing-code 
 Then immediately poll for the code (do NOT wait for the background command to finish):
 
 ```bash
-for i in $(seq 1 20); do [ -f store/pairing-code.txt ] && cat store/pairing-code.txt && break; sleep 1; done
+for i in $(seq 1 50); do [ -f store/pairing-code.txt ] && cat store/pairing-code.txt && break; sleep 0.2; done
 ```
 
 Display the code to the user the moment it appears. Tell them:
@@ -139,7 +139,7 @@ Display the code to the user the moment it appears. Tell them:
 After the user enters the code, poll for authentication to complete:
 
 ```bash
-for i in $(seq 1 60); do grep -q 'AUTH_STATUS: authenticated' /tmp/wa-auth.log 2>/dev/null && echo "authenticated" && break; grep -q 'AUTH_STATUS: failed' /tmp/wa-auth.log 2>/dev/null && echo "failed" && break; sleep 2; done
+for i in $(seq 1 120); do grep -q 'AUTH_STATUS: authenticated' /tmp/wa-auth.log 2>/dev/null && echo "authenticated" && break; grep -q 'AUTH_STATUS: failed' /tmp/wa-auth.log 2>/dev/null && echo "failed" && break; sleep 0.5; done
 ```
 
 **If failed:** qr_timeout → re-run. logged_out → delete `store/auth/` and re-run. 515 → re-run. timeout → ask user, offer retry.

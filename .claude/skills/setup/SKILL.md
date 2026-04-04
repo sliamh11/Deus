@@ -189,7 +189,7 @@ Run `npx tsx setup/index.ts --step service` and parse the status block.
 
 **If FALLBACK=wsl_no_systemd:** WSL without systemd detected. Tell user they can either enable systemd in WSL (`echo -e "[boot]\nsystemd=true" | sudo tee /etc/wsl.conf` then restart WSL) or use the generated `start-deus.sh` wrapper.
 
-**If PLATFORM=windows and FALLBACK=batch:** Windows without NSSM/Servy — a `start-deus.bat` launcher was generated. Tell user: run it from PowerShell as `.\start-deus.bat` or double-click it. For auto-start on login, add a shortcut to `shell:startup`.
+**If PLATFORM=windows and FALLBACK=batch:** Windows without NSSM/Servy — a `start-deus.bat` launcher was generated for the background service. Tell user: the service can be started with `.\start-deus.bat` or by double-clicking it. For auto-start on login, add a shortcut to `shell:startup`. The `deus` CLI command will be set up in step 7b.
 
 **If DOCKER_GROUP_STALE=true:** The user was added to the docker group after their session started — the systemd service can't reach the Docker socket. Ask user to run these two commands:
 
@@ -210,6 +210,24 @@ Replace `USERNAME` with the actual username (from `whoami`). Run the two `sudo` 
 - macOS: check `launchctl list | grep deus`. If PID=`-` and status non-zero, read `logs/deus.error.log`.
 - Linux: check `systemctl --user status deus`.
 - Re-run the service step after fixing.
+
+## 7b. Register CLI Command
+
+Run `npx tsx setup/index.ts --step cli` and parse the status block.
+
+This creates a global `deus` command so the user can type `deus` from any terminal.
+
+- macOS/Linux: symlinks `deus-cmd.sh` → `~/.local/bin/deus`
+- Windows: creates `deus.cmd` shim → `%USERPROFILE%\.local\bin\` and adds it to user PATH
+
+**If IN_PATH=false (macOS/Linux only):** Tell user to add `~/.local/bin` to their PATH. Suggest:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
+source ~/.zshrc
+```
+
+**If IN_PATH=true:** CLI is ready. Tell user they can now type `deus` from any terminal after reopening their shell (Windows) or immediately (macOS/Linux).
 
 ## 8. Verify
 
