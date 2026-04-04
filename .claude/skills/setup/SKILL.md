@@ -13,12 +13,14 @@ Run setup steps automatically. Only pause when user action is required (channel 
 
 ## 0. Git & Fork Setup
 
-Check the git remote configuration to ensure the user has a fork and upstream is configured.
+Check the git remote configuration to ensure the user has a proper setup for receiving updates.
 
 Run:
 - `git remote -v`
 
-**Case A — `origin` points to `qwibitai/nanoclaw` (user cloned directly):**
+Determine which case applies based on the origin URL:
+
+**Case A — `origin` points to `qwibitai/nanoclaw` (user cloned the upstream directly):**
 
 The user cloned instead of forking. AskUserQuestion: "You cloned Deus directly. We recommend forking so you can push your customizations. Would you like to set up a fork?"
 - Fork now (recommended) — walk them through it
@@ -37,18 +39,22 @@ If continue without fork: add upstream so they can still pull updates:
 git remote add upstream https://github.com/qwibitai/nanoclaw.git
 ```
 
-**Case B — `origin` points to user's fork, no `upstream` remote:**
+**Case B — `origin` points to user's fork (NOT qwibitai/nanoclaw), no `upstream` remote:**
 
-Add upstream:
+First, check if this is a genuine fork or the source repo itself. Use `gh repo view --json parent` to check if origin has a parent repo. If it does → it's a fork, add upstream pointing to the parent. If it doesn't → it's the source repo (e.g. `sliamh11/Deus`), do NOT add upstream.
+
+For forks only:
 ```bash
 git remote add upstream https://github.com/qwibitai/nanoclaw.git
 ```
 
-**Case C — both `origin` (user's fork) and `upstream` (qwibitai) exist:**
+**Case C — both `origin` and `upstream` exist:**
 
 Already configured. Continue.
 
-**Verify:** `git remote -v` should show `origin` → user's repo, `upstream` → `qwibitai/nanoclaw.git`.
+**Case D — `origin` points to the source repo (no parent):**
+
+This is the maintainer's own repo or a direct clone. No upstream needed. Continue.
 
 ## 1. Bootstrap (Node.js + Dependencies)
 
