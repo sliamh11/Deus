@@ -27,6 +27,8 @@ const logger = pino(
 
 const MAX_MESSAGE_LENGTH = 4096;
 const MAX_CONSECUTIVE_ERRORS = 5;
+const MAX_RECONNECT_RETRIES = 3;
+const BASE_BACKOFF_MS = 1000;
 
 /**
  * Send a message with Telegram Markdown parse mode, falling back to plain text.
@@ -239,9 +241,9 @@ export class TelegramProvider implements ChannelProvider {
 
   /**
    * Reset the polling session after consecutive errors.
-   * Stops the bot and restarts polling to recover from a degraded state.
+   * Retries with exponential backoff (1s, 2s, 4s), then exits on failure.
    */
-  private resetPolling(): void {
+  private async resetPolling(): Promise<void> {
     if (!this.bot || this.resetting) return;
     this.resetting = true;
     logger.warn(
@@ -253,17 +255,51 @@ export class TelegramProvider implements ChannelProvider {
     bot.stop();
     this.consecutiveErrors = 0;
 
-    bot.start({
-      onStart: (botInfo) => {
-        this.botUsername = botInfo.username;
-        this.connectTime = Date.now();
-        this.resetting = false;
-        logger.info(
-          { username: botInfo.username, id: botInfo.id },
-          'Telegram bot reconnected after polling reset',
+    for (let attempt = 0; attempt < MAX_RECONNECT_RETRIES; attempt++) {
+      const delayMs = BASE_BACKOFF_MS * Math.pow(2, attempt);
+      logger.info(
+        { attempt: attempt + 1, delayMs },
+        'Attempting polling reset with backoff',
+      );
+
+      await new Promise((r) => setTimeout(r, delayMs));
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error('Polling restart timed out'));
+          }, 30_000);
+
+          bot.start({
+            onStart: (botInfo) => {
+              clearTimeout(timeout);
+              this.botUsername = botInfo.username;
+              this.connectTime = Date.now();
+              this.resetting = false;
+              this.consecutiveErrors = 0;
+              logger.info(
+                { username: botInfo.username, id: botInfo.id },
+                'Telegram bot reconnected after polling reset',
+              );
+              resolve();
+            },
+          });
+        });
+        return; // Success — exit retry loop
+      } catch (err) {
+        logger.error(
+          { attempt: attempt + 1, err },
+          'Polling reset attempt failed',
         );
-      },
-    });
+        bot.stop();
+      }
+    }
+
+    logger.fatal(
+      'Telegram bot failed to reconnect after %d retries — exiting',
+      MAX_RECONNECT_RETRIES,
+    );
+    process.exit(1);
   }
 
   async sendMessage(chatId: string, text: string): Promise<void> {

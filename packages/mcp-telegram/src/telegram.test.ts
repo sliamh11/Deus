@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // vi.hoisted runs before vi.mock hoisting — set env before module evaluation
 vi.hoisted(() => {
@@ -43,6 +43,7 @@ vi.mock('pino', () => {
     warn: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
+    fatal: vi.fn(),
   };
   const pinoFn: any = () => mockLogger;
   pinoFn.destination = () => ({});
@@ -73,6 +74,14 @@ describe('TelegramProvider', () => {
   });
 
   describe('error tracking and polling reset', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     it('tracks consecutive errors via the catch handler', async () => {
       await provider.connect();
       expect(catchHandler).toBeDefined();
@@ -98,15 +107,19 @@ describe('TelegramProvider', () => {
         catchHandler!({ message: `error ${i}` });
       }
 
-      // Should have called stop + start to reset polling
+      // Stop is called immediately in resetPolling
       expect(mockStop).toHaveBeenCalledTimes(1);
+
+      // Advance past the first backoff delay (1s) to trigger start
+      await vi.advanceTimersByTimeAsync(1100);
+
       expect(mockStart).toHaveBeenCalledTimes(1);
     });
 
     it('does not reset polling twice while already resetting', async () => {
       await provider.connect();
 
-      // Make start not call onStart (simulating slow restart)
+      // Make start not call onStart (simulating slow restart that times out)
       mockStart.mockImplementationOnce(() => Promise.resolve());
       mockStop.mockClear();
       mockStart.mockClear();
@@ -121,10 +134,20 @@ describe('TelegramProvider', () => {
         catchHandler!({ message: `error ${i}` });
       }
 
-      // Should only have triggered one reset
+      // Should only have triggered one reset (one stop call)
       expect(mockStop).toHaveBeenCalledTimes(1);
-    });
 
+      // Drain pending timers so resetPolling's async loop completes cleanly
+      // Mock process.exit to prevent test runner from exiting
+      const mockExit = vi
+        .spyOn(process, 'exit')
+        .mockImplementation(() => undefined as never);
+      await vi.runAllTimersAsync();
+      mockExit.mockRestore();
+    });
+  });
+
+  describe('disconnect', () => {
     it('cleans up state on disconnect', async () => {
       await provider.connect();
       mockStop.mockClear();
