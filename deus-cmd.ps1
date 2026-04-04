@@ -130,10 +130,30 @@ function Invoke-ClaudeWithContext {
     }
 
     $vault = Get-VaultPath
+
+    # Git context
+    $gitContext = ""
+    Push-Location $WorkDir
+    try {
+        $branch = & git rev-parse --abbrev-ref HEAD 2>$null
+        $status = & git status --short 2>$null
+        $log    = & git log --oneline -5 2>$null
+        if ($branch) {
+            $gitContext  = "Current branch: $branch`n"
+            $gitContext += "Status:`n$(if ($status) { $status } else { '(clean)' })`n`nRecent commits:`n$($log -join "`n")"
+        }
+    } catch { } finally { Pop-Location }
+
+    # Startup instruction - always present so Claude knows it's Deus
+    $startupInstruction = "STARTUP INSTRUCTION: You are Deus - the user's personal AI assistant. This repo is the infrastructure that powers you. See README.md for philosophy and setup."
+    if ($gitContext) {
+        $startupInstruction += "`n`ngitStatus:`n$gitContext"
+    }
+
     if (-not $vault) {
         Write-Host "Warning: No vault configured. Set DEUS_VAULT_PATH or vault_path in ~/.config/deus/config.json" -ForegroundColor Yellow
         Set-Location $WorkDir
-        Invoke-Claude
+        Invoke-Claude --append-system-prompt $startupInstruction
         return
     }
 
@@ -177,28 +197,15 @@ function Invoke-ClaudeWithContext {
         if ($related) { $context += "`n`n=== RELATED SESSIONS ===`n$related" }
     }
 
-    # Git status for context
-    Write-Host "  Loading git status...`r" -NoNewline
-    $gitStatus = ""
-    Push-Location $WorkDir
-    try {
-        $branch    = & git rev-parse --abbrev-ref HEAD 2>$null
-        $mainBranch = "main"
-        $status    = & git status --short 2>$null
-        $log       = & git log --oneline -5 2>$null
-        if ($branch) {
-            $gitStatus  = "Current branch: $branch`n`nMain branch (you will usually use this for PRs): $mainBranch`n`n"
-            $gitStatus += "Status:`n$(if ($status) { $status } else { '(clean)' })`n`nRecent commits:`n$($log -join "`n")"
-        }
-    } catch { } finally { Pop-Location }
-    if ($gitStatus) { $context += "`n`n=== GIT STATUS ===`n$gitStatus" }
+    Write-Host (" " * 50 + "`r") -NoNewline  # clear status line
 
-    Write-Host "  " + (" " * 40) + "`r" -NoNewline  # clear line
+    # Combine context + startup instruction
+    $fullPrompt = ""
+    if ($context) { $fullPrompt = $context + "`n`n" }
+    $fullPrompt += $startupInstruction
 
-    # Launch Claude with system prompt
-    $env:CLAUDE_SYSTEM_PROMPT = $context
     Set-Location $WorkDir
-    Invoke-Claude
+    Invoke-Claude --append-system-prompt $fullPrompt
 }
 
 # -- Commands -----------------------------------------------------------------
