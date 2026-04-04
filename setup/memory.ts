@@ -23,12 +23,7 @@ const DEUS_ENV_PATH = path.join(process.cwd(), '.env');
 const DEFAULT_VAULT_PATH = path.join(HOME_DIR, '.deus', 'vault');
 const MEMORY_INDEXER = path.join(process.cwd(), 'scripts', 'memory_indexer.py');
 
-const VAULT_SUBDIRS = [
-  'Session-Logs',
-  'Atoms',
-  'Checkpoints',
-  'Persona',
-];
+const VAULT_SUBDIRS = ['Session-Logs', 'Atoms', 'Checkpoints', 'Persona'];
 
 export async function run(args: string[]): Promise<void> {
   logger.info('Starting memory system setup');
@@ -39,7 +34,8 @@ export async function run(args: string[]): Promise<void> {
   if (!pythonCmd) {
     emitStatus('MEMORY', {
       STATUS: 'failed',
-      ERROR: 'Python 3 not found. Install Python 3.11+ to enable the memory system.',
+      ERROR:
+        'Python 3 not found. Install Python 3.11+ to enable the memory system.',
       STEP: 'python_check',
     });
     return;
@@ -54,7 +50,8 @@ export async function run(args: string[]): Promise<void> {
   } catch {
     emitStatus('MEMORY', {
       STATUS: 'failed',
-      ERROR: 'Python 3 not found. Install Python 3.11+ to enable the memory system.',
+      ERROR:
+        'Python 3 not found. Install Python 3.11+ to enable the memory system.',
       STEP: 'python_check',
     });
     return;
@@ -65,12 +62,18 @@ export async function run(args: string[]): Promise<void> {
   // ── 2. Check/install Python dependencies ─────────────────────────────────
   const missing: string[] = [];
   try {
-    execSync('${pythonCmd} -c "import sqlite_vec"', { stdio: 'pipe', timeout: 5000 });
+    execSync(`${pythonCmd} -c "import sqlite_vec"`, {
+      stdio: 'pipe',
+      timeout: 5000,
+    });
   } catch {
     missing.push('sqlite-vec');
   }
   try {
-    execSync('${pythonCmd} -c "from google import genai"', { stdio: 'pipe', timeout: 5000 });
+    execSync(`${pythonCmd} -c "from google import genai"`, {
+      stdio: 'pipe',
+      timeout: 5000,
+    });
   } catch {
     missing.push('google-genai');
   }
@@ -78,7 +81,11 @@ export async function run(args: string[]): Promise<void> {
   if (missing.length > 0) {
     // Attempt to auto-install missing packages.
     logger.info({ missing }, 'Installing missing Python dependencies');
-    const requirementsPath = path.join(process.cwd(), 'evolution', 'requirements.txt');
+    const requirementsPath = path.join(
+      process.cwd(),
+      'evolution',
+      'requirements.txt',
+    );
     const installCmd = fs.existsSync(requirementsPath)
       ? `pip install -r "${requirementsPath}"`
       : `pip install ${missing.join(' ')}`;
@@ -108,12 +115,18 @@ export async function run(args: string[]): Promise<void> {
     // Re-check after install.
     const stillMissing: string[] = [];
     try {
-      execSync('${pythonCmd} -c "import sqlite_vec"', { stdio: 'pipe', timeout: 5000 });
+      execSync(`${pythonCmd} -c "import sqlite_vec"`, {
+        stdio: 'pipe',
+        timeout: 5000,
+      });
     } catch {
       stillMissing.push('sqlite-vec');
     }
     try {
-      execSync('${pythonCmd} -c "from google import genai"', { stdio: 'pipe', timeout: 5000 });
+      execSync(`${pythonCmd} -c "from google import genai"`, {
+        stdio: 'pipe',
+        timeout: 5000,
+      });
     } catch {
       stillMissing.push('google-genai');
     }
@@ -189,19 +202,22 @@ export async function run(args: string[]): Promise<void> {
 
   // ── 5. Initialize memory database ────────────────────────────────────────
   try {
-    execSync(
-      `${pythonCmd} "${MEMORY_INDEXER}" --rebuild`,
-      {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        timeout: 30000,
-        env: { ...process.env, DEUS_VAULT_PATH: vaultPath },
-      },
-    );
+    execSync(`${pythonCmd} "${MEMORY_INDEXER}" --rebuild`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30000,
+      env: { ...process.env, DEUS_VAULT_PATH: vaultPath },
+    });
     logger.info('Memory database initialized');
   } catch (err) {
-    const message = err instanceof Error ? (err as { stderr?: string }).stderr || err.message : String(err);
-    logger.warn({ err: message }, 'Memory database init failed (may need Gemini API key)');
+    const message =
+      err instanceof Error
+        ? (err as { stderr?: string }).stderr || err.message
+        : String(err);
+    logger.warn(
+      { err: message },
+      'Memory database init failed (may need Gemini API key)',
+    );
   }
 
   // ── 6. Check Gemini API key ──────────────────────────────────────────────
