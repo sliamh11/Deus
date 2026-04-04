@@ -172,7 +172,7 @@ This repo (~/deus) is the infrastructure that powers you. See README.md for phil
     if (-not $vault) {
         Write-Host "Warning: No vault configured. Set DEUS_VAULT_PATH or vault_path in ~/.config/deus/config.json" -ForegroundColor Yellow
         Set-Location $WorkDir
-        Invoke-Claude --append-system-prompt $startupInstruction
+        Invoke-Claude @("--append-system-prompt", $startupInstruction)
         return
     }
 
@@ -224,7 +224,7 @@ This repo (~/deus) is the infrastructure that powers you. See README.md for phil
     $fullPrompt += $startupInstruction
 
     Set-Location $WorkDir
-    Invoke-Claude --append-system-prompt $fullPrompt
+    Invoke-Claude @("--append-system-prompt", $fullPrompt)
 }
 
 # -- Commands -----------------------------------------------------------------
