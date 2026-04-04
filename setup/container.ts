@@ -1,8 +1,9 @@
 /**
  * Step: container — Build container image and verify with test run.
- * Replaces 03-setup-container.sh
+ * Cross-platform: uses build.sh on macOS/Linux, replicates staging logic on Windows.
  */
 import { execSync } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 
 import { CONTAINER_IMAGE } from '../src/config.js';
@@ -21,11 +22,50 @@ function parseArgs(args: string[]): { runtime: string } {
   return { runtime };
 }
 
+/**
+ * Stage skill agent files into container/skill-agents/ for the Docker build.
+ * This replicates the staging logic from build.sh in a cross-platform way.
+ */
+function stageSkillAgents(projectRoot: string): void {
+  const stagingDir = path.join(projectRoot, 'container', 'skill-agents');
+
+  // Clean previous staging
+  if (fs.existsSync(stagingDir)) {
+    fs.rmSync(stagingDir, { recursive: true });
+  }
+  fs.mkdirSync(stagingDir, { recursive: true });
+
+  const skillsDir = path.join(projectRoot, '.claude', 'skills');
+  if (!fs.existsSync(skillsDir)) return;
+
+  for (const skillName of fs.readdirSync(skillsDir)) {
+    const skillDir = path.join(skillsDir, skillName);
+    if (!fs.statSync(skillDir).isDirectory()) continue;
+
+    const agentFile = path.join(skillDir, 'agent.ts');
+    if (fs.existsSync(agentFile)) {
+      const destDir = path.join(stagingDir, skillName);
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.copyFileSync(agentFile, path.join(destDir, 'agent.ts'));
+      logger.info({ skill: skillName }, 'Staged skill agent');
+    }
+  }
+}
+
+/**
+ * Clean up staging directory after build.
+ */
+function cleanupStaging(projectRoot: string): void {
+  const stagingDir = path.join(projectRoot, 'container', 'skill-agents');
+  if (fs.existsSync(stagingDir)) {
+    fs.rmSync(stagingDir, { recursive: true });
+  }
+}
+
 export async function run(args: string[]): Promise<void> {
   const projectRoot = process.cwd();
   const { runtime } = parseArgs(args);
   const image = CONTAINER_IMAGE;
-  const logFile = path.join(projectRoot, 'logs', 'setup.log');
 
   if (!runtime) {
     emitStatus('SETUP_CONTAINER', {
@@ -40,7 +80,6 @@ export async function run(args: string[]): Promise<void> {
     process.exit(4);
   }
 
-  // Validate runtime availability
   if (runtime !== 'docker') {
     emitStatus('SETUP_CONTAINER', {
       RUNTIME: runtime,
@@ -82,21 +121,34 @@ export async function run(args: string[]): Promise<void> {
     process.exit(2);
   }
 
-  const buildCmd = 'docker build';
-  const runCmd = 'docker';
-
-  // Build
+  // Build — use build.sh on unix, manual staging on Windows
   let buildOk = false;
   logger.info({ runtime }, 'Building container');
+
+  const isWindows = process.platform === 'win32';
+
   try {
-    execSync(`${buildCmd} -t ${image} .`, {
-      cwd: path.join(projectRoot, 'container'),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    if (isWindows) {
+      // Windows: stage skills and run docker build from project root
+      stageSkillAgents(projectRoot);
+      execSync(`docker build -t ${image} -f container/Dockerfile .`, {
+        cwd: projectRoot,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      cleanupStaging(projectRoot);
+    } else {
+      // macOS/Linux: use build.sh which handles staging + build
+      execSync(`bash container/build.sh`, {
+        cwd: projectRoot,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    }
     buildOk = true;
     logger.info('Container build succeeded');
   } catch (err) {
     logger.error({ err }, 'Container build failed');
+    // Clean up staging on failure too
+    if (isWindows) cleanupStaging(projectRoot);
   }
 
   // Test
@@ -105,7 +157,7 @@ export async function run(args: string[]): Promise<void> {
     logger.info('Testing container');
     try {
       const output = execSync(
-        `echo '{}' | ${runCmd} run -i --rm --entrypoint /bin/echo ${image} "Container OK"`,
+        `echo '{}' | docker run -i --rm --entrypoint /bin/echo ${image} "Container OK"`,
         { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
       );
       testOk = output.includes('Container OK');

@@ -85,15 +85,13 @@ Run `npx tsx setup/index.ts --step environment` and parse the status block.
   - Linux: install with `curl -fsSL https://get.docker.com | sh && sudo usermod -aG docker $USER`. Note: user may need to log out/in for group membership.
   - Windows: direct to Docker Desktop download at https://docker.com/products/docker-desktop. Requires WSL 2 (auto-offered by Docker installer). After install, start Docker Desktop from Start menu.
 
-### 3b. Build and test
+### 3b. Build and test (BACKGROUND)
 
-Run `npx tsx setup/index.ts --step container -- --runtime docker` and parse the status block.
+**Start the container build in the background** — it takes 3-5 minutes and doesn't need user input. Continue with steps 4-6 while it runs.
 
-**If BUILD_OK=false:** Read `logs/setup.log` tail for the build error.
-- Cache issue (stale layers): `docker builder prune -f`. Retry.
-- Dockerfile syntax or missing files: diagnose from the log and fix, then retry.
+Run in background: `npx tsx setup/index.ts --step container -- --runtime docker`
 
-**If TEST_OK=false but BUILD_OK=true:** The image built but won't run. Check logs — common cause is runtime not fully started. Wait a moment and retry the test.
+**Do NOT wait for this to finish.** Immediately continue to step 4. You will check the result before step 7.
 
 ## 4. Claude Authentication (No Script)
 
@@ -143,6 +141,18 @@ AskUserQuestion: Agent access to external directories?
 
 **No:** `npx tsx setup/index.ts --step mounts -- --empty`
 **Yes:** Collect paths/permissions. `npx tsx setup/index.ts --step mounts -- --json '{"allowedRoots":[...],"blockedPatterns":[],"nonMainReadOnly":true}'`
+
+## 6b. Wait for Container Build
+
+**Before proceeding to step 7, check the container build from step 3b.**
+
+If the background build is still running, wait for it to finish. Parse the status block.
+
+**If BUILD_OK=false:** Read `logs/setup.log` tail for the build error.
+- Cache issue (stale layers): `docker builder prune -f`. Retry.
+- Dockerfile syntax or missing files: diagnose from the log and fix, then retry.
+
+**If TEST_OK=false but BUILD_OK=true:** The image built but won't run. Check logs — common cause is runtime not fully started. Wait a moment and retry the test.
 
 ## 7. Start Service
 
