@@ -14,9 +14,15 @@ import {
 import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-const AUTH_DIR = path.join(process.cwd(), 'store', 'auth');
-const QR_DATA_PATH = path.join(process.cwd(), 'store', 'qr-data.txt');
+// Derive project root from script location (immune to MSYS2 cwd mangling)
+const __filename = fileURLToPath(import.meta.url);
+const PROJECT_ROOT = path.resolve(path.dirname(__filename), '..');
+const STORE_DIR = path.join(PROJECT_ROOT, 'store');
+
+const AUTH_DIR = path.join(STORE_DIR, 'auth');
+const QR_DATA_PATH = path.join(STORE_DIR, 'qr-data.txt');
 const logger = pino({ level: 'silent' });
 
 // Parse CLI args
@@ -51,14 +57,7 @@ async function main() {
     browser: Browsers.macOS('Chrome'),
   });
 
-  if (usePairingCode && !sock.authState.creds.registered) {
-    // Request pairing code
-    const code = await sock.requestPairingCode(phone!);
-    console.log(`\nPAIRING_CODE: ${code}`);
-    // Write to file for polling by setup process
-    const codePath = path.join(process.cwd(), 'store', 'pairing-code.txt');
-    fs.writeFileSync(codePath, code);
-  }
+  let pairingCodeRequested = false;
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -67,6 +66,23 @@ async function main() {
       // Write QR data to file for external rendering (browser, image, etc.)
       fs.mkdirSync(path.dirname(QR_DATA_PATH), { recursive: true });
       fs.writeFileSync(QR_DATA_PATH, qr);
+
+      // Request pairing code on first qr event (socket is now ready)
+      if (usePairingCode && !pairingCodeRequested) {
+        pairingCodeRequested = true;
+        sock
+          .requestPairingCode(phone!)
+          .then((code) => {
+            console.log(`\nPAIRING_CODE: ${code}`);
+            const codePath = path.join(STORE_DIR, 'pairing-code.txt');
+            fs.writeFileSync(codePath, code);
+          })
+          .catch((err) => {
+            console.error('Failed to request pairing code:', err.message);
+          });
+        return; // Skip QR instructions when using pairing code
+      }
+
       console.log(`\nQR data written to ${QR_DATA_PATH}`);
       console.log('Scan the QR code shown above with WhatsApp.');
       console.log(
@@ -83,7 +99,7 @@ async function main() {
         console.error('AUTH_STATUS: failed (logged_out)');
         cleanup();
         process.exit(1);
-      } else if (reason === 405 || reason === 428) {
+      } else if (reason === 405) {
         console.error(
           `AUTH_STATUS: failed (error ${reason} — WhatsApp rejected the connection)`,
         );
