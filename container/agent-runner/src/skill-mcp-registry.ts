@@ -1,13 +1,13 @@
 /**
  * Container-side skill MCP tool registry.
  *
- * At startup, scans /app/skills/*/agent.js for skill MCP tool definitions.
+ * At startup, scans /app/skills/{name}/agent.js for skill MCP tool definitions.
  * Each agent.js must export a `registerTools` function that receives the
  * MCP server instance and a context object.
  *
  * Skill agent files are copied into the container at build time from
- * .claude/skills/*/agent.ts. They are compiled alongside the agent-runner
- * source by the container entrypoint's `npx tsc` step.
+ * .claude/skills/{name}/agent.ts. They are compiled alongside the agent-runner
+ * source by the container entrypoint's tsc step.
  *
  * This enables community-contributed MCP tool templates that extend the
  * agent's capabilities without modifying ipc-mcp-stdio.ts.
@@ -24,10 +24,7 @@ export interface SkillMcpContext {
   ipcDir: string;
 }
 
-export type RegisterToolsFn = (
-  server: McpServer,
-  ctx: SkillMcpContext,
-) => void;
+export type RegisterToolsFn = (server: McpServer, ctx: SkillMcpContext) => void;
 
 const SKILLS_DIR = '/app/skills';
 
@@ -57,9 +54,7 @@ export async function loadSkillMcpTools(
         console.error(`[skill-mcp] Loaded tools from skill: ${entry.name}`);
       }
     } catch (err) {
-      console.error(
-        `[skill-mcp] Failed to load skill ${entry.name}: ${err}`,
-      );
+      console.error(`[skill-mcp] Failed to load skill ${entry.name}: ${err}`);
     }
   }
 }

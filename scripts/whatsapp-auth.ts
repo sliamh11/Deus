@@ -30,6 +30,9 @@ if (usePairingCode && !phone) {
   process.exit(1);
 }
 
+const MAX_RETRIES = 3;
+let retryCount = 0;
+
 async function main() {
   fs.mkdirSync(AUTH_DIR, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -80,8 +83,28 @@ async function main() {
         console.error('AUTH_STATUS: failed (logged_out)');
         cleanup();
         process.exit(1);
+      } else if (reason === 405 || reason === 428) {
+        console.error(
+          `AUTH_STATUS: failed (error ${reason} — WhatsApp rejected the connection)`,
+        );
+        console.error(
+          'This usually means the baileys protocol version is outdated.',
+        );
+        console.error('Try: rm -rf store/auth/ and re-run authentication.');
+        cleanup();
+        process.exit(1);
       } else {
-        console.error(`Connection closed (reason: ${reason}), retrying...`);
+        retryCount++;
+        if (retryCount >= MAX_RETRIES) {
+          console.error(
+            `AUTH_STATUS: failed (${retryCount} retries exhausted, last reason: ${reason})`,
+          );
+          cleanup();
+          process.exit(1);
+        }
+        console.error(
+          `Connection closed (reason: ${reason}), retrying (${retryCount}/${MAX_RETRIES})...`,
+        );
       }
     } else if (connection === 'open') {
       const id = sock.user?.id?.split(':')[0] || 'unknown';
