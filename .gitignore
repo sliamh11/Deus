@@ -58,6 +58,10 @@ __pycache__/
 # Skills system (local per-installation state)
 .deus/
 
+# Local-only skills — listed here so they're not staged into container builds
+# One skill name per line (e.g., "x-integration"). No paths, just the name.
+.local-skills
+
 # Skill local dependencies (each skill manages its own node_modules)
 .claude/skills/*/node_modules/
 .claude/skills/*/package-lock.json

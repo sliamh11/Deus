@@ -22,9 +22,12 @@ rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
 
 if [ -d ".claude/skills" ]; then
-  # Read local-only skills from .git/info/exclude (lines matching .claude/skills/<name>)
+  # Read local-only skills from .local-skills (one skill name per line)
+  # Falls back to .git/info/exclude for backwards compatibility
   LOCAL_ONLY_SKILLS=""
-  if [ -f ".git/info/exclude" ]; then
+  if [ -f ".local-skills" ]; then
+    LOCAL_ONLY_SKILLS=$(grep -v '^#' .local-skills 2>/dev/null | grep -v '^$' || true)
+  elif [ -f ".git/info/exclude" ]; then
     LOCAL_ONLY_SKILLS=$(grep -oP '\.claude/skills/\K[^/]+' .git/info/exclude 2>/dev/null || true)
   fi
 
