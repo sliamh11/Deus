@@ -28,7 +28,7 @@ function parseArgs(args: string[]): { list: boolean; limit: number } {
 }
 
 export async function run(args: string[]): Promise<void> {
-  const projectRoot = process.cwd();
+  const projectRoot = path.resolve(process.cwd());
   const { list, limit } = parseArgs(args);
 
   if (list) {

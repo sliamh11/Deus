@@ -11,7 +11,7 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
-import { HOME_DIR, CONFIG_DIR } from './config.js';
+import { HOME_DIR, CONFIG_DIR, STORE_DIR } from './config.js';
 import { readEnvFile } from './env.js';
 
 const DEUS_CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -149,8 +149,7 @@ export function hasAnyChannelAuth(): boolean {
   // Each skill leaves credentials on disk. Check for known credential patterns.
   const checks: Array<() => boolean> = [
     // WhatsApp: store/auth/creds.json
-    () =>
-      fs.existsSync(path.join(process.cwd(), 'store', 'auth', 'creds.json')),
+    () => fs.existsSync(path.join(STORE_DIR, 'auth', 'creds.json')),
     // Token-based channels (Telegram, Slack, Discord, etc.)
     () => {
       const env = readEnvFile([
@@ -185,7 +184,7 @@ export function hasContainerImage(): boolean {
 
 /** Count registered groups in the database (opens readonly, safe before initDatabase). */
 export function countRegisteredGroups(): number {
-  const dbPath = path.join(process.cwd(), 'store', 'messages.db');
+  const dbPath = path.join(STORE_DIR, 'messages.db');
   if (!fs.existsSync(dbPath)) return 0;
 
   try {

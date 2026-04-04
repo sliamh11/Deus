@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 vi.mock('./config.js', () => ({
   HOME_DIR: '/home/testuser',
   CONFIG_DIR: '/home/testuser/.config/deus',
+  STORE_DIR: '/project/store',
 }));
 
 vi.mock('./logger.js', () => ({
