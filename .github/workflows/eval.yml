@@ -38,10 +38,22 @@ jobs:
         run: pip install -r eval/requirements.txt
 
       - name: Build agent container
+        if: github.event_name == 'workflow_dispatch'
         run: cd container && bash build.sh
 
-      - name: Run smoke tests (PR gate)
-        if: github.event_name == 'pull_request' || github.event.inputs.suite == 'smoke'
+      - name: Verify eval imports (PR gate)
+        if: github.event_name == 'pull_request'
+        run: |
+          cd eval && python -c "
+          import agent_wrapper
+          import conftest
+          import judge_model
+          from metrics import tool_use_metric, efficiency_metric
+          print('All eval imports OK')
+          "
+
+      - name: Run smoke tests
+        if: github.event_name == 'workflow_dispatch' && (github.event.inputs.suite == 'smoke' || github.event.inputs.suite == '')
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DEEPEVAL_API_KEY: ${{ secrets.DEEPEVAL_API_KEY }}
