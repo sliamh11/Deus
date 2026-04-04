@@ -128,12 +128,18 @@ registerStartupCheck({
 registerStartupCheck({
   name: 'Registered groups',
   level: 'suggest',
-  run: () => ({
-    name: 'Registered groups',
-    level: 'suggest',
-    ok: countRegisteredGroups() > 0,
-    hint: 'No groups registered — messages will be ignored. Run /setup → "register" to add one.',
-  }),
+  run: () => {
+    const ok = countRegisteredGroups() > 0;
+    let hint: string;
+    if (hasAnyChannelAuth()) {
+      hint =
+        'Channel connected but no chats registered. Run /setup to register a chat.';
+    } else {
+      hint =
+        'No groups registered yet. Use /add-whatsapp or /add-telegram to set up a channel, then register a chat.';
+    }
+    return { name: 'Registered groups', level: 'suggest', ok, hint };
+  },
 });
 
 // ── Runner ──────────────────────────────────────────────────────────────────

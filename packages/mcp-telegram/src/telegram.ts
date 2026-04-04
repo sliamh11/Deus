@@ -26,6 +26,7 @@ const logger = pino(
 );
 
 const MAX_MESSAGE_LENGTH = 4096;
+const MAX_CONSECUTIVE_ERRORS = 5;
 
 /**
  * Send a message with Telegram Markdown parse mode, falling back to plain text.
@@ -50,6 +51,8 @@ export class TelegramProvider implements ChannelProvider {
   private connectTime = 0;
   private knownChats = new Map<string, { name: string; isGroup: boolean }>();
   private botUsername?: string;
+  private consecutiveErrors = 0;
+  private resetting = false;
 
   // Set by server-base.ts
   onMessage: (msg: IncomingMessage) => void = () => {};
@@ -87,6 +90,7 @@ export class TelegramProvider implements ChannelProvider {
 
     // Handle text messages
     this.bot.on('message:text', async (ctx) => {
+      this.consecutiveErrors = 0;
       if (ctx.message.text.startsWith('/')) {
         const cmd = ctx.message.text.slice(1).split(/[\s@]/)[0].toLowerCase();
         if (BOT_COMMANDS.has(cmd)) return;
@@ -206,7 +210,15 @@ export class TelegramProvider implements ChannelProvider {
     this.bot.on('message:contact', (ctx) => storeMedia(ctx, '[Contact]'));
 
     this.bot.catch((err) => {
-      logger.error({ err: err.message }, 'Telegram bot error');
+      this.consecutiveErrors++;
+      logger.error(
+        { err: err.message, consecutiveErrors: this.consecutiveErrors },
+        'Telegram bot error',
+      );
+
+      if (this.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS && !this.resetting) {
+        this.resetPolling();
+      }
     });
 
     return new Promise<void>((resolve) => {
@@ -214,6 +226,7 @@ export class TelegramProvider implements ChannelProvider {
         onStart: (botInfo) => {
           this.botUsername = botInfo.username;
           this.connectTime = Date.now();
+          this.consecutiveErrors = 0;
           logger.info(
             { username: botInfo.username, id: botInfo.id },
             'Telegram bot connected',
@@ -221,6 +234,35 @@ export class TelegramProvider implements ChannelProvider {
           resolve();
         },
       });
+    });
+  }
+
+  /**
+   * Reset the polling session after consecutive errors.
+   * Stops the bot and restarts polling to recover from a degraded state.
+   */
+  private resetPolling(): void {
+    if (!this.bot || this.resetting) return;
+    this.resetting = true;
+    logger.warn(
+      { consecutiveErrors: this.consecutiveErrors },
+      'Too many consecutive errors, resetting Telegram polling session',
+    );
+
+    const bot = this.bot;
+    bot.stop();
+    this.consecutiveErrors = 0;
+
+    bot.start({
+      onStart: (botInfo) => {
+        this.botUsername = botInfo.username;
+        this.connectTime = Date.now();
+        this.resetting = false;
+        logger.info(
+          { username: botInfo.username, id: botInfo.id },
+          'Telegram bot reconnected after polling reset',
+        );
+      },
     });
   }
 
@@ -261,6 +303,8 @@ export class TelegramProvider implements ChannelProvider {
 
   async disconnect(): Promise<void> {
     if (this.bot) {
+      this.resetting = false;
+      this.consecutiveErrors = 0;
       this.bot.stop();
       this.bot = null;
       logger.info('Telegram bot stopped');

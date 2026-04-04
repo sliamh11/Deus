@@ -111,6 +111,33 @@ describe('runStartupChecks', () => {
     expect(suggestNames).toContain('Registered groups');
   });
 
+  it('shows setup hint when no groups and no channels configured', () => {
+    mockHasApiCredentials.mockReturnValue(true);
+    mockHasAnyChannelAuth.mockReturnValue(false);
+    mockCountRegisteredGroups.mockReturnValue(0);
+    const report = runStartupChecks();
+    const groupResult = report.suggestions.find(
+      (r) => r.name === 'Registered groups',
+    );
+    expect(groupResult).toBeDefined();
+    expect(groupResult!.hint).toContain('/add-whatsapp');
+    expect(groupResult!.hint).toContain('/add-telegram');
+    expect(groupResult!.hint).not.toContain('messages will be ignored');
+  });
+
+  it('shows channel-connected hint when channels exist but no groups registered', () => {
+    mockHasApiCredentials.mockReturnValue(true);
+    mockHasAnyChannelAuth.mockReturnValue(true);
+    mockCountRegisteredGroups.mockReturnValue(0);
+    const report = runStartupChecks();
+    const groupResult = report.suggestions.find(
+      (r) => r.name === 'Registered groups',
+    );
+    expect(groupResult).toBeDefined();
+    expect(groupResult!.hint).toContain('Channel connected');
+    expect(groupResult!.hint).toContain('/setup');
+  });
+
   it('returns all passed when everything is healthy', () => {
     mockHasApiCredentials.mockReturnValue(true);
     mockHasGeminiApiKey.mockReturnValue(true);
