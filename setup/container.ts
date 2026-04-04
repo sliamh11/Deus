@@ -105,6 +105,22 @@ function cleanupStaging(projectRoot: string): void {
   }
 }
 
+/**
+ * Resolve the path to a bash executable.
+ * On Windows, bash isn't guaranteed to be in PATH — look in common Git install paths.
+ * On macOS/Linux, plain `bash` is always available.
+ */
+export function resolveBash(): string {
+  if (process.platform === 'win32') {
+    const gitBashPaths = [
+      'C:\\Program Files\\Git\\bin\\bash.exe',
+      'C:\\Program Files (x86)\\Git\\bin\\bash.exe',
+    ];
+    return gitBashPaths.find((p) => fs.existsSync(p)) || 'bash';
+  }
+  return 'bash';
+}
+
 export async function run(args: string[]): Promise<void> {
   const projectRoot = process.cwd();
   const { runtime } = parseArgs(args);
@@ -180,8 +196,9 @@ export async function run(args: string[]): Promise<void> {
       });
       cleanupStaging(projectRoot);
     } else {
-      // macOS/Linux: use build.sh which handles staging + build
-      execSync(`bash container/build.sh`, {
+      // macOS/Linux/WSL: use build.sh which handles staging + build
+      const bash = resolveBash();
+      execSync(`"${bash}" container/build.sh`, {
         cwd: projectRoot,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
@@ -200,8 +217,8 @@ export async function run(args: string[]): Promise<void> {
     logger.info('Testing container');
     try {
       const output = execSync(
-        `echo '{}' | docker run -i --rm --entrypoint /bin/echo ${image} "Container OK"`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+        `docker run -i --rm --entrypoint /bin/echo ${image} "Container OK"`,
+        { input: '{}', encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
       );
       testOk = output.includes('Container OK');
       logger.info({ testOk }, 'Container test result');
