@@ -23,21 +23,37 @@ function parseArgs(args: string[]): { runtime: string } {
 }
 
 /**
- * Read local-only skill names from .git/info/exclude.
- * These are skills that exist locally but aren't committed (e.g. x-integration).
- * They should NOT be staged into the container — their dependencies aren't available.
+ * Read local-only skill names from .local-skills (one name per line).
+ * Falls back to .git/info/exclude for backwards compatibility.
+ * These skills should NOT be staged — their dependencies aren't in the container.
  */
 function getLocalOnlySkills(projectRoot: string): Set<string> {
-  const excludePath = path.join(projectRoot, '.git', 'info', 'exclude');
   const localOnly = new Set<string>();
-  if (!fs.existsSync(excludePath)) return localOnly;
 
-  const content = fs.readFileSync(excludePath, 'utf-8');
-  const pattern = /\.claude\/skills\/([^/\s]+)/g;
-  let match;
-  while ((match = pattern.exec(content)) !== null) {
-    localOnly.add(match[1]);
+  // Primary: .local-skills file (gitignored, works on all clones)
+  const localSkillsPath = path.join(projectRoot, '.local-skills');
+  if (fs.existsSync(localSkillsPath)) {
+    const content = fs.readFileSync(localSkillsPath, 'utf-8');
+    for (const line of content.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        localOnly.add(trimmed);
+      }
+    }
+    return localOnly;
   }
+
+  // Fallback: .git/info/exclude (local-only, doesn't transfer to other clones)
+  const excludePath = path.join(projectRoot, '.git', 'info', 'exclude');
+  if (fs.existsSync(excludePath)) {
+    const content = fs.readFileSync(excludePath, 'utf-8');
+    const pattern = /\.claude\/skills\/([^/\s]+)/g;
+    let match;
+    while ((match = pattern.exec(content)) !== null) {
+      localOnly.add(match[1]);
+    }
+  }
+
   return localOnly;
 }
 
