@@ -106,6 +106,12 @@ Tell the user:
 > 2. Scan the QR code displayed in the terminal
 > 3. Wait for "Authentication successful!" message
 
+**If the QR code is cut off or doesn't display:** The auth script writes raw QR data to `store/qr-data.txt`. Render it manually:
+
+```bash
+node -e "require('qrcode-terminal').generate(require('fs').readFileSync('store/qr-data.txt','utf-8').trim(), {small: true})"
+```
+
 **For pairing code:**
 
 Tell the user to have WhatsApp open on **Settings > Linked Devices > Link a Device**, ready to tap **"Link with phone number instead"** — the code expires in ~60 seconds and must be entered immediately.

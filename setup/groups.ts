@@ -114,7 +114,7 @@ async function syncGroups(projectRoot: string): Promise<void> {
   let syncOk = false;
   try {
     const syncScript = `
-import makeWASocket, { useMultiFileAuthState, makeCacheableSignalKeyStore, Browsers } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, fetchLatestWaWebVersion, Browsers } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import path from 'path';
 import fs from 'fs';
@@ -123,6 +123,8 @@ import Database from 'better-sqlite3';
 const logger = pino({ level: 'silent' });
 const authDir = path.join('store', 'auth');
 const dbPath = path.join('store', 'messages.db');
+const MAX_RETRIES = 2;
+let retryCount = 0;
 
 if (!fs.existsSync(authDir)) {
   console.error('NO_AUTH');
@@ -137,49 +139,66 @@ const upsert = db.prepare(
   'INSERT INTO chats (jid, name, last_message_time) VALUES (?, ?, ?) ON CONFLICT(jid) DO UPDATE SET name = excluded.name'
 );
 
-const { state, saveCreds } = await useMultiFileAuthState(authDir);
+const { version } = await fetchLatestWaWebVersion({}).catch(() => ({ version: undefined }));
 
-const sock = makeWASocket({
-  auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, logger) },
-  printQRInTerminal: false,
-  logger,
-  browser: Browsers.macOS('Chrome'),
-});
+async function connect() {
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-const timeout = setTimeout(() => {
-  console.error('TIMEOUT');
-  process.exit(1);
-}, 30000);
+  const sock = makeWASocket({
+    version,
+    auth: { creds: state.creds, keys: state.keys },
+    printQRInTerminal: false,
+    logger,
+    browser: Browsers.macOS('Chrome'),
+  });
 
-sock.ev.on('creds.update', saveCreds);
+  const timeout = setTimeout(() => {
+    console.error('TIMEOUT');
+    db.close();
+    process.exit(1);
+  }, 30000);
 
-sock.ev.on('connection.update', async (update) => {
-  if (update.connection === 'open') {
-    try {
-      const groups = await sock.groupFetchAllParticipating();
-      const now = new Date().toISOString();
-      let count = 0;
-      for (const [jid, metadata] of Object.entries(groups)) {
-        if (metadata.subject) {
-          upsert.run(jid, metadata.subject, now);
-          count++;
+  sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('connection.update', async (update) => {
+    if (update.connection === 'open') {
+      try {
+        const groups = await sock.groupFetchAllParticipating();
+        const now = new Date().toISOString();
+        let count = 0;
+        for (const [jid, metadata] of Object.entries(groups)) {
+          if (metadata.subject) {
+            upsert.run(jid, metadata.subject, now);
+            count++;
+          }
         }
+        console.log('SYNCED:' + count);
+      } catch (err) {
+        console.error('FETCH_ERROR:' + err.message);
+      } finally {
+        clearTimeout(timeout);
+        sock.end(undefined);
+        db.close();
+        process.exit(0);
       }
-      console.log('SYNCED:' + count);
-    } catch (err) {
-      console.error('FETCH_ERROR:' + err.message);
-    } finally {
+    } else if (update.connection === 'close') {
       clearTimeout(timeout);
       sock.end(undefined);
-      db.close();
-      process.exit(0);
+      retryCount++;
+      if (retryCount <= MAX_RETRIES) {
+        console.error('CONNECTION_CLOSED, retrying in 3s (' + retryCount + '/' + MAX_RETRIES + ')...');
+        await new Promise(r => setTimeout(r, 3000));
+        connect();
+      } else {
+        console.error('CONNECTION_CLOSED');
+        db.close();
+        process.exit(1);
+      }
     }
-  } else if (update.connection === 'close') {
-    clearTimeout(timeout);
-    console.error('CONNECTION_CLOSED');
-    process.exit(1);
-  }
-});
+  });
+}
+
+await connect();
 `;
 
     const tmpScript = path.join(projectRoot, '.tmp-group-sync.mjs');
@@ -194,7 +213,11 @@ sock.ev.on('connection.update', async (update) => {
       syncOk = output.includes('SYNCED:');
       logger.info({ output: output.trim() }, 'Sync output');
     } finally {
-      try { fs.unlinkSync(tmpScript); } catch { /* ignore cleanup errors */ }
+      try {
+        fs.unlinkSync(tmpScript);
+      } catch {
+        /* ignore cleanup errors */
+      }
     }
   } catch (err) {
     logger.error({ err }, 'Sync failed');
