@@ -111,31 +111,20 @@ describe('runStartupChecks', () => {
     expect(suggestNames).toContain('Registered groups');
   });
 
-  it('shows setup hint when no groups and no channels configured', () => {
+  it('uses informational tone for registered groups hint (not alarming)', () => {
     mockHasApiCredentials.mockReturnValue(true);
-    mockHasAnyChannelAuth.mockReturnValue(false);
     mockCountRegisteredGroups.mockReturnValue(0);
     const report = runStartupChecks();
     const groupResult = report.suggestions.find(
       (r) => r.name === 'Registered groups',
     );
     expect(groupResult).toBeDefined();
-    expect(groupResult!.hint).toContain('/add-whatsapp');
-    expect(groupResult!.hint).toContain('/add-telegram');
+    // Should NOT contain alarming language
     expect(groupResult!.hint).not.toContain('messages will be ignored');
-  });
-
-  it('shows channel-connected hint when channels exist but no groups registered', () => {
-    mockHasApiCredentials.mockReturnValue(true);
-    mockHasAnyChannelAuth.mockReturnValue(true);
-    mockCountRegisteredGroups.mockReturnValue(0);
-    const report = runStartupChecks();
-    const groupResult = report.suggestions.find(
-      (r) => r.name === 'Registered groups',
-    );
-    expect(groupResult).toBeDefined();
-    expect(groupResult!.hint).toContain('Channel connected');
+    // Should contain informational guidance
+    expect(groupResult!.hint).toContain('No groups registered yet');
     expect(groupResult!.hint).toContain('/setup');
+    expect(groupResult!.hint).toContain('fresh installation');
   });
 
   it('returns all passed when everything is healthy', () => {
