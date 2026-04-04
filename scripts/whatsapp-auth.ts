@@ -112,7 +112,7 @@ async function main() {
       console.log(`Phone: ${id}`);
       console.log('WhatsApp authentication successful!');
       cleanup();
-      setTimeout(() => process.exit(0), 2000);
+      setTimeout(() => process.exit(0), 200);
     }
   });
 
