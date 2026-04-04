@@ -1,6 +1,6 @@
 {
   "name": "deus",
-  "version": "1.2.19",
+  "version": "1.0.0",
   "description": "Personal Claude assistant. Lightweight, secure, customizable.",
   "type": "module",
   "main": "dist/index.js",
