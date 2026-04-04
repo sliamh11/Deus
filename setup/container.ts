@@ -200,8 +200,8 @@ export async function run(args: string[]): Promise<void> {
     logger.info('Testing container');
     try {
       const output = execSync(
-        `echo '{}' | docker run -i --rm --entrypoint /bin/echo ${image} "Container OK"`,
-        { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
+        `docker run -i --rm --entrypoint /bin/echo ${image} "Container OK"`,
+        { input: '{}', encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] },
       );
       testOk = output.includes('Container OK');
       logger.info({ testOk }, 'Container test result');
