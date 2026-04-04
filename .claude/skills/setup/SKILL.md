@@ -41,14 +41,24 @@ If continue without fork: add upstream so they can still pull updates:
 git remote add upstream https://github.com/qwibitai/nanoclaw.git
 ```
 
-**Case B — `origin` points to user's fork (NOT qwibitai/nanoclaw), no `upstream` remote:**
+**Case B — `origin` points to a non-qwibitai repo, no `upstream` remote:**
 
-First, check if this is a genuine fork or the source repo itself. Use `gh repo view --json parent` to check if origin has a parent repo. If it does → it's a fork, add upstream pointing to the parent. If it doesn't → it's the source repo (e.g. `sliamh11/Deus`), do NOT add upstream.
+Determine if the user owns the origin repo (it's their fork) or if they cloned someone else's repo:
 
-For forks only:
-```bash
-git remote add upstream https://github.com/qwibitai/nanoclaw.git
-```
+1. Get the authenticated GitHub user: `gh api user --jq .login`
+2. Extract the owner from the origin URL (e.g. `sliamh11` from `sliamh11/Deus`)
+3. Compare them.
+
+**If the user OWNS origin** (their GitHub username matches origin owner):
+  - Check if origin is a fork: `gh repo view --json parent --jq '.parent.owner.login + "/" + .parent.name'`
+  - If it's a fork → add the parent as upstream:
+    ```bash
+    git remote add upstream https://github.com/<parent-owner>/<parent-name>.git
+    ```
+  - If it's NOT a fork → this is the source repo. No upstream needed (Case D).
+
+**If the user does NOT own origin** (they cloned someone else's repo):
+  - They're using that repo as their source of truth. Do NOT add upstream. Their `origin` is already their update source.
 
 **Case C — both `origin` and `upstream` exist:**
 
