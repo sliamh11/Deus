@@ -104,7 +104,7 @@ function setupLaunchd(
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin</string>
         <key>HOME</key>
         <string>${homeDir}</string>
     </dict>
@@ -348,10 +348,14 @@ function setupNssm(
   // Remove existing service if present (ignore errors — may not exist)
   try {
     execSync(`nssm stop ${svc}`, { stdio: 'ignore', timeout: 10000 });
-  } catch { /* not running */ }
+  } catch {
+    /* not running */
+  }
   try {
     execSync(`nssm remove ${svc} confirm`, { stdio: 'ignore', timeout: 10000 });
-  } catch { /* does not exist */ }
+  } catch {
+    /* does not exist */
+  }
 
   // Install and configure
   execSync(
@@ -380,7 +384,9 @@ function setupNssm(
       stdio: 'pipe',
     });
     serviceLoaded = out.trim() === 'SERVICE_RUNNING';
-  } catch { /* status check failed */ }
+  } catch {
+    /* status check failed */
+  }
 
   emitStatus('SETUP_SERVICE', {
     SERVICE_TYPE: 'windows-nssm',
@@ -408,13 +414,17 @@ function setupServy(
       stdio: 'ignore',
       timeout: 10000,
     });
-  } catch { /* not running */ }
+  } catch {
+    /* not running */
+  }
   try {
     execSync(`servy-cli uninstall --name="${svc}" --quiet`, {
       stdio: 'ignore',
       timeout: 10000,
     });
-  } catch { /* does not exist */ }
+  } catch {
+    /* does not exist */
+  }
 
   // Install with crash recovery via health monitor
   execSync(
@@ -454,7 +464,9 @@ function setupServy(
       stdio: 'pipe',
     });
     serviceLoaded = out.trim() === 'Running';
-  } catch { /* status check failed */ }
+  } catch {
+    /* status check failed */
+  }
 
   emitStatus('SETUP_SERVICE', {
     SERVICE_TYPE: 'windows-servy',

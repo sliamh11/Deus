@@ -34,7 +34,7 @@ function generatePlist(
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin</string>
         <key>HOME</key>
         <string>${homeDir}</string>
     </dict>
@@ -100,6 +100,15 @@ describe('plist generation', () => {
     expect(plist).toContain('/home/user/deus/dist/index.js');
   });
 
+  it('includes /opt/homebrew/bin in PATH for Apple Silicon', () => {
+    const plist = generatePlist(
+      '/usr/local/bin/node',
+      '/home/user/deus',
+      '/home/user',
+    );
+    expect(plist).toContain('/opt/homebrew/bin');
+  });
+
   it('sets log paths', () => {
     const plist = generatePlist(
       '/usr/local/bin/node',
@@ -160,9 +169,7 @@ describe('systemd unit generation', () => {
       '/home/user',
       false,
     );
-    expect(unit).toContain(
-      'ExecStart=/usr/bin/node /srv/deus/dist/index.js',
-    );
+    expect(unit).toContain('ExecStart=/usr/bin/node /srv/deus/dist/index.js');
   });
 });
 
