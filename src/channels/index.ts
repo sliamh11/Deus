@@ -5,3 +5,4 @@
 
 import './mcp-whatsapp.js';
 import './mcp-telegram.js';
+import './mcp-discord.js';

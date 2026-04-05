@@ -1,0 +1,34 @@
+{
+  "name": "@deus-ai/discord-mcp",
+  "version": "1.0.0",
+  "description": "Discord MCP server — standalone Discord bot integration for any MCP client",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "deus-ai-discord-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "@deus-ai/channel-core": "file:../mcp-channel-core",
+    "discord.js": "^14.18.0",
+    "pino": "^10.3.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}
