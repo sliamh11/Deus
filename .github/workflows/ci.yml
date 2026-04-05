@@ -34,6 +34,28 @@ jobs:
         with:
           configFile: commitlint.config.mjs
 
+  test-packages:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            packages:
+              - 'packages/**'
+      - uses: actions/setup-node@v6
+        if: steps.filter.outputs.packages == 'true'
+        with:
+          node-version: 20
+      - name: Build and test packages
+        if: steps.filter.outputs.packages == 'true'
+        run: |
+          cd packages/mcp-channel-core && npm ci && npm run build && npm test && cd ../..
+          cd packages/mcp-whatsapp && npm ci && npm run build && npm test && cd ../..
+          cd packages/mcp-telegram && npm ci && npm run build && npm test
+
   test-windows:
     runs-on: windows-latest
     steps:
