@@ -21,30 +21,15 @@ If already applied, skip to Phase 3 (Verify).
 
 ## Phase 2: Apply Code Changes
 
-### Ensure WhatsApp fork remote
+Reactions support is part of the WhatsApp MCP package in `packages/`. Check if the status tracker already exists:
 
 ```bash
-git remote -v
+test -f src/status-tracker.ts && echo "Already present" || echo "Not present"
 ```
 
-If `whatsapp` is missing, add it:
+If not present, the WhatsApp MCP package should include reactions support. Ensure the WhatsApp channel is installed and up to date by running `/add-whatsapp`.
 
-```bash
-git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git
-```
-
-### Merge the skill branch
-
-```bash
-git fetch whatsapp skill/reactions
-git merge whatsapp/skill/reactions || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
-```
-
-This adds:
+The following files are involved:
 - `scripts/migrate-reactions.ts` (database migration for `reactions` table with composite PK and indexes)
 - `src/status-tracker.ts` (forward-only emoji state machine for message lifecycle signaling, with persistence and retry)
 - `src/status-tracker.test.ts` (unit tests for StatusTracker)

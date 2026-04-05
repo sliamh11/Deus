@@ -22,26 +22,23 @@ Run:
 
 Determine which case applies based on the origin URL:
 
-**Case A — `origin` points to `qwibitai/nanoclaw` (user cloned the upstream directly):**
+**Case A — `origin` points to the Deus source repo (user cloned directly instead of forking):**
 
 The user cloned instead of forking. AskUserQuestion: "You cloned Deus directly. We recommend forking so you can push your customizations. Would you like to set up a fork?"
 - Fork now (recommended) — walk them through it
 - Continue without fork — they'll only have local changes
 
-If fork: instruct the user to fork `qwibitai/nanoclaw` on GitHub (they need to do this in their browser), then ask them for their GitHub username. Run:
+If fork: instruct the user to fork the repo on GitHub (they need to do this in their browser), then ask them for their GitHub username. Run:
 ```bash
 git remote rename origin upstream
-git remote add origin https://github.com/<their-username>/nanoclaw.git
+git remote add origin https://github.com/<their-username>/deus.git
 git push --force origin main
 ```
 Verify with `git remote -v`.
 
-If continue without fork: add upstream so they can still pull updates:
-```bash
-git remote add upstream https://github.com/qwibitai/nanoclaw.git
-```
+If continue without fork: they'll only have local changes.
 
-**Case B — `origin` points to a non-qwibitai repo, no `upstream` remote:**
+**Case B — `origin` points to a different repo, no `upstream` remote:**
 
 Determine if the user owns the origin repo (it's their fork) or if they cloned someone else's repo:
 

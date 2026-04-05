@@ -52,9 +52,15 @@ jobs:
       - name: Build and test packages
         if: steps.filter.outputs.packages == 'true'
         run: |
-          cd packages/mcp-channel-core && npm ci && npm run build && npm test && cd ../..
-          cd packages/mcp-whatsapp && npm ci && npm run build && npm test && cd ../..
-          cd packages/mcp-telegram && npm ci && npm run build && npm test
+          # Build core first (dependency for all channel packages)
+          cd packages/mcp-channel-core && npm install && npm run build && npm test && cd ../..
+          # Build and test all channel packages dynamically
+          for pkg in packages/mcp-*/; do
+            [ "$pkg" = "packages/mcp-channel-core/" ] && continue
+            echo "::group::Testing $pkg"
+            cd "$pkg" && npm install && npm run build && npm test && cd ../..
+            echo "::endgroup::"
+          done
 
   test-windows:
     runs-on: windows-latest
