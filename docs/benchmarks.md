@@ -95,7 +95,7 @@ Deus includes a [DeepEval](https://github.com/confident-ai/deepeval) test suite 
 - **Parallel pre-warm** — containers cached across test runs
 - **Dynamic concurrency** — scales to available resources
 
-Judge options: OllamaJudge (local, free, qwen3.5:4b) or GeminiJudge (cloud).
+Judge options: OllamaJudge (local, free, gemma4:e4b) or GeminiJudge (cloud).
 
 No other framework in this comparison ships with a built-in eval suite for the agent's conversational behavior.
 

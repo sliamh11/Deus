@@ -21,7 +21,7 @@ from .base import BaseJudge, JudgeResult
 from .criteria import RUBRIC, compose_score
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3.5:4b")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
 
 
 def _ollama_url(path: str) -> str:
@@ -63,8 +63,8 @@ def _check_model_pulled(model: str) -> None:
 
 def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
     """Synchronous Ollama generate call."""
-    # Append /no_think to prevent qwen3.5 thinking mode from returning empty
-    full_prompt = f"{prompt}\n/no_think"
+    # /no_think prevents qwen3.5 thinking mode from returning empty — only needed for qwen
+    full_prompt = f"{prompt}\n/no_think" if "qwen" in model.lower() else prompt
     body = json.dumps({
         "model": model,
         "prompt": full_prompt,

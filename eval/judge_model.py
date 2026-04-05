@@ -141,7 +141,7 @@ def make_judge(model: Optional[str] = None) -> DeepEvalBaseLLM:
     if eval_judge == "ollama":
         if not _OLLAMA_IMPORTABLE:
             raise RuntimeError("OllamaJudge not importable — check evolution package")
-        return OllamaJudge(model=model or os.environ.get("OLLAMA_MODEL", "qwen3.5:4b"))
+        return OllamaJudge(model=model or os.environ.get("OLLAMA_MODEL", "gemma4:e4b"))
 
     if eval_judge == "gemini":
         if not _GEMINI_AVAILABLE:
@@ -151,7 +151,7 @@ def make_judge(model: Optional[str] = None) -> DeepEvalBaseLLM:
 
     # Auto-detect: try Ollama first, then Gemini, then Claude proxy
     if _OLLAMA_IMPORTABLE and is_ollama_available():
-        return OllamaJudge(model=model or os.environ.get("OLLAMA_MODEL", "qwen3.5:4b"))
+        return OllamaJudge(model=model or os.environ.get("OLLAMA_MODEL", "gemma4:e4b"))
 
     if _GEMINI_AVAILABLE:
         from evolution.config import JUDGE_MODEL as GEMINI_JUDGE_MODEL
