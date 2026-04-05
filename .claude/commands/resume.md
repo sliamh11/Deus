@@ -31,7 +31,7 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
     If no output (nothing new), skip silently — silence signals stability.
 
 4c. Load cold tier — semantically relevant older sessions:
-    Formulate a 1-sentence query based on the loaded context from steps 1–3 (e.g. "linear algebra exam prep" or "nanoclaw whatsapp debugging").
+    Formulate a 1-sentence query based on the loaded context from steps 1–3 (e.g. "linear algebra exam prep" or "whatsapp channel debugging").
     Run: python3 scripts/memory_indexer.py --query "<your query>" --top 2 --recency-boost
     Include the output as additional context. Deduplicate: skip any session that already appeared in step 4a (compare by filename).
     If the script fails or returns nothing, skip silently — warm tier already provides continuity.

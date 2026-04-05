@@ -10,34 +10,19 @@ Adds PDF reading capability to all container agents using poppler-utils (pdftote
 ## Phase 1: Pre-flight
 
 1. Check if `container/skills/pdf-reader/pdf-reader` exists — skip to Phase 3 if already applied
-2. Confirm WhatsApp is installed first (`skill/whatsapp` merged). This skill modifies WhatsApp channel files.
+2. Confirm WhatsApp is installed first (via `/add-whatsapp`). This skill modifies WhatsApp channel files.
 
 ## Phase 2: Apply Code Changes
 
-### Ensure WhatsApp fork remote
+PDF reading is part of the WhatsApp MCP package in `packages/`. Check if the PDF reader already exists:
 
 ```bash
-git remote -v
+test -f container/skills/pdf-reader/pdf-reader && echo "Already present" || echo "Not present"
 ```
 
-If `whatsapp` is missing, add it:
+If not present, the WhatsApp MCP package should include PDF reading support. Ensure the WhatsApp channel is installed and up to date by running `/add-whatsapp`.
 
-```bash
-git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git
-```
-
-### Merge the skill branch
-
-```bash
-git fetch whatsapp skill/pdf-reader
-git merge whatsapp/skill/pdf-reader || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
-```
-
-This merges in:
+The following files are involved:
 - `container/skills/pdf-reader/SKILL.md` (agent-facing documentation)
 - `container/skills/pdf-reader/pdf-reader` (CLI script)
 - `poppler-utils` in `container/Dockerfile`

@@ -5,67 +5,11 @@ description: Add Discord bot channel integration to Deus.
 
 # Add Discord Channel
 
-This skill adds Discord support to Deus, then walks through interactive setup.
+> **Status:** Coming soon — this channel will be available as `@deus-ai/discord-mcp`. The MCP package is not yet available.
 
-## Phase 1: Pre-flight
+This skill will add Discord support to Deus once the MCP package is released. In the meantime, the setup/config/registration phases below describe what the integration will look like.
 
-### Check if already applied
-
-Check if `src/channels/discord.ts` exists. If it does, skip to Phase 3 (Setup). The code changes are already in place.
-
-### Ask the user
-
-Use `AskUserQuestion` to collect configuration:
-
-AskUserQuestion: Do you have a Discord bot token, or do you need to create one?
-
-If they have one, collect it now. If not, we'll create one in Phase 3.
-
-## Phase 2: Apply Code Changes
-
-### Ensure channel remote
-
-```bash
-git remote -v
-```
-
-If `discord` is missing, add it:
-
-```bash
-git remote add discord https://github.com/qwibitai/nanoclaw-discord.git
-```
-
-### Merge the skill branch
-
-```bash
-git fetch discord main
-git merge discord/main || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
-```
-
-This merges in:
-- `src/channels/discord.ts` (DiscordChannel class with self-registration via `registerChannel`)
-- `src/channels/discord.test.ts` (unit tests with discord.js mock)
-- `import './discord.js'` appended to the channel barrel file `src/channels/index.ts`
-- `discord.js` npm dependency in `package.json`
-- `DISCORD_BOT_TOKEN` in `.env.example`
-
-If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
-
-### Validate code changes
-
-```bash
-npm install
-npm run build
-npx vitest run src/channels/discord.test.ts
-```
-
-All tests must pass (including the new Discord tests) and build must be clean before proceeding.
-
-## Phase 3: Setup
+## Phase 1: Setup (Future)
 
 ### Create Discord Bot (if needed)
 
@@ -105,14 +49,7 @@ mkdir -p data/env && cp .env data/env/env
 
 The container reads environment from `data/env/env`, not `.env` directly.
 
-### Build and restart
-
-```bash
-npm run build
-launchctl kickstart -k gui/$(id -u)/com.deus
-```
-
-## Phase 4: Registration
+## Phase 2: Registration (Future)
 
 ### Get Channel ID
 
@@ -142,24 +79,6 @@ For additional channels (trigger-only):
 
 ```bash
 npx tsx setup/index.ts --step register -- --jid "dc:<channel-id>" --name "<server-name> #<channel-name>" --folder "discord_<channel-name>" --trigger "@${ASSISTANT_NAME}" --channel discord
-```
-
-## Phase 5: Verify
-
-### Test the connection
-
-Tell the user:
-
-> Send a message in your registered Discord channel:
-> - For main channel: Any message works
-> - For non-main: @mention the bot in Discord
->
-> The bot should respond within a few seconds.
-
-### Check logs if needed
-
-```bash
-tail -f logs/deus.log
 ```
 
 ## Troubleshooting

@@ -23,39 +23,22 @@ If yes, collect it now. If no, direct them to create one at https://platform.ope
 
 ## Phase 2: Apply Code Changes
 
-**Prerequisite:** WhatsApp must be installed first (`skill/whatsapp` merged). This skill modifies WhatsApp channel files.
+**Prerequisite:** WhatsApp must be installed first (via `/add-whatsapp`). This skill modifies WhatsApp channel files.
 
-### Ensure WhatsApp fork remote
-
-```bash
-git remote -v
-```
-
-If `whatsapp` is missing, add it:
+Voice transcription is part of the WhatsApp MCP package in `packages/`. Check if the transcription module already exists:
 
 ```bash
-git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git
+test -f src/transcription.ts && echo "Already present" || echo "Not present"
 ```
 
-### Merge the skill branch
+If not present, the WhatsApp MCP package should include voice transcription support. Ensure the WhatsApp channel is installed and up to date by running `/add-whatsapp`.
 
-```bash
-git fetch whatsapp skill/voice-transcription
-git merge whatsapp/skill/voice-transcription || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
-```
-
-This merges in:
+The following files are involved:
 - `src/transcription.ts` (voice transcription module using OpenAI Whisper)
 - Voice handling in `src/channels/whatsapp.ts` (isVoiceMessage check, transcribeAudioMessage call)
 - Transcription tests in `src/channels/whatsapp.test.ts`
 - `openai` npm dependency in `package.json`
 - `OPENAI_API_KEY` in `.env.example`
-
-If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
 
 ### Validate code changes
 

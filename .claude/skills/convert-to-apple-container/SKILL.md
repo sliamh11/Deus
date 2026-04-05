@@ -49,26 +49,13 @@ If it already shows `'container'`, the runtime is already Apple Container. Skip 
 
 ## Phase 2: Apply Code Changes
 
-### Ensure upstream remote
+Check if the Apple Container runtime files are already present:
 
 ```bash
-git remote -v
+grep "CONTAINER_RUNTIME_BIN" src/container-runtime.ts
 ```
 
-If `upstream` is missing, add it:
-
-```bash
-git remote add upstream https://github.com/qwibitai/nanoclaw.git
-```
-
-### Merge the skill branch
-
-```bash
-git fetch upstream skill/apple-container
-git merge upstream/skill/apple-container
-```
-
-This merges in:
+If it already shows `'container'`, the runtime is already Apple Container. If not, the following files need to be updated:
 - `src/container-runtime.ts` — Apple Container implementation (replaces Docker)
 - `src/container-runtime.test.ts` — Apple Container-specific tests
 - `src/container-runner.ts` — .env shadow mount fix and privilege dropping

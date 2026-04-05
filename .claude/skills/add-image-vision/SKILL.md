@@ -12,42 +12,25 @@ Adds the ability for Deus agents to see and understand images sent via WhatsApp.
 1. Check if `src/image.ts` exists — skip to Phase 3 if already applied
 2. Confirm `sharp` is installable (native bindings require build tools)
 
-**Prerequisite:** WhatsApp must be installed first (`skill/whatsapp` merged). This skill modifies WhatsApp channel files.
+**Prerequisite:** WhatsApp must be installed first (via `/add-whatsapp`). This skill modifies WhatsApp channel files.
 
 ## Phase 2: Apply Code Changes
 
-### Ensure WhatsApp fork remote
+Image vision is part of the WhatsApp MCP package in `packages/`. Check if the image module already exists:
 
 ```bash
-git remote -v
+test -f src/image.ts && echo "Already present" || echo "Not present"
 ```
 
-If `whatsapp` is missing, add it:
+If not present, the WhatsApp MCP package should include image vision support. Ensure the WhatsApp channel is installed and up to date by running `/add-whatsapp`.
 
-```bash
-git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git
-```
-
-### Merge the skill branch
-
-```bash
-git fetch whatsapp skill/image-vision
-git merge whatsapp/skill/image-vision || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
-```
-
-This merges in:
+The following files are involved:
 - `src/image.ts` (image download, resize via sharp, base64 encoding)
 - `src/image.test.ts` (8 unit tests)
 - Image attachment handling in `src/channels/whatsapp.ts`
 - Image passing to agent in `src/index.ts` and `src/container-runner.ts`
 - Image content block support in `container/agent-runner/src/index.ts`
 - `sharp` npm dependency in `package.json`
-
-If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
 
 ### Validate code changes
 
