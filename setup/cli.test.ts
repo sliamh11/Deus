@@ -27,7 +27,7 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 import { getPlatform } from './platform.js';
-import { run, cleanStaleLegacySymlink } from './cli.js';
+import { run, cleanStaleLegacySymlink, checkExistingCli } from './cli.js';
 
 describe('setup/cli', () => {
   const originalCwd = process.cwd();
@@ -79,10 +79,10 @@ describe('setup/cli', () => {
     expect(emitStatusCalls[0].data.ERROR).toBe('deus-cmd.sh not found');
   });
 
-  it('replaces existing symlink', async () => {
+  it('replaces existing dead symlink', async () => {
     vi.mocked(getPlatform).mockReturnValue('macos');
 
-    // Create an existing symlink pointing elsewhere
+    // Create an existing dead symlink
     const binDir = path.join(os.homedir(), '.local', 'bin');
     const linkPath = path.join(binDir, 'deus');
     fs.mkdirSync(binDir, { recursive: true });
@@ -91,7 +91,7 @@ describe('setup/cli', () => {
     } catch {
       // doesn't exist
     }
-    fs.symlinkSync('/tmp/old-deus', linkPath);
+    fs.symlinkSync('/tmp/old-deus-nonexistent', linkPath);
 
     await run([]);
 
@@ -102,6 +102,93 @@ describe('setup/cli', () => {
 
     // Clean up
     fs.unlinkSync(linkPath);
+  });
+
+  it('replaces existing Deus symlink from different install path', async () => {
+    vi.mocked(getPlatform).mockReturnValue('macos');
+
+    const binDir = path.join(os.homedir(), '.local', 'bin');
+    const linkPath = path.join(binDir, 'deus');
+    fs.mkdirSync(binDir, { recursive: true });
+    try {
+      fs.unlinkSync(linkPath);
+    } catch {
+      // doesn't exist
+    }
+    // Symlink pointing to our own deus-cmd.sh (current dir)
+    fs.symlinkSync(path.join(tmpDir, 'deus-cmd.sh'), linkPath);
+
+    await run([]);
+
+    expect(emitStatusCalls[0].data.STATUS).toBe('success');
+
+    // Clean up
+    fs.unlinkSync(linkPath);
+  });
+
+  it('skips symlink creation when foreign binary exists', async () => {
+    vi.mocked(getPlatform).mockReturnValue('macos');
+
+    const binDir = path.join(os.homedir(), '.local', 'bin');
+    const linkPath = path.join(binDir, 'deus');
+    fs.mkdirSync(binDir, { recursive: true });
+    try {
+      fs.unlinkSync(linkPath);
+    } catch {
+      // doesn't exist
+    }
+    // Create a regular file (foreign binary)
+    fs.writeFileSync(linkPath, '#!/bin/sh\necho "different deus tool"');
+
+    await run([]);
+
+    expect(emitStatusCalls[0].data.STATUS).toBe('conflict');
+    expect(emitStatusCalls[0].data.EXISTING).toBe('foreign');
+    // Foreign file should still be intact
+    expect(fs.readFileSync(linkPath, 'utf-8')).toContain('different deus tool');
+
+    // Clean up
+    fs.unlinkSync(linkPath);
+  });
+
+  describe('checkExistingCli', () => {
+    let checkDir: string;
+
+    beforeEach(() => {
+      checkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deus-check-'));
+    });
+
+    afterEach(() => {
+      fs.rmSync(checkDir, { recursive: true, force: true });
+    });
+
+    it('returns none when path does not exist', () => {
+      expect(checkExistingCli(path.join(checkDir, 'deus'))).toBe('none');
+    });
+
+    it('returns ours when symlink points to deus-cmd.sh', () => {
+      const target = path.join(checkDir, 'deus-cmd.sh');
+      fs.writeFileSync(target, '#!/bin/sh');
+      fs.symlinkSync(target, path.join(checkDir, 'deus'));
+      expect(checkExistingCli(path.join(checkDir, 'deus'))).toBe('ours');
+    });
+
+    it('returns dead when symlink target does not exist', () => {
+      fs.symlinkSync('/tmp/nonexistent-xyz', path.join(checkDir, 'deus'));
+      expect(checkExistingCli(path.join(checkDir, 'deus'))).toBe('dead');
+    });
+
+    it('returns foreign for symlink to non-deus target', () => {
+      const target = path.join(checkDir, 'other-tool');
+      fs.writeFileSync(target, '#!/bin/sh');
+      fs.symlinkSync(target, path.join(checkDir, 'deus'));
+      expect(checkExistingCli(path.join(checkDir, 'deus'))).toBe('foreign');
+    });
+
+    it('returns foreign for regular file', () => {
+      fs.writeFileSync(path.join(checkDir, 'deus'), '#!/bin/sh\necho hi');
+      expect(checkExistingCli(path.join(checkDir, 'deus'))).toBe('foreign');
+    });
   });
 
   describe('cleanStaleLegacySymlink', () => {

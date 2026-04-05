@@ -247,6 +247,8 @@ This creates a global `deus` command so the user can type `deus` from any termin
 - macOS/Linux: symlinks `deus-cmd.sh` → `~/.local/bin/deus`
 - Windows: creates `deus.cmd` shim → `%USERPROFILE%\.local\bin\` and adds it to user PATH
 
+**If STATUS=conflict and EXISTING=foreign:** A non-Deus binary named `deus` already exists at the CLI path. Ask the user: "A file already exists at `<LINK_PATH>` that doesn't appear to be a Deus installation. Should I replace it with the Deus CLI? (The existing file will be deleted.)" If they confirm, delete the file and re-run `npx tsx setup/index.ts --step cli`. If they decline, skip CLI registration and tell them they can run Deus directly with `./deus-cmd.sh` from the repo directory.
+
 **If IN_PATH=false:** The setup step auto-appends `~/.local/bin` to the user's shell config. If it couldn't (permissions, etc.), tell user to add it manually:
 
 ```bash
