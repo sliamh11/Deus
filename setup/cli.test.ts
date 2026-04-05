@@ -27,7 +27,7 @@ vi.mock('../src/logger.js', () => ({
 }));
 
 import { getPlatform } from './platform.js';
-import { run } from './cli.js';
+import { run, cleanStaleLegacySymlink } from './cli.js';
 
 describe('setup/cli', () => {
   const originalCwd = process.cwd();
@@ -102,5 +102,74 @@ describe('setup/cli', () => {
 
     // Clean up
     fs.unlinkSync(linkPath);
+  });
+
+  describe('cleanStaleLegacySymlink', () => {
+    const legacyDir = path.join(os.tmpdir(), 'deus-legacy-test');
+    const legacyPath = path.join(legacyDir, 'deus');
+    let mockLog: {
+      info: ReturnType<typeof vi.fn>;
+      warn: ReturnType<typeof vi.fn>;
+    };
+
+    // We can't write to /usr/local/bin in tests, so we test the function
+    // directly with a monkey-patched path via fs mocking.
+    // Instead, test the logic by calling the exported function with a mock
+    // that simulates stale symlinks in a temp dir.
+
+    beforeEach(() => {
+      fs.mkdirSync(legacyDir, { recursive: true });
+      mockLog = { info: vi.fn(), warn: vi.fn() };
+    });
+
+    afterEach(() => {
+      fs.rmSync(legacyDir, { recursive: true, force: true });
+    });
+
+    it('removes a dead symlink at the legacy path', () => {
+      const deadLink = path.join(legacyDir, 'deus');
+      fs.symlinkSync('/tmp/nonexistent-deus-target-xyz', deadLink);
+
+      cleanStaleLegacySymlink(mockLog, deadLink);
+
+      // Symlink should be removed
+      expect(() => fs.lstatSync(deadLink)).toThrow();
+      expect(mockLog.info).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves alive symlinks untouched', () => {
+      const target = path.join(legacyDir, 'real-target');
+      fs.writeFileSync(target, 'exists');
+      const aliveLink = path.join(legacyDir, 'deus');
+      fs.symlinkSync(target, aliveLink);
+
+      cleanStaleLegacySymlink(mockLog, aliveLink);
+
+      // Symlink should still exist
+      expect(fs.existsSync(aliveLink)).toBe(true);
+      expect(fs.lstatSync(aliveLink).isSymbolicLink()).toBe(true);
+      expect(mockLog.info).not.toHaveBeenCalled();
+      expect(mockLog.warn).not.toHaveBeenCalled();
+    });
+
+    it('leaves regular files untouched', () => {
+      const regularFile = path.join(legacyDir, 'deus');
+      fs.writeFileSync(regularFile, '#!/bin/sh\necho deus');
+
+      cleanStaleLegacySymlink(mockLog, regularFile);
+
+      // File should still exist
+      expect(fs.existsSync(regularFile)).toBe(true);
+      expect(mockLog.info).not.toHaveBeenCalled();
+      expect(mockLog.warn).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when path does not exist', () => {
+      const missingPath = path.join(legacyDir, 'nonexistent');
+      cleanStaleLegacySymlink(mockLog, missingPath);
+
+      expect(mockLog.info).not.toHaveBeenCalled();
+      expect(mockLog.warn).not.toHaveBeenCalled();
+    });
   });
 });

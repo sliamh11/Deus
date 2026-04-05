@@ -739,9 +739,14 @@ case "$1" in
     # a source fix is present but the running binary is stale (root cause of
     # the login loop regression: fix was in src but never compiled into dist).
     printf "  Building...\r"
-    (cd "$HOME/deus" && npm run build --silent) || { echo "Build failed — not restarting."; exit 1; }
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    (cd "$SCRIPT_DIR" && npm run build --silent) || { echo "Build failed — not restarting."; exit 1; }
+    # Re-create CLI symlink — catches repo moves/renames
+    LINK_DIR="$HOME/.local/bin"
+    mkdir -p "$LINK_DIR"
+    ln -sf "$SCRIPT_DIR/deus-cmd.sh" "$LINK_DIR/deus"
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
-    echo "Deus built and restarted."
+    echo "Deus built and restarted (CLI symlink refreshed)."
     ;;
   home|"")
     TOKEN=$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["claudeAiOauth"]["accessToken"])' "$HOME/.claude/.credentials.json" 2>/dev/null)

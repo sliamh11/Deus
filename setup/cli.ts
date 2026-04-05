@@ -57,6 +57,9 @@ function setupUnixCli(projectRoot: string, homeDir: string): void {
   fs.symlinkSync(scriptPath, linkPath);
   logger.info({ linkPath, scriptPath }, 'Created deus CLI symlink');
 
+  // Clean up stale /usr/local/bin/deus symlink that may shadow the new one
+  cleanStaleLegacySymlink(logger);
+
   // Check if ~/.local/bin is in PATH; if not, add it to shell config
   const pathEnv = process.env.PATH || '';
   const delimiter = process.platform === 'win32' ? ';' : ':';
@@ -101,6 +104,40 @@ function setupUnixCli(projectRoot: string, homeDir: string): void {
     SCRIPT_PATH: scriptPath,
     IN_PATH: inPath,
   });
+}
+
+/**
+ * Remove a legacy CLI symlink if it points to a dead target.
+ * Old manual installs can leave stale symlinks that shadow ~/.local/bin/deus.
+ * @param legacyPath defaults to /usr/local/bin/deus; override for testing.
+ */
+export function cleanStaleLegacySymlink(
+  log: {
+    info: (...args: unknown[]) => void;
+    warn: (...args: unknown[]) => void;
+  },
+  legacyPath = '/usr/local/bin/deus',
+): void {
+  try {
+    const stat = fs.lstatSync(legacyPath);
+    if (!stat.isSymbolicLink()) return; // regular file — don't touch
+
+    // Check if the symlink target actually exists
+    if (fs.existsSync(legacyPath)) return; // target is alive — nothing to do
+
+    // Dead symlink — try to remove
+    try {
+      fs.unlinkSync(legacyPath);
+      log.info({ legacyPath }, 'Removed stale legacy CLI symlink');
+    } catch {
+      log.warn(
+        { legacyPath },
+        'Stale symlink at /usr/local/bin/deus may shadow the CLI. Remove it manually: sudo rm /usr/local/bin/deus',
+      );
+    }
+  } catch {
+    // legacyPath doesn't exist — nothing to do
+  }
 }
 
 function setupWindowsCli(projectRoot: string, homeDir: string): void {
