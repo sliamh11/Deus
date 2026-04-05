@@ -1,0 +1,67 @@
+name: Setup Smoke Test
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'setup/**'
+      - '.github/workflows/setup-test.yml'
+  workflow_dispatch:
+
+jobs:
+  setup-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Step: environment — detects OS, runtimes, existing config
+      - name: 'Setup step: environment'
+        run: npx tsx setup/index.ts --step environment
+
+      # Step: container — build Docker image (Linux only; macOS runners lack Docker)
+      - name: 'Setup step: container'
+        if: runner.os == 'Linux'
+        run: npx tsx setup/index.ts --step container --runtime docker
+
+      # Step: memory — vault dirs, Python deps, config
+      - name: 'Setup step: memory'
+        run: npx tsx setup/index.ts --step memory --vault-mode=default
+
+      # Step: mounts — write mount allowlist (use --empty for CI)
+      - name: 'Setup step: mounts'
+        run: npx tsx setup/index.ts --step mounts --empty
+
+      # Step: register — write channel registration to SQLite
+      - name: 'Setup step: register'
+        run: >
+          npx tsx setup/index.ts --step register
+          --jid ci-test@s.whatsapp.net
+          --name ci-test
+          --trigger deus
+          --folder main
+          --channel whatsapp
+
+      # groups — SKIPPED (requires live WhatsApp auth)
+
+      # Step: service — generate service config (launchd on macOS, systemd on Linux)
+      - name: 'Setup step: service'
+        run: npx tsx setup/index.ts --step service
+        continue-on-error: true  # systemd/launchctl may not be fully available in CI
+
+      # Step: cli — register deus CLI command
+      - name: 'Setup step: cli'
+        run: npx tsx setup/index.ts --step cli
+
+      # verify — SKIPPED (requires full running setup)
