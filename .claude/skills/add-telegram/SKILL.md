@@ -13,7 +13,7 @@ This skill adds Telegram support to Deus, then walks through interactive setup.
 
 ### Check if already applied
 
-Check if `src/channels/index.ts` already imports `./mcp-telegram.js`. If it does, skip to Phase 3 (Setup).
+Check if Telegram is already configured. If `TELEGRAM_BOT_TOKEN` exists in `.env`, skip to Phase 4 (Registration) or Phase 5 (Verify).
 
 ### Ask the user
 
@@ -31,16 +31,6 @@ The Telegram channel is a local MCP server in `packages/`. Build the packages in
 cd packages/mcp-channel-core && npm install && npm run build && cd ../..
 cd packages/mcp-telegram && npm install && npm run build && cd ../..
 ```
-
-### Register the channel import
-
-Add the Telegram import to `src/channels/index.ts`:
-
-```typescript
-import './mcp-telegram.js';
-```
-
-The factory file `src/channels/mcp-telegram.ts` already exists in the codebase.
 
 ### Validate
 

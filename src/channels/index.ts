@@ -1,6 +1,7 @@
 // Channel self-registration barrel file.
-// Each channel skill adds its import here when installed (e.g., /add-whatsapp, /add-telegram).
-// A fresh clone has no channels — that's by design.
-//
-// Example (added by /add-whatsapp):
-//   import './whatsapp.js';
+// All channel factories are imported unconditionally — each one checks for
+// credentials and returns null if not configured, so unused channels are
+// automatically disabled. This prevents git pulls from breaking active channels.
+
+import './mcp-whatsapp.js';
+import './mcp-telegram.js';

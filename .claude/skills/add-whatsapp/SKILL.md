@@ -60,16 +60,6 @@ cd packages/mcp-channel-core && npm install && npm run build && cd ../..
 cd packages/mcp-whatsapp && npm install && npm run build && cd ../..
 ```
 
-### Register the channel import
-
-Check if `src/channels/index.ts` already imports `./mcp-whatsapp.js`. If not, add it:
-
-```typescript
-import './mcp-whatsapp.js';
-```
-
-The factory file `src/channels/mcp-whatsapp.ts` already exists in the codebase.
-
 ### Configure environment
 
 Add `ASSISTANT_HAS_OWN_NUMBER` to `.env` if not already present:
