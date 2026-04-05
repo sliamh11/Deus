@@ -59,30 +59,13 @@ For better accuracy at the cost of speed, use `ggml-small.bin` (466MB) or `ggml-
 
 ## Phase 2: Apply Code Changes
 
-### Ensure WhatsApp fork remote
+The local whisper feature modifies `src/transcription.ts` to use the `whisper-cli` binary instead of the OpenAI API. Check if it's already applied:
 
 ```bash
-git remote -v
+grep 'whisper-cli' src/transcription.ts && echo "Already applied" || echo "Not applied"
 ```
 
-If `whatsapp` is missing, add it:
-
-```bash
-git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git
-```
-
-### Merge the skill branch
-
-```bash
-git fetch whatsapp skill/local-whisper
-git merge whatsapp/skill/local-whisper || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
-```
-
-This modifies `src/transcription.ts` to use the `whisper-cli` binary instead of the OpenAI API.
+If not applied, modify `src/transcription.ts` to use the local `whisper-cli` binary instead of the OpenAI API. The WhatsApp MCP package in `packages/` includes the transcription module.
 
 ### Validate
 

@@ -5,63 +5,11 @@ description: Add Slack as a channel. Can replace WhatsApp entirely or run alongs
 
 # Add Slack Channel
 
-This skill adds Slack support to Deus, then walks through interactive setup.
+> **Status:** Coming soon — this channel will be available as `@deus-ai/slack-mcp`. The MCP package is not yet available.
 
-## Phase 1: Pre-flight
+This skill will add Slack support to Deus once the MCP package is released. In the meantime, the setup/config/registration phases below describe what the integration will look like.
 
-### Check if already applied
-
-Check if `src/channels/slack.ts` exists. If it does, skip to Phase 3 (Setup). The code changes are already in place.
-
-### Ask the user
-
-**Do they already have a Slack app configured?** If yes, collect the Bot Token and App Token now. If no, we'll create one in Phase 3.
-
-## Phase 2: Apply Code Changes
-
-### Ensure channel remote
-
-```bash
-git remote -v
-```
-
-If `slack` is missing, add it:
-
-```bash
-git remote add slack https://github.com/qwibitai/nanoclaw-slack.git
-```
-
-### Merge the skill branch
-
-```bash
-git fetch slack main
-git merge slack/main || {
-  git checkout --theirs package-lock.json
-  git add package-lock.json
-  git merge --continue
-}
-```
-
-This merges in:
-- `src/channels/slack.ts` (SlackChannel class with self-registration via `registerChannel`)
-- `src/channels/slack.test.ts` (46 unit tests)
-- `import './slack.js'` appended to the channel barrel file `src/channels/index.ts`
-- `@slack/bolt` npm dependency in `package.json`
-- `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` in `.env.example`
-
-If the merge reports conflicts, resolve them by reading the conflicted files and understanding the intent of both sides.
-
-### Validate code changes
-
-```bash
-npm install
-npm run build
-npx vitest run src/channels/slack.test.ts
-```
-
-All tests must pass (including the new Slack tests) and build must be clean before proceeding.
-
-## Phase 3: Setup
+## Phase 1: Setup (Future)
 
 ### Create Slack App (if needed)
 
@@ -73,8 +21,6 @@ Quick summary of what's needed:
 3. Subscribe to bot events: `message.channels`, `message.groups`, `message.im`
 4. Add OAuth scopes: `chat:write`, `channels:history`, `groups:history`, `im:history`, `channels:read`, `groups:read`, `users:read`
 5. Install to workspace and copy the Bot Token (`xoxb-...`)
-
-Wait for the user to provide both tokens.
 
 ### Configure environment
 
@@ -95,14 +41,7 @@ mkdir -p data/env && cp .env data/env/env
 
 The container reads environment from `data/env/env`, not `.env` directly.
 
-### Build and restart
-
-```bash
-npm run build
-launchctl kickstart -k gui/$(id -u)/com.deus
-```
-
-## Phase 4: Registration
+## Phase 2: Registration (Future)
 
 ### Get Channel ID
 
@@ -113,8 +52,6 @@ Tell the user:
 > 3. Alternatively, right-click the channel name → **Copy link** — the channel ID is the last path segment
 >
 > The JID format for Deus is: `slack:C0123456789`
-
-Wait for the user to provide the channel ID.
 
 ### Register the channel
 
@@ -130,24 +67,6 @@ For additional channels (trigger-only):
 
 ```bash
 npx tsx setup/index.ts --step register -- --jid "slack:<channel-id>" --name "<channel-name>" --folder "slack_<channel-name>" --trigger "@${ASSISTANT_NAME}" --channel slack
-```
-
-## Phase 5: Verify
-
-### Test the connection
-
-Tell the user:
-
-> Send a message in your registered Slack channel:
-> - For main channel: Any message works
-> - For non-main: `@<assistant-name> hello` (using the configured trigger word)
->
-> The bot should respond within a few seconds.
-
-### Check logs if needed
-
-```bash
-tail -f logs/deus.log
 ```
 
 ## Troubleshooting

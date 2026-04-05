@@ -21,16 +21,13 @@ If already applied, skip to Phase 3 (Verify).
 
 ## Phase 2: Apply Code Changes
 
-Merge the skill branch:
+Check if the compact feature files are already present in the local codebase:
 
 ```bash
-git fetch upstream skill/compact
-git merge upstream/skill/compact
+test -f src/session-commands.ts && echo "Already present" || echo "Not present"
 ```
 
-> **Note:** `upstream` is the remote pointing to `qwibitai/nanoclaw`. If using a different remote name, substitute accordingly.
-
-This adds:
+If not present, the compact feature needs to be implemented locally. The following files are involved:
 - `src/session-commands.ts` (extract and authorize session commands)
 - `src/session-commands.test.ts` (unit tests for command parsing and auth)
 - Session command interception in `src/index.ts` (both `processGroupMessages` and `startMessageLoop`)

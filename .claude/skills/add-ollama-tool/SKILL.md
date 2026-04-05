@@ -39,26 +39,13 @@ If no models are installed, suggest pulling one:
 
 ## Phase 2: Apply Code Changes
 
-### Ensure upstream remote
+Check if the Ollama MCP server files are already present:
 
 ```bash
-git remote -v
+test -f container/agent-runner/src/ollama-mcp-stdio.ts && echo "Already present" || echo "Not present"
 ```
 
-If `upstream` is missing, add it:
-
-```bash
-git remote add upstream https://github.com/qwibitai/nanoclaw.git
-```
-
-### Merge the skill branch
-
-```bash
-git fetch upstream skill/ollama-tool
-git merge upstream/skill/ollama-tool
-```
-
-This merges in:
+If not present, the Ollama integration needs to be implemented locally. The following files are involved:
 - `container/agent-runner/src/ollama-mcp-stdio.ts` (Ollama MCP server)
 - `scripts/ollama-watch.sh` (macOS notification watcher)
 - Ollama MCP config in `container/agent-runner/src/index.ts` (allowedTools + mcpServers)
