@@ -27,24 +27,20 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Build and publish @deus-ai/whatsapp-mcp
-        working-directory: packages/mcp-whatsapp
+      - name: Build and publish channel packages
         run: |
-          # Point to published @deus-ai/channel-core instead of local file path
-          npm pkg set 'dependencies.@deus-ai/channel-core=^1.0.0'
-          npm install
-          npm run build
-          npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Build and publish @deus-ai/telegram-mcp
-        working-directory: packages/mcp-telegram
-        run: |
-          # Point to published @deus-ai/channel-core instead of local file path
-          npm pkg set 'dependencies.@deus-ai/channel-core=^1.0.0'
-          npm install
-          npm run build
-          npm publish --access public
+          for pkg in packages/mcp-*/; do
+            [ "$pkg" = "packages/mcp-channel-core/" ] && continue
+            name=$(node -p "require('./$pkg/package.json').name")
+            echo "::group::Publishing $name"
+            cd "$pkg"
+            # Point to published @deus-ai/channel-core instead of local file path
+            npm pkg set 'dependencies.@deus-ai/channel-core=^1.0.0'
+            npm install
+            npm run build
+            npm publish --access public || echo "::warning::Failed to publish $name (may already exist)"
+            cd ../..
+            echo "::endgroup::"
+          done
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
