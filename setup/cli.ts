@@ -47,7 +47,24 @@ function setupUnixCli(projectRoot: string, homeDir: string): void {
 
   fs.mkdirSync(binDir, { recursive: true });
 
-  // Remove existing symlink/file if present
+  // Check what exists at the target path before overwriting
+  const existing = checkExistingCli(linkPath);
+  if (existing === 'foreign') {
+    logger.warn(
+      { linkPath },
+      'A non-Deus binary already exists at the CLI path. Skipping symlink creation to avoid data loss.',
+    );
+    emitStatus('SETUP_CLI', {
+      STATUS: 'conflict',
+      LINK_PATH: linkPath,
+      SCRIPT_PATH: scriptPath,
+      EXISTING: 'foreign',
+      IN_PATH: false,
+    });
+    return;
+  }
+
+  // Safe to replace: either nothing, a dead symlink, or our own deus-cmd.sh symlink
   try {
     fs.unlinkSync(linkPath);
   } catch {
@@ -104,6 +121,36 @@ function setupUnixCli(projectRoot: string, homeDir: string): void {
     SCRIPT_PATH: scriptPath,
     IN_PATH: inPath,
   });
+}
+
+/**
+ * Check what exists at the CLI symlink path.
+ * Returns:
+ * - 'none'    — nothing exists, safe to create
+ * - 'ours'    — symlink pointing to a deus-cmd.sh, safe to replace
+ * - 'dead'    — dead symlink, safe to replace
+ * - 'foreign' — something else (different binary, regular file), DO NOT replace
+ */
+export function checkExistingCli(
+  linkPath: string,
+): 'none' | 'ours' | 'dead' | 'foreign' {
+  try {
+    const stat = fs.lstatSync(linkPath);
+
+    if (stat.isSymbolicLink()) {
+      const target = fs.readlinkSync(linkPath);
+      // Check if target is alive
+      if (!fs.existsSync(linkPath)) return 'dead';
+      // Check if it points to any deus-cmd.sh (ours, possibly different install path)
+      if (path.basename(target) === 'deus-cmd.sh') return 'ours';
+      return 'foreign';
+    }
+
+    // Regular file or directory — not ours
+    return 'foreign';
+  } catch {
+    return 'none';
+  }
 }
 
 /**
