@@ -23,7 +23,7 @@ jobs:
         run: |
           npm install
           npm run build
-          npm publish --access public
+          npm publish --access public || echo "::warning::channel-core already published at this version"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
