@@ -50,11 +50,9 @@ Inside the Claude Code prompt:
 
 ```
 /setup                  # Install deps, configure runtime, build container, onboard
-/add-whatsapp           # Scan QR code to connect WhatsApp
-/add-telegram           # Paste bot token to connect Telegram
 ```
 
-A fresh clone has **zero channels** — you add only the ones you need. `/setup` includes a **Personality Kickstarter** at the end: choose from curated behavioral bundles (universal defaults, developer workflow, student/learner mode), pick individual behaviors à la carte, and optionally seed the self-improvement loop with battle-tested reflections so it isn't starting cold.
+`/setup` includes a **Personality Kickstarter** at the end: choose from curated behavioral bundles (universal defaults, developer workflow, student/learner mode), pick individual behaviors à la carte, and optionally seed the self-improvement loop with battle-tested reflections so it isn't starting cold.
 
 > **Switching from another AI?** Give Deus a head start. Paste this prompt into your current AI (ChatGPT, Gemini, etc.) and send the output to Deus in your first conversation:
 >
@@ -73,7 +71,16 @@ A fresh clone has **zero channels** — you add only the ones you need. `/setup`
 > Be specific and factual. Skip anything generic. Format as plain text.
 > ```
 
-Start talking:
+### Connect Channels
+
+A fresh clone has **zero channels** — you add only the ones you need:
+
+```
+/add-whatsapp           # Scan QR code to connect WhatsApp
+/add-telegram           # Paste bot token to connect Telegram
+```
+
+### Start Talking
 
 ```
 @Deus what's on my calendar tomorrow?
