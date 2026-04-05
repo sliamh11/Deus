@@ -15,7 +15,7 @@ A personal AI assistant that lives in your messaging apps, remembers everything,
 ## Features
 
 1. **Memory** — Remembers everything across all your conversations. Ask it something you discussed weeks ago and it'll recall it precisely, using semantic search to find the most relevant context.
-2. **Messaging apps** — WhatsApp, Telegram, Slack, Discord, and Gmail — all installed as optional add-ons via skills. Switch between them freely — memory and context follow you everywhere.
+2. **Messaging apps** — WhatsApp, Telegram, Slack, Discord, and Gmail — each a standalone MCP package you install as needed. Switch between them freely — memory and context follow you everywhere.
 3. **Voice** — Send a voice message and it transcribes and responds. Runs locally on Apple Silicon — nothing leaves your machine.
 4. **Vision** — Send a photo or screenshot and it sees and responds to it.
 5. **Calendar** — Reads and creates Google Calendar events. Ask what's on your schedule, or tell it to book something.
@@ -28,33 +28,21 @@ A personal AI assistant that lives in your messaging apps, remembers everything,
 
 ---
 
-## Architecture
-
-<p align="center">
-  <img src="assets/brand-production/diagrams/deus-channels-diagram.png" alt="Message flow: User → Host → Container → Response" width="700">
-</p>
-
-- One Node.js process on the host. No microservices.
-- Each conversation group runs in its own container with an isolated filesystem.
-- Domain detection tags conversations by topic so the self-improvement loop learns per-domain patterns.
-
----
-
 ## Quick Start
 
 ### Prerequisites
 
-- macOS (Apple Silicon recommended) or Linux
+- macOS (Apple Silicon recommended), Linux, or Windows
 - [Claude Code](https://claude.ai/download) installed and authenticated
-- [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) — the installer handles WSL 2 on Windows automatically
 - Node.js 20+, Python 3.11+
 - A [Gemini API key](https://aistudio.google.com/apikey) (free tier is enough)
 
 ### Setup
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/deus.git
-cd deus
+git clone https://github.com/sliamh11/Deus.git
+cd Deus
 claude
 ```
 
@@ -68,6 +56,23 @@ Inside the Claude Code prompt:
 
 A fresh clone has **zero channels** — you add only the ones you need. `/setup` includes a **Personality Kickstarter** at the end: choose from curated behavioral bundles (universal defaults, developer workflow, student/learner mode), pick individual behaviors à la carte, and optionally seed the self-improvement loop with battle-tested reflections so it isn't starting cold.
 
+> **Switching from another AI?** Give Deus a head start. Paste this prompt into your current AI (ChatGPT, Gemini, etc.) and send the output to Deus in your first conversation:
+>
+> ```
+> I'm switching to a new AI assistant called Deus. Generate a structured summary
+> about me that I can give it so it knows me from day one. Include:
+>
+> 1. **About me** — name, role/occupation, location, languages I speak
+> 2. **What I use AI for** — the main topics and tasks I come to you with
+> 3. **Communication style** — how I like responses (concise vs detailed, formal
+>    vs casual, code-heavy vs explanatory)
+> 4. **Preferences** — things I've corrected you on or asked you to do differently
+> 5. **Key context** — ongoing projects, goals, or background that shapes our
+>    conversations
+>
+> Be specific and factual. Skip anything generic. Format as plain text.
+> ```
+
 Start talking:
 
 ```
@@ -75,6 +80,18 @@ Start talking:
 @Deus summarize the YouTube video at <url>
 @Deus remind me every Monday morning what I worked on last week
 ```
+
+---
+
+## Architecture
+
+<p align="center">
+  <img src="assets/brand-production/diagrams/deus-channels-diagram.png" alt="Message flow: User → Host → Container → Response" width="700">
+</p>
+
+- One Node.js process on the host. No microservices.
+- Each conversation group runs in its own container with an isolated filesystem.
+- Domain detection tags conversations by topic so the self-improvement loop learns per-domain patterns.
 
 ---
 
@@ -188,7 +205,7 @@ The core agent uses the Claude Agent SDK — this is architectural and not swapp
 All local. Memory in SQLite, session logs in a local vault directory, no cloud sync.
 
 **How do I add a new channel?**
-Use the skill system: `/add-whatsapp`, `/add-telegram`, `/add-slack`, `/add-discord`, `/add-gmail`. Or build your own channel skill.
+Use the skill system: `/add-whatsapp`, `/add-telegram`, `/add-slack`, `/add-discord`, `/add-gmail`. Each channel is a standalone MCP package under `packages/` — you can also build your own by implementing the `ChannelProvider` interface from `@deus-ai/channel-core`.
 
 **How do I customize behavior?**
 Send `/settings` in any connected chat to view and edit per-channel settings (idle reset, timeout, trigger requirement). For deeper changes — personas, trigger words, response style — tell Claude Code directly or run `/customize`.
@@ -221,7 +238,7 @@ src/
   index.ts                # Entry point: startup gate, channel connect, IPC, scheduler
   message-orchestrator.ts # Message loop, trigger detection, cursor management, agent dispatch
   session-commands.ts     # Host-side slash command registry (/settings, /compact)
-  channels/               # Channel registry (implementations installed via /add-* skills)
+  channels/               # Channel registry and MCP adapter factories
   container-runner.ts     # Spawns and streams agent containers
   domain-presets.ts       # Keyword-based domain detection for evolution loop tagging
   user-signal.ts          # Detects user feedback signals (positive/negative)
@@ -230,6 +247,13 @@ src/
   db.ts                   # SQLite operations
   router.ts               # Outbound message routing
   ipc.ts                  # File-based IPC watcher
+packages/
+  mcp-channel-core/       # Shared ChannelProvider interface and MCP adapter
+  mcp-whatsapp/           # WhatsApp channel (Baileys)
+  mcp-telegram/           # Telegram channel (node-telegram-bot-api)
+  mcp-discord/            # Discord channel (discord.js)
+  mcp-slack/              # Slack channel (@slack/bolt)
+  mcp-gmail/              # Gmail channel (googleapis + OAuth polling)
 scripts/
   memory_indexer.py       # Semantic memory: index, query, extract, wander
   import_seeds.py         # Import curated seed reflections into evolution DB
