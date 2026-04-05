@@ -1,0 +1,24 @@
+name: Update Sponsors README
+
+on:
+  schedule:
+    - cron: '0 0 * * 0' # Weekly on Sunday midnight UTC
+  workflow_dispatch:
+
+jobs:
+  update-sponsors:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: JamesIves/github-sponsors-readme-action@v1
+        with:
+          token: ${{ secrets.PAT }}
+          file: README.md
+          fallback: 'Become the first sponsor — [github.com/sponsors/sliamh11](https://github.com/sponsors/sliamh11)'
+
+      - uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: 'chore: update sponsors in README'

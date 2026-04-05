@@ -309,9 +309,7 @@ Sponsorships go toward full-time development during breaks, CI/infrastructure co
 
 ### Sponsors
 
-<!-- sponsors:start -->
-*Become the first sponsor — [github.com/sponsors/sliamh11](https://github.com/sponsors/sliamh11)*
-<!-- sponsors:end -->
+<!-- sponsors --><!-- sponsors -->
 
 ## Acknowledgments
 
