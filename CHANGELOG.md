@@ -13,7 +13,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 * **auth:** auto-refresh OAuth token from ~/.claude/.credentials.json ([a7d7e87](https://github.com/sliamh11/Deus/commit/a7d7e87595d1c339449a9b3b0d677cbdf6fe5b13))
 * **cli:** add /preferences command and preference-aware launchers ([#41](https://github.com/sliamh11/Deus/issues/41)) ([75aa29c](https://github.com/sliamh11/Deus/commit/75aa29cff4cc81dedd3b64737a2f7fa7ba95547d))
 * **cli:** add `deus listen` — mic-to-text via whisper.cpp ([5d50617](https://github.com/sliamh11/Deus/commit/5d506179286579ce9e45b6f87e79207490093dc0))
-* **cli:** add `deus listen` — mic-to-text via whisper.cpp ([336a43b](https://github.com/sliamh11/Deus/commit/336a43be6223c1703bd9e9bc6fcdefdf7d5dec98))
 * **cli:** add loading progress and catch-me-up greeting to Windows launcher ([#40](https://github.com/sliamh11/Deus/issues/40)) ([36eb638](https://github.com/sliamh11/Deus/commit/36eb638497618158dfad79567e1fc80d286c8626))
 * domain presets + expanded self-improvement loop ([85d9808](https://github.com/sliamh11/Deus/commit/85d980846e1193d3d4858cd5c4f58cc39196add8))
 * **eval:** add MockJudge for CI and wire Gemini judge in workflow ([f42128c](https://github.com/sliamh11/Deus/commit/f42128c10a4251dd34ffdd3baa09a697f543f916))
@@ -25,7 +24,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 * **external-env:** Phase 2 project-settings improvements, Phase 3 auto-redaction ([b64acd8](https://github.com/sliamh11/Deus/commit/b64acd8365df3e823ce530a4d0062ddab4e27c21))
 * generate group CLAUDE.md from templates during setup ([2d53289](https://github.com/sliamh11/Deus/commit/2d532894971200ea05c8665e3329f828532e9a5b))
 * **mcp:** add custom YouTube transcript server ([f98f7ed](https://github.com/sliamh11/Deus/commit/f98f7ed0048241320dd79acbfecaa5f3520242ce))
-* **mcp:** add custom YouTube transcript server ([d63baa2](https://github.com/sliamh11/Deus/commit/d63baa2f2b533dacc4892267afe91da93d17736e))
 * **memory:** add --learnings flag to surface emerging patterns in /resume ([1f88f49](https://github.com/sliamh11/Deus/commit/1f88f498d08dc3ba3e85c77d9a8be0cbd2971ce6))
 * **memory:** add continuity indicator, session clustering, and cold start welcome ([26eb42f](https://github.com/sliamh11/Deus/commit/26eb42fc8bf81baa8ad31e5e4448eabe053e52f4))
 * **memory:** improve /resume session loading, learnings, and UX ([86a1f95](https://github.com/sliamh11/Deus/commit/86a1f9548b354478a3228907e918dbec12f786a4))
@@ -40,7 +38,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 * **tests:** comprehensive test coverage for security, core, and evolution layers ([3baf3e5](https://github.com/sliamh11/Deus/commit/3baf3e54a414d61921c0eac5079eb155fa2386e5))
 * **windows:** add proxy bind host, service status checks, setup docs ([ebd83dc](https://github.com/sliamh11/Deus/commit/ebd83dc6ddd2a52862c6aea92799aa6473dfccd7))
 * **windows:** add Windows platform detection and service management ([a27ba85](https://github.com/sliamh11/Deus/commit/a27ba850f4d2381b91e72e26f1cec1ab8ce582c1))
-* **windows:** Windows support via Docker Desktop + NSSM/Servy ([5e5b941](https://github.com/sliamh11/Deus/commit/5e5b94170fe28e512f78bbde947c8c0558a08038))
 * **windows:** Windows support via Docker Desktop + NSSM/Servy ([5e5b941](https://github.com/sliamh11/Deus/commit/5e5b94170fe28e512f78bbde947c8c0558a08038))
 
 
@@ -85,7 +82,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 * **test:** mock async dependencies in container-runner timeout tests ([8314141](https://github.com/sliamh11/Deus/commit/8314141d6e02a63ef2a04b5d2c508fe988dc3845))
 * **tests:** fix Windows path handling and platform validation in tests ([8d9cde9](https://github.com/sliamh11/Deus/commit/8d9cde9283f3f3afcf0e79b65c17e3dc9e65e311))
 * **tests:** platform-aware process kill assertions in remote-control tests ([aed8953](https://github.com/sliamh11/Deus/commit/aed8953f4ade3352a172fbf9d0d0097296bca584))
-* **tests:** platform-aware process kill assertions in remote-control tests ([85ff6fb](https://github.com/sliamh11/Deus/commit/85ff6fbf39fac0e80ad9d59d98588348d79e0da6))
 * **tests:** skip Unix-path Docker tests on Windows, fix mount-security path ([8ddaf81](https://github.com/sliamh11/Deus/commit/8ddaf818d4ffeb1cb549e97c529d41919eda9f0b))
 * **tests:** use path.resolve for cross-platform path comparison in mount-security ([f094f60](https://github.com/sliamh11/Deus/commit/f094f600d1c5fd5fc4129881908a17e1aa8f104e))
 * **types:** resolve pre-existing TypeScript errors exposed by TS upgrade ([5e737d6](https://github.com/sliamh11/Deus/commit/5e737d653648b1d646c728af3dc5feac9c80019f))
@@ -100,26 +96,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-### Added
-- Windows support via Docker Desktop + NSSM/Servy service management
-- Personality kickstarter in `/setup` (behavioral bundles, seed reflections)
-- `/settings` channel command with per-channel `session_idle_hours`, `timeout`, `requires_trigger`
-- Idle-based session reset for all channels
-- Host slash command registry (`HOST_COMMAND_HANDLERS`) for extensible command dispatch
-- Ko-fi as additional sponsor platform
-
-### Fixed
-- OAuth token no longer written to `.env`, preventing login loop on auto-refresh
-- Host slash commands (`/settings`, `/compact`) intercepted before container dispatch
-- 8 critical flaws in reflexion loop
-- Cross-platform path handling in tests
-
-### Changed
-- Tool filtering excludes swarm tools for non-orchestration queries (~600 token savings)
-- Orchestration logic extracted to `message-orchestrator.ts` and `router-state.ts`
-- Container mount logic extracted to `container-mounter.ts`
-
-## [1.2.19] - 2026-03-30
+## [0.1.0] - 2026-03-30
 
 ### Added
 - Semantic memory system with sqlite-vec and Gemini embeddings (tiered retrieval)
@@ -142,4 +119,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ---
 
-*Entries before v1.2.19 are from the upstream NanoClaw project and preserved for historical reference.*
+*Entries before v0.1.0 are from the upstream NanoClaw project and preserved for historical reference.*
