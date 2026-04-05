@@ -332,7 +332,7 @@ Commands:
 | Judge | Use Case | Model |
 |-------|----------|-------|
 | `GeminiRuntimeJudge` | Production scoring | Gemini (cloud) |
-| `OllamaJudge` | Eval runs (no API quota) | `qwen3.5:4b` (local) |
+| `OllamaJudge` | Eval runs (no API quota) | `gemma4:e4b` (local) |
 
 Auto-detection: pings `localhost:11434`. Uses Ollama if reachable, Gemini otherwise. Override with `EVAL_JUDGE=ollama|gemini`.
 

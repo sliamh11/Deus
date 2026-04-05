@@ -27,8 +27,8 @@ def _setup_dspy(model: str = JUDGE_MODEL) -> None:
     import dspy
     import os
     # Prefer Ollama (no quota) for optimizer; fall back to Gemini.
-    # qwen3.5:4b with think=False to disable slow thinking mode.
-    ollama_model = os.environ.get("DSPY_OLLAMA_MODEL", "qwen3.5:4b")
+    # gemma4:e4b — best accuracy/speed tradeoff per benchmark (Round 3 clean dataset).
+    ollama_model = os.environ.get("DSPY_OLLAMA_MODEL", "gemma4:e4b")
     try:
         import httpx
         r = httpx.get("http://localhost:11434/api/tags", timeout=2)
