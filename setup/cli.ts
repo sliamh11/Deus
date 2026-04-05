@@ -107,14 +107,17 @@ function setupUnixCli(projectRoot: string, homeDir: string): void {
 }
 
 /**
- * Remove /usr/local/bin/deus if it is a symlink pointing to a dead target.
+ * Remove a legacy CLI symlink if it points to a dead target.
  * Old manual installs can leave stale symlinks that shadow ~/.local/bin/deus.
+ * @param legacyPath defaults to /usr/local/bin/deus; override for testing.
  */
-export function cleanStaleLegacySymlink(log: {
-  info: (...args: unknown[]) => void;
-  warn: (...args: unknown[]) => void;
-}): void {
-  const legacyPath = '/usr/local/bin/deus';
+export function cleanStaleLegacySymlink(
+  log: {
+    info: (...args: unknown[]) => void;
+    warn: (...args: unknown[]) => void;
+  },
+  legacyPath = '/usr/local/bin/deus',
+): void {
   try {
     const stat = fs.lstatSync(legacyPath);
     if (!stat.isSymbolicLink()) return; // regular file — don't touch

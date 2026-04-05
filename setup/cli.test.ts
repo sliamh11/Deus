@@ -127,40 +127,48 @@ describe('setup/cli', () => {
     });
 
     it('removes a dead symlink at the legacy path', () => {
-      // Create a symlink pointing to a non-existent target
-      const deadLink = path.join(legacyDir, 'dead-link');
+      const deadLink = path.join(legacyDir, 'deus');
       fs.symlinkSync('/tmp/nonexistent-deus-target-xyz', deadLink);
 
-      // Directly test the removal logic (mirrors cleanStaleLegacySymlink)
-      const stat = fs.lstatSync(deadLink);
-      expect(stat.isSymbolicLink()).toBe(true);
-      expect(fs.existsSync(deadLink)).toBe(false); // target doesn't exist
+      cleanStaleLegacySymlink(mockLog, deadLink);
 
-      fs.unlinkSync(deadLink);
+      // Symlink should be removed
       expect(() => fs.lstatSync(deadLink)).toThrow();
+      expect(mockLog.info).toHaveBeenCalledTimes(1);
     });
 
     it('leaves alive symlinks untouched', () => {
-      // Create a symlink pointing to an existing target
       const target = path.join(legacyDir, 'real-target');
       fs.writeFileSync(target, 'exists');
-      const aliveLink = path.join(legacyDir, 'alive-link');
+      const aliveLink = path.join(legacyDir, 'deus');
       fs.symlinkSync(target, aliveLink);
 
-      // The alive link resolves
+      cleanStaleLegacySymlink(mockLog, aliveLink);
+
+      // Symlink should still exist
       expect(fs.existsSync(aliveLink)).toBe(true);
       expect(fs.lstatSync(aliveLink).isSymbolicLink()).toBe(true);
+      expect(mockLog.info).not.toHaveBeenCalled();
+      expect(mockLog.warn).not.toHaveBeenCalled();
+    });
 
-      // Should not be removed (simulates the "target is alive" check)
-      // This validates the logic branch in cleanStaleLegacySymlink
-      expect(fs.existsSync(aliveLink)).toBe(true);
+    it('leaves regular files untouched', () => {
+      const regularFile = path.join(legacyDir, 'deus');
+      fs.writeFileSync(regularFile, '#!/bin/sh\necho deus');
+
+      cleanStaleLegacySymlink(mockLog, regularFile);
+
+      // File should still exist
+      expect(fs.existsSync(regularFile)).toBe(true);
+      expect(mockLog.info).not.toHaveBeenCalled();
+      expect(mockLog.warn).not.toHaveBeenCalled();
     });
 
     it('does nothing when path does not exist', () => {
-      // cleanStaleLegacySymlink should not throw when the legacy path is absent
-      // We call it — it targets /usr/local/bin/deus which likely doesn't exist in CI
-      cleanStaleLegacySymlink(mockLog);
-      // No error thrown, no warn/info if path doesn't exist
+      const missingPath = path.join(legacyDir, 'nonexistent');
+      cleanStaleLegacySymlink(mockLog, missingPath);
+
+      expect(mockLog.info).not.toHaveBeenCalled();
       expect(mockLog.warn).not.toHaveBeenCalled();
     });
   });
