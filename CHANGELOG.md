@@ -4,6 +4,22 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.0](https://github.com/sliamh11/Deus/compare/v1.0.0...v1.1.0) (2026-04-05)
+
+
+### Features
+
+* **channels:** add Discord MCP package ([#66](https://github.com/sliamh11/Deus/issues/66)) ([3d07584](https://github.com/sliamh11/Deus/commit/3d075849cc7f54e240392b2f127e17995b69a650))
+* **channels:** add Gmail MCP package with OAuth polling and email tools ([#67](https://github.com/sliamh11/Deus/issues/67)) ([1a167be](https://github.com/sliamh11/Deus/commit/1a167be5c33def3142466a783d40cd4c115f897c))
+* **channels:** add Slack MCP package ([#68](https://github.com/sliamh11/Deus/issues/68)) ([363451f](https://github.com/sliamh11/Deus/commit/363451f48670ad06ccf5452831b163df6dd69743))
+
+
+### Bug Fixes
+
+* **channels:** auto-import all channel factories to prevent git pull breakage ([ae11032](https://github.com/sliamh11/Deus/commit/ae11032ea1bb23086138d136ac7841d582be89da))
+* **channels:** auto-import all channel factories to prevent git pull breakage ([1a7b649](https://github.com/sliamh11/Deus/commit/1a7b64956bf1fb771cd0d470c9416ce47d61332d))
+* **ci:** use npm install and resolve file: deps for npm publish workflow ([54e4bbf](https://github.com/sliamh11/Deus/commit/54e4bbf712325c6c8c8c4a9fb47a679ea5ebea8b))
+
 ## 1.0.0 (2026-04-04)
 
 
