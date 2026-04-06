@@ -75,6 +75,7 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `EVOLUTION_JUDGE_MODEL` | `models/gemini-3.1-flash-lite-preview` | Gemini model used for judging and principle extraction |
 | `EVOLUTION_JUDGE_PROVIDER` | (auto-detect) | Force a specific judge provider: `ollama`, `gemini`, `claude`, `mock` |
 | `EVOLUTION_GEN_PROVIDER` | (auto-detect) | Force a specific generative provider: `gemini`, `ollama`, `mock` |
+| `DEUS_STORAGE_PROVIDER` | (auto-detect) | Force a specific storage provider: `sqlite` |
 | `EVOLUTION_GEN_MODEL` | `models/gemini-3.1-flash-lite-preview` | Default generative model (Gemini) |
 | `EVOLUTION_MAX_REFLECTIONS` | `3` | Max reflections retrieved per agent query |
 | `EVOLUTION_REFLECTION_DEDUP_L2` | `0.4` | L2 distance threshold for deduplicating similar reflections |

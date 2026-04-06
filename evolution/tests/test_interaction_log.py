@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+import evolution.config as config_mod
 import evolution.db as db_mod
 from evolution.db import open_db
 from evolution.ilog.interaction_log import (
@@ -20,6 +21,7 @@ from evolution.ilog.interaction_log import (
 def patch_db_path(tmp_path, monkeypatch):
     test_db = tmp_path / "test_ilog.db"
     monkeypatch.setattr(db_mod, "DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "DB_PATH", test_db)
     yield test_db
 
 

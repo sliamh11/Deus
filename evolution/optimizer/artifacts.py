@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import ARTIFACTS_DIR
-from ..db import open_db
+from ..storage import get_storage
 
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -28,24 +28,16 @@ def save_artifact(
     """
     aid = str(uuid.uuid4())
     ts = datetime.now(timezone.utc).isoformat()
-    db = open_db()
-
-    # Deactivate all previous artifacts for this module
-    db.execute(
-        "UPDATE prompt_artifacts SET active = 0 WHERE module = ?", [module]
+    store = get_storage()
+    store.save_artifact(
+        artifact_id=aid,
+        module=module,
+        content=content,
+        created_at=ts,
+        baseline_score=baseline_score,
+        optimized_score=optimized_score,
+        sample_count=sample_count,
     )
-
-    db.execute(
-        """
-        INSERT INTO prompt_artifacts
-            (id, created_at, module, content, baseline_score,
-             optimized_score, sample_count, active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-        """,
-        (aid, ts, module, content, baseline_score, optimized_score, sample_count),
-    )
-    db.commit()
-    db.close()
 
     # Write to filesystem for Node.js to read without Python
     _write_file(module, content, aid, ts, baseline_score, optimized_score)
@@ -54,29 +46,13 @@ def save_artifact(
 
 def get_active(module: str) -> Optional[dict]:
     """Return the currently active artifact for a module, or None."""
-    db = open_db()
-    row = db.execute(
-        "SELECT * FROM prompt_artifacts WHERE module = ? AND active = 1",
-        [module],
-    ).fetchone()
-    db.close()
-    return dict(row) if row else None
+    store = get_storage()
+    return store.get_active_artifact(module)
 
 
 def list_artifacts(module: Optional[str] = None, limit: int = 10) -> list[dict]:
-    db = open_db()
-    if module:
-        rows = db.execute(
-            "SELECT * FROM prompt_artifacts WHERE module = ? ORDER BY created_at DESC LIMIT ?",
-            [module, limit],
-        ).fetchall()
-    else:
-        rows = db.execute(
-            "SELECT * FROM prompt_artifacts ORDER BY created_at DESC LIMIT ?",
-            [limit],
-        ).fetchall()
-    db.close()
-    return [dict(r) for r in rows]
+    store = get_storage()
+    return store.list_artifacts(module=module, limit=limit)
 
 
 def _write_file(

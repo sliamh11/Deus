@@ -115,16 +115,11 @@ def _run_mcp_server() -> None:
         Positive feedback increments helpfulness score on retrieved reflections.
         """
         if positive:
-            # Bump helpful count on reflections that referenced this interaction
-            from ..db import open_db
-            db = open_db()
-            refs = db.execute(
-                "SELECT id FROM reflections WHERE interaction_id = ?",
-                [interaction_id],
-            ).fetchall()
-            db.close()
+            from .storage import get_storage
+            store = get_storage()
+            refs = store.get_reflections_for_interaction(interaction_id)
             for r in refs:
-                increment_helpful(r[0])
+                increment_helpful(r["id"])
         return {"status": "recorded"}
 
     mcp.run()

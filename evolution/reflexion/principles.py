@@ -13,56 +13,31 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from ..config import JUDGE_MODEL
-from ..db import open_db
 from ..generative import generate
 from ..ilog.interaction_log import get_recent
+from ..storage import get_storage
 from .store import save_reflection
 
 
 def _count_new_scored(domain: Optional[str]) -> int:
     """Count scored interactions added since the last extraction for this domain."""
-    db = open_db()
+    store = get_storage()
     domain_key = domain or "cross-domain"
-
-    last = db.execute(
-        "SELECT extracted_at FROM principle_extractions "
-        "WHERE domain = ? ORDER BY extracted_at DESC LIMIT 1",
-        (domain_key,),
-    ).fetchone()
-
-    clauses = ["judge_score IS NOT NULL"]
-    params: list = []
-    if last:
-        clauses.append("timestamp > ?")
-        params.append(last["extracted_at"])
-    if domain:
-        clauses.append("domain_presets LIKE ?")
-        params.append(f'%"{domain}"%')
-
-    count = db.execute(
-        f"SELECT COUNT(*) FROM interactions WHERE {' AND '.join(clauses)}",
-        params,
-    ).fetchone()[0]
-    db.close()
-    return count
+    last = store.get_last_extraction(domain_key)
+    since_ts = last["extracted_at"] if last else None
+    return store.count_new_scored(since_timestamp=since_ts, domain=domain)
 
 
 def _record_extraction(domain: Optional[str], interaction_count: int, principles_count: int) -> None:
     """Record that extraction happened for this domain."""
-    db = open_db()
-    db.execute(
-        "INSERT INTO principle_extractions (id, domain, extracted_at, interaction_count, principles_count) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (
-            str(uuid.uuid4()),
-            domain or "cross-domain",
-            datetime.now(timezone.utc).isoformat(),
-            interaction_count,
-            principles_count,
-        ),
+    store = get_storage()
+    store.record_extraction(
+        extraction_id=str(uuid.uuid4()),
+        domain=domain or "cross-domain",
+        extracted_at=datetime.now(timezone.utc).isoformat(),
+        interaction_count=interaction_count,
+        principles_count=principles_count,
     )
-    db.commit()
-    db.close()
 
 _PRINCIPLES_PROMPT = """
 You are analyzing a set of AI assistant interactions — some high-scoring and some low-scoring.

@@ -4,6 +4,7 @@ Mocks embed to avoid real API calls.
 """
 import pytest
 
+import evolution.config as config_mod
 import evolution.db as db_mod
 import evolution.providers.embeddings as embed_mod
 from evolution.db import open_db
@@ -25,6 +26,7 @@ VECTOR_B = [0.0] * (EMBED_DIM - 1) + [1.0]  # unit vector along dim 767 (far fro
 def patch_db_path(tmp_path, monkeypatch):
     test_db = tmp_path / "test_reflexion.db"
     monkeypatch.setattr(db_mod, "DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "DB_PATH", test_db)
     yield test_db
 
 

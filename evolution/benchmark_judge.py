@@ -20,7 +20,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .db import open_db
+from .storage import get_storage
 from .judge.ollama_judge import (
     OLLAMA_HOST,
     OllamaRuntimeJudge,
@@ -128,16 +128,12 @@ def _get_scored_interactions(limit: int, clean: bool = False) -> list[dict]:
         limit: Max number of interactions to return.
         clean: If True, exclude test/setup noise interactions.
     """
-    db = open_db()
-    rows = db.execute(
-        """
-        SELECT id, prompt, response, tools_used, judge_score, judge_dims
-        FROM interactions
-        WHERE judge_score IS NOT NULL
-        ORDER BY timestamp DESC
-        """,
-    ).fetchall()
-    db.close()
+    store = get_storage()
+    rows = store.get_recent_interactions(
+        limit=limit * 3,  # fetch extra to account for noise filtering
+        eval_suite=None,
+        min_score=0.0,  # only scored interactions (score IS NOT NULL)
+    )
 
     results = []
     for row in rows:

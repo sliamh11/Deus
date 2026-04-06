@@ -5,8 +5,9 @@ Returns a formatted <reflections> block ready to prepend to the agent prompt.
 from typing import Optional
 
 from ..config import MAX_REFLECTIONS_PER_QUERY
-from ..db import open_db, serialize_vec
+from ..db import serialize_vec
 from ..providers.embeddings import embed as _embed
+from ..storage import get_storage
 from .store import increment_retrieved
 
 
@@ -27,34 +28,11 @@ def get_reflections(
 
     vec = _embed(search_text)
     blob = serialize_vec(vec)
-    db = open_db()
+    store = get_storage()
 
-    # KNN search via sqlite-vec MATCH syntax.
-    # Fetch 2× top_k so we can apply the group filter and still get enough results.
-    try:
-        rows = db.execute(
-            """
-            SELECT r.id, r.content, r.category, r.score_at_gen,
-                   r.times_helpful, r.times_retrieved,
-                   re.distance
-            FROM reflection_embeddings re
-            JOIN reflections r ON r.rowid = re.rowid
-            WHERE re.embedding MATCH ? AND k = ?
-              AND (r.group_folder = ? OR r.group_folder IS NULL)
-              AND r.archived_at IS NULL
-            ORDER BY re.distance, r.times_helpful DESC
-            """,
-            [blob, top_k * 2, group_folder],
-        ).fetchall()
-    except Exception:
-        rows = []
-    finally:
-        db.close()
-
-    results = [dict(zip(
-        ["id", "content", "category", "score_at_gen", "times_helpful", "times_retrieved", "distance"],
-        row,
-    )) for row in rows[:top_k]]
+    results = store.get_reflections_by_embedding(
+        embedding=blob, top_k=top_k, group_folder=group_folder,
+    )
 
     # Track retrieval counts
     for r in results:

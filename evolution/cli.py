@@ -27,7 +27,9 @@ if __name__ == "__main__" and __package__ is None:
 def cmd_status(group_folder: Optional[str] = None, domain: Optional[str] = None, compare: bool = False) -> None:
     from .ilog.interaction_log import get_recent, score_trend
     from .optimizer.artifacts import list_artifacts
-    from .db import open_db
+    from .storage import get_storage
+
+    store = get_storage()
 
     # Score trend
     trend = score_trend(group_folder=group_folder, days=30, domain=domain)
@@ -37,48 +39,25 @@ def cmd_status(group_folder: Optional[str] = None, domain: Optional[str] = None,
     print(f"\n=== {header} ===")
     if trend:
         for row in trend[-10:]:
-            bar = "█" * int(row["avg_score"] * 20)
+            bar = "��" * int(row["avg_score"] * 20)
             print(f"  {row['day']}  {bar:<20}  {row['avg_score']:.3f}  ({row['count']} interactions)")
     else:
         print("  No scored interactions yet.")
 
     # Compare: with-preset vs without-preset scores
     if compare and domain:
-        db = open_db()
-        with_preset = db.execute(
-            "SELECT AVG(judge_score) AS avg, COUNT(*) AS n FROM interactions "
-            "WHERE judge_score IS NOT NULL AND domain_presets LIKE ?",
-            (f'%"{domain}"%',),
-        ).fetchone()
-        without_preset = db.execute(
-            "SELECT AVG(judge_score) AS avg, COUNT(*) AS n FROM interactions "
-            "WHERE judge_score IS NOT NULL AND (domain_presets IS NULL OR domain_presets NOT LIKE ?)",
-            (f'%"{domain}"%',),
-        ).fetchone()
-        db.close()
-
+        comp = store.domain_comparison(domain)
         print(f"\n=== Comparison: {domain} ===")
-        w_avg = with_preset["avg"] or 0
-        w_n = with_preset["n"] or 0
-        wo_avg = without_preset["avg"] or 0
-        wo_n = without_preset["n"] or 0
-        print(f"  With preset:    {w_avg:.3f}  (n={w_n})")
-        print(f"  Without preset: {wo_avg:.3f}  (n={wo_n})")
-        if w_n > 0 and wo_n > 0:
-            delta = w_avg - wo_avg
+        print(f"  With preset:    {comp['with_avg']:.3f}  (n={comp['with_n']})")
+        print(f"  Without preset: {comp['without_avg']:.3f}  (n={comp['without_n']})")
+        if comp['with_n'] > 0 and comp['without_n'] > 0:
+            delta = comp['with_avg'] - comp['without_avg']
             print(f"  Delta: {'+'if delta>=0 else ''}{delta:.3f}")
 
     # Reflection count
-    db = open_db()
-    total_refs = db.execute("SELECT COUNT(*) FROM reflections").fetchone()[0]
-    helpful_refs = db.execute(
-        "SELECT COUNT(*) FROM reflections WHERE times_helpful > 0"
-    ).fetchone()[0]
-    # Per-category breakdown
-    cat_rows = db.execute(
-        "SELECT category, COUNT(*) AS n FROM reflections GROUP BY category ORDER BY n DESC"
-    ).fetchall()
-    db.close()
+    total_refs = store.count_reflections()
+    helpful_refs = store.count_helpful_reflections()
+    cat_rows = store.reflections_by_category()
     print(f"\n=== Reflections ===")
     print(f"  Total: {total_refs} | Helpful: {helpful_refs}")
     if cat_rows:
@@ -127,21 +106,16 @@ def cmd_get_reflections(query_json: str) -> None:
 def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> None:
     """Auto-trigger principles extraction if enough new data exists."""
     from .config import PRINCIPLES_COOLDOWN_HOURS
-    from .reflexion.principles import extract_principles, _count_new_scored
-    from .db import open_db
+    from .reflexion.principles import extract_principles
+    from .storage import get_storage
     from datetime import datetime, timezone, timedelta
 
+    store = get_storage()
     domains_to_check = list(domain_presets or []) + [None]  # domain-specific + cross-domain
     for domain in domains_to_check:
         domain_key = domain or "cross-domain"
         # Cooldown check
-        db = open_db()
-        last = db.execute(
-            "SELECT extracted_at FROM principle_extractions "
-            "WHERE domain = ? ORDER BY extracted_at DESC LIMIT 1",
-            (domain_key,),
-        ).fetchone()
-        db.close()
+        last = store.get_last_extraction(domain_key)
         if last:
             last_dt = datetime.fromisoformat(last["extracted_at"])
             if datetime.now(timezone.utc) - last_dt < timedelta(hours=PRINCIPLES_COOLDOWN_HOURS):
@@ -155,26 +129,15 @@ def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> Non
 
 def _maybe_auto_optimize(domain_presets: Optional[list] = None) -> None:
     """Auto-trigger DSPy optimization if enough new scored interactions exist."""
-    from .config import AUTO_OPTIMIZE_THRESHOLD, DSPY_MIN_SAMPLES, DSPY_MIN_DOMAIN_SAMPLES
+    from .config import AUTO_OPTIMIZE_THRESHOLD
     if AUTO_OPTIMIZE_THRESHOLD <= 0:
         return
 
-    from .ilog.interaction_log import get_recent
-    from .db import open_db
+    from .storage import get_storage
 
-    # Check total scored count vs last optimization
-    db = open_db()
-    last_artifact = db.execute(
-        "SELECT created_at FROM prompt_artifacts ORDER BY created_at DESC LIMIT 1"
-    ).fetchone()
-    last_ts = last_artifact["created_at"] if last_artifact else "1970-01-01"
-
-    scored_since = db.execute(
-        "SELECT COUNT(*) FROM interactions "
-        "WHERE judge_score IS NOT NULL AND timestamp > ?",
-        (last_ts,),
-    ).fetchone()[0]
-    db.close()
+    store = get_storage()
+    last_ts = store.get_latest_artifact_timestamp() or "1970-01-01"
+    scored_since = store.count_scored_since(last_ts)
 
     if scored_since < AUTO_OPTIMIZE_THRESHOLD:
         return
@@ -335,21 +298,16 @@ def cmd_log_interaction(json_str: str) -> None:
 def cmd_reflect(interaction_id: str) -> None:
     """Manually trigger reflection generation for an interaction."""
     import asyncio
-    from .db import open_db
+    from .storage import get_storage
     from .reflexion.generator import generate_reflection
     from .reflexion.store import save_reflection
 
-    db = open_db()
-    row = db.execute(
-        "SELECT * FROM interactions WHERE id = ?", [interaction_id]
-    ).fetchone()
-    db.close()
+    store = get_storage()
+    row = store.get_interaction(interaction_id)
 
     if not row:
         print(f"Interaction {interaction_id} not found.")
         sys.exit(1)
-
-    row = dict(row)
     content, category = generate_reflection(
         prompt=row["prompt"],
         response=row["response"] or "",

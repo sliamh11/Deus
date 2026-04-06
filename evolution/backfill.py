@@ -26,8 +26,8 @@ from pathlib import Path
 from typing import Iterator
 
 from .config import REFLECTION_THRESHOLD
-from .db import open_db
 from .ilog.interaction_log import log_interaction, update_score
+from .storage import get_storage
 from .judge import make_runtime_judge
 from .reflexion.generator import generate_reflection
 from .reflexion.store import save_reflection
@@ -54,12 +54,8 @@ def _deterministic_id(session_id: str, pair_index: int) -> str:
 
 
 def _already_processed(interaction_id: str) -> bool:
-    db = open_db()
-    row = db.execute(
-        "SELECT 1 FROM interactions WHERE id = ?", [interaction_id]
-    ).fetchone()
-    db.close()
-    return row is not None
+    store = get_storage()
+    return store.get_interaction(interaction_id) is not None
 
 
 def _extract_text(content) -> str:
@@ -255,31 +251,19 @@ def run_backfill(
 
 
 def print_status() -> None:
-    db = open_db()
-    total = db.execute("SELECT COUNT(*) FROM interactions WHERE eval_suite='backfill'").fetchone()[0]
-    scored = db.execute(
-        "SELECT COUNT(*) FROM interactions WHERE eval_suite='backfill' AND judge_score IS NOT NULL"
-    ).fetchone()[0]
-    avg = db.execute(
-        "SELECT AVG(judge_score) FROM interactions WHERE eval_suite='backfill' AND judge_score IS NOT NULL"
-    ).fetchone()[0]
-    reflections = db.execute(
-        "SELECT COUNT(*) FROM reflections r "
-        "JOIN interactions i ON r.interaction_id = i.id "
-        "WHERE i.eval_suite = 'backfill'"
-    ).fetchone()[0]
-    runtime_total = db.execute(
-        "SELECT COUNT(*) FROM interactions WHERE eval_suite='runtime'"
-    ).fetchone()[0]
-    runtime_scored = db.execute(
-        "SELECT COUNT(*) FROM interactions WHERE eval_suite='runtime' AND judge_score IS NOT NULL"
-    ).fetchone()[0]
-    db.close()
+    store = get_storage()
+    backfill_stats = store.interaction_stats("backfill")
+    runtime_stats = store.interaction_stats("runtime")
+    reflections = store.backfill_reflection_count()
+
+    total = backfill_stats["total"]
+    scored = backfill_stats["scored"]
+    avg = backfill_stats["avg_score"]
 
     print("=== Evolution loop status ===")
     print(f"  backfill interactions : {total} total, {scored} scored"
           + (f", avg score={avg:.2f}" if avg else ""))
-    print(f"  runtime interactions  : {runtime_total} total, {runtime_scored} scored")
+    print(f"  runtime interactions  : {runtime_stats['total']} total, {runtime_stats['scored']} scored")
     print(f"  reflections (backfill): {reflections}")
 
 
