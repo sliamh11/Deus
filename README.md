@@ -245,6 +245,7 @@ src/
   index.ts                # Entry point: startup gate, channel connect, IPC, scheduler
   message-orchestrator.ts # Message loop, trigger detection, cursor management, agent dispatch
   session-commands.ts     # Host-side slash command registry (/settings, /compact)
+  auth-providers/         # AuthProvider interface, registry, and Anthropic provider
   channels/               # Channel registry and MCP adapter factories
   container-runner.ts     # Spawns and streams agent containers
   domain-presets.ts       # Keyword-based domain detection for evolution loop tagging

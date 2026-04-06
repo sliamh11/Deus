@@ -185,15 +185,17 @@ Tasks spawn containers using the same `runContainerAgent` path as regular messag
 
 ### `credential-proxy.ts` — API Key Injection
 
-An HTTP proxy server that containers route Anthropic API calls through. The proxy injects real credentials so containers never see them.
+An HTTP proxy server that containers route API calls through. The proxy injects real credentials so containers never see them. Auth logic is delegated to `AuthProvider` implementations (see `auth-providers/`).
 
-Two auth modes:
-- **API key**: proxy injects `x-api-key` header on every request
-- **OAuth**: container CLI exchanges a placeholder token for a temporary API key via the OAuth endpoint; proxy injects the real OAuth token on the exchange request
+**AuthProvider pattern** (`src/auth-providers/`): mirrors the provider/registry pattern from `evolution/judge/provider.py`. Each API provider implements the `AuthProvider` interface and registers with the singleton `AuthProviderRegistry`. The registry resolves the best available provider by priority, with an optional `DEUS_AUTH_PROVIDER` env var override.
+
+**Path-prefix routing**: requests to `/<provider>/rest/of/path` are routed to the named provider with the prefix stripped. Bare paths (no prefix) route to Anthropic for backward compatibility.
+
+**Built-in provider — Anthropic** (`AnthropicAuthProvider`):
+- Two auth modes: API key (`x-api-key` header) and OAuth (`Authorization: Bearer`)
+- OAuth token resolution order: env file → `~/.claude/.credentials.json` (auto-refreshed by Claude Code CLI, read with 5-min cache)
 
 Binds to `127.0.0.1` on macOS (Docker Desktop VM routes `host.docker.internal` to loopback) and to the `docker0` bridge IP on Linux.
-
-OAuth token resolution order: env file → `~/.claude/.credentials.json` (auto-refreshed by Claude Code CLI, read with 5-min cache).
 
 ### `startup-gate.ts` — Prerequisite Validation
 

@@ -1,27 +1,32 @@
 /**
  * Credential proxy for container isolation.
- * Containers connect here instead of directly to the Anthropic API.
+ * Containers connect here instead of directly to API providers.
  * The proxy injects real credentials so containers never see them.
  *
- * Two auth modes:
- *   API key:  Proxy injects x-api-key on every request.
- *   OAuth:    Container CLI exchanges its placeholder token for a temp
- *             API key via /api/oauth/claude_cli/create_api_key.
- *             Proxy injects real OAuth token on that exchange request;
- *             subsequent requests carry the temp key which is valid as-is.
+ * Auth is delegated to AuthProvider implementations (see auth-providers/).
+ *
+ * Path-prefix routing:
+ *   /anthropic/*  → Anthropic provider (prefix stripped)
+ *   /openai/*     → OpenAI provider (prefix stripped, if registered)
+ *   /gemini/*     → Gemini provider (prefix stripped, if registered)
+ *   /*            → Anthropic provider (backward compatibility)
  *
  * OAuth token resolution order (per-request, with 5-min cache):
  *   1. CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN from env file (explicit override)
  *   2. ~/.claude/.credentials.json (auto-refreshed by Claude Code CLI)
  */
-import { readFileSync } from 'fs';
 import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
-import os from 'os';
-import path from 'path';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+import {
+  AuthProviderRegistry,
+  AnthropicAuthProvider,
+  _resetCredentialsCacheForTest as _resetAnthropicCache,
+  ensureDefaultProviders,
+} from './auth-providers/index.js';
+import type { AuthProvider } from './auth-providers/types.js';
 
 export type AuthMode = 'api-key' | 'oauth';
 
@@ -29,88 +34,58 @@ export interface ProxyConfig {
   authMode: AuthMode;
 }
 
-// ---------------------------------------------------------------------------
-// Dynamic OAuth token — read from ~/.claude/.credentials.json with a 5-min TTL.
-// The env-file value always takes priority when set.
-// ---------------------------------------------------------------------------
-const CREDENTIALS_PATH = path.join(
-  process.env.HOME || os.homedir(),
-  '.claude',
-  '.credentials.json',
-);
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const EARLY_EXPIRE_WINDOW_MS = 5 * 60 * 1000;
-
-interface CredentialsCache {
-  token: string;
-  fetchedAt: number;
-  tokenExpiresAt: number;
-}
-
-let credentialsCache: CredentialsCache | null = null;
-
 /** @internal exposed for testing only */
 export function _resetCredentialsCacheForTest(): void {
-  credentialsCache = null;
+  _resetAnthropicCache();
 }
 
-function readCredentialsFile():
-  | { token: string; expiresAt: number }
-  | undefined {
-  try {
-    const raw = readFileSync(CREDENTIALS_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as {
-      claudeAiOauth?: { accessToken?: string; expiresAt?: number };
-    };
-    const oauth = parsed?.claudeAiOauth;
-    if (!oauth?.accessToken) return undefined;
-    return { token: oauth.accessToken, expiresAt: oauth.expiresAt ?? Infinity };
-  } catch {
-    return undefined;
+/**
+ * Resolve provider and path from a request URL.
+ *
+ * Path-prefix routing:
+ *   /anthropic/v1/messages → provider='anthropic', path='/v1/messages'
+ *   /openai/v1/chat        → provider='openai',    path='/v1/chat'
+ *   /v1/messages            → provider='anthropic', path='/v1/messages' (default)
+ *
+ * @internal exported for testing
+ */
+export function resolveProviderRoute(
+  url: string,
+  registry: AuthProviderRegistry,
+): { provider: AuthProvider; path: string } {
+  // Check for provider prefix: /<provider-name>/rest/of/path
+  const prefixMatch = url.match(/^\/([a-z]+)(\/.*)?$/);
+  if (prefixMatch) {
+    const prefix = prefixMatch[1];
+    const rest = prefixMatch[2] || '/';
+    // Only treat as a provider prefix if it's actually registered
+    if (registry.listProviders().includes(prefix)) {
+      return { provider: registry.get(prefix), path: rest };
+    }
   }
-}
 
-function getDynamicOAuthToken(): string | undefined {
-  const now = Date.now();
-  if (credentialsCache) {
-    const cacheAge = now - credentialsCache.fetchedAt;
-    const aboutToExpire =
-      credentialsCache.tokenExpiresAt !== Infinity &&
-      credentialsCache.tokenExpiresAt < now + EARLY_EXPIRE_WINDOW_MS;
-    if (cacheAge < CACHE_TTL_MS && !aboutToExpire)
-      return credentialsCache.token;
-  }
-  const creds = readCredentialsFile();
-  if (!creds) return undefined;
-  credentialsCache = {
-    token: creds.token,
-    fetchedAt: now,
-    tokenExpiresAt: creds.expiresAt,
-  };
-  return creds.token;
+  // Default: route to Anthropic for backward compatibility
+  return { provider: registry.get('anthropic'), path: url || '/' };
 }
 
 export function startCredentialProxy(
   port: number,
   host = '127.0.0.1',
 ): Promise<Server> {
-  const secrets = readEnvFile([
-    'ANTHROPIC_API_KEY',
-    'CLAUDE_CODE_OAUTH_TOKEN',
-    'ANTHROPIC_AUTH_TOKEN',
-    'ANTHROPIC_BASE_URL',
-  ]);
+  // Lazily register built-in providers (deferred to avoid breaking test mocks)
+  ensureDefaultProviders();
+  const registry = AuthProviderRegistry.default();
 
-  const authMode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
-  // env-file value takes priority; otherwise resolved dynamically per-request
-  const envOauthToken =
-    secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN;
-
-  const upstreamUrl = new URL(
-    secrets.ANTHROPIC_BASE_URL || 'https://api.anthropic.com',
-  );
-  const isHttps = upstreamUrl.protocol === 'https:';
-  const makeRequest = isHttps ? httpsRequest : httpRequest;
+  // Get the Anthropic provider for logging the auth mode
+  let authMode: AuthMode = 'oauth';
+  try {
+    const anthropic = registry.get('anthropic');
+    if (anthropic instanceof AnthropicAuthProvider) {
+      authMode = anthropic.getAuthMode();
+    }
+  } catch {
+    // No Anthropic provider registered — unusual but not fatal
+  }
 
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
@@ -118,6 +93,28 @@ export function startCredentialProxy(
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
         const body = Buffer.concat(chunks);
+
+        // Resolve which provider handles this request
+        let provider: AuthProvider;
+        let upstreamPath: string;
+        try {
+          const route = resolveProviderRoute(req.url || '/', registry);
+          provider = route.provider;
+          upstreamPath = route.path;
+        } catch (err) {
+          logger.error(
+            { err, url: req.url },
+            'No provider available for request',
+          );
+          res.writeHead(502);
+          res.end('No provider available');
+          return;
+        }
+
+        const upstreamUrl = new URL(provider.getUpstreamUrl());
+        const isHttps = upstreamUrl.protocol === 'https:';
+        const makeRequest = isHttps ? httpsRequest : httpRequest;
+
         const headers: Record<string, string | number | string[] | undefined> =
           {
             ...(req.headers as Record<string, string>),
@@ -130,29 +127,16 @@ export function startCredentialProxy(
         delete headers['keep-alive'];
         delete headers['transfer-encoding'];
 
-        if (authMode === 'api-key') {
-          // API key mode: inject x-api-key on every request
-          delete headers['x-api-key'];
-          headers['x-api-key'] = secrets.ANTHROPIC_API_KEY;
-        } else {
-          // OAuth mode: replace placeholder Bearer token with the real one
-          // only when the container actually sends an Authorization header
-          // (exchange request + auth probes). Post-exchange requests use
-          // x-api-key only, so they pass through without token injection.
-          if (headers['authorization']) {
-            delete headers['authorization'];
-            const token = envOauthToken || getDynamicOAuthToken();
-            if (token) {
-              headers['authorization'] = `Bearer ${token}`;
-            }
-          }
-        }
+        // Delegate auth injection to the provider
+        provider.injectAuth(
+          headers as Record<string, string | string[] | undefined>,
+        );
 
         const upstream = makeRequest(
           {
             hostname: upstreamUrl.hostname,
             port: upstreamUrl.port || (isHttps ? 443 : 80),
-            path: req.url,
+            path: upstreamPath,
             method: req.method,
             headers,
           } as RequestOptions,
@@ -209,6 +193,16 @@ export function startCredentialProxy(
 
 /** Detect which auth mode the host is configured for. */
 export function detectAuthMode(): AuthMode {
+  try {
+    const registry = AuthProviderRegistry.default();
+    const anthropic = registry.get('anthropic');
+    if (anthropic instanceof AnthropicAuthProvider) {
+      return anthropic.getAuthMode();
+    }
+  } catch {
+    // Fallback to direct env check if registry not available
+  }
+  // Fallback: read env directly (same logic as before)
   const secrets = readEnvFile(['ANTHROPIC_API_KEY']);
   return secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
 }

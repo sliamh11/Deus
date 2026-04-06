@@ -21,6 +21,7 @@ import {
   startCredentialProxy,
   _resetCredentialsCacheForTest,
 } from './credential-proxy.js';
+import { AuthProviderRegistry } from './auth-providers/types.js';
 
 const mockReadFileSync = readFileSync as ReturnType<typeof vi.fn>;
 
@@ -63,6 +64,9 @@ describe('credential-proxy', () => {
 
   beforeEach(async () => {
     lastUpstreamHeaders = {};
+    // Reset registry so each test gets a fresh AnthropicAuthProvider
+    // that reads the current mockEnv at construction time.
+    AuthProviderRegistry.reset();
     _resetCredentialsCacheForTest();
     // Default: credentials file missing — existing tests are unaffected
     mockReadFileSync.mockImplementation(() => {
@@ -86,6 +90,7 @@ describe('credential-proxy', () => {
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
     mockReadFileSync.mockReset();
     _resetCredentialsCacheForTest();
+    AuthProviderRegistry.reset();
   });
 
   async function startProxy(env: Record<string, string>): Promise<number> {

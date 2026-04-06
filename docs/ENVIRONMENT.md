@@ -53,6 +53,7 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 |----------|---------|-------------|
 | `CREDENTIAL_PROXY_PORT` | `3001` | Port for the credential injection proxy |
 | `CREDENTIAL_PROXY_HOST` | — | Bind address for proxy (empty = auto-detect) |
+| `DEUS_AUTH_PROVIDER` | (auto-detect) | Force a specific auth provider for the credential proxy: `anthropic` (more providers planned) |
 
 ## Ollama / Local Models
 
