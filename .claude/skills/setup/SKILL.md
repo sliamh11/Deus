@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Run initial Deus setup. Use when user wants to install dependencies, authenticate messaging channels, register their main channel, or start the background services. Triggers on "setup", "install", "configure deus", or first-time setup requests.
+description: Run initial Deus setup — dependencies, container, credentials, service, and CLI. Channels are added separately after setup completes. Triggers on "setup", "install", "configure deus", or first-time setup requests.
 ---
 
 # Deus Setup
@@ -81,8 +81,8 @@ Run `bash setup.sh` and parse the status block.
 
 Run `npx tsx setup/index.ts --step environment` and parse the status block.
 
-- If HAS_AUTH=true → WhatsApp is already configured, note for step 5
-- If HAS_REGISTERED_GROUPS=true → note existing config, offer to skip or reconfigure
+- If HAS_AUTH=true → WhatsApp is already configured, inform user
+- If HAS_REGISTERED_GROUPS=true → note existing config
 - Record APPLE_CONTAINER and DOCKER values for step 3
 
 ## 3. Container Runtime
@@ -102,11 +102,11 @@ Run `npx tsx setup/index.ts --step environment` and parse the status block.
 
 ### 3b. Build and test (BACKGROUND)
 
-**Start the container build in the background** — it takes 3-5 minutes (up to 10 on Windows first run) and doesn't need user input. Continue with steps 4-6 while it runs.
+**Start the container build in the background** — it takes 3-5 minutes (up to 10 on Windows first run) and doesn't need user input. Continue with steps 4-5 while it runs.
 
 Run in background with **10 minute timeout**: `npx tsx setup/index.ts --step container -- --runtime docker`
 
-**Do NOT wait for this to finish.** Immediately continue to step 4. You will check the result before step 7.
+**Do NOT wait for this to finish.** Immediately continue to step 4. You will check the result before step 6.
 
 **IMPORTANT — if build fails later:** Read the FULL error output before retrying. Common causes:
 - TypeScript compilation errors from skill agents → check which skill was staged and if it's compatible
@@ -123,48 +123,16 @@ AskUserQuestion: Claude subscription (Pro/Max) vs Anthropic API key?
 
 **API key:** Tell user to add `ANTHROPIC_API_KEY=<key>` to `.env`.
 
-## 5. Set Up Channels
-
-AskUserQuestion (multiSelect): Which messaging channels do you want to enable?
-- WhatsApp (authenticates via QR code or pairing code)
-- Telegram (authenticates via bot token from @BotFather)
-- Slack (authenticates via Slack app with Socket Mode)
-- Discord (authenticates via Discord bot token)
-
-**Delegate to each selected channel's own skill.** Each channel skill handles its own code installation, authentication, registration, and JID resolution. This avoids duplicating channel-specific logic and ensures JIDs are always correct.
-
-For each selected channel, invoke its skill:
-
-- **WhatsApp:** Invoke `/add-whatsapp`
-- **Telegram:** Invoke `/add-telegram`
-- **Slack:** Invoke `/add-slack`
-- **Discord:** Invoke `/add-discord`
-
-Each skill will:
-1. Install the channel code (via `git merge` of the skill branch)
-2. Collect credentials/tokens and write to `.env`
-3. Authenticate (WhatsApp QR/pairing, or verify token-based connection)
-4. Register the chat with the correct JID format
-5. Build and verify
-
-**After all channel skills complete**, install dependencies and rebuild — channel merges may introduce new packages:
-
-```bash
-npm install && npm run build
-```
-
-If the build fails, read the error output and fix it (usually a missing dependency). Then continue to step 6.
-
-## 6. Mount Allowlist
+## 5. Mount Allowlist
 
 AskUserQuestion: Agent access to external directories?
 
 **No:** `npx tsx setup/index.ts --step mounts -- --empty`
 **Yes:** Collect paths/permissions. `npx tsx setup/index.ts --step mounts -- --json '{"allowedRoots":[...],"blockedPatterns":[],"nonMainReadOnly":true}'`
 
-## 6b. Wait for Container Build
+## 5b. Wait for Container Build
 
-**Before proceeding to step 7, check the container build from step 3b.**
+**Before proceeding to step 6, check the container build from step 3b.**
 
 If the background build is still running, wait for it to finish. Parse the status block.
 
@@ -174,7 +142,7 @@ If the background build is still running, wait for it to finish. Parse the statu
 
 **If TEST_OK=false but BUILD_OK=true:** The image built but won't run. Check logs — common cause is runtime not fully started. Wait a moment and retry the test.
 
-## 7. Start Service
+## 6. Start Service
 
 If service already running: stop first.
 - macOS: `launchctl unload ~/Library/LaunchAgents/com.deus.plist`
@@ -216,7 +184,7 @@ If the user chose Task Scheduler: guide them to create a scheduled task:
 4. Action: Start a Program — `node`, arguments: `<project-root>\dist\index.js`, start in: `<project-root>`
 5. Check "Run with highest privileges" if Docker requires it
 
-**If PLATFORM=windows and FALLBACK=batch (and user skipped NSSM/Task Scheduler):** A `start-deus.bat` launcher was generated for the background service. Tell user: the service can be started with `.\start-deus.bat` or by double-clicking it. For auto-start on login, add a shortcut to `shell:startup`. The `deus` CLI command will be set up in step 7b.
+**If PLATFORM=windows and FALLBACK=batch (and user skipped NSSM/Task Scheduler):** A `start-deus.bat` launcher was generated for the background service. Tell user: the service can be started with `.\start-deus.bat` or by double-clicking it. For auto-start on login, add a shortcut to `shell:startup`. The `deus` CLI command will be set up in step 6b.
 
 **If DOCKER_GROUP_STALE=true:** The user was added to the docker group after their session started — the systemd service can't reach the Docker socket. Ask user to run these two commands:
 
@@ -238,7 +206,7 @@ Replace `USERNAME` with the actual username (from `whoami`). Run the two `sudo` 
 - Linux: check `systemctl --user status deus`.
 - Re-run the service step after fixing.
 
-## 7b. Register CLI Command
+## 6b. Register CLI Command
 
 Run `npx tsx setup/index.ts --step cli` and parse the status block.
 
@@ -257,7 +225,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
 
 **After CLI registration:** Tell user they can type `deus` from any terminal after reopening their shell (or running `source ~/.zshrc` / `source ~/.bashrc` to apply immediately).
 
-## 8. Verify
+## 7. Verify
 
 Run `npx tsx setup/index.ts --step verify` and parse the status block.
 
@@ -268,25 +236,23 @@ Run `npx tsx setup/index.ts --step verify` and parse the status block.
   - Windows (NSSM): `nssm restart deus`
   - Windows (Servy): `servy-cli restart --name=deus`
   - WSL nohup fallback: `bash start-deus.sh`
-- SERVICE=not_found → re-run step 7
+- SERVICE=not_found → re-run step 6
 - CREDENTIALS=missing → re-run step 4
-- CHANNEL_AUTH shows `not_found` for any channel → re-invoke that channel's skill (e.g. `/add-telegram`)
-- REGISTERED_GROUPS=0 → re-invoke the channel skills from step 5
 - MOUNT_ALLOWLIST=missing → `npx tsx setup/index.ts --step mounts -- --empty`
 
-Tell user to test: send a message in their registered chat. Show: `tail -f logs/deus.log`
+**Note:** CONFIGURED_CHANNELS=0 and REGISTERED_GROUPS=0 are expected at this point — channels are added after setup completes. These are informational, not failures.
 
-## 9. Personality Kickstarter (Optional)
+## 8. Personality Kickstarter (Optional)
 
 AskUserQuestion: "Deus works best when it knows your preferences. Want to load battle-tested defaults from real usage?" Options: "Yes, show me" / "Skip"
 
-**If Skip:** Continue to step 10.
+**If Skip:** Continue to step 9.
 
-**If Yes, show me:** Run steps 9a → 9b → 9c in order.
+**If Yes, show me:** Run steps 8a → 8b → 8c in order.
 
 ---
 
-### 9a. Bundles
+### 8a. Bundles
 
 AskUserQuestion (multiSelect): "Which default bundles would you like to enable? Pick any combination." Options:
 - "Bundle A — Universal Defaults (recommended for everyone)"
@@ -324,7 +290,7 @@ Read `groups/main/CLAUDE.md`. If the file does not exist, create it. Append each
 
 ---
 
-### 9b. À la carte behaviors
+### 8b. À la carte behaviors
 
 Present these as a multi-select — independent of bundle selection. Each is a single rule the user can add on top of whatever bundles they chose (or instead of any bundle).
 
@@ -346,7 +312,7 @@ For each selected behavior, append its rule under `## Behavioral Defaults` in `g
 
 ---
 
-### 9c. Evolution seed reflections
+### 8c. Evolution seed reflections
 
 Seeds pre-warm the self-improvement loop so it isn't starting cold. Each seed is a past-learned lesson (corrective or positive) that will be retrieved and applied in relevant future conversations.
 
@@ -354,7 +320,7 @@ First, check if the evolution package is available:
 ```bash
 python3 -c "from evolution.reflexion.store import save_reflection; print('ok')" 2>/dev/null
 ```
-If this fails, tell the user "Evolution package not set up — skipping seed import." and continue to step 10.
+If this fails, tell the user "Evolution package not set up — skipping seed import." and continue to step 9.
 
 If available, read `seeds/reflections.json` and display a numbered list to the user: show each seed's `summary` and `category` (not the full content, to keep it scannable).
 
@@ -377,9 +343,23 @@ Report the result: "Imported N reflections (M skipped as near-duplicates)."
 
 After all three sub-steps, tell the user: "Defaults saved. You can edit `groups/main/CLAUDE.md` anytime to add, remove, or rephrase any rule."
 
-## 10. First Steps
+## 9. First Steps
 
-Tell the user: "Deus is ready. Here are three quick wins to get the most out of it fast:"
+Tell the user: "Deus is ready. Here are your next steps:"
+
+### Add a messaging channel
+
+Tell the user: "Deus needs at least one messaging channel to communicate through. Add one now:"
+
+Present these options:
+- `/add-whatsapp` — WhatsApp (QR code or pairing code authentication)
+- `/add-telegram` — Telegram (bot token from @BotFather)
+- `/add-slack` — Slack (Socket Mode, no public URL needed)
+- `/add-discord` — Discord (bot token)
+
+Tell the user: "Run one of these commands to add your first channel. Each channel skill handles authentication, registration, and smoke testing. You can add more channels later."
+
+### Quick wins
 
 **Quick Win 1 — Import knowledge from your previous AI tools**
 
@@ -403,7 +383,7 @@ Tell the user: "Don't start with test messages. Give Deus a real task from your 
 
 ## Troubleshooting
 
-**Service not starting:** Check `logs/deus.error.log`. Common: wrong Node path (re-run step 7), missing `.env` (step 4), missing channel credentials (re-invoke channel skill).
+**Service not starting:** Check `logs/deus.error.log`. Common: wrong Node path (re-run step 6), missing `.env` (step 4).
 
 **Container agent fails ("Claude Code process exited with code 1"):** Ensure Docker is running — `open -a Docker` (macOS) or `sudo systemctl start docker` (Linux). Check container logs in `groups/main/logs/container-*.log`.
 

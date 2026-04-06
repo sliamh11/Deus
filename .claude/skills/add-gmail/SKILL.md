@@ -60,6 +60,26 @@ npx -y @gongrzhe/server-gmail-autoauth-mcp auth
 
 If that fails (some versions don't have an auth subcommand), try `timeout 60 npx -y @gongrzhe/server-gmail-autoauth-mcp || true`. Verify with `ls ~/.gmail-mcp/credentials.json`.
 
+## Verify
+
+### Smoke test
+
+Run the automated smoke test to verify service, DB, and channel connection:
+
+```bash
+npx tsx setup/index.ts --step smoke-test -- --channel gmail
+```
+
+The smoke test checks: service running, registered group exists, DB write/read works, and channel connection appears in logs.
+
+If the smoke test passes, tell the user "Gmail channel is working."
+
+If it fails, check the STATUS output for the specific failure (service down, no registered group, DB error, or no log connection). Guide the user to fix the issue before proceeding.
+
+After the automated check, also ask the user to send a test email to verify real-time delivery:
+
+> Send a test email to confirm real-time delivery. Check `logs/deus.log` for processing confirmation.
+
 ## Troubleshooting
 
 ### Gmail connection not responding

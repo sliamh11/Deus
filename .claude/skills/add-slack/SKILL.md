@@ -69,6 +69,28 @@ For additional channels (trigger-only):
 npx tsx setup/index.ts --step register -- --jid "slack:<channel-id>" --name "<channel-name>" --folder "slack_<channel-name>" --trigger "@${ASSISTANT_NAME}" --channel slack
 ```
 
+## Verify
+
+### Smoke test
+
+Run the automated smoke test to verify service, DB, and channel connection:
+
+```bash
+npx tsx setup/index.ts --step smoke-test -- --channel slack
+```
+
+The smoke test checks: service running, registered group exists, DB write/read works, and channel connection appears in logs.
+
+If the smoke test passes, tell the user "Slack channel is working."
+
+If it fails, check the STATUS output for the specific failure (service down, no registered group, DB error, or no log connection). Guide the user to fix the issue before proceeding.
+
+After the automated check, also ask the user to send a test message to verify real-time delivery:
+
+> Send a message in your registered Slack channel to confirm real-time delivery.
+> - For main channel: Any message works
+> - For non-main: @mention the bot
+
 ## Troubleshooting
 
 ### Bot not responding
