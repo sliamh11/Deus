@@ -20,10 +20,10 @@ import { registerCommonTools } from '@deus-ai/channel-core';
 
 import { WhatsAppProvider } from './whatsapp.js';
 
-const server = new McpServer({
-  name: '@deus-ai/whatsapp-mcp',
-  version: '1.0.0',
-});
+const server = new McpServer(
+  { name: '@deus-ai/whatsapp-mcp', version: '1.0.0' },
+  { capabilities: { logging: {} } },
+);
 
 const provider = new WhatsAppProvider();
 

@@ -21,10 +21,10 @@ import { registerCommonTools } from '@deus-ai/channel-core';
 
 import { SlackProvider } from './slack.js';
 
-const server = new McpServer({
-  name: '@deus-ai/slack-mcp',
-  version: '1.0.0',
-});
+const server = new McpServer(
+  { name: '@deus-ai/slack-mcp', version: '1.0.0' },
+  { capabilities: { logging: {} } },
+);
 
 const provider = new SlackProvider();
 

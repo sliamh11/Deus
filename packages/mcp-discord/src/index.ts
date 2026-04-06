@@ -18,10 +18,10 @@ import { registerCommonTools } from '@deus-ai/channel-core';
 
 import { DiscordProvider } from './discord.js';
 
-const server = new McpServer({
-  name: '@deus-ai/discord-mcp',
-  version: '1.0.0',
-});
+const server = new McpServer(
+  { name: '@deus-ai/discord-mcp', version: '1.0.0' },
+  { capabilities: { logging: {} } },
+);
 
 const provider = new DiscordProvider();
 
