@@ -184,22 +184,14 @@ export async function run(_args: string[]): Promise<void> {
 
   // 6. Check mount allowlist
   let mountAllowlist = 'missing';
-  if (
-    fs.existsSync(
-      path.join(CONFIG_DIR, 'mount-allowlist.json'),
-    )
-  ) {
+  if (fs.existsSync(path.join(CONFIG_DIR, 'mount-allowlist.json'))) {
     mountAllowlist = 'configured';
   }
 
-  // Determine overall status
+  // Determine overall status — channels and registered groups are optional
+  // at this stage since they are configured separately after setup completes.
   const status =
-    service === 'running' &&
-    credentials !== 'missing' &&
-    anyChannelConfigured &&
-    registeredGroups > 0
-      ? 'success'
-      : 'failed';
+    service === 'running' && credentials !== 'missing' ? 'success' : 'failed';
 
   logger.info({ status, channelAuth }, 'Verification complete');
 

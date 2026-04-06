@@ -293,29 +293,23 @@ Tell the user:
 
 ### Smoke test
 
-After confirming the service is running, send a programmatic test message to verify end-to-end delivery:
+Run the automated smoke test to verify service, DB, and channel connection:
 
 ```bash
-npx tsx -e "
-import { getDb } from './dist/db.js';
-const db = getDb();
-const group = db.prepare('SELECT jid, name FROM registered_groups WHERE jid LIKE \"%@s.whatsapp.net\" OR jid LIKE \"%@g.us\" LIMIT 1').get();
-if (!group) { console.log('SMOKE_TEST: no registered WhatsApp chat found'); process.exit(1); }
-console.log('SMOKE_TEST: sending to ' + group.name + ' (' + group.jid + ')');
-"
+npx tsx setup/index.ts --step smoke-test -- --channel whatsapp
 ```
 
-If a registered chat is found, use the MCP tool `send_message` (if available) or tell the user:
+The smoke test checks: service running, registered group exists, DB write/read works, and channel connection appears in logs.
 
-> Smoke test: Send any message to your registered chat now. I'll check the logs in 5 seconds.
+If the smoke test passes, tell the user "WhatsApp channel is working."
 
-Wait 5 seconds, then check for delivery confirmation:
+If it fails, check the STATUS output for the specific failure (service down, no registered group, DB error, or no log connection). Guide the user to fix the issue before proceeding.
 
-```bash
-tail -20 logs/deus.log | grep -i "message\|received\|processing"
-```
+After the automated check, also ask the user to send a test message to verify real-time delivery:
 
-Report the result: if log entries show message receipt/processing, tell the user "WhatsApp channel is working." If no relevant log entries, suggest checking the Troubleshooting section below.
+> Send a message to your registered WhatsApp chat to confirm real-time delivery.
+> - For self-chat / main: Any message works
+> - For groups: Use the trigger word (e.g., "@Deus hello")
 
 ### Check logs if needed
 
