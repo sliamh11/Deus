@@ -11,6 +11,16 @@ Every change — from maintainers and contributors alike — follows this workfl
 
 No direct pushes to `main`. No exceptions.
 
+## PR Scope and Squashing
+
+Each PR must contain a **single squashed commit** when merged. This means:
+
+- All commits in a PR should be squashable into one coherent change.
+- If two commits are too different to squash (different scope, different purpose), they belong in **separate PRs**.
+- Use GitHub's "Squash and merge" option when merging.
+
+This keeps `main` history clean and every commit meaningful.
+
 ## Commit Messages
 
 We use [Conventional Commits](https://www.conventionalcommits.org/). This drives automated changelogs and versioning via [release-please](https://github.com/googleapis/release-please).

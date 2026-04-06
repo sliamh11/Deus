@@ -10,6 +10,10 @@ These rules apply to any AI agent (Claude Code, Deus, or other) developing in th
 4. After implementation: run `npm run build` and `npm test`. Both must pass before committing.
 5. Create a PR targeting `main`. Wait for CI to pass before requesting merge.
 
+## PR Scope and Squashing
+
+Each PR must contain a **single squashed commit** when merged. If your branch has multiple commits, they will be squashed on merge. If two commits are fundamentally different in scope or purpose, split them into separate PRs instead.
+
 ## Commit Messages
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) strictly. Commits that don't match this format will be rejected by the commit-msg hook and CI.
