@@ -1,12 +1,8 @@
 """
 DeepEval judge model for Deus eval suites.
 
-Priority order:
-0. MockJudge   — fixed score, no API calls; for CI smoke tests (EVAL_JUDGE=mock).
-1. GeminiJudge  — uses GEMINI_API_KEY; same Gemini client as memory_indexer.
-2. ClaudeProxyJudge — OAuth Bearer via localhost:3001 credential proxy.
-                      Blocked on Anthropic API (returns 401); kept as fallback
-                      in case the auth issue is resolved.
+Uses the JudgeRegistry provider pattern to resolve the best available backend.
+Supports EVAL_JUDGE env var for explicit selection (mock/ollama/gemini/claude).
 
 Usage:
     from judge_model import make_judge
@@ -15,146 +11,36 @@ Usage:
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional, Tuple
+from typing import Optional
 
 from deepeval.models import DeepEvalBaseLLM
-
-
-# ── Mock judge (CI / PR gate) ────────────────────────────────────────────────
-
-class MockJudge(DeepEvalBaseLLM):
-    """
-    Returns a fixed score without calling any external API.
-    Useful for CI smoke tests where you want to validate the eval pipeline
-    without burning API credits.  Activated via EVAL_JUDGE=mock.
-    """
-
-    def __init__(self, score: float = 0.75):
-        self._score = score
-
-    def load_model(self):
-        return None
-
-    def generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
-        return str(self._score), self._score
-
-    async def a_generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
-        return str(self._score), self._score
-
-    def get_model_name(self) -> str:
-        return f"mock:{self._score}"
-
-
-# ── Gemini judge ───────────────────────────────────────────────────────────────
 
 # Add project root to path so `evolution` package is importable from eval/
 _PROJECT_ROOT = Path(__file__).parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-try:
-    from evolution.judge.gemini_judge import GeminiJudge
-    _GEMINI_AVAILABLE = True
-except ImportError:
-    _GEMINI_AVAILABLE = False
-    GeminiJudge = None  # type: ignore
+from evolution.judge import JudgeRegistry, NoProviderAvailableError  # noqa: E402
 
-try:
-    from evolution.judge.ollama_judge import OllamaJudge, is_ollama_available
-    _OLLAMA_IMPORTABLE = True
-except ImportError:
-    _OLLAMA_IMPORTABLE = False
-    OllamaJudge = None  # type: ignore
-    def is_ollama_available() -> bool:  # type: ignore
-        return False
-
-# ── Claude proxy judge (fallback) ─────────────────────────────────────────────
-
-PROXY_BASE_URL = os.environ.get("CREDENTIAL_PROXY_URL", "http://localhost:3001")
-JUDGE_MODEL = os.environ.get("DEEPEVAL_JUDGE_MODEL", "claude-sonnet-4-5")
-
-
-class ClaudeProxyJudge(DeepEvalBaseLLM):
-    """
-    Claude judge model routed through the Deus credential proxy.
-    NOTE: currently blocked — Anthropic messages API rejects OAuth Bearer auth.
-    Kept as fallback; use GeminiJudge for working evaluations.
-    """
-
-    def __init__(self, model: str = JUDGE_MODEL):
-        self.model = model
-        self._client = None
-
-    def _get_client(self):
-        if self._client is None:
-            import anthropic
-            self._client = anthropic.Anthropic(
-                auth_token="placeholder",
-                base_url=PROXY_BASE_URL,
-            )
-        return self._client
-
-    def load_model(self):
-        return self._get_client()
-
-    def generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
-        client = self._get_client()
-        response = client.messages.create(
-            model=self.model,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text, 0.0
-
-    async def a_generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
-        import anthropic
-        client = anthropic.AsyncAnthropic(
-            auth_token="placeholder",
-            base_url=PROXY_BASE_URL,
-        )
-        response = await client.messages.create(
-            model=self.model,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text, 0.0
-
-    def get_model_name(self) -> str:
-        return f"claude-proxy:{self.model}"
-
-
-# ── Factory ────────────────────────────────────────────────────────────────────
 
 def make_judge(model: Optional[str] = None) -> DeepEvalBaseLLM:
     """
-    Return the best available judge:
-    - EVAL_JUDGE=mock   → MockJudge (fixed score, no API calls)
-    - EVAL_JUDGE=ollama → OllamaJudge
-    - EVAL_JUDGE=gemini → GeminiJudge
-    - If not set, auto-detect: Ollama if reachable, then Gemini, then ClaudeProxy
+    Return the best available judge.
+
+    - EVAL_JUDGE=mock   -> MockProvider
+    - EVAL_JUDGE=ollama -> OllamaProvider
+    - EVAL_JUDGE=gemini -> GeminiProvider
+    - EVAL_JUDGE=claude -> ClaudeProxyProvider
+    - If not set, auto-detect by priority (ollama > gemini > claude)
     """
     eval_judge = os.environ.get("EVAL_JUDGE", "").lower()
+    preference = eval_judge if eval_judge else None
 
-    if eval_judge == "mock":
-        return MockJudge()
-
-    if eval_judge == "ollama":
-        if not _OLLAMA_IMPORTABLE:
-            raise RuntimeError("OllamaJudge not importable — check evolution package")
-        return OllamaJudge(model=model or os.environ.get("OLLAMA_MODEL", "gemma4:e4b"))
-
-    if eval_judge == "gemini":
-        if not _GEMINI_AVAILABLE:
-            raise RuntimeError("GeminiJudge not importable — check google-genai package")
-        from evolution.config import JUDGE_MODEL as GEMINI_JUDGE_MODEL
-        return GeminiJudge(model=model or GEMINI_JUDGE_MODEL)
-
-    # Auto-detect: try Ollama first, then Gemini, then Claude proxy
-    if _OLLAMA_IMPORTABLE and is_ollama_available():
-        return OllamaJudge(model=model or os.environ.get("OLLAMA_MODEL", "gemma4:e4b"))
-
-    if _GEMINI_AVAILABLE:
-        from evolution.config import JUDGE_MODEL as GEMINI_JUDGE_MODEL
-        return GeminiJudge(model=model or GEMINI_JUDGE_MODEL)
-
-    return ClaudeProxyJudge(model=model or JUDGE_MODEL)
+    try:
+        registry = JudgeRegistry.default()
+        provider = registry.resolve(preference)
+        return provider.make_deepeval_judge(model)
+    except NoProviderAvailableError:
+        # Last resort: Claude proxy (kept for legacy compatibility)
+        from evolution.judge.providers.claude_proxy import ClaudeProxyJudge
+        return ClaudeProxyJudge(model=model or os.environ.get("DEEPEVAL_JUDGE_MODEL", "claude-sonnet-4-5"))
