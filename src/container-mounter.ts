@@ -153,12 +153,12 @@ export function buildVolumeMounts(
         });
 
         // Shadow sensitive files to prevent credential leakage.
-        // The container will see /dev/null instead of the real file.
+        // The container will see the null device instead of the real file.
         for (const pattern of SENSITIVE_FILE_PATTERNS) {
           const filePath = path.join(realProjectPath, pattern);
           if (fs.existsSync(filePath)) {
             mounts.push({
-              hostPath: '/dev/null',
+              hostPath: os.devNull,
               containerPath: `/workspace/project/${pattern}`,
               readonly: true,
             });
