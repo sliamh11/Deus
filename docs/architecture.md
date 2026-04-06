@@ -358,6 +358,24 @@ Override with `EVOLUTION_GEN_PROVIDER=gemini|ollama|mock`.
 
 Adding a new backend: implement `GenerativeProvider` in `evolution/generative/providers/`, register in `providers/__init__.py`.
 
+### Storage
+
+Uses the same **provider/registry pattern** (`evolution/storage/provider.py`). Each backend implements `StorageProvider` and self-registers at import time. Abstracts all database operations behind domain-level methods so callers never write raw SQL.
+
+| Provider | Priority | Description |
+|----------|----------|-------------|
+| `sqlite` | 10 | SQLite + sqlite-vec (default, always available) |
+
+Override with `DEUS_STORAGE_PROVIDER=sqlite`.
+
+Adding a new backend: implement `StorageProvider` in `evolution/storage/providers/`, register in `providers/__init__.py`.
+
+**StorageProvider ABC methods** cover four domains:
+- **Interactions**: log, update, get, list recent, session lookup, count, score trends
+- **Reflections**: save (with embedding), vector search, dedup check, increment counters, archive stale, category stats
+- **Artifacts**: save (with deactivation), get active, list, latest timestamp
+- **Principle extractions**: record extraction, get last extraction, count new scored
+
 ### CLI (`evolution/cli.py`)
 
 ```
@@ -370,7 +388,8 @@ python3 evolution/cli.py principles [--domain <domain>]
 
 ### Supporting Modules
 
-- `db.py` — evolution SQLite database (interactions, scores, reflections, principle extractions)
+- `storage/` — storage provider abstraction (provider ABC, registry, SQLite adapter)
+- `db.py` — backward-compatibility shim, delegates to storage provider
 - `config.py` — evolution configuration
 - `backfill.py` — score all historical interactions in bulk
 - `mcp_server.py` — MCP server exposing evolution tools to Claude Code

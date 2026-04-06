@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import evolution.config as config_mod
 import evolution.db as db_mod
 from evolution.db import deserialize_vec, open_db, serialize_vec
 
@@ -16,6 +17,7 @@ def patch_db_path(tmp_path, monkeypatch):
     """Redirect DB_PATH to a temp file for every test."""
     test_db = tmp_path / "test_memory.db"
     monkeypatch.setattr(db_mod, "DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "DB_PATH", test_db)
     yield test_db
 
 

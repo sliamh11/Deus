@@ -272,10 +272,11 @@ seeds/
 evolution/
   judge/                  # Provider/registry pattern for judge backends (Ollama, Gemini, Mock, Claude)
   generative/             # Provider/registry pattern for text generation (Gemini, Ollama, Mock)
+  storage/                # Provider/registry pattern for database backends (SQLite)
   reflexion/              # Reflexion + positive patterns + principles extraction
   optimizer/              # DSPy optimizer: per-domain prompt tuning
   ilog/                   # Interaction log: domain-tagged scored interactions
-  db.py                   # Evolution database (SQLite)
+  db.py                   # Backward-compat shim (delegates to storage provider)
   cli.py                  # CLI: status, optimize, principles (with --domain)
 eval/
   conftest.py             # Fixtures: agent cache, parallel pre-warm, dynamic concurrency

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import evolution.config as config_mod
 import evolution.db as db_mod
 import evolution.providers.embeddings as embed_mod
 from evolution.db import open_db
@@ -21,6 +22,7 @@ from evolution.judge.base import JudgeResult
 def patch_db_path(tmp_path, monkeypatch):
     test_db = tmp_path / "cli_test.db"
     monkeypatch.setattr(db_mod, "DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "DB_PATH", test_db)
     yield test_db
 
 
@@ -588,9 +590,12 @@ def test_main_log_interaction_dispatch(monkeypatch, tmp_path):
     import evolution.db as db_mod_inner
     import evolution.providers.embeddings as embed_mod_inner
 
+    import evolution.config as config_mod_inner
+
     # We can't easily monkeypatch across subprocess, so call main() directly
     test_db = tmp_path / "main_dispatch_test.db"
     monkeypatch.setattr(db_mod_inner, "DB_PATH", test_db)
+    monkeypatch.setattr(config_mod_inner, "DB_PATH", test_db)
     monkeypatch.setattr(embed_mod_inner, "_provider", None)
     monkeypatch.setattr("evolution.reflexion.store._embed", lambda text: [0.1] * 768)
 
