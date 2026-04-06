@@ -19,9 +19,7 @@ from deepeval.models import DeepEvalBaseLLM
 
 from .base import BaseJudge, JudgeResult
 from .criteria import RUBRIC, compose_score
-
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
+from ..config import OLLAMA_HOST, OLLAMA_MODEL
 
 
 def _ollama_url(path: str) -> str:

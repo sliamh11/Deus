@@ -199,7 +199,7 @@ def cmd_log_interaction(json_str: str) -> None:
         return
 
     from .ilog.interaction_log import log_interaction
-    from .judge.gemini_judge import make_runtime_judge
+    from .judge import make_runtime_judge
     from .ilog.interaction_log import update_score
     from .reflexion.generator import generate_reflection
     from .reflexion.store import save_reflection

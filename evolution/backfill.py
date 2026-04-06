@@ -28,7 +28,7 @@ from typing import Iterator
 from .config import REFLECTION_THRESHOLD
 from .db import open_db
 from .ilog.interaction_log import log_interaction, update_score
-from .judge.gemini_judge import make_runtime_judge
+from .judge import make_runtime_judge
 from .reflexion.generator import generate_reflection
 from .reflexion.store import save_reflection
 

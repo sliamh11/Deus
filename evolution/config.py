@@ -12,6 +12,11 @@ ARTIFACTS_DIR = EVOLUTION_DIR / "artifacts"
 DB_PATH = Path(os.environ.get("DEUS_DB", "~/.deus/memory.db")).expanduser()
 CONFIG_ENV = Path(__file__).resolve().parent.parent / ".env"
 
+# ── Ollama ────────────────────────────────────────────────────────────────────
+
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
+
 # ── Gemini ────────────────────────────────────────────────────────────────────
 
 EMBED_DIM = 768
@@ -34,6 +39,9 @@ MAX_REFLECTIONS_PER_QUERY = int(os.environ.get("EVOLUTION_MAX_REFLECTIONS", "3")
 REFLECTION_DEDUP_L2 = float(os.environ.get("EVOLUTION_REFLECTION_DEDUP_L2", "0.4"))
 
 # ── DSPy Optimizer ────────────────────────────────────────────────────────────
+
+# DSPy uses its own env var for independent tuning, but shares the default.
+DSPY_OLLAMA_MODEL = os.environ.get("DSPY_OLLAMA_MODEL", OLLAMA_MODEL)
 
 DSPY_MIN_SAMPLES = int(os.environ.get("EVOLUTION_DSPY_MIN_SAMPLES", "20"))
 DSPY_MIN_DOMAIN_SAMPLES = int(os.environ.get("EVOLUTION_DSPY_MIN_DOMAIN_SAMPLES", "10"))

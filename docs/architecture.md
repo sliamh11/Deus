@@ -329,12 +329,18 @@ Commands:
 
 ### Judges
 
-| Judge | Use Case | Model |
-|-------|----------|-------|
-| `GeminiRuntimeJudge` | Production scoring | Gemini (cloud) |
-| `OllamaJudge` | Eval runs (no API quota) | `gemma4:e4b` (local) |
+Uses a **provider/registry pattern** (`evolution/judge/provider.py`). Each backend implements `JudgeProvider` and self-registers at import time. The registry resolves the best available backend by priority.
 
-Auto-detection: pings `localhost:11434`. Uses Ollama if reachable, Gemini otherwise. Override with `EVAL_JUDGE=ollama|gemini`.
+| Provider | Priority | Judge Classes | Model |
+|----------|----------|---------------|-------|
+| `ollama` | 10 | `OllamaJudge`, `OllamaRuntimeJudge` | `gemma4:e4b` (local) |
+| `gemini` | 20 | `GeminiJudge`, `GeminiRuntimeJudge` | Gemini (cloud) |
+| `claude` | 30 | `ClaudeProxyJudge` | Claude (proxy, blocked) |
+| `mock` | 0 | `MockJudge`, `MockRuntimeJudge` | Fixed score (CI only) |
+
+Auto-detection: lowest priority available provider wins. Override with `EVAL_JUDGE=ollama|gemini|mock` or `EVOLUTION_JUDGE_PROVIDER=<name>`.
+
+Adding a new backend: implement `JudgeProvider` in `evolution/judge/providers/`, register in `providers/__init__.py`.
 
 ### CLI (`evolution/cli.py`)
 

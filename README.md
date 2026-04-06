@@ -269,7 +269,7 @@ scripts/
 seeds/
   reflections.json        # Curated seed reflections for onboarding
 evolution/
-  judge/                  # OllamaJudge + GeminiJudge (DeepEvalBaseLLM wrappers)
+  judge/                  # Provider/registry pattern for judge backends (Ollama, Gemini, Mock, Claude)
   reflexion/              # Reflexion + positive patterns + principles extraction
   optimizer/              # DSPy optimizer: per-domain prompt tuning
   ilog/                   # Interaction log: domain-tagged scored interactions
@@ -277,7 +277,7 @@ evolution/
   cli.py                  # CLI: status, optimize, principles (with --domain)
 eval/
   conftest.py             # Fixtures: agent cache, parallel pre-warm, dynamic concurrency
-  judge_model.py          # make_judge(): auto-detect Ollama → Gemini → ClaudeProxy
+  judge_model.py          # make_judge(): delegates to JudgeRegistry for provider resolution
   test_core_qa.py         # Factual Q&A tests
   test_tool_use.py        # Tool-calling tests
   test_safety.py          # Refusal and safety tests

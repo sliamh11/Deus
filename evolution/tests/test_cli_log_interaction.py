@@ -39,7 +39,7 @@ def mock_judge(monkeypatch):
     judge_mock.a_evaluate = AsyncMock(return_value=result)
 
     monkeypatch.setattr(
-        "evolution.judge.gemini_judge.make_runtime_judge",
+        "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,
     )
     return judge_mock, result
@@ -60,7 +60,7 @@ def mock_low_score_judge(monkeypatch):
     judge_mock.a_evaluate = AsyncMock(return_value=result)
 
     monkeypatch.setattr(
-        "evolution.judge.gemini_judge.make_runtime_judge",
+        "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,
     )
     return judge_mock, result
@@ -228,7 +228,7 @@ def mock_high_score_judge(monkeypatch):
     judge_mock = MagicMock()
     judge_mock.a_evaluate = AsyncMock(return_value=result)
     monkeypatch.setattr(
-        "evolution.judge.gemini_judge.make_runtime_judge",
+        "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,
     )
     return judge_mock, result
@@ -248,7 +248,7 @@ def mock_mid_score_judge(monkeypatch):
     judge_mock = MagicMock()
     judge_mock.a_evaluate = AsyncMock(return_value=result)
     monkeypatch.setattr(
-        "evolution.judge.gemini_judge.make_runtime_judge",
+        "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,
     )
     return judge_mock, result
@@ -506,7 +506,7 @@ def test_cmd_log_interaction_judge_exception_does_not_crash(monkeypatch, mock_em
     judge_mock = MagicMock()
     judge_mock.a_evaluate = AsyncMock(side_effect=RuntimeError("Judge API exploded"))
     monkeypatch.setattr(
-        "evolution.judge.gemini_judge.make_runtime_judge",
+        "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,
     )
 
@@ -603,7 +603,7 @@ def test_main_log_interaction_dispatch(monkeypatch, tmp_path):
     judge_mock = MagicMock()
     judge_mock.a_evaluate = AsyncMock(return_value=result)
     monkeypatch.setattr(
-        "evolution.judge.gemini_judge.make_runtime_judge",
+        "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,
     )
     monkeypatch.setattr("evolution.reflexion.generator.generate_reflection", lambda **kw: ("c", "cat"))

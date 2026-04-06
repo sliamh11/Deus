@@ -31,7 +31,7 @@ try:
 except ImportError:
     _MCP_AVAILABLE = False
 
-from .judge.gemini_judge import make_runtime_judge
+from .judge import make_runtime_judge
 from .ilog.interaction_log import log_interaction, update_score
 from .reflexion.generator import generate_reflection
 from .reflexion.retriever import format_reflections_block, get_reflections

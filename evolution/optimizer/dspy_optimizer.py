@@ -14,6 +14,7 @@ from ..config import (
     DSPY_MAX_LABELED,
     DSPY_MIN_DOMAIN_SAMPLES,
     DSPY_MIN_SAMPLES,
+    DSPY_OLLAMA_MODEL,
     JUDGE_MODEL,
     load_api_key,
 )
@@ -27,20 +28,19 @@ def _setup_dspy(model: str = JUDGE_MODEL) -> None:
     import dspy
     import os
     # Prefer Ollama (no quota) for optimizer; fall back to Gemini.
-    # gemma4:e4b — best accuracy/speed tradeoff per benchmark (Round 3 clean dataset).
-    ollama_model = os.environ.get("DSPY_OLLAMA_MODEL", "gemma4:e4b")
+    from ..judge.provider import JudgeRegistry
     try:
-        import httpx
-        r = httpx.get("http://localhost:11434/api/tags", timeout=2)
-        if r.status_code == 200:
+        ollama_provider = JudgeRegistry.default().get("ollama")
+        if ollama_provider.is_available():
+            from ..config import OLLAMA_HOST
             lm = dspy.LM(
-                f"ollama/{ollama_model}",
-                api_base="http://localhost:11434",
+                f"ollama/{DSPY_OLLAMA_MODEL}",
+                api_base=OLLAMA_HOST,
                 think=False,
             )
             dspy.configure(lm=lm)
             return
-    except Exception:
+    except KeyError:
         pass
     # Fallback: Gemini
     os.environ.setdefault("GEMINI_API_KEY", load_api_key())
