@@ -18,10 +18,10 @@ import { registerCommonTools } from '@deus-ai/channel-core';
 
 import { TelegramProvider } from './telegram.js';
 
-const server = new McpServer({
-  name: '@deus-ai/telegram-mcp',
-  version: '1.0.0',
-});
+const server = new McpServer(
+  { name: '@deus-ai/telegram-mcp', version: '1.0.0' },
+  { capabilities: { logging: {} } },
+);
 
 const provider = new TelegramProvider();
 

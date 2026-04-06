@@ -19,10 +19,10 @@ import { z } from 'zod';
 
 import { GmailProvider } from './gmail.js';
 
-const server = new McpServer({
-  name: '@deus-ai/gmail-mcp',
-  version: '1.0.0',
-});
+const server = new McpServer(
+  { name: '@deus-ai/gmail-mcp', version: '1.0.0' },
+  { capabilities: { logging: {} } },
+);
 
 const provider = new GmailProvider();
 
