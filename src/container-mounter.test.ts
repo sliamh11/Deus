@@ -6,6 +6,7 @@
  * per-group IPC namespace isolation.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import os from 'os';
 import path from 'path';
 
 // ── Mocks (must be declared before importing the module under test) ─────
@@ -14,21 +15,30 @@ vi.mock('./logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock('./config.js', () => ({
-  DATA_DIR: '/tmp/deus-data',
-  GROUPS_DIR: '/tmp/deus-groups',
-  HOME_DIR: '/home/testuser',
-  CONFIG_DIR: '/home/testuser/.config/deus',
-}));
+vi.mock('./config.js', async () => {
+  const p = await import('path');
+  const tmpBase = p.default.join(p.default.sep, 'tmp');
+  const homeBase = p.default.join(p.default.sep, 'home', 'testuser');
+  return {
+    DATA_DIR: p.default.join(tmpBase, 'deus-data'),
+    GROUPS_DIR: p.default.join(tmpBase, 'deus-groups'),
+    HOME_DIR: homeBase,
+    CONFIG_DIR: p.default.join(homeBase, '.config', 'deus'),
+  };
+});
 
-vi.mock('./group-folder.js', () => ({
-  resolveGroupFolderPath: vi.fn(
-    (folder: string) => `/tmp/deus-groups/${folder}`,
-  ),
-  resolveGroupIpcPath: vi.fn(
-    (folder: string) => `/tmp/deus-data/ipc/${folder}`,
-  ),
-}));
+vi.mock('./group-folder.js', async () => {
+  const p = await import('path');
+  const tmpBase = p.default.join(p.default.sep, 'tmp');
+  return {
+    resolveGroupFolderPath: vi.fn((folder: string) =>
+      p.default.join(tmpBase, 'deus-groups', folder),
+    ),
+    resolveGroupIpcPath: vi.fn((folder: string) =>
+      p.default.join(tmpBase, 'deus-data', 'ipc', folder),
+    ),
+  };
+});
 
 vi.mock('./db.js', () => ({
   getProjectById: vi.fn(),
@@ -86,6 +96,12 @@ const mockGetProjectById = vi.mocked(getProjectById);
 const mockDetectAuthMode = vi.mocked(detectAuthMode);
 const mockValidateAdditionalMounts = vi.mocked(validateAdditionalMounts);
 
+// ── Platform-aware test paths ──────────────────────────────────────────
+const TMP_BASE = path.join(path.sep, 'tmp');
+const HOME_BASE = path.join(path.sep, 'home', 'testuser');
+const DATA_DIR = path.join(TMP_BASE, 'deus-data');
+const GROUPS_DIR = path.join(TMP_BASE, 'deus-groups');
+
 // ── Test helpers ────────────────────────────────────────────────────────
 
 const makeGroup = (
@@ -132,7 +148,7 @@ describe('buildVolumeMounts: control group', () => {
     const groupMount = findMount(mounts, '/workspace/group');
     expect(groupMount).toBeDefined();
     expect(groupMount!.readonly).toBe(false);
-    expect(groupMount!.hostPath).toBe('/tmp/deus-groups/test-group');
+    expect(groupMount!.hostPath).toBe(path.join(GROUPS_DIR, 'test-group'));
   });
 
   it('shadows .env with /dev/null when .env exists', () => {
@@ -147,10 +163,7 @@ describe('buildVolumeMounts: control group', () => {
     expect(envShadow).toBeDefined();
     expect(envShadow!.readonly).toBe(true);
     // Should use os.devNull (platform-agnostic null device)
-    expect(
-      envShadow!.hostPath === '/dev/null' ||
-        envShadow!.hostPath === '\\\\.\\nul',
-    ).toBe(true);
+    expect(envShadow!.hostPath).toBe(os.devNull);
   });
 
   it('does not shadow .env when it does not exist', () => {
@@ -178,8 +191,9 @@ describe('buildVolumeMounts: non-control group', () => {
   });
 
   it('mounts global memory directory as read-only when it exists', () => {
+    const globalPath = path.join(GROUPS_DIR, 'global');
     mockExistsSync.mockImplementation((p) => {
-      if (String(p) === '/tmp/deus-groups/global') return true;
+      if (String(p) === globalPath) return true;
       return false;
     });
     const group = makeGroup();
@@ -187,7 +201,7 @@ describe('buildVolumeMounts: non-control group', () => {
     const globalMount = findMount(mounts, '/workspace/global');
     expect(globalMount).toBeDefined();
     expect(globalMount!.readonly).toBe(true);
-    expect(globalMount!.hostPath).toBe('/tmp/deus-groups/global');
+    expect(globalMount!.hostPath).toBe(globalPath);
   });
 
   it('does not mount global directory when it does not exist', () => {
@@ -205,7 +219,7 @@ describe('buildVolumeMounts: external project mount', () => {
   const PROJECT = {
     id: 'proj-1',
     name: 'MyApp',
-    path: '/home/testuser/projects/myapp',
+    path: path.join(HOME_BASE, 'projects', 'myapp'),
     type: null,
     readonly: false,
     created_at: '2024-01-01',
@@ -234,21 +248,21 @@ describe('buildVolumeMounts: external project mount', () => {
     mockGetProjectById.mockReturnValue(PROJECT);
     mockExistsSync.mockReturnValue(true);
     // Simulate symlink swap: realpath resolves to different location
-    mockRealpathSync.mockReturnValue('/etc/shadow');
+    const attackerPath = path.join(path.sep, 'etc', 'shadow');
+    mockRealpathSync.mockReturnValue(attackerPath);
 
     const group = makeGroup({ projectId: 'proj-1' });
     const mounts = buildVolumeMounts(group, true);
     // Should NOT have a project mount at the attacker's path
     const projectMount = mounts.find(
       (m) =>
-        m.containerPath === '/workspace/project' &&
-        m.hostPath === '/etc/shadow',
+        m.containerPath === '/workspace/project' && m.hostPath === attackerPath,
     );
     expect(projectMount).toBeUndefined();
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({
         registeredPath: PROJECT.path,
-        currentRealPath: '/etc/shadow',
+        currentRealPath: attackerPath,
       }),
       expect.stringContaining('mount BLOCKED'),
     );
@@ -345,13 +359,13 @@ describe('buildVolumeMounts: sensitive file shadowing', () => {
   const PROJECT = {
     id: 'proj-1',
     name: 'MyApp',
-    path: '/home/testuser/projects/myapp',
+    path: path.join(HOME_BASE, 'projects', 'myapp'),
     type: null,
     readonly: false,
     created_at: '2024-01-01',
   };
 
-  it('shadows .env files inside the project with /dev/null', () => {
+  it('shadows .env files inside the project with os.devNull', () => {
     mockGetProjectById.mockReturnValue(PROJECT);
     mockRealpathSync.mockImplementation((p) => String(p));
     mockExistsSync.mockReturnValue(true); // all paths exist
@@ -366,13 +380,13 @@ describe('buildVolumeMounts: sensitive file shadowing', () => {
     // Check .env shadow
     const envShadow = findMount(mounts, '/workspace/project/.env');
     expect(envShadow).toBeDefined();
-    expect(envShadow!.hostPath).toBe('/dev/null');
+    expect(envShadow!.hostPath).toBe(os.devNull);
     expect(envShadow!.readonly).toBe(true);
 
     // Check .env.local shadow
     const envLocalShadow = findMount(mounts, '/workspace/project/.env.local');
     expect(envLocalShadow).toBeDefined();
-    expect(envLocalShadow!.hostPath).toBe('/dev/null');
+    expect(envLocalShadow!.hostPath).toBe(os.devNull);
   });
 
   it('shadows sensitive directories with empty tmpdir', () => {
@@ -431,14 +445,15 @@ describe('buildVolumeMounts: IPC namespace', () => {
     const group = makeGroup();
     buildVolumeMounts(group, false);
 
+    const ipcBase = path.join(DATA_DIR, 'ipc', 'test-group');
     // Verify IPC subdirectories were created
     const ipcMkdirCalls = mockMkdirSync.mock.calls.filter((call) =>
-      String(call[0]).includes('/ipc/'),
+      String(call[0]).includes(`${path.sep}ipc${path.sep}`),
     );
     const paths = ipcMkdirCalls.map((call) => String(call[0]));
-    expect(paths).toContain('/tmp/deus-data/ipc/test-group/messages');
-    expect(paths).toContain('/tmp/deus-data/ipc/test-group/tasks');
-    expect(paths).toContain('/tmp/deus-data/ipc/test-group/input');
+    expect(paths).toContain(path.join(ipcBase, 'messages'));
+    expect(paths).toContain(path.join(ipcBase, 'tasks'));
+    expect(paths).toContain(path.join(ipcBase, 'input'));
   });
 
   it('mounts IPC directory at /workspace/ipc (writable)', () => {
@@ -447,7 +462,7 @@ describe('buildVolumeMounts: IPC namespace', () => {
     const ipcMount = findMount(mounts, '/workspace/ipc');
     expect(ipcMount).toBeDefined();
     expect(ipcMount!.readonly).toBe(false);
-    expect(ipcMount!.hostPath).toBe('/tmp/deus-data/ipc/test-group');
+    expect(ipcMount!.hostPath).toBe(path.join(DATA_DIR, 'ipc', 'test-group'));
   });
 });
 
@@ -460,7 +475,9 @@ describe('buildVolumeMounts: session isolation', () => {
     const sessionMount = findMount(mounts, '/home/node/.claude');
     expect(sessionMount).toBeDefined();
     expect(sessionMount!.readonly).toBe(false);
-    expect(sessionMount!.hostPath).toContain('sessions/test-group/.claude');
+    expect(sessionMount!.hostPath).toContain(
+      path.join('sessions', 'test-group', '.claude'),
+    );
   });
 
   it('creates default settings.json when it does not exist', () => {
@@ -512,7 +529,7 @@ describe('buildVolumeMounts: OAuth mode', () => {
 describe('buildVolumeMounts: vault', () => {
   it('mounts vault when DEUS_VAULT_PATH env var is set and path exists', () => {
     const originalEnv = process.env.DEUS_VAULT_PATH;
-    process.env.DEUS_VAULT_PATH = '/home/testuser/vault';
+    process.env.DEUS_VAULT_PATH = path.join(HOME_BASE, 'vault');
     mockExistsSync.mockImplementation((p) => {
       if (String(p).includes('vault')) return true;
       return false;
@@ -542,7 +559,7 @@ describe('buildVolumeMounts: vault', () => {
     const vaultMount = findMount(mounts, '/workspace/vault');
     expect(vaultMount).toBeDefined();
     // Should expand ~ to HOME_DIR
-    expect(vaultMount!.hostPath).toContain('/home/testuser');
+    expect(vaultMount!.hostPath).toContain(HOME_BASE);
     expect(vaultMount!.hostPath).toContain('my-vault');
 
     if (originalEnv !== undefined) {
@@ -559,7 +576,7 @@ describe('buildVolumeMounts: vault', () => {
     mockReadFileSync.mockImplementation((p) => {
       if (String(p).includes('config.json')) {
         return JSON.stringify({
-          vault_path: '/home/testuser/vault-from-config',
+          vault_path: path.join(HOME_BASE, 'vault-from-config'),
         });
       }
       return '';
@@ -582,8 +599,9 @@ describe('buildVolumeMounts: vault', () => {
 
 describe('buildVolumeMounts: additional mounts', () => {
   it('delegates to validateAdditionalMounts and appends results', () => {
+    const dataPath = path.join(HOME_BASE, 'data');
     const extraMount: VolumeMount = {
-      hostPath: '/home/testuser/data',
+      hostPath: dataPath,
       containerPath: '/workspace/extra/data',
       readonly: true,
     };
@@ -591,13 +609,13 @@ describe('buildVolumeMounts: additional mounts', () => {
 
     const group = makeGroup({
       containerConfig: {
-        additionalMounts: [{ hostPath: '/home/testuser/data' }],
+        additionalMounts: [{ hostPath: dataPath }],
       },
     });
     const mounts = buildVolumeMounts(group, false);
 
     expect(mockValidateAdditionalMounts).toHaveBeenCalledWith(
-      [{ hostPath: '/home/testuser/data' }],
+      [{ hostPath: dataPath }],
       'Test Group',
       false,
     );
