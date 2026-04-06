@@ -392,10 +392,10 @@ def test_cmd_log_interaction_user_signal_negative_generates_reflection_for_prev(
     assert len(neg_calls) >= 1
 
 
-def test_cmd_log_interaction_user_signal_no_prev_judge_score_skips(
+def test_cmd_log_interaction_user_signal_no_prev_judge_score_uses_fallback(
     mock_mid_score_judge, mock_embed, monkeypatch
 ):
-    """user_signal present but previous interaction has no judge_score → signal path skipped."""
+    """user_signal present but previous interaction has no judge_score → uses fallback score."""
     from evolution.ilog.interaction_log import log_interaction
     from evolution.cli import cmd_log_interaction
 
@@ -407,7 +407,7 @@ def test_cmd_log_interaction_user_signal_no_prev_judge_score_skips(
         group_folder="g",
         session_id=session_id,
     )
-    # Leave judge_score as NULL — guard should prevent signal reflection
+    # Leave judge_score as NULL — code uses fallback score (0.8 for positive)
 
     signal_gen_calls = []
 
@@ -431,11 +431,13 @@ def test_cmd_log_interaction_user_signal_no_prev_judge_score_skips(
     })
     cmd_log_interaction(payload)
 
-    # None of the calls should be for the previous interaction (prev prompt)
-    for signal_type, kwargs in signal_gen_calls:
-        assert kwargs.get("prompt") != "Prev prompt", (
-            "generate reflection was called for previous interaction despite no judge_score"
-        )
+    # Positive signal should still generate a reflection for prev interaction using fallback score
+    prev_calls = [
+        (sig, kw) for sig, kw in signal_gen_calls if kw.get("prompt") == "Prev prompt"
+    ]
+    assert len(prev_calls) >= 1, "expected reflection for prev interaction with fallback score"
+    assert prev_calls[0][0] == "positive"
+    assert prev_calls[0][1]["score"] == 0.8  # fallback score for positive signal
 
 
 # 4. Feedback loop — increment_helpful called for each retrieved_reflection_id when score is high
