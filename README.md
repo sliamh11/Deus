@@ -270,6 +270,7 @@ seeds/
   reflections.json        # Curated seed reflections for onboarding
 evolution/
   judge/                  # Provider/registry pattern for judge backends (Ollama, Gemini, Mock, Claude)
+  generative/             # Provider/registry pattern for text generation (Gemini, Ollama, Mock)
   reflexion/              # Reflexion + positive patterns + principles extraction
   optimizer/              # DSPy optimizer: per-domain prompt tuning
   ilog/                   # Interaction log: domain-tagged scored interactions

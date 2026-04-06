@@ -2,7 +2,7 @@
 Lightweight "top principles" extraction.
 
 Queries the best and worst scored interactions (optionally domain-filtered),
-sends them to Gemini to extract 3-5 actionable principles, and stores each
+sends them to a generative provider to extract 3-5 actionable principles, and stores each
 as a reflection with category='principle'.
 
 Extraction is data-driven: only triggers when N new scored interactions
@@ -12,8 +12,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from ..config import GEN_MODELS, JUDGE_MODEL, load_api_key
+from ..config import JUDGE_MODEL
 from ..db import open_db
+from ..generative import generate
 from ..ilog.interaction_log import get_recent
 from .store import save_reflection
 
@@ -104,8 +105,6 @@ def extract_principles(
     Only extracts when at least `min_new` scored interactions exist since
     the last extraction for this domain. Pass force=True to bypass.
     """
-    from google import genai
-
     # Data-count trigger: skip if not enough new data
     if not force:
         new_count = _count_new_scored(domain)
@@ -141,24 +140,7 @@ def extract_principles(
         bad_examples=_format_examples(worst),
     )
 
-    client = genai.Client(api_key=load_api_key())
-    models_to_try = [model] + [m for m in GEN_MODELS if m != model]
-    text = ""
-    last_exc = None
-
-    for m in models_to_try:
-        try:
-            resp = client.models.generate_content(model=m, contents=formatted)
-            text = resp.text.strip()
-            break
-        except Exception as exc:
-            last_exc = exc
-            if "429" in str(exc) or "quota" in str(exc).lower():
-                continue
-            raise
-
-    if not text:
-        raise RuntimeError(f"All Gemini models failed generating principles. Last: {last_exc}")
+    text = generate(formatted, model=model)
 
     # Store each principle as a separate reflection
     lines = [l.strip() for l in text.split("\n") if l.strip() and l.strip()[0].isdigit()]

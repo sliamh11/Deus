@@ -7,7 +7,8 @@ improving agent behavior without any model weight updates.
 import json
 from typing import Optional
 
-from ..config import GEN_MODELS, JUDGE_MODEL, load_api_key
+from ..config import JUDGE_MODEL
+from ..generative import generate
 
 _REFLECTION_PROMPT = """
 You are analyzing an AI assistant interaction that received a low quality score.
@@ -53,9 +54,6 @@ def generate_reflection(
     Generate a reflection for a low-scoring interaction.
     Returns (content, category).
     """
-    from google import genai
-
-    client = genai.Client(api_key=load_api_key())
     formatted = _REFLECTION_PROMPT.format(
         prompt=prompt[:1000],
         response=(response or "")[:1000],
@@ -65,23 +63,7 @@ def generate_reflection(
         rationale=rationale or "no rationale provided",
     )
 
-    models_to_try = [model] + [m for m in GEN_MODELS if m != model]
-    last_exc = None
-    text = ""
-    for m in models_to_try:
-        try:
-            resp = client.models.generate_content(model=m, contents=formatted)
-            text = resp.text.strip()
-            break
-        except Exception as exc:
-            last_exc = exc
-            if "429" in str(exc) or "quota" in str(exc).lower():
-                continue
-            raise
-
-    if not text:
-        raise RuntimeError(f"All Gemini models failed generating reflection. Last: {last_exc}")
-
+    text = generate(formatted, model=model)
     category = _extract_category(text)
     return text, category
 
@@ -128,9 +110,6 @@ def generate_positive_reflection(
     Generate a positive pattern reflection for a high-scoring interaction.
     Returns (content, category).
     """
-    from google import genai
-
-    client = genai.Client(api_key=load_api_key())
     formatted = _POSITIVE_PROMPT.format(
         prompt=prompt[:1000],
         response=(response or "")[:1000],
@@ -140,23 +119,7 @@ def generate_positive_reflection(
         rationale=rationale or "no rationale provided",
     )
 
-    models_to_try = [model] + [m for m in GEN_MODELS if m != model]
-    last_exc = None
-    text = ""
-    for m in models_to_try:
-        try:
-            resp = client.models.generate_content(model=m, contents=formatted)
-            text = resp.text.strip()
-            break
-        except Exception as exc:
-            last_exc = exc
-            if "429" in str(exc) or "quota" in str(exc).lower():
-                continue
-            raise
-
-    if not text:
-        raise RuntimeError(f"All Gemini models failed generating positive reflection. Last: {last_exc}")
-
+    text = generate(formatted, model=model)
     category = _extract_positive_category(text)
     return text, category
 

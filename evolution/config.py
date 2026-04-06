@@ -27,6 +27,7 @@ GEN_MODELS = [
     "models/gemini-2.5-flash",
     "models/gemini-2.5-flash-lite",
 ]
+GEN_MODEL = os.environ.get("EVOLUTION_GEN_MODEL", GEN_MODELS[0])
 JUDGE_MODEL = os.environ.get("EVOLUTION_JUDGE_MODEL", "models/gemini-3.1-flash-lite-preview")
 
 # ── Reflexion ─────────────────────────────────────────────────────────────────

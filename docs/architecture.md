@@ -323,7 +323,7 @@ Commands:
 3. **User signal detection** (`src/user-signal.ts`): short follow-up messages like "perfect" or "wrong" are detected as explicit user feedback and attached to the previous interaction.
 4. **Judge scoring** (`judge/`): a judge LLM scores each interaction on quality (0.0-1.0).
 5. **Reflexion** (`reflexion/`): scores below the threshold (default 0.6, configurable via `EVOLUTION_REFLECTION_THRESHOLD`) trigger reflexion — the system generates a self-critique and a corrected response, stored for future retrieval. Scores above `POSITIVE_SCORE_THRESHOLD` (default 0.85) trigger positive pattern extraction. New reflections are deduplicated via L2 distance against existing embeddings to avoid storing near-duplicate lessons.
-6. **Principles extraction** (`reflexion/principles.py`): auto-triggered after judge scoring when enough new data exists. Extracts 3-5 actionable per-domain principles from the best and worst interactions using Gemini.
+6. **Principles extraction** (`reflexion/principles.py`): auto-triggered after judge scoring when enough new data exists. Extracts 3-5 actionable per-domain principles from the best and worst interactions via the generative provider.
 7. **DSPy optimization** (`optimizer/`): once 20+ scored samples accumulate, DSPy tunes the system prompt per domain. Interactions with positive user signals receive 2x weight in the training set.
 8. **`times_helpful` tracking** (`reflexion/store.py`): each time a reflection is retrieved and used, its `times_helpful` counter increments, allowing the system to surface the most useful reflections.
 
@@ -341,6 +341,20 @@ Uses a **provider/registry pattern** (`evolution/judge/provider.py`). Each backe
 Auto-detection: lowest priority available provider wins. Override with `EVAL_JUDGE=ollama|gemini|mock` or `EVOLUTION_JUDGE_PROVIDER=<name>`.
 
 Adding a new backend: implement `JudgeProvider` in `evolution/judge/providers/`, register in `providers/__init__.py`.
+
+### Generative Text
+
+Uses the same **provider/registry pattern** (`evolution/generative/provider.py`). Each backend implements `GenerativeProvider` and self-registers at import time. Used for reflexion generation and principle extraction.
+
+| Provider | Priority | Description |
+|----------|----------|-------------|
+| `gemini` | 10 | Google Gemini (cloud, model fallback chain) |
+| `ollama` | 20 | Local Ollama (`/api/generate`) |
+| `mock` | 0 | Canned text (CI only) |
+
+Override with `EVOLUTION_GEN_PROVIDER=gemini|ollama|mock`.
+
+Adding a new backend: implement `GenerativeProvider` in `evolution/generative/providers/`, register in `providers/__init__.py`.
 
 ### CLI (`evolution/cli.py`)
 
