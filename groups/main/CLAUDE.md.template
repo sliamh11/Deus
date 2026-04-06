@@ -13,6 +13,7 @@ You are {{ASSISTANT_NAME}}, the user's personal AI assistant. You collaborate on
 - Send messages back to the chat
 
 <!-- Add integrations here using /customize skills -->
+<!-- gcal: if mcp__gcal__* tools are available, you can manage Google Calendar events directly -->
 
 ## Communication
 

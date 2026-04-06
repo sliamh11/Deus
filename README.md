@@ -262,11 +262,11 @@ packages/
   mcp-discord/            # Discord channel (discord.js)
   mcp-slack/              # Slack channel (@slack/bolt)
   mcp-gmail/              # Gmail channel (googleapis + OAuth polling)
+  mcp-gcal/               # Google Calendar MCP server (tool server for container agents)
 scripts/
   memory_indexer.py       # Semantic memory: index, query, extract, wander
   import_seeds.py         # Import curated seed reflections into evolution DB
   stop_hook.py            # Auto-checkpoint on session end
-  gcal.mjs                # Google Calendar MCP server
 seeds/
   reflections.json        # Curated seed reflections for onboarding
 evolution/
