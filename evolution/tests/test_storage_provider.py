@@ -68,6 +68,9 @@ class FakeStorageProvider(StorageProvider):
     def count_scored_since(self, *a): return 0
     def count_new_scored(self, **kw): return 0
     def domain_comparison(self, *a): return {}
+    def get_compactable_interactions(self, *a, **kw): return []
+    def compact_interaction(self, *a, **kw): ...
+    def get_unjudged_interactions(self, *a, **kw): return []
 
 
 def _serialize_vec(vec: list[float]) -> bytes:
@@ -539,6 +542,96 @@ class TestSQLiteStatusQueries:
         assert comp["with_n"] == 1
         assert comp["without_n"] == 1
         assert comp["with_avg"] > comp["without_avg"]
+
+
+class TestSQLiteCompactionAndBatchJudge:
+    def test_get_compactable_returns_old_scored_long_prompts(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="x" * 400, response="r", group_folder="g",
+            timestamp="2020-01-01T00:00:00Z", interaction_id="cmp1",
+        )
+        sqlite_provider.update_interaction("cmp1", judge_score=0.8)
+
+        results = sqlite_provider.get_compactable_interactions(days=7)
+        assert len(results) == 1
+        assert results[0]["id"] == "cmp1"
+
+    def test_get_compactable_skips_short_prompts(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="short", response="r", group_folder="g",
+            timestamp="2020-01-01T00:00:00Z", interaction_id="cmp2",
+        )
+        sqlite_provider.update_interaction("cmp2", judge_score=0.8)
+
+        assert sqlite_provider.get_compactable_interactions(days=7) == []
+
+    def test_get_compactable_skips_unjudged(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="x" * 400, response="r", group_folder="g",
+            timestamp="2020-01-01T00:00:00Z", interaction_id="cmp3",
+        )
+        assert sqlite_provider.get_compactable_interactions(days=7) == []
+
+    def test_get_compactable_skips_maintenance(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="x" * 400, response=None, group_folder="__maintenance__",
+            timestamp="2020-01-01T00:00:00Z", interaction_id="cmp4",
+            eval_suite="maintenance",
+        )
+        sqlite_provider.update_interaction("cmp4", judge_score=0.5)
+
+        assert sqlite_provider.get_compactable_interactions(days=7) == []
+
+    def test_compact_interaction_replaces_prompt_and_nulls_response(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="x" * 400, response="long response", group_folder="g",
+            timestamp="2020-01-01T00:00:00Z", interaction_id="cmp5",
+        )
+        sqlite_provider.update_interaction("cmp5", judge_score=0.9)
+
+        sqlite_provider.compact_interaction("cmp5", "Short summary")
+
+        row = sqlite_provider.get_interaction("cmp5")
+        assert row["prompt"] == "Short summary"
+        assert row["response"] is None
+        assert abs(row["judge_score"] - 0.9) < 1e-5
+
+    def test_get_unjudged_returns_null_score_rows(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="uj1",
+        )
+        results = sqlite_provider.get_unjudged_interactions()
+        assert len(results) == 1
+        assert results[0]["id"] == "uj1"
+
+    def test_get_unjudged_skips_judged(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="uj2",
+        )
+        sqlite_provider.update_interaction("uj2", judge_score=0.7)
+
+        assert sqlite_provider.get_unjudged_interactions() == []
+
+    def test_get_unjudged_skips_maintenance_sentinel(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="[sentinel]", response=None,
+            group_folder="__maintenance__",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="uj3",
+            eval_suite="maintenance",
+        )
+        assert sqlite_provider.get_unjudged_interactions() == []
+
+    def test_get_unjudged_respects_limit(self, sqlite_provider):
+        for i in range(10):
+            sqlite_provider.log_interaction(
+                prompt=f"p{i}", response=f"r{i}", group_folder="g",
+                timestamp=f"2024-01-{i+1:02d}T00:00:00Z",
+                interaction_id=f"lim{i}",
+            )
+        results = sqlite_provider.get_unjudged_interactions(limit=3)
+        assert len(results) == 3
 
 
 class TestBuiltInProviders:
