@@ -69,6 +69,15 @@ vi.mock('./evolution-client.js', () => ({
 // Mock domain-presets and user-signal
 vi.mock('./domain-presets.js', () => ({
   detectDomains: vi.fn(() => []),
+  detectDomainsWithFallback: vi.fn(() => Promise.resolve([])),
+  parseCustomDomains: vi.fn(() => []),
+  getAllDomainNames: vi.fn(() => [
+    'engineering',
+    'marketing',
+    'strategy',
+    'study',
+    'writing',
+  ]),
 }));
 
 vi.mock('./user-signal.js', () => ({
