@@ -28,6 +28,21 @@ A personal AI assistant that lives in your messaging apps, remembers everything,
 
 ---
 
+## Why Deus?
+
+| Feature | Deus | OpenClaw | NemoClaw | Cortex |
+|---------|------|----------|----------|--------|
+| Persistent memory | Semantic + tiered | Basic hooks | Via OpenClaw | Neuroscience-grounded |
+| Self-improvement | DSPy per-domain eval loop | No | No | No |
+| Cross-session recall | Yes (sqlite-vec embeddings) | No | No | Yes |
+| Container isolation | Yes (Linux VM per group) | No | No | No |
+| Multi-channel | WhatsApp, Telegram, Slack, Discord, Gmail | No | No | No |
+| Token efficiency | ~1,800 tokens at session start | Higher | Higher | Not measured |
+| Local-first | Yes | Yes | Yes | Yes |
+| Setup time | ~5 min (`claude /setup`) | ~15 min | ~20 min | ~10 min |
+
+---
+
 ## Quick Start
 
 ### Prerequisites
