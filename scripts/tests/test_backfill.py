@@ -183,3 +183,31 @@ def test_chunk_stats_shows_zero_for_empty_dir(tmp_path, capsys):
     output = capsys.readouterr().out
 
     assert "0" in output
+
+
+def test_collect_pairs_threads_context_window(tmp_path):
+    """context_window parameter is forwarded from collect_pairs to _extract_pairs."""
+    from evolution.backfill import collect_pairs
+
+    session_dir = _make_session_dir(tmp_path)
+    fpath = session_dir / "ctx_test.jsonl"
+    _write_jsonl(fpath, [
+        _make_entry("user", "Tell me about Python programming language"),
+        _make_entry("assistant", "Python is a high-level programming language."),
+        _make_entry("user", "What about its type system in detail?"),
+        _make_entry("assistant", "Python uses dynamic typing by default."),
+    ])
+
+    # Without context_window: no context field
+    pairs_no_ctx = collect_pairs(tmp_path / "sessions", context_window=0)
+    assert all("context" not in p for p in pairs_no_ctx)
+
+    # With context_window=2: second pair should have context from prior exchange
+    pairs_with_ctx = collect_pairs(tmp_path / "sessions", context_window=2)
+    assert len(pairs_with_ctx) == 2
+    # First pair may have empty context (nothing before it)
+    # Second pair should have context
+    second = pairs_with_ctx[1]
+    assert "context" in second
+    ctx_texts = [c["text"] for c in second["context"]]
+    assert any("Python" in t for t in ctx_texts)

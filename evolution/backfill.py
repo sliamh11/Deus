@@ -138,6 +138,7 @@ def collect_pairs(
     sessions_dir: Path,
     limit: int | None = None,
     chunk_stats: bool = False,
+    context_window: int = 0,
 ) -> list[dict]:
     """
     Walk sessions_dir, extract all valid pairs from non-subagent .jsonl files.
@@ -147,6 +148,9 @@ def collect_pairs(
     total files scanned, total pairs extracted, average prompt/response lengths,
     and per-file pair counts. Useful for validating the exchange-pair chunking
     strategy before ingesting a new batch of sessions.
+
+    context_window: passed through to _extract_pairs(). When > 0, each pair dict
+    includes a "context" field with the N preceding messages (for retrieval experiments).
     """
     pattern = str(sessions_dir / "**" / ".claude" / "projects" / "*" / "*.jsonl")
     all_files = [
@@ -161,15 +165,18 @@ def collect_pairs(
         session_id = fpath.stem
         group_folder = _infer_group_folder(fpath)
         file_count = 0
-        for pair in _extract_pairs(fpath):
+        for pair in _extract_pairs(fpath, context_window=context_window):
             iid = _deterministic_id(session_id, pair["pair_index"])
-            pairs.append({
+            entry: dict = {
                 "interaction_id": iid,
                 "session_id": session_id,
                 "group_folder": group_folder,
                 "prompt": pair["prompt"],
                 "response": pair["response"],
-            })
+            }
+            if "context" in pair:
+                entry["context"] = pair["context"]
+            pairs.append(entry)
             file_count += 1
             if limit and len(pairs) >= limit:
                 if chunk_stats:
