@@ -14,6 +14,7 @@
 | `src/channels/registry.ts` | Channel registry (self-registration at startup) |
 | `src/ipc.ts` | IPC watcher and task processing |
 | `src/router.ts` | Message formatting and outbound routing |
+| `src/platform.ts` | Platform abstraction — ONLY file with raw OS calls (ESLint enforced) |
 | `src/config.ts` | Trigger pattern, paths, intervals |
 | `src/task-scheduler.ts` | Runs scheduled tasks |
 | `src/db.ts` | SQLite operations |

@@ -1,8 +1,8 @@
 import fs from 'fs';
-import os from 'os';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
-const isWindows = os.platform() === 'win32';
+import { IS_WINDOWS } from './platform.js';
+const isWindows = IS_WINDOWS;
 
 // Mock config before importing the module under test
 vi.mock('./config.js', () => ({

@@ -183,21 +183,24 @@ const PATH = paths.join(path.delimiter);  // ':' on Unix, ';' on Windows
 
 ## Platform Detection Reference
 
-```ts
-import os from 'os';
-import { getPlatform, isWSL } from './setup/platform.js'; // for setup code
+**All platform-sensitive code in `src/` must go through `src/platform.ts`.** Direct calls to `os.platform()`, `process.platform`, and `process.env.HOME` are banned by ESLint outside that file. See `docs/decisions/platform-abstraction-layer.md`.
 
-// Raw Node.js
+```ts
+// ── src/ code — use platform.ts ──────────────────────────────
+import { IS_WINDOWS, IS_MACOS, IS_LINUX, IS_WSL } from './platform.js';
+import { homeDir, killProcess, forceKillProcess, processExists } from './platform.js';
+import { detectProxyBindHost, hostGatewayArgs, containerBuildHint } from './platform.js';
+
+// ── setup/ code — use setup/platform.ts ──────────────────────
+import { getPlatform, isWSL } from './setup/platform.js';
+
+// ── Raw Node.js reference (DO NOT use directly in src/) ──────
 os.platform()     // 'darwin' | 'linux' | 'win32'
 os.homedir()      // /Users/name | /home/name | C:\Users\name
 os.tmpdir()       // /tmp | C:\Users\name\AppData\Local\Temp
 os.devNull        // /dev/null | \\.\nul
 path.sep          // '/' | '\'
 path.delimiter    // ':' | ';'
-
-// Deus helpers (setup code only)
-getPlatform()     // 'macos' | 'linux' | 'windows' | 'unknown'
-isWSL()           // true if running inside WSL2
 ```
 
 ---

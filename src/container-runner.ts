@@ -4,9 +4,8 @@
  *
  * Mount assembly lives in container-mounter.ts.
  */
-import { ChildProcess, execFile, execFileSync, spawn } from 'child_process';
+import { ChildProcess, execFile, spawn } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
 import {
@@ -25,6 +24,7 @@ import {
   hostGatewayArgs,
   readonlyMountArgs,
 } from './container-runtime.js';
+import { forceKillProcess } from './platform.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { buildVolumeMounts } from './container-mounter.js';
 import { RegisteredGroup } from './types.js';
@@ -302,19 +302,7 @@ export async function runContainerAgent(
               { group: group.name, containerName, err },
               'Graceful stop failed, force killing',
             );
-            if (os.platform() === 'win32') {
-              try {
-                execFileSync(
-                  'taskkill',
-                  ['/F', '/T', '/PID', String(container.pid)],
-                  { stdio: 'pipe' },
-                );
-              } catch {
-                /* already dead */
-              }
-            } else {
-              container.kill('SIGKILL');
-            }
+            forceKillProcess(container.pid!);
           }
         },
       );

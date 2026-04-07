@@ -1,7 +1,7 @@
-import os from 'os';
 import path from 'path';
 
 import { readEnvFile } from './env.js';
+import { homeDir } from './platform.js';
 
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here — they are loaded only
@@ -18,7 +18,7 @@ export const SCHEDULER_POLL_INTERVAL = 60000;
 
 // Absolute paths needed for container mounts
 export const PROJECT_ROOT = path.resolve(process.cwd());
-export const HOME_DIR = process.env.HOME || os.homedir();
+export const HOME_DIR = homeDir;
 export const CONFIG_DIR = path.join(HOME_DIR, '.config', 'deus');
 
 // Mount security: allowlist stored OUTSIDE project root, never mounted into containers

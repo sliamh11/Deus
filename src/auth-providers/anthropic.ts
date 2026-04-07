@@ -14,10 +14,10 @@
  *   2. ~/.claude/.credentials.json (auto-refreshed by Claude Code CLI)
  */
 import { readFileSync } from 'fs';
-import os from 'os';
 import path from 'path';
 
 import { readEnvFile } from '../env.js';
+import { homeDir } from '../platform.js';
 import type { AuthProvider } from './types.js';
 import type { AuthMode } from '../credential-proxy.js';
 
@@ -25,11 +25,7 @@ import type { AuthMode } from '../credential-proxy.js';
 // Dynamic OAuth token — read from ~/.claude/.credentials.json with a 5-min TTL.
 // The env-file value always takes priority when set.
 // ---------------------------------------------------------------------------
-const CREDENTIALS_PATH = path.join(
-  process.env.HOME || os.homedir(),
-  '.claude',
-  '.credentials.json',
-);
+const CREDENTIALS_PATH = path.join(homeDir, '.claude', '.credentials.json');
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const EARLY_EXPIRE_WINDOW_MS = 5 * 60 * 1000;
 

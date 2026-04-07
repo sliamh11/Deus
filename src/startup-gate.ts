@@ -10,8 +10,6 @@
  *   suggest — allows startup, one-line hint (e.g., Gemini API key, channels)
  */
 
-import os from 'os';
-
 import {
   hasApiCredentials,
   hasGeminiApiKey,
@@ -22,6 +20,7 @@ import {
   countRegisteredGroups,
 } from './checks.js';
 import { logger } from './logger.js';
+import { containerBuildHint } from './platform.js';
 
 // ── Check Registry ──────────────────────────────────────────────────────────
 
@@ -96,10 +95,7 @@ registerStartupCheck({
     name: 'Agent container image',
     level: 'warn',
     ok: hasContainerImage(),
-    hint:
-      os.platform() === 'win32'
-        ? 'Agent container image not built. Run: docker build -t deus-agent ./container'
-        : 'Agent container image not built. Run: ./container/build.sh',
+    hint: containerBuildHint,
   }),
 });
 

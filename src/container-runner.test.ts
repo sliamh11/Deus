@@ -2,12 +2,13 @@ import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import path from 'path';
-import os from 'os';
+
+import { IS_WINDOWS } from './platform.js';
 
 // buildVolumeMounts tests use hardcoded Unix paths (/tmp, /home) that
 // path.resolve() converts to drive-letter paths on Windows. These tests
 // exercise Docker mount logic (Linux containers), not Windows behavior.
-const onWindows = os.platform() === 'win32';
+const onWindows = IS_WINDOWS;
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---DEUS_OUTPUT_START---';

@@ -15,6 +15,8 @@
 import { execFile } from 'child_process';
 import path from 'path';
 
+import { IS_WINDOWS } from './platform.js';
+
 /** Minimum keyword hits to tag a domain. */
 const MIN_KEYWORD_HITS = 2;
 
@@ -252,7 +254,7 @@ except Exception:
 `;
 
   return new Promise((resolve) => {
-    const py = process.platform === 'win32' ? 'python' : 'python3';
+    const py = IS_WINDOWS ? 'python' : 'python3';
     let settled = false;
 
     const settle = (result: string[]) => {

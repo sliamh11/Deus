@@ -1,10 +1,10 @@
-import { execFileSync, execSync, spawn } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 
 import { DATA_DIR } from './config.js';
 import { logger } from './logger.js';
+import { killProcess, processExists } from './platform.js';
 
 interface RemoteControlSession {
   pid: number;
@@ -36,42 +36,7 @@ function clearState(): void {
   }
 }
 
-function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Terminate a process cross-platform.
- * - Unix: sends SIGTERM to the process group first (-pid), falls back to SIGTERM on the PID.
- * - Windows: SIGTERM is unsupported; uses `taskkill /F /T /PID` to kill the process tree.
- */
-function killProcess(pid: number): void {
-  if (os.platform() === 'win32') {
-    try {
-      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
-        stdio: 'pipe',
-      });
-    } catch {
-      // already dead
-    }
-    return;
-  }
-  // Unix: try process group first, then individual PID
-  try {
-    process.kill(-pid, 'SIGTERM');
-  } catch {
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch {
-      // already dead
-    }
-  }
-}
+// killProcess and processExists are imported from platform.ts
 
 /**
  * Restore session from disk on startup.
@@ -87,7 +52,7 @@ export function restoreRemoteControl(): void {
 
   try {
     const session: RemoteControlSession = JSON.parse(data);
-    if (session.pid && isProcessAlive(session.pid)) {
+    if (session.pid && processExists(session.pid)) {
       activeSession = session;
       logger.info(
         { pid: session.pid, url: session.url },
@@ -122,7 +87,7 @@ export async function startRemoteControl(
 ): Promise<{ ok: true; url: string } | { ok: false; error: string }> {
   if (activeSession) {
     // Verify the process is still alive
-    if (isProcessAlive(activeSession.pid)) {
+    if (processExists(activeSession.pid)) {
       return { ok: true, url: activeSession.url };
     }
     // Process died — clean up and start a new one
@@ -173,7 +138,7 @@ export async function startRemoteControl(
 
     const poll = () => {
       // Check if process died
-      if (!isProcessAlive(pid)) {
+      if (!processExists(pid)) {
         resolve({ ok: false, error: 'Process exited before producing URL' });
         return;
       }
