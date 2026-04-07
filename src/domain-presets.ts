@@ -16,6 +16,7 @@ import { execFile } from 'child_process';
 import path from 'path';
 
 import { IS_WINDOWS } from './platform.js';
+import { logger } from './logger.js';
 
 /** Minimum keyword hits to tag a domain. */
 const MIN_KEYWORD_HITS = 2;
@@ -277,6 +278,7 @@ except Exception:
       (err, stdout) => {
         clearTimeout(guard);
         if (err) {
+          logger.warn({ err }, 'domain: LLM classification subprocess failed');
           settle([]);
           return;
         }
@@ -290,9 +292,11 @@ except Exception:
           ) {
             settle(parsed as string[]);
           } else {
+            logger.warn({ lastLine }, 'domain: LLM output not a string array');
             settle([]);
           }
-        } catch {
+        } catch (parseErr) {
+          logger.warn({ err: parseErr }, 'domain: failed to parse LLM output');
           settle([]);
         }
       },
@@ -332,7 +336,8 @@ export async function detectDomainsWithFallback(
     // subprocess is bypassed.
     const validSet = new Set(allDomains);
     return llmResult.filter((d) => validSet.has(d));
-  } catch {
+  } catch (err) {
+    logger.warn({ err }, 'domain: LLM fallback failed, returning []');
     return [];
   }
 }
