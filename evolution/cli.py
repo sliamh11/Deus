@@ -340,6 +340,20 @@ def main() -> None:
                             help="Print backfill status and exit")
     p_backfill.add_argument("--quiet", action="store_true")
 
+    # cc-backfill
+    p_cc = sub.add_parser("cc-backfill", help="Backfill Claude Code host sessions into evolution loop")
+    p_cc.add_argument("--sessions-dir", type=Path,
+                      help="Path to ~/.claude/projects (default: auto-detected)")
+    p_cc.add_argument("--project", type=str, default=None,
+                      help="Filter by project name (e.g. 'deus')")
+    p_cc.add_argument("--dry-run", action="store_true",
+                      help="Preview pairs without writing to DB")
+    p_cc.add_argument("--limit", type=int, default=None,
+                      help="Process at most N pairs")
+    p_cc.add_argument("--status", action="store_true",
+                      help="Print CC backfill status and exit")
+    p_cc.add_argument("--quiet", action="store_true")
+
     args = parser.parse_args()
 
     if args.cmd == "status":
@@ -366,6 +380,19 @@ def main() -> None:
             sessions_dir = Path(args.sessions_dir) if args.sessions_dir else SESSIONS_DIR
             run_backfill(
                 sessions_dir=sessions_dir,
+                dry_run=args.dry_run,
+                limit=args.limit,
+                verbose=not args.quiet,
+            )
+    elif args.cmd == "cc-backfill":
+        from .cc_backfill import run_cc_backfill, print_status as cc_print_status, CC_SESSIONS_DIR
+        if args.status:
+            cc_print_status()
+        else:
+            sessions_dir = Path(args.sessions_dir) if args.sessions_dir else CC_SESSIONS_DIR
+            run_cc_backfill(
+                sessions_dir=sessions_dir,
+                project_filter=args.project,
                 dry_run=args.dry_run,
                 limit=args.limit,
                 verbose=not args.quiet,
