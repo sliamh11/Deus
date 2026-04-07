@@ -39,29 +39,15 @@ def _record_extraction(domain: Optional[str], interaction_count: int, principles
         principles_count=principles_count,
     )
 
-_PRINCIPLES_PROMPT = """
-You are analyzing a set of AI assistant interactions — some high-scoring and some low-scoring.
-Extract 3-5 actionable principles that distinguish excellent responses from poor ones.
+_PRINCIPLES_PROMPT = """Extract 3-5 actionable principles that distinguish good from bad AI responses.
 
-## High-scoring interactions (what works well):
+High-scoring (what works):
 {good_examples}
 
-## Low-scoring interactions (what goes wrong):
+Low-scoring (what fails):
 {bad_examples}
 
-## Instructions
-
-Write exactly 3-5 principles. Each principle should be:
-- One sentence, actionable, specific
-- Something the assistant can apply to future interactions
-- A pattern, not a one-time fix
-
-Format each as a numbered list:
-1. [principle]
-2. [principle]
-...
-
-Keep the total under 200 words.
+Write 3-5 numbered principles (under 200 words total). Each must be: one sentence, actionable, a replicable pattern (not a one-time fix).
 """
 
 
