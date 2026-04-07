@@ -430,6 +430,7 @@ async function runQuery(
   prompt: string,
   sessionId: string | undefined,
   mcpServerPath: string,
+  ollamaMcpPath: string,
   containerInput: ContainerInput,
   sdkEnv: Record<string, string | undefined>,
   resumeAt?: string,
@@ -611,6 +612,7 @@ async function runQuery(
         'Skill',
         'NotebookEdit',
         'mcp__deus__*',
+        'mcp__ollama__*',
         ...(hasGcalMcp ? ['mcp__gcal__*'] : []),
       ],
       env: sdkEnv,
@@ -625,6 +627,14 @@ async function runQuery(
             DEUS_CHAT_JID: containerInput.chatJid,
             DEUS_GROUP_FOLDER: containerInput.groupFolder,
             DEUS_IS_MAIN: containerInput.isMain ? '1' : '0',
+          },
+        },
+        // Ollama MCP — always available; provides access to locally installed models
+        ollama: {
+          command: 'node',
+          args: [ollamaMcpPath],
+          env: {
+            OLLAMA_HOST: process.env.OLLAMA_HOST || '',
           },
         },
         // Google Calendar MCP — only available when credentials exist on the host
@@ -729,6 +739,7 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+  const ollamaMcpPath = path.join(__dirname, 'ollama-mcp-stdio.js');
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
@@ -880,6 +891,7 @@ async function main(): Promise<void> {
         prompt,
         sessionId,
         mcpServerPath,
+        ollamaMcpPath,
         containerInput,
         sdkEnv,
         resumeAt,
