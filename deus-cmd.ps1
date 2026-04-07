@@ -9,7 +9,7 @@
       deus home         Launch Claude Code in home mode (~\deus)
       deus auth         Rebuild dist/ and restart the background service
       deus status       Show service status
-      deus logs         Tail the Deus service log
+      deus logs         Review system health logs (rotate|review|summary|pinned)
 
     The Deus background service runs under NSSM or Servy.
     Credential proxy reads ~/.claude/.credentials.json directly - do NOT
@@ -341,10 +341,23 @@ switch ($Command.ToLower()) {
     }
 
     "logs" {
-        if (Test-Path $LogFile) {
-            Get-Content $LogFile -Wait -Tail 50
-        } else {
-            Write-Host "Log file not found: $LogFile" -ForegroundColor Yellow
+        $sub = if ($args.Count -gt 0) { $args[0] } else { "" }
+        $reviewScript = Join-Path $DeusHome "scripts\log_review.py"
+        switch ($sub.ToLower()) {
+            "summary" { & python3 $reviewScript --summary }
+            "pinned"  { & python3 $reviewScript --pinned }
+            "rotate"  { & python3 $reviewScript --rotate-only }
+            "review"  { & python3 $reviewScript --review-only }
+            ""        { & python3 $reviewScript }
+            default {
+                Write-Host "Usage: deus logs [summary|pinned|rotate|review]"
+                Write-Host ""
+                Write-Host "  deus logs           Rotate old logs + run Ollama health review"
+                Write-Host "  deus logs summary   Print last saved daily report"
+                Write-Host "  deus logs pinned    Print pinned issues needing attention"
+                Write-Host "  deus logs rotate    Rotation only"
+                Write-Host "  deus logs review    Health review only"
+            }
         }
     }
 
@@ -434,7 +447,7 @@ switch ($Command.ToLower()) {
         Write-Host "  deus home   Launch in home mode (~\deus) regardless of current directory"
         Write-Host "  deus auth   Rebuild dist/ and restart background service"
         Write-Host "  deus status Show service status (NSSM or Servy)"
-        Write-Host "  deus logs   Tail the Deus service log"
+        Write-Host "  deus logs   Review system health logs (rotate|review|summary|pinned)"
         Write-Host "  deus listen Record from mic, transcribe, and copy to clipboard"
     }
 }

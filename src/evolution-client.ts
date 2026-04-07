@@ -92,13 +92,14 @@ export function logInteraction(params: LogInteractionParams): void {
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   child.stderr?.on('data', (d: Buffer) => {
-    logger.debug(
-      { data: d.toString().trim() },
-      'evolution: log_interaction stderr',
-    );
+    const text = d.toString().trim();
+    if (text) logger.warn({ data: text }, 'evolution: log_interaction stderr');
   });
   child.on('error', (err) => {
-    logger.debug({ err }, 'evolution: log_interaction spawn error (non-fatal)');
+    logger.error(
+      { err },
+      'evolution: log_interaction spawn error — interaction not logged',
+    );
   });
   // Do not await — fire and forget
 }

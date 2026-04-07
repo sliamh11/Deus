@@ -1027,12 +1027,33 @@ $STARTUP_INSTRUCTION" "Catch me up."
     shift
     exec "$HOME/deus/scripts/deus-listen.sh" "$@"
     ;;
+  logs)
+    # Log review, rotation, and health reporting.
+    shift
+    case "$1" in
+      summary)  exec python3 "$HOME/deus/scripts/log_review.py" --summary ;;
+      pinned)   exec python3 "$HOME/deus/scripts/log_review.py" --pinned ;;
+      rotate)   exec python3 "$HOME/deus/scripts/log_review.py" --rotate-only ;;
+      review)   exec python3 "$HOME/deus/scripts/log_review.py" --review-only ;;
+      "")       exec python3 "$HOME/deus/scripts/log_review.py" ;;
+      *)
+        echo "Usage: deus logs [summary|pinned|rotate|review]"
+        echo ""
+        echo "  deus logs           Rotate old logs + run Ollama health review"
+        echo "  deus logs summary   Print last saved daily report"
+        echo "  deus logs pinned    Print pinned issues needing attention"
+        echo "  deus logs rotate    Rotate old logs only (no review)"
+        echo "  deus logs review    Run health review only (no rotation)"
+        ;;
+    esac
+    ;;
   *)
-    echo "Usage: deus [home|auth|listen]"
+    echo "Usage: deus [home|auth|listen|logs]"
     echo ""
     echo "  deus        Launch in current directory (external project mode if not ~/deus)"
     echo "  deus home   Launch in home mode (~/deus) regardless of current directory"
     echo "  deus auth   Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
     echo "  deus listen Record from mic, transcribe, and copy to clipboard"
+    echo "  deus logs   Review system health logs (rotate|review|summary|pinned)"
     ;;
 esac
