@@ -1,7 +1,6 @@
 """
 Database access for the Evolution loop.
-Opens the shared memory database and migrates in the evolution-specific tables
-alongside the memory indexer's existing schema.
+Opens the dedicated evolution database and migrates tables.
 
 BACKWARD-COMPATIBILITY SHIM: This module now delegates to the storage provider.
 Existing callers that use open_db() + raw SQL will continue to work, but new
@@ -14,20 +13,20 @@ from typing import Optional
 
 import sqlite_vec
 
-from .config import DB_PATH, EMBED_DIM
+from .config import EVOLUTION_DB_PATH, EMBED_DIM
 
 
 def open_db() -> sqlite3.Connection:
     """
-    Open (or create) the shared Deus SQLite database and ensure all
+    Open (or create) the Deus evolution SQLite database and ensure all
     evolution tables exist.  Safe to call multiple times; uses IF NOT EXISTS.
 
     DEPRECATED: Prefer `from evolution.storage import get_storage` for new code.
     This function is kept for backward compatibility with callers that haven't
     been migrated yet.
     """
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(DB_PATH)
+    EVOLUTION_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(EVOLUTION_DB_PATH)
     db.row_factory = sqlite3.Row
     db.enable_load_extension(True)
     sqlite_vec.load(db)

@@ -82,7 +82,8 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `DEUS_EVAL_CONCURRENT` | — | Override eval pre-warm concurrency |
 | `EVOLUTION_AUTO_OPTIMIZE_THRESHOLD` | `50` | Auto-optimize after this many new scored interactions (0 = disabled) |
 | `EVOLUTION_PRINCIPLES_COOLDOWN_HOURS` | `24` | Cooldown between principle extractions in hours |
-| `DEUS_DB` | `~/.deus/memory.db` | Path to the SQLite database for interactions, reflections, and embeddings |
+| `DEUS_DB` | `~/.deus/memory.db` | Path to the memory indexer SQLite database (session embeddings, atoms) |
+| `DEUS_EVOLUTION_DB` | `~/.deus/evolution.db` | Path to the evolution SQLite database (interactions, reflections, scores) |
 
 ## Eval
 

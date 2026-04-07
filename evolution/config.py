@@ -10,6 +10,7 @@ from pathlib import Path
 EVOLUTION_DIR = Path(__file__).parent
 ARTIFACTS_DIR = EVOLUTION_DIR / "artifacts"
 DB_PATH = Path(os.environ.get("DEUS_DB", "~/.deus/memory.db")).expanduser()
+EVOLUTION_DB_PATH = Path(os.environ.get("DEUS_EVOLUTION_DB", "~/.deus/evolution.db")).expanduser()
 CONFIG_ENV = Path(__file__).resolve().parent.parent / ".env"
 
 # ── Ollama ────────────────────────────────────────────────────────────────────
