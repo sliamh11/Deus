@@ -292,6 +292,16 @@ def cmd_log_interaction(json_str: str) -> None:
             traceback.print_exc(file=sys.stderr)
 
     asyncio.run(_judge_and_reflect())
+
+    # Post-interaction maintenance check (non-blocking, best-effort).
+    # Runs at most once per MAINTENANCE_INTERACTION_INTERVAL interactions
+    # so it never meaningfully impacts per-request latency.
+    try:
+        from .maintenance import run_maintenance
+        run_maintenance()
+    except Exception:
+        pass  # Non-fatal — maintenance is supplementary
+
     print(json.dumps({"id": iid, "status": "ok"}))
 
 
