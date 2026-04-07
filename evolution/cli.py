@@ -152,9 +152,27 @@ def _maybe_auto_optimize(domain_presets: Optional[list] = None) -> None:
         pass  # Non-fatal
 
 
+def _maybe_batch_judge(domain_presets: Optional[list] = None) -> None:
+    """Check if enough unjudged interactions exist to trigger a batch judge run."""
+    from .config import JUDGE_BATCH_SIZE
+    from .storage import get_storage
+
+    store = get_storage()
+    unjudged = store.get_unjudged_interactions(limit=JUDGE_BATCH_SIZE)
+    if len(unjudged) < JUDGE_BATCH_SIZE:
+        return
+
+    from .maintenance import judge_pending_interactions
+    judge_pending_interactions()
+
+    # Auto-trigger: principles extraction (post-batch hook)
+    _maybe_auto_extract_principles(domain_presets)
+    # Auto-trigger: DSPy optimization
+    _maybe_auto_optimize(domain_presets)
+
+
 def cmd_log_interaction(json_str: str) -> None:
-    """Fire-and-forget logging + async judge eval called by Node.js host."""
-    import asyncio
+    """Fire-and-forget logging + deferred batch judge, called by Node.js host."""
     try:
         params = json.loads(json_str)
     except json.JSONDecodeError:
@@ -162,15 +180,9 @@ def cmd_log_interaction(json_str: str) -> None:
         return
 
     from .ilog.interaction_log import log_interaction
-    from .judge import make_runtime_judge
-    from .ilog.interaction_log import update_score
-    from .reflexion.generator import generate_reflection
-    from .reflexion.store import save_reflection
-    from .config import REFLECTION_THRESHOLD, POSITIVE_THRESHOLD
 
     domain_presets = params.get("domain_presets") or None
     user_signal = params.get("user_signal") or None
-    retrieved_reflection_ids = params.get("retrieved_reflection_ids") or []
 
     iid = log_interaction(
         prompt=params.get("prompt", ""),
@@ -184,118 +196,13 @@ def cmd_log_interaction(json_str: str) -> None:
         user_signal=user_signal,
     )
 
-    async def _judge_and_reflect():
-        try:
-            judge = make_runtime_judge()
-            result = await judge.a_evaluate(
-                prompt=params.get("prompt", ""),
-                response=params.get("response") or "",
-                tools_used=params.get("tools_used"),
-            )
-            dims = {
-                "quality": result.quality,
-                "safety": result.safety,
-                "tool_use": result.tool_use,
-                "personalization": result.personalization,
-            }
-            update_score(iid, result.score, dims, parse_error=result.is_parse_error)
-
-            # Skip reflection generation entirely for parse errors — the score is
-            # a meaningless fallback and would generate misleading lessons.
-            if result.is_parse_error:
-                pass
-            elif result.score < REFLECTION_THRESHOLD:
-                content, category = generate_reflection(
-                    prompt=params.get("prompt", ""),
-                    response=params.get("response") or "",
-                    score=result.score,
-                    dims=dims,
-                    rationale=result.rationale,
-                    tools_used=params.get("tools_used"),
-                )
-                save_reflection(
-                    content=content,
-                    category=category,
-                    score_at_gen=result.score,
-                    interaction_id=iid,
-                    group_folder=params.get("group_folder"),
-                )
-            elif result.score >= POSITIVE_THRESHOLD:
-                from .reflexion.generator import generate_positive_reflection
-                content, category = generate_positive_reflection(
-                    prompt=params.get("prompt", ""),
-                    response=params.get("response") or "",
-                    score=result.score,
-                    dims=dims,
-                    rationale=result.rationale,
-                    tools_used=params.get("tools_used"),
-                )
-                save_reflection(
-                    content=content,
-                    category=category,
-                    score_at_gen=result.score,
-                    interaction_id=iid,
-                    group_folder=params.get("group_folder"),
-                )
-
-            # User signal: generate a reflection for the *previous* interaction.
-            # Use the actual judge score if available; otherwise assume a score
-            # consistent with the user signal so feedback is never silently dropped.
-            if user_signal and params.get("session_id"):
-                from .ilog.interaction_log import get_previous_in_session
-                prev = get_previous_in_session(params["session_id"], iid)
-                if prev:
-                    prev_score = prev.get("judge_score")
-                    if user_signal == "positive":
-                        from .reflexion.generator import generate_positive_reflection
-                        content, category = generate_positive_reflection(
-                            prompt=prev["prompt"],
-                            response=prev.get("response") or "",
-                            score=prev_score if prev_score is not None else 0.8,
-                            rationale="User explicitly praised this response",
-                        )
-                    else:
-                        content, category = generate_reflection(
-                            prompt=prev["prompt"],
-                            response=prev.get("response") or "",
-                            score=prev_score if prev_score is not None else 0.3,
-                            rationale="User explicitly rejected this response",
-                        )
-                    save_reflection(
-                        content=content,
-                        category=category,
-                        score_at_gen=prev_score if prev_score is not None else (
-                            0.8 if user_signal == "positive" else 0.3
-                        ),
-                        interaction_id=prev["id"],
-                        group_folder=prev.get("group_folder"),
-                    )
-
-            # Close feedback loop: if reflections were retrieved and the
-            # interaction scored well, mark those reflections as helpful.
-            if retrieved_reflection_ids and result.score >= POSITIVE_THRESHOLD:
-                from .reflexion.store import increment_helpful
-                for ref_id in retrieved_reflection_ids:
-                    try:
-                        increment_helpful(ref_id)
-                    except Exception:
-                        pass  # Non-fatal
-
-            # Auto-trigger: principles extraction (post-judge hook)
-            _maybe_auto_extract_principles(domain_presets)
-
-            # Auto-trigger: DSPy optimization
-            _maybe_auto_optimize(domain_presets)
-
-        except Exception as exc:
-            import traceback
-            traceback.print_exc(file=sys.stderr)
-
-    asyncio.run(_judge_and_reflect())
+    # Batch judge: check if we've accumulated enough unjudged interactions
+    try:
+        _maybe_batch_judge(domain_presets)
+    except Exception:
+        pass  # Non-fatal — judging will catch up during maintenance
 
     # Post-interaction maintenance check (non-blocking, best-effort).
-    # Runs at most once per MAINTENANCE_INTERACTION_INTERVAL interactions
-    # so it never meaningfully impacts per-request latency.
     try:
         from .maintenance import run_maintenance
         run_maintenance()

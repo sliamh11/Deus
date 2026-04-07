@@ -58,6 +58,13 @@ PRINCIPLES_COOLDOWN_HOURS = int(os.environ.get("EVOLUTION_PRINCIPLES_COOLDOWN_HO
 # How many times to retry Gemini judge on JSON parse failure before falling back to neutral score.
 JUDGE_RETRY_COUNT = int(os.environ.get("EVOLUTION_JUDGE_RETRY_COUNT", "1"))
 
+# ── Compaction & Batch Judging ───────────────────────────────────────────────
+
+# Compact scored interactions older than N days (replace with summary, NULL response).
+COMPACT_AFTER_DAYS = int(os.environ.get("EVOLUTION_COMPACT_AFTER_DAYS", "7"))
+# Judge interactions in batches of N to reduce API call frequency.
+JUDGE_BATCH_SIZE = int(os.environ.get("EVOLUTION_JUDGE_BATCH_SIZE", "5"))
+
 
 def load_api_key() -> str:
     """Load GEMINI_API_KEY from project .env or environment."""

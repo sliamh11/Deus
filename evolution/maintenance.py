@@ -2,7 +2,9 @@
 Evolution maintenance tasks.
 
 Handles periodic cleanup of the evolution DB:
-  - Archive stale reflections (never retrieved, older than N days)
+  1. Judge pending interactions (batch scoring of unjudged entries)
+  2. Archive stale reflections (never retrieved, older than N days)
+  3. Compact old interactions (replace full text with summary after N days)
 
 Can be called programmatically or from the CLI:
     python3 -m evolution.maintenance
@@ -81,16 +83,161 @@ def is_maintenance_due(*, interaction_count: Optional[int] = None) -> bool:
     return (interaction_count - stored_count) >= MAINTENANCE_INTERACTION_INTERVAL
 
 
+def judge_pending_interactions() -> int:
+    """
+    Judge all unjudged interactions in a single batch.
+
+    Called by maintenance to catch up on interactions that were logged
+    but not immediately judged (due to batch thresholds not being met).
+
+    Returns the number of interactions successfully judged.
+    """
+    import asyncio
+    from .config import REFLECTION_THRESHOLD, POSITIVE_THRESHOLD
+    from .ilog.interaction_log import update_score
+    from .judge import make_runtime_judge
+    from .reflexion.generator import generate_reflection, generate_positive_reflection
+    from .reflexion.store import save_reflection
+    from .storage import get_storage
+
+    store = get_storage()
+    unjudged = store.get_unjudged_interactions(limit=50)
+    if not unjudged:
+        return 0
+
+    try:
+        judge = make_runtime_judge()
+    except Exception as exc:
+        log.warning("Could not create judge for batch judging: %s", exc)
+        return 0
+
+    judged = 0
+    for row in unjudged:
+        try:
+            result = asyncio.run(judge.a_evaluate(
+                prompt=row["prompt"],
+                response=row.get("response") or "",
+                tools_used=row.get("tools_used"),
+            ))
+            dims = {
+                "quality": result.quality,
+                "safety": result.safety,
+                "tool_use": result.tool_use,
+                "personalization": result.personalization,
+            }
+            update_score(row["id"], result.score, dims, parse_error=result.is_parse_error)
+            judged += 1
+
+            if result.is_parse_error:
+                continue
+            if result.score < REFLECTION_THRESHOLD:
+                content, category = generate_reflection(
+                    prompt=row["prompt"],
+                    response=row.get("response") or "",
+                    score=result.score,
+                    dims=dims,
+                    rationale=result.rationale,
+                    tools_used=row.get("tools_used"),
+                )
+                save_reflection(
+                    content=content,
+                    category=category,
+                    score_at_gen=result.score,
+                    interaction_id=row["id"],
+                    group_folder=row.get("group_folder"),
+                )
+            elif result.score >= POSITIVE_THRESHOLD:
+                content, category = generate_positive_reflection(
+                    prompt=row["prompt"],
+                    response=row.get("response") or "",
+                    score=result.score,
+                    dims=dims,
+                    rationale=result.rationale,
+                    tools_used=row.get("tools_used"),
+                )
+                save_reflection(
+                    content=content,
+                    category=category,
+                    score_at_gen=result.score,
+                    interaction_id=row["id"],
+                    group_folder=row.get("group_folder"),
+                )
+        except Exception as exc:
+            log.warning("Failed to judge interaction %s: %s", row["id"], exc)
+
+    return judged
+
+
+def compact_old_interactions() -> int:
+    """
+    Replace old interactions' full text with a one-line summary.
+
+    Uses the generative provider (Gemma4 via Ollama preferred, Gemini fallback)
+    to summarize each interaction. On provider failure, falls back to simple
+    truncation so compaction always progresses.
+
+    Returns the number of interactions compacted.
+    """
+    from .config import COMPACT_AFTER_DAYS
+    from .storage import get_storage
+
+    store = get_storage()
+    compactable = store.get_compactable_interactions(days=COMPACT_AFTER_DAYS, limit=50)
+    if not compactable:
+        return 0
+
+    # Try to use the generative module for intelligent summarization
+    can_generate = False
+    try:
+        from .generative import generate as gen_generate
+        from .generative.provider import GenerativeRegistry
+        provider = GenerativeRegistry.default().resolve()
+        can_generate = provider.is_available()
+    except Exception:
+        pass
+
+    compacted = 0
+    for row in compactable:
+        try:
+            prompt_snippet = (row["prompt"] or "")[:500]
+            response_snippet = (row.get("response") or "")[:500]
+
+            if can_generate:
+                summary_prompt = (
+                    "Summarize this AI interaction in one sentence (under 100 words). "
+                    f"User asked: {prompt_snippet} "
+                    f"Assistant responded: {response_snippet}"
+                )
+                try:
+                    summary = gen_generate(summary_prompt)
+                    summary = summary.strip()[:500]
+                except Exception:
+                    summary = prompt_snippet[:200] + " [compacted]"
+            else:
+                summary = prompt_snippet[:200] + " [compacted]"
+
+            store.compact_interaction(row["id"], summary)
+            compacted += 1
+        except Exception as exc:
+            log.warning("Failed to compact interaction %s: %s", row["id"], exc)
+
+    return compacted
+
+
 def run_maintenance(*, days: int = ARCHIVE_AFTER_DAYS, force: bool = False) -> dict:
     """
     Run evolution maintenance tasks.
 
     Tasks performed:
-      1. Archive stale reflections (never retrieved, older than ``days`` days).
+      1. Judge pending interactions (catch up on unjudged entries).
+      2. Archive stale reflections (never retrieved, older than ``days`` days).
+      3. Compact old interactions (replace full text with summary).
 
     Returns a summary dict:
         {
+          "judged_interactions": int,
           "archived_reflections": int,
+          "compacted_interactions": int,
           "ran_at": ISO-8601 timestamp,
           "skipped": bool,   # True when is_maintenance_due() returned False
         }
@@ -107,14 +254,31 @@ def run_maintenance(*, days: int = ARCHIVE_AFTER_DAYS, force: bool = False) -> d
 
     if not force and not is_maintenance_due(interaction_count=total):
         log.debug("Maintenance skipped — not due yet (total=%d)", total)
-        return {"archived_reflections": 0, "ran_at": None, "skipped": True}
+        return {
+            "judged_interactions": 0,
+            "archived_reflections": 0,
+            "compacted_interactions": 0,
+            "ran_at": None,
+            "skipped": True,
+        }
 
     ran_at = datetime.now(timezone.utc).isoformat()
     log.info("Running evolution maintenance (total_interactions=%d)", total)
 
-    # 1. Archive stale reflections
+    # 1. Judge pending interactions (before compaction so newly-judged entries
+    #    aren't immediately compacted)
+    judged = judge_pending_interactions()
+    if judged:
+        log.info("Batch-judged %d pending interaction(s)", judged)
+
+    # 2. Archive stale reflections
     archived = archive_stale_reflections(days=days)
     log.info("Archived %d stale reflection(s) (threshold: %d days)", archived, days)
+
+    # 3. Compact old interactions
+    compacted = compact_old_interactions()
+    if compacted:
+        log.info("Compacted %d old interaction(s)", compacted)
 
     # Record that maintenance ran by upserting a sentinel interaction.
     # We reuse latency_ms to store the interaction count snapshot so
@@ -142,7 +306,9 @@ def run_maintenance(*, days: int = ARCHIVE_AFTER_DAYS, force: bool = False) -> d
         log.warning("Could not record maintenance timestamp: %s", exc)
 
     return {
+        "judged_interactions": judged,
         "archived_reflections": archived,
+        "compacted_interactions": compacted,
         "ran_at": ran_at,
         "skipped": False,
     }
@@ -186,10 +352,13 @@ def _main() -> None:
     elif result["skipped"]:
         print("Maintenance skipped — not due yet.")
     else:
-        print(
-            f"Maintenance complete: archived {result['archived_reflections']} "
-            f"stale reflection(s) at {result['ran_at']}"
-        )
+        parts = []
+        if result["judged_interactions"]:
+            parts.append(f"judged {result['judged_interactions']} interaction(s)")
+        parts.append(f"archived {result['archived_reflections']} stale reflection(s)")
+        if result["compacted_interactions"]:
+            parts.append(f"compacted {result['compacted_interactions']} interaction(s)")
+        print(f"Maintenance complete: {', '.join(parts)} at {result['ran_at']}")
 
 
 if __name__ == "__main__":

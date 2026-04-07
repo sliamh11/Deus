@@ -271,6 +271,23 @@ class StorageProvider(ABC):
         """Compare avg scores with vs without a domain preset. Returns {with_avg, with_n, without_avg, without_n}."""
         ...
 
+    # ── Compaction & batch judging ──────────────────────────────────────────
+
+    @abstractmethod
+    def get_compactable_interactions(self, days: int, limit: int = 50) -> list[dict]:
+        """Fetch scored interactions older than N days with long prompt text, eligible for compaction."""
+        ...
+
+    @abstractmethod
+    def compact_interaction(self, interaction_id: str, summary: str) -> None:
+        """Replace an interaction's prompt with a summary and NULL out the response."""
+        ...
+
+    @abstractmethod
+    def get_unjudged_interactions(self, limit: int = 50) -> list[dict]:
+        """Fetch interactions that have not been judged yet (judge_score IS NULL)."""
+        ...
+
 
 class StorageRegistry:
     """

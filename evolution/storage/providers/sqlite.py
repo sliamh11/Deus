@@ -711,3 +711,48 @@ class SQLiteStorageProvider(StorageProvider):
             "without_avg": without_preset["avg"] or 0,
             "without_n": without_preset["n"] or 0,
         }
+
+    # ── Compaction & batch judging ──────────────────────────────────────────
+
+    def get_compactable_interactions(self, days: int, limit: int = 50) -> list[dict]:
+        db = self._connect()
+        rows = db.execute(
+            """
+            SELECT * FROM interactions
+            WHERE judge_score IS NOT NULL
+              AND timestamp < datetime('now', ? || ' days')
+              AND LENGTH(prompt) > 300
+              AND eval_suite != 'maintenance'
+              AND group_folder != '__maintenance__'
+            ORDER BY timestamp ASC
+            LIMIT ?
+            """,
+            (f"-{days}", limit),
+        ).fetchall()
+        db.close()
+        return [dict(r) for r in rows]
+
+    def compact_interaction(self, interaction_id: str, summary: str) -> None:
+        db = self._connect()
+        db.execute(
+            "UPDATE interactions SET prompt = ?, response = NULL WHERE id = ?",
+            (summary, interaction_id),
+        )
+        db.commit()
+        db.close()
+
+    def get_unjudged_interactions(self, limit: int = 50) -> list[dict]:
+        db = self._connect()
+        rows = db.execute(
+            """
+            SELECT * FROM interactions
+            WHERE judge_score IS NULL
+              AND eval_suite != 'maintenance'
+              AND group_folder != '__maintenance__'
+            ORDER BY timestamp ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        db.close()
+        return [dict(r) for r in rows]
