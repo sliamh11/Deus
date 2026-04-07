@@ -532,11 +532,11 @@ def test_rebuild_restores_source_chunk_from_frontmatter(mi, fresh_vault, tmp_pat
 
 
 def test_cmd_recent_compact_truncates_decisions(mi, fresh_vault, capsys):
-    """Compact mode: decisions field truncated to ≤ 63 chars (60 + ellipsis)."""
+    """Compact mode: decisions field truncated to ≤ 81 chars (80 + ellipsis)."""
     day_dir = fresh_vault / "Session-Logs" / "2024-06-15"
     day_dir.mkdir(parents=True)
     p = day_dir / "session-a.md"
-    long_decision = "A" * 100
+    long_decision = "A" * 120
     p.write_text(
         f"---\ntype: session\ndate: 2024-06-15\ntldr: summary\n"
         f"decisions:\n  - \"{long_decision}\"\n---\n"
@@ -544,19 +544,36 @@ def test_cmd_recent_compact_truncates_decisions(mi, fresh_vault, capsys):
 
     mi.cmd_recent(1, compact=True)
     output = capsys.readouterr().out
-    # The original 100 A's should not appear in full — truncated
-    assert "A" * 61 not in output
+    # 120 A's should not appear in full — truncated at 80
+    assert "A" * 81 not in output
     assert "…" in output
 
 
+def test_cmd_recent_compact_decisions_not_truncated_under_limit(mi, fresh_vault, capsys):
+    """Decisions at or under 80 chars should NOT get ellipsis."""
+    day_dir = fresh_vault / "Session-Logs" / "2024-06-15"
+    day_dir.mkdir(parents=True)
+    p = day_dir / "session-a.md"
+    short_decision = "Use pytest"
+    p.write_text(
+        f"---\ntype: session\ndate: 2024-06-15\ntldr: summary\n"
+        f"decisions:\n  - \"{short_decision}\"\n---\n"
+    )
+
+    mi.cmd_recent(1, compact=True)
+    output = capsys.readouterr().out
+    assert "Use pytest" in output
+    assert "…" not in output
+
+
 def test_cmd_recent_compact_strips_full_paths(mi, fresh_vault, capsys):
-    """Compact mode: path lines show only filename stem, not full vault path."""
+    """Compact mode: path shows 'log: <stem>' without full vault path."""
     _create_session(fresh_vault, "2024-06-15", "my-session", "summary")
 
     mi.cmd_recent(1, compact=True)
     output = capsys.readouterr().out
     assert str(fresh_vault) not in output
-    assert "my-session" in output
+    assert "log: my-session" in output
 
 
 def test_cmd_recent_compact_collapses_clusters(mi, fresh_vault, capsys):
@@ -574,6 +591,24 @@ def test_cmd_recent_compact_collapses_clusters(mi, fresh_vault, capsys):
     assert "(2 sessions" in output
     assert "  - auth login" not in output
     assert "  - auth oauth" not in output
+
+
+def test_cmd_recent_compact_cluster_no_covering_when_no_tldr(mi, fresh_vault, capsys):
+    """Compact cluster header omits 'covering:' when sessions have no tldr."""
+    for name, topics in [("no-tldr-1", "auth"), ("no-tldr-2", "auth"),
+                         ("no-tldr-3", "ui"), ("no-tldr-4", "ui")]:
+        p = fresh_vault / "Session-Logs" / "2024-06-15" / f"{name}.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        # Note: NO tldr field
+        p.write_text(
+            f"---\ntype: session\ndate: 2024-06-15\ntopics: [{topics}]\n---\n"
+        )
+
+    mi.cmd_recent(1, days=True, compact=True)
+    output = capsys.readouterr().out
+    # Should not produce "covering: " with nothing after it
+    assert "covering: )" not in output
+    assert "(2 sessions)" in output
 
 
 def test_cmd_recent_auto_compact_at_threshold(mi, fresh_vault, capsys, monkeypatch):

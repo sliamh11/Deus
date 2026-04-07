@@ -317,12 +317,13 @@ def cmd_recent(n: int = 3, days: bool = False, compact: bool = False):
     def fmt_decisions(decisions: str) -> str:
         if not compact or not decisions:
             return f" | {decisions}" if decisions else ""
-        truncated = decisions[:60] + "…" if len(decisions) > 60 else decisions
+        # 80-char limit: median real decision is ~71 chars, preserves ~95% of content
+        truncated = decisions[:80] + "…" if len(decisions) > 80 else decisions
         return f" | {truncated}"
 
     def fmt_path(path: Path) -> str:
         if compact:
-            return f"  ({path.stem})"
+            return f"  (log: {path.stem})"
         return f"  (full log: {path})"
 
     # Group sessions by date for clustering on busy days
@@ -353,10 +354,13 @@ def cmd_recent(n: int = 3, days: bool = False, compact: bool = False):
                     if compact:
                         # Compact: header only — no individual entries
                         tldrs = "; ".join(
-                            (fm.get("tldr", "") or "").split(".")[0][:40]
-                            for _, fm in items[:3]
+                            t for t in (
+                                (fm.get("tldr", "") or "").split(".")[0][:40]
+                                for _, fm in items[:3]
+                            ) if t
                         )
-                        lines.append(f"- [{date} | {topic}] ({len(items)} sessions, covering: {tldrs})")
+                        covering = f", covering: {tldrs}" if tldrs else ""
+                        lines.append(f"- [{date} | {topic}] ({len(items)} sessions{covering})")
                     else:
                         # Full: group header + indented items
                         lines.append(f"- [{date} | {topic}] ({len(items)} sessions)")
