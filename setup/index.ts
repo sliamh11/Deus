@@ -21,6 +21,7 @@ const STEPS: Record<
   service: () => import('./service.js'),
   cli: () => import('./cli.js'),
   verify: () => import('./verify.js'),
+  ollama: () => import('./ollama.js'),
   'smoke-test': () => import('./smoke-test.js'),
 };
 

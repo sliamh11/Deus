@@ -20,6 +20,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Optional
 
+from .hardware import MODEL_SIZES as _MODEL_SIZES, detect_hardware as _detect_hardware
 from .storage import get_storage
 from .judge.ollama_judge import (
     OLLAMA_HOST,
@@ -278,53 +279,6 @@ def print_comparison(results: list[ModelResult]) -> None:
 
     # Hardware-aware recommendation
     _print_hardware_recommendation(ranked[0])
-
-
-def _detect_hardware() -> dict:
-    """Detect system hardware for model recommendations."""
-    import platform
-    import subprocess
-
-    hw = {"os": platform.system(), "arch": platform.machine()}
-
-    if hw["os"] == "Darwin":
-        try:
-            ram = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
-            hw["ram_gb"] = ram / (1024 ** 3)
-        except (subprocess.SubprocessError, ValueError):
-            hw["ram_gb"] = 0
-        try:
-            cores = int(subprocess.check_output(["sysctl", "-n", "hw.ncpu"]).strip())
-            hw["cores"] = cores
-        except (subprocess.SubprocessError, ValueError):
-            hw["cores"] = 0
-        # Check for Apple Silicon (unified memory = GPU memory)
-        hw["gpu"] = "apple_silicon" if hw["arch"] == "arm64" else "none"
-    else:
-        try:
-            import os as _os
-            hw["cores"] = _os.cpu_count() or 0
-            with open("/proc/meminfo") as f:
-                for line in f:
-                    if line.startswith("MemTotal:"):
-                        hw["ram_gb"] = int(line.split()[1]) / (1024 ** 2)
-                        break
-        except (OSError, ValueError):
-            hw["ram_gb"] = 0
-            hw["cores"] = 0
-        hw["gpu"] = "unknown"
-
-    return hw
-
-
-# Model size estimates (download size in GB)
-_MODEL_SIZES = {
-    "gemma4:e2b": 7.2,
-    "gemma4:e4b": 9.6,
-    "gemma4:26b": 18.0,
-    "gemma4:31b": 20.0,
-    "qwen3.5:4b": 3.4,
-}
 
 
 def _print_hardware_recommendation(winner: "ModelResult") -> None:

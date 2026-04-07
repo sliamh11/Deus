@@ -242,6 +242,27 @@ Run `npx tsx setup/index.ts --step verify` and parse the status block.
 
 **Note:** CONFIGURED_CHANNELS=0 and REGISTERED_GROUPS=0 are expected at this point — channels are added after setup completes. These are informational, not failures.
 
+## 7b. Ollama Model Advisor (Optional)
+
+Run `npx tsx setup/index.ts --step ollama` and parse the status block.
+
+This step is **non-fatal** — Ollama is optional. If Ollama is not installed, the step exits gracefully.
+
+**If STATUS=skipped and REASON=ollama_not_installed:**
+Tell the user: "Ollama is not installed. If you want to use local AI models for self-improvement scoring, install Ollama from https://ollama.ai, then re-run this step with `npx tsx setup/index.ts --step ollama`."
+
+**If STATUS=skipped and REASON=hardware_detection_unavailable:**
+Python evolution package is not set up. This is fine — Ollama can be configured manually later by setting `OLLAMA_MODEL` in `~/.config/deus/.env`.
+
+**If STATUS=success and PULLED=true:**
+Tell the user: "Pulled `{MODEL}` ({MODEL_SIZE_GB} GB) — configured as your local judge model."
+
+**If STATUS=success and ALREADY_PRESENT=true:**
+Tell the user: "Model `{MODEL}` is already pulled — no action needed."
+
+**If STATUS=failed:**
+Tell the user: "Model pull failed (see ERROR field). You can retry with `ollama pull {MODEL}` and set `OLLAMA_MODEL={MODEL}` in `~/.config/deus/.env` manually."
+
 ## 8. Personality Kickstarter (Optional)
 
 AskUserQuestion: "Deus works best when it knows your preferences. Want to load battle-tested defaults from real usage?" Options: "Yes, show me" / "Skip"
