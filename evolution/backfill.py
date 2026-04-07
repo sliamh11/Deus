@@ -68,10 +68,24 @@ def _extract_text(content) -> str:
     return ""
 
 
-def _extract_pairs(jsonl_path: Path) -> Iterator[dict]:
+def _extract_pairs(jsonl_path: Path, context_window: int = 0) -> Iterator[dict]:
     """
-    Yield (prompt, response, pair_index) dicts from a session .jsonl file.
-    Only yields pairs where neither side is junk.
+    Yield exchange-pair dicts from a session .jsonl file.
+
+    Strategy: exchange-pair chunking — each yielded dict represents exactly one
+    (user turn, immediately following assistant turn) pair. This preserves the
+    Q&A relationship as an atomic unit, which improves retrieval coherence compared
+    to paragraph-based chunking. The assistant entry is found within a 5-message
+    lookahead to handle tool calls between user and assistant turns.
+
+    Args:
+        jsonl_path: Path to the .jsonl session file.
+        context_window: When > 0, include the N preceding messages (regardless of
+            role) as a "context" field in the yielded dict. Useful for future
+            retrieval experiments that benefit from conversational context.
+
+    Only yields pairs where neither side is junk (length filters + prefix blocklist).
+    Idempotent: pair_index is deterministic from position in the file.
     """
     try:
         lines = [json.loads(l) for l in jsonl_path.read_text().splitlines() if l.strip()]
@@ -89,7 +103,7 @@ def _extract_pairs(jsonl_path: Path) -> Iterator[dict]:
         if any(prompt.startswith(p) for p in _SKIP_PROMPT_PREFIXES):
             continue
 
-        # Find the immediately following assistant entry
+        # Find the immediately following assistant entry (exchange-pair chunking)
         for j in range(i + 1, min(i + 6, len(lines))):
             if lines[j].get("type") == "assistant":
                 response = _extract_text(lines[j].get("message", {}).get("content", ""))
@@ -97,7 +111,16 @@ def _extract_pairs(jsonl_path: Path) -> Iterator[dict]:
                     break
                 if any(response.startswith(p) for p in _SKIP_RESPONSE_PREFIXES):
                     break
-                yield {"prompt": prompt, "response": response, "pair_index": pair_index}
+                pair: dict = {"prompt": prompt, "response": response, "pair_index": pair_index}
+                if context_window > 0:
+                    ctx_start = max(0, i - context_window)
+                    pair["context"] = [
+                        {"role": lines[k].get("type", ""), "text": _extract_text(
+                            lines[k].get("message", {}).get("content", "")
+                        )}
+                        for k in range(ctx_start, i)
+                    ]
+                yield pair
                 pair_index += 1
                 break
 
@@ -111,10 +134,23 @@ def _infer_group_folder(jsonl_path: Path) -> str:
     return "unknown"
 
 
-def collect_pairs(sessions_dir: Path, limit: int | None = None) -> list[dict]:
+def collect_pairs(
+    sessions_dir: Path,
+    limit: int | None = None,
+    chunk_stats: bool = False,
+    context_window: int = 0,
+) -> list[dict]:
     """
     Walk sessions_dir, extract all valid pairs from non-subagent .jsonl files.
-    Returns list of dicts with: prompt, response, session_id, group_folder, interaction_id
+    Returns list of dicts with: prompt, response, session_id, group_folder, interaction_id.
+
+    When chunk_stats=True, prints a summary of extraction quality to stdout:
+    total files scanned, total pairs extracted, average prompt/response lengths,
+    and per-file pair counts. Useful for validating the exchange-pair chunking
+    strategy before ingesting a new batch of sessions.
+
+    context_window: passed through to _extract_pairs(). When > 0, each pair dict
+    includes a "context" field with the N preceding messages (for retrieval experiments).
     """
     pattern = str(sessions_dir / "**" / ".claude" / "projects" / "*" / "*.jsonl")
     all_files = [
@@ -123,21 +159,64 @@ def collect_pairs(sessions_dir: Path, limit: int | None = None) -> list[dict]:
     ]
 
     pairs = []
+    file_pair_counts: dict[str, int] = {}
+
     for fpath in all_files:
         session_id = fpath.stem
         group_folder = _infer_group_folder(fpath)
-        for pair in _extract_pairs(fpath):
+        file_count = 0
+        for pair in _extract_pairs(fpath, context_window=context_window):
             iid = _deterministic_id(session_id, pair["pair_index"])
-            pairs.append({
+            entry: dict = {
                 "interaction_id": iid,
                 "session_id": session_id,
                 "group_folder": group_folder,
                 "prompt": pair["prompt"],
                 "response": pair["response"],
-            })
+            }
+            if "context" in pair:
+                entry["context"] = pair["context"]
+            pairs.append(entry)
+            file_count += 1
             if limit and len(pairs) >= limit:
+                if chunk_stats:
+                    file_pair_counts[fpath.name] = file_count
+                    _print_chunk_stats(all_files, pairs, file_pair_counts)
                 return pairs
+        if file_count > 0:
+            file_pair_counts[fpath.name] = file_count
+
+    if chunk_stats:
+        _print_chunk_stats(all_files, pairs, file_pair_counts)
+
     return pairs
+
+
+def _print_chunk_stats(
+    all_files: list[Path],
+    pairs: list[dict],
+    file_pair_counts: dict[str, int],
+) -> None:
+    """Print exchange-pair chunking quality stats to stdout."""
+    total_pairs = len(pairs)
+    files_with_pairs = len(file_pair_counts)
+
+    print("=== Exchange-pair chunk stats ===")
+    print(f"  files scanned         : {len(all_files)}")
+    print(f"  files with pairs      : {files_with_pairs}")
+    print(f"  total pairs extracted : {total_pairs}")
+
+    if total_pairs > 0:
+        avg_prompt = sum(len(p["prompt"]) for p in pairs) / total_pairs
+        avg_response = sum(len(p["response"]) for p in pairs) / total_pairs
+        print(f"  avg prompt length     : {avg_prompt:.0f} chars")
+        print(f"  avg response length   : {avg_response:.0f} chars")
+
+        # Top 5 most productive files
+        top_files = sorted(file_pair_counts.items(), key=lambda x: -x[1])[:5]
+        print("  top files by pairs:")
+        for fname, count in top_files:
+            print(f"    {fname}: {count} pairs")
 
 
 def run_backfill(
@@ -279,10 +358,18 @@ def main() -> None:
                         help="Print current backfill status and exit")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress per-pair output")
+    parser.add_argument("--chunk-stats", action="store_true",
+                        help="Print exchange-pair chunking quality stats (files, pair counts, avg lengths) "
+                             "without running judge or writing to DB. Useful for validating a new batch "
+                             "of sessions before full ingestion.")
     args = parser.parse_args()
 
     if args.status:
         print_status()
+        return
+
+    if args.chunk_stats:
+        collect_pairs(args.sessions_dir, limit=args.limit, chunk_stats=True)
         return
 
     stats = run_backfill(
