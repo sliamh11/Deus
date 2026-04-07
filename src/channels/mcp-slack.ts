@@ -4,6 +4,7 @@
  */
 
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import { ASSISTANT_NAME, PROJECT_ROOT } from '../config.js';
 import { readEnvFile } from '../env.js';
@@ -18,9 +19,7 @@ registerChannel('slack', (opts) => {
 
   let serverPath: string;
   try {
-    serverPath = import.meta
-      .resolve('@deus-ai/slack-mcp')
-      .replace('file://', '');
+    serverPath = fileURLToPath(import.meta.resolve('@deus-ai/slack-mcp'));
   } catch {
     serverPath = path.join(
       PROJECT_ROOT,

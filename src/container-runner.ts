@@ -4,8 +4,9 @@
  *
  * Mount assembly lives in container-mounter.ts.
  */
-import { ChildProcess, execFile, spawn } from 'child_process';
+import { ChildProcess, execFile, execFileSync, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -299,7 +300,19 @@ export async function runContainerAgent(
               { group: group.name, containerName, err },
               'Graceful stop failed, force killing',
             );
-            container.kill('SIGKILL');
+            if (os.platform() === 'win32') {
+              try {
+                execFileSync(
+                  'taskkill',
+                  ['/F', '/T', '/PID', String(container.pid)],
+                  { stdio: 'pipe' },
+                );
+              } catch {
+                /* already dead */
+              }
+            } else {
+              container.kill('SIGKILL');
+            }
           }
         },
       );

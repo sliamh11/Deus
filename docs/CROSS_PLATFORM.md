@@ -223,8 +223,8 @@ Before opening a PR, run through this checklist for every file you changed:
 ```
 [ ] No shell redirect syntax in execSync strings (2>/dev/null, >/dev/null)
 [ ] No single-quoted strings in shell commands run via execSync
-[ ] No hardcoded /dev/null — use os.devNull
-[ ] No SIGTERM/process.kill without platform check — use killProcess() helper
+[ ] No hardcoded /dev/null — use os.devNull (CI-enforced)
+[ ] No SIGTERM/process.kill without platform check — use killProcess() helper (CI-enforced)
 [ ] No hardcoded Unix paths (/Users/, /home/, /proc/, /dev/, /etc/)
 [ ] No process.getuid() without optional chaining (?.)
 [ ] No process.env.HOME without os.homedir() fallback
@@ -232,18 +232,68 @@ Before opening a PR, run through this checklist for every file you changed:
 [ ] No PATH strings using ':' separator — use path.delimiter
 [ ] No .sh scripts invoked from Node.js without a Windows alternative
 [ ] New exec calls use execFileSync(binary, args) not execSync(shellString)
+[ ] No .replace('file://', '') — use fileURLToPath() (CI-enforced)
+[ ] No new URL(`file://${path}`) — use pathToFileURL() (CI-enforced)
+[ ] No sqlite3 CLI or other Unix-only binaries — use Node.js alternatives
 ```
+
+---
+
+### 11. `file://` URL to filesystem path conversion
+
+```ts
+// BAD — strips file:// prefix but leaves /C:/... on Windows
+const filePath = import.meta.resolve('pkg').replace('file://', '');
+const filePath = new URL(`file://${process.argv[1]}`).pathname;
+
+// GOOD — handles drive letters, encoding, and all platforms
+import { fileURLToPath, pathToFileURL } from 'url';
+const filePath = fileURLToPath(import.meta.resolve('pkg'));
+const isMatch = new URL(import.meta.url).href === pathToFileURL(process.argv[1]).href;
+```
+
+**Rule:** Never manually strip `file://` from URLs or manually construct `file://` URLs. Always use `fileURLToPath()` and `pathToFileURL()` from the `url` module.
+
+---
+
+### 12. `sqlite3` CLI and other Unix-only binaries
+
+```ts
+// BAD — sqlite3 CLI is not installed on Windows
+execSync(`sqlite3 "${dbPath}" "SELECT COUNT(*) FROM ..."`)
+
+// GOOD — use the Node.js binding (better-sqlite3) which is already a dependency
+execSync(`node -e "const D=require('better-sqlite3');..."`)
+// Or: use better-sqlite3 directly if async is acceptable
+```
+
+**Rule:** Never depend on CLI tools that aren't installed by default on all platforms. If you need SQLite, use `better-sqlite3` (an npm dependency). If you need other tools, check availability or provide a Node.js alternative.
 
 ---
 
 ## Testing on Multiple Platforms
 
-The CI runs on `ubuntu-latest`, `macos-latest`, and `windows-latest`. If your change touches anything in the checklist above, you should:
+The CI runs on `ubuntu-latest`, `macos-latest`, and `windows-latest`. The `test-windows` job runs lint, typecheck, and all tests — including automated cross-platform pattern detection tests in `src/cross-platform.test.ts`.
+
+If your change touches anything in the checklist above, you should:
 
 1. Look at the CI output for the `windows-latest` job in your PR
 2. If you don't have a Windows machine, annotate your PR with `needs-windows-test` and describe what you expect might fail
 
 For the Windows service path (NSSM/Servy integration), a real Windows machine smoke test is required — see `docs/windows-setup.md`.
+
+### Automated Enforcement
+
+The following patterns are caught automatically by `src/cross-platform.test.ts`, which runs on every CI platform:
+
+| Pattern | Detection |
+|---------|-----------|
+| `.replace('file://', '')` | Caught — use `fileURLToPath()` |
+| `new URL('file://' + path)` | Caught — use `pathToFileURL()` |
+| `'/dev/null'` in code (not comments) | Caught — use `os.devNull` |
+| `.kill('SIGKILL')` / `.kill('SIGTERM')` without platform check | Caught — use `killProcess()` helper |
+
+These tests scan all `.ts` files in `src/` and fail the build if violations are found. To add new patterns, edit `src/cross-platform.test.ts`.
 
 ---
 

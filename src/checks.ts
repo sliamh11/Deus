@@ -188,12 +188,15 @@ export function countRegisteredGroups(): number {
   if (!fs.existsSync(dbPath)) return 0;
 
   try {
-    // Dynamic import avoidance: use execSync to query without loading better-sqlite3
-    // into the main process before initDatabase() runs.
-    const result = execSync(
-      `sqlite3 "${dbPath}" "SELECT COUNT(*) FROM registered_groups;"`,
-      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000 },
-    );
+    // Use node -e with better-sqlite3 instead of sqlite3 CLI — sqlite3 is not
+    // available on Windows. This spawns a short-lived node process that loads
+    // better-sqlite3 (already an npm dependency) and prints the count.
+    const script = `const D=require('better-sqlite3');const db=new D(${JSON.stringify(dbPath)},{readonly:true});try{const r=db.prepare('SELECT COUNT(*) as cnt FROM registered_groups').get();console.log(r?r.cnt:0)}finally{db.close()}`;
+    const result = execSync(`node -e "${script.replace(/"/g, '\\"')}"`, {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 5000,
+    });
     return parseInt(result.trim(), 10) || 0;
   } catch {
     return 0;

@@ -1,3 +1,5 @@
+import { pathToFileURL } from 'url';
+
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
@@ -292,11 +294,11 @@ async function main(): Promise<void> {
   });
 }
 
-// Guard: only run when executed directly, not when imported by tests
+// Guard: only run when executed directly, not when imported by tests.
+// pathToFileURL handles Windows drive letters correctly (file:///C:/...)
 const isDirectRun =
   process.argv[1] &&
-  new URL(import.meta.url).pathname ===
-    new URL(`file://${process.argv[1]}`).pathname;
+  new URL(import.meta.url).href === pathToFileURL(process.argv[1]).href;
 
 if (isDirectRun) {
   main().catch((err) => {

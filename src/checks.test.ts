@@ -268,17 +268,17 @@ describe('countRegisteredGroups', () => {
     expect(countRegisteredGroups()).toBe(0);
   });
 
-  it('returns 0 when execSync fails', () => {
+  it('returns 0 when node subprocess fails', () => {
     mockExistsSync.mockReturnValue(true);
     mockExecSync.mockImplementation(() => {
-      throw new Error('sqlite3 not found');
+      throw new Error('better-sqlite3 not found');
     });
     expect(countRegisteredGroups()).toBe(0);
   });
 
-  it('parses count from sqlite3 output', () => {
+  it('parses count from node subprocess output', () => {
     mockExistsSync.mockReturnValue(true);
-    // The source uses { encoding: 'utf-8' } so execSync returns a string
+    // The source spawns node -e with better-sqlite3 and prints the count
     mockExecSync.mockReturnValue('3\n' as unknown as string);
     expect(countRegisteredGroups()).toBe(3);
   });
