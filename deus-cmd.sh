@@ -754,11 +754,11 @@ case "$1" in
       echo "Error: could not read token from ~/.claude/.credentials.json"
       exit 1
     fi
-    # Do NOT write token to .env — the credential proxy reads credentials.json
-    # directly via getDynamicOAuthToken() with a 5-min cache. Writing to .env
-    # would permanently freeze the token and cause a login loop on next refresh.
+    # Do NOT export CLAUDE_CODE_OAUTH_TOKEN — the Claude CLI reads
+    # ~/.claude/.credentials.json directly and auto-refreshes on /login.
+    # Exporting a frozen token causes 401s after token rotation because
+    # the CLI prioritizes the env var over the credentials file.
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
-    export CLAUDE_CODE_OAUTH_TOKEN="$TOKEN"
     # Launch claude with bypass mode; fall back to normal mode if user declines
     launch_claude() {
       claude --dangerously-skip-permissions "$@"
