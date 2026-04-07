@@ -105,6 +105,28 @@ def deserialize(buf: bytes) -> list[float]:
 
 # ── DB ────────────────────────────────────────────────────────────────────────
 
+def _backfill_fts(db: sqlite3.Connection) -> None:
+    """Insert any entries rows not yet in the standalone FTS5 index.
+
+    Compares counts; if FTS5 is behind, inserts missing rows by rowid.
+    Idempotent and fast at Deus vault scale (~hundreds of rows).
+    Silently skips if FTS5 is unavailable.
+    """
+    try:
+        fts_count = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
+        entries_count = db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+        if fts_count < entries_count:
+            # Insert all entries rows that don't yet have an FTS5 counterpart
+            db.execute("""
+                INSERT INTO entries_fts(rowid, chunk)
+                SELECT e.id, e.chunk FROM entries e
+                WHERE e.id NOT IN (SELECT rowid FROM entries_fts)
+            """)
+            db.commit()
+    except sqlite3.OperationalError:
+        pass
+
+
 def open_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB_PATH)
@@ -137,7 +159,16 @@ def open_db() -> sqlite3.Connection:
             db.execute(f"ALTER TABLE entries ADD COLUMN {col} {definition}")
         except sqlite3.OperationalError:
             pass
+    # FTS5 full-text index for hybrid BM25+vector search (standalone, not a content table)
+    try:
+        db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts
+            USING fts5(chunk, tokenize='porter unicode61')
+        """)
+    except sqlite3.OperationalError:
+        pass  # FTS5 unavailable on this SQLite build — hybrid search degrades to ANN-only
     db.commit()
+    _backfill_fts(db)
     return db
 
 
@@ -150,6 +181,10 @@ def delete_entries(db: sqlite3.Connection, path: str):
     ids = [r[0] for r in db.execute("SELECT id FROM entries WHERE path = ?", [path]).fetchall()]
     for eid in ids:
         db.execute("DELETE FROM embeddings WHERE rowid = ?", [eid])
+        try:
+            db.execute("DELETE FROM entries_fts WHERE rowid = ?", [eid])
+        except sqlite3.OperationalError:
+            pass
     db.execute("DELETE FROM entries WHERE path = ?", [path])
     db.commit()
 
@@ -195,6 +230,58 @@ def extract_decisions_section(content: str) -> str:
     return m.group(1).strip()
 
 
+_TURN_RE = re.compile(r"(?:^|\n)\*\*(user|assistant)\*\*:\s*", re.IGNORECASE)
+
+_TARGET_CHUNK_TOKENS = int(os.environ.get("DEUS_TURN_CHUNK_TOKENS", "400"))
+_MIN_CHUNK_TOKENS = 80
+
+
+def _split_turns(body: str) -> list[str]:
+    """Split session body on **user**:/**assistant**: markers.
+
+    Returns [] if no markers found — plain-prose sessions are untouched.
+    """
+    parts = _TURN_RE.split(body)
+    if len(parts) <= 1:
+        return []
+    # parts: [pre-text, role1, content1, role2, content2, ...]
+    turns = []
+    for i in range(1, len(parts), 2):
+        role = parts[i]
+        content = parts[i + 1] if i + 1 < len(parts) else ""
+        turns.append(f"**{role}**: {content.strip()}")
+    return turns
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate: words × 1.3 (English prose heuristic)."""
+    return int(len(text.split()) * 1.3)
+
+
+def _make_turn_windows(turns: list[str], target: int = _TARGET_CHUNK_TOKENS) -> list[str]:
+    """Greedy grouping of turns into ~target-token windows.
+
+    Windows below _MIN_CHUNK_TOKENS are discarded (e.g. single short greetings).
+    """
+    windows: list[str] = []
+    current: list[str] = []
+    current_tokens = 0
+    for turn in turns:
+        t = _estimate_tokens(turn)
+        if current and current_tokens + t > target:
+            text = "\n\n".join(current)
+            if _estimate_tokens(text) >= _MIN_CHUNK_TOKENS:
+                windows.append(text)
+            current, current_tokens = [], 0
+        current.append(turn)
+        current_tokens += t
+    if current:
+        text = "\n\n".join(current)
+        if _estimate_tokens(text) >= _MIN_CHUNK_TOKENS:
+            windows.append(text)
+    return windows
+
+
 def chunks_for_log(path: Path, content: str) -> list[dict]:
     """Return chunks to index for a single session log."""
     fm = extract_frontmatter(content)
@@ -227,12 +314,28 @@ def chunks_for_log(path: Path, content: str) -> list[dict]:
             "decisions": fm.get("decisions", ""),
         })
 
+    # Chunk group 3: turn-level windows (only for conversation-style sessions)
+    # Strip frontmatter before scanning for turn markers
+    fm_raw = fm.get("raw", "")
+    body = content[len(fm_raw):].strip() if fm_raw else content
+    turns = _split_turns(body)
+    if turns:
+        for window in _make_turn_windows(turns):
+            chunks.append({
+                "chunk": window,
+                "type": "turn",
+                "date": fm.get("date", ""),
+                "tldr": fm.get("tldr", ""),
+                "topics": fm.get("topics", ""),
+                "decisions": fm.get("decisions", ""),
+            })
+
     return chunks
 
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
-def cmd_add(path_str: str):
+def cmd_add(path_str: str, extract: bool = True):
     path = Path(path_str).expanduser().resolve()
     if not path.exists():
         print(f"ERROR: file not found: {path}", file=sys.stderr)
@@ -259,10 +362,23 @@ def cmd_add(path_str: str):
         rowid = cur.lastrowid
         db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
                    [rowid, serialize(vec)])
+        try:
+            db.execute("INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)",
+                       [rowid, chunk["chunk"]])
+        except sqlite3.OperationalError:
+            pass
         indexed += 1
 
     db.commit()
     print(f"Indexed {indexed} chunk(s) from {path.name}")
+
+    if extract:
+        try:
+            cmd_extract(str(path))
+        except SystemExit:
+            pass  # cmd_extract uses sys.exit(1) for missing files — already resolved above
+        except Exception as exc:
+            print(f"  WARN: atom extraction failed for {path.name}: {exc}", file=sys.stderr)
 
 
 COMPACT_SESSION_THRESHOLD = 12  # auto-enable compact mode above this many sessions
@@ -539,6 +655,66 @@ def cmd_learnings(since_days: int = 7, max_items: int = 3):
     LAST_RESUME_LEARNINGS.write_text("\n".join(sorted(shown_names)) + "\n")
 
 
+def _fts_escape(query: str) -> str:
+    """Strip FTS5 special syntax to prevent parse errors on arbitrary user queries."""
+    cleaned = re.sub(r'["()*\-]', " ", query)
+    cleaned = re.sub(r"\b(AND|OR|NOT|NEAR)\b", " ", cleaned, flags=re.IGNORECASE)
+    return " ".join(cleaned.split())
+
+
+def _fts_query(db: sqlite3.Connection, query: str, k: int) -> list[tuple[str, int]]:
+    """FTS5 BM25-ranked search. Returns [(path, 1-based rank)], deduped by path.
+
+    Returns [] if FTS5 is unavailable or the query matches nothing.
+    FTS5 rank() is negative — lower (more negative) = better match.
+    """
+    escaped = _fts_escape(query)
+    if not escaped.strip():
+        return []
+    try:
+        rows = db.execute(
+            """
+            SELECT e.path, entries_fts.rank
+            FROM entries_fts
+            JOIN entries e ON e.id = entries_fts.rowid
+            WHERE entries_fts MATCH ?
+              AND e.type != 'atom'
+            ORDER BY entries_fts.rank
+            LIMIT ?
+            """,
+            [escaped, k * 3],
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    # Dedup by path, keep first (best) FTS5 rank per path
+    seen: dict[str, int] = {}
+    result: list[tuple[str, int]] = []
+    for path, _rank in rows:
+        if path not in seen:
+            seen[path] = len(result) + 1
+            result.append((path, seen[path]))
+    return result[:k]
+
+
+def _rrf_fuse(
+    ann_ranked: list[tuple[str, int]],
+    fts_ranked: list[tuple[str, int]],
+    k_rrf: int = 60,
+    top: int = 10,
+) -> list[str]:
+    """Reciprocal Rank Fusion. Returns paths sorted by fused score (descending).
+
+    score(path) = Σ 1 / (k_rrf + rank_i) across all result lists.
+    Paths appearing in both lists score higher than paths in only one.
+    """
+    scores: dict[str, float] = {}
+    for path, rank in ann_ranked:
+        scores[path] = scores.get(path, 0.0) + 1.0 / (k_rrf + rank)
+    for path, rank in fts_ranked:
+        scores[path] = scores.get(path, 0.0) + 1.0 / (k_rrf + rank)
+    return [p for p, _ in sorted(scores.items(), key=lambda x: -x[1])[:top]]
+
+
 def cmd_query(query: str, top: int = 3, recency_boost: bool = False, show_source: bool = False):
     db = open_db()
 
@@ -561,7 +737,7 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False, show_source
           AND k = ?
         ORDER BY v.distance
         """,
-        [serialize(q_vec), top * 3],  # 3x to have room for both atoms and sessions
+        [serialize(q_vec), max(top * 6, 30)],  # 6x headroom: turn chunks multiply rows per session
     ).fetchall()
 
     # Partition into atoms and sessions; deduplicate sessions by path
@@ -583,9 +759,31 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False, show_source
                     "topics": topics, "decisions": decisions,
                     "type": chunk_type, "dist": dist,
                 }
-            # Without recency boost, stop early at top; with it, collect all candidates for re-ranking
-            if not recency_boost and len(seen) >= top:
-                break
+
+    # ── Hybrid RRF fusion ─────────────────────────────────────────────────────
+    # Build ANN ranked list (paths in order of first appearance in seen)
+    ann_ranked = [(path, i + 1) for i, path in enumerate(seen.keys())]
+    fts_ranked = _fts_query(db, query, k=top * 2)
+
+    if fts_ranked:
+        fused_paths = _rrf_fuse(ann_ranked, fts_ranked, top=top * 2)
+        # Rebuild seen in fused order; fetch metadata for FTS-only hits
+        fused_seen: dict[str, dict] = {}
+        for path in fused_paths:
+            if path in seen:
+                fused_seen[path] = seen[path]
+            else:
+                row = db.execute(
+                    "SELECT path, date, tldr, topics, decisions, type FROM entries "
+                    "WHERE path = ? LIMIT 1", [path]
+                ).fetchone()
+                if row:
+                    fused_seen[path] = {
+                        "path": row[0], "date": row[1], "tldr": row[2],
+                        "topics": row[3], "decisions": row[4],
+                        "type": row[5], "dist": 999.0,
+                    }
+        seen = fused_seen
 
     # Re-rank sessions by recency-adjusted distance
     if recency_boost and seen:
@@ -996,7 +1194,7 @@ def cmd_rebuild():
     ok = 0
     for f in log_files:
         try:
-            cmd_add(str(f))
+            cmd_add(str(f), extract=False)  # skip per-session extraction during bulk rebuild
             ok += 1
         except Exception as exc:
             print(f"  WARN: skipped {f.name}: {exc}", file=sys.stderr)
@@ -1244,6 +1442,8 @@ def main():
     group.add_argument("--health", action="store_true",
                        help="Print memory health report (atom quality, confidence, coverage trends) "
                             "and save a daily snapshot to ~/.deus/memory_health.jsonl (no API call)")
+    parser.add_argument("--no-extract", action="store_true",
+                        help="Skip atom extraction when using --add (useful for CI/benchmarks)")
     parser.add_argument("--top", type=int, default=3, help="Number of results for --query")
     parser.add_argument("--since", type=int, default=7,
                         help="Lookback window in days for --learnings (default: 7)")
@@ -1280,7 +1480,7 @@ def main():
     _client = genai.Client(api_key=load_api_key())
 
     if args.add:
-        cmd_add(args.add)
+        cmd_add(args.add, extract=not args.no_extract)
     elif args.query:
         cmd_query(args.query, top=args.top, recency_boost=args.recency_boost, show_source=args.source)
     elif args.rebuild:

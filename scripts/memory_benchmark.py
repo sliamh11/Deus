@@ -287,9 +287,9 @@ def run_outbound(limit: int = 50, ks: list[int] = None) -> dict:
                 _write_session_md(session, s_date, qid, s_idx, dest)
                 session_stems.append(stem)
 
-                # Index this session
+                # Index this session (skip atom extraction — not relevant for benchmarking)
                 _run_indexer_with_home(
-                    ["--add", str(dest)],
+                    ["--add", str(dest), "--no-extract"],
                     fake_home=fake_home,
                     vault_path=vault_path,
                 )

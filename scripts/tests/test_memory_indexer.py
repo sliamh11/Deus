@@ -787,3 +787,349 @@ def test_cmd_health_shows_trends_on_second_run(mi, tmp_path, monkeypatch, capsys
     assert "Trends vs last snapshot" in output
     assert "+1 new atoms" in output or "+3" in output or "new atoms" in output
     assert "corroboration" in output.lower()
+
+
+# ── cmd_add: extract param (PR 1) ─────────────────────────────────────────────
+
+
+def _make_session_file(path, decisions=True):
+    content = "---\ndate: 2024-01-01\ntldr: test session\ntopics: [test]\n"
+    if decisions:
+        content += 'decisions:\n  - "chose pytest: fast"\n'
+    content += "---\n\n## Decisions Made\n- chose pytest for speed\n"
+    path.write_text(content)
+
+
+def test_cmd_add_calls_extract_by_default(mi, tmp_path, monkeypatch):
+    """extract=True (default) — cmd_extract must be called after successful indexing."""
+    session = tmp_path / "vault" / "Session-Logs" / "my-session.md"
+    _make_session_file(session)
+
+    calls = []
+    monkeypatch.setattr(mi, "embed", lambda text: [0.0] * mi.EMBED_DIM)
+    monkeypatch.setattr(mi, "cmd_extract", lambda path: calls.append(path))
+
+    mi.cmd_add(str(session))
+
+    assert len(calls) == 1
+    assert calls[0] == str(session)
+
+
+def test_cmd_add_skips_extract_with_flag(mi, tmp_path, monkeypatch):
+    """extract=False — cmd_extract must NOT be called."""
+    session = tmp_path / "vault" / "Session-Logs" / "my-session.md"
+    _make_session_file(session)
+
+    calls = []
+    monkeypatch.setattr(mi, "embed", lambda text: [0.0] * mi.EMBED_DIM)
+    monkeypatch.setattr(mi, "cmd_extract", lambda path: calls.append(path))
+
+    mi.cmd_add(str(session), extract=False)
+
+    assert calls == []
+
+
+def test_cmd_add_survives_extract_exception(mi, tmp_path, monkeypatch):
+    """A RuntimeError from cmd_extract must not abort cmd_add."""
+    session = tmp_path / "vault" / "Session-Logs" / "boom-session.md"
+    _make_session_file(session)
+    monkeypatch.setattr(mi, "embed", lambda text: [0.0] * mi.EMBED_DIM)
+    monkeypatch.setattr(mi, "cmd_extract", lambda path: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    mi.cmd_add(str(session))  # must not raise
+
+    db = mi.open_db()
+    count = db.execute("SELECT COUNT(*) FROM entries WHERE path = ?", [str(session)]).fetchone()[0]
+    assert count > 0
+
+
+def test_cmd_add_survives_extract_systemexit(mi, tmp_path, monkeypatch):
+    """A SystemExit from cmd_extract must not abort cmd_add."""
+    session = tmp_path / "vault" / "Session-Logs" / "exit-session.md"
+    _make_session_file(session)
+    monkeypatch.setattr(mi, "embed", lambda text: [0.0] * mi.EMBED_DIM)
+    monkeypatch.setattr(mi, "cmd_extract", lambda path: (_ for _ in ()).throw(SystemExit(1)))
+
+    mi.cmd_add(str(session))  # must not raise
+
+    db = mi.open_db()
+    count = db.execute("SELECT COUNT(*) FROM entries WHERE path = ?", [str(session)]).fetchone()[0]
+    assert count > 0
+
+
+def test_no_extract_flag_parsed():
+    """--no-extract flag must be recognised by argparse."""
+    import argparse
+    import importlib
+    import sys as _sys
+
+    # Re-import fresh to get argparse parser
+    if "memory_indexer" in _sys.modules:
+        del _sys.modules["memory_indexer"]
+    mi_mod = importlib.import_module("memory_indexer")
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-extract", action="store_true")
+    args = parser.parse_args(["--no-extract"])
+    assert args.no_extract is True
+
+
+# ── Turn chunking helpers (PR 2) ───────────────────────────────────────────────
+
+
+def test_split_turns_no_markers(mi):
+    """Plain prose — no **user**: markers — returns empty list."""
+    body = "This is a plain session log with no conversation turns.\nJust prose."
+    assert mi._split_turns(body) == []
+
+
+def test_split_turns_finds_markers(mi):
+    body = "**user**: Hello\n**assistant**: Hi there\n**user**: How are you?"
+    turns = mi._split_turns(body)
+    assert len(turns) == 3
+    assert turns[0].startswith("**user**:")
+    assert turns[1].startswith("**assistant**:")
+
+
+def test_split_turns_case_insensitive(mi):
+    body = "**User**: Hello\n**Assistant**: Hi"
+    turns = mi._split_turns(body)
+    assert len(turns) == 2
+
+
+def test_estimate_tokens(mi):
+    text = " ".join(["word"] * 100)
+    est = mi._estimate_tokens(text)
+    assert 120 <= est <= 140  # 100 * 1.3
+
+
+def test_make_turn_windows_grouping(mi):
+    """Short turns should be grouped into fewer windows."""
+    turns = [f"**user**: word{i}" for i in range(10)]
+    windows = mi._make_turn_windows(turns, target=400)
+    assert len(windows) < 10  # grouped, not one-per-turn
+
+
+def test_make_turn_windows_splits_large_turns(mi):
+    """Each large turn exceeds target — should produce one window each."""
+    big = " ".join(["word"] * 400)  # ~520 tokens
+    turns = [f"**user**: {big}", f"**assistant**: {big}"]
+    windows = mi._make_turn_windows(turns, target=400)
+    assert len(windows) == 2
+
+
+def test_make_turn_windows_discards_tiny(mi):
+    """Windows below MIN_CHUNK_TOKENS must be discarded."""
+    turns = ["**user**: hi"]  # single very short turn
+    windows = mi._make_turn_windows(turns, target=400)
+    assert windows == []
+
+
+def test_chunks_for_log_no_turn_chunks_plain_prose(mi, tmp_path):
+    """Sessions without **user**:**assistant**: markers produce no turn chunks."""
+    session = tmp_path / "vault" / "Session-Logs" / "prose.md"
+    session.write_text(
+        "---\ndate: 2024-01-01\ntldr: plain prose\ntopics: [test]\n---\n\n"
+        "This is just a plain paragraph. No conversation markers here.\n"
+    )
+    content = session.read_text()
+    chunks = mi.chunks_for_log(session, content)
+    types = [c["type"] for c in chunks]
+    assert "turn" not in types
+
+
+def test_chunks_for_log_produces_turn_chunks(mi, tmp_path):
+    """Sessions with conversation markers produce at least one turn chunk."""
+    session = tmp_path / "vault" / "Session-Logs" / "convo.md"
+    # Turns must be long enough to pass _MIN_CHUNK_TOKENS (80 tokens each)
+    long_turn = " ".join(["word"] * 70)
+    session.write_text(
+        "---\ndate: 2024-01-01\ntldr: a conversation\ntopics: [test]\n---\n\n"
+        f"**user**: {long_turn}\n"
+        f"**assistant**: {long_turn}\n"
+    )
+    content = session.read_text()
+    chunks = mi.chunks_for_log(session, content)
+    types = [c["type"] for c in chunks]
+    assert "turn" in types
+
+
+def test_turn_chunk_metadata(mi, tmp_path):
+    """Turn chunks carry date/tldr/topics from frontmatter."""
+    session = tmp_path / "vault" / "Session-Logs" / "meta.md"
+    session.write_text(
+        "---\ndate: 2024-06-15\ntldr: my tldr\ntopics: [a, b]\n---\n\n"
+        "**user**: hello\n**assistant**: " + " ".join(["word"] * 100) + "\n"
+    )
+    content = session.read_text()
+    chunks = mi.chunks_for_log(session, content)
+    turn_chunks = [c for c in chunks if c["type"] == "turn"]
+    assert len(turn_chunks) >= 1
+    for tc in turn_chunks:
+        assert tc["date"] == "2024-06-15"
+        assert tc["tldr"] == "my tldr"
+        assert "a, b" in tc["topics"]
+
+
+# ── FTS5 + RRF (PR 3) ─────────────────────────────────────────────────────────
+
+
+def _add_entry_direct(db, path, chunk, entry_type="frontmatter"):
+    """Insert directly into entries (bypassing embed) for fast FTS tests."""
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, decisions) "
+        "VALUES (?, '2024-01-01', ?, ?, '', '', '')",
+        [path, chunk, entry_type],
+    )
+    rowid = cur.lastrowid
+    try:
+        db.execute("INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)", [rowid, chunk])
+    except Exception:
+        pass
+    db.commit()
+    return rowid
+
+
+def test_fts_table_created(mi, tmp_path):
+    """entries_fts virtual table must exist after open_db()."""
+    db = mi.open_db()
+    row = db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='entries_fts'"
+    ).fetchone()
+    assert row is not None
+
+
+def test_fts_populated_on_add(mi, tmp_path, monkeypatch):
+    """cmd_add must insert a row into entries_fts for each indexed chunk."""
+    session = tmp_path / "vault" / "Session-Logs" / "fts-session.md"
+    _make_session_file(session)
+    monkeypatch.setattr(mi, "embed", lambda text: [0.0] * mi.EMBED_DIM)
+    monkeypatch.setattr(mi, "cmd_extract", lambda path: None)
+
+    mi.cmd_add(str(session), extract=False)
+
+    db = mi.open_db()
+    entries_count = db.execute("SELECT COUNT(*) FROM entries WHERE path = ?", [str(session)]).fetchone()[0]
+    fts_count = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
+    assert entries_count > 0
+    assert fts_count >= entries_count
+
+
+def test_fts_removed_on_delete(mi, tmp_path, monkeypatch):
+    """delete_entries must remove FTS5 rows for that path."""
+    session = tmp_path / "vault" / "Session-Logs" / "del-session.md"
+    _make_session_file(session)
+    monkeypatch.setattr(mi, "embed", lambda text: [0.0] * mi.EMBED_DIM)
+    monkeypatch.setattr(mi, "cmd_extract", lambda path: None)
+    mi.cmd_add(str(session), extract=False)
+
+    db = mi.open_db()
+    before = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
+    mi.delete_entries(db, str(session))
+    after = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
+    assert after < before
+
+
+def test_fts_exact_keyword_match(mi, tmp_path):
+    """_fts_query must find a session containing the exact query term."""
+    db = mi.open_db()
+    path = str(tmp_path / "eigenvalue-session.md")
+    _add_entry_direct(db, path, "The eigenvalue decomposition is a key concept in linear algebra.")
+
+    results = mi._fts_query(db, "eigenvalue", k=5)
+    paths = [p for p, _ in results]
+    assert path in paths
+
+
+def test_fts_no_match_returns_empty(mi, tmp_path):
+    """_fts_query returns [] when no session contains the query term."""
+    db = mi.open_db()
+    _add_entry_direct(db, str(tmp_path / "unrelated.md"), "We discussed astronomy and stars.")
+
+    results = mi._fts_query(db, "carpentry", k=5)
+    assert results == []
+
+
+def test_fts_dedup_by_path(mi, tmp_path):
+    """Multiple chunks from the same path appear only once in _fts_query results."""
+    db = mi.open_db()
+    path = str(tmp_path / "multi-chunk.md")
+    _add_entry_direct(db, path, "eigenvalue chunk one")
+    _add_entry_direct(db, path, "eigenvalue chunk two")
+
+    results = mi._fts_query(db, "eigenvalue", k=10)
+    paths = [p for p, _ in results]
+    assert paths.count(path) == 1
+
+
+def test_rrf_ordering(mi):
+    """A path in both ANN and FTS lists should outscore a path in only one."""
+    ann = [("both.md", 5), ("ann-only.md", 1)]
+    fts = [("both.md", 3), ("fts-only.md", 1)]
+    fused = mi._rrf_fuse(ann, fts, top=10)
+    # "both.md" scores 1/(60+5) + 1/(60+3) ≈ 0.0154+0.0159 = 0.0313
+    # "ann-only.md" scores 1/(60+1) ≈ 0.0164
+    # "fts-only.md" scores 1/(60+1) ≈ 0.0164
+    assert fused[0] == "both.md"
+
+
+def test_rrf_fts_only_path_included(mi):
+    """A path present only in FTS results must appear in fused output."""
+    ann = [("a.md", 1)]
+    fts = [("b.md", 1)]
+    fused = mi._rrf_fuse(ann, fts, top=10)
+    assert "b.md" in fused
+
+
+def test_fts_escape_strips_operators(mi):
+    result = mi._fts_escape('"linux" AND "kernel" OR NOT test')
+    assert '"' not in result
+    assert "AND" not in result
+    assert "OR" not in result
+    assert "NOT" not in result
+    assert "linux" in result
+    assert "kernel" in result
+
+
+def test_fts_escape_preserves_words(mi):
+    result = mi._fts_escape("memory retrieval benchmark")
+    assert "memory" in result
+    assert "retrieval" in result
+    assert "benchmark" in result
+
+
+def test_fts_graceful_fallback_no_table(mi, tmp_path):
+    """_fts_query returns [] gracefully when entries_fts table doesn't exist."""
+    db = mi.open_db()
+    # Drop the FTS table to simulate old SQLite without FTS5
+    try:
+        db.execute("DROP TABLE IF EXISTS entries_fts")
+    except Exception:
+        pass
+    results = mi._fts_query(db, "test query", k=5)
+    assert results == []
+
+
+def test_backfill_fts_on_open(mi, tmp_path):
+    """Opening a DB with entries but empty FTS triggers backfill."""
+    db = mi.open_db()
+    # Insert directly into entries (bypassing FTS sync)
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, decisions) "
+        "VALUES ('test.md', '2024-01-01', 'some content', 'frontmatter', '', '', '')"
+    )
+    db.commit()
+    db.close()
+
+    # Re-open: _backfill_fts should rebuild FTS index
+    db2 = mi.open_db()
+    fts_count = db2.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
+    entries_count = db2.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+    assert fts_count >= entries_count
+
+
+def test_backfill_fts_idempotent(mi, tmp_path):
+    """Calling _backfill_fts twice on a synced DB raises no errors."""
+    db = mi.open_db()
+    mi._backfill_fts(db)
+    mi._backfill_fts(db)  # must not raise
