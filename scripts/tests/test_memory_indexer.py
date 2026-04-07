@@ -10,6 +10,7 @@ import sys
 import types
 from pathlib import Path
 
+import json
 import pytest
 
 # Ensure project root is importable
@@ -642,3 +643,147 @@ def test_cmd_recent_normal_shows_full_path(mi, fresh_vault, capsys):
     output = capsys.readouterr().out
     assert "full log:" in output
     assert "(compact)" not in output
+
+
+# ── health analytics ──────────────────────────────────────────────────────────
+
+
+def _seed_atoms(db, atoms: list[tuple[str, float, int]]):
+    """Insert (path, confidence, corroborations) rows into entries table."""
+    for path, conf, corr in atoms:
+        cur = db.execute(
+            "INSERT INTO entries (path, date, chunk, type, tldr, confidence, corroborations) "
+            "VALUES (?, '2024-01-01', 'body', 'atom', 'body', ?, ?)",
+            [path, conf, corr],
+        )
+        # Insert a dummy embedding (768 floats) so sqlite-vec doesn't complain
+        import struct
+        dummy = struct.pack(f"768f", *([0.0] * 768))
+        db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)", [cur.lastrowid, dummy])
+    db.commit()
+
+
+def test_collect_health_metrics_empty_db(mi, tmp_path, monkeypatch):
+    """Snapshot with no atoms returns zeros."""
+    test_db = tmp_path / "memory.db"
+    monkeypatch.setattr(mi, "DB_PATH", test_db)
+    db = mi.open_db()
+    snap = mi._collect_health_metrics(db)
+    db.close()
+    assert snap["atoms"] == 0
+    assert snap["avg_confidence"] == 0.0
+    assert snap["corr_1x"] == 0
+
+
+def test_collect_health_metrics_counts_correctly(mi, tmp_path, monkeypatch):
+    """Snapshot computes correct counts from DB rows."""
+    test_db = tmp_path / "memory.db"
+    monkeypatch.setattr(mi, "DB_PATH", test_db)
+    db = mi.open_db()
+    _seed_atoms(db, [
+        ("preference-use-pytest.md", 0.60, 1),
+        ("decision-use-sqlite.md",   0.70, 2),
+        ("fact-lives-in-israel.md",  0.80, 3),
+        ("preference-dark-mode.md",  0.50, 1),
+    ])
+    snap = mi._collect_health_metrics(db)
+    db.close()
+    assert snap["atoms"] == 4
+    assert snap["corr_1x"] == 2
+    assert snap["corr_2x"] == 1
+    assert snap["corr_3plus"] == 1
+    assert abs(snap["avg_confidence"] - (0.60 + 0.70 + 0.80 + 0.50) / 4) < 0.001
+    assert snap["categories"]["preference"] == 2
+    assert snap["categories"]["decision"] == 1
+
+
+def test_cmd_health_prints_report(mi, tmp_path, monkeypatch, capsys):
+    """cmd_health() produces a report with key sections."""
+    test_db = tmp_path / "memory.db"
+    health_log = tmp_path / "health.jsonl"
+    monkeypatch.setattr(mi, "DB_PATH", test_db)
+    monkeypatch.setattr(mi, "HEALTH_LOG_PATH", health_log)
+    db = mi.open_db()
+    _seed_atoms(db, [
+        ("preference-pytest.md", 0.70, 2),
+        ("decision-sqlite.md",   0.80, 1),
+    ])
+    db.close()
+
+    mi.cmd_health(save=False)
+    output = capsys.readouterr().out
+    assert "Memory Health" in output
+    assert "Atoms: 2" in output
+    assert "avg confidence" in output
+    assert "corroborations" in output
+    assert "source coverage" in output
+
+
+def test_cmd_health_saves_snapshot(mi, tmp_path, monkeypatch, capsys):
+    """cmd_health() appends a JSON line to HEALTH_LOG_PATH."""
+    test_db = tmp_path / "memory.db"
+    health_log = tmp_path / "health.jsonl"
+    monkeypatch.setattr(mi, "DB_PATH", test_db)
+    monkeypatch.setattr(mi, "HEALTH_LOG_PATH", health_log)
+    mi.open_db().close()
+
+    mi.cmd_health(save=True)
+    capsys.readouterr()
+
+    assert health_log.exists()
+    lines = [l for l in health_log.read_text().splitlines() if l.strip()]
+    assert len(lines) == 1
+    snap = json.loads(lines[0])
+    assert "date" in snap
+    assert "atoms" in snap
+
+
+def test_cmd_health_idempotent_same_day(mi, tmp_path, monkeypatch, capsys):
+    """Running --health twice on the same day does NOT duplicate the snapshot."""
+    test_db = tmp_path / "memory.db"
+    health_log = tmp_path / "health.jsonl"
+    monkeypatch.setattr(mi, "DB_PATH", test_db)
+    monkeypatch.setattr(mi, "HEALTH_LOG_PATH", health_log)
+    mi.open_db().close()
+
+    mi.cmd_health(save=True)
+    mi.cmd_health(save=True)
+    capsys.readouterr()
+
+    lines = [l for l in health_log.read_text().splitlines() if l.strip()]
+    assert len(lines) == 1, "Should not write duplicate snapshot for the same day"
+
+
+def test_cmd_health_shows_trends_on_second_run(mi, tmp_path, monkeypatch, capsys):
+    """Second run shows trend comparison vs previous snapshot."""
+    import json as _json
+    from datetime import date, timedelta
+
+    test_db = tmp_path / "memory.db"
+    health_log = tmp_path / "health.jsonl"
+    monkeypatch.setattr(mi, "DB_PATH", test_db)
+    monkeypatch.setattr(mi, "HEALTH_LOG_PATH", health_log)
+
+    # Seed a prior snapshot (yesterday, fewer atoms)
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    prior = {
+        "date": yesterday, "atoms": 2, "avg_confidence": 0.50,
+        "corr_1x": 2, "corr_2x": 0, "corr_3plus": 0,
+        "source_chunk_coverage": 0.0, "categories": {}, "sessions": 10,
+    }
+    health_log.write_text(_json.dumps(prior) + "\n")
+
+    # Today: more atoms, better confidence
+    db = mi.open_db()
+    _seed_atoms(db, [
+        ("preference-pytest.md", 0.70, 2),
+        ("decision-sqlite.md",   0.80, 2),
+        ("fact-israel.md",       0.90, 3),
+    ])
+    db.close()
+
+    mi.cmd_health(save=False)
+    output = capsys.readouterr().out
+    assert "Trends vs last snapshot" in output
+    assert "+1 new atoms" in output or "+3" in output or "new atoms" in output
+    assert "corroboration" in output.lower()
