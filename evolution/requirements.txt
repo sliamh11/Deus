@@ -4,9 +4,6 @@
 google-genai==1.14.0       # Gemini API (same as memory_indexer.py)
 sqlite-vec==0.1.6          # Vector search in SQLite
 
-# DeepEval integration (judge for eval layer)
-deepeval==2.5.6
-
 # MCP server (optional — for external agent integration)
 mcp==1.23.0
 

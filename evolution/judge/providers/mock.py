@@ -1,30 +1,9 @@
 """Mock judge provider — for CI smoke tests."""
 import os
-from typing import Any, Optional, Tuple
-
-from deepeval.models import DeepEvalBaseLLM
+from typing import Optional
 
 from ..base import BaseJudge, JudgeResult
 from ..provider import JudgeProvider
-
-
-class MockJudge(DeepEvalBaseLLM):
-    """Returns a fixed score without calling any external API."""
-
-    def __init__(self, score: float = 0.75):
-        self._score = score
-
-    def load_model(self):
-        return None
-
-    def generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
-        return str(self._score), self._score
-
-    async def a_generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
-        return str(self._score), self._score
-
-    def get_model_name(self) -> str:
-        return f"mock:{self._score}"
 
 
 class MockRuntimeJudge(BaseJudge):
@@ -67,9 +46,6 @@ class MockProvider(JudgeProvider):
 
     def is_available(self) -> bool:
         return os.environ.get("EVAL_JUDGE", "").lower() == "mock"
-
-    def make_deepeval_judge(self, model: Optional[str] = None) -> DeepEvalBaseLLM:
-        return MockJudge()
 
     def make_runtime_judge(self, model: Optional[str] = None) -> BaseJudge:
         return MockRuntimeJudge()

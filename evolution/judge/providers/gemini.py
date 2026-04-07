@@ -1,8 +1,6 @@
 """Gemini judge provider."""
 from typing import Optional
 
-from deepeval.models import DeepEvalBaseLLM
-
 from ..base import BaseJudge
 from ..provider import JudgeProvider
 
@@ -30,10 +28,6 @@ class GeminiProvider(JudgeProvider):
             return True
         except (RuntimeError, ImportError):
             return False
-
-    def make_deepeval_judge(self, model: Optional[str] = None) -> DeepEvalBaseLLM:
-        from ..gemini_judge import GeminiJudge
-        return GeminiJudge(model=model or self.default_model)
 
     def make_runtime_judge(self, model: Optional[str] = None) -> BaseJudge:
         from ..gemini_judge import GeminiRuntimeJudge

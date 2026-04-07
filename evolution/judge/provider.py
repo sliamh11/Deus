@@ -7,8 +7,6 @@ JudgeRegistry resolves the best available backend at runtime.
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from deepeval.models import DeepEvalBaseLLM
-
 from .base import BaseJudge
 
 
@@ -39,11 +37,6 @@ class JudgeProvider(ABC):
     @abstractmethod
     def is_available(self) -> bool:
         """Return True if this backend can serve requests right now."""
-        ...
-
-    @abstractmethod
-    def make_deepeval_judge(self, model: Optional[str] = None) -> DeepEvalBaseLLM:
-        """Create a DeepEval-compatible judge instance."""
         ...
 
     @abstractmethod

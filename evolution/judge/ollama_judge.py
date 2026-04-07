@@ -1,11 +1,7 @@
 """
 Ollama-based judge for the Deus Evolution loop.
 
-Two roles:
-1. DeepEvalBaseLLM — plugs into DeepEval metrics (GEval, AnswerRelevancy, etc.)
-   as a local alternative to GeminiJudge.
-2. Standalone runtime evaluator — scores production interactions via evaluate().
-
+Standalone runtime evaluator — scores production interactions via evaluate().
 Uses stdlib urllib for HTTP — no new dependencies required.
 """
 import asyncio
@@ -13,9 +9,7 @@ import json
 import os
 import urllib.request
 import urllib.error
-from typing import Any, Optional, Tuple
-
-from deepeval.models import DeepEvalBaseLLM
+from typing import Optional
 
 from .base import BaseJudge, JudgeResult
 from .criteria import RUBRIC, compose_score
@@ -85,36 +79,7 @@ async def _call_ollama_async(prompt: str, model: str = OLLAMA_MODEL) -> str:
     return await loop.run_in_executor(None, lambda: _call_ollama(prompt, model))
 
 
-# ── DeepEval integration ───────────────────────────────────────────────────────
-
-class OllamaJudge(DeepEvalBaseLLM):
-    """
-    Ollama judge that plugs into DeepEval as the LLM backend.
-    Pass model=OllamaJudge() to any GEval / AnswerRelevancy / etc. metric.
-    """
-
-    def __init__(self, model: str = OLLAMA_MODEL):
-        self.model = model
-        _check_model_pulled(self.model)
-
-    def load_model(self):
-        return self.model
-
-    def generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
-        if schema is not None:
-            prompt = f"{prompt}\n\nRespond with valid JSON matching this schema: {schema}"
-        return _call_ollama(prompt, self.model), 0.0
-
-    async def a_generate(self, prompt: str, schema: Optional[Any] = None) -> Tuple[str, float]:
-        if schema is not None:
-            prompt = f"{prompt}\n\nRespond with valid JSON matching this schema: {schema}"
-        return await _call_ollama_async(prompt, self.model), 0.0
-
-    def get_model_name(self) -> str:
-        return f"ollama:{self.model}"
-
-
-# ── Standalone runtime evaluator ───────────────────────────────────────────────
+# ── Runtime evaluator ─────────────────────────────────────────────────────────
 
 class OllamaRuntimeJudge(BaseJudge):
     """
@@ -196,10 +161,6 @@ def _parse_result(raw: str) -> JudgeResult:
             raw_response=raw,
         )
 
-
-def make_deepeval_judge(model: str = OLLAMA_MODEL) -> OllamaJudge:
-    """Return an OllamaJudge instance for use with DeepEval metrics."""
-    return OllamaJudge(model=model)
 
 
 def make_runtime_judge(model: str = OLLAMA_MODEL) -> OllamaRuntimeJudge:

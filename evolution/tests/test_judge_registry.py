@@ -4,7 +4,6 @@ from typing import Optional
 from unittest.mock import patch
 
 import pytest
-from deepeval.models import DeepEvalBaseLLM
 
 from evolution.judge.base import BaseJudge, JudgeResult
 from evolution.judge.provider import (
@@ -15,23 +14,6 @@ from evolution.judge.provider import (
 
 
 # ── Test helpers ──────────────────────────────────────────────────────────────
-
-
-class FakeDeepEvalJudge(DeepEvalBaseLLM):
-    def __init__(self, name: str = "fake"):
-        self._name = name
-
-    def load_model(self):
-        return None
-
-    def generate(self, prompt, schema=None):
-        return "fake", 0.0
-
-    async def a_generate(self, prompt, schema=None):
-        return "fake", 0.0
-
-    def get_model_name(self):
-        return self._name
 
 
 class FakeRuntimeJudge(BaseJudge):
@@ -64,9 +46,6 @@ class FakeProvider(JudgeProvider):
 
     def is_available(self) -> bool:
         return self._available
-
-    def make_deepeval_judge(self, model: Optional[str] = None) -> DeepEvalBaseLLM:
-        return FakeDeepEvalJudge(model or self.default_model)
 
     def make_runtime_judge(self, model: Optional[str] = None) -> BaseJudge:
         return FakeRuntimeJudge()
@@ -194,16 +173,6 @@ class TestResolve:
 
 
 class TestProviderFactoryMethods:
-    def test_make_deepeval_judge_uses_default_model(self):
-        p = FakeProvider("test", priority=1)
-        judge = p.make_deepeval_judge()
-        assert judge.get_model_name() == "test:default"
-
-    def test_make_deepeval_judge_uses_custom_model(self):
-        p = FakeProvider("test", priority=1)
-        judge = p.make_deepeval_judge("custom-model")
-        assert judge.get_model_name() == "custom-model"
-
     def test_make_runtime_judge_returns_base_judge(self):
         p = FakeProvider("test", priority=1)
         judge = p.make_runtime_judge()
