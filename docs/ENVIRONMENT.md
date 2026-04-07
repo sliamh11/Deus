@@ -61,7 +61,7 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 |----------|---------|-------------|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `gemma4:e4b` | Ollama judge model |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Ollama embedding model |
+| `OLLAMA_EMBED_MODEL` | `embeddinggemma` | Ollama embedding model |
 | `EMBEDDING_PROVIDER` | `auto` | Embedding backend: `auto`, `gemini`, or `ollama` |
 
 ## Evolution / Eval

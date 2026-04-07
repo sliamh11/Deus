@@ -1,9 +1,9 @@
 """
 Pluggable embedding provider.
 
-Default: Gemini (uses EMBED_MODELS from config with automatic fallback).
+Default: Ollama with EmbeddingGemma (local, ~7x faster than Gemini API).
 Override via EMBEDDING_PROVIDER env var: 'gemini', 'ollama', or 'auto'.
-'auto' (default) tries Gemini first, falls back to Ollama if unavailable.
+'auto' (default) tries Ollama first, falls back to Gemini if unavailable.
 """
 import json
 import os
@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from ..config import EMBED_DIM, EMBED_MODELS, load_api_key
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "nomic-embed-text")
+OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "embeddinggemma")
 
 
 class EmbeddingProvider(ABC):
@@ -95,14 +95,14 @@ def get_embedding_provider() -> EmbeddingProvider:
     elif backend == "ollama":
         _provider = OllamaEmbeddingProvider()
     elif backend == "auto":
-        try:
-            _provider = GeminiEmbeddingProvider()
-        except Exception:
-            if _is_ollama_available():
-                _provider = OllamaEmbeddingProvider()
-            else:
+        if _is_ollama_available():
+            _provider = OllamaEmbeddingProvider()
+        else:
+            try:
+                _provider = GeminiEmbeddingProvider()
+            except Exception:
                 raise RuntimeError(
-                    "No embedding provider available. Set GEMINI_API_KEY or start Ollama."
+                    "No embedding provider available. Start Ollama or set GEMINI_API_KEY."
                 )
     else:
         raise ValueError(
