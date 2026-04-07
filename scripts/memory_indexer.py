@@ -41,6 +41,7 @@ from evolution.config import (
 CONFIG_PATH = Path("~/.config/deus/config.json").expanduser()
 DB_PATH = Path("~/.deus/memory.db").expanduser()
 LAST_RESUME_LEARNINGS = Path("~/.deus/last_resume_learnings.txt").expanduser()
+HEALTH_LOG_PATH = Path("~/.deus/memory_health.jsonl").expanduser()
 
 
 def _load_vault_path() -> Path:
@@ -1047,6 +1048,176 @@ def cmd_rebuild():
     print(f"\nDone. {ok}/{len(log_files)} logs + {atom_ok} atoms indexed into {DB_PATH}")
 
 
+# ── Health analytics ─────────────────────────────────────────────────────────
+
+def _collect_health_metrics(db: sqlite3.Connection) -> dict:
+    """Snapshot current memory system quality metrics from DB + filesystem."""
+    from datetime import date as _date
+    try:
+        rows = db.execute(
+            "SELECT path, confidence, corroborations, source_chunk FROM entries WHERE type='atom'"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = db.execute(
+            "SELECT path, confidence, corroborations, NULL FROM entries WHERE type='atom'"
+        ).fetchall()
+    total_atoms = len(rows)
+    snapshot: dict = {"date": _date.today().isoformat(), "atoms": total_atoms}
+    if total_atoms > 0:
+        snapshot["avg_confidence"] = round(sum(r[1] or 0.0 for r in rows) / total_atoms, 3)
+        snapshot["corr_1x"]    = sum(1 for r in rows if (r[2] or 1) == 1)
+        snapshot["corr_2x"]    = sum(1 for r in rows if (r[2] or 1) == 2)
+        snapshot["corr_3plus"] = sum(1 for r in rows if (r[2] or 1) >= 3)
+        snapshot["source_chunk_coverage"] = round(sum(1 for r in rows if r[3]) / total_atoms, 3)
+        cats: dict[str, int] = {}
+        for path, *_ in rows:
+            stem = Path(path).stem
+            cat = stem.split("-")[0] if "-" in stem else "unknown"
+            cats[cat] = cats.get(cat, 0) + 1
+        snapshot["categories"] = cats
+    else:
+        snapshot.update({
+            "avg_confidence": 0.0, "corr_1x": 0, "corr_2x": 0, "corr_3plus": 0,
+            "source_chunk_coverage": 0.0, "categories": {},
+        })
+    snapshot["sessions"] = (
+        len([f for f in VAULT_SESSION_LOGS.rglob("*.md") if ".obsidian" not in str(f)])
+        if VAULT_SESSION_LOGS.exists() else 0
+    )
+    return snapshot
+
+
+def cmd_health(save: bool = True) -> None:
+    """Print a memory health report and persist a daily snapshot for trend tracking.
+
+    Tracks 6 improvement signals over time:
+      atoms          — total extracted facts (growth = learning new knowledge)
+      avg_confidence — rising = facts getting corroborated across sessions
+      corroborations — 1x/2x/3x+ distribution; more 3x+ = stronger memory
+      source_coverage— % of atoms with traceable context
+      categories     — diversity of fact types extracted
+      velocity       — atoms/day and corroboration rate between snapshots
+
+    Snapshots persisted to ~/.deus/memory_health.jsonl (append-only JSONL).
+    One snapshot per calendar day — idempotent within a day.
+    """
+    db = open_db()
+    current = _collect_health_metrics(db)
+    db.close()
+
+    history: list[dict] = []
+    if HEALTH_LOG_PATH.exists():
+        for line in HEALTH_LOG_PATH.read_text().splitlines():
+            line = line.strip()
+            if line:
+                try:
+                    history.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+    prev = history[-1] if history else None
+
+    def _delta(curr: float, prev_val: float | None, higher_is_better: bool = True) -> str:
+        if prev_val is None:
+            return ""
+        d = curr - prev_val
+        if abs(d) < 1e-4:
+            return " (→)"
+        arrow = "↑" if (d > 0) == higher_is_better else "↓"
+        sign = "+" if d > 0 else ""
+        return f" ({arrow} {sign}{d:.3g})"
+
+    total = current["atoms"] or 1
+    out = [
+        "## Memory Health",
+        f"  snapshot: {current['date']}",
+        "",
+        f"Atoms: {current['atoms']}"
+        + _delta(current["atoms"], prev["atoms"] if prev else None),
+    ]
+    cats = current.get("categories", {})
+    if cats:
+        out.append("  categories: " + "  ".join(
+            f"{k}:{v}" for k, v in sorted(cats.items(), key=lambda x: -x[1])
+        ))
+    out.append(
+        f"  avg confidence: {current['avg_confidence']:.3f}"
+        + _delta(current["avg_confidence"], prev.get("avg_confidence") if prev else None)
+    )
+    out.append(
+        f"  corroborations: 1×={current['corr_1x']} ({100*current['corr_1x']//total}%)  "
+        f"2×={current['corr_2x']} ({100*current['corr_2x']//total}%)  "
+        f"3×+={current['corr_3plus']} ({100*current['corr_3plus']//total}%)"
+        + _delta(
+            current["corr_2x"] + current["corr_3plus"],
+            (prev["corr_2x"] + prev["corr_3plus"]) if prev and "corr_2x" in prev else None,
+        )
+    )
+    out.append(
+        f"  source coverage: {100*current['source_chunk_coverage']:.1f}%"
+        + _delta(current["source_chunk_coverage"],
+                 prev.get("source_chunk_coverage") if prev else None)
+    )
+    sess = current["sessions"]
+    ratio = f"{current['atoms']/sess:.1f}" if sess > 0 else "n/a"
+    out.append(
+        f"\nSessions: {sess}"
+        + _delta(sess, prev["sessions"] if prev else None)
+        + f"  (atom/session ratio: {ratio})"
+    )
+
+    out.append("")
+    if prev:
+        out.append(f"## Trends vs last snapshot ({prev['date']})")
+        improvements, regressions = [], []
+        atom_d = current["atoms"] - prev["atoms"]
+        if atom_d > 0:
+            improvements.append(f"+{atom_d} new atoms extracted")
+        elif atom_d < 0:
+            regressions.append(f"{atom_d} atoms lost (rebuild without re-extract?)")
+        corr_now  = current["corr_2x"] + current["corr_3plus"]
+        corr_prev = prev.get("corr_2x", 0) + prev.get("corr_3plus", 0)
+        if corr_now - corr_prev > 0:
+            improvements.append(f"+{corr_now - corr_prev} corroboration events (knowledge confirmed)")
+        conf_d = current["avg_confidence"] - prev.get("avg_confidence", current["avg_confidence"])
+        if conf_d > 0.005:
+            improvements.append(f"confidence +{conf_d:.3f} (facts strengthening)")
+        elif conf_d < -0.005:
+            regressions.append(f"confidence {conf_d:.3f} (new weak atoms diluting average)")
+        cov_d = current["source_chunk_coverage"] - prev.get("source_chunk_coverage", 0)
+        if cov_d > 0.01:
+            improvements.append(f"source coverage +{100*cov_d:.1f}pp (more traceable atoms)")
+        for item in improvements:
+            out.append(f"  ✓ {item}")
+        for item in regressions:
+            out.append(f"  ⚠ {item}")
+        if not improvements and not regressions:
+            out.append("  → no significant changes")
+        try:
+            from datetime import date as _date
+            days_apart = (
+                _date.fromisoformat(current["date"]) - _date.fromisoformat(prev["date"])
+            ).days
+            if days_apart > 0:
+                out.append(
+                    f"\n  Velocity: {atom_d/days_apart:.1f} atoms/day  "
+                    f"({corr_now - corr_prev} corroborations over {days_apart}d)"
+                )
+        except (ValueError, TypeError):
+            pass
+    else:
+        out.append("(run --health again after more sessions to see trends)")
+
+    print("\n".join(out))
+
+    if save:
+        already_today = prev and prev.get("date") == current["date"]
+        if not already_today:
+            HEALTH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with HEALTH_LOG_PATH.open("a") as f:
+                f.write(json.dumps(current) + "\n")
+            print(f"\n[snapshot saved → {HEALTH_LOG_PATH}]")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -1070,6 +1241,9 @@ def main():
                        help="Return ALL sessions from the last N calendar days (no API call)")
     group.add_argument("--learnings", action="store_true",
                        help="Surface recently strengthened/new atoms since last /resume (no API call)")
+    group.add_argument("--health", action="store_true",
+                       help="Print memory health report (atom quality, confidence, coverage trends) "
+                            "and save a daily snapshot to ~/.deus/memory_health.jsonl (no API call)")
     parser.add_argument("--top", type=int, default=3, help="Number of results for --query")
     parser.add_argument("--since", type=int, default=7,
                         help="Lookback window in days for --learnings (default: 7)")
@@ -1081,6 +1255,8 @@ def main():
     parser.add_argument("--compact", action="store_true",
                         help="Compact output for --recent/--recent-days: truncate decisions, strip paths, "
                              "collapse cluster entries. Auto-triggered at >= 12 sessions.")
+    parser.add_argument("--no-save", action="store_true",
+                        help="Skip saving snapshot for --health (useful for CI/dry-run)")
     args = parser.parse_args()
 
     global _client
@@ -1096,6 +1272,9 @@ def main():
         return
     if args.learnings:
         cmd_learnings(since_days=args.since, max_items=args.top)
+        return
+    if args.health:
+        cmd_health(save=not args.no_save)
         return
 
     _client = genai.Client(api_key=load_api_key())
