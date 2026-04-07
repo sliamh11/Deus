@@ -427,6 +427,56 @@ def test_cmd_learnings_cold_start_welcome(mi, fresh_vault, capsys, tmp_path, mon
     assert "Your learnings will appear here" in output
 
 
+# ── PR 1: source chunk preservation ──────────────────────────────────────
+
+
+def test_open_db_adds_source_chunk_column(mi):
+    """open_db() must add source_chunk column on fresh and existing DBs."""
+    db = mi.open_db()
+    cols = {row[1] for row in db.execute("PRAGMA table_info(entries)").fetchall()}
+    db.close()
+    assert "source_chunk" in cols
+
+
+def test_open_db_source_chunk_upgrade_idempotent(mi):
+    """Calling open_db() twice must not raise (column already exists)."""
+    db = mi.open_db()
+    db.close()
+    db2 = mi.open_db()
+    db2.close()
+
+
+def test_write_atom_file_includes_source_excerpt(mi, fresh_vault):
+    """write_atom_file() with source_excerpt writes it into frontmatter."""
+    atom = {"text": "Prefers pytest over unittest", "category": "preference"}
+    path = mi.write_atom_file(atom, "/session.md", "2024-06-15",
+                              source_excerpt="## Decisions Made\nUse pytest.")
+    content = path.read_text()
+    assert "source_excerpt:" in content
+    assert "Decisions Made" in content
+
+
+def test_write_atom_file_no_source_excerpt_when_empty(mi, fresh_vault):
+    """write_atom_file() without source_excerpt omits the field."""
+    atom = {"text": "Prefers dark mode", "category": "preference"}
+    path = mi.write_atom_file(atom, "/session.md", "2024-06-15")
+    content = path.read_text()
+    assert "source_excerpt" not in content
+
+
+def test_write_atom_file_truncates_long_excerpt(mi, fresh_vault):
+    """source_excerpt stored in frontmatter must be ≤ 2000 chars."""
+    long_excerpt = "x" * 5000
+    atom = {"text": "Some preference fact", "category": "preference"}
+    path = mi.write_atom_file(atom, "/session.md", "2024-06-15",
+                              source_excerpt=long_excerpt)
+    content = path.read_text()
+    # Verify truncation happened (not the full 5000) and is bounded near 2000
+    x_count = content.count("x")
+    assert x_count < 5000, "source_excerpt was not truncated"
+    assert x_count <= 2002, f"source_excerpt exceeded expected bound: {x_count}"
+
+
 def test_cmd_learnings_skips_expired_atoms(mi, fresh_vault, capsys, tmp_path, monkeypatch):
     """Atoms past their TTL should not appear."""
     monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
@@ -442,3 +492,37 @@ def test_cmd_learnings_skips_expired_atoms(mi, fresh_vault, capsys, tmp_path, mo
     mi.cmd_learnings(since_days=7, max_items=3)
     output = capsys.readouterr().out
     assert "Expired constraint" not in output
+
+
+def test_rebuild_restores_source_chunk_from_frontmatter(mi, fresh_vault, tmp_path, monkeypatch):
+    """--rebuild reads source_excerpt from atom .md frontmatter and stores in source_chunk column."""
+    atoms_dir = fresh_vault / "Atoms"
+    atoms_dir.mkdir(exist_ok=True)
+    atom_file = atoms_dir / "preference-use-pytest.md"
+    atom_file.write_text(
+        "---\ntype: atom\ncategory: preference\ntags: []\n"
+        "confidence: 0.70\ncorroborations: 2\n"
+        "source: /session.md\ncreated_at: 2024-06-15\nupdated_at: 2024-06-15\nttl_days: 365\n"
+        "source_excerpt: |\n"
+        "  ## Decisions Made\n"
+        "  We chose pytest over unittest for all tests.\n"
+        "---\n"
+        "Prefers pytest over unittest for testing\n"
+    )
+
+    # Stub embed so --rebuild doesn't need API key
+    monkeypatch.setattr(mi, "embed", lambda text: [0.1] * 768)
+    test_db = tmp_path / "memory.db"
+    monkeypatch.setattr(mi, "DB_PATH", test_db)
+
+    mi.cmd_rebuild()
+
+    db = mi.open_db()
+    row = db.execute(
+        "SELECT source_chunk FROM entries WHERE type='atom' LIMIT 1"
+    ).fetchone()
+    db.close()
+
+    assert row is not None
+    assert row[0] is not None, "source_chunk should be restored from frontmatter"
+    assert "pytest" in row[0]

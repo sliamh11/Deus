@@ -127,7 +127,11 @@ def open_db() -> sqlite3.Connection:
         USING vec0(embedding float[{EMBED_DIM}])
     """)
     # Backward-compatible: add atom columns if upgrading an existing DB
-    for col, definition in [("confidence", "REAL DEFAULT 0.0"), ("corroborations", "INTEGER DEFAULT 0")]:
+    for col, definition in [
+        ("confidence", "REAL DEFAULT 0.0"),
+        ("corroborations", "INTEGER DEFAULT 0"),
+        ("source_chunk", "TEXT"),
+    ]:
         try:
             db.execute(f"ALTER TABLE entries ADD COLUMN {col} {definition}")
         except sqlite3.OperationalError:
@@ -498,7 +502,7 @@ def cmd_learnings(since_days: int = 7, max_items: int = 3):
     LAST_RESUME_LEARNINGS.write_text("\n".join(sorted(shown_names)) + "\n")
 
 
-def cmd_query(query: str, top: int = 3, recency_boost: bool = False):
+def cmd_query(query: str, top: int = 3, recency_boost: bool = False, show_source: bool = False):
     db = open_db()
 
     # Check if anything is indexed
@@ -513,7 +517,7 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False):
     rows = db.execute(
         """
         SELECT e.path, e.date, e.tldr, e.topics, e.decisions, e.type,
-               e.confidence, e.corroborations, v.distance
+               e.confidence, e.corroborations, v.distance, e.source_chunk
         FROM embeddings v
         JOIN entries e ON e.id = v.rowid
         WHERE v.embedding MATCH ?
@@ -527,12 +531,13 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False):
     atom_results: list[dict] = []
     seen: dict[str, dict] = {}
 
-    for path, date, tldr, topics, decisions, chunk_type, confidence, corroborations, dist in rows:
+    for path, date, tldr, topics, decisions, chunk_type, confidence, corroborations, dist, source_chunk in rows:
         if chunk_type == "atom":
             if has_atoms and len(atom_results) < top:
                 atom_results.append({
                     "path": path, "chunk": tldr, "confidence": confidence or 0.0,
                     "corroborations": corroborations or 1,
+                    "source_chunk": source_chunk or "",
                 })
         else:
             if path not in seen or (chunk_type == "frontmatter" and seen[path]["type"] != "frontmatter"):
@@ -581,6 +586,9 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False):
                     cat = m.group(1)
             text = a["chunk"] or ""
             lines.append(f"- [{cat} | {a['confidence']:.2f}] {text} ({a['corroborations']}x)")
+        if show_source and a.get("source_chunk"):
+            excerpt = a["source_chunk"][:400].replace("\n", "\n    ")
+            lines.append(f"  Source context:\n    {excerpt}")
         lines.append("")
 
     if seen:
@@ -827,7 +835,7 @@ def bump_corroboration(db: sqlite3.Connection, entry_id: int):
         atom_path.write_text(text)
 
 
-def write_atom_file(atom: dict, source_path: str, today: str) -> Path:
+def write_atom_file(atom: dict, source_path: str, today: str, source_excerpt: str = "") -> Path:
     """Write an atom to the vault Atoms/ directory and return its path."""
     VAULT_ATOMS.mkdir(parents=True, exist_ok=True)
     cat = atom["category"]
@@ -840,10 +848,17 @@ def write_atom_file(atom: dict, source_path: str, today: str) -> Path:
     while path.exists():
         path = VAULT_ATOMS / f"{cat}-{slug}-{counter}.md"
         counter += 1
+    # Build source_excerpt block for frontmatter (truncated to cap file size)
+    excerpt_lines = ""
+    if source_excerpt:
+        truncated = source_excerpt[:2000]
+        indented = "\n".join("  " + line for line in truncated.splitlines())
+        excerpt_lines = f"source_excerpt: |\n{indented}\n"
     path.write_text(
         f"---\ntype: atom\ncategory: {cat}\ntags: []\n"
         f"confidence: 0.50\ncorroborations: 1\n"
-        f"source: {source_path}\ncreated_at: {today}\nupdated_at: {today}\n{ttl_line}\n---\n"
+        f"source: {source_path}\ncreated_at: {today}\nupdated_at: {today}\n{ttl_line}\n"
+        f"{excerpt_lines}---\n"
         f"{atom['text']}\n"
     )
     return path
@@ -865,6 +880,9 @@ def cmd_extract(session_path: str):
     if not has_decisions:
         print("No decisions content — skipping extraction.")
         return
+
+    # Compute once — this is exactly what the LLM will see; store alongside atoms
+    source_excerpt = _extract_content_for_llm(content)
 
     atoms = extract_atoms(content)
     if not atoms:
@@ -908,11 +926,11 @@ def cmd_extract(session_path: str):
             corroborated_count += 1
             print(f"  corroborated: {atom['text'][:70]}")
         else:
-            atom_path = write_atom_file(atom, str(path), today)
+            atom_path = write_atom_file(atom, str(path), today, source_excerpt)
             cur = db.execute(
-                "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations) "
-                "VALUES (?, ?, ?, 'atom', ?, '', 0.50, 1)",
-                [str(atom_path), today, atom["text"], atom["text"]],
+                "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, source_chunk) "
+                "VALUES (?, ?, ?, 'atom', ?, '', 0.50, 1, ?)",
+                [str(atom_path), today, atom["text"], atom["text"], source_excerpt],
             )
             db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
                        [cur.lastrowid, serialize(vec)])
@@ -970,10 +988,18 @@ def cmd_rebuild():
                 conf = float(fm.get("confidence", 0.5))
                 corr = int(fm.get("corroborations", 1))
                 date_str = fm.get("created_at", "")
+                # Restore source_excerpt from .md frontmatter into source_chunk column
+                stored_excerpt = None
+                raw = fm.get("raw", "")
+                excerpt_m = re.search(
+                    r"^source_excerpt:\s*\|\n((?:  .*\n?)*)", raw, re.MULTILINE
+                )
+                if excerpt_m:
+                    stored_excerpt = re.sub(r"^ {2}", "", excerpt_m.group(1), flags=re.MULTILINE).strip()
                 cur = db.execute(
-                    "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations) "
-                    "VALUES (?, ?, ?, 'atom', ?, ?, ?, ?)",
-                    [str(af), date_str, body, body, fm.get("tags", ""), conf, corr],
+                    "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, source_chunk) "
+                    "VALUES (?, ?, ?, 'atom', ?, ?, ?, ?, ?)",
+                    [str(af), date_str, body, body, fm.get("tags", ""), conf, corr, stored_excerpt],
                 )
                 db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
                            [cur.lastrowid, serialize(vec)])
@@ -1014,6 +1040,8 @@ def main():
     parser.add_argument("--steps", type=int, default=3, help="Activation steps for --wander")
     parser.add_argument("--recency-boost", action="store_true",
                         help="Boost recent results in --query (last 7d strong, 30d moderate)")
+    parser.add_argument("--source", action="store_true",
+                        help="Show source excerpt below each atom in --query results")
     args = parser.parse_args()
 
     global _client
@@ -1036,7 +1064,7 @@ def main():
     if args.add:
         cmd_add(args.add)
     elif args.query:
-        cmd_query(args.query, top=args.top, recency_boost=args.recency_boost)
+        cmd_query(args.query, top=args.top, recency_boost=args.recency_boost, show_source=args.source)
     elif args.rebuild:
         cmd_rebuild()
     elif args.extract:
