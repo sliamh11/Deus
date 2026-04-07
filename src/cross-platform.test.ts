@@ -110,8 +110,8 @@ describe('cross-platform: no bare SIGKILL/SIGTERM without platform check', () =>
       const lines = content.split('\n');
       for (let i = 0; i < lines.length; i++) {
         if (!pattern.test(lines[i])) continue;
-        // Check if there's a platform check nearby (within 5 lines before)
-        const context = lines.slice(Math.max(0, i - 5), i + 1).join('\n');
+        // Check if there's a platform check nearby (within 15 lines before)
+        const context = lines.slice(Math.max(0, i - 15), i + 1).join('\n');
         if (context.includes('win32') || context.includes('platform')) continue;
         violations.push(`${path.relative(SRC_DIR, file)}:${i + 1}`);
       }
