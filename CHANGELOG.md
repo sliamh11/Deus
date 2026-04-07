@@ -4,6 +4,43 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0](https://github.com/sliamh11/Deus/compare/v1.1.0...v1.2.0) (2026-04-07)
+
+
+### Features
+
+* **container:** add Google Calendar MCP server for container agents ([#93](https://github.com/sliamh11/Deus/issues/93)) ([b7ae997](https://github.com/sliamh11/Deus/commit/b7ae99707cc8d45c81a66401d7ecaf8ca01d3117))
+* **evolution:** add Claude Code session ingestion via cc-backfill ([#108](https://github.com/sliamh11/Deus/issues/108)) ([39e1ee4](https://github.com/sliamh11/Deus/commit/39e1ee458e6eb9dc08c80455b488e201b24dac6e))
+* **evolution:** add generative provider/registry pattern ([#87](https://github.com/sliamh11/Deus/issues/87)) ([d9e9c1c](https://github.com/sliamh11/Deus/commit/d9e9c1c5fb092860e3e20a4597e03e61fac7d2c7))
+* **evolution:** add interaction compaction and batch judging ([#107](https://github.com/sliamh11/Deus/issues/107)) ([b1ced70](https://github.com/sliamh11/Deus/commit/b1ced70d2d7d4f43de3183b058ed13fe97199984))
+* **evolution:** add LLM domain fallback and reflection maintenance ([#104](https://github.com/sliamh11/Deus/issues/104)) ([c65eb53](https://github.com/sliamh11/Deus/commit/c65eb539a6004824c4be82ef7776964fbde22f88))
+* **evolution:** add storage provider/registry pattern for database abstraction ([#91](https://github.com/sliamh11/Deus/issues/91)) ([1dc3788](https://github.com/sliamh11/Deus/commit/1dc3788d1875cb289df129a910880f308e50683c))
+* **evolution:** document exchange-pair chunking + add --chunk-stats and context_window ([#111](https://github.com/sliamh11/Deus/issues/111)) ([d86344c](https://github.com/sliamh11/Deus/commit/d86344cf0e8d9946b5283f793260cf2a23c6bca8))
+* **evolution:** prefer local EmbeddingGemma over Gemini API ([#105](https://github.com/sliamh11/Deus/issues/105)) ([38e7c8b](https://github.com/sliamh11/Deus/commit/38e7c8b93b9fca080dd413ffef3c83b71709aad0))
+* **evolution:** switch default Ollama judge from qwen3.5:4b to gemma4:e4b ([#84](https://github.com/sliamh11/Deus/issues/84)) ([67865a2](https://github.com/sliamh11/Deus/commit/67865a2a76cefa4865313ebd225566df1bdc38e4))
+* **memory:** add --health analytics to track system improvement over time ([#113](https://github.com/sliamh11/Deus/issues/113)) ([7fbda4b](https://github.com/sliamh11/Deus/commit/7fbda4b38e83c3a906778bbaa9523240afa01ab5))
+* **memory:** preserve source excerpt alongside extracted atoms ([#109](https://github.com/sliamh11/Deus/issues/109)) ([52ceffb](https://github.com/sliamh11/Deus/commit/52ceffbdebccc49d6425bfdb138fe034646b4c54))
+* **setup,evolution:** add Ollama model advisor step ([#103](https://github.com/sliamh11/Deus/issues/103)) ([f1c8a23](https://github.com/sliamh11/Deus/commit/f1c8a238bf7d24deead639575d7d7dcce1986a3d))
+* **setup:** add channel smoke test and decouple channels from /setup ([#92](https://github.com/sliamh11/Deus/issues/92)) ([3216ff1](https://github.com/sliamh11/Deus/commit/3216ff152234a59edca2010feaf96d228453cbdb))
+
+
+### Bug Fixes
+
+* **channels:** enable MCP logging capability for message delivery ([#88](https://github.com/sliamh11/Deus/issues/88)) ([d38d7fa](https://github.com/sliamh11/Deus/commit/d38d7fad0419a7453e5739d5c244f1c0fc3ab01c))
+* **channels:** fix Windows path handling across all channel adapters and startup ([#101](https://github.com/sliamh11/Deus/issues/101)) ([05d3523](https://github.com/sliamh11/Deus/commit/05d3523fd7b65bc8ac34357bfad0b1dc92456202))
+* **ci:** make publish idempotent and use PAT for release-please ([#76](https://github.com/sliamh11/Deus/issues/76)) ([ccf12f6](https://github.com/sliamh11/Deus/commit/ccf12f69d3bf69afcd1b1e96a475ba9630d89e6e))
+* **cli:** guard against overwriting foreign binaries at CLI symlink path ([#82](https://github.com/sliamh11/Deus/issues/82)) ([574fa7f](https://github.com/sliamh11/Deus/commit/574fa7ff4e98f8885d89603ed3a17341c234adee))
+* **cli:** make CLI symlink resilient to repo moves and stale shadows ([#81](https://github.com/sliamh11/Deus/issues/81)) ([153d787](https://github.com/sliamh11/Deus/commit/153d78708a0e39dc92672fe795b7d9ce6c5591ab))
+* **cli:** remove frozen OAuth token export that causes 401 after /login ([#100](https://github.com/sliamh11/Deus/issues/100)) ([5e73ace](https://github.com/sliamh11/Deus/commit/5e73ace3c5c7610bb880668acfd6d0dbe3113978))
+* **evolution:** drop deepeval dependency — use plain Python judge classes ([#115](https://github.com/sliamh11/Deus/issues/115)) ([b16ab33](https://github.com/sliamh11/Deus/commit/b16ab33b87dadc6dbd2af4ec56bcfd8e1d02ea39))
+* **setup:** add /opt/homebrew/bin to launchd plist PATH for Apple Silicon ([#80](https://github.com/sliamh11/Deus/issues/80)) ([cbbf214](https://github.com/sliamh11/Deus/commit/cbbf214e56c66d20904ae33f828693689a821ca6))
+* **test:** make container-mounter tests cross-platform for Windows CI ([#94](https://github.com/sliamh11/Deus/issues/94)) ([68d468a](https://github.com/sliamh11/Deus/commit/68d468a92fb5ab014fa2a43345d38d0c4a10315f))
+
+
+### Performance Improvements
+
+* **memory:** add compact mode for --recent/--recent-days output ([#110](https://github.com/sliamh11/Deus/issues/110)) ([0f6fab2](https://github.com/sliamh11/Deus/commit/0f6fab24eb9aaae50edcb00b602e796be6904914))
+
 ## [1.1.0](https://github.com/sliamh11/Deus/compare/v1.0.0...v1.1.0) (2026-04-05)
 
 
