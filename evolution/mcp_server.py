@@ -22,8 +22,11 @@ Register in ~/.claude/settings.json:
 """
 import asyncio
 import json
+import logging
 import sys
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -166,8 +169,11 @@ async def _async_judge_and_reflect(
                 group_folder=group_folder,
             )
     except Exception as exc:
-        import traceback
-        traceback.print_exc(file=sys.stderr)
+        log.error(
+            'evolution: async judge failed for interaction %s — %s: %s',
+            interaction_id, type(exc).__name__, exc,
+            exc_info=True,
+        )
 
 
 if __name__ == "__main__":

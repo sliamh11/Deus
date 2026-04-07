@@ -54,6 +54,7 @@ export async function run(_args: string[]): Promise<void> {
 
   if (platform === 'macos') {
     setupLaunchd(projectRoot, nodePath, homeDir);
+    setupLogReviewLaunchd(projectRoot, homeDir);
   } else if (platform === 'linux') {
     setupLinux(projectRoot, nodePath, homeDir);
   } else if (platform === 'windows') {
@@ -145,6 +146,72 @@ function setupLaunchd(
     STATUS: 'success',
     LOG: 'logs/setup.log',
   });
+}
+
+function setupLogReviewLaunchd(projectRoot: string, homeDir: string): void {
+  const pythonPath = (() => {
+    for (const bin of ['python3', 'python']) {
+      try {
+        return execSync(`which ${bin}`, { encoding: 'utf-8' }).trim();
+      } catch {
+        /* try next */
+      }
+    }
+    return 'python3';
+  })();
+
+  const plistPath = path.join(
+    homeDir,
+    'Library',
+    'LaunchAgents',
+    'com.deus.log-review.plist',
+  );
+
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.deus.log-review</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${pythonPath}</string>
+        <string>${projectRoot}/scripts/log_review.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${projectRoot}</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>8</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${homeDir}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>${projectRoot}/logs/log-review.log</string>
+    <key>StandardErrorPath</key>
+    <string>${projectRoot}/logs/log-review.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>`;
+
+  fs.writeFileSync(plistPath, plist);
+  try {
+    execSync(`launchctl load ${JSON.stringify(plistPath)}`, {
+      stdio: 'ignore',
+    });
+    logger.info({ plistPath }, 'Log review job scheduled (daily 08:00)');
+  } catch {
+    logger.warn('launchctl load for log-review failed (may already be loaded)');
+  }
 }
 
 function setupLinux(

@@ -12,9 +12,12 @@ Usage:
 """
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
+
+log = logging.getLogger(__name__)
 
 # Allow running as a script (python evolution/cli.py) or module (-m evolution.cli)
 if __name__ == "__main__" and __package__ is None:
@@ -123,8 +126,9 @@ def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> Non
         # Data-count check + extraction (extract_principles handles its own min_new gate)
         try:
             extract_principles(domain=domain)
-        except Exception:
-            pass  # Non-fatal — principles are supplementary
+        except Exception as exc:
+            log.warning('evolution: principles extraction failed for domain=%s — %s: %s',
+                        domain, type(exc).__name__, exc)
 
 
 def _maybe_auto_optimize(domain_presets: Optional[list] = None) -> None:
@@ -199,15 +203,15 @@ def cmd_log_interaction(json_str: str) -> None:
     # Batch judge: check if we've accumulated enough unjudged interactions
     try:
         _maybe_batch_judge(domain_presets)
-    except Exception:
-        pass  # Non-fatal — judging will catch up during maintenance
+    except Exception as exc:
+        log.warning('evolution: batch judge failed — %s: %s', type(exc).__name__, exc)
 
     # Post-interaction maintenance check (non-blocking, best-effort).
     try:
         from .maintenance import run_maintenance
         run_maintenance()
-    except Exception:
-        pass  # Non-fatal — maintenance is supplementary
+    except Exception as exc:
+        log.warning('evolution: maintenance failed — %s: %s', type(exc).__name__, exc)
 
     print(json.dumps({"id": iid, "status": "ok"}))
 
