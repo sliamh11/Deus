@@ -28,7 +28,7 @@ import {
 import { detectAuthMode } from './credential-proxy.js';
 import { buildVolumeMounts } from './container-mounter.js';
 import { RegisteredGroup } from './types.js';
-import { detectDomains } from './domain-presets.js';
+import { detectDomainsWithFallback } from './domain-presets.js';
 import { getReflections, logInteraction } from './evolution-client.js';
 import { detectUserSignal } from './user-signal.js';
 import { getProjectById } from './db.js';
@@ -126,8 +126,10 @@ export async function runContainerAgent(
   }
 
   // Detect domain tags for evolution loop metadata (no prompt injection).
+  // detectDomainsWithFallback: fast keyword path first; if no keywords match,
+  // falls back to a Gemini LLM call bounded to 3 s. Never throws.
   const userSignal = detectUserSignal(input.prompt);
-  const domains = detectDomains(input.prompt);
+  const domains = await detectDomainsWithFallback(input.prompt);
 
   // Pre-dispatch: inject project type hint if group has an associated project.
   // This gives the agent immediate context about the project without waiting
