@@ -36,7 +36,7 @@ def generate(prompt: str, model: Optional[str] = None, provider: Optional[str] =
     if provider:
         return registry.resolve(provider).generate(prompt, model)
 
-    # Try providers in priority order, fall back on quota errors
+    # Try providers in priority order, fall back on quota/transient errors
     last_exc = None
     is_first = True
     for name in registry.list_providers():

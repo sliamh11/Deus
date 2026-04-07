@@ -159,9 +159,9 @@ def _reflect_single(scored: dict, config: dict) -> bool:
 
 def judge_pending_interactions() -> int:
     """
-    Judge all unjudged interactions using a two-pass approach:
-      Pass 1: Score all interactions in parallel (GPU-bound, benefits from OLLAMA_NUM_PARALLEL)
-      Pass 2: Generate reflections for low/high scorers in parallel
+    Judge unjudged interactions using a two-pass parallel approach:
+      Pass 1: Score all interactions concurrently (GPU-bound)
+      Pass 2: Generate reflections for low/high scorers concurrently
 
     Returns the number of interactions successfully scored.
     """
@@ -189,8 +189,9 @@ def judge_pending_interactions() -> int:
 
     workers = int(os.environ.get("EVOLUTION_JUDGE_WORKERS", "4"))
 
-    # Pass 1: Score all interactions in parallel
+    # Pass 1: Score all in parallel
     scored_results = []
+    parse_errors = 0
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(_score_single, row, judge): row["id"]
@@ -198,14 +199,14 @@ def judge_pending_interactions() -> int:
         }
         for future in as_completed(futures):
             result = future.result()
-            if result and not result["is_parse_error"]:
+            if result is None:
+                continue
+            if result["is_parse_error"]:
+                parse_errors += 1
+            else:
                 scored_results.append(result)
 
-    judged = len(scored_results) + sum(
-        1 for f in futures if f.result() is not None and f.result()["is_parse_error"]
-    )
-
-    # Pass 2: Generate reflections for interactions that need them
+    # Pass 2: Reflect in parallel for interactions that need it
     needs_reflection = [
         s for s in scored_results
         if s["score"] < config["reflection_threshold"]
@@ -215,7 +216,7 @@ def judge_pending_interactions() -> int:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             list(pool.map(lambda s: _reflect_single(s, config), needs_reflection))
 
-    return judged
+    return len(scored_results) + parse_errors
 
 
 def _truncation_fallback(prompt_snippet: str, tools_info: str, score_info: str) -> str:
@@ -271,15 +272,11 @@ def compact_old_interactions() -> int:
 
             if can_generate:
                 summary_prompt = (
-                    "Summarize this AI interaction for a quality evaluation pipeline. "
-                    "The summary will be used for pattern extraction and trend analysis "
-                    "(the interaction has already been scored — preserve enough context "
-                    "for a reader to understand WHY it scored well or poorly). "
-                    "Include: (1) what the user asked for, (2) what the assistant did, "
-                    "(3) tools used if any, (4) whether the outcome was successful. "
-                    "Keep it under 100 words, one paragraph.\n\n"
-                    f"User asked: {prompt_snippet}\n"
-                    f"Assistant responded: {response_snippet}\n"
+                    "Summarize this AI interaction for eval pipeline trend analysis. "
+                    "Preserve WHY it scored well/poorly. Include: user ask, assistant action, "
+                    "tools used, outcome success. Under 100 words, one paragraph.\n\n"
+                    f"User: {prompt_snippet}\n"
+                    f"Assistant: {response_snippet}\n"
                     f"{tools_info}{score_info}"
                 )
                 try:

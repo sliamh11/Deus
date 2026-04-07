@@ -10,34 +10,17 @@ from typing import Optional
 from ..config import JUDGE_MODEL
 from ..generative import generate
 
-_REFLECTION_PROMPT = """
-You are analyzing an AI assistant interaction that received a low quality score.
-Generate a concise, actionable lesson that the assistant should remember for similar
-future situations.
+_REFLECTION_PROMPT = """Analyze this low-scoring AI interaction and extract an actionable lesson.
 
-## Interaction
+User: {prompt}
+Assistant: {response}
+Tools: {tools}
+Score: {score:.2f}/1.0 | Breakdown: {dims} | Rationale: {rationale}
 
-**User prompt:**
-{prompt}
-
-**Assistant response:**
-{response}
-
-**Tools used:** {tools}
-
-**Quality score:** {score:.2f} / 1.0
-**Score breakdown:** {dims}
-**Judge rationale:** {rationale}
-
-## Instructions
-
-Write a reflection in exactly this format:
-- **What went wrong:** (1 sentence — be specific)
-- **Next time:** (1-2 sentences — concrete action to take differently)
-- **Category:** one of: tool_use | reasoning | style | safety
-
-Keep the whole reflection under 100 words. Be concrete and actionable.
-Focus only on what is fixable by the agent (not API errors or timeouts).
+Reply in this exact format (under 100 words, agent-fixable issues only):
+- What went wrong: (1 sentence, specific)
+- Next time: (1-2 sentences, concrete action)
+- Category: tool_use | reasoning | style | safety
 """
 
 
@@ -68,32 +51,17 @@ def generate_reflection(
     return text, category
 
 
-_POSITIVE_PROMPT = """
-You are analyzing an AI assistant interaction that received a HIGH quality score.
-Extract the key pattern that made this response excellent, so it can be replicated.
+_POSITIVE_PROMPT = """Analyze this high-scoring AI interaction and extract the replicable pattern.
 
-## Interaction
+User: {prompt}
+Assistant: {response}
+Tools: {tools}
+Score: {score:.2f}/1.0 | Breakdown: {dims} | Rationale: {rationale}
 
-**User prompt:**
-{prompt}
-
-**Assistant response:**
-{response}
-
-**Tools used:** {tools}
-
-**Quality score:** {score:.2f} / 1.0
-**Score breakdown:** {dims}
-**Judge rationale:** {rationale}
-
-## Instructions
-
-Write a reflection in exactly this format:
-- **What worked:** (1 sentence — be specific about the technique/approach)
-- **Pattern to replicate:** (1-2 sentences — generalizable principle)
-- **Category:** one of: tool_use | reasoning | style | positive_pattern
-
-Keep the whole reflection under 100 words. Focus on what is replicable in future interactions.
+Reply in this exact format (under 100 words, focus on replicable patterns):
+- What worked: (1 sentence, specific technique/approach)
+- Pattern to replicate: (1-2 sentences, generalizable principle)
+- Category: tool_use | reasoning | style | positive_pattern
 """
 
 
