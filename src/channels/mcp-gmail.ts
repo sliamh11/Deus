@@ -6,6 +6,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import { PROJECT_ROOT } from '../config.js';
 import { McpChannelAdapter } from './mcp-adapter.js';
@@ -23,9 +24,7 @@ registerChannel('gmail', (opts) => {
 
   let serverPath: string;
   try {
-    serverPath = import.meta
-      .resolve('@deus-ai/gmail-mcp')
-      .replace('file://', '');
+    serverPath = fileURLToPath(import.meta.resolve('@deus-ai/gmail-mcp'));
   } catch {
     serverPath = path.join(
       PROJECT_ROOT,

@@ -75,7 +75,10 @@ Before modifying `eval/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `
 
 All source code must work on macOS, Linux, and Windows. See `docs/CROSS_PLATFORM.md` for rules. Key points:
 - Use `path.join()` or `path.resolve()`, never string concatenation for paths
-- Use `os.tmpdir()`, never hardcoded `/tmp`
+- Use `fileURLToPath()` / `pathToFileURL()`, never `.replace('file://', '')` or `new URL('file://' + path)`
+- Use `os.tmpdir()`, never hardcoded `/tmp`; use `os.devNull`, never `/dev/null`
+- Use platform-aware process kill (see `killProcess()` in `remote-control.ts`), never bare `.kill('SIGKILL')`
+- Automated pattern detection runs in `src/cross-platform.test.ts` on all CI platforms
 - Test with `npx vitest run` on the target platform
 
 ## MCP Channel Servers

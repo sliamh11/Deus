@@ -113,7 +113,10 @@ export class WhatsAppProvider implements ChannelProvider {
       },
       printQRInTerminal: false,
       logger: baileysLogger,
-      browser: Browsers.macOS('Chrome'),
+      browser:
+        process.platform === 'win32'
+          ? Browsers.windows('Chrome')
+          : Browsers.macOS('Chrome'),
       cachedGroupMetadata: async (jid: string) =>
         this.getNormalizedGroupMetadata(jid),
       getMessage: async (key: WAMessageKey) => {

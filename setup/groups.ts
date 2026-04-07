@@ -149,7 +149,7 @@ async function connect() {
     auth: { creds: state.creds, keys: state.keys },
     printQRInTerminal: false,
     logger,
-    browser: Browsers.macOS('Chrome'),
+    browser: process.platform === 'win32' ? Browsers.windows('Chrome') : Browsers.macOS('Chrome'),
   });
 
   const timeout = setTimeout(() => {

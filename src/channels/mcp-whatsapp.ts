@@ -5,6 +5,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import {
   ASSISTANT_HAS_OWN_NUMBER,
@@ -23,9 +24,7 @@ registerChannel('whatsapp', (opts) => {
   let serverPath: string;
   try {
     // When @deus-ai/whatsapp-mcp is installed as a dependency
-    serverPath = import.meta
-      .resolve('@deus-ai/whatsapp-mcp')
-      .replace('file://', '');
+    serverPath = fileURLToPath(import.meta.resolve('@deus-ai/whatsapp-mcp'));
   } catch {
     // Fallback: local packages directory (monorepo dev)
     serverPath = path.join(
