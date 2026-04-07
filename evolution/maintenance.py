@@ -168,6 +168,16 @@ def judge_pending_interactions() -> int:
     return judged
 
 
+def _truncation_fallback(prompt_snippet: str, tools_info: str, score_info: str) -> str:
+    """Build a compact summary from truncated prompt + metadata when no LLM is available."""
+    parts = [prompt_snippet[:200]]
+    if tools_info:
+        parts.append(tools_info.strip())
+    if score_info:
+        parts.append(score_info.strip())
+    return " ".join(parts) + " [compacted]"
+
+
 def compact_old_interactions() -> int:
     """
     Replace old interactions' full text with a one-line summary.
@@ -202,19 +212,33 @@ def compact_old_interactions() -> int:
             prompt_snippet = (row["prompt"] or "")[:500]
             response_snippet = (row.get("response") or "")[:500]
 
+            tools_info = ""
+            if row.get("tools_used"):
+                tools_info = f" Tools used: {row['tools_used']}."
+            score_info = ""
+            if row.get("judge_score") is not None:
+                score_info = f" Judge score: {row['judge_score']:.2f}."
+
             if can_generate:
                 summary_prompt = (
-                    "Summarize this AI interaction in one sentence (under 100 words). "
-                    f"User asked: {prompt_snippet} "
-                    f"Assistant responded: {response_snippet}"
+                    "Summarize this AI interaction for a quality evaluation pipeline. "
+                    "The summary will be used for pattern extraction and trend analysis "
+                    "(the interaction has already been scored — preserve enough context "
+                    "for a reader to understand WHY it scored well or poorly). "
+                    "Include: (1) what the user asked for, (2) what the assistant did, "
+                    "(3) tools used if any, (4) whether the outcome was successful. "
+                    "Keep it under 100 words, one paragraph.\n\n"
+                    f"User asked: {prompt_snippet}\n"
+                    f"Assistant responded: {response_snippet}\n"
+                    f"{tools_info}{score_info}"
                 )
                 try:
                     summary = gen_generate(summary_prompt)
                     summary = summary.strip()[:500]
                 except Exception:
-                    summary = prompt_snippet[:200] + " [compacted]"
+                    summary = _truncation_fallback(prompt_snippet, tools_info, score_info)
             else:
-                summary = prompt_snippet[:200] + " [compacted]"
+                summary = _truncation_fallback(prompt_snippet, tools_info, score_info)
 
             store.compact_interaction(row["id"], summary)
             compacted += 1

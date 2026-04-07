@@ -433,8 +433,10 @@ def test_compact_old_interactions_with_no_provider():
 
     assert count == 1
     row = store.get_interaction("fallback1")
-    assert row["prompt"].endswith("[compacted]")
+    assert "[compacted]" in row["prompt"]
     assert row["response"] is None
+    # Score metadata should be included in fallback summary
+    assert "0.70" in row["prompt"]
 
 
 # ── Batch judging tests ──────────────────────────────────────────────────────
