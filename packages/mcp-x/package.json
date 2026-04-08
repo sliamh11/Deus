@@ -1,0 +1,33 @@
+{
+  "name": "@deus-ai/x-mcp",
+  "version": "1.0.0",
+  "description": "X (Twitter) MCP server — post, like, reply, retweet, and quote tweets via the Twitter API v2",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "deus-ai-x-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "pino": "^10.3.1",
+    "twitter-api-v2": "^1.19.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}
