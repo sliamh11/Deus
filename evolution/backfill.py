@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Iterator
 
-from .config import REFLECTION_THRESHOLD
+from .config import REFLECTION_THRESHOLD, MAX_REFLECTIONS_TO_GENERATE
 from .ilog.interaction_log import log_interaction, update_score
 from .storage import get_storage
 from .judge import make_runtime_judge
@@ -293,31 +293,38 @@ def run_backfill(
                   f"s={result.safety:.2f}  t={result.tool_use:.2f}  "
                   f"p={result.personalization:.2f}")
 
-        # Generate reflection for low-scoring interactions
+        # Generate reflection(s) for low-scoring interactions
         if result.score < REFLECTION_THRESHOLD:
             try:
-                content, category = generate_reflection(
-                    prompt=pair["prompt"],
-                    response=pair["response"],
-                    score=result.score,
-                    dims={
-                        "quality": result.quality,
-                        "safety": result.safety,
-                        "tool_use": result.tool_use,
-                        "personalization": result.personalization,
-                    },
-                    rationale=result.rationale,
-                )
-                save_reflection(
-                    content=content,
-                    category=category,
-                    score_at_gen=result.score,
-                    interaction_id=iid,
-                    group_folder=pair["group_folder"],
-                )
-                stats["reflections_generated"] += 1
-                if verbose:
-                    print(f"  → reflection generated ({category}): {content[:80]}…")
+                dims = {
+                    "quality": result.quality,
+                    "safety": result.safety,
+                    "tool_use": result.tool_use,
+                    "personalization": result.personalization,
+                }
+                generated_contents: set[str] = set()
+                for _ in range(MAX_REFLECTIONS_TO_GENERATE):
+                    content, category = generate_reflection(
+                        prompt=pair["prompt"],
+                        response=pair["response"],
+                        score=result.score,
+                        dims=dims,
+                        rationale=result.rationale,
+                    )
+                    if content in generated_contents:
+                        break  # LLM returned identical text; stop early
+                    generated_contents.add(content)
+                    saved = save_reflection(
+                        content=content,
+                        category=category,
+                        score_at_gen=result.score,
+                        interaction_id=iid,
+                        group_folder=pair["group_folder"],
+                    )
+                    if saved:
+                        stats["reflections_generated"] += 1
+                        if verbose:
+                            print(f"  → reflection generated ({category}): {content[:80]}…")
             except Exception as exc:
                 if verbose:
                     print(f"  !! reflection failed: {exc}")
