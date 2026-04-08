@@ -20,8 +20,9 @@ from evolution.ilog.interaction_log import (
 @pytest.fixture(autouse=True)
 def patch_db_path(tmp_path, monkeypatch):
     test_db = tmp_path / "test_ilog.db"
-    monkeypatch.setattr(db_mod, "DB_PATH", test_db)
-    monkeypatch.setattr(config_mod, "DB_PATH", test_db)
+    monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "DB_PATH", tmp_path / "nonexistent_legacy.db")
     yield test_db
 
 

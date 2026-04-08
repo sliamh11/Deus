@@ -244,6 +244,7 @@ def run_cc_backfill(
     dry_run: bool = False,
     limit: Optional[int] = None,
     verbose: bool = True,
+    no_judge: bool = False,
 ) -> dict:
     """Run the CC session backfill."""
     pairs = collect_pairs(sessions_dir, project_filter, limit)
@@ -276,13 +277,16 @@ def run_cc_backfill(
         return stats
 
     # Import judge lazily — it may not be available in all environments
-    try:
-        from .judge import make_runtime_judge
-        judge = make_runtime_judge()
-    except Exception as exc:
-        print(f"ERROR: Cannot create judge: {exc}")
-        print("Logging interactions without scores. Run maintenance to judge later.")
+    if no_judge:
         judge = None
+    else:
+        try:
+            from .judge import make_runtime_judge
+            judge = make_runtime_judge()
+        except Exception as exc:
+            print(f"ERROR: Cannot create judge: {exc}")
+            print("Logging interactions without scores. Run maintenance to judge later.")
+            judge = None
 
     from .reflexion.generator import generate_reflection, generate_positive_reflection
     from .reflexion.store import save_reflection
@@ -442,6 +446,8 @@ def main() -> None:
                         help="Print current backfill status and exit")
     parser.add_argument("--quiet", action="store_true",
                         help="Suppress per-pair output")
+    parser.add_argument("--no-judge", action="store_true",
+                        help="Skip judging; log interactions only (judge later via maintenance)")
     args = parser.parse_args()
 
     if args.status:
@@ -454,6 +460,7 @@ def main() -> None:
         dry_run=args.dry_run,
         limit=args.limit,
         verbose=not args.quiet,
+        no_judge=args.no_judge,
     )
 
     print(f"\n{'[dry-run] ' if args.dry_run else ''}Done.")

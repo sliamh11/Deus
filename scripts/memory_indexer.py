@@ -32,6 +32,7 @@ from google.genai import types as genai_types
 
 from evolution.config import (
     EMBED_DIM,
+    EVOLUTION_DB_PATH,
     GEN_MODELS,
     load_api_key as _load_api_key,
 )
@@ -518,12 +519,12 @@ def cmd_recent(n: int = 3, days: bool = False, compact: bool = False):
     parts = [f"{len(selected)} sessions across {total_days} day{'s' if total_days != 1 else ''}"]
     if total_atoms > 0:
         parts.append(f"{total_atoms} atoms")
-    # Check for reflections in shared DB (optional — evolution may not be set up)
+    # Check for reflections in evolution DB (optional — evolution may not be set up)
     try:
-        if DB_PATH.exists():
-            _db = sqlite3.connect(DB_PATH)
+        if EVOLUTION_DB_PATH.exists():
+            _db = sqlite3.connect(EVOLUTION_DB_PATH)
             reflection_count = _db.execute(
-                "SELECT COUNT(*) FROM reflections WHERE archived = 0"
+                "SELECT COUNT(*) FROM reflections WHERE archived_at IS NULL"
             ).fetchone()[0]
             _db.close()
             if reflection_count > 0:

@@ -2,7 +2,7 @@
 Tests for evolution/cli.py::cmd_log_interaction.
 
 Mocks the judge (make_runtime_judge) and embed function to avoid real API calls.
-Uses a temp DB via monkeypatching evolution.db.DB_PATH.
+Uses a temp DB via monkeypatching evolution.db.EVOLUTION_DB_PATH.
 """
 import asyncio
 import json
@@ -21,8 +21,9 @@ from evolution.judge.base import JudgeResult
 @pytest.fixture(autouse=True)
 def patch_db_path(tmp_path, monkeypatch):
     test_db = tmp_path / "cli_test.db"
-    monkeypatch.setattr(db_mod, "DB_PATH", test_db)
-    monkeypatch.setattr(config_mod, "DB_PATH", test_db)
+    monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "DB_PATH", tmp_path / "nonexistent_legacy.db")
     yield test_db
 
 
@@ -594,8 +595,9 @@ def test_main_log_interaction_dispatch(monkeypatch, tmp_path):
 
     # We can't easily monkeypatch across subprocess, so call main() directly
     test_db = tmp_path / "main_dispatch_test.db"
-    monkeypatch.setattr(db_mod_inner, "DB_PATH", test_db)
-    monkeypatch.setattr(config_mod_inner, "DB_PATH", test_db)
+    monkeypatch.setattr(db_mod_inner, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(config_mod_inner, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(config_mod_inner, "DB_PATH", tmp_path / "nonexistent_legacy.db")
     monkeypatch.setattr(embed_mod_inner, "_provider", None)
     monkeypatch.setattr("evolution.reflexion.store._embed", lambda text: [0.1] * 768)
 
