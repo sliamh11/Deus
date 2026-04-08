@@ -1133,3 +1133,75 @@ def test_backfill_fts_idempotent(mi, tmp_path):
     db = mi.open_db()
     mi._backfill_fts(db)
     mi._backfill_fts(db)  # must not raise
+
+
+# ── cmd_rebuild safety guard ─────────────────────────────────────────────
+
+
+def test_rebuild_aborts_if_db_contains_evolution_tables(mi, tmp_path, fresh_vault):
+    """cmd_rebuild refuses to delete a DB that contains evolution tables."""
+    import sqlite3
+
+    # Create a session log so rebuild doesn't fail on missing logs
+    log_dir = fresh_vault / "Session-Logs" / "2024-01-01"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "test.md").write_text("---\ndate: 2024-01-01\n---\n# Test")
+
+    # Create a DB with evolution tables (simulating the old shared-DB scenario)
+    db = sqlite3.connect(mi.DB_PATH)
+    db.execute("CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY)")
+    db.execute("CREATE TABLE IF NOT EXISTS interactions (id TEXT PRIMARY KEY)")
+    db.commit()
+    db.close()
+
+    with pytest.raises(SystemExit) as exc_info:
+        mi.cmd_rebuild()
+    assert exc_info.value.code == 1
+
+    # DB should NOT have been deleted
+    assert mi.DB_PATH.exists()
+    db = sqlite3.connect(mi.DB_PATH)
+    tables = {r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+    ).fetchall()}
+    db.close()
+    assert "interactions" in tables
+
+
+def test_rebuild_proceeds_if_db_has_no_evolution_tables(mi, tmp_path, fresh_vault):
+    """cmd_rebuild deletes and recreates DB when no evolution tables present."""
+    import sqlite3
+
+    # Create a session log
+    log_dir = fresh_vault / "Session-Logs" / "2024-01-01"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "test.md").write_text("---\ndate: 2024-01-01\n---\n# Test")
+
+    # Create a DB with only memory-indexer tables (safe to delete)
+    db = sqlite3.connect(mi.DB_PATH)
+    db.execute("CREATE TABLE IF NOT EXISTS entries (id TEXT PRIMARY KEY)")
+    db.execute("CREATE TABLE IF NOT EXISTS atoms (id TEXT PRIMARY KEY)")
+    db.commit()
+    db.close()
+
+    # Should NOT raise — safe to rebuild
+    mi.cmd_rebuild()
+
+    # DB should have been recreated (old tables gone, new schema applied)
+    assert mi.DB_PATH.exists()
+
+
+def test_rebuild_proceeds_if_no_db_exists(mi, tmp_path, fresh_vault):
+    """cmd_rebuild works fine when DB doesn't exist yet."""
+    # Create a session log
+    log_dir = fresh_vault / "Session-Logs" / "2024-01-01"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "test.md").write_text("---\ndate: 2024-01-01\n---\n# Test")
+
+    # Ensure no DB exists
+    if mi.DB_PATH.exists():
+        mi.DB_PATH.unlink()
+
+    # Should NOT raise
+    mi.cmd_rebuild()
+    assert mi.DB_PATH.exists()
