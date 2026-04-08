@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -181,6 +182,13 @@ def cmd_log_interaction(json_str: str) -> None:
         params = json.loads(json_str)
     except json.JSONDecodeError:
         print(json.dumps({"error": "Invalid JSON"}))
+        return
+
+    # Skip evolution tracking for opted-out groups (e.g. automated/scheduled agents)
+    group_folder = params.get("group_folder", "unknown")
+    skip_groups = os.environ.get("EVOLUTION_SKIP_GROUPS", "").split(",")
+    if group_folder in skip_groups:
+        print(json.dumps({"id": params.get("id", ""), "status": "skipped", "reason": "group opted out"}))
         return
 
     from .ilog.interaction_log import log_interaction

@@ -92,8 +92,9 @@ def clean_registry():
 def sqlite_provider(tmp_path, monkeypatch):
     """Return a SQLiteStorageProvider backed by a temp DB."""
     test_db = tmp_path / "test_storage.db"
-    monkeypatch.setattr(config_mod, "DB_PATH", test_db)
-    monkeypatch.setattr(db_mod, "DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "DB_PATH", tmp_path / "nonexistent_legacy.db")
     return SQLiteStorageProvider()
 
 
@@ -648,3 +649,92 @@ class TestBuiltInProviders:
         assert p.name == "sqlite"
         assert p.priority == 10
         assert p.is_available() is True
+
+
+class TestLegacyMigration:
+    """Test auto-migration of evolution tables from legacy shared memory.db."""
+
+    def test_migrates_interactions_from_legacy(self, tmp_path, monkeypatch):
+        """When evolution.db doesn't exist but memory.db has interactions, migrate them."""
+        import sqlite3
+        import sqlite_vec
+
+        legacy_db = tmp_path / "memory.db"
+        evolution_db = tmp_path / "evolution.db"
+
+        # Create legacy DB with an interaction
+        conn = sqlite3.connect(legacy_db)
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.execute("""CREATE TABLE interactions (
+            id TEXT PRIMARY KEY, timestamp TEXT NOT NULL,
+            group_folder TEXT NOT NULL, prompt TEXT NOT NULL,
+            response TEXT, tools_used TEXT, latency_ms REAL,
+            judge_score REAL, judge_dims TEXT,
+            eval_suite TEXT DEFAULT 'runtime', session_id TEXT)""")
+        conn.execute("""INSERT INTO interactions (id, timestamp, group_folder, prompt, judge_score)
+            VALUES ('test-1', '2026-04-07T00:00:00', 'test', 'hello', 0.9)""")
+        # Add an indexer table too
+        conn.execute("CREATE TABLE entries (id INTEGER PRIMARY KEY, path TEXT, chunk TEXT)")
+        conn.execute("INSERT INTO entries VALUES (1, '/test', 'chunk')")
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(config_mod, "DB_PATH", legacy_db)
+        monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", evolution_db)
+        monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", evolution_db)
+
+        provider = SQLiteStorageProvider()
+        interaction = provider.get_interaction("test-1")
+        assert interaction is not None
+        assert interaction["judge_score"] == 0.9
+        assert evolution_db.exists()
+
+    def test_no_migration_when_evolution_db_exists(self, tmp_path, monkeypatch):
+        """If evolution.db already exists, don't migrate even if memory.db has data."""
+        import sqlite3
+
+        legacy_db = tmp_path / "memory.db"
+        evolution_db = tmp_path / "evolution.db"
+
+        # Create legacy DB with data
+        conn = sqlite3.connect(legacy_db)
+        conn.execute("""CREATE TABLE interactions (
+            id TEXT PRIMARY KEY, timestamp TEXT NOT NULL,
+            group_folder TEXT NOT NULL, prompt TEXT NOT NULL)""")
+        conn.execute("INSERT INTO interactions VALUES ('old-1', '2026-01-01', 'g', 'p')")
+        conn.commit()
+        conn.close()
+
+        # Create empty evolution.db (already exists)
+        evolution_db.touch()
+
+        monkeypatch.setattr(config_mod, "DB_PATH", legacy_db)
+        monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", evolution_db)
+        monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", evolution_db)
+
+        provider = SQLiteStorageProvider()
+        # Should NOT have migrated the old data
+        interaction = provider.get_interaction("old-1")
+        assert interaction is None
+
+    def test_no_migration_when_legacy_empty(self, tmp_path, monkeypatch):
+        """If memory.db has no evolution data, don't create evolution.db from it."""
+        import sqlite3
+
+        legacy_db = tmp_path / "memory.db"
+        evolution_db = tmp_path / "evolution.db"
+
+        # Create legacy DB with only indexer tables (no interactions)
+        conn = sqlite3.connect(legacy_db)
+        conn.execute("CREATE TABLE entries (id INTEGER PRIMARY KEY, path TEXT)")
+        conn.commit()
+        conn.close()
+
+        monkeypatch.setattr(config_mod, "DB_PATH", legacy_db)
+        monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", evolution_db)
+        monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", evolution_db)
+
+        provider = SQLiteStorageProvider()
+        # Should create a fresh evolution.db (via _migrate), not copy from legacy
+        assert provider.count_interactions() == 0

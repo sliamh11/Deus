@@ -289,7 +289,7 @@ At startup, `index.ts` iterates over registered channel names, calls each factor
 
 ### Storage
 
-- **SQLite vector database**: `~/.deus/memory.db` using `sqlite-vec` extension for vector similarity search
+- **SQLite databases**: `~/.deus/memory.db` (memory indexer: sessions, atoms, embeddings) and `~/.deus/evolution.db` (evolution loop: interactions, reflections, scores), both using `sqlite-vec` extension for vector similarity search
 - **Embeddings**: Gemini `text-embedding-004` model (768-dimensional vectors)
 - **Session logs**: Markdown files stored in a vault directory (path configured via `DEUS_VAULT_PATH` or `~/.config/deus/config.json`, defaults to `~/.deus/vault/`)
 

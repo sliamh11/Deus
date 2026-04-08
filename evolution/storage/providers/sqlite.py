@@ -3,15 +3,28 @@ SQLite storage provider.
 
 Wraps all database logic from the original evolution/db.py, including
 schema migration, sqlite_vec extension loading, and vector operations.
+
+Uses a dedicated database file (default: ~/.deus/evolution.db) separate from
+the memory indexer's database (memory.db). This prevents the memory indexer's
+--rebuild (which deletes and recreates memory.db) from destroying scored
+interactions, reflections, and other expensive evolution data.
 """
+import logging
 import sqlite3
 import struct
+import threading
 from typing import Optional
 
 import sqlite_vec
 
 from ... import config as _config
 from ..provider import StorageProvider
+
+log = logging.getLogger(__name__)
+
+# Guard against concurrent schema migrations from multiple threads
+_migration_lock = threading.Lock()
+_migrated_paths: set = set()
 
 
 def _serialize_vec(vec: list[float]) -> bytes:
@@ -43,7 +56,7 @@ class SQLiteStorageProvider(StorageProvider):
     @property
     def _db_path(self):
         """Resolve DB path lazily so test monkeypatching works."""
-        return self._explicit_db_path or _config.DB_PATH
+        return self._explicit_db_path or _config.EVOLUTION_DB_PATH
 
     # ── Connection management ────────────────────────────────────────────────
 
@@ -51,13 +64,86 @@ class SQLiteStorageProvider(StorageProvider):
         """Open a connection and ensure schema is migrated."""
         db_path = self._db_path
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        db = sqlite3.connect(db_path)
+
+        # One-time migration: copy evolution tables from legacy shared memory.db
+        if not db_path.exists() and not self._explicit_db_path:
+            self._migrate_from_legacy(db_path)
+
+        db = sqlite3.connect(db_path, timeout=30)
         db.row_factory = sqlite3.Row
         db.enable_load_extension(True)
         sqlite_vec.load(db)
         db.enable_load_extension(False)
-        self._migrate(db)
+        db.execute("PRAGMA journal_mode=WAL")
+        # Only run migration once per process per DB path to avoid concurrent DDL locks
+        path_key = str(db_path)
+        if path_key not in _migrated_paths:
+            with _migration_lock:
+                if path_key not in _migrated_paths:
+                    self._migrate(db)
+                    _migrated_paths.add(path_key)
         return db
+
+    def _migrate_from_legacy(self, target_path) -> None:
+        """Copy evolution tables from the legacy shared memory.db if they exist."""
+        legacy_path = _config.DB_PATH  # ~/.deus/memory.db
+        if not legacy_path.exists():
+            return
+
+        try:
+            legacy = sqlite3.connect(legacy_path)
+            tables = [r[0] for r in legacy.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+
+            # Only migrate if legacy DB has evolution tables with data
+            evolution_tables = ["interactions", "reflections", "prompt_artifacts", "principle_extractions"]
+            has_data = False
+            for t in evolution_tables:
+                if t in tables:
+                    count = legacy.execute(f"SELECT COUNT(*) FROM [{t}]").fetchone()[0]
+                    if count > 0:
+                        has_data = True
+                        break
+
+            if not has_data:
+                legacy.close()
+                return
+
+            log.info("Migrating evolution data from %s to %s", legacy_path, target_path)
+
+            # Use SQLite backup API to copy, then drop non-evolution tables
+            target = sqlite3.connect(target_path)
+            legacy.backup(target)
+            legacy.close()
+
+            # Drop memory indexer tables from the new evolution DB
+            indexer_tables = [r[0] for r in target.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()]
+            for t in indexer_tables:
+                if t not in evolution_tables:
+                    try:
+                        target.execute(f"DROP TABLE IF EXISTS [{t}]")
+                    except sqlite3.OperationalError:
+                        pass  # virtual tables may need special handling
+
+            # Drop virtual tables (FTS, vec0) that belong to the indexer
+            for vt in [r[0] for r in target.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE '%virtual%'"
+            ).fetchall()]:
+                if vt not in ("reflection_embeddings",):
+                    try:
+                        target.execute(f"DROP TABLE IF EXISTS [{vt}]")
+                    except sqlite3.OperationalError:
+                        pass
+
+            target.execute("VACUUM")
+            target.commit()
+            target.close()
+            log.info("Migration complete")
+        except Exception as exc:
+            log.warning("Failed to migrate legacy data: %s (starting fresh)", exc)
 
     def _migrate(self, db: sqlite3.Connection) -> None:
         """Create or update all evolution tables. Safe to call multiple times."""

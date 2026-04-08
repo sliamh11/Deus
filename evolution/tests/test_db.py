@@ -14,10 +14,11 @@ from evolution.db import deserialize_vec, open_db, serialize_vec
 
 @pytest.fixture(autouse=True)
 def patch_db_path(tmp_path, monkeypatch):
-    """Redirect DB_PATH to a temp file for every test."""
-    test_db = tmp_path / "test_memory.db"
-    monkeypatch.setattr(db_mod, "DB_PATH", test_db)
-    monkeypatch.setattr(config_mod, "DB_PATH", test_db)
+    """Redirect EVOLUTION_DB_PATH to a temp file for every test."""
+    test_db = tmp_path / "test_evolution.db"
+    monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", test_db)
+    monkeypatch.setattr(config_mod, "DB_PATH", tmp_path / "nonexistent_legacy.db")
     yield test_db
 
 
@@ -25,8 +26,8 @@ def patch_db_path(tmp_path, monkeypatch):
 
 
 def test_open_db_creates_file(tmp_path, monkeypatch):
-    test_db = tmp_path / "subdir" / "memory.db"
-    monkeypatch.setattr(db_mod, "DB_PATH", test_db)
+    test_db = tmp_path / "subdir" / "evolution.db"
+    monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", test_db)
     conn = open_db()
     conn.close()
     assert test_db.exists()
