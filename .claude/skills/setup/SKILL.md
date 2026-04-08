@@ -225,6 +225,30 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
 
 **After CLI registration:** Tell user they can type `deus` from any terminal after reopening their shell (or running `source ~/.zshrc` / `source ~/.bashrc` to apply immediately).
 
+## 6c. Install Core Skills
+
+Install Deus's 6 core memory skills to `~/.claude/skills/` so they work in any directory (home mode AND external project mode).
+
+Run:
+```bash
+REPO_DIR="$(pwd)"
+SKILLS_SRC="$REPO_DIR/.claude/skills"
+SKILLS_DEST="$HOME/.claude/skills"
+mkdir -p "$SKILLS_DEST"
+
+for skill in compress resume checkpoint preserve preferences project-settings; do
+  mkdir -p "$SKILLS_DEST/$skill"
+  ln -sf "$SKILLS_SRC/$skill/skill.md" "$SKILLS_DEST/$skill/skill.md"
+  echo "  ✓ $skill"
+done
+```
+
+This creates symlinks so updates to the repo automatically reflect in `~/.claude/skills/`. Idempotent — safe to re-run.
+
+**If any symlink fails** (permissions, existing non-symlink file): warn the user and continue — the other skills still install. The commands at `.claude/commands/` (home-mode-only) remain as fallback.
+
+**After installing:** Tell the user that `/compress`, `/resume`, `/checkpoint`, `/preserve`, `/preferences`, and `/project-settings` are now available in any project directory.
+
 ## 7. Verify
 
 Run `npx tsx setup/index.ts --step verify` and parse the status block.
