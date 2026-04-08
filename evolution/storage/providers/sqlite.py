@@ -842,3 +842,46 @@ class SQLiteStorageProvider(StorageProvider):
         ).fetchall()
         db.close()
         return [dict(r) for r in rows]
+
+    def score_by_reflection_count(self) -> list[dict]:
+        """
+        Return avg judge score grouped by the number of reflections an interaction has.
+
+        Only includes scored interactions (judge_score IS NOT NULL) and excludes
+        maintenance sentinels.  The result is sorted by reflection_count ascending so
+        callers can easily compare 0-reflection vs 1-reflection vs N-reflection groups.
+        """
+        db = self._connect()
+        # Each row is one interaction: (reflection_count, judge_score)
+        rows = db.execute(
+            """
+            SELECT
+                COUNT(r.id) AS reflection_count,
+                i.judge_score
+            FROM interactions i
+            LEFT JOIN reflections r
+                ON r.interaction_id = i.id
+                AND r.archived_at IS NULL
+            WHERE i.judge_score IS NOT NULL
+              AND i.eval_suite != 'maintenance'
+              AND i.group_folder != '__maintenance__'
+            GROUP BY i.id
+            """,
+        ).fetchall()
+        db.close()
+
+        # Aggregate per-interaction rows into per-reflection-count buckets in Python
+        from collections import defaultdict
+        buckets: dict[int, list[float]] = defaultdict(list)
+        for rc, score in rows:
+            buckets[rc].append(score)
+
+        result = []
+        for rc in sorted(buckets.keys()):
+            scores = buckets[rc]
+            result.append({
+                "reflection_count": rc,
+                "avg_score": sum(scores) / len(scores),
+                "interaction_count": len(scores),
+            })
+        return result

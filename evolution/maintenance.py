@@ -113,44 +113,55 @@ def _score_single(row: dict, judge) -> dict | None:
 
 
 def _reflect_single(scored: dict, config: dict) -> bool:
-    """Generate reflection for a scored interaction. Returns True on success."""
+    """Generate reflection(s) for a scored interaction. Returns True on success."""
+    from .config import MAX_REFLECTIONS_TO_GENERATE
     from .reflexion.generator import generate_reflection, generate_positive_reflection
     from .reflexion.store import save_reflection
 
     row = scored["row"]
     try:
         if scored["score"] < config["reflection_threshold"]:
-            content, category = generate_reflection(
-                prompt=row["prompt"],
-                response=row.get("response") or "",
-                score=scored["score"],
-                dims=scored["dims"],
-                rationale=scored["rationale"],
-                tools_used=row.get("tools_used"),
-            )
-            save_reflection(
-                content=content,
-                category=category,
-                score_at_gen=scored["score"],
-                interaction_id=row["id"],
-                group_folder=row.get("group_folder"),
-            )
+            generated_contents: set[str] = set()
+            for _ in range(MAX_REFLECTIONS_TO_GENERATE):
+                content, category = generate_reflection(
+                    prompt=row["prompt"],
+                    response=row.get("response") or "",
+                    score=scored["score"],
+                    dims=scored["dims"],
+                    rationale=scored["rationale"],
+                    tools_used=row.get("tools_used"),
+                )
+                if content in generated_contents:
+                    break  # LLM returned identical text; stop early
+                generated_contents.add(content)
+                save_reflection(
+                    content=content,
+                    category=category,
+                    score_at_gen=scored["score"],
+                    interaction_id=row["id"],
+                    group_folder=row.get("group_folder"),
+                )
         elif scored["score"] >= config["positive_threshold"]:
-            content, category = generate_positive_reflection(
-                prompt=row["prompt"],
-                response=row.get("response") or "",
-                score=scored["score"],
-                dims=scored["dims"],
-                rationale=scored["rationale"],
-                tools_used=row.get("tools_used"),
-            )
-            save_reflection(
-                content=content,
-                category=category,
-                score_at_gen=scored["score"],
-                interaction_id=row["id"],
-                group_folder=row.get("group_folder"),
-            )
+            generated_contents = set()
+            for _ in range(MAX_REFLECTIONS_TO_GENERATE):
+                content, category = generate_positive_reflection(
+                    prompt=row["prompt"],
+                    response=row.get("response") or "",
+                    score=scored["score"],
+                    dims=scored["dims"],
+                    rationale=scored["rationale"],
+                    tools_used=row.get("tools_used"),
+                )
+                if content in generated_contents:
+                    break  # LLM returned identical text; stop early
+                generated_contents.add(content)
+                save_reflection(
+                    content=content,
+                    category=category,
+                    score_at_gen=scored["score"],
+                    interaction_id=row["id"],
+                    group_folder=row.get("group_folder"),
+                )
         return True
     except Exception as exc:
         log.warning("Failed to generate reflection for %s: %s", row["id"], exc)

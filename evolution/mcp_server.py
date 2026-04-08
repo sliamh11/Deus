@@ -135,8 +135,8 @@ async def _async_judge_and_reflect(
     tools_used: Optional[list[str]],
     group_folder: str,
 ) -> None:
-    """Judge the interaction and generate a reflection if score is low."""
-    from .config import REFLECTION_THRESHOLD
+    """Judge the interaction and generate reflections if score is low."""
+    from .config import REFLECTION_THRESHOLD, MAX_REFLECTIONS_TO_GENERATE
     try:
         judge = make_runtime_judge()
         result = await judge.a_evaluate(
@@ -153,21 +153,26 @@ async def _async_judge_and_reflect(
         update_score(interaction_id, result.score, dims)
 
         if result.score < REFLECTION_THRESHOLD:
-            content, category = generate_reflection(
-                prompt=prompt,
-                response=response,
-                score=result.score,
-                dims=dims,
-                rationale=result.rationale,
-                tools_used=tools_used,
-            )
-            save_reflection(
-                content=content,
-                category=category,
-                score_at_gen=result.score,
-                interaction_id=interaction_id,
-                group_folder=group_folder,
-            )
+            generated_contents: set[str] = set()
+            for _ in range(MAX_REFLECTIONS_TO_GENERATE):
+                content, category = generate_reflection(
+                    prompt=prompt,
+                    response=response,
+                    score=result.score,
+                    dims=dims,
+                    rationale=result.rationale,
+                    tools_used=tools_used,
+                )
+                if content in generated_contents:
+                    break  # LLM returned identical text; stop early
+                generated_contents.add(content)
+                save_reflection(
+                    content=content,
+                    category=category,
+                    score_at_gen=result.score,
+                    interaction_id=interaction_id,
+                    group_folder=group_folder,
+                )
     except Exception as exc:
         log.error(
             'evolution: async judge failed for interaction %s — %s: %s',
