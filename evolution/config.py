@@ -39,6 +39,9 @@ REFLECTION_THRESHOLD = float(os.environ.get("EVOLUTION_REFLECTION_THRESHOLD", "0
 POSITIVE_THRESHOLD = float(os.environ.get("EVOLUTION_POSITIVE_THRESHOLD", "0.85"))
 MAX_REFLECTIONS_PER_QUERY = int(os.environ.get("EVOLUTION_MAX_REFLECTIONS", "3"))
 REFLECTION_DEDUP_L2 = float(os.environ.get("EVOLUTION_REFLECTION_DEDUP_L2", "0.4"))
+# Experiment: how many reflections to generate per interaction (default=1, existing behavior).
+# Set to 2-3 to test whether more reflections per interaction improves retrieval quality.
+MAX_REFLECTIONS_TO_GENERATE = int(os.environ.get("EVOLUTION_MAX_REFLECTIONS_TO_GENERATE", "1"))
 
 # ── DSPy Optimizer ────────────────────────────────────────────────────────────
 
@@ -58,6 +61,12 @@ AUTO_OPTIMIZE_THRESHOLD = int(os.environ.get("EVOLUTION_AUTO_OPTIMIZE_THRESHOLD"
 PRINCIPLES_COOLDOWN_HOURS = int(os.environ.get("EVOLUTION_PRINCIPLES_COOLDOWN_HOURS", "24"))
 # How many times to retry Gemini judge on JSON parse failure before falling back to neutral score.
 JUDGE_RETRY_COUNT = int(os.environ.get("EVOLUTION_JUDGE_RETRY_COUNT", "1"))
+
+# ── Group Opt-Out ────────────────────────────────────────────────────────────
+
+# Comma-separated group folder names that are excluded from evolution tracking.
+# Interactions from these groups are skipped in cmd_log_interaction without being stored.
+EVOLUTION_SKIP_GROUPS: str = os.environ.get("EVOLUTION_SKIP_GROUPS", "")
 
 # ── Compaction & Batch Judging ───────────────────────────────────────────────
 

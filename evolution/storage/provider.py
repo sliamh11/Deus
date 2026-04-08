@@ -288,6 +288,21 @@ class StorageProvider(ABC):
         """Fetch interactions that have not been judged yet (judge_score IS NULL)."""
         ...
 
+    @abstractmethod
+    def score_by_reflection_count(self) -> list[dict]:
+        """
+        Return average judge score grouped by the number of reflections an
+        interaction has.
+
+        Returns a list of dicts ordered by reflection_count ascending:
+            [{"reflection_count": int, "avg_score": float, "interaction_count": int}, ...]
+
+        Only scored interactions with at least one reflection (or zero reflections)
+        are included.  Useful for measuring whether generating more reflections per
+        interaction correlates with higher or lower base quality.
+        """
+        ...
+
 
 class StorageRegistry:
     """
