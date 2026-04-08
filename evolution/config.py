@@ -59,6 +59,12 @@ PRINCIPLES_COOLDOWN_HOURS = int(os.environ.get("EVOLUTION_PRINCIPLES_COOLDOWN_HO
 # How many times to retry Gemini judge on JSON parse failure before falling back to neutral score.
 JUDGE_RETRY_COUNT = int(os.environ.get("EVOLUTION_JUDGE_RETRY_COUNT", "1"))
 
+# ── Group Opt-Out ────────────────────────────────────────────────────────────
+
+# Comma-separated group folder names that are excluded from evolution tracking.
+# Interactions from these groups are skipped in cmd_log_interaction without being stored.
+EVOLUTION_SKIP_GROUPS: str = os.environ.get("EVOLUTION_SKIP_GROUPS", "")
+
 # ── Compaction & Batch Judging ───────────────────────────────────────────────
 
 # Compact scored interactions older than N days (replace with summary, NULL response).
