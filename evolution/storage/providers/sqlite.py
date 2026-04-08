@@ -12,6 +12,7 @@ interactions, reflections, and other expensive evolution data.
 import logging
 import sqlite3
 import struct
+import threading
 from typing import Optional
 
 import sqlite_vec
@@ -20,6 +21,10 @@ from ... import config as _config
 from ..provider import StorageProvider
 
 log = logging.getLogger(__name__)
+
+# Guard against concurrent schema migrations from multiple threads
+_migration_lock = threading.Lock()
+_migrated_paths: set = set()
 
 
 def _serialize_vec(vec: list[float]) -> bytes:
@@ -64,12 +69,19 @@ class SQLiteStorageProvider(StorageProvider):
         if not db_path.exists() and not self._explicit_db_path:
             self._migrate_from_legacy(db_path)
 
-        db = sqlite3.connect(db_path)
+        db = sqlite3.connect(db_path, timeout=30)
         db.row_factory = sqlite3.Row
         db.enable_load_extension(True)
         sqlite_vec.load(db)
         db.enable_load_extension(False)
-        self._migrate(db)
+        db.execute("PRAGMA journal_mode=WAL")
+        # Only run migration once per process per DB path to avoid concurrent DDL locks
+        path_key = str(db_path)
+        if path_key not in _migrated_paths:
+            with _migration_lock:
+                if path_key not in _migrated_paths:
+                    self._migrate(db)
+                    _migrated_paths.add(path_key)
         return db
 
     def _migrate_from_legacy(self, target_path) -> None:

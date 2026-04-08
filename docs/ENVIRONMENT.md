@@ -84,6 +84,7 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `EVOLUTION_PRINCIPLES_COOLDOWN_HOURS` | `24` | Cooldown between principle extractions in hours |
 | `DEUS_DB` | `~/.deus/memory.db` | Path to the memory indexer SQLite database (session embeddings, atoms) |
 | `DEUS_EVOLUTION_DB` | `~/.deus/evolution.db` | Path to the evolution SQLite database (interactions, reflections, scores) |
+| `EVOLUTION_SKIP_GROUPS` | — | Comma-separated group folders to exclude from evolution tracking (e.g. automated agents) |
 
 ## Eval
 
