@@ -1189,8 +1189,20 @@ def cmd_rebuild():
         print(f"ERROR: session logs not found at {VAULT_SESSION_LOGS}", file=sys.stderr)
         sys.exit(1)
 
-    # Wipe and recreate DB
+    # Wipe and recreate DB — safety check: never delete a file with evolution data
     if DB_PATH.exists():
+        import sqlite3 as _sql
+        _check = _sql.connect(DB_PATH)
+        _tables = {r[0] for r in _check.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        _check.close()
+        _evolution_tables = {"interactions", "reflections", "principles"}
+        if _tables & _evolution_tables:
+            print(f"ABORT: {DB_PATH} contains evolution tables {_tables & _evolution_tables}. "
+                  f"Refusing to delete. Evolution data should be in DEUS_EVOLUTION_DB, not here.",
+                  file=sys.stderr)
+            sys.exit(1)
         DB_PATH.unlink()
     db = open_db()
     db.close()
