@@ -39,6 +39,9 @@ Before using this skill, ensure:
 ## Quick Start
 
 ```bash
+# 0. Install dependencies (always run first — idempotent)
+npm install --save-dev playwright dotenv-cli
+
 # 1. Setup authentication (interactive)
 npx dotenv -e .env -- npx tsx .claude/skills/x-integration/scripts/setup.ts
 # Verify: data/x-auth.json should exist after successful login
@@ -301,6 +304,11 @@ Replace `@Assistant` with your configured trigger name (`ASSISTANT_NAME` in `.en
 **Note:** Only the main group can use X tools. Other groups will receive an error.
 
 ## Testing
+
+Always install dependencies first (idempotent):
+```bash
+npm install --save-dev playwright dotenv-cli
+```
 
 Scripts require environment variables from `.env`. Use `dotenv-cli` to load them:
 
