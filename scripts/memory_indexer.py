@@ -231,6 +231,12 @@ def extract_decisions_section(content: str) -> str:
 
 
 _TURN_RE = re.compile(r"(?:^|\n)\*\*(user|assistant)\*\*:\s*", re.IGNORECASE)
+_WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]")
+
+
+def resolve_wikilinks(text: str) -> str:
+    """Replace [[page]] → page and [[page|display]] → display text."""
+    return _WIKILINK_RE.sub(lambda m: (m.group(2) or m.group(1)).strip(), text)
 
 _TARGET_CHUNK_TOKENS = int(os.environ.get("DEUS_TURN_CHUNK_TOKENS", "400"))
 _MIN_CHUNK_TOKENS = 80
@@ -303,7 +309,7 @@ def chunks_for_log(path: Path, content: str) -> list[dict]:
         })
 
     # Chunk 2: decisions section body (if present and non-trivial)
-    dec_body = extract_decisions_section(content)
+    dec_body = resolve_wikilinks(extract_decisions_section(content))
     if len(dec_body) > 30:
         chunks.append({
             "chunk": f"Decisions from {path.stem}:\n{dec_body}",
@@ -318,6 +324,7 @@ def chunks_for_log(path: Path, content: str) -> list[dict]:
     # Strip frontmatter before scanning for turn markers
     fm_raw = fm.get("raw", "")
     body = content[len(fm_raw):].strip() if fm_raw else content
+    body = resolve_wikilinks(body)
     turns = _split_turns(body)
     if turns:
         for window in _make_turn_windows(turns):
