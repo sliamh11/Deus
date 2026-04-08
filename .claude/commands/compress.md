@@ -45,8 +45,15 @@ Keep `tldr` to 2–3 lines. Skip sections with no content.
 
 After saving the session log, do three things:
 
-1. Update the `pending:` block in:
-   $VAULT/CLAUDE.md
+1. Update vault CLAUDE.md (`$VAULT/CLAUDE.md`):
+
+   **`previous:` block** — rolling list of the last 3 sessions (parallel-safe, prepend-only):
+   - Format each entry as: `  - "YYYY-MM-DD: <tldr one-liner>"` (≤120 chars total)
+   - Read the current `previous:` block. If it's a single line (`previous: "..."`), convert it to list format first.
+   - Prepend the new entry at the top. Trim to 3 entries max (drop the oldest).
+   - If `previous:` doesn't exist, add it before `pending:`.
+
+   **`pending:` block** — replace entirely with unchecked `[ ]` items from `## Pending Tasks` (max 10). If section is missing or empty, keep current `pending:` unchanged.
 
 2. Index the new log into the semantic memory index by running:
    python3 scripts/memory_indexer.py --add "<full path to saved log>"

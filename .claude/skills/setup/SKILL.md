@@ -225,6 +225,52 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
 
 **After CLI registration:** Tell user they can type `deus` from any terminal after reopening their shell (or running `source ~/.zshrc` / `source ~/.bashrc` to apply immediately).
 
+## 6c. Install Core Skills
+
+Install Deus's 6 core memory skills to `~/.claude/skills/` so they work in any directory (home mode AND external project mode).
+
+Run using Python (cross-platform — macOS, Linux, Windows):
+```bash
+python3 -c "
+import os, shutil, sys
+from pathlib import Path
+
+repo = Path.cwd()
+src_base = repo / '.claude' / 'skills'
+dest_base = Path.home() / '.claude' / 'skills'
+skills = ['compress', 'resume', 'checkpoint', 'preserve', 'preferences', 'project-settings']
+failed = []
+
+for skill in skills:
+    src = src_base / skill / 'skill.md'
+    dest_dir = dest_base / skill
+    dest = dest_dir / 'skill.md'
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if dest.exists() or dest.is_symlink():
+        dest.unlink()
+    try:
+        dest.symlink_to(src.resolve())
+        print(f'  ✓ {skill} (symlink)')
+    except OSError:
+        # Windows without Developer Mode — fall back to copy
+        shutil.copy2(src, dest)
+        print(f'  ✓ {skill} (copied — re-run setup after repo updates)')
+
+if failed:
+    print(f'  ✗ failed: {failed}', file=sys.stderr)
+    sys.exit(1)
+"
+```
+
+- **macOS/Linux:** creates symlinks — repo updates propagate automatically
+- **Windows (Developer Mode on):** creates symlinks
+- **Windows (Developer Mode off):** falls back to file copy — user must re-run setup after updating the repo
+- Idempotent — safe to re-run anytime
+
+**If any skill fails:** warn the user and continue — the other skills still install. The commands at `.claude/commands/` (home-mode-only) remain as fallback.
+
+**After installing:** Tell the user that `/compress`, `/resume`, `/checkpoint`, `/preserve`, `/preferences`, and `/project-settings` are now available in any project directory.
+
 ## 7. Verify
 
 Run `npx tsx setup/index.ts --step verify` and parse the status block.
