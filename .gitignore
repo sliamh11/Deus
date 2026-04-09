@@ -87,3 +87,8 @@ packages/*/package-lock.json
 
 agents-sdk-docs
 deus.db
+
+# Fine-tune artifacts
+finetune/data/
+finetune/adapters/
+finetune/gemma4-tool-fused/
