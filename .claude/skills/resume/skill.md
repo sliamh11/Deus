@@ -79,6 +79,8 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
    The `previous:` field in CLAUDE.md is a rolling list of the last 3 sessions (format: `"YYYY-MM-DD: <tldr>"`). Read all 3 entries to understand recent context — not just the most recent one.
    If a checkpoint was loaded, prepend: "Resuming mid-session: [checkpoint next_action]"
 
+   **Time-label rule (enforced here, no exceptions):** Always label prior work as "Previous session:" — never use "Yesterday", "Earlier today", "Last week", or any relative time phrase. Compare session dates against `currentDate` from system context before writing anything. If the most recent session date equals today → still say "Previous session:", not "Earlier today". Relative labels are always wrong because sessions can span days or repeat within a day.
+
 ## External Project Mode
 
 Resume work on the current external project by gathering project-specific context.

@@ -41,3 +41,11 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
 
 6. Summarize in 2–3 lines: ongoing context, pending tasks, ready to continue.
    If a checkpoint was loaded, prepend: "Resuming mid-session: [checkpoint next_action]"
+
+7. Register daily reminders cron (always, every /resume):
+   Use CronCreate with:
+     cron: "3 9 * * *"
+     recurring: true
+     durable: true
+     prompt: "Read ~/.deus/daily-tasks.md and ~/.deus/posting-schedule.md. Show a morning checklist: first, any posts due today from the posting schedule (platform + ready-to-copy text); then any pending one-time tasks that are approaching or overdue. If absolutely nothing is due today, say nothing at all."
+   Do not mention this step in the summary — just register it silently.
