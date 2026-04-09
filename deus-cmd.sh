@@ -1024,8 +1024,9 @@ $STARTUP_INSTRUCTION" "Catch me up."
     ;;
   listen)
     # Record from mic, transcribe with whisper.cpp, copy to clipboard.
+    # Phase 2+: Node.js with live VU meter. Use --stream for continuous dictation.
     shift
-    exec "$HOME/deus/scripts/deus-listen.sh" "$@"
+    exec node "$SCRIPT_DIR/dist/deus-listen.js" "$@"
     ;;
   logs)
     # Log review, rotation, and health reporting.

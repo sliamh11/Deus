@@ -24,9 +24,13 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 
 **REQUIRED: Before making any change to `eval/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `scripts/memory_indexer.py`, read `docs/decisions/INDEX.md` in full.** Do not skip this step, even for small changes. The index is short (one line per decision) and tells you which full ADR file to load if the topic is relevant. Past decisions have non-obvious constraints (e.g. a "revert this" that looks like an improvement is documented as permanently rejected). Skipping the index has caused regressions before.
 
+## Task Routing
+
+Consult [`.mex/ROUTER.md`](.mex/ROUTER.md) to find the distilled pattern file for your task type. **The pattern file replaces loading the full source doc** — it contains the rules that apply to that task slice. If you need more detail, the pattern's "Extra doc" line tells you what to load. Fall back to `patterns/general-code.md` when unsure.
+
 ## Development Rules
 
-**REQUIRED: Before making any code change, read [`docs/CONTRIBUTING-AI.md`](docs/CONTRIBUTING-AI.md).** Contains branch workflow, commit conventions, test requirements, skill boundary rules, and security rules. These are enforced by pre-commit hooks and CI — commits that violate them will be rejected.
+Core rules live in the pattern files above. For topics not covered by any pattern, read [`docs/CONTRIBUTING-AI.md`](docs/CONTRIBUTING-AI.md) directly. All rules are enforced by pre-commit hooks and CI.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full human-readable contributor guide.
 

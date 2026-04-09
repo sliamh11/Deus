@@ -212,11 +212,12 @@ class SQLiteStorageProvider(StorageProvider):
         except Exception:
             pass  # Already exists or vec0 not available
 
-        # Domain presets, user signal, parse_error columns (added in v1.3+)
+        # Domain presets, user signal, parse_error, context_tokens columns (added in v1.3+)
         for col, coltype in [
             ("domain_presets", "TEXT"),
             ("user_signal", "TEXT"),
             ("parse_error", "INTEGER DEFAULT 0"),
+            ("context_tokens", "INTEGER"),
         ]:
             try:
                 db.execute(f"ALTER TABLE interactions ADD COLUMN {col} {coltype}")
@@ -274,19 +275,21 @@ class SQLiteStorageProvider(StorageProvider):
         eval_suite: str = "runtime",
         domain_presets: Optional[str] = None,
         user_signal: Optional[str] = None,
+        context_tokens: Optional[int] = None,
     ) -> str:
         db = self._connect()
         db.execute(
             """
             INSERT OR REPLACE INTO interactions
                 (id, timestamp, group_folder, prompt, response, tools_used,
-                 latency_ms, eval_suite, session_id, domain_presets, user_signal)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 latency_ms, eval_suite, session_id, domain_presets, user_signal,
+                 context_tokens)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 interaction_id, timestamp, group_folder, prompt, response,
                 tools_used, latency_ms, eval_suite, session_id,
-                domain_presets, user_signal,
+                domain_presets, user_signal, context_tokens,
             ),
         )
         db.commit()
@@ -420,6 +423,29 @@ class SQLiteStorageProvider(StorageProvider):
             ORDER BY day
             """,
             params,
+        ).fetchall()
+        db.close()
+        return [dict(r) for r in rows]
+
+    # ── Token trend ──────────────────────────────────────────────────────────
+
+    def token_trend(
+        self,
+        *,
+        days: int = 30,
+    ) -> list[dict]:
+        db = self._connect()
+        rows = db.execute(
+            f"""
+            SELECT DATE(timestamp) AS day,
+                   AVG(context_tokens) AS avg_tokens,
+                   COUNT(*) AS count
+            FROM interactions
+            WHERE context_tokens IS NOT NULL
+              AND timestamp >= DATETIME('now', '-{days} days')
+            GROUP BY day
+            ORDER BY day
+            """,
         ).fetchall()
         db.close()
         return [dict(r) for r in rows]

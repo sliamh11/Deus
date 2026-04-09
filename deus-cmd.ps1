@@ -376,68 +376,9 @@ switch ($Command.ToLower()) {
 
     "listen" {
         # Record from mic, transcribe with whisper.cpp, copy to clipboard.
-        # Uses sox for recording and whisper-cli for transcription.
-        $whisperBin = if ($env:WHISPER_BIN) { $env:WHISPER_BIN } else { "whisper-cli" }
-        $whisperModel = if ($env:WHISPER_MODEL) { $env:WHISPER_MODEL } else { "$DeusHome\data\models\ggml-base.bin" }
-        $whisperLang = if ($env:WHISPER_LANG) { $env:WHISPER_LANG } else { "en" }
-        $modelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
-
-        # Check dependencies
-        $deps = @("sox", $whisperBin, "ffmpeg")
-        $missingDeps = $deps | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
-        if ($missingDeps) {
-            Write-Host "Missing dependencies: $($missingDeps -join ', ')" -ForegroundColor Red
-            Write-Host "Install with: choco install sox.portable ffmpeg"
-            Write-Host "whisper-cpp: download from https://github.com/ggerganov/whisper.cpp/releases"
-            exit 1
-        }
-
-        # Auto-download model
-        if (-not (Test-Path $whisperModel)) {
-            Write-Host "Whisper model not found. Downloading ggml-base.bin (148 MB)..."
-            $modelDir = Split-Path $whisperModel -Parent
-            if (-not (Test-Path $modelDir)) { New-Item -ItemType Directory -Path $modelDir -Force | Out-Null }
-            Invoke-WebRequest -Uri $modelUrl -OutFile $whisperModel -UseBasicParsing
-            Write-Host "Download complete."
-        }
-
-        # Record
-        $tmpFile = Join-Path $env:TEMP "deus-voice-$(Get-Date -Format 'yyyyMMddHHmmss').wav"
-        Write-Host ""
-        Write-Host "  Recording... (press Ctrl+C to stop)" -ForegroundColor Cyan
-        Write-Host ""
-
-        try {
-            # rec from sox: 16kHz mono WAV
-            & sox -d -q -r 16000 -c 1 -b 16 $tmpFile
-        } catch { }
-
-        if (-not (Test-Path $tmpFile) -or (Get-Item $tmpFile).Length -lt 16000) {
-            Write-Host "  Recording too short or failed. Try again." -ForegroundColor Yellow
-            if (Test-Path $tmpFile) { Remove-Item $tmpFile -Force }
-            exit 1
-        }
-
-        # Transcribe
-        Write-Host "  Transcribing..." -ForegroundColor Cyan
-        $transcript = & $whisperBin -m $whisperModel -f $tmpFile --no-timestamps -nt -l $whisperLang 2>$null
-        $transcript = ($transcript | Where-Object { $_.Trim() -ne "" }) -join " "
-        $transcript = $transcript.Trim()
-
-        # Cleanup
-        Remove-Item $tmpFile -Force -ErrorAction SilentlyContinue
-
-        if (-not $transcript) {
-            Write-Host "  Could not transcribe audio. Try speaking louder or longer." -ForegroundColor Yellow
-            exit 1
-        }
-
-        Write-Host ""
-        Write-Host "  $transcript"
-        Write-Host ""
-        Set-Clipboard -Value $transcript
-        Write-Host "  Copied to clipboard. Paste with Ctrl+V." -ForegroundColor Green
-        Write-Host ""
+        # Phase 2+: Node.js with live VU meter. Use --stream for continuous dictation.
+        $remaining = $Args[1..($Args.Length - 1)]
+        & node "$DeusHome\dist\deus-listen.js" @remaining
     }
 
     default {

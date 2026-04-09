@@ -30,6 +30,7 @@ import { buildVolumeMounts } from './container-mounter.js';
 import { RegisteredGroup } from './types.js';
 import { detectDomainsWithFallback } from './domain-presets.js';
 import { getReflections, logInteraction } from './evolution-client.js';
+import { estimateTokens } from './token-counter.js';
 import { detectUserSignal } from './user-signal.js';
 import { getProjectById } from './db.js';
 
@@ -480,6 +481,7 @@ export async function runContainerAgent(
               reflections.reflectionIds.length > 0
                 ? reflections.reflectionIds
                 : undefined,
+            contextTokens: estimateTokens(input.prompt),
           });
           resolve({
             status: 'success',
@@ -533,6 +535,7 @@ export async function runContainerAgent(
             reflections.reflectionIds.length > 0
               ? reflections.reflectionIds
               : undefined,
+          contextTokens: estimateTokens(input.prompt),
         });
 
         resolve(output);

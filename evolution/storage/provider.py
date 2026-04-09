@@ -55,6 +55,7 @@ class StorageProvider(ABC):
         eval_suite: str = "runtime",
         domain_presets: Optional[str] = None,
         user_signal: Optional[str] = None,
+        context_tokens: Optional[int] = None,
     ) -> str:
         """Persist one agent interaction. Returns the interaction ID."""
         ...
@@ -106,6 +107,15 @@ class StorageProvider(ABC):
         domain: Optional[str] = None,
     ) -> list[dict]:
         """Daily average judge scores for the last N days."""
+        ...
+
+    @abstractmethod
+    def token_trend(
+        self,
+        *,
+        days: int = 30,
+    ) -> list[dict]:
+        """Daily average context_tokens for the last N days."""
         ...
 
     # ── Reflection operations ────────────────────────────────────────────────

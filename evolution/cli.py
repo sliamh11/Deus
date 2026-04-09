@@ -28,7 +28,7 @@ if __name__ == "__main__" and __package__ is None:
     __package__ = "evolution"  # type: ignore
 
 
-def cmd_status(group_folder: Optional[str] = None, domain: Optional[str] = None, compare: bool = False) -> None:
+def cmd_status(group_folder: Optional[str] = None, domain: Optional[str] = None, compare: bool = False, show_tokens: bool = False) -> None:
     from .ilog.interaction_log import get_recent, score_trend
     from .optimizer.artifacts import list_artifacts
     from .storage import get_storage
@@ -84,6 +84,19 @@ def cmd_status(group_folder: Optional[str] = None, domain: Optional[str] = None,
             )
     else:
         print("  No active artifacts. Run `optimize` to generate one.")
+
+    # Token trend (optional)
+    if show_tokens:
+        token_rows = store.token_trend(days=30)
+        print("\n=== Context Token Trend (last 30 days) ===")
+        if token_rows:
+            for row in token_rows[-10:]:
+                avg = int(row["avg_tokens"])
+                bar = "█" * min(int(avg / 100), 30)
+                print(f"  {row['day']}  {bar:<30}  {avg} avg tokens  ({row['count']} interactions)")
+        else:
+            print("  No token data yet (context_tokens tracked from this release forward).")
+
     print()
 
 
@@ -195,6 +208,9 @@ def cmd_log_interaction(json_str: str) -> None:
 
     domain_presets = params.get("domain_presets") or None
     user_signal = params.get("user_signal") or None
+    context_tokens = params.get("context_tokens")
+    if context_tokens is not None:
+        context_tokens = int(context_tokens)
 
     iid = log_interaction(
         prompt=params.get("prompt", ""),
@@ -206,6 +222,7 @@ def cmd_log_interaction(json_str: str) -> None:
         interaction_id=params.get("id"),
         domain_presets=domain_presets if isinstance(domain_presets, list) else None,
         user_signal=user_signal,
+        context_tokens=context_tokens,
     )
 
     # Batch judge: check if we've accumulated enough unjudged interactions
@@ -306,6 +323,7 @@ def main() -> None:
     p_status.add_argument("--group", help="Filter by group folder")
     p_status.add_argument("--domain", help="Filter by domain preset (e.g., marketing)")
     p_status.add_argument("--compare", action="store_true", help="Compare with-preset vs without-preset scores")
+    p_status.add_argument("--tokens", action="store_true", help="Show daily average context token trend")
 
     # get_reflections
     p_refs = sub.add_parser("get_reflections", help="Retrieve relevant reflections (JSON)")
@@ -369,7 +387,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.cmd == "status":
-        cmd_status(group_folder=args.group, domain=args.domain, compare=args.compare)
+        cmd_status(group_folder=args.group, domain=args.domain, compare=args.compare, show_tokens=args.tokens)
     elif args.cmd == "get_reflections":
         cmd_get_reflections(args.query_json)
     elif args.cmd == "log_interaction":

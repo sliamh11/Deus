@@ -19,7 +19,8 @@
     "auth": "echo 'Use /add-whatsapp or /add-telegram to configure a channel' && exit 1",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "drift-check": "python3 scripts/drift_check.py"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

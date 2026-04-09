@@ -1,0 +1,42 @@
+---
+governs:
+  - src/container-runner.ts
+  - src/message-orchestrator.ts
+---
+# Pattern: debugging
+
+## Diagnosis order
+
+1. **Establish basic facts first** — check the simplest observable state before hypothesizing:
+   - `pm2 logs --nostream` / `tail logs/deus.log` — is the service running?
+   - `SELECT MAX(timestamp) FROM messages` — are messages being stored?
+2. **Instrument boundaries, don't reason about code** — add one log line at each stage boundary, send one test input, read the logs. Definitively locates the break in 2 minutes.
+3. **Read SDK source for silent failures** — check `node_modules/` before tracing the whole pipeline.
+4. **Use `info` level** for temporary debug logs — service default is `info`; `debug` won't appear.
+
+## Message pipeline (8 stages)
+
+```
+Channel → MCP child process (messages.upsert / bot.on)
+  → sendLoggingMessage() [requires logging capability — #1 silent drop]
+  → Host MCP adapter (setNotificationHandler)
+  → onMessage callback (sender allowlist check)
+  → storeMessage() [SQLite]
+  → Message polling loop (getNewMessages)
+  → Trigger check (@Deus for non-main groups)
+  → Container spawn (processGroupMessages)
+```
+
+Each `→` is a potential silent drop. Instrument boundaries between stages.
+
+## Quick status check
+
+```bash
+launchctl list | grep deus          # PID = running, "-" = stopped
+container ls --format '{{.Names}} {{.Status}}' 2>/dev/null | grep deus
+grep -E 'ERROR|WARN' logs/deus.log | tail -20
+```
+
+## Extra doc
+
+Load `docs/DEBUG_CHECKLIST.md` for container timeout, mount issues, and WhatsApp auth commands.
