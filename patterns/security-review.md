@@ -3,6 +3,9 @@ governs:
   - src/container-mounter.ts
   - src/credential-proxy.ts
   - src/ipc.ts
+  - src/sender-allowlist.ts
+  - src/mount-security.ts
+last_verified: "2026-04-09"
 ---
 # Pattern: security-review
 

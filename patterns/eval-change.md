@@ -2,6 +2,8 @@
 governs:
   - evolution/
   - eval/
+  - scripts/memory_indexer.py
+last_verified: "2026-04-09"
 ---
 # Pattern: eval-change
 
@@ -14,6 +16,17 @@ Before any change to `evolution/`, read `docs/decisions/INDEX.md`. Three decisio
 | `eval-ipc-file-output.md` | Results via shared-volume files, **not stdout** — do not revert | Docker pipe buffering is a runtime constraint, not a fixable bug. Deadlock is guaranteed under load. |
 | `eval-no-disk-cache.md` | In-memory cache only | Disk cache silently masks regressions across builds — a passing cached result hides a regression in the new build. |
 | `eval-selective-warmup.md` | Warm only active test datasets | Full suite = ~40 container starts; cold start ~10 min. Warming inactive sets wastes time and saturates API rate limits. |
+
+## Database isolation
+
+**Two separate databases.** Never share files or join across them:
+
+| Database | Owner | Safe to delete? | Env override |
+|----------|-------|-----------------|--------------|
+| `~/.deus/memory.db` | `scripts/memory_indexer.py` | Yes — derived from on-disk files | `DEUS_DB` |
+| `~/.deus/evolution.db` | `evolution/` | No — scored interactions, reflections | `DEUS_EVOLUTION_DB` |
+
+**Tests that monkeypatch the database path** must use `EVOLUTION_DB_PATH`, not the old `DB_PATH`. Using `DB_PATH` silently tests against the wrong database file.
 
 ## Concurrency limits
 
@@ -38,6 +51,10 @@ for col, coltype in [("new_col", "TEXT")]:
 ## Provider pattern
 
 Adding a new backend = one file + one registration line. Abstract contract in `evolution/storage/provider.py`. Concrete impl in `evolution/storage/providers/`.
+
+## Config file locations
+
+The evolution layer reads from the **project root `.env`** — not from `~/.config/deus/.env`. See `patterns/deployment.md` §Config file locations for the full table.
 
 ## Tests
 

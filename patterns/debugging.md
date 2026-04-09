@@ -2,6 +2,7 @@
 governs:
   - src/container-runner.ts
   - src/message-orchestrator.ts
+last_verified: "2026-04-09"
 ---
 # Pattern: debugging
 
@@ -28,6 +29,15 @@ Channel → MCP child process (messages.upsert / bot.on)
 ```
 
 Each `→` is a potential silent drop. Instrument boundaries between stages.
+
+**Common silent drops:**
+
+| Stage | Symptom | Cause |
+|-------|---------|-------|
+| `sendLoggingMessage` | Messages arrive at MCP child but host sees nothing | Missing `logging` capability on McpServer |
+| Sender allowlist | Messages stored but never processed | Sender not in allowlist, `logDenied` is false |
+| Trigger check | Messages stored and polled but not dispatched | Non-main group without `@Deus` prefix |
+| dist/src drift | Code fix deployed but service still uses old binary | `npm run build` not run before restart |
 
 ## Quick status check
 

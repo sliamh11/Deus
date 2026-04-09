@@ -6,6 +6,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
+last_verified: "2026-04-09"
 ---
 # Pattern: general-code
 
@@ -31,15 +32,28 @@ Scope required (e.g. `evolution`, `container`, `skills`, `startup-gate`).
 
 ## ADR gate
 
-**Before modifying `eval/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `scripts/memory_indexer.py`**: read `docs/decisions/INDEX.md` first. Past decisions have non-obvious permanent constraints. Skipping the index has caused regressions.
+**Before modifying `eval/`, `evolution/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `scripts/memory_indexer.py`**: read `docs/decisions/INDEX.md` first. Past decisions have non-obvious permanent constraints. Skipping the index has caused regressions.
+
+## Startup-gate checks
+
+Add new checks via `registerStartupCheck()` — never modify the gate's control flow directly. Three severity levels:
+
+- **fatal** — blocks startup. Only for hard requirements (API credentials).
+- **warn** — allows startup with warning. For optional-but-important components (memory vault, Python deps).
+- **suggest** — one-line hint. For truly optional features (channels, groups, Gemini key).
+
+**Channels are optional, not fatal.** The `process.exit(1)` on zero channels was intentionally removed (ADR: startup-gate.md). Never make a channel check fatal — it breaks new-user onboarding.
 
 ## Security
 
 Never commit credentials, API keys, or tokens — not even in test files. New credentials go in `.env.example`. Design as if the repo is public.
 
-## What not to do
+## Universal rules (apply to all tasks)
+
+These apply regardless of which pattern file was loaded. Every contributor — human or AI — must follow them:
 
 - Don't manually edit `CHANGELOG.md` or bump version in `package.json` (release-please handles both)
 - Don't add features as source code changes — use skills
 - Don't skip pre-commit hooks (`--no-verify`)
 - Don't force-push to shared branches
+- Each PR must contain a single logical change; squash fixup commits before merging

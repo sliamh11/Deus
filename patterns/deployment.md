@@ -3,6 +3,8 @@ governs:
   - src/
   - setup/
   - dist/
+  - packages/
+last_verified: "2026-04-09"
 ---
 # Pattern: deployment
 
@@ -11,24 +13,64 @@ governs:
 A merged PR does **not** auto-rebuild. Always run `npm run build` before restarting.
 
 ```bash
-npm run build
-launchctl kickstart -k gui/$(id -u)/com.deus
+npm run build && launchctl kickstart -k gui/$(id -u)/com.deus  # macOS
+npm run build && systemctl --user restart deus                  # Linux
 ```
 
 Verify: `stat dist/index.js` mtime should be newer than the service startup timestamp in `logs/deus.log`.
 
-## Credentials rule
+## MCP package build
 
-Never write rotating credentials (OAuth tokens, short-lived keys) to `.env`. Read them dynamically at request time from their source file (e.g., `credentials.json`). `.env` is for static secrets only.
-
-## Restart sequence
+Changes to `packages/mcp-*/` require a separate build — `npm run build` only rebuilds `src/`. Run `npx tsc` inside the specific package:
 
 ```bash
-npm run build && launchctl kickstart -k gui/$(id -u)/com.deus
+cd packages/mcp-whatsapp && npx tsc
 ```
 
-Stop only: `launchctl bootout gui/$(id -u)/com.deus`
-Start only: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.deus.plist`
+Missing this step causes the service to silently run stale MCP code with no error.
+
+## Process manager rule
+
+**Use exactly one process manager per platform.** Never mix (e.g., running both pm2 and launchd). Mixing causes orphan processes that hold ports, leading to `EADDRINUSE` on the credential proxy (port 3001).
+
+```bash
+# macOS — launchd only
+launchctl bootout gui/$(id -u)/com.deus                                   # stop
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.deus.plist   # start
+
+# Linux — systemd only
+systemctl --user stop deus    # stop
+systemctl --user start deus   # start
+```
+
+## Container build cache
+
+`--no-cache` alone does **NOT** invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder first:
+
+```bash
+docker builder prune -f && ./container/build.sh
+```
+
+## Credentials rule
+
+Never write rotating credentials (OAuth tokens, short-lived keys) to `.env`. Read them dynamically at request time from their source file (e.g., `~/.claude/.credentials.json`). `.env` is for static secrets only.
+
+## Config file locations
+
+Different components read config from different locations. Getting this wrong causes **silent failures** (keys not loaded, wrong model used):
+
+| Component | Config source |
+|-----------|---------------|
+| Main process (`src/`) + evolution layer | Project root `.env` |
+| Setup / startup gate | `~/.config/deus/.env` |
+| Memory indexer | `~/.config/deus/.env` |
+| Credential proxy | `~/.claude/.credentials.json` (dynamic read — never `.env`) |
+
+**Common mistake:** Putting a key in `~/.config/deus/.env` but expecting the main process or evolution layer to find it — both read from the project root `.env`.
+
+## Silent drop: dist/src drift
+
+After deploying a code fix, the service may still run the old binary if `dist/` was not rebuilt. Symptom: fix appears to deploy but has no effect. Fix: `npm run build`, then verify `stat dist/index.js` timestamp is newer than the service start time in `logs/deus.log`.
 
 ## Scope
 

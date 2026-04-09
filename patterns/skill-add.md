@@ -1,6 +1,7 @@
 ---
 governs:
   - .claude/skills
+last_verified: "2026-04-09"
 ---
 # Pattern: skill-add
 

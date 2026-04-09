@@ -22,7 +22,7 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 
 ## Architecture Decisions (ADRs)
 
-**REQUIRED: Before making any change to `eval/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `scripts/memory_indexer.py`, read `docs/decisions/INDEX.md` in full.** Do not skip this step, even for small changes. The index is short (one line per decision) and tells you which full ADR file to load if the topic is relevant. Past decisions have non-obvious constraints (e.g. a "revert this" that looks like an improvement is documented as permanently rejected). Skipping the index has caused regressions before.
+**REQUIRED: Before making any change to `eval/`, `evolution/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `scripts/memory_indexer.py`, read `docs/decisions/INDEX.md` in full.** Do not skip this step, even for small changes. The index is short (one line per decision) and tells you which full ADR file to load if the topic is relevant. Past decisions have non-obvious constraints (e.g. a "revert this" that looks like an improvement is documented as permanently rejected). Skipping the index has caused regressions before.
 
 ## Task Routing
 
