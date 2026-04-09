@@ -43,14 +43,14 @@ const ASSISTANT_NAME = process.env.ASSISTANT_NAME || 'Deus';
 const ASSISTANT_HAS_OWN_NUMBER =
   process.env.ASSISTANT_HAS_OWN_NUMBER === 'true';
 
+const CHATS_FILE = path.join(AUTH_DIR, 'chats.json');
+
 // Use stderr for logging (stdout is reserved for MCP JSON-RPC)
 const logger = pino(
   { level: process.env.LOG_LEVEL || 'info' },
   pino.destination(2),
 );
 const baileysLogger = pino({ level: 'silent' });
-
-const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 export class WhatsAppProvider implements ChannelProvider {
   readonly name = 'whatsapp';
@@ -61,7 +61,6 @@ export class WhatsAppProvider implements ChannelProvider {
   private lidToPhoneMap: Record<string, string> = {};
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
-  private groupSyncTimerStarted = false;
   private sentMessageCache = new Map<string, ProtoTypes.IMessage>();
   private groupMetadataCache = new Map<
     string,
@@ -69,8 +68,8 @@ export class WhatsAppProvider implements ChannelProvider {
   >();
   private botLidUser?: string;
   private pendingFirstOpen?: () => void;
-  private lastGroupSync: string | null = null;
-  private knownChats = new Map<string, { name: string; isGroup: boolean }>();
+  private knownChats = this.loadChats();
+  private saveChatsTimer: ReturnType<typeof setTimeout> | null = null;
   private readyPromise: Promise<void> | null = null;
   private readyResolve: (() => void) | null = null;
 
@@ -175,13 +174,12 @@ export class WhatsAppProvider implements ChannelProvider {
         }
 
         this.flushOutgoingQueue().catch(() => {});
-        this.syncGroupMetadata().catch(() => {});
 
-        if (!this.groupSyncTimerStarted) {
-          this.groupSyncTimerStarted = true;
-          setInterval(() => {
-            this.syncGroupMetadata().catch(() => {});
-          }, GROUP_SYNC_INTERVAL_MS);
+        // Seed knownChats on first-ever boot only.
+        // On reconnects, Baileys handles group re-sync internally via the
+        // CB:ib,,dirty WebSocket handler — no manual fetch needed.
+        if (this.knownChats.size === 0) {
+          this.seedGroupsFromBaileys().catch(() => {});
         }
 
         if (this.pendingFirstOpen) {
@@ -196,6 +194,65 @@ export class WhatsAppProvider implements ChannelProvider {
     });
 
     this.sock.ev.on('creds.update', saveCreds);
+
+    // ── Incremental group updates from Baileys events ─────────────────
+    // Baileys fires these after its internal CB:ib,,dirty sync and in real time.
+
+    this.sock.ev.on('groups.upsert', (groups) => {
+      for (const g of groups) {
+        if (g.id && g.subject) {
+          this.knownChats.set(g.id, { name: g.subject, isGroup: true });
+        }
+      }
+      this.scheduleSaveChats();
+    });
+
+    this.sock.ev.on('groups.update', (updates) => {
+      for (const u of updates) {
+        if (!u.id) continue;
+        const existing = this.knownChats.get(u.id);
+        if (u.subject) {
+          this.knownChats.set(u.id, {
+            name: u.subject,
+            isGroup: true,
+          });
+        } else if (!existing) {
+          // Group exists but we don't have metadata yet — mark as known
+          this.knownChats.set(u.id, {
+            name: u.id.split('@')[0],
+            isGroup: true,
+          });
+        }
+      }
+      this.scheduleSaveChats();
+    });
+
+    this.sock.ev.on('chats.upsert', (chats) => {
+      for (const chat of chats) {
+        if (!chat.id || chat.id === 'status@broadcast') continue;
+        if (!this.knownChats.has(chat.id)) {
+          const isGroup = chat.id.endsWith('@g.us');
+          this.knownChats.set(chat.id, {
+            name: chat.name || chat.id.split('@')[0],
+            isGroup,
+          });
+        }
+      }
+      this.scheduleSaveChats();
+    });
+
+    this.sock.ev.on('chats.delete', (deletedIds) => {
+      for (const id of deletedIds) {
+        this.knownChats.delete(id);
+        this.groupMetadataCache.delete(id);
+      }
+      this.scheduleSaveChats();
+    });
+
+    this.sock.ev.on('group-participants.update', ({ id }) => {
+      // Invalidate cached metadata so next message fetch gets fresh participants
+      this.groupMetadataCache.delete(id);
+    });
 
     // Phone number share event — not typed in all baileys versions
     (this.sock.ev as any).on(
@@ -347,7 +404,7 @@ export class WhatsAppProvider implements ChannelProvider {
   }
 
   async syncGroups(): Promise<ChatInfo[]> {
-    return this.syncGroupMetadata(true);
+    return this.seedGroupsFromBaileys();
   }
 
   /** Check if WhatsApp credentials exist on disk. */
@@ -357,12 +414,8 @@ export class WhatsAppProvider implements ChannelProvider {
 
   // ── Internal helpers ──────────────────────────────────────────────────
 
-  private async syncGroupMetadata(force = false): Promise<ChatInfo[]> {
-    if (!force && this.lastGroupSync) {
-      const elapsed = Date.now() - new Date(this.lastGroupSync).getTime();
-      if (elapsed < GROUP_SYNC_INTERVAL_MS) return [];
-    }
-
+  /** Full group fetch — first boot or manual sync_groups tool only. */
+  private async seedGroupsFromBaileys(): Promise<ChatInfo[]> {
     try {
       const groups = await this.sock.groupFetchAllParticipating();
       const result: ChatInfo[] = [];
@@ -372,13 +425,45 @@ export class WhatsAppProvider implements ChannelProvider {
           result.push({ id: jid, name: metadata.subject, is_group: true });
         }
       }
-      this.lastGroupSync = new Date().toISOString();
-      logger.info({ count: result.length }, 'Group metadata synced');
+      this.scheduleSaveChats();
+      logger.info({ count: result.length }, 'Group metadata seeded');
       return result;
     } catch (err) {
-      logger.error({ err }, 'Failed to sync group metadata');
+      logger.error({ err }, 'Failed to seed group metadata');
       return [];
     }
+  }
+
+  private loadChats(): Map<string, { name: string; isGroup: boolean }> {
+    try {
+      const raw = fs.readFileSync(CHATS_FILE, 'utf8');
+      const arr = JSON.parse(raw) as Array<{
+        id: string;
+        name: string;
+        isGroup: boolean;
+      }>;
+      return new Map(
+        arr.map((c) => [c.id, { name: c.name, isGroup: c.isGroup }]),
+      );
+    } catch {
+      return new Map();
+    }
+  }
+
+  private scheduleSaveChats(): void {
+    if (this.saveChatsTimer) clearTimeout(this.saveChatsTimer);
+    this.saveChatsTimer = setTimeout(() => {
+      try {
+        const arr = Array.from(this.knownChats.entries()).map(([id, info]) => ({
+          id,
+          name: info.name,
+          isGroup: info.isGroup,
+        }));
+        fs.writeFileSync(CHATS_FILE, JSON.stringify(arr));
+      } catch (err) {
+        logger.warn({ err }, 'Failed to persist chats');
+      }
+    }, 500);
   }
 
   private async translateJid(jid: string): Promise<string> {
