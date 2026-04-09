@@ -68,6 +68,18 @@ Different components read config from different locations. Getting this wrong ca
 
 **Common mistake:** Putting a key in `~/.config/deus/.env` but expecting the main process or evolution layer to find it — both read from the project root `.env`.
 
+## Verifying the service is alive
+
+The service has no HTTP health endpoint. Use these to confirm it's actually processing:
+
+```bash
+launchctl list | grep deus        # non-empty PID = running
+tail -f logs/deus.log             # watch for "Deus running" after restart
+sqlite3 store/messages.db "SELECT MAX(created_at) FROM messages;"  # confirms messages flowing
+```
+
+A process can be running (PID present) but stuck — a recent `MAX(created_at)` confirms end-to-end health.
+
 ## Silent drop: dist/src drift
 
 After deploying a code fix, the service may still run the old binary if `dist/` was not rebuilt. Symptom: fix appears to deploy but has no effect. Fix: `npm run build`, then verify `stat dist/index.js` timestamp is newer than the service start time in `logs/deus.log`.

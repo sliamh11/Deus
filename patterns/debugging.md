@@ -47,6 +47,19 @@ container ls --format '{{.Names}} {{.Status}}' 2>/dev/null | grep deus
 grep -E 'ERROR|WARN' logs/deus.log | tail -20
 ```
 
+## Known issues (open bugs — document, don't try to fix)
+
+| Issue | Symptom | Root cause |
+|-------|---------|-----------|
+| **IDLE_TIMEOUT == CONTAINER_TIMEOUT** (both 30 min) | Containers always exit via SIGKILL (code 137), never graceful `_close` shutdown | Both timers fire simultaneously — idle timeout should be shorter (~5 min) so containers wind down between messages while container timeout stays as a safety net |
+| **Cursor advanced before agent succeeds** | Messages permanently lost on container timeout | `processGroupMessages` advances `lastAgentTimestamp` before the agent runs; on timeout, retries find no messages (cursor already past them) |
+
+These are known and open. Do not add workarounds without reading `docs/DEBUG_CHECKLIST.md` §Known Issues first.
+
+## Async boundary instrumentation
+
+When debugging a Promise chain failure: add one log at each `.then()` / `await` boundary, not inside the body. The failure is always between the last log that fired and the first that didn't. Instrument the boundaries, not the internals.
+
 ## Extra doc
 
 Load `docs/DEBUG_CHECKLIST.md` for container timeout, mount issues, and WhatsApp auth commands.

@@ -46,6 +46,14 @@ Then restart the service to pick up the change.
 - Core changes (`src/`, `packages/`, `package.json`) go in a separate PR first.
 - Never commit `host.ts`, `scripts/`, `node_modules/`, or `package-lock.json`.
 
+## Tool registration
+
+If the channel exposes MCP tools (not just notifications), each tool must include a JSON Schema for its input parameters. Tools registered without a schema silently fail schema validation at the SDK level — callers receive no error, the tool just isn't invoked.
+
+```typescript
+server.tool('send_message', { description: '...', inputSchema: zodToJsonSchema(SendMessageSchema) }, handler);
+```
+
 ## Tests
 
 Add at least one test covering the capability registration path. Run `npm test` before committing.

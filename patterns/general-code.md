@@ -30,6 +30,8 @@ Both must pass before committing.
 Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `chore`, `ci`
 Scope required (e.g. `evolution`, `container`, `skills`, `startup-gate`).
 
+**If a pre-commit hook fails, the commit did NOT happen.** Create a NEW commit after fixing — never `--amend`. Amending after a hook failure modifies the previous commit, not the failed one.
+
 ## ADR gate
 
 **Before modifying `eval/`, `evolution/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `scripts/memory_indexer.py`**: read `docs/decisions/INDEX.md` first. Past decisions have non-obvious permanent constraints. Skipping the index has caused regressions.
