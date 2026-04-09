@@ -12,9 +12,11 @@ Exit codes:
   2 — one or more governed paths are missing from the filesystem
 
 Usage:
-  python3 scripts/drift_check.py
+  python3 scripts/drift_check.py              # drift check
+  python3 scripts/drift_check.py --coverage   # report uncovered docs/
   npm run drift-check
 """
+import argparse
 import re
 import sys
 from pathlib import Path
@@ -148,5 +150,55 @@ def main() -> int:
     return exit_code
 
 
+def check_coverage(project_root: Path) -> int:
+    """Report docs/ files that are not referenced by any pattern (informational)."""
+    index = project_root / "patterns" / "INDEX.md"
+    patterns_dir = project_root / "patterns"
+    docs_dir = project_root / "docs"
+
+    if not docs_dir.exists():
+        print("No docs/ directory found.")
+        return 0
+
+    # Collect docs references from INDEX.md and all pattern files
+    covered: set[str] = set()
+    sources = [index] + list(patterns_dir.glob("*.md")) if index.exists() else list(patterns_dir.glob("*.md"))
+    for src in sources:
+        try:
+            text = src.read_text()
+        except FileNotFoundError:
+            continue
+        for match in re.finditer(r"docs/[\w./-]+\.md", text):
+            covered.add(match.group(0))
+
+    # Scan docs/ for all .md files (excluding decisions/ sub-docs individually — they're referenced via INDEX.md)
+    uncovered: list[str] = []
+    for doc_file in sorted(docs_dir.rglob("*.md")):
+        rel = str(doc_file.relative_to(project_root))
+        if rel not in covered:
+            uncovered.append(rel)
+
+    if not uncovered:
+        print("All docs/ files are referenced by at least one pattern.")
+        return 0
+
+    print(f"Uncovered docs/ files ({len(uncovered)}) — no pattern distils these:")
+    for f in uncovered:
+        print(f"  {f}")
+    print("\nConsider referencing them in patterns/INDEX.md or adding a new pattern.")
+    return 0  # informational only — not a blocking failure
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    parser = argparse.ArgumentParser(description="Drift checker for pattern files.")
+    parser.add_argument(
+        "--coverage",
+        action="store_true",
+        help="Report docs/ files not referenced by any pattern (informational)",
+    )
+    args = parser.parse_args()
+
+    if args.coverage:
+        sys.exit(check_coverage(PROJECT_ROOT))
+    else:
+        sys.exit(main())

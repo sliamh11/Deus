@@ -20,7 +20,8 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",
-    "drift-check": "python3 scripts/drift_check.py"
+    "drift-check": "python3 scripts/drift_check.py",
+    "drift-coverage": "python3 scripts/drift_check.py --coverage"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

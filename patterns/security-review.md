@@ -3,6 +3,9 @@ governs:
   - src/container-mounter.ts
   - src/credential-proxy.ts
   - src/ipc.ts
+  - src/sender-allowlist.ts
+  - src/mount-security.ts
+last_verified: "2026-04-09"
 ---
 # Pattern: security-review
 
@@ -26,9 +29,9 @@ Each group has isolated Claude sessions at `data/sessions/{group}/.claude/`. Gro
 ## Mount security
 
 - Mount allowlist lives at `~/.config/deus/mount-allowlist.json` — outside project root, never mounted into containers, cannot be modified by agents.
-- Symlinks resolved before validation (prevents traversal attacks).
-- Container paths reject `..` and absolute paths.
-- `.env` is shadowed with `/dev/null` in the project root mount.
+- **Symlinks resolved before validation** (`src/mount-security.ts`): the real path is checked against the allowlist, not the symlink. Prevents symlink-swap (TOCTOU) attacks where a valid path is replaced with a symlink to a sensitive file after the check passes.
+- Container paths reject `..` and absolute paths before allowlist check.
+- **`.env` is shadowed with `/dev/null`** in the project root mount (`src/container-mounter.ts`). This is a defence-in-depth measure — even if `.env` is somehow accessible in the mount, it reads as empty. Never remove this shadow mount.
 - Project root mounted read-only for main group. Writable paths (group folder, IPC, `.claude/`) mounted separately.
 
 ## Credential isolation
@@ -68,9 +71,11 @@ Verify group identity before any privileged IPC operation.
 [ ] New credentials have .env.example entry with descriptive comment
 [ ] IPC operations verify group identity before privileged actions
 [ ] Container mounts go through allowlist validation
+[ ] .env shadow mount preserved — not removed from project root mount
 [ ] No secrets in container environment or mounted paths
 [ ] New mounts: does this expose anything outside the intended scope?
 [ ] New IPC operations: does non-main group access need to be restricted?
+[ ] Symlink paths resolved via mount-security.ts before allowlist check
 ```
 
 ## Extra doc
