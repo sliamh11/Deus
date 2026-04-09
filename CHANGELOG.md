@@ -4,6 +4,33 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.0](https://github.com/sliamh11/Deus/compare/v1.2.0...v1.3.0) (2026-04-09)
+
+
+### Features
+
+* **agents:** compact system prompts 126→64 lines each (-49% tokens) ([#130](https://github.com/sliamh11/Deus/issues/130)) ([aca6e87](https://github.com/sliamh11/Deus/commit/aca6e870ea26e51ce9f00143999e0b1fc99bfa91))
+* **channels:** add X (Twitter) MCP server ([#126](https://github.com/sliamh11/Deus/issues/126)) ([92edc97](https://github.com/sliamh11/Deus/commit/92edc97ee253a83a965aa2582ebdac943bc43058))
+* **evolution:** add configurable reflection count and score analytics ([#129](https://github.com/sliamh11/Deus/issues/129)) ([15a6ee7](https://github.com/sliamh11/Deus/commit/15a6ee7d0062a00cda930eb35e60e37fd6fe30f1))
+* **evolution:** document EVOLUTION_SKIP_GROUPS env var and add config constant ([#131](https://github.com/sliamh11/Deus/issues/131)) ([13fe4c2](https://github.com/sliamh11/Deus/commit/13fe4c22fd420f5d321f3539e0b91bf358f7b561))
+* **memory:** add atom extraction, turn chunking, and hybrid FTS5+RRF retrieval ([#122](https://github.com/sliamh11/Deus/issues/122)) ([76a7a67](https://github.com/sliamh11/Deus/commit/76a7a679a2e3cbf72019b617a8a0e49249928aac))
+* **memory:** add LongMemEval benchmark runner and internal benchmarks ([#117](https://github.com/sliamh11/Deus/issues/117)) ([d312b03](https://github.com/sliamh11/Deus/commit/d312b0318d9255a321e52c6ee9070378d1fd9769))
+* **skills:** add 6 core memory skills to repo and install via setup ([#125](https://github.com/sliamh11/Deus/issues/125)) ([63f171d](https://github.com/sliamh11/Deus/commit/63f171d81282531f2b125dc0093ccee670d632ff))
+* **x-integration:** add delete script and install deps in skill ([#128](https://github.com/sliamh11/Deus/issues/128)) ([b6bb720](https://github.com/sliamh11/Deus/commit/b6bb720e8fb66c67608b7f46a93d20de7d58d95d))
+
+
+### Bug Fixes
+
+* **evolution:** add provider fallback, Ollama timeout, and scoring helpers ([#119](https://github.com/sliamh11/Deus/issues/119)) ([72ca907](https://github.com/sliamh11/Deus/commit/72ca90769c05813375cfd5e1de0fef3ee275b239))
+* **evolution:** split evolution DB from shared memory.db to prevent data loss ([#123](https://github.com/sliamh11/Deus/issues/123)) ([2cb7e6e](https://github.com/sliamh11/Deus/commit/2cb7e6e921d443823abbc1dc7bbcb9d8dd9ab24d))
+* **memory:** add safety guard to prevent rebuild from deleting evolution data ([#127](https://github.com/sliamh11/Deus/issues/127)) ([3ad089c](https://github.com/sliamh11/Deus/commit/3ad089c063a45b391e8f5745c99ef4b2c5c0d9ed))
+* **memory:** resolve Obsidian wikilinks before embedding ([#124](https://github.com/sliamh11/Deus/issues/124)) ([b81b7cf](https://github.com/sliamh11/Deus/commit/b81b7cf23115cf12f82a3b104b689685ce3aa94d))
+
+
+### Performance Improvements
+
+* **evolution:** compact LLM prompts and fix parse error tracking ([#121](https://github.com/sliamh11/Deus/issues/121)) ([588c36a](https://github.com/sliamh11/Deus/commit/588c36a0d982cd1fac67e40c20f0b24350fe9e96))
+
 ## [1.2.0](https://github.com/sliamh11/Deus/compare/v1.1.0...v1.2.0) (2026-04-07)
 
 
