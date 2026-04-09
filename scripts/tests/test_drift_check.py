@@ -391,3 +391,109 @@ class TestLoadSourceDocs:
         (tmp_path / "docs" / "CONTRIBUTING-AI.md").write_text("only this one")
         docs = drift_check._load_source_docs(tmp_path)
         assert list(docs.keys()) == ["docs/CONTRIBUTING-AI.md"]
+
+
+# ── _normalize_router_response ───────────────────────────────────────────────
+
+class TestNormalizeRouterResponse:
+    VALID = [
+        "channel-add.md",
+        "cross-platform.md",
+        "debugging.md",
+        "deployment.md",
+        "eval-change.md",
+        "general-code.md",
+        "security-review.md",
+        "skill-add.md",
+    ]
+
+    def test_exact_match(self):
+        assert drift_check._normalize_router_response("deployment.md", self.VALID) == "deployment.md"
+
+    def test_with_backticks(self):
+        assert drift_check._normalize_router_response("`deployment.md`", self.VALID) == "deployment.md"
+
+    def test_case_insensitive(self):
+        assert drift_check._normalize_router_response("Deployment.MD", self.VALID) == "deployment.md"
+
+    def test_missing_md_suffix(self):
+        assert drift_check._normalize_router_response("general-code", self.VALID) == "general-code.md"
+
+    def test_leading_path(self):
+        assert drift_check._normalize_router_response("patterns/debugging.md", self.VALID) == "debugging.md"
+
+    def test_truncated_unique_prefix(self):
+        # `cross-` should match `cross-platform.md` uniquely.
+        assert drift_check._normalize_router_response("cross-", self.VALID) == "cross-platform.md"
+
+    def test_truncated_with_trailing_dot(self):
+        # `deployment.` is a truncation of `deployment.md`.
+        assert drift_check._normalize_router_response("deployment.", self.VALID) == "deployment.md"
+
+    def test_empty_response(self):
+        assert drift_check._normalize_router_response("", self.VALID) == ""
+
+    def test_whitespace_only(self):
+        assert drift_check._normalize_router_response("   \n\t  ", self.VALID) == ""
+
+    def test_first_token_from_prose(self):
+        # Model prepends prose despite instructions.
+        assert drift_check._normalize_router_response("deployment.md would be best", self.VALID) == "deployment.md"
+
+    def test_ambiguous_prefix_returns_cleaned_token(self):
+        # `d` matches both `debugging.md` and `deployment.md` — not a unique prefix.
+        result = drift_check._normalize_router_response("d", self.VALID)
+        assert result == "d"  # no unique match, returned as-is for mismatch reporting
+
+    def test_unknown_filename_passed_through(self):
+        result = drift_check._normalize_router_response("phantom.md", self.VALID)
+        assert result == "phantom.md"  # preserved so caller reports it as mismatch
+
+
+# ── check_validate_router (skip paths — LLM-free) ───────────────────────────
+
+class TestCheckValidateRouterSkip:
+    """Unit tests for --validate-router's graceful-skip paths.
+
+    The full LLM flow is smoke-tested separately. These tests verify the
+    function exits cleanly in the three environments where it is expected
+    to no-op without failing CI:
+      1. No ROUTER.md present
+      2. pattern_filter matches nothing
+      3. (Gemini / API-key skip paths are exercised by the same code path
+          in check_validate and covered there by the shared helpers.)
+    """
+
+    def test_skip_when_no_router(self, tmp_path, monkeypatch):
+        (tmp_path / "patterns").mkdir()
+        (tmp_path / "patterns" / "INDEX.md").write_text(
+            "| task | pattern | source |\n|---|---|---|\n"
+            "| demo | `patterns/demo.md` | none |\n"
+        )
+        (tmp_path / "patterns" / "demo.md").write_text(
+            "---\ngovers:\n  - src/\nlast_verified: \"2026-04-09\"\n"
+            "test_tasks:\n  - \"do a thing\"\n---\nbody\n"
+        )
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+        # No .mex/ROUTER.md anywhere. Should skip, not crash.
+        # The google.genai import happens first — skip if unavailable too.
+        rc = drift_check.check_validate_router(tmp_path)
+        assert rc == 0
+
+    def test_skip_when_pattern_filter_matches_nothing(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / "patterns").mkdir()
+        (tmp_path / "patterns" / "INDEX.md").write_text(
+            "| task | pattern | source |\n|---|---|---|\n"
+            "| demo | `patterns/demo.md` | none |\n"
+        )
+        (tmp_path / "patterns" / "demo.md").write_text(
+            "---\nlast_verified: \"2026-04-09\"\n---\nbody\n"
+        )
+        (tmp_path / ".mex").mkdir()
+        (tmp_path / ".mex" / "ROUTER.md").write_text("# router")
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+        rc = drift_check.check_validate_router(tmp_path, pattern_filter="nonexistent")
+        out = capsys.readouterr().out
+        # Either the filter message or a graceful skip — both are exit 0.
+        assert rc == 0
+        assert ("No patterns match filter" in out) or ("SKIP" in out)

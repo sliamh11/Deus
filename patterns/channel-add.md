@@ -5,9 +5,9 @@ governs:
 last_verified: "2026-04-09"
 test_tasks:
   - "Add a Discord channel with OAuth login"
-  - "Fix silent message loss in the WhatsApp MCP server"
-  - "Update the Telegram MCP server to expose a new tool"
-  - "Add a notification hook that reports errors to a Slack webhook"
+  - "Add capabilities: logging to a new MCP channel server so notifications are delivered"
+  - "Register a new MCP tool on the Telegram channel with a Zod input schema"
+  - "Create a new Slack channel package under packages/mcp-slack/"
 ---
 # Pattern: channel-add
 

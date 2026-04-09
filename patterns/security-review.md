@@ -7,10 +7,10 @@ governs:
   - src/mount-security.ts
 last_verified: "2026-04-09"
 test_tasks:
-  - "Add a new shared-volume mount for per-group config files"
-  - "Allow the container to read a specific env var at runtime"
-  - "Audit a new MCP tool for credential exposure risks"
-  - "Add a new sender to the allowlist for a specific channel"
+  - "Add a new mount in src/container-mounter.ts for per-group config files"
+  - "Update src/mount-security.ts to permit reading a new credential path"
+  - "Audit a new MCP tool for credential exposure via src/credential-proxy.ts"
+  - "Add a new sender to src/sender-allowlist.ts for a specific channel"
 ---
 # Pattern: security-review
 

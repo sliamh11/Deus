@@ -12,12 +12,13 @@ Exit codes:
   2 — one or more governed paths are missing from the filesystem
 
 Usage:
-  python3 scripts/drift_check.py              # drift check (mtime-based)
-  python3 scripts/drift_check.py --coverage   # report uncovered docs/
-  python3 scripts/drift_check.py --paths      # verify all pattern path refs exist
-  python3 scripts/drift_check.py --adr        # flag patterns stale vs ADRs
-  python3 scripts/drift_check.py --all        # run every fast check above
-  python3 scripts/drift_check.py --validate   # LLM task validation (slow, on-demand)
+  python3 scripts/drift_check.py                   # drift check (mtime-based)
+  python3 scripts/drift_check.py --coverage        # report uncovered docs/
+  python3 scripts/drift_check.py --paths           # verify all pattern path refs exist
+  python3 scripts/drift_check.py --adr             # flag patterns stale vs ADRs
+  python3 scripts/drift_check.py --all             # run every fast check above
+  python3 scripts/drift_check.py --validate        # LLM pattern content check (slow)
+  python3 scripts/drift_check.py --validate-router # LLM router selection check (slow)
   npm run drift-check
 """
 import argparse
@@ -622,6 +623,178 @@ def check_validate(project_root: Path, pattern_filter: str | None = None) -> int
     return 1 if total_gaps > 0 else 0
 
 
+def _normalize_router_response(name: str, valid: list[str]) -> str:
+    """Normalize an LLM's router response to a canonical pattern filename.
+
+    Handles common response variants from Gemini:
+      - leading path (`patterns/foo.md` → `foo.md`)
+      - missing `.md` suffix (`foo` → `foo.md` if that pattern exists)
+      - truncation (`cross-` → `cross-platform.md` via unique-prefix match)
+      - prose prefix (`The answer is foo.md` → `foo.md` if possible)
+      - empty response → empty string (preserved as an explicit failure)
+
+    Returned string is always lowercased. If normalization fails, returns
+    the lowercased cleaned token so the caller can still report it as a
+    mismatch.
+    """
+    s = name.strip().strip("`").strip("'\"").lower()
+    if not s:
+        return ""
+    # Strip any leading path segments the model might have added.
+    if "/" in s:
+        s = s.rsplit("/", 1)[1]
+    # Keep only the first token — the model sometimes prepends prose.
+    tokens = s.split()
+    s = tokens[0] if tokens else s
+    s = s.strip(".,;:")
+    if s in valid:
+        return s
+    if not s.endswith(".md") and f"{s}.md" in valid:
+        return f"{s}.md"
+    # Unique-prefix match against valid filenames (handles truncation).
+    prefix_matches = [v for v in valid if v.startswith(s)]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+    # Retry prefix match after stripping trailing non-alphanumerics.
+    s_clean = re.sub(r"[^a-z0-9]+$", "", s)
+    if s_clean and s_clean != s:
+        prefix_matches = [v for v in valid if v.startswith(s_clean)]
+        if len(prefix_matches) == 1:
+            return prefix_matches[0]
+    return s
+
+
+def check_validate_router(project_root: Path, pattern_filter: str | None = None) -> int:
+    """LLM-based router validation — closes the router-selection blind spot.
+
+    `--validate` tests each pattern's content in isolation. This check tests
+    the other half: given a task, does ROUTER.md route it to the correct
+    pattern? For every test_task in every pattern, ask an LLM which pattern
+    file it would load (given only ROUTER.md and the list of valid pattern
+    names). If the answer doesn't match the pattern the task was declared in,
+    the router has a gap.
+
+    Uses temperature=0.0 and a constrained output format so the comparison
+    is deterministic. Skips gracefully without GEMINI_API_KEY.
+    """
+    try:
+        from google import genai
+        from google.genai import types as genai_types
+    except ImportError as e:
+        print(f"SKIP: --validate-router needs google-genai ({e})", file=sys.stderr)
+        return 0
+
+    try:
+        from evolution.config import GEN_MODELS, load_api_key
+    except ImportError as e:
+        print(f"SKIP: --validate-router needs evolution.config ({e})", file=sys.stderr)
+        return 0
+
+    try:
+        api_key = load_api_key()
+    except RuntimeError as e:
+        print(f"SKIP: --validate-router needs GEMINI_API_KEY ({e})", file=sys.stderr)
+        return 0
+
+    router_path = project_root / ".mex" / "ROUTER.md"
+    if not router_path.exists():
+        print("SKIP: .mex/ROUTER.md not found")
+        return 0
+    router = router_path.read_text()
+
+    client = genai.Client(api_key=api_key)
+
+    patterns = discover_patterns()
+    if pattern_filter:
+        patterns = [p for p in patterns if pattern_filter in p.name]
+        if not patterns:
+            print(f"No patterns match filter: {pattern_filter}")
+            return 0
+
+    # Build the allowed-answer list so the planner can only name real files.
+    valid_names = sorted({p.name for p in patterns if p.exists()})
+    valid_list = "\n".join(f"  - {n}" for n in valid_names)
+
+    def call_gemini(prompt: str) -> str | None:
+        for model in GEN_MODELS:
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        temperature=0.0, max_output_tokens=256
+                    ),
+                )
+                return (response.text or "").strip()
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    continue
+                print(f"  WARN: Gemini error ({model}): {e}", file=sys.stderr)
+                return None
+        print("  WARN: all Gemini models quota-exhausted", file=sys.stderr)
+        return None
+
+    mismatches: list[tuple[str, str, str]] = []  # (expected, task, chosen)
+    total_tasks = 0
+    failures = 0
+
+    for pattern_path in patterns:
+        if not pattern_path.exists():
+            continue
+        tasks = parse_test_tasks(pattern_path)
+        if not tasks:
+            continue
+        expected = pattern_path.name
+
+        print(f"\n=== {expected} ({len(tasks)} tasks) ===")
+
+        for task in tasks:
+            total_tasks += 1
+
+            prompt = (
+                "You are routing a code task to the correct pattern file. You "
+                "have ONLY the routing guide below — no other context.\n\n"
+                f"=== ROUTING GUIDE ===\n{router}\n\n"
+                f"=== VALID PATTERN FILES ===\n{valid_list}\n\n"
+                f"=== TASK ===\n{task}\n\n"
+                "Pick the single most specific pattern file for this task. "
+                "Respond with EXACTLY the filename (e.g. `deployment.md`), "
+                "nothing else. No path, no quotes, no explanation. If no "
+                "specific pattern fits, respond with `general-code.md`."
+            )
+
+            response = call_gemini(prompt)
+            if response is None:
+                print(f"  FAIL: {task}")
+                failures += 1
+                continue
+
+            chosen = _normalize_router_response(response, valid_names)
+            expected_norm = expected.lower()
+
+            if chosen == expected_norm:
+                print(f"  OK: {task}")
+            else:
+                mismatches.append((expected, task, chosen))
+                print(f"  MISMATCH: {task}")
+                print(f"      expected: {expected}")
+                print(f"      chosen:   {chosen}")
+
+    print("\n=== VALIDATE-ROUTER SUMMARY ===")
+    print(f"Tasks checked: {total_tasks}")
+    print(f"Mismatches: {len(mismatches)}")
+    if failures:
+        print(f"Failures (unable to check): {failures}")
+    if mismatches:
+        print(
+            "\nFIX: a mismatch means either the router is picking the wrong "
+            "pattern for this task class, or the test_task is too generic to "
+            "disambiguate. Tighten ROUTER.md or reword the test_task."
+        )
+    return 1 if mismatches else 0
+
+
 def check_all(project_root: Path) -> int:
     """Run every fast check in sequence and aggregate exit codes.
 
@@ -718,9 +891,20 @@ if __name__ == "__main__":
         help="LLM-based correctness check (slow, needs GEMINI_API_KEY). "
              "Optional PATTERN arg filters to matching pattern files.",
     )
+    parser.add_argument(
+        "--validate-router",
+        nargs="?",
+        const="",
+        metavar="PATTERN",
+        dest="validate_router",
+        help="LLM-based router check: verify ROUTER.md picks the correct "
+             "pattern for each test_task (slow, needs GEMINI_API_KEY).",
+    )
     args = parser.parse_args()
 
-    if args.validate is not None:
+    if args.validate_router is not None:
+        sys.exit(check_validate_router(PROJECT_ROOT, args.validate_router or None))
+    elif args.validate is not None:
         sys.exit(check_validate(PROJECT_ROOT, args.validate or None))
     elif args.all:
         sys.exit(check_all(PROJECT_ROOT))

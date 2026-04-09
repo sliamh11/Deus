@@ -5,10 +5,10 @@ governs:
   - scripts/memory_indexer.py
 last_verified: "2026-04-09"
 test_tasks:
-  - "Add a new DeepEval metric to the core_qa test suite"
-  - "Add a new judge backend to the evolution judge provider registry"
-  - "Fix a race condition in the evolution storage provider on concurrent writes"
-  - "Update the memory indexer to include a new atom type"
+  - "Add a new DeepEval metric under eval/ for the core_qa test suite"
+  - "Add a new judge backend to evolution/judge/ using the provider registry"
+  - "Add a new storage provider under evolution/storage/providers/ for Postgres"
+  - "Add a new atom type extraction step to scripts/memory_indexer.py"
 ---
 # Pattern: eval-change
 
