@@ -50,12 +50,38 @@ async function postTweet(input: PostInput): Promise<ScriptResult> {
       return { success: false, message: 'Post button disabled. Content may be empty or exceed character limit.' };
     }
 
+    // Intercept CreateTweet API response to capture tweet ID
+    const responsePromise = page.waitForResponse(
+      (response) => response.url().includes('CreateTweet'),
+      { timeout: 15000 }
+    ).catch(() => null);
+
     await postButton.click();
     await page.waitForTimeout(config.timeouts.afterSubmit);
 
+    let tweetUrl: string | undefined;
+    try {
+      const response = await responsePromise;
+      if (response) {
+        const data = await response.json().catch(() => null);
+        const tweetId = data?.data?.create_tweet?.tweet_results?.result?.rest_id;
+        if (tweetId) {
+          const handleEl = page.locator('[data-testid="SideNav_AccountSwitcher_Button"] [dir="ltr"] span').first();
+          const handleText = await handleEl.textContent().catch(() => null);
+          const handle = handleText?.replace('@', '').trim() || 'me';
+          tweetUrl = `https://x.com/${handle}/status/${tweetId}`;
+        }
+      }
+    } catch {
+      // URL capture failed silently — post still succeeded
+    }
+
     return {
       success: true,
-      message: `Tweet posted: ${content.slice(0, 50)}${content.length > 50 ? '...' : ''}`
+      message: tweetUrl
+        ? `Tweet posted: ${tweetUrl}`
+        : `Tweet posted: ${content.slice(0, 50)}${content.length > 50 ? '...' : ''}`,
+      data: tweetUrl ? { url: tweetUrl } : undefined
     };
 
   } finally {
