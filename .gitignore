@@ -54,6 +54,7 @@ __pycache__/
 # IDE
 .idea/
 .vscode/
+.eslintcache
 
 # Skills system (local per-installation state)
 .deus/
