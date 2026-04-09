@@ -17,11 +17,15 @@ governs:
 | `scripts/` | Subprocess scripts |
 | `node_modules/`, `package-lock.json` | Local dependencies |
 
-CI rejects skill PRs that also touch `src/`.
+**CI rejects skill PRs that also touch `src/`.** This is enforced automatically — do not attempt to bundle skill + source changes in one PR.
 
 ## Core source changes
 
-If a skill genuinely requires `src/` changes, open a separate source PR first. Explain in the PR description why the feature cannot be a skill.
+If a skill genuinely requires `src/` changes, open a separate source PR first. **Explain in the PR description why the feature cannot be a skill** — this is required, not optional. All source code PRs require maintainer review (CODEOWNERS).
+
+## New features belong in skills
+
+New features and enhancements go in skills, not source code. Source PRs are accepted for: bug fixes, security fixes, simplifications, performance improvements only.
 
 ## Tests
 

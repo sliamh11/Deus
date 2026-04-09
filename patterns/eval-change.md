@@ -7,17 +7,25 @@ governs:
 
 ## ADR gate (mandatory)
 
-Before any change to `evolution/`, read `docs/decisions/INDEX.md`. Three decisions have non-obvious permanent constraints:
+Before any change to `evolution/`, read `docs/decisions/INDEX.md`. Three decisions have permanent constraints:
 
-| ADR | Ruling |
-|-----|--------|
-| `eval-ipc-file-output.md` | Results via shared-volume files, **not stdout** — Docker pipe buffering is permanent. Do not revert. |
-| `eval-no-disk-cache.md` | In-memory cache only — disk cache silently masks regressions across builds. |
-| `eval-selective-warmup.md` | Warm only active test datasets — saves ~3× time, avoids API rate saturation. |
+| ADR | Ruling | Why permanent |
+|-----|--------|---------------|
+| `eval-ipc-file-output.md` | Results via shared-volume files, **not stdout** — do not revert | Docker pipe buffering is a runtime constraint, not a fixable bug. Deadlock is guaranteed under load. |
+| `eval-no-disk-cache.md` | In-memory cache only | Disk cache silently masks regressions across builds — a passing cached result hides a regression in the new build. |
+| `eval-selective-warmup.md` | Warm only active test datasets | Full suite = ~40 container starts; cold start ~10 min. Warming inactive sets wastes time and saturates API rate limits. |
+
+## Concurrency limits
+
+Concurrency is `cpu_count // 2`, capped at 8. Override with `DEUS_EVAL_CONCURRENT`. **Never raise this cap** — rate limits saturate fast (~30 containers/session).
+
+## Adding a new dataset
+
+New dataset test files must be named `test_{name}.py` for auto-discovery. If the naming convention isn't followed, add the dataset manually to `_ALL_DATASETS`. Warm only the datasets used by the active test suite.
 
 ## Storage migrations
 
-Use the existing `try/except ALTER TABLE` pattern in `evolution/storage/providers/sqlite.py` lines 215–244. Never add columns in the `CREATE TABLE` block — it only runs once.
+Use the existing `try/except ALTER TABLE` pattern in `evolution/storage/providers/sqlite.py`. Never add columns in the `CREATE TABLE` block — it only runs once.
 
 ```python
 for col, coltype in [("new_col", "TEXT")]:
