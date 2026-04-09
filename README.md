@@ -329,6 +329,10 @@ New features should be [skills](https://code.claude.com/docs/en/skills) (markdow
 
 Commit messages, formatting, and PR conventions are enforced automatically by pre-commit hooks and CI — `npm install` sets everything up. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide.
 
+### Pattern verification (for AI contributors)
+
+Deus uses distilled pattern files (`patterns/*.md`) instead of loading full docs on every task — ~68% token reduction. Run `npm run drift-check` before committing pattern changes; it aggregates path, ADR-freshness, and frontmatter checks. LLM-based content and router validation is available on-demand via `npm run pattern-validate` and `npm run pattern-validate-router` (needs `GEMINI_API_KEY`). See [docs/decisions/pattern-verification-system.md](docs/decisions/pattern-verification-system.md) for how the system works and how to add new check layers.
+
 ---
 
 ## Support
