@@ -1,13 +1,93 @@
 # /add-listen-hotkey
 
 Install a global hotkey that triggers `deus listen` from anywhere on the OS.
+Also installs all required dependencies (sox, whisper-cli) and downloads the whisper model.
 
-## Prerequisites
+## Step 1 — Install dependencies and whisper model
 
-- `deus listen` must work from terminal (`npm run build` must have been run).
-- `deus` must be on `$PATH` (run `deus auth` once to ensure the symlink is in place).
+Run these checks and installs **before** asking the user about hotkey preferences.
 
-## Step 1 — Detect OS and ask for preferences
+### Dependencies
+
+**macOS:**
+```bash
+# Check sox
+command -v sox || brew install sox
+
+# Check whisper-cli (from whisper-cpp)
+command -v whisper-cli || brew install whisper-cpp
+```
+
+**Linux:**
+```bash
+# Check sox
+command -v sox || sudo apt install -y sox libsox-fmt-all
+
+# Check whisper-cli — not in apt, build from source if missing
+if ! command -v whisper-cli; then
+  echo "whisper-cli not found. Build from: https://github.com/ggerganov/whisper.cpp"
+  echo "After building, ensure 'whisper-cli' is on your PATH."
+  # Pause and ask user to confirm before continuing
+fi
+```
+
+**Windows:**
+```powershell
+# Check sox
+if (-not (Get-Command sox -ErrorAction SilentlyContinue)) {
+  winget install sharkdp.bat  # or: choco install sox.portable
+}
+
+# Check whisper-cli
+if (-not (Get-Command whisper-cli -ErrorAction SilentlyContinue)) {
+  Write-Host "Download whisper-cli from: https://github.com/ggerganov/whisper.cpp/releases"
+  Write-Host "Add it to your PATH, then re-run this skill."
+  # Stop and wait for user
+}
+```
+
+### Whisper model
+
+Resolve the model path from `WHISPER_MODEL` env var, or default to
+`~/deus/data/models/ggml-large-v3-turbo.bin` (Liam's personal config) or
+`~/deus/data/models/ggml-base.bin` (public default).
+
+If the model file doesn't exist, download it:
+```bash
+MODEL_PATH="${WHISPER_MODEL:-$HOME/deus/data/models/ggml-base.bin}"
+MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
+
+if [ ! -f "$MODEL_PATH" ]; then
+  mkdir -p "$(dirname "$MODEL_PATH")"
+  echo "Downloading whisper model (148 MB)..."
+  curl -L --progress-bar -o "$MODEL_PATH" "$MODEL_URL"
+  echo "Model saved to: $MODEL_PATH"
+fi
+```
+
+For `ggml-large-v3-turbo.bin` (higher accuracy, 1.5 GB):
+```
+https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+```
+
+Ask the user which model they want if `WHISPER_MODEL` is not already set:
+- `base` (148 MB, fast, good for English) — default
+- `large-v3-turbo` (1.5 GB, best accuracy, recommended for Hebrew)
+
+Set `WHISPER_MODEL` in `~/.zshrc` / `~/.bashrc` / Windows user environment variables
+so `deus listen` always finds the model without specifying it each time.
+
+### Verify end-to-end
+
+Run a quick smoke test before installing the hotkey:
+```bash
+DEUS_LISTEN_NO_CLIPBOARD=1 node ~/deus/dist/deus-listen.js --help 2>/dev/null || \
+  echo "Build needed — run: cd ~/deus && npm run build"
+```
+
+If the build is missing, run `npm run build` in `~/deus` before proceeding.
+
+## Step 2 — Detect OS and ask for hotkey preferences
 
 Detect the OS (`IS_MACOS` / `IS_LINUX` / `IS_WINDOWS` from platform.ts context, or run `uname -s`).
 
@@ -18,7 +98,7 @@ Ask the user:
    - `terminal` — opens a new terminal window with the VU meter visible
 3. **Stream mode?** — if yes, uses `deus listen --stream` instead of single-shot
 
-## Step 2 — Install per OS
+## Step 3 — Install per OS
 
 ### macOS — Hammerspoon
 
@@ -98,14 +178,14 @@ Add to startup: create a shortcut in `%APPDATA%\Microsoft\Windows\Start Menu\Pro
 
 Run immediately: `Start-Process autohotkey.exe "$env:APPDATA\deus\deus-listen.ahk"`
 
-## Step 3 — Verify
+## Step 4 — Verify
 
 Test the hotkey:
 - macOS: trigger it, wait for "Listening…" notification, speak, check clipboard.
 - Linux: trigger, speak, check `xclip -o -selection clipboard`.
 - Windows: trigger, speak, check `Get-Clipboard`.
 
-## Step 4 — Uninstall instructions (show to user)
+## Step 5 — Uninstall instructions (show to user)
 
 - **macOS**: delete `~/.hammerspoon/deus-listen.lua`, remove the `require` line from `init.lua`, reload Hammerspoon.
 - **Linux**: remove the appended block from `~/.config/sxhkd/sxhkdrc`, `pkill -USR1 sxhkd`.
