@@ -2,7 +2,6 @@
 governs:
   - src/
   - setup/
-  - dist/
   - packages/
 last_verified: "2026-04-09"
 test_tasks:

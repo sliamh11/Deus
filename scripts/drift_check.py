@@ -23,10 +23,130 @@ Usage:
 """
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
+
+
+def _has_uncommitted_changes(path: Path, project_root: Path) -> bool:
+    """True if `path` has uncommitted changes (tracked but modified, or
+    untracked). Directories return True if any child has changes.
+    """
+    try:
+        rel = path.relative_to(project_root)
+    except ValueError:
+        return False
+    try:
+        # `git status --porcelain -- <path>` returns one line per changed
+        # entry (tracked-modified OR untracked). Empty output = clean.
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--", str(rel)],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.returncode == 0 and bool(result.stdout.strip())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+
+
+def _git_commit_time(path: Path, project_root: Path) -> float:
+    """Return the unix timestamp of the last commit that touched `path`.
+
+    Precedence:
+      1. If the file has uncommitted changes (working tree), use its mtime
+         so local edits are caught immediately before you commit.
+      2. Otherwise use `git log -1 --format=%ct -- <path>` (reproducible
+         across fresh clones, including CI).
+      3. Fall back to filesystem mtime if git is unavailable or the file
+         is untracked and clean (shouldn't happen in practice).
+
+    Using commit time on CI avoids false drift reports: `git checkout`
+    sets every file's mtime to the clone time, which would make every
+    pattern look "drifted" against every source file otherwise.
+    """
+    try:
+        rel = path.relative_to(project_root)
+    except ValueError:
+        return path.stat().st_mtime if path.exists() else 0.0
+
+    if _has_uncommitted_changes(path, project_root):
+        return path.stat().st_mtime if path.exists() else 0.0
+
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ct", "--", str(rel)],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        out = result.stdout.strip()
+        if result.returncode == 0 and out:
+            return float(out)
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+    return path.stat().st_mtime if path.exists() else 0.0
+
+
+def _dir_commit_time(dir_path: Path, project_root: Path) -> float:
+    """Return the commit timestamp of the most recently committed file
+    inside `dir_path`, falling back to an mtime walk if the directory has
+    uncommitted changes (so local edits are caught immediately).
+
+    Build artifact dirs (__pycache__, dist/, node_modules/, caches) are
+    always skipped in the mtime-walk fallback.
+    """
+    skip_dirs = {"__pycache__", "node_modules", "dist", ".pytest_cache", ".mypy_cache"}
+    skip_suffixes = {".pyc", ".pyo"}
+
+    try:
+        rel = dir_path.relative_to(project_root)
+    except ValueError:
+        return 0.0
+
+    # Local-dev fast path: if anything inside the dir is dirty, walk mtimes.
+    if _has_uncommitted_changes(dir_path, project_root):
+        mtimes: list[float] = []
+        for f in dir_path.rglob("*"):
+            if not f.is_file():
+                continue
+            if any(part in skip_dirs for part in f.parts):
+                continue
+            if f.suffix in skip_suffixes:
+                continue
+            mtimes.append(f.stat().st_mtime)
+        return max(mtimes) if mtimes else 0.0
+
+    # Clean tree: use git log scoped to the directory (reproducible on CI).
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%ct", "--", str(rel)],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        out = result.stdout.strip()
+        if result.returncode == 0 and out:
+            return float(out)
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        pass
+
+    # Untracked-but-clean fallback: walk mtimes.
+    mtimes_fallback: list[float] = []
+    for f in dir_path.rglob("*"):
+        if not f.is_file():
+            continue
+        if any(part in skip_dirs for part in f.parts):
+            continue
+        if f.suffix in skip_suffixes:
+            continue
+        mtimes_fallback.append(f.stat().st_mtime)
+    return max(mtimes_fallback) if mtimes_fallback else 0.0
 
 
 def parse_governs(pattern_path: Path) -> list[str]:
@@ -94,7 +214,7 @@ def main() -> int:
             exit_code = max(exit_code, 2)
             continue
 
-        pattern_mtime = pattern_path.stat().st_mtime
+        pattern_time = _git_commit_time(pattern_path, PROJECT_ROOT)
         governs = parse_governs(pattern_path)
 
         drifted: list[str] = []
@@ -110,25 +230,13 @@ def main() -> int:
                 continue
 
             if governed.is_dir():
-                # For directories, check the most recently modified source file.
-                # Skip build artifacts and caches that churn independently of
-                # the semantic content the pattern is about.
-                skip_dirs = {"__pycache__", "node_modules", "dist", ".pytest_cache", ".mypy_cache"}
-                skip_suffixes = {".pyc", ".pyo"}
-                mtimes: list[float] = []
-                for f in governed.rglob("*"):
-                    if not f.is_file():
-                        continue
-                    if any(part in skip_dirs for part in f.parts):
-                        continue
-                    if f.suffix in skip_suffixes:
-                        continue
-                    mtimes.append(f.stat().st_mtime)
-                governed_mtime = max(mtimes) if mtimes else 0.0
+                governed_time = _dir_commit_time(governed, PROJECT_ROOT)
             else:
-                governed_mtime = governed.stat().st_mtime
+                governed_time = _git_commit_time(governed, PROJECT_ROOT)
 
-            if governed_mtime > pattern_mtime:
+            # 1-second tolerance absorbs rounding noise between git commit
+            # timestamps; drift must be strictly later than the pattern.
+            if governed_time > pattern_time + 1.0:
                 drifted.append(rel_path)
 
         if drifted:
