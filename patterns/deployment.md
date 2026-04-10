@@ -57,7 +57,7 @@ docker builder prune -f && ./container/build.sh
 
 ## Credentials rule
 
-Never write rotating credentials (OAuth tokens, short-lived keys) to `.env`. Read them dynamically at request time from their source file (e.g., `~/.claude/.credentials.json`). `.env` is for static secrets only.
+Never write rotating credentials (OAuth tokens, short-lived session keys) to `.env`. Read them dynamically at request time from their source file (e.g., `~/.claude/.credentials.json`). `.env` is for **static, long-lived secrets only** (API keys, bot tokens like `TELEGRAM_BOT_TOKEN`, model names).
 
 ## Config file locations
 

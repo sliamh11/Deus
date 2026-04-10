@@ -65,7 +65,7 @@ Verify group identity before any privileged IPC operation.
 |------|----------|
 | `store/auth/creds.json` | WhatsApp session (encrypted) |
 | `store/messages.db` | Full message history |
-| `.env` | API keys and channel tokens |
+| `.env` | Static long-lived secrets (API keys, bot tokens) — never rotating credentials |
 | `~/.config/deus/mount-allowlist.json` | Allowed mount paths |
 | `data/sessions/*/` | Per-group Claude session state |
 

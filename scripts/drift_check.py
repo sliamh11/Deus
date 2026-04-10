@@ -951,18 +951,23 @@ def check_contradictions(project_root: Path, pattern_filter: str | None = None) 
     patterns_blob = "\n\n".join(blob_parts)
 
     prompt = (
-        "You are auditing a set of pattern files for contradictions. Each "
-        "pattern is a cheat-sheet of rules for a specific task type.\n\n"
         f"{patterns_blob}\n\n"
-        "Identify any rules that DIRECTLY contradict each other across "
-        "different patterns. A contradiction is when pattern A says to always "
-        "do X and pattern B says to never do X (or vice versa). Do NOT flag:\n"
-        "- Rules that are simply more specific in one pattern than another\n"
-        "- Rules that apply to different contexts or task types\n"
-        "- Universal rules that are intentionally repeated across patterns\n\n"
-        "If there are no contradictions, respond with exactly: NO_CONTRADICTIONS\n"
-        "Otherwise, list each contradiction as:\n"
-        "CONTRADICTION: <pattern_a.md> says \"<rule>\" vs <pattern_b.md> says \"<rule>\""
+        "Above are pattern files — cheat-sheets for different task types.\n\n"
+        "Find DIRECT contradictions: pattern A says DO X, pattern B says "
+        "DON'T DO X, and both apply to the exact same situation. A developer "
+        "following both patterns simultaneously would receive impossible "
+        "instructions.\n\n"
+        "NOT contradictions (never flag these):\n"
+        "- Different rules for different components or contexts\n"
+        "- Same rule stated with different wording (agreement)\n"
+        "- One rule more specific than another (refinement)\n"
+        "- Patterns that agree on a classification (e.g., if both call "
+        "something 'static' and say it goes in .env, that is agreement)\n"
+        "- Anything requiring external domain knowledge to judge — only "
+        "flag what the text itself makes contradictory\n\n"
+        "Be conservative. When in doubt, it is NOT a contradiction.\n\n"
+        "Respond NO_CONTRADICTIONS if none found.\n"
+        "Otherwise: CONTRADICTION: <a.md> \"<rule>\" vs <b.md> \"<rule>\""
     )
 
     client = genai.Client(api_key=api_key)
