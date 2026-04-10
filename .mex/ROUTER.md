@@ -16,6 +16,14 @@
 | env-var-add | `patterns/deployment.md` | `docs/ENVIRONMENT.md` |
 | general-code (fallback) | `patterns/general-code.md` | — |
 
+## Precedence
+
+When a task matches multiple task types, pick the **most specific** one:
+
+1. Security-sensitive code (mounts, allowlists, credentials, auth) → `security-review`
+2. Subsystem-internal changes (evolution/\*, eval/\*, memory indexer) → the subsystem's own pattern
+3. `general-code` is the fallback — use it only when no specialized pattern applies
+
 ## Universal rules
 
 **The rules in `patterns/general-code.md` §Universal rules always apply**, regardless of which pattern was loaded:

@@ -2,11 +2,15 @@
 governs:
   - src/
   - evolution/
-  - scripts/memory_indexer.py
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
 last_verified: "2026-04-09"
+test_tasks:
+  - "Refactor src/router.ts into smaller modules"
+  - "Add a new utility function for parsing timestamps"
+  - "Fix a memory leak in the startup gate"
+  - "Add a new startup-gate check in `src/checks.ts` that validates a required config value before boot"
 ---
 # Pattern: general-code
 

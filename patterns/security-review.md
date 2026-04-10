@@ -6,6 +6,11 @@ governs:
   - src/sender-allowlist.ts
   - src/mount-security.ts
 last_verified: "2026-04-09"
+test_tasks:
+  - "Add a new mount in src/container-mounter.ts for per-group config files"
+  - "Update src/mount-security.ts to permit reading a new credential path"
+  - "Audit a new MCP tool for credential exposure via src/credential-proxy.ts"
+  - "Add a new sender to src/sender-allowlist.ts for a specific channel"
 ---
 # Pattern: security-review
 
@@ -60,7 +65,7 @@ Verify group identity before any privileged IPC operation.
 |------|----------|
 | `store/auth/creds.json` | WhatsApp session (encrypted) |
 | `store/messages.db` | Full message history |
-| `.env` | API keys and channel tokens |
+| `.env` | Static long-lived secrets (API keys, bot tokens) — never rotating credentials |
 | `~/.config/deus/mount-allowlist.json` | Allowed mount paths |
 | `data/sessions/*/` | Per-group Claude session state |
 

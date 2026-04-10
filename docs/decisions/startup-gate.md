@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-30
+**Scope:** `src/startup-gate.ts`, `src/checks.ts`
 
 ## Context
 

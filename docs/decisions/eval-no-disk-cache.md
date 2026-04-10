@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-29
+**Scope:** `eval/`
 
 ## Context
 

@@ -15,6 +15,9 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - run: npm ci
 
       - name: Lint
@@ -28,6 +31,15 @@ jobs:
 
       - name: Tests
         run: npx vitest run
+
+      - name: Install pytest
+        run: python3 -m pip install pytest
+
+      - name: Pattern drift check
+        run: npm run drift-check
+
+      - name: Pattern tests (Python)
+        run: python3 -m pytest scripts/tests/test_drift_check.py -v
 
       - name: Validate commits
         uses: wagoid/commitlint-github-action@v6

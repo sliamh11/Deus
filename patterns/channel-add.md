@@ -3,6 +3,11 @@ governs:
   - src/channels
   - packages/
 last_verified: "2026-04-09"
+test_tasks:
+  - "Add a Discord channel with OAuth login"
+  - "Add capabilities: logging to a new MCP channel server so notifications are delivered"
+  - "Register a new MCP tool on the Telegram channel with a Zod input schema"
+  - "Create a new Slack channel package under packages/mcp-slack/"
 ---
 # Pattern: channel-add
 
@@ -60,7 +65,7 @@ Add at least one test covering the capability registration path. Run `npm test` 
 
 ## Config
 
-Channel-specific env vars (e.g., `TELEGRAM_BOT_TOKEN`) are passed by the host process — they go in the project root `.env`, not `~/.config/deus/.env`.
+Channel-specific env vars (e.g., `TELEGRAM_BOT_TOKEN`) are static long-lived secrets passed by the host process — they go in the project root `.env`, not `~/.config/deus/.env`. These are not rotating credentials (see `deployment.md` §Credentials rule).
 
 ## Extra doc
 

@@ -2,9 +2,13 @@
 governs:
   - src/
   - setup/
-  - dist/
   - packages/
 last_verified: "2026-04-09"
+test_tasks:
+  - "Deploy a hotfix to a running service and restart it after rebuilding dist/"
+  - "Rebuild the WhatsApp MCP package and pick up the change live"
+  - "Update a long-lived config value and restart the service to pick it up"
+  - "Ship a dist/ fix after a failed deploy where the old binary is still running"
 ---
 # Pattern: deployment
 
@@ -53,7 +57,7 @@ docker builder prune -f && ./container/build.sh
 
 ## Credentials rule
 
-Never write rotating credentials (OAuth tokens, short-lived keys) to `.env`. Read them dynamically at request time from their source file (e.g., `~/.claude/.credentials.json`). `.env` is for static secrets only.
+Never write rotating credentials (OAuth tokens, short-lived session keys) to `.env`. Read them dynamically at request time from their source file (e.g., `~/.claude/.credentials.json`). `.env` is for **static, long-lived secrets only** (API keys, bot tokens like `TELEGRAM_BOT_TOKEN`, model names).
 
 ## Config file locations
 

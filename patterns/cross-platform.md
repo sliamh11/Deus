@@ -4,6 +4,11 @@ governs:
   - src/cross-platform.test.ts
   - src/config.ts
 last_verified: "2026-04-09"
+test_tasks:
+  - "Add a new HOME directory lookup in src/ that must go through src/platform.ts"
+  - "Add a shell command helper under src/ that works on macOS, Linux, and Windows"
+  - "Fix a path.join separator bug in src/ that only appears on Windows"
+  - "Add a new OS-specific path accessor to src/platform.ts"
 ---
 # Pattern: cross-platform
 
