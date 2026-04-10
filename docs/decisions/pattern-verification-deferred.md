@@ -22,6 +22,8 @@ The pattern verification system catches 6 categories of gap. This doc lists the 
 
 ## R. Router tightening (revealed by this PR)
 
+**Status: completed** — 2026-04-10
+
 **What `--validate-router` found (4 residual mismatches after test_task cleanup):**
 1. "Add a new storage provider under `evolution/storage/providers/`" → routes to `general-code.md`, expected `eval-change.md`
 2. "Add a new atom type extraction step to `scripts/memory_indexer.py`" → routes to `general-code.md`, expected `eval-change.md`
@@ -43,6 +45,8 @@ The pattern verification system catches 6 categories of gap. This doc lists the 
 ---
 
 ## 3. Cross-pattern contradictions
+
+**Status: completed** — 2026-04-10
 
 **Gap:** If `deployment.md` says "always X" and `general-code.md` says "never X", nothing detects that. With only 8 patterns today contradictions are rare, but the number will grow.
 

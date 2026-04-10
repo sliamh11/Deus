@@ -7,7 +7,7 @@ test_tasks:
   - "Messages from a Telegram group arrive but the agent never responds"
   - "A container exits with code 137 instead of returning a result"
   - "WhatsApp ack messages are not appearing in the log stream"
-  - "Container mount appears empty even though the host file exists"
+  - "Debug why a container's working directory appears empty even though the host file exists"
 ---
 # Pattern: debugging
 

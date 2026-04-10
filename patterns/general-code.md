@@ -2,7 +2,6 @@
 governs:
   - src/
   - evolution/
-  - scripts/memory_indexer.py
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
@@ -11,7 +10,7 @@ test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"
   - "Fix a memory leak in the startup gate"
-  - "Add a new startup check for a required environment variable"
+  - "Add a new startup-gate check in `src/checks.ts` that validates a required config value before boot"
 ---
 # Pattern: general-code
 

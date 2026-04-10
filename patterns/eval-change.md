@@ -7,8 +7,8 @@ last_verified: "2026-04-09"
 test_tasks:
   - "Add a new DeepEval metric under eval/ for the core_qa test suite"
   - "Add a new judge backend to evolution/judge/ using the provider registry"
-  - "Add a new storage provider under evolution/storage/providers/ for Postgres"
-  - "Add a new atom type extraction step to scripts/memory_indexer.py"
+  - "Add a new evolution storage provider under `evolution/storage/providers/`"
+  - "Add a new atom type to the eval/evolution memory indexer at `scripts/memory_indexer.py`"
 ---
 # Pattern: eval-change
 
