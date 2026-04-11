@@ -3,6 +3,19 @@ PLIST="$HOME/Library/LaunchAgents/com.deus.plist"
 DEUS_PROJECTS_DIR="$HOME/.config/deus/projects"
 DEUS_SKILLS_DIR="$HOME/.claude/skills"
 
+# Resolve symlinks so SCRIPT_DIR always points to the repo, even when
+# called via /usr/local/bin/deus → ~/deus/deus-cmd.sh symlink.
+_resolve_script_dir() {
+  local src="$0"
+  while [ -L "$src" ]; do
+    local dir="$(cd "$(dirname "$src")" && pwd)"
+    src="$(readlink "$src")"
+    [[ "$src" != /* ]] && src="$dir/$src"
+  done
+  echo "$(cd "$(dirname "$src")" && pwd)"
+}
+SCRIPT_DIR="$(_resolve_script_dir)"
+
 # ─── Project Config Helpers ───
 # Config stored at ~/.config/deus/projects/<md5-of-path>.json
 # Outside both the project dir (no pollution) and the Deus repo (no cross-user leakage).
@@ -739,7 +752,6 @@ case "$1" in
     # a source fix is present but the running binary is stale (root cause of
     # the login loop regression: fix was in src but never compiled into dist).
     printf "  Building...\r"
-    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     (cd "$SCRIPT_DIR" && npm run build --silent) || { echo "Build failed — not restarting."; exit 1; }
     # Re-create CLI symlink — catches repo moves/renames
     LINK_DIR="$HOME/.local/bin"
