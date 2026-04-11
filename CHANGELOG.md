@@ -4,6 +4,21 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0](https://github.com/sliamh11/Deus/compare/v1.3.0...v1.4.0) (2026-04-11)
+
+
+### Features
+
+* **evolution:** add routing patterns and context_tokens ([#135](https://github.com/sliamh11/Deus/issues/135)) ([32f1d43](https://github.com/sliamh11/Deus/commit/32f1d43ce5af67872af44f486ba483eb08e36508))
+* **patterns:** add pattern verification system ([#138](https://github.com/sliamh11/Deus/issues/138)) ([f614673](https://github.com/sliamh11/Deus/commit/f614673eb01d134d05506e80f846210ffb27c605))
+* **skill:** add-listen-hotkey — install deps + whisper model before hotkey setup ([fef98ef](https://github.com/sliamh11/Deus/commit/fef98effa36c6de6304e4ca03f2d9ba7298b0284))
+
+
+### Bug Fixes
+
+* resolve symlink in SCRIPT_DIR so `deus auth` works from any path ([57cff44](https://github.com/sliamh11/Deus/commit/57cff4452c522c847508d54520f9f63229dbc7de))
+* **whatsapp:** event-driven group sync, eliminate redundant bulk fetch ([#134](https://github.com/sliamh11/Deus/issues/134)) ([5043405](https://github.com/sliamh11/Deus/commit/50434050a8566bbc92fef2cea41439e2926bc358))
+
 ## [1.3.0](https://github.com/sliamh11/Deus/compare/v1.2.0...v1.3.0) (2026-04-09)
 
 
