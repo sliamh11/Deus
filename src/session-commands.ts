@@ -23,11 +23,15 @@ export interface SettingsCommandResult {
   updatedGroup?: RegisteredGroup; // Present when a setting was changed
 }
 
+const VALID_PRIVACY_LEVELS = ['public', 'internal', 'private', 'sensitive'];
+
 const SETTINGS_HELP =
   'Available settings:\n' +
   '  session_idle_hours=N  — reset session after N idle hours (0 = never)\n' +
   '  timeout=N             — container timeout in seconds (min 30)\n' +
-  '  requires_trigger=true/false  — whether @Name prefix is required';
+  '  requires_trigger=true/false  — whether @Name prefix is required\n' +
+  '  memory_privacy=level1,level2  — privacy levels this channel can access\n' +
+  '    levels: public, internal, private, sensitive (default: public,internal,private)';
 
 /**
  * Parse and apply a /settings command.
@@ -55,6 +59,7 @@ export function handleSettingsCommand(
       }`,
       `  timeout: ${timeoutMs !== undefined ? `${Math.round(timeoutMs / 1000)}s` : '300s (default)'}`,
       `  requires_trigger: ${group.requiresTrigger !== false}`,
+      `  memory_privacy: ${group.containerConfig?.memoryPrivacy?.join(',') || 'public,internal,private (default)'}`,
       '',
       SETTINGS_HELP,
     ];
@@ -115,6 +120,33 @@ export function handleSettingsCommand(
       }
       updatedGroup.requiresTrigger = value === 'true';
       return { response: `requires_trigger set to ${value}`, updatedGroup };
+    }
+    case 'memory_privacy': {
+      const levels = [
+        ...new Set(
+          value
+            .split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean),
+        ),
+      ];
+      const invalid = levels.filter((l) => !VALID_PRIVACY_LEVELS.includes(l));
+      if (invalid.length > 0) {
+        return {
+          response: `Invalid privacy level(s): ${invalid.join(', ')}. Valid: ${VALID_PRIVACY_LEVELS.join(', ')}`,
+        };
+      }
+      if (levels.length === 0) {
+        return { response: 'memory_privacy requires at least one level.' };
+      }
+      updatedGroup.containerConfig = {
+        ...updatedGroup.containerConfig,
+        memoryPrivacy: levels,
+      };
+      return {
+        response: `memory_privacy set to ${levels.join(',')}`,
+        updatedGroup,
+      };
     }
     default:
       return { response: `Unknown setting: ${key}\n\n${SETTINGS_HELP}` };

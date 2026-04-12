@@ -3266,3 +3266,217 @@ def test_export_default_excludes_sensitive_and_private(mi, tmp_path):
     assert "public study fact" in content
     assert "sensitive trading secret" not in content
     assert "private family fact" not in content
+
+
+# ── Channel privacy: --allowed-privacy and DEUS_MEMORY_PRIVACY ───────────────
+
+
+def test_allowed_privacy_filters_to_allowlist(mi, capsys):
+    """--allowed-privacy should only show atoms in the allowlist."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    mi.cmd_query("fact secret", top=10, allowed_privacy=["public", "internal"])
+    out = capsys.readouterr().out
+    assert "public study fact" in out or "internal dev fact" in out
+    assert "private family fact" not in out
+    assert "sensitive trading secret" not in out
+
+
+def test_allowed_privacy_includes_sensitive_when_listed(mi, capsys):
+    """If sensitive is in the allowlist, it should appear."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    mi.cmd_query("sensitive trading secret", top=10, allowed_privacy=["sensitive"])
+    out = capsys.readouterr().out
+    assert "sensitive trading secret" in out
+    assert "public study fact" not in out
+
+
+def test_allowed_privacy_env_fallback(mi, capsys, monkeypatch):
+    """DEUS_MEMORY_PRIVACY env var should act as fallback for --allowed-privacy."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    monkeypatch.setenv("DEUS_MEMORY_PRIVACY", "public,internal")
+    mi.cmd_query("fact secret", top=10)
+    out = capsys.readouterr().out
+    assert "private family fact" not in out
+    assert "sensitive trading secret" not in out
+
+
+def test_allowed_privacy_overrides_env(mi, capsys, monkeypatch):
+    """Explicit --allowed-privacy should override DEUS_MEMORY_PRIVACY env."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    monkeypatch.setenv("DEUS_MEMORY_PRIVACY", "public")
+    # Explicit allowlist includes private, env says only public
+    mi.cmd_query("private family fact", top=10, allowed_privacy=["public", "internal", "private"])
+    out = capsys.readouterr().out
+    assert "private family fact" in out
+
+
+def test_allowed_privacy_blocked_notice_shows_channel_message(mi, capsys):
+    """When atoms are blocked by allowlist, notice should mention channel policy."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    mi.cmd_query("sensitive trading secret", top=10, allowed_privacy=["public", "internal"])
+    out = capsys.readouterr().out
+    assert "blocked by channel privacy policy" in out
+    assert "/settings memory_privacy" in out
+
+
+def test_allowed_privacy_no_blocked_notice_when_all_allowed(mi, capsys):
+    """No blocked notice when all privacy levels are in the allowlist."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    mi.cmd_query("fact", top=10, allowed_privacy=["public", "internal", "private", "sensitive"])
+    out = capsys.readouterr().out
+    assert "blocked" not in out
+
+
+def test_export_uses_env_var_privacy(mi, tmp_path, monkeypatch):
+    """cmd_export should respect DEUS_MEMORY_PRIVACY env var."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    monkeypatch.setenv("DEUS_MEMORY_PRIVACY", "public,internal,private")
+    out_path = tmp_path / "export.md"
+    mi.cmd_export(str(out_path))
+    content = out_path.read_text()
+    assert "private family fact" in content
+    assert "sensitive trading secret" not in content
+
+
+def test_export_explicit_overrides_env(mi, tmp_path, monkeypatch):
+    """Explicit privacy_levels should override DEUS_MEMORY_PRIVACY env."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    monkeypatch.setenv("DEUS_MEMORY_PRIVACY", "public,internal,private,sensitive")
+    out_path = tmp_path / "export.md"
+    mi.cmd_export(str(out_path), privacy_levels=["public"])
+    content = out_path.read_text()
+    assert "public study fact" in content
+    assert "internal dev fact" not in content
+    assert "sensitive trading secret" not in content
+
+
+def test_allowed_privacy_takes_precedence_over_legacy_privacy(mi, capsys):
+    """When both --allowed-privacy and --privacy are given, allowlist wins."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    # --privacy=sensitive would normally show ONLY sensitive
+    # --allowed-privacy=public,internal should override that
+    mi.cmd_query("fact", top=10, privacy="sensitive", allowed_privacy=["public", "internal"])
+    out = capsys.readouterr().out
+    assert "sensitive trading secret" not in out
+    # Allowlist should filter, not the legacy flag
+    assert "private family fact" not in out
+
+
+def test_empty_env_var_falls_through_to_default(mi, capsys, monkeypatch):
+    """DEUS_MEMORY_PRIVACY='' should behave like no env var (default filtering)."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    monkeypatch.setenv("DEUS_MEMORY_PRIVACY", "")
+    mi.cmd_query("sensitive trading secret", top=10)
+    out = capsys.readouterr().out
+    # Default behavior: sensitive excluded, blocked notice shown
+    assert "sensitive trading secret" not in out
+    assert "blocked by privacy filter" in out
+
+
+def test_allowed_privacy_with_no_matching_atoms(mi, capsys):
+    """Allowlist with levels that have no atoms should return empty gracefully."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    # Only seed has public/internal/private/sensitive — query with allowlist
+    # that excludes everything the query matches
+    mi.cmd_query("sensitive trading secret", top=10, allowed_privacy=["public"])
+    out = capsys.readouterr().out
+    assert "sensitive trading secret" not in out
+    assert "blocked by channel privacy policy" in out
+
+
+def test_new_channel_gets_safe_default(mi, capsys):
+    """Without any privacy config (new channel), sensitive is excluded by default."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    # No allowed_privacy, no env var, no --privacy → default excludes sensitive
+    mi.cmd_query("fact secret", top=10)
+    out = capsys.readouterr().out
+    assert "sensitive trading secret" not in out
+    assert "public study fact" in out or "internal dev fact" in out or "private family fact" in out
+
+
+def test_commas_only_env_var_falls_through_to_default(mi, capsys, monkeypatch):
+    """DEUS_MEMORY_PRIVACY=',,,' should behave like no env var."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    monkeypatch.setenv("DEUS_MEMORY_PRIVACY", ",,,")
+    mi.cmd_query("sensitive trading secret", top=10)
+    out = capsys.readouterr().out
+    assert "sensitive trading secret" not in out
+    assert "blocked by privacy filter" in out
+
+
+def test_invalid_levels_in_env_var_stripped(mi, capsys, monkeypatch):
+    """Invalid privacy levels in DEUS_MEMORY_PRIVACY should be silently stripped."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    monkeypatch.setenv("DEUS_MEMORY_PRIVACY", "public,bogus,internal")
+    mi.cmd_query("fact", top=10)
+    out = capsys.readouterr().out
+    # 'bogus' is stripped; only public and internal are allowed
+    assert "private family fact" not in out
+    assert "sensitive trading secret" not in out
+
+
+def test_export_respects_allowed_privacy_arg(mi, tmp_path):
+    """cmd_export should respect explicit privacy_levels allowlist."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    out_path = tmp_path / "export.md"
+    mi.cmd_export(str(out_path), privacy_levels=["public", "internal", "private"])
+    content = out_path.read_text()
+    assert "private family fact" in content
+    assert "sensitive trading secret" not in content
+
+
+def test_resolve_privacy_allowlist_validates(mi):
+    """_resolve_privacy_allowlist should strip invalid levels."""
+    result = mi._resolve_privacy_allowlist(["public", "bogus", "internal"])
+    assert result == ["public", "internal"]
+
+
+def test_resolve_privacy_allowlist_all_invalid_returns_none(mi):
+    """_resolve_privacy_allowlist with all-invalid input returns None."""
+    result = mi._resolve_privacy_allowlist(["bogus", "fake"])
+    assert result is None

@@ -2,9 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   extractSessionCommand,
   handleSessionCommand,
+  handleSettingsCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
-import type { NewMessage } from './types.js';
+import type { NewMessage, RegisteredGroup } from './types.js';
 import type { SessionCommandDeps } from './session-commands.js';
 
 describe('extractSessionCommand', () => {
@@ -243,5 +244,112 @@ describe('handleSessionCommand', () => {
     expect(deps.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('Failed to process'),
     );
+  });
+});
+
+// ── /settings memory_privacy ────────────────────────────────────────────────
+
+function makeGroup(overrides: Partial<RegisteredGroup> = {}): RegisteredGroup {
+  return {
+    name: 'test-group',
+    folder: 'test-group',
+    trigger: '@Test',
+    added_at: '2024-01-01',
+    ...overrides,
+  };
+}
+
+describe('handleSettingsCommand — memory_privacy', () => {
+  it('sets valid privacy levels', () => {
+    const group = makeGroup();
+    const result = handleSettingsCommand(
+      '/settings memory_privacy=public,internal,private',
+      group,
+      24,
+    );
+    expect(result.response).toBe(
+      'memory_privacy set to public,internal,private',
+    );
+    expect(result.updatedGroup?.containerConfig?.memoryPrivacy).toEqual([
+      'public',
+      'internal',
+      'private',
+    ]);
+  });
+
+  it('rejects invalid privacy levels', () => {
+    const group = makeGroup();
+    const result = handleSettingsCommand(
+      '/settings memory_privacy=public,bogus',
+      group,
+      24,
+    );
+    expect(result.response).toContain('Invalid privacy level(s): bogus');
+    expect(result.updatedGroup).toBeUndefined();
+  });
+
+  it('rejects empty value', () => {
+    const group = makeGroup();
+    const result = handleSettingsCommand(
+      '/settings memory_privacy=',
+      group,
+      24,
+    );
+    expect(result.response).toContain('Missing value');
+    expect(result.updatedGroup).toBeUndefined();
+  });
+
+  it('includes sensitive when explicitly listed', () => {
+    const group = makeGroup();
+    const result = handleSettingsCommand(
+      '/settings memory_privacy=sensitive',
+      group,
+      24,
+    );
+    expect(result.updatedGroup?.containerConfig?.memoryPrivacy).toEqual([
+      'sensitive',
+    ]);
+  });
+
+  it('displays current memory_privacy in settings output', () => {
+    const group = makeGroup({
+      containerConfig: { memoryPrivacy: ['public', 'internal'] },
+    });
+    const result = handleSettingsCommand('/settings', group, 24);
+    expect(result.response).toContain('memory_privacy: public,internal');
+  });
+
+  it('displays default when no memory_privacy configured', () => {
+    const group = makeGroup();
+    const result = handleSettingsCommand('/settings', group, 24);
+    expect(result.response).toContain(
+      'memory_privacy: public,internal,private (default)',
+    );
+  });
+
+  it('normalizes to lowercase', () => {
+    const group = makeGroup();
+    const result = handleSettingsCommand(
+      '/settings memory_privacy=Public,INTERNAL',
+      group,
+      24,
+    );
+    expect(result.updatedGroup?.containerConfig?.memoryPrivacy).toEqual([
+      'public',
+      'internal',
+    ]);
+  });
+
+  it('deduplicates levels', () => {
+    const group = makeGroup();
+    const result = handleSettingsCommand(
+      '/settings memory_privacy=public,public,internal',
+      group,
+      24,
+    );
+    expect(result.updatedGroup?.containerConfig?.memoryPrivacy).toEqual([
+      'public',
+      'internal',
+    ]);
   });
 });

@@ -31,6 +31,8 @@ export interface ContainerConfig {
   additionalMounts?: AdditionalMount[];
   timeout?: number; // Default: 300000ms (5 minutes). Configurable via /settings timeout=N (seconds).
   sessionIdleResetHours?: number; // Override global SESSION_IDLE_RESET_HOURS. 0 = never reset.
+  memoryPrivacy?: string[]; // Privacy levels the container can access (e.g. ["public","internal","private"]).
+  // Injected as DEUS_MEMORY_PRIVACY env var. Default: all except sensitive.
 }
 
 export interface ProjectType {

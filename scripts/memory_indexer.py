@@ -873,7 +873,8 @@ def _rrf_fuse(
 def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
               show_source: bool = False, domain: str | None = None,
               intent: str | None = None, as_of: str | None = None,
-              privacy: str | None = None):
+              privacy: str | None = None,
+              allowed_privacy: list[str] | None = None):
     db = open_db()
 
     # Check if anything is indexed
@@ -918,7 +919,10 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
     # Partition into atoms and sessions; deduplicate sessions by path
     atom_results: list[dict] = []
     seen: dict[str, dict] = {}
-    sensitive_filtered = 0  # track how many sensitive atoms were blocked
+    privacy_filtered = 0  # track how many sensitive atoms were blocked
+
+    # Resolve effective privacy allowlist once (not per-atom)
+    effective_allowlist = _resolve_privacy_allowlist(allowed_privacy)
 
     for path, date, tldr, topics, decisions, chunk_type, confidence, corroborations, dist, source_chunk in rows:
         if chunk_type == "atom":
@@ -929,18 +933,22 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
                 ).fetchone()
                 if entry_domain and entry_domain[0] != domain:
                     continue
-            # Apply privacy filter: exclude sensitive by default
+            # Apply privacy filter
             entry_privacy = db.execute(
                 "SELECT privacy FROM entries WHERE path = ? LIMIT 1", [path]
             ).fetchone()
             atom_privacy = entry_privacy[0] if entry_privacy else "internal"
-            if privacy:
-                # Explicit filter: show only this level
+            if effective_allowlist:
+                if atom_privacy not in effective_allowlist:
+                    privacy_filtered += 1
+                    continue
+            elif privacy:
+                # Legacy single-level filter: show only this level
                 if atom_privacy != privacy:
                     continue
             elif atom_privacy == "sensitive":
                 # Default: exclude sensitive
-                sensitive_filtered += 1
+                privacy_filtered += 1
                 continue
             # Temperature: used for ranking, not exclusion.
             # Cold atoms rank lower but are never fully hidden.
@@ -1068,14 +1076,21 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
         except sqlite3.OperationalError:
             pass
 
-    # Notify when sensitive atoms were filtered
-    if sensitive_filtered > 0:
+    # Notify when atoms were filtered by privacy
+    if privacy_filtered > 0:
         lines.append("")
-        lines.append(
-            f"({sensitive_filtered} result(s) blocked by privacy filter — "
-            f"sensitive atoms are excluded by default. "
-            f"Use --privacy sensitive to query them explicitly.)"
-        )
+        if effective_allowlist:
+            lines.append(
+                f"({privacy_filtered} result(s) blocked by channel privacy policy — "
+                f"this channel can only access: {', '.join(effective_allowlist)}. "
+                f"Change channel privacy via /settings memory_privacy=level1,level2)"
+            )
+        else:
+            lines.append(
+                f"({privacy_filtered} result(s) blocked by privacy filter — "
+                f"sensitive atoms are excluded by default. "
+                f"Use --privacy sensitive to query them explicitly.)"
+            )
 
     print("\n".join(lines))
 
@@ -1992,6 +2007,35 @@ def cmd_decay(dry_run: bool = False):
     db.close()
 
 
+VALID_PRIVACY_LEVELS = {"public", "internal", "private", "sensitive"}
+
+
+def _resolve_privacy_allowlist(explicit: list[str] | None = None) -> list[str] | None:
+    """Resolve the effective privacy allowlist from explicit arg or env var.
+
+    Priority: explicit arg > DEUS_MEMORY_PRIVACY env var > None (caller uses default).
+    Invalid levels are silently stripped. Empty result returns None.
+
+    Note: DEUS_MEMORY_PRIVACY is injected by container-runner from validated
+    /settings config. A container agent with shell access could unset it,
+    falling back to the default (exclude sensitive only). This is acceptable
+    given the semi-trusted agent threat model.
+    """
+    if explicit:
+        return [p for p in explicit if p in VALID_PRIVACY_LEVELS] or None
+    raw = os.environ.get("DEUS_MEMORY_PRIVACY", "")
+    levels = [p.strip() for p in raw.split(",") if p.strip()]
+    validated = [p for p in levels if p in VALID_PRIVACY_LEVELS]
+    return validated or None
+
+
+def _parse_allowed_privacy_arg(raw: str | None) -> list[str] | None:
+    """Parse --allowed-privacy CLI value into a validated list."""
+    if not raw:
+        return None
+    return [p.strip() for p in raw.split(",") if p.strip()] or None
+
+
 PRIVACY_KEYWORDS: dict[str, list[str]] = {
     "sensitive": ["password", "token", "secret", "api_key", "credential", "ssn",
                   "credit card", "bank account", "social security", "trade", "stock",
@@ -2209,7 +2253,7 @@ def cmd_blind_spots(top: int = 10):
 def cmd_export(output_path: str, privacy_levels: list[str] | None = None):
     """Export atoms filtered by privacy to standalone markdown."""
     db = open_db()
-    levels = privacy_levels or ["public", "internal"]
+    levels = _resolve_privacy_allowlist(privacy_levels) or ["public", "internal"]
 
     placeholders = ",".join("?" * len(levels))
     atoms = db.execute(
@@ -2962,9 +3006,13 @@ def main():
                         help="Override auto-detected query intent for --query")
     parser.add_argument("--privacy",
                         choices=["public", "internal", "private", "sensitive"],
-                        help="Filter --query/--export by privacy level. "
+                        help="Filter --query/--export by single privacy level. "
                              "Sensitive atoms are excluded from --query by default; "
                              "pass --privacy sensitive to see only sensitive atoms.")
+    parser.add_argument("--allowed-privacy",
+                        help="Comma-separated allowlist of privacy levels for --query "
+                             "(e.g. public,internal,private). Overrides --privacy. "
+                             "Also reads from DEUS_MEMORY_PRIVACY env var.")
     args = parser.parse_args()
 
     global _client
@@ -3000,7 +3048,8 @@ def main():
         cmd_blind_spots(top=args.top)
         return
     if args.export:
-        cmd_export(args.export, privacy_levels=[args.privacy] if args.privacy else None)
+        ap = _parse_allowed_privacy_arg(args.allowed_privacy)
+        cmd_export(args.export, privacy_levels=ap or ([args.privacy] if args.privacy else None))
         return
 
     _client = genai.Client(api_key=load_api_key())
@@ -3018,9 +3067,11 @@ def main():
     if args.add:
         cmd_add(args.add, extract=not args.no_extract)
     elif args.query:
+        ap = _parse_allowed_privacy_arg(args.allowed_privacy)
         cmd_query(args.query, top=args.top, recency_boost=args.recency_boost,
                   show_source=args.source, domain=args.domain,
-                  intent=args.intent, as_of=args.as_of, privacy=args.privacy)
+                  intent=args.intent, as_of=args.as_of, privacy=args.privacy,
+                  allowed_privacy=ap)
     elif args.rebuild:
         cmd_rebuild()
     elif args.extract:
