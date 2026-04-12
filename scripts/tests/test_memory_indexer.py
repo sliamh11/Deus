@@ -1873,3 +1873,436 @@ def test_health_includes_graph_metrics(mi):
     assert metrics["relationships_live"] == 1
     assert metrics["relationships_expired"] == 0
     db.close()
+
+
+# ── KB Phase 3: Schema ──────────────────────────────────────────────────────
+
+
+def test_schema_has_entity_articles_table(mi):
+    db = mi.open_db()
+    cols = [r[1] for r in db.execute("PRAGMA table_info(entity_articles)").fetchall()]
+    assert "entity_id" in cols
+    assert "vault_path" in cols
+    assert "source_hash" in cols
+    assert "generated_at" in cols
+    db.close()
+
+
+def test_schema_has_digests_table(mi):
+    db = mi.open_db()
+    cols = [r[1] for r in db.execute("PRAGMA table_info(digests)").fetchall()]
+    assert "level" in cols
+    assert "period_key" in cols
+    assert "content" in cols
+    assert "atom_ids" in cols
+    db.close()
+
+
+# ── KB Phase 3: _compute_entity_source_hash ─────────────────────────────────
+
+
+def _seed_entity(db, mi, name, entity_type, mention_count=1):
+    """Helper to create an entity with a specific mention_count."""
+    eid = mi.upsert_entity(db, name, entity_type, "dev", "2024-01-01")
+    if mention_count > 1:
+        db.execute("UPDATE entities SET mention_count = ? WHERE id = ?", [mention_count, eid])
+        db.commit()
+    return eid
+
+
+def _seed_atom_for_entity(db, mi, entity_id, text="test atom", fresh_vault=None):
+    """Helper to create an atom and link it to an entity."""
+    vec = mi.embed(text)
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, domain) "
+        "VALUES (?, '2024-01-01', ?, 'atom', ?, '', 0.5, 1, 'dev')",
+        [f"/tmp/atom-{text[:10]}.md", text, text],
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur.lastrowid, mi.serialize(vec)])
+    db.execute("INSERT OR IGNORE INTO atom_entities (atom_id, entity_id) VALUES (?, ?)",
+               [cur.lastrowid, entity_id])
+    db.commit()
+    return cur.lastrowid
+
+
+def test_compute_entity_source_hash_deterministic(mi):
+    db = mi.open_db()
+    eid = _seed_entity(db, mi, "Docker", "tool")
+    h1 = mi._compute_entity_source_hash(db, eid)
+    h2 = mi._compute_entity_source_hash(db, eid)
+    assert h1 == h2
+    assert len(h1) == 64  # SHA-256 hex
+    db.close()
+
+
+def test_compute_entity_source_hash_changes_on_new_atom(mi):
+    db = mi.open_db()
+    eid = _seed_entity(db, mi, "Docker", "tool")
+    h1 = mi._compute_entity_source_hash(db, eid)
+    _seed_atom_for_entity(db, mi, eid, "docker uses containers")
+    h2 = mi._compute_entity_source_hash(db, eid)
+    assert h1 != h2
+    db.close()
+
+
+# ── KB Phase 3: _entity_article_prompt ───────────────────────────────────────
+
+
+def test_entity_article_prompt_includes_relationships(mi):
+    entity = {"name": "Docker", "entity_type": "tool"}
+    rels = [{"source": "User", "target": "Docker", "rel_type": "uses"}]
+    atoms = [{"text": "Docker runs containers"}]
+    prompt = mi._entity_article_prompt(entity, rels, atoms)
+    assert "User" in prompt
+    assert "uses" in prompt
+    assert "Docker" in prompt
+
+
+def test_entity_article_prompt_includes_atoms(mi):
+    entity = {"name": "Docker", "entity_type": "tool"}
+    rels = []
+    atoms = [{"text": "Docker runs containers"}, {"text": "Docker uses images"}]
+    prompt = mi._entity_article_prompt(entity, rels, atoms)
+    assert "Docker runs containers" in prompt
+    assert "Docker uses images" in prompt
+
+
+# ── KB Phase 3: generate_entity_article ──────────────────────────────────────
+
+
+class _FakeResponse:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeModels:
+    def __init__(self, response_text="# Test Article\n\nThis is a test."):
+        self._response_text = response_text
+        self.call_count = 0
+
+    def generate_content(self, **kwargs):
+        self.call_count += 1
+        return _FakeResponse(self._response_text)
+
+
+def test_generate_entity_article_writes_file(mi, fresh_vault, monkeypatch):
+    db = mi.open_db()
+    eid = _seed_entity(db, mi, "Docker", "tool")
+    _seed_atom_for_entity(db, mi, eid, "Docker runs containers")
+    db.commit()
+
+    fake_models = _FakeModels()
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    path = mi.generate_entity_article(db, eid)
+    assert path.exists()
+    content = path.read_text()
+    assert "Test Article" in content
+    assert "entity: docker" in content
+    db.close()
+
+
+def test_generate_entity_article_records_in_db(mi, fresh_vault, monkeypatch):
+    db = mi.open_db()
+    eid = _seed_entity(db, mi, "Docker", "tool")
+    _seed_atom_for_entity(db, mi, eid, "Docker runs containers")
+    db.commit()
+
+    fake_models = _FakeModels()
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.generate_entity_article(db, eid)
+    row = db.execute("SELECT entity_id, source_hash FROM entity_articles WHERE entity_id = ?", [eid]).fetchone()
+    assert row is not None
+    assert row[0] == eid
+    assert len(row[1]) == 64
+    db.close()
+
+
+# ── KB Phase 3: cmd_compile ──────────────────────────────────────────────────
+
+
+def test_cmd_compile_auto_selects_eligible(mi, fresh_vault, monkeypatch, capsys):
+    db = mi.open_db()
+    eid_high = _seed_entity(db, mi, "Docker", "tool", mention_count=5)
+    _seed_atom_for_entity(db, mi, eid_high, "docker fact")
+    _seed_entity(db, mi, "Rare", "concept", mention_count=1)
+    db.commit()
+    db.close()
+
+    fake_models = _FakeModels()
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.cmd_compile()
+    assert fake_models.call_count == 1  # only Docker compiled, Rare skipped
+    out = capsys.readouterr().out
+    assert "docker" in out.lower()
+
+
+def test_cmd_compile_skips_fresh_articles(mi, fresh_vault, monkeypatch, capsys):
+    db = mi.open_db()
+    eid = _seed_entity(db, mi, "Docker", "tool", mention_count=5)
+    _seed_atom_for_entity(db, mi, eid, "docker fact")
+    db.commit()
+    db.close()
+
+    fake_models = _FakeModels()
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    # First compile
+    mi.cmd_compile()
+    assert fake_models.call_count == 1
+
+    # Second compile — should skip (hash unchanged)
+    mi.cmd_compile()
+    assert fake_models.call_count == 1  # no new calls
+
+
+def test_cmd_compile_regenerates_stale(mi, fresh_vault, monkeypatch, capsys):
+    db = mi.open_db()
+    eid = _seed_entity(db, mi, "Docker", "tool", mention_count=5)
+    _seed_atom_for_entity(db, mi, eid, "docker fact")
+    db.commit()
+
+    fake_models = _FakeModels()
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.cmd_compile()
+    assert fake_models.call_count == 1
+
+    # Add new atom → hash changes → stale
+    _seed_atom_for_entity(db, mi, eid, "docker new fact")
+    db.close()
+
+    mi.cmd_compile()
+    assert fake_models.call_count == 2  # regenerated
+
+
+def test_cmd_compile_specific_entity(mi, fresh_vault, monkeypatch, capsys):
+    db = mi.open_db()
+    eid = _seed_entity(db, mi, "Docker", "tool", mention_count=1)  # below threshold
+    _seed_atom_for_entity(db, mi, eid, "docker fact")
+    db.commit()
+    db.close()
+
+    fake_models = _FakeModels()
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.cmd_compile(entity_name="Docker")
+    assert fake_models.call_count == 1  # compiled despite low mention_count
+
+
+# ── KB Phase 3: _get_period_key ──────────────────────────────────────────────
+
+
+def test_get_period_key_weekly(mi):
+    # 2024-06-15 is a Saturday in ISO week 24
+    assert mi._get_period_key("2024-06-15", "weekly") == "2024-W24"
+
+
+def test_get_period_key_monthly(mi):
+    assert mi._get_period_key("2024-06-15", "monthly") == "2024-06"
+
+
+# ── KB Phase 3: compress_period / cmd_compress_digests ───────────────────────
+
+
+def test_compress_period_stores_digest(mi, monkeypatch):
+    db = mi.open_db()
+    # Seed a session entry in a known period
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/s.md', '2024-06-15', 'test session', 'frontmatter', 'did stuff', 'dev')"
+    )
+    db.commit()
+
+    fake_models = _FakeModels(response_text="Weekly digest summary")
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    content = mi.compress_period(db, "weekly", "2024-W24")
+    assert content == "Weekly digest summary"
+
+    row = db.execute("SELECT content FROM digests WHERE level='weekly' AND period_key='2024-W24'").fetchone()
+    assert row is not None
+    assert row[0] == "Weekly digest summary"
+    db.close()
+
+
+def test_compress_period_idempotent(mi, monkeypatch):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/s.md', '2024-06-15', 'test session', 'frontmatter', 'did stuff', 'dev')"
+    )
+    db.commit()
+
+    fake_models = _FakeModels(response_text="First digest")
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.compress_period(db, "weekly", "2024-W24")
+    # Second call with different content should upsert (not duplicate)
+    fake_models._response_text = "Updated digest"
+    mi.compress_period(db, "weekly", "2024-W24")
+
+    count = db.execute("SELECT COUNT(*) FROM digests WHERE level='weekly' AND period_key='2024-W24'").fetchone()[0]
+    assert count == 1
+    row = db.execute("SELECT content FROM digests WHERE period_key='2024-W24'").fetchone()
+    assert row[0] == "Updated digest"
+    db.close()
+
+
+def test_cmd_compress_digests_finds_missing_periods(mi, monkeypatch, capsys):
+    db = mi.open_db()
+    # Seed sessions in 2 different weeks (W23 and W25)
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/s1.md', '2024-06-03', 'session1', 'frontmatter', 'week23', 'dev')"
+    )
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/s2.md', '2024-06-17', 'session2', 'frontmatter', 'week25', 'dev')"
+    )
+    # Pre-seed digest for W23 only
+    db.execute(
+        "INSERT INTO digests (level, period_key, content, created_at) "
+        "VALUES ('weekly', '2024-W23', 'existing', '2024-06-07')"
+    )
+    db.commit()
+    db.close()
+
+    fake_models = _FakeModels(response_text="new digest")
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.cmd_compress_digests("weekly")
+    # W23 already exists, only W25 should be generated
+    assert fake_models.call_count == 1
+
+
+# ── KB Phase 3: classify_query_intent ────────────────────────────────────────
+
+
+def test_classify_query_intent_factual(mi):
+    assert mi.classify_query_intent("what did we decide about auth") == "factual"
+    assert mi.classify_query_intent("who is Eden") == "factual"
+
+
+def test_classify_query_intent_temporal(mi):
+    assert mi.classify_query_intent("how has my thinking on auth evolved") == "temporal"
+    assert mi.classify_query_intent("history of the auth module") == "temporal"
+
+
+def test_classify_query_intent_exhaustive(mi):
+    assert mi.classify_query_intent("everything about python") == "exhaustive"
+    assert mi.classify_query_intent("deep dive into Docker") == "exhaustive"
+
+
+def test_classify_query_intent_exploratory_default(mi):
+    assert mi.classify_query_intent("auth middleware") == "exploratory"
+    assert mi.classify_query_intent("python docker") == "exploratory"
+
+
+# ── KB Phase 3: query intent routing ─────────────────────────────────────────
+
+
+def _seed_session_entry(db, mi, path, date, tldr, text="chunk"):
+    """Seed a session entry with embedding for query tests."""
+    vec = mi.embed(text)
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, decisions) "
+        "VALUES (?, ?, ?, 'frontmatter', ?, 'dev', '')",
+        [path, date, text, tldr],
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur.lastrowid, mi.serialize(vec)])
+    try:
+        db.execute("INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)",
+                   [cur.lastrowid, text])
+    except Exception:
+        pass
+    db.commit()
+    return cur.lastrowid
+
+
+def test_query_as_of_filters_by_date(mi, monkeypatch, capsys):
+    db = mi.open_db()
+    _seed_session_entry(db, mi, "/tmp/old.md", "2024-01-01", "old session", "auth middleware")
+    _seed_session_entry(db, mi, "/tmp/new.md", "2024-12-01", "new session", "auth middleware new")
+    db.close()
+
+    # Query with as_of should only show old entry
+    mi.cmd_query("auth middleware", top=5, as_of="2024-06-01")
+    out = capsys.readouterr().out
+    assert "old.md" in out
+    assert "new.md" not in out
+
+
+def test_query_intent_override(mi, monkeypatch, capsys):
+    db = mi.open_db()
+    _seed_session_entry(db, mi, "/tmp/s.md", "2024-01-01", "test session", "auth stuff")
+    db.close()
+
+    # "auth stuff" would be exploratory by default, but we override to factual
+    mi.cmd_query("auth stuff", top=5, intent="factual")
+    out = capsys.readouterr().out
+    assert "Past Sessions" in out  # still shows results (factual uses same hybrid path)
+
+
+def test_query_exploratory_uses_graph(mi, monkeypatch, capsys):
+    """Exploratory intent should still produce results from hybrid search."""
+    db = mi.open_db()
+    _seed_session_entry(db, mi, "/tmp/s.md", "2024-01-01", "docker session", "docker containers")
+    db.close()
+
+    mi.cmd_query("docker containers", top=5, intent="exploratory")
+    out = capsys.readouterr().out
+    assert "Past Sessions" in out
+
+
+# ── KB Phase 3: Health metrics ───────────────────────────────────────────────
+
+
+def test_health_includes_article_metrics(mi, fresh_vault, monkeypatch):
+    db = mi.open_db()
+    eid = _seed_entity(db, mi, "Docker", "tool", mention_count=5)
+    _seed_atom_for_entity(db, mi, eid, "docker fact")
+    db.commit()
+
+    fake_models = _FakeModels()
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+    mi.generate_entity_article(db, eid)
+
+    metrics = mi._collect_health_metrics(db)
+    assert "articles" in metrics
+    assert metrics["articles"] == 1
+    assert "articles_stale" in metrics
+    assert metrics["articles_stale"] == 0
+    db.close()
+
+
+def test_health_includes_digest_metrics(mi, monkeypatch):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO digests (level, period_key, content, created_at) "
+        "VALUES ('weekly', '2024-W24', 'test', '2024-06-15')"
+    )
+    db.execute(
+        "INSERT INTO digests (level, period_key, content, created_at) "
+        "VALUES ('monthly', '2024-06', 'test monthly', '2024-06-30')"
+    )
+    db.commit()
+
+    metrics = mi._collect_health_metrics(db)
+    assert metrics["digests_weekly"] == 1
+    assert metrics["digests_monthly"] == 1
+    db.close()

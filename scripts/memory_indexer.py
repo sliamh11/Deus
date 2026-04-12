@@ -72,6 +72,7 @@ def _load_vault_path() -> Path:
 _vault_root = _load_vault_path()
 VAULT_SESSION_LOGS = _vault_root / "Session-Logs"
 VAULT_ATOMS = _vault_root / "Atoms"
+VAULT_ENTITIES = _vault_root / "Entities"
 DEDUP_L2_THRESHOLD = 0.55  # ≈ cosine similarity 0.85 for unit-normalized vectors
 # Recency boost for --query --recency-boost (subtracted from L2 distance).
 RECENCY_BOOST_7D = 0.3    # last 7 days — strong boost
@@ -232,6 +233,32 @@ def open_db() -> sqlite3.Connection:
     """)
     try:
         db.execute("CREATE INDEX IF NOT EXISTS idx_atom_entities_entity ON atom_entities(entity_id)")
+    except sqlite3.OperationalError:
+        pass
+    # Phase 3: entity articles + digest tables
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS entity_articles (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_id    INTEGER NOT NULL REFERENCES entities(id),
+            vault_path   TEXT NOT NULL,
+            generated_at TEXT NOT NULL,
+            source_hash  TEXT NOT NULL,
+            UNIQUE(entity_id)
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS digests (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            level      TEXT NOT NULL,
+            period_key TEXT NOT NULL,
+            content    TEXT NOT NULL,
+            atom_ids   TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            UNIQUE(level, period_key)
+        )
+    """)
+    try:
+        db.execute("ALTER TABLE entries ADD COLUMN query_intent TEXT DEFAULT NULL")
     except sqlite3.OperationalError:
         pass
     db.commit()
@@ -453,6 +480,21 @@ def cmd_add(path_str: str, extract: bool = True):
             pass  # cmd_extract uses sys.exit(1) for missing files — already resolved above
         except Exception as exc:
             print(f"  WARN: atom extraction failed for {path.name}: {exc}", file=sys.stderr)
+
+    # Phase 3: check for stale entity articles
+    try:
+        stale_count = 0
+        articles = db.execute(
+            "SELECT ea.entity_id, ea.source_hash FROM entity_articles ea"
+        ).fetchall()
+        for entity_id, old_hash in articles:
+            new_hash = _compute_entity_source_hash(db, entity_id)
+            if new_hash != old_hash:
+                stale_count += 1
+        if stale_count > 0:
+            print(f"  [stale] {stale_count} entity article(s) need recompile (run --compile)")
+    except (sqlite3.OperationalError, Exception):
+        pass
 
 
 COMPACT_SESSION_THRESHOLD = 12  # auto-enable compact mode above this many sessions
@@ -790,7 +832,8 @@ def _rrf_fuse(
 
 
 def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
-              show_source: bool = False, domain: str | None = None):
+              show_source: bool = False, domain: str | None = None,
+              intent: str | None = None, as_of: str | None = None):
     db = open_db()
 
     # Check if anything is indexed
@@ -799,21 +842,37 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
         print("(index empty — run --rebuild first)", file=sys.stderr)
         sys.exit(1)
 
+    # Intent classification
+    resolved_intent = intent or classify_query_intent(query)
+
     has_atoms = db.execute("SELECT COUNT(*) FROM entries WHERE type = 'atom'").fetchone()[0] > 0
 
+    # Exhaustive mode: widen the search
+    effective_top = 20 if resolved_intent == "exhaustive" else top
+
     q_vec = embed(query)
+
+    # Build query with optional --as-of filter
+    where_clauses = [
+        "v.embedding MATCH ?",
+        "k = ?",
+        "(e.expired_at IS NULL OR e.expired_at > date('now'))",
+    ]
+    params: list = [serialize(q_vec), max(effective_top * 6, 30)]
+    if as_of:
+        where_clauses.append("e.date <= ?")
+        params.append(as_of)
+
     rows = db.execute(
-        """
+        f"""
         SELECT e.path, e.date, e.tldr, e.topics, e.decisions, e.type,
                e.confidence, e.corroborations, v.distance, e.source_chunk
         FROM embeddings v
         JOIN entries e ON e.id = v.rowid
-        WHERE v.embedding MATCH ?
-          AND k = ?
-          AND (e.expired_at IS NULL OR e.expired_at > date('now'))
+        WHERE {' AND '.join(where_clauses)}
         ORDER BY v.distance
         """,
-        [serialize(q_vec), max(top * 6, 30)],  # 6x headroom: turn chunks multiply rows per session
+        params,
     ).fetchall()
 
     # Partition into atoms and sessions; deduplicate sessions by path
@@ -869,6 +928,10 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
                     }
         seen = fused_seen
 
+    # Post-filter by as_of (FTS results bypass the ANN date filter)
+    if as_of and seen:
+        seen = {p: e for p, e in seen.items() if not e.get("date") or e["date"] <= as_of}
+
     # Re-rank sessions by recency-adjusted distance
     if recency_boost and seen:
         from datetime import date as _date
@@ -916,8 +979,11 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
         lines.append("")
 
     if seen:
-        lines.append("## Relevant Past Sessions")
-        for entry in list(seen.values())[:top]:
+        if resolved_intent == "temporal" and as_of:
+            lines.append(f"## Relevant Past Sessions (as-of {as_of})")
+        else:
+            lines.append("## Relevant Past Sessions")
+        for entry in list(seen.values())[:effective_top]:
             date = entry["date"] or "unknown date"
             name = Path(entry["path"]).stem.replace("-", " ")
             tldr = (entry["tldr"] or "").split(".")[0][:80]
@@ -926,7 +992,24 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
             lines.append(f"- [{date} | {name}]{dec_part} — {tldr}")
             lines.append(f"  (full log: {entry['path']})")
 
+    # Exhaustive: append matching digests
+    if resolved_intent == "exhaustive":
+        try:
+            digests = db.execute(
+                "SELECT level, period_key, content FROM digests ORDER BY period_key DESC"
+            ).fetchall()
+            if digests:
+                lines.append("")
+                lines.append("## Period Digests")
+                for level, pk, content in digests[:10]:
+                    lines.append(f"### {level}: {pk}")
+                    lines.append(content[:500])
+                    lines.append("")
+        except sqlite3.OperationalError:
+            pass
+
     print("\n".join(lines))
+    db.close()
 
 
 def cmd_wander(seeds: list[str], steps: int = 3, top_k: int = 10, graph: bool = False):
@@ -1493,6 +1576,271 @@ def cmd_wander_graph(seeds: list[str], steps: int = 3, top_k: int = 10):
     db.close()
 
 
+# ── Phase 3: Entity articles, compression, query routing ─────────────────────
+
+import hashlib
+
+
+def _compute_entity_source_hash(db: sqlite3.Connection, entity_id: int) -> str:
+    """SHA-256 of sorted atom IDs + sorted edge tuples linked to this entity."""
+    atom_ids = sorted(
+        r[0] for r in db.execute(
+            "SELECT atom_id FROM atom_entities WHERE entity_id = ?", [entity_id]
+        ).fetchall()
+    )
+    edges = sorted(
+        (r[0], r[1], r[2]) for r in db.execute(
+            "SELECT source_id, target_id, rel_type FROM relationships "
+            "WHERE source_id = ? OR target_id = ?", [entity_id, entity_id]
+        ).fetchall()
+    )
+    blob = json.dumps({"atoms": atom_ids, "edges": edges}).encode()
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _entity_article_prompt(entity: dict, relationships: list[dict], atoms: list[dict]) -> str:
+    """Build Gemini prompt for entity article generation."""
+    lines = [
+        f"Write a concise knowledge article about \"{entity['name']}\" (type: {entity['entity_type']}).",
+        "Synthesize the relationships and facts below into a coherent summary.",
+        "Use markdown. Be factual and concise. No preamble.",
+        "",
+        "Relationships:",
+    ]
+    for rel in relationships:
+        lines.append(f"- {rel['source']} --{rel['rel_type']}--> {rel['target']}")
+    lines.append("")
+    lines.append("Known facts:")
+    for atom in atoms:
+        lines.append(f"- {atom['text']}")
+    return "\n".join(lines)
+
+
+def generate_entity_article(db: sqlite3.Connection, entity_id: int) -> Path:
+    """Generate a markdown article for an entity from its graph context."""
+    VAULT_ENTITIES.mkdir(parents=True, exist_ok=True)
+
+    entity_row = db.execute(
+        "SELECT name, entity_type, domain, summary FROM entities WHERE id = ?", [entity_id]
+    ).fetchone()
+    if not entity_row:
+        raise ValueError(f"entity {entity_id} not found")
+    entity = {"name": entity_row[0], "entity_type": entity_row[1],
+              "domain": entity_row[2], "summary": entity_row[3]}
+
+    # Gather relationships (both directions)
+    rels_raw = db.execute(
+        "SELECT r.source_id, r.target_id, r.rel_type, es.name, et.name "
+        "FROM relationships r "
+        "JOIN entities es ON es.id = r.source_id "
+        "JOIN entities et ON et.id = r.target_id "
+        "WHERE (r.source_id = ? OR r.target_id = ?) AND r.expired_at IS NULL",
+        [entity_id, entity_id]
+    ).fetchall()
+    relationships = [
+        {"source": r[3], "target": r[4], "rel_type": r[2]} for r in rels_raw
+    ]
+
+    # Gather linked atoms
+    atoms_raw = db.execute(
+        "SELECT e.chunk FROM entries e "
+        "JOIN atom_entities ae ON ae.atom_id = e.id "
+        "WHERE ae.entity_id = ? AND e.type = 'atom' "
+        "AND (e.expired_at IS NULL OR e.expired_at > date('now'))",
+        [entity_id]
+    ).fetchall()
+    atoms = [{"text": r[0]} for r in atoms_raw]
+
+    prompt = _entity_article_prompt(entity, relationships, atoms)
+
+    article_text = ""
+    for model in GEN_MODELS:
+        try:
+            response = _client.models.generate_content(
+                model=model, contents=prompt,
+                config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=2048),
+            )
+            article_text = response.text.strip()
+            break
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                continue
+            print(f"  WARN: article generation error ({model}): {e}", file=sys.stderr)
+            return Path()
+    if not article_text:
+        print("  WARN: all models quota-exhausted for article generation", file=sys.stderr)
+        return Path()
+
+    slug = slugify(entity["name"])
+    path = VAULT_ENTITIES / f"{slug}.md"
+    today = datetime.now().strftime("%Y-%m-%d")
+    source_hash = _compute_entity_source_hash(db, entity_id)
+
+    path.write_text(
+        f"---\ntype: entity-article\nentity: {entity['name']}\n"
+        f"entity_type: {entity['entity_type']}\ngenerated_at: {today}\n---\n\n"
+        f"{article_text}\n"
+    )
+
+    db.execute(
+        "INSERT INTO entity_articles (entity_id, vault_path, generated_at, source_hash) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(entity_id) DO UPDATE SET vault_path=excluded.vault_path, "
+        "generated_at=excluded.generated_at, source_hash=excluded.source_hash",
+        [entity_id, str(path), today, source_hash]
+    )
+    db.commit()
+    return path
+
+
+def cmd_compile(entity_name: str | None = None, threshold: int = 3) -> None:
+    """Generate entity articles. Auto-mode: entities with mention_count >= threshold."""
+    db = open_db()
+    if entity_name:
+        row = db.execute(
+            "SELECT id, name FROM entities WHERE name = ?", [entity_name.strip().lower()]
+        ).fetchone()
+        if not row:
+            print(f"Entity not found: {entity_name}", file=sys.stderr)
+            db.close()
+            return
+        path = generate_entity_article(db, row[0])
+        if path and path.exists():
+            print(f"  compiled: {row[1]} → {path.name}")
+        db.close()
+        return
+
+    # Auto mode: select eligible entities
+    entities = db.execute(
+        "SELECT id, name, mention_count FROM entities WHERE mention_count >= ?",
+        [threshold]
+    ).fetchall()
+    compiled, skipped = 0, 0
+    for eid, name, mc in entities:
+        new_hash = _compute_entity_source_hash(db, eid)
+        existing = db.execute(
+            "SELECT source_hash FROM entity_articles WHERE entity_id = ?", [eid]
+        ).fetchone()
+        if existing and existing[0] == new_hash:
+            skipped += 1
+            continue
+        path = generate_entity_article(db, eid)
+        if path and path.exists():
+            compiled += 1
+            print(f"  compiled: {name} → {path.name}")
+    print(f"Compiled {compiled} articles ({skipped} fresh, skipped)")
+    db.close()
+
+
+def _get_period_key(date_str: str, level: str) -> str:
+    """Convert a date string to a period key. '2024-06-15' + 'weekly' → '2024-W24'."""
+    from datetime import date as _date
+    d = _date.fromisoformat(date_str)
+    if level == "monthly":
+        return f"{d.year}-{d.month:02d}"
+    # weekly: ISO week
+    iso = d.isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def compress_period(db: sqlite3.Connection, level: str, period_key: str) -> str:
+    """Generate a digest for a time period. One Gemini Flash call."""
+    # Collect sessions in this period
+    all_entries = db.execute(
+        "SELECT date, tldr, decisions FROM entries WHERE type IN ('frontmatter', 'session') AND date IS NOT NULL"
+    ).fetchall()
+    matching = [
+        (date, tldr, decisions) for date, tldr, decisions in all_entries
+        if _get_period_key(date, level) == period_key
+    ]
+    if not matching:
+        return ""
+
+    prompt_lines = [
+        f"Summarize this {level} period ({period_key}) of activity into a concise digest.",
+        "Focus on decisions, outcomes, and themes. Use markdown bullets. Be concise.",
+        ""
+    ]
+    for date, tldr, decisions in matching:
+        prompt_lines.append(f"- [{date}] {tldr or ''}")
+        if decisions:
+            prompt_lines.append(f"  Decisions: {decisions}")
+
+    prompt = "\n".join(prompt_lines)
+    digest_text = ""
+    for model in GEN_MODELS:
+        try:
+            response = _client.models.generate_content(
+                model=model, contents=prompt,
+                config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=1024),
+            )
+            digest_text = response.text.strip()
+            break
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                continue
+            print(f"  WARN: digest generation error ({model}): {e}", file=sys.stderr)
+            return ""
+    if not digest_text:
+        return ""
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    db.execute(
+        "INSERT INTO digests (level, period_key, content, created_at) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(level, period_key) DO UPDATE SET content=excluded.content, created_at=excluded.created_at",
+        [level, period_key, digest_text, today]
+    )
+    db.commit()
+    return digest_text
+
+
+def cmd_compress_digests(level: str = "weekly") -> None:
+    """Generate digests for periods that don't have one yet."""
+    db = open_db()
+    # Find all period keys present in entries
+    all_entries = db.execute(
+        "SELECT DISTINCT date FROM entries WHERE date IS NOT NULL AND type IN ('frontmatter', 'session')"
+    ).fetchall()
+    all_periods = {_get_period_key(r[0], level) for r in all_entries if r[0]}
+
+    # Find existing digests
+    existing = {
+        r[0] for r in db.execute(
+            "SELECT period_key FROM digests WHERE level = ?", [level]
+        ).fetchall()
+    }
+
+    missing = sorted(all_periods - existing)
+    if not missing:
+        print(f"All {level} digests up to date ({len(existing)} exist)")
+        db.close()
+        return
+
+    generated = 0
+    for period_key in missing:
+        content = compress_period(db, level, period_key)
+        if content:
+            generated += 1
+            print(f"  digest: {period_key}")
+    print(f"Generated {generated} {level} digests ({len(existing)} already existed)")
+    db.close()
+
+
+def classify_query_intent(query: str) -> str:
+    """Classify query intent via keyword heuristics. Returns factual/temporal/exhaustive/exploratory."""
+    q = query.lower()
+    if re.search(r'\b(what did we decide|what was|who is|define|what is)\b', q):
+        return "factual"
+    if re.search(r'\b(how has .* evolved|over time|since|progression|history of|timeline)\b', q):
+        return "temporal"
+    if re.search(r'\b(everything about|all .* on|complete picture|deep dive|comprehensive)\b', q):
+        return "exhaustive"
+    return "exploratory"
+
+
 def write_atom_file(atom: dict, source_path: str, today: str,
                     source_excerpt: str = "", domain: str = "general") -> Path:
     """Write an atom to the vault Atoms/ directory and return its path."""
@@ -1806,6 +2154,24 @@ def _collect_health_metrics(db: sqlite3.Connection) -> dict:
         snapshot["relationships_expired"] = rels[0][1] if rels else 0
     except sqlite3.OperationalError:
         snapshot.update({"entities": 0, "relationships_live": 0, "relationships_expired": 0})
+    # Phase 3: article + digest metrics
+    try:
+        total_articles = db.execute("SELECT COUNT(*) FROM entity_articles").fetchone()[0]
+        stale_articles = 0
+        for row in db.execute("SELECT entity_id, source_hash FROM entity_articles").fetchall():
+            if _compute_entity_source_hash(db, row[0]) != row[1]:
+                stale_articles += 1
+        snapshot["articles"] = total_articles
+        snapshot["articles_stale"] = stale_articles
+        digest_counts = db.execute(
+            "SELECT level, COUNT(*) FROM digests GROUP BY level"
+        ).fetchall()
+        snapshot["digests_weekly"] = 0
+        snapshot["digests_monthly"] = 0
+        for level, cnt in digest_counts:
+            snapshot[f"digests_{level}"] = cnt
+    except sqlite3.OperationalError:
+        snapshot.update({"articles": 0, "articles_stale": 0, "digests_weekly": 0, "digests_monthly": 0})
     return snapshot
 
 
@@ -1898,6 +2264,15 @@ def cmd_health(save: bool = True) -> None:
     rel_expired = current.get("relationships_expired", 0)
     if ent_count > 0 or rel_live > 0:
         out.append(f"Entities: {ent_count}  Relationships: {rel_live} live, {rel_expired} expired")
+    articles = current.get("articles", 0)
+    articles_stale = current.get("articles_stale", 0)
+    if articles > 0:
+        stale_pct = round(100 * articles_stale / articles) if articles else 0
+        out.append(f"Articles: {articles} ({stale_pct}% stale)")
+    dw = current.get("digests_weekly", 0)
+    dm = current.get("digests_monthly", 0)
+    if dw > 0 or dm > 0:
+        out.append(f"Digests: {dw} weekly, {dm} monthly")
 
     out.append("")
     if prev:
@@ -2109,6 +2484,12 @@ def main():
                        help="Manually invalidate (soft-delete) an atom by path")
     group.add_argument("--gaps", action="store_true",
                        help="Show knowledge gaps: frequent topics with low atom coverage (no API call)")
+    group.add_argument("--compile", nargs="?", const="__AUTO__", metavar="ENTITY",
+                       help="Generate entity articles. No arg = auto mode (mention_count >= 3). "
+                            "Arg = compile that specific entity.")
+    group.add_argument("--compress-digests", nargs="?", const="weekly",
+                       choices=["weekly", "monthly"], metavar="LEVEL",
+                       help="Generate period digests (default: weekly)")
     parser.add_argument("--no-extract", action="store_true",
                         help="Skip atom extraction when using --add (useful for CI/benchmarks)")
     parser.add_argument("--top", type=int, default=3, help="Number of results for --query")
@@ -2136,6 +2517,11 @@ def main():
                         help="Skip contradiction detection during --extract")
     parser.add_argument("--with-graph", action="store_true",
                         help="Re-extract entities/relationships during --rebuild (LLM calls)")
+    parser.add_argument("--as-of", metavar="DATE",
+                        help="Temporal filter for --query (YYYY-MM-DD)")
+    parser.add_argument("--intent",
+                        choices=["factual", "exploratory", "temporal", "exhaustive"],
+                        help="Override auto-detected query intent for --query")
     args = parser.parse_args()
 
     global _client
@@ -2167,11 +2553,19 @@ def main():
 
     _client = genai.Client(api_key=load_api_key())
 
+    if args.compile is not None:
+        cmd_compile(None if args.compile == "__AUTO__" else args.compile)
+        return
+    if args.compress_digests is not None:
+        cmd_compress_digests(args.compress_digests)
+        return
+
     if args.add:
         cmd_add(args.add, extract=not args.no_extract)
     elif args.query:
         cmd_query(args.query, top=args.top, recency_boost=args.recency_boost,
-                  show_source=args.source, domain=args.domain)
+                  show_source=args.source, domain=args.domain,
+                  intent=args.intent, as_of=args.as_of)
     elif args.rebuild:
         cmd_rebuild()
     elif args.extract:
