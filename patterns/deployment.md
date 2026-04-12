@@ -3,7 +3,7 @@ governs:
   - src/
   - setup/
   - packages/
-last_verified: "2026-04-09"
+last_verified: "2026-04-12"
 test_tasks:
   - "Deploy a hotfix to a running service and restart it after rebuilding dist/"
   - "Rebuild the WhatsApp MCP package and pick up the change live"
@@ -57,7 +57,7 @@ docker builder prune -f && ./container/build.sh
 
 ## Credentials rule
 
-Never write rotating credentials (OAuth tokens, short-lived session keys) to `.env`. Read them dynamically at request time from their source file (e.g., `~/.claude/.credentials.json`). `.env` is for **static, long-lived secrets only** (API keys, bot tokens like `TELEGRAM_BOT_TOKEN`, model names).
+Never write rotating credentials (OAuth tokens, short-lived session keys) to `.env`. Read them dynamically at request time from the OS credential store (macOS Keychain, Linux libsecret, Windows Credential Manager) with `~/.claude/.credentials.json` as fallback. `.env` is for **static, long-lived secrets only** (API keys, bot tokens like `TELEGRAM_BOT_TOKEN`, model names).
 
 ## Config file locations
 
@@ -68,7 +68,7 @@ Different components read config from different locations. Getting this wrong ca
 | Main process (`src/`) + evolution layer | Project root `.env` |
 | Setup / startup gate | `~/.config/deus/.env` |
 | Memory indexer | `~/.config/deus/.env` |
-| Credential proxy | `~/.claude/.credentials.json` (dynamic read — never `.env`) |
+| Credential proxy | OS credential store → `~/.claude/.credentials.json` fallback (dynamic — never `.env`) |
 
 **Common mistake:** Putting a key in `~/.config/deus/.env` but expecting the main process or evolution layer to find it — both read from the project root `.env`.
 
