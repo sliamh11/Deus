@@ -122,7 +122,14 @@ export function handleSettingsCommand(
       return { response: `requires_trigger set to ${value}`, updatedGroup };
     }
     case 'memory_privacy': {
-      const levels = [...new Set(value.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean))];
+      const levels = [
+        ...new Set(
+          value
+            .split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean),
+        ),
+      ];
       const invalid = levels.filter((l) => !VALID_PRIVACY_LEVELS.includes(l));
       if (invalid.length > 0) {
         return {

@@ -249,9 +249,7 @@ describe('handleSessionCommand', () => {
 
 // ── /settings memory_privacy ────────────────────────────────────────────────
 
-function makeGroup(
-  overrides: Partial<RegisteredGroup> = {},
-): RegisteredGroup {
+function makeGroup(overrides: Partial<RegisteredGroup> = {}): RegisteredGroup {
   return {
     name: 'test-group',
     folder: 'test-group',

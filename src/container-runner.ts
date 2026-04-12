@@ -69,7 +69,10 @@ function buildContainerArgs(
 
   // Inject per-channel memory privacy allowlist if configured
   if (group?.containerConfig?.memoryPrivacy?.length) {
-    args.push('-e', `DEUS_MEMORY_PRIVACY=${group.containerConfig.memoryPrivacy.join(',')}`);
+    args.push(
+      '-e',
+      `DEUS_MEMORY_PRIVACY=${group.containerConfig.memoryPrivacy.join(',')}`,
+    );
   }
 
   // Route API traffic through the credential proxy (containers never see real secrets)
