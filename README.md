@@ -130,6 +130,24 @@ A fresh clone has **zero channels** — you add only the ones you need:
 
 A stop hook auto-saves a checkpoint at the end of every Claude Code session with no LLM calls.
 
+### Knowledge Base Architecture
+
+Inspired by [Karpathy's LLM Knowledge Bases](https://x.com/karpathy/status/2039805659525644595) pattern and enhanced with ideas from [Zep/Graphiti](https://github.com/getzep/graphiti) (temporal knowledge graphs) and [Synapse](https://arxiv.org/html/2601.02744v2) (spreading activation for LLM memory).
+
+Deus goes beyond Karpathy's flat wiki approach with a five-layer knowledge architecture:
+
+1. **Raw storage** — Session logs in Obsidian vault, embeddings in sqlite-vec, FTS5 full-text index
+2. **Atomic facts** — Extracted facts with confidence scoring, temporal versioning, domain tagging, and contradiction detection on insert
+3. **Semantic graph** — Entity-relationship extraction with bi-temporal validity, enabling multi-hop reasoning and "as-of" temporal queries
+4. **Compiled knowledge** — Auto-generated entity articles, LLM-maintained indexes, and periodic compression (weekly/monthly digests)
+5. **Knowledge interface** — Intent-classified retrieval (factual/exploratory/temporal/exhaustive), spreading activation for cross-domain synthesis, knowledge gap identification
+
+Key differences from Karpathy's approach:
+- **Hybrid retrieval** — compiled knowledge for known-known queries, vector RAG for lateral discovery, spreading activation for cross-domain connections
+- **Temporal reasoning** — bi-temporal fact model tracks when knowledge was true vs when it was recorded, enabling graceful belief revision instead of silent overwrites
+- **Contradiction detection** — new facts are checked against semantically similar existing facts; conflicts are flagged and old facts invalidated rather than silently coexisting
+- **Forgetting curves** — facts decay based on access frequency; hot facts stay searchable, cold facts archive automatically
+
 ### Retrieval Benchmarks
 
 Evaluated on [LongMemEval-S](https://arxiv.org/abs/2410.10813) (ICLR 2025) — a needle-in-a-haystack benchmark with multi-session reasoning across 500+ turn histories.
