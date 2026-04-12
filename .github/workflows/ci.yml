@@ -36,7 +36,7 @@ jobs:
         run: python3 -m pip install pytest
 
       - name: Pattern drift check
-        run: npm run drift-check
+        run: python3 scripts/drift_check.py --all --base origin/${{ github.base_ref }}
 
       - name: Pattern tests (Python)
         run: python3 -m pytest scripts/tests/test_drift_check.py -v

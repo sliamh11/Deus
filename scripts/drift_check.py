@@ -196,11 +196,47 @@ def discover_patterns() -> list[Path]:
     return patterns
 
 
-def main() -> int:
+def _changed_files_since(base_ref: str, project_root: Path) -> set[str]:
+    """Return set of file paths changed between base_ref and HEAD."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", f"{base_ref}...HEAD"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return {f.strip() for f in result.stdout.strip().splitlines() if f.strip()}
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return set()
+
+
+def _file_in_changed_set(rel_path: str, changed: set[str], project_root: Path) -> bool:
+    """Check if a governed path (file or directory prefix) overlaps with any changed file."""
+    target = Path(rel_path)
+    for f in changed:
+        fp = Path(f)
+        # Direct match or the changed file is under the governed directory
+        if fp == target or str(fp).startswith(rel_path.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def main(base_ref: str | None = None) -> int:
     patterns = discover_patterns()
     if not patterns:
         print("No patterns found in patterns/INDEX.md.")
         return 0
+
+    # When --base is given, only check governed files that changed in this PR.
+    # This prevents cascading drift failures across sequential PRs: if a governed
+    # file wasn't touched in this PR, any apparent drift comes from a prior merge
+    # that already included the pattern bump.
+    changed_files: set[str] | None = None
+    if base_ref:
+        changed_files = _changed_files_since(base_ref, PROJECT_ROOT)
 
     rows: list[dict] = []
     exit_code = 0
@@ -228,6 +264,10 @@ def main() -> int:
                     "drifted": rel_path,
                 })
                 exit_code = max(exit_code, 2)
+                continue
+
+            # In --base mode: skip governed files not changed in this PR.
+            if changed_files is not None and not _file_in_changed_set(rel_path, changed_files, PROJECT_ROOT):
                 continue
 
             if governed.is_dir():
@@ -993,7 +1033,7 @@ def check_contradictions(project_root: Path, pattern_filter: str | None = None) 
     return 1
 
 
-def check_all(project_root: Path) -> int:
+def check_all(project_root: Path, base_ref: str | None = None) -> int:
     """Run every fast check in sequence and aggregate exit codes.
 
     Runs: drift (main), paths, adr, test_tasks, coverage. The worst exit code
@@ -1001,7 +1041,7 @@ def check_all(project_root: Path) -> int:
     its report, never a failure.
     """
     print("=== drift (mtime) ===")
-    drift_rc = main()
+    drift_rc = main(base_ref=base_ref)
     print("\n=== paths ===")
     paths_rc = check_paths(project_root)
     print("\n=== adr freshness ===")
@@ -1106,6 +1146,12 @@ if __name__ == "__main__":
         help="LLM-based cross-pattern contradictions check (slow, needs "
              "GEMINI_API_KEY). Optional PATTERN arg filters to matching files.",
     )
+    parser.add_argument(
+        "--base",
+        metavar="REF",
+        help="Only check governed files changed since REF (e.g. origin/main). "
+             "Prevents cascading drift failures across sequential PRs.",
+    )
     args = parser.parse_args()
 
     if args.contradictions is not None:
@@ -1115,7 +1161,7 @@ if __name__ == "__main__":
     elif args.validate is not None:
         sys.exit(check_validate(PROJECT_ROOT, args.validate or None))
     elif args.all:
-        sys.exit(check_all(PROJECT_ROOT))
+        sys.exit(check_all(PROJECT_ROOT, base_ref=args.base))
     elif args.coverage:
         sys.exit(check_coverage(PROJECT_ROOT))
     elif args.paths:
@@ -1123,4 +1169,4 @@ if __name__ == "__main__":
     elif args.adr:
         sys.exit(check_adr(PROJECT_ROOT))
     else:
-        sys.exit(main())
+        sys.exit(main(base_ref=args.base))

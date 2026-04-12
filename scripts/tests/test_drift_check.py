@@ -619,3 +619,28 @@ class TestCheckContradictionsMocked:
         self._setup_and_mock(tmp_path, monkeypatch, patterns, "NO_CONTRADICTIONS")
         rc = drift_check.check_contradictions(tmp_path)
         assert rc == 0
+
+
+# ── _file_in_changed_set ─────────────────────────────────────────────────────
+
+
+class TestFileInChangedSet:
+    def test_exact_file_match(self, tmp_path):
+        changed = {"scripts/memory_indexer.py", "src/types.ts"}
+        assert drift_check._file_in_changed_set("scripts/memory_indexer.py", changed, tmp_path)
+
+    def test_directory_governs_file_inside(self, tmp_path):
+        changed = {"src/container-runner.ts", "src/types.ts"}
+        assert drift_check._file_in_changed_set("src/", changed, tmp_path)
+
+    def test_no_match_different_dir(self, tmp_path):
+        changed = {"src/types.ts"}
+        assert not drift_check._file_in_changed_set("evolution/", changed, tmp_path)
+
+    def test_no_false_positive_on_prefix(self, tmp_path):
+        """evolution/ should not match eval/ even though both start with 'e'."""
+        changed = {"evolution/judge/provider.py"}
+        assert not drift_check._file_in_changed_set("eval/", changed, tmp_path)
+
+    def test_empty_changed_set(self, tmp_path):
+        assert not drift_check._file_in_changed_set("src/", set(), tmp_path)
