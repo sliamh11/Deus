@@ -1,5 +1,7 @@
 # KB Phase 2: Entity/Relationship Graph
 
+**Date:** 2026-04-12
+
 ## Status: Accepted
 
 ## Context
