@@ -261,6 +261,45 @@ def open_db() -> sqlite3.Connection:
         db.execute("ALTER TABLE entries ADD COLUMN query_intent TEXT DEFAULT NULL")
     except sqlite3.OperationalError:
         pass
+    # Phase 4: access/query logging, synthesis, privacy, temperature
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS access_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id    INTEGER NOT NULL REFERENCES entries(id),
+            accessed_at TEXT NOT NULL,
+            access_type TEXT NOT NULL
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS query_log (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            query_text   TEXT NOT NULL,
+            intent       TEXT,
+            result_count INTEGER DEFAULT 0,
+            atom_hit     INTEGER DEFAULT 0,
+            queried_at   TEXT NOT NULL
+        )
+    """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS synthesis_suggestions (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_a_id INTEGER NOT NULL REFERENCES entities(id),
+            entity_b_id INTEGER NOT NULL REFERENCES entities(id),
+            bridge_text TEXT NOT NULL,
+            confidence  REAL DEFAULT 0.5,
+            created_at  TEXT NOT NULL,
+            dismissed   INTEGER DEFAULT 0,
+            UNIQUE(entity_a_id, entity_b_id)
+        )
+    """)
+    for col, definition in [
+        ("privacy", "TEXT DEFAULT 'internal'"),
+        ("temperature", "REAL DEFAULT 1.0"),
+    ]:
+        try:
+            db.execute(f"ALTER TABLE entries ADD COLUMN {col} {definition}")
+        except sqlite3.OperationalError:
+            pass
     db.commit()
     _backfill_fts(db)
     return db
@@ -833,7 +872,8 @@ def _rrf_fuse(
 
 def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
               show_source: bool = False, domain: str | None = None,
-              intent: str | None = None, as_of: str | None = None):
+              intent: str | None = None, as_of: str | None = None,
+              privacy: str | None = None):
     db = open_db()
 
     # Check if anything is indexed
@@ -878,6 +918,7 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
     # Partition into atoms and sessions; deduplicate sessions by path
     atom_results: list[dict] = []
     seen: dict[str, dict] = {}
+    sensitive_filtered = 0  # track how many sensitive atoms were blocked
 
     for path, date, tldr, topics, decisions, chunk_type, confidence, corroborations, dist, source_chunk in rows:
         if chunk_type == "atom":
@@ -888,12 +929,31 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
                 ).fetchone()
                 if entry_domain and entry_domain[0] != domain:
                     continue
+            # Apply privacy filter: exclude sensitive by default
+            entry_privacy = db.execute(
+                "SELECT privacy FROM entries WHERE path = ? LIMIT 1", [path]
+            ).fetchone()
+            atom_privacy = entry_privacy[0] if entry_privacy else "internal"
+            if privacy:
+                # Explicit filter: show only this level
+                if atom_privacy != privacy:
+                    continue
+            elif atom_privacy == "sensitive":
+                # Default: exclude sensitive
+                sensitive_filtered += 1
+                continue
+            # Temperature: used for ranking, not exclusion.
+            # Cold atoms rank lower but are never fully hidden.
+            entry_temp = db.execute(
+                "SELECT temperature FROM entries WHERE path = ? LIMIT 1", [path]
+            ).fetchone()
+            atom_temp = entry_temp[0] if entry_temp and entry_temp[0] is not None else 1.0
             if has_atoms and len(atom_results) < top:
                 atom_results.append({
                     "path": path, "chunk": tldr, "confidence": confidence or 0.0,
                     "corroborations": corroborations or 1,
                     "source_chunk": source_chunk or "",
-                    "dist": dist,
+                    "dist": dist, "temperature": atom_temp,
                 })
         else:
             if path not in seen or (chunk_type == "frontmatter" and seen[path]["type"] != "frontmatter"):
@@ -955,9 +1015,9 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
 
     lines = []
 
-    # Confidence-weighted re-ranking: lower score = better (L2 distance - confidence bonus)
+    # Confidence + temperature weighted re-ranking
     for a in atom_results:
-        a["score"] = a.get("dist", 999.0) - 0.25 * a["confidence"]
+        a["score"] = a.get("dist", 999.0) - 0.25 * a["confidence"] - 0.15 * a.get("temperature", 1.0)
     atom_results.sort(key=lambda a: a["score"])
 
     # Known Facts — only atoms with ≥ 2 corroborations (well-established)
@@ -1008,7 +1068,24 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
         except sqlite3.OperationalError:
             pass
 
+    # Notify when sensitive atoms were filtered
+    if sensitive_filtered > 0:
+        lines.append("")
+        lines.append(
+            f"({sensitive_filtered} result(s) blocked by privacy filter — "
+            f"sensitive atoms are excluded by default. "
+            f"Use --privacy sensitive to query them explicitly.)"
+        )
+
     print("\n".join(lines))
+
+    # Phase 4: log query for blind-spot analysis
+    try:
+        log_query(db, query, resolved_intent,
+                  result_count=len(seen), atom_hit=len(atom_results))
+    except Exception:
+        pass
+
     db.close()
 
 
@@ -1841,8 +1918,321 @@ def classify_query_intent(query: str) -> str:
     return "exploratory"
 
 
+# ── Phase 4: Forgetting curves, cross-domain synthesis, privacy ──────────────
+
+import math
+
+
+def log_access(db: sqlite3.Connection, entry_id: int, access_type: str):
+    """Record an access event for temperature computation."""
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    db.execute(
+        "INSERT INTO access_log (entry_id, accessed_at, access_type) VALUES (?, ?, ?)",
+        [entry_id, now, access_type],
+    )
+    db.commit()
+
+
+def log_query(db: sqlite3.Connection, query: str, intent: str,
+              result_count: int = 0, atom_hit: int = 0):
+    """Record a query for blind-spot analysis."""
+    now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    db.execute(
+        "INSERT INTO query_log (query_text, intent, result_count, atom_hit, queried_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        [query, intent, result_count, atom_hit, now],
+    )
+    db.commit()
+
+
+def compute_temperature(db: sqlite3.Connection, entry_id: int,
+                        lambda_decay: float = 0.03) -> float:
+    """Compute forgetting curve temperature: sum(exp(-lambda * days_since_access)).
+    Higher = hotter (more recently/frequently accessed)."""
+    from datetime import date as _date
+    today = _date.today()
+    accesses = db.execute(
+        "SELECT accessed_at FROM access_log WHERE entry_id = ?", [entry_id]
+    ).fetchall()
+    if not accesses:
+        return 0.0
+    total = 0.0
+    for (accessed_at,) in accesses:
+        try:
+            access_date = _date.fromisoformat(accessed_at[:10])
+            days = (today - access_date).days
+            total += math.exp(-lambda_decay * days)
+        except (ValueError, TypeError):
+            pass
+    return round(total, 4)
+
+
+def cmd_decay(dry_run: bool = False):
+    """Recompute temperature for all live atoms."""
+    db = open_db()
+    atoms = db.execute(
+        "SELECT id, path FROM entries WHERE type = 'atom' AND (expired_at IS NULL OR expired_at > date('now'))"
+    ).fetchall()
+    hot, warm, cold = 0, 0, 0
+    for entry_id, path in atoms:
+        temp = compute_temperature(db, entry_id)
+        if temp >= 0.5:
+            hot += 1
+        elif temp >= 0.1:
+            warm += 1
+        else:
+            cold += 1
+        if not dry_run:
+            db.execute("UPDATE entries SET temperature = ? WHERE id = ?", [temp, entry_id])
+    if not dry_run:
+        db.commit()
+    prefix = "[dry-run] " if dry_run else ""
+    print(f"{prefix}Temperature: {hot} hot (≥0.5), {warm} warm (0.1-0.5), {cold} cold (<0.1)")
+    print(f"{prefix}Total: {len(atoms)} atoms")
+    db.close()
+
+
+PRIVACY_KEYWORDS: dict[str, list[str]] = {
+    "sensitive": ["password", "token", "secret", "api_key", "credential", "ssn",
+                  "credit card", "bank account", "social security", "trade", "stock",
+                  "portfolio", "position", "strike", "option", "earnings"],
+    "private": ["family", "friend", "relationship", "health", "medical", "personal",
+                "roommate", "birthday", "mood", "diary", "journal"],
+}
+
+
+def classify_privacy(text: str, domain: str = "general") -> str:
+    """Classify atom privacy level via keyword heuristics."""
+    lower = text.lower()
+    # PII patterns
+    if re.search(r'\b\d{3}[-.]?\d{2}[-.]?\d{4}\b', lower):  # SSN-like
+        return "sensitive"
+    if re.search(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b', lower):  # email
+        return "sensitive"
+    # Keyword matching
+    for word in PRIVACY_KEYWORDS["sensitive"]:
+        if word in lower:
+            return "sensitive"
+    if domain == "trading":
+        return "sensitive"
+    if domain == "personal":
+        return "private"
+    for word in PRIVACY_KEYWORDS["private"]:
+        if word in lower:
+            return "private"
+    if domain == "study":
+        return "public"
+    return "internal"
+
+
+def find_cross_domain_bridges(db: sqlite3.Connection,
+                              min_activation: float = 0.3) -> list[dict]:
+    """Find entity pairs in different domains with shared graph neighbors."""
+    entities = db.execute(
+        "SELECT id, name, domain FROM entities WHERE domain IS NOT NULL"
+    ).fetchall()
+    if len(entities) < 2:
+        return []
+
+    # Build adjacency from relationships
+    adjacency: dict[int, set[int]] = {}
+    edges = db.execute(
+        "SELECT source_id, target_id FROM relationships WHERE expired_at IS NULL"
+    ).fetchall()
+    for src, tgt in edges:
+        adjacency.setdefault(src, set()).add(tgt)
+        adjacency.setdefault(tgt, set()).add(src)
+
+    id_to_info = {eid: (name, domain) for eid, name, domain in entities}
+    bridges = []
+    seen_pairs: set[tuple[int, int]] = set()
+
+    for e1_id, e1_name, e1_domain in entities:
+        for e2_id, e2_name, e2_domain in entities:
+            if e1_id >= e2_id or e1_domain == e2_domain:
+                continue
+            pair = (e1_id, e2_id)
+            if pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            # Find shared neighbors
+            n1 = adjacency.get(e1_id, set())
+            n2 = adjacency.get(e2_id, set())
+            shared = n1 & n2
+            if shared:
+                bridges.append({
+                    "entity_a": e1_name, "entity_a_id": e1_id, "domain_a": e1_domain,
+                    "entity_b": e2_name, "entity_b_id": e2_id, "domain_b": e2_domain,
+                    "shared_neighbors": [id_to_info.get(n, (f"entity-{n}", None))[0] for n in shared],
+                })
+    return bridges
+
+
+def generate_synthesis(db: sqlite3.Connection, entity_a_id: int,
+                       entity_b_id: int) -> str:
+    """Generate a cross-domain synthesis suggestion. Cached in synthesis_suggestions."""
+    # Check cache
+    existing = db.execute(
+        "SELECT bridge_text FROM synthesis_suggestions "
+        "WHERE entity_a_id = ? AND entity_b_id = ? AND dismissed = 0",
+        [entity_a_id, entity_b_id]
+    ).fetchone()
+    if existing:
+        return existing[0]
+
+    a = db.execute("SELECT name, entity_type, domain FROM entities WHERE id = ?", [entity_a_id]).fetchone()
+    b = db.execute("SELECT name, entity_type, domain FROM entities WHERE id = ?", [entity_b_id]).fetchone()
+    if not a or not b:
+        return ""
+
+    prompt = (
+        f"These two concepts come from different domains but share connections:\n"
+        f"- {a[0]} ({a[1]}, domain: {a[2]})\n"
+        f"- {b[0]} ({b[1]}, domain: {b[2]})\n\n"
+        f"In 2-3 sentences, suggest how insights from one domain might apply to the other. "
+        f"Be specific and actionable."
+    )
+
+    synthesis_text = ""
+    for model in GEN_MODELS:
+        try:
+            response = _client.models.generate_content(
+                model=model, contents=prompt,
+                config=genai_types.GenerateContentConfig(temperature=0.5, max_output_tokens=512),
+            )
+            synthesis_text = response.text.strip()
+            break
+        except Exception as e:
+            err = str(e)
+            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                continue
+            print(f"  WARN: synthesis error ({model}): {e}", file=sys.stderr)
+            return ""
+    if not synthesis_text:
+        return ""
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    db.execute(
+        "INSERT INTO synthesis_suggestions (entity_a_id, entity_b_id, bridge_text, created_at) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(entity_a_id, entity_b_id) DO UPDATE SET bridge_text=excluded.bridge_text, "
+        "created_at=excluded.created_at, dismissed=0",
+        [entity_a_id, entity_b_id, synthesis_text, today]
+    )
+    db.commit()
+    return synthesis_text
+
+
+def cmd_synthesize(top: int = 3):
+    """Find and display cross-domain synthesis suggestions."""
+    db = open_db()
+    bridges = find_cross_domain_bridges(db)
+    if not bridges:
+        print("No cross-domain bridges found (need entities in different domains with shared neighbors)")
+        db.close()
+        return
+
+    print(f"## Cross-Domain Synthesis ({len(bridges)} bridge(s) found)\n")
+    for bridge in bridges[:top]:
+        text = generate_synthesis(db, bridge["entity_a_id"], bridge["entity_b_id"])
+        if text:
+            print(f"### {bridge['entity_a']} ({bridge['domain_a']}) ↔ {bridge['entity_b']} ({bridge['domain_b']})")
+            print(f"  via: {', '.join(bridge['shared_neighbors'][:3])}")
+            print(f"  {text}\n")
+    db.close()
+
+
+def cmd_blind_spots(top: int = 10):
+    """Enhanced gap analysis: topic frequency + query log misses + entity orphans."""
+    db = open_db()
+    gaps: list[tuple[str, str, int]] = []  # (name, source, score)
+
+    # 1. Topic-based gaps (from cmd_gaps logic)
+    if VAULT_SESSION_LOGS.exists():
+        session_topic_count: dict[str, int] = {}
+        for log_file in VAULT_SESSION_LOGS.rglob("*.md"):
+            if ".obsidian" in str(log_file):
+                continue
+            fm = extract_frontmatter(log_file.read_text(encoding="utf-8"))
+            if not fm.get("topics"):
+                continue
+            for topic in fm["topics"].split(","):
+                t = topic.strip().lower()
+                if t:
+                    session_topic_count[t] = session_topic_count.get(t, 0) + 1
+
+        atom_coverage: dict[str, int] = {}
+        if VAULT_ATOMS.exists():
+            for atom_file in VAULT_ATOMS.glob("*.md"):
+                body = atom_file.read_text(encoding="utf-8").lower()
+                for topic in session_topic_count:
+                    if topic in body:
+                        atom_coverage[topic] = atom_coverage.get(topic, 0) + 1
+
+        for topic, count in session_topic_count.items():
+            if count >= 3 and atom_coverage.get(topic, 0) <= 1:
+                gaps.append((topic, "topic-gap", count))
+
+    # 2. Query misses (queries with 0 atom hits)
+    try:
+        misses = db.execute(
+            "SELECT query_text, COUNT(*) as cnt FROM query_log "
+            "WHERE atom_hit = 0 GROUP BY query_text ORDER BY cnt DESC LIMIT ?"
+        , [top]).fetchall()
+        for query_text, cnt in misses:
+            gaps.append((query_text[:50], "query-miss", cnt))
+    except sqlite3.OperationalError:
+        pass
+
+    # 3. Entity orphans (entities with no linked atoms)
+    try:
+        orphans = db.execute(
+            "SELECT e.name FROM entities e "
+            "WHERE NOT EXISTS (SELECT 1 FROM atom_entities ae WHERE ae.entity_id = e.id) "
+            "AND e.mention_count >= 2"
+        ).fetchall()
+        for (name,) in orphans:
+            gaps.append((name, "entity-orphan", 1))
+    except sqlite3.OperationalError:
+        pass
+
+    gaps.sort(key=lambda x: -x[2])
+    print("## Blind Spots")
+    if gaps:
+        for name, source, score in gaps[:top]:
+            print(f"- [{source}] {name} (score: {score})")
+    else:
+        print("- No blind spots detected")
+    db.close()
+
+
+def cmd_export(output_path: str, privacy_levels: list[str] | None = None):
+    """Export atoms filtered by privacy to standalone markdown."""
+    db = open_db()
+    levels = privacy_levels or ["public", "internal"]
+
+    placeholders = ",".join("?" * len(levels))
+    atoms = db.execute(
+        f"SELECT path, chunk, confidence, domain, privacy FROM entries "
+        f"WHERE type = 'atom' AND (expired_at IS NULL OR expired_at > date('now')) "
+        f"AND privacy IN ({placeholders})",
+        levels,
+    ).fetchall()
+
+    out_path = Path(output_path).expanduser()
+    lines = [f"# Deus Knowledge Export\n", f"Privacy levels: {', '.join(levels)}\n",
+             f"Exported: {datetime.now().strftime('%Y-%m-%d')}\n", f"Atoms: {len(atoms)}\n", ""]
+    for path, chunk, confidence, domain, privacy in atoms:
+        lines.append(f"- [{domain}/{privacy}] ({confidence:.2f}) {chunk}")
+
+    out_path.write_text("\n".join(lines))
+    print(f"Exported {len(atoms)} atoms to {out_path}")
+    db.close()
+
+
 def write_atom_file(atom: dict, source_path: str, today: str,
-                    source_excerpt: str = "", domain: str = "general") -> Path:
+                    source_excerpt: str = "", domain: str = "general",
+                    privacy: str = "internal") -> Path:
     """Write an atom to the vault Atoms/ directory and return its path."""
     VAULT_ATOMS.mkdir(parents=True, exist_ok=True)
     cat = atom["category"]
@@ -1864,7 +2254,7 @@ def write_atom_file(atom: dict, source_path: str, today: str,
         excerpt_lines = f"source_excerpt: |\n{indented}\n"
     path.write_text(
         f"---\ntype: atom\ncategory: {cat}\ntags: []\n"
-        f"confidence: {conf:.2f}\ncorroborations: 1\ndomain: {domain}\n"
+        f"confidence: {conf:.2f}\ncorroborations: 1\ndomain: {domain}\nprivacy: {privacy}\n"
         f"source: {source_path}\ncreated_at: {today}\nupdated_at: {today}\n{ttl_line}\n"
         f"{excerpt_lines}---\n"
         f"{atom['text']}\n"
@@ -1937,12 +2327,13 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
         else:
             cat = atom["category"]
             domain = classify_domain(atom["text"])
+            privacy = classify_privacy(atom["text"], domain)
             conf = CONFIDENCE_PRIOR.get(cat, 0.50)
-            atom_path = write_atom_file(atom, str(path), today, source_excerpt, domain=domain)
+            atom_path = write_atom_file(atom, str(path), today, source_excerpt, domain=domain, privacy=privacy)
             cur = db.execute(
-                "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, source_chunk, domain) "
-                "VALUES (?, ?, ?, 'atom', ?, '', ?, 1, ?, ?)",
-                [str(atom_path), today, atom["text"], atom["text"], conf, source_excerpt, domain],
+                "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, source_chunk, domain, privacy) "
+                "VALUES (?, ?, ?, 'atom', ?, '', ?, 1, ?, ?, ?)",
+                [str(atom_path), today, atom["text"], atom["text"], conf, source_excerpt, domain, privacy],
             )
             db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
                        [cur.lastrowid, serialize(vec)])
@@ -2172,6 +2563,35 @@ def _collect_health_metrics(db: sqlite3.Connection) -> dict:
             snapshot[f"digests_{level}"] = cnt
     except sqlite3.OperationalError:
         snapshot.update({"articles": 0, "articles_stale": 0, "digests_weekly": 0, "digests_monthly": 0})
+    # Phase 4: temperature, query success, privacy
+    try:
+        temp_rows = db.execute(
+            "SELECT temperature FROM entries WHERE type = 'atom' AND (expired_at IS NULL OR expired_at > date('now'))"
+        ).fetchall()
+        temps = [r[0] if r[0] is not None else 1.0 for r in temp_rows]
+        if temps:
+            snapshot["temp_hot"] = sum(1 for t in temps if t >= 0.5)
+            snapshot["temp_warm"] = sum(1 for t in temps if 0.1 <= t < 0.5)
+            snapshot["temp_cold"] = sum(1 for t in temps if t < 0.1)
+        else:
+            snapshot.update({"temp_hot": 0, "temp_warm": 0, "temp_cold": 0})
+    except sqlite3.OperationalError:
+        snapshot.update({"temp_hot": 0, "temp_warm": 0, "temp_cold": 0})
+    try:
+        total_queries = db.execute("SELECT COUNT(*) FROM query_log").fetchone()[0]
+        queries_with_hits = db.execute("SELECT COUNT(*) FROM query_log WHERE atom_hit > 0").fetchone()[0]
+        snapshot["query_total"] = total_queries
+        snapshot["query_success_rate"] = round(queries_with_hits / max(total_queries, 1), 3)
+    except sqlite3.OperationalError:
+        snapshot.update({"query_total": 0, "query_success_rate": 0.0})
+    try:
+        privacy_rows = db.execute(
+            "SELECT privacy, COUNT(*) FROM entries WHERE type = 'atom' "
+            "AND (expired_at IS NULL OR expired_at > date('now')) GROUP BY privacy"
+        ).fetchall()
+        snapshot["privacy"] = {p: c for p, c in privacy_rows} if privacy_rows else {}
+    except sqlite3.OperationalError:
+        snapshot["privacy"] = {}
     return snapshot
 
 
@@ -2273,6 +2693,18 @@ def cmd_health(save: bool = True) -> None:
     dm = current.get("digests_monthly", 0)
     if dw > 0 or dm > 0:
         out.append(f"Digests: {dw} weekly, {dm} monthly")
+    t_hot = current.get("temp_hot", 0)
+    t_warm = current.get("temp_warm", 0)
+    t_cold = current.get("temp_cold", 0)
+    if t_hot + t_warm + t_cold > 0:
+        out.append(f"Temperature: {t_hot} hot, {t_warm} warm, {t_cold} cold")
+    qt = current.get("query_total", 0)
+    qsr = current.get("query_success_rate", 0.0)
+    if qt > 0:
+        out.append(f"Queries: {qt} total, {100*qsr:.0f}% hit rate")
+    priv = current.get("privacy", {})
+    if priv:
+        out.append("Privacy: " + "  ".join(f"{k}:{v}" for k, v in sorted(priv.items(), key=lambda x: -x[1])))
 
     out.append("")
     if prev:
@@ -2490,6 +2922,14 @@ def main():
     group.add_argument("--compress-digests", nargs="?", const="weekly",
                        choices=["weekly", "monthly"], metavar="LEVEL",
                        help="Generate period digests (default: weekly)")
+    group.add_argument("--decay", action="store_true",
+                       help="Recompute forgetting curve temperatures for all atoms (no API call)")
+    group.add_argument("--synthesize", action="store_true",
+                       help="Cross-domain synthesis suggestions (uses Gemini Flash)")
+    group.add_argument("--blind-spots", action="store_true",
+                       help="Enhanced gap analysis: topic gaps + query misses + entity orphans (no API call)")
+    group.add_argument("--export", metavar="PATH",
+                       help="Export atoms filtered by --privacy to standalone markdown")
     parser.add_argument("--no-extract", action="store_true",
                         help="Skip atom extraction when using --add (useful for CI/benchmarks)")
     parser.add_argument("--top", type=int, default=3, help="Number of results for --query")
@@ -2515,13 +2955,16 @@ def main():
                         help="Use entity graph instead of topic co-occurrence for --wander")
     parser.add_argument("--no-contradict", action="store_true",
                         help="Skip contradiction detection during --extract")
-    parser.add_argument("--with-graph", action="store_true",
-                        help="Re-extract entities/relationships during --rebuild (LLM calls)")
     parser.add_argument("--as-of", metavar="DATE",
                         help="Temporal filter for --query (YYYY-MM-DD)")
     parser.add_argument("--intent",
                         choices=["factual", "exploratory", "temporal", "exhaustive"],
                         help="Override auto-detected query intent for --query")
+    parser.add_argument("--privacy",
+                        choices=["public", "internal", "private", "sensitive"],
+                        help="Filter --query/--export by privacy level. "
+                             "Sensitive atoms are excluded from --query by default; "
+                             "pass --privacy sensitive to see only sensitive atoms.")
     args = parser.parse_args()
 
     global _client
@@ -2550,6 +2993,15 @@ def main():
     if args.gaps:
         cmd_gaps(top=args.top)
         return
+    if args.decay:
+        cmd_decay(dry_run=args.dry_run)
+        return
+    if args.blind_spots:
+        cmd_blind_spots(top=args.top)
+        return
+    if args.export:
+        cmd_export(args.export, privacy_levels=[args.privacy] if args.privacy else None)
+        return
 
     _client = genai.Client(api_key=load_api_key())
 
@@ -2559,13 +3011,16 @@ def main():
     if args.compress_digests is not None:
         cmd_compress_digests(args.compress_digests)
         return
+    if args.synthesize:
+        cmd_synthesize(top=args.top)
+        return
 
     if args.add:
         cmd_add(args.add, extract=not args.no_extract)
     elif args.query:
         cmd_query(args.query, top=args.top, recency_boost=args.recency_boost,
                   show_source=args.source, domain=args.domain,
-                  intent=args.intent, as_of=args.as_of)
+                  intent=args.intent, as_of=args.as_of, privacy=args.privacy)
     elif args.rebuild:
         cmd_rebuild()
     elif args.extract:

@@ -2306,3 +2306,963 @@ def test_health_includes_digest_metrics(mi, monkeypatch):
     assert metrics["digests_weekly"] == 1
     assert metrics["digests_monthly"] == 1
     db.close()
+
+
+# ── KB Phase 4: Schema ──────────────────────────────────────────────────────
+
+
+def test_schema_has_access_log_table(mi):
+    db = mi.open_db()
+    cols = [r[1] for r in db.execute("PRAGMA table_info(access_log)").fetchall()]
+    assert "entry_id" in cols
+    assert "accessed_at" in cols
+    assert "access_type" in cols
+    db.close()
+
+
+def test_schema_has_query_log_table(mi):
+    db = mi.open_db()
+    cols = [r[1] for r in db.execute("PRAGMA table_info(query_log)").fetchall()]
+    assert "query_text" in cols
+    assert "intent" in cols
+    assert "result_count" in cols
+    assert "atom_hit" in cols
+    db.close()
+
+
+def test_schema_has_synthesis_suggestions_table(mi):
+    db = mi.open_db()
+    cols = [r[1] for r in db.execute("PRAGMA table_info(synthesis_suggestions)").fetchall()]
+    assert "entity_a_id" in cols
+    assert "entity_b_id" in cols
+    assert "bridge_text" in cols
+    assert "dismissed" in cols
+    db.close()
+
+
+def test_schema_has_privacy_column(mi):
+    db = mi.open_db()
+    cols = [r[1] for r in db.execute("PRAGMA table_info(entries)").fetchall()]
+    assert "privacy" in cols
+    db.close()
+
+
+def test_schema_has_temperature_column(mi):
+    db = mi.open_db()
+    cols = [r[1] for r in db.execute("PRAGMA table_info(entries)").fetchall()]
+    assert "temperature" in cols
+    db.close()
+
+
+# ── KB Phase 4: Logging ─────────────────────────────────────────────────────
+
+
+def test_log_access_inserts_row(mi):
+    db = mi.open_db()
+    # Seed an entry
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/a.md', '2024-01-01', 'test', 'atom', 'test', '')"
+    )
+    db.commit()
+    mi.log_access(db, 1, "query")
+    row = db.execute("SELECT entry_id, access_type FROM access_log WHERE entry_id = 1").fetchone()
+    assert row is not None
+    assert row[1] == "query"
+    db.close()
+
+
+def test_log_query_inserts_row(mi):
+    db = mi.open_db()
+    mi.log_query(db, "test query", "factual", result_count=3, atom_hit=2)
+    row = db.execute("SELECT query_text, intent, result_count, atom_hit FROM query_log").fetchone()
+    assert row[0] == "test query"
+    assert row[1] == "factual"
+    assert row[2] == 3
+    assert row[3] == 2
+    db.close()
+
+
+# ── KB Phase 4: Temperature / Forgetting curves ─────────────────────────────
+
+
+def test_compute_temperature_recent_access_hot(mi):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/a.md', '2024-01-01', 'test', 'atom', 'test', '')"
+    )
+    db.commit()
+    from datetime import datetime as dt
+    today = dt.now().strftime("%Y-%m-%dT%H:%M:%S")
+    db.execute("INSERT INTO access_log (entry_id, accessed_at, access_type) VALUES (1, ?, 'query')", [today])
+    db.commit()
+    temp = mi.compute_temperature(db, 1)
+    assert temp >= 0.9  # exp(0) ≈ 1.0
+    db.close()
+
+
+def test_compute_temperature_old_access_cold(mi):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/a.md', '2024-01-01', 'test', 'atom', 'test', '')"
+    )
+    db.commit()
+    db.execute("INSERT INTO access_log (entry_id, accessed_at, access_type) VALUES (1, '2020-01-01T00:00:00', 'query')")
+    db.commit()
+    temp = mi.compute_temperature(db, 1)
+    assert temp < 0.01  # very old access → near zero
+    db.close()
+
+
+def test_compute_temperature_multiple_accesses_cumulative(mi):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/a.md', '2024-01-01', 'test', 'atom', 'test', '')"
+    )
+    db.commit()
+    from datetime import datetime as dt
+    today = dt.now().strftime("%Y-%m-%dT%H:%M:%S")
+    db.execute("INSERT INTO access_log (entry_id, accessed_at, access_type) VALUES (1, ?, 'query')", [today])
+    db.execute("INSERT INTO access_log (entry_id, accessed_at, access_type) VALUES (1, ?, 'wander')", [today])
+    db.commit()
+    temp = mi.compute_temperature(db, 1)
+    assert temp >= 1.9  # two recent accesses → ~2.0
+    db.close()
+
+
+def test_compute_temperature_no_accesses(mi):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/a.md', '2024-01-01', 'test', 'atom', 'test', '')"
+    )
+    db.commit()
+    temp = mi.compute_temperature(db, 1)
+    assert temp == 0.0
+    db.close()
+
+
+def test_cmd_decay_updates_temperature_column(mi, capsys):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, temperature) "
+        "VALUES ('/tmp/a.md', '2024-01-01', 'test', 'atom', 'test', '', 1.0)"
+    )
+    db.commit()
+    db.close()
+    mi.cmd_decay()
+    db = mi.open_db()
+    row = db.execute("SELECT temperature FROM entries WHERE id = 1").fetchone()
+    assert row[0] == 0.0  # no accesses → cold
+    out = capsys.readouterr().out
+    assert "cold" in out
+    db.close()
+
+
+def test_cmd_decay_dry_run(mi, capsys):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, temperature) "
+        "VALUES ('/tmp/a.md', '2024-01-01', 'test', 'atom', 'test', '', 1.0)"
+    )
+    db.commit()
+    db.close()
+    mi.cmd_decay(dry_run=True)
+    db = mi.open_db()
+    row = db.execute("SELECT temperature FROM entries WHERE id = 1").fetchone()
+    assert row[0] == 1.0  # unchanged in dry-run
+    out = capsys.readouterr().out
+    assert "[dry-run]" in out
+    db.close()
+
+
+# ── KB Phase 4: Query integration ───────────────────────────────────────────
+
+
+def test_query_temperature_weighting(mi, monkeypatch, capsys):
+    """Hot atoms should rank higher than equivalent cold atoms."""
+    db = mi.open_db()
+    vec1 = mi.embed("auth middleware hot")
+    cur1 = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, domain, temperature) "
+        "VALUES ('/tmp/hot.md', '2024-01-01', 'auth middleware hot', 'atom', 'auth hot', '', 0.5, 2, 'dev', 1.0)"
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)", [cur1.lastrowid, mi.serialize(vec1)])
+
+    vec2 = mi.embed("auth middleware warm")
+    cur2 = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, domain, temperature) "
+        "VALUES ('/tmp/warm.md', '2024-01-01', 'auth middleware warm', 'atom', 'auth warm', '', 0.5, 2, 'dev', 0.2)"
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)", [cur2.lastrowid, mi.serialize(vec2)])
+    db.commit()
+    db.close()
+
+    mi.cmd_query("auth middleware", top=5)
+    out = capsys.readouterr().out
+    # Both should appear (neither is cold)
+    assert "auth" in out.lower()
+
+
+def test_query_cold_atoms_rank_lower(mi, monkeypatch, capsys):
+    """Cold atoms should still appear but rank lower due to temperature weighting."""
+    db = mi.open_db()
+    vec = mi.embed("cold atom test")
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, domain, temperature) "
+        "VALUES ('/tmp/cold.md', '2024-01-01', 'cold atom test', 'atom', 'cold fact', '', 0.5, 2, 'dev', 0.05)"
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)", [cur.lastrowid, mi.serialize(vec)])
+    # Also add a session so query doesn't exit with code 1
+    vec2 = mi.embed("session about testing")
+    cur2 = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/s.md', '2024-01-01', 'session about testing', 'frontmatter', 'testing', 'dev')"
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)", [cur2.lastrowid, mi.serialize(vec2)])
+    db.commit()
+    db.close()
+
+    mi.cmd_query("cold atom test", top=5)
+    out = capsys.readouterr().out
+    # Cold atoms still appear (not excluded), just rank lower
+    assert "cold fact" in out
+
+
+# ── KB Phase 4: Privacy ──────────────────────────────────────────────────────
+
+
+def test_classify_privacy_pii_sensitive(mi):
+    assert mi.classify_privacy("My SSN is 123-45-6789", "dev") == "sensitive"
+    assert mi.classify_privacy("Email: user@example.com", "dev") == "sensitive"
+
+
+def test_classify_privacy_personal_domain(mi):
+    assert mi.classify_privacy("some personal note", "personal") == "private"
+
+
+def test_classify_privacy_dev_internal(mi):
+    assert mi.classify_privacy("refactored the build pipeline", "dev") == "internal"
+
+
+def test_classify_privacy_study_public(mi):
+    assert mi.classify_privacy("linear algebra theorem", "study") == "public"
+
+
+def test_classify_privacy_trading_sensitive(mi):
+    assert mi.classify_privacy("market analysis", "trading") == "sensitive"
+
+
+def test_write_atom_file_includes_privacy(mi, fresh_vault):
+    atom = {"text": "test atom", "category": "fact"}
+    path = mi.write_atom_file(atom, "/tmp/source.md", "2024-01-01", privacy="private")
+    content = path.read_text()
+    assert "privacy: private" in content
+
+
+def test_cmd_extract_sets_privacy(mi, fresh_vault, monkeypatch):
+    """cmd_extract should classify privacy for new atoms."""
+    session = fresh_vault / "Session-Logs" / "2024-01-01" / "test.md"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text(
+        "---\ntype: session\ndate: 2024-01-01\ntopics: [dev]\ntldr: test\n"
+        "decisions:\n  - \"chose X\"\n---\n## Decisions Made\n- chose X\n"
+    )
+
+    fake_atoms = [{"text": "prefer dark mode always", "category": "preference"}]
+    monkeypatch.setattr(mi, "extract_atoms", lambda c: fake_atoms)
+    monkeypatch.setattr(mi, "embed", lambda t: [0.1] * 768)
+
+    mi.cmd_extract(str(session))
+
+    db = mi.open_db()
+    row = db.execute("SELECT privacy FROM entries WHERE type = 'atom' LIMIT 1").fetchone()
+    assert row is not None
+    assert row[0] in ("public", "internal", "private", "sensitive")
+    db.close()
+
+
+def test_query_privacy_filter(mi, monkeypatch, capsys):
+    db = mi.open_db()
+    vec1 = mi.embed("public fact")
+    cur1 = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, domain, privacy, temperature) "
+        "VALUES ('/tmp/pub.md', '2024-01-01', 'public fact', 'atom', 'public fact', '', 0.5, 2, 'dev', 'public', 1.0)"
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)", [cur1.lastrowid, mi.serialize(vec1)])
+
+    vec2 = mi.embed("sensitive secret")
+    cur2 = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, domain, privacy, temperature) "
+        "VALUES ('/tmp/sec.md', '2024-01-01', 'sensitive secret', 'atom', 'sensitive secret', '', 0.5, 2, 'dev', 'sensitive', 1.0)"
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)", [cur2.lastrowid, mi.serialize(vec2)])
+    db.commit()
+    db.close()
+
+    mi.cmd_query("fact secret", top=5, privacy="public")
+    out = capsys.readouterr().out
+    assert "sensitive secret" not in out
+
+
+# ── KB Phase 4: Cross-domain synthesis ───────────────────────────────────────
+
+
+def test_find_cross_domain_bridges_detects_candidates(mi):
+    db = mi.open_db()
+    e1 = mi.upsert_entity(db, "Docker", "tool", "dev", "2024-01-01")
+    e2 = mi.upsert_entity(db, "Study", "topic", "study", "2024-01-01")
+    bridge = mi.upsert_entity(db, "Automation", "concept", "dev", "2024-01-01")
+    mi.upsert_relationship(db, e1, bridge, "uses", 0.5, "2024-01-01")
+    mi.upsert_relationship(db, e2, bridge, "uses", 0.5, "2024-01-01")
+    db.commit()
+    bridges = mi.find_cross_domain_bridges(db)
+    assert len(bridges) >= 1
+    names = [(b["entity_a"], b["entity_b"]) for b in bridges]
+    assert any("docker" in a or "docker" in b for a, b in names)
+    db.close()
+
+
+def test_find_cross_domain_bridges_no_same_domain(mi):
+    db = mi.open_db()
+    e1 = mi.upsert_entity(db, "Docker", "tool", "dev", "2024-01-01")
+    e2 = mi.upsert_entity(db, "Python", "tool", "dev", "2024-01-01")
+    bridge = mi.upsert_entity(db, "CI", "concept", "dev", "2024-01-01")
+    mi.upsert_relationship(db, e1, bridge, "uses", 0.5, "2024-01-01")
+    mi.upsert_relationship(db, e2, bridge, "uses", 0.5, "2024-01-01")
+    db.commit()
+    bridges = mi.find_cross_domain_bridges(db)
+    # All entities are in "dev" domain → no cross-domain bridges
+    assert len(bridges) == 0
+    db.close()
+
+
+def test_find_cross_domain_bridges_empty_graph(mi):
+    db = mi.open_db()
+    bridges = mi.find_cross_domain_bridges(db)
+    assert bridges == []
+    db.close()
+
+
+def test_generate_synthesis_stores_in_db(mi, monkeypatch):
+    db = mi.open_db()
+    e1 = mi.upsert_entity(db, "Docker", "tool", "dev", "2024-01-01")
+    e2 = mi.upsert_entity(db, "Study", "topic", "study", "2024-01-01")
+    db.commit()
+
+    fake_models = _FakeModels(response_text="Docker containerization patterns apply to study modularization")
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    text = mi.generate_synthesis(db, e1, e2)
+    assert "Docker" in text
+    row = db.execute("SELECT bridge_text FROM synthesis_suggestions WHERE entity_a_id = ? AND entity_b_id = ?", [e1, e2]).fetchone()
+    assert row is not None
+    db.close()
+
+
+def test_generate_synthesis_cached(mi, monkeypatch):
+    db = mi.open_db()
+    e1 = mi.upsert_entity(db, "Docker", "tool", "dev", "2024-01-01")
+    e2 = mi.upsert_entity(db, "Study", "topic", "study", "2024-01-01")
+    db.commit()
+
+    fake_models = _FakeModels(response_text="Synthesis result")
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.generate_synthesis(db, e1, e2)
+    assert fake_models.call_count == 1
+    # Second call should use cache
+    mi.generate_synthesis(db, e1, e2)
+    assert fake_models.call_count == 1  # no new LLM call
+    db.close()
+
+
+def test_cmd_synthesize_outputs_suggestions(mi, monkeypatch, capsys):
+    db = mi.open_db()
+    e1 = mi.upsert_entity(db, "Docker", "tool", "dev", "2024-01-01")
+    e2 = mi.upsert_entity(db, "Study", "topic", "study", "2024-01-01")
+    bridge = mi.upsert_entity(db, "Automation", "concept", "dev", "2024-01-01")
+    mi.upsert_relationship(db, e1, bridge, "uses", 0.5, "2024-01-01")
+    mi.upsert_relationship(db, e2, bridge, "uses", 0.5, "2024-01-01")
+    db.commit()
+    db.close()
+
+    fake_models = _FakeModels(response_text="Cross-domain insight here")
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.cmd_synthesize(top=3)
+    out = capsys.readouterr().out
+    assert "Cross-Domain Synthesis" in out
+
+
+# ── KB Phase 4: Blind spots ─────────────────────────────────────────────────
+
+
+def test_cmd_blind_spots_combines_all_sources(mi, fresh_vault, capsys):
+    """Blind spots should run without errors even with empty data."""
+    mi.cmd_blind_spots(top=5)
+    out = capsys.readouterr().out
+    assert "Blind Spots" in out
+
+
+def test_cmd_blind_spots_query_misses(mi, capsys):
+    db = mi.open_db()
+    # Log queries with 0 atom hits
+    mi.log_query(db, "unknown topic", "exploratory", result_count=0, atom_hit=0)
+    mi.log_query(db, "unknown topic", "exploratory", result_count=0, atom_hit=0)
+    db.close()
+
+    mi.cmd_blind_spots(top=5)
+    out = capsys.readouterr().out
+    assert "query-miss" in out
+    assert "unknown topic" in out
+
+
+def test_cmd_blind_spots_entity_orphans(mi, capsys):
+    db = mi.open_db()
+    # Create entity with mention_count >= 2 but no linked atoms
+    mi.upsert_entity(db, "OrphanEntity", "concept", "dev", "2024-01-01")
+    db.execute("UPDATE entities SET mention_count = 3 WHERE name = 'orphanentity'")
+    db.commit()
+    db.close()
+
+    mi.cmd_blind_spots(top=5)
+    out = capsys.readouterr().out
+    assert "entity-orphan" in out
+    assert "orphanentity" in out
+
+
+# ── KB Phase 4: Export ───────────────────────────────────────────────────────
+
+
+def test_cmd_export_filters_by_privacy(mi, tmp_path):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, domain, privacy) "
+        "VALUES ('/tmp/pub.md', '2024-01-01', 'public fact', 'atom', 'public fact', '', 'dev', 'public')"
+    )
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, domain, privacy) "
+        "VALUES ('/tmp/sec.md', '2024-01-01', 'secret fact', 'atom', 'secret fact', '', 'dev', 'sensitive')"
+    )
+    db.commit()
+    db.close()
+
+    out_path = tmp_path / "export.md"
+    mi.cmd_export(str(out_path), privacy_levels=["public"])
+    content = out_path.read_text()
+    assert "public fact" in content
+    assert "secret fact" not in content
+
+
+def test_cmd_export_writes_file(mi, tmp_path):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, domain, privacy) "
+        "VALUES ('/tmp/a.md', '2024-01-01', 'test atom', 'atom', 'test atom', '', 'dev', 'internal')"
+    )
+    db.commit()
+    db.close()
+
+    out_path = tmp_path / "export.md"
+    mi.cmd_export(str(out_path))
+    assert out_path.exists()
+    content = out_path.read_text()
+    assert "test atom" in content
+
+
+# ── KB Phase 4: Health metrics ───────────────────────────────────────────────
+
+
+def test_health_includes_temperature_distribution(mi):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, temperature) "
+        "VALUES ('/tmp/hot.md', '2024-01-01', 'hot', 'atom', 'hot', '', 0.8)"
+    )
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, temperature) "
+        "VALUES ('/tmp/cold.md', '2024-01-01', 'cold', 'atom', 'cold', '', 0.05)"
+    )
+    db.commit()
+    metrics = mi._collect_health_metrics(db)
+    assert metrics["temp_hot"] == 1
+    assert metrics["temp_cold"] == 1
+    db.close()
+
+
+def test_health_includes_query_success_rate(mi):
+    db = mi.open_db()
+    mi.log_query(db, "query1", "factual", result_count=3, atom_hit=2)
+    mi.log_query(db, "query2", "factual", result_count=0, atom_hit=0)
+    metrics = mi._collect_health_metrics(db)
+    assert metrics["query_total"] == 2
+    assert metrics["query_success_rate"] == 0.5
+    db.close()
+
+
+def test_health_includes_privacy_distribution(mi):
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, privacy) "
+        "VALUES ('/tmp/a.md', '2024-01-01', 'a', 'atom', 'a', '', 'public')"
+    )
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, privacy) "
+        "VALUES ('/tmp/b.md', '2024-01-01', 'b', 'atom', 'b', '', 'sensitive')"
+    )
+    db.commit()
+    metrics = mi._collect_health_metrics(db)
+    assert "privacy" in metrics
+    assert metrics["privacy"].get("public") == 1
+    assert metrics["privacy"].get("sensitive") == 1
+    db.close()
+
+
+# ── New coverage: functions with no tests ────────────────────────────────────
+
+
+def test_resolve_wikilinks_simple(mi):
+    """[[page]] should be replaced with page."""
+    result = mi.resolve_wikilinks("See [[Linear Algebra]] for details.")
+    assert result == "See Linear Algebra for details."
+
+
+def test_resolve_wikilinks_with_display(mi):
+    """[[page|display text]] should be replaced with display text."""
+    result = mi.resolve_wikilinks("See [[Linear Algebra|LA]] for details.")
+    assert result == "See LA for details."
+
+
+def test_slugify_basic(mi):
+    """'Hello World Test' should become 'hello-world-test'."""
+    assert mi.slugify("Hello World Test") == "hello-world-test"
+
+
+def test_slugify_truncates_to_5_words(mi):
+    """Long text should be truncated to 5 words in the slug."""
+    result = mi.slugify("one two three four five six seven eight")
+    parts = result.split("-")
+    assert len(parts) == 5
+
+
+def test_slugify_collision_increments_counter(mi, fresh_vault):
+    """write_atom_file picks a different filename when the slug path already exists."""
+    atom = {"text": "user prefers pytest over unittest", "category": "preference"}
+    # Write once to create the file at the expected slug path
+    first_path = mi.write_atom_file(atom, "/session.md", "2024-01-01")
+    assert first_path.exists()
+    # Write again with same text — should pick a counter-suffixed name
+    second_path = mi.write_atom_file(atom, "/session.md", "2024-01-01")
+    assert second_path.exists()
+    assert second_path != first_path
+    assert "-2" in second_path.name
+
+
+def test_cmd_invalidate_happy_path(mi, fresh_vault):
+    """cmd_invalidate should set expired_at on an existing atom entry."""
+    atom_path = fresh_vault / "Atoms" / "fact-live.md"
+    atom_path.write_text(
+        "---\ntype: atom\ncategory: fact\nconfidence: 0.70\ncorroborations: 1\n"
+        "created_at: 2024-01-01\nupdated_at: 2024-01-01\nttl_days: null\n---\n"
+        "User lives in Tel Aviv\n"
+    )
+    db = mi.open_db()
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence) "
+        "VALUES (?, '2024-01-01', 'User lives in Tel Aviv', 'atom', 0.70)",
+        [str(atom_path)],
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_invalidate(str(atom_path), "superseded")
+
+    db = mi.open_db()
+    row = db.execute(
+        "SELECT expired_at, expired_reason FROM entries WHERE path = ?",
+        [str(atom_path)],
+    ).fetchone()
+    db.close()
+    assert row[0] is not None
+    assert row[1] == "superseded"
+
+
+def test_cmd_invalidate_not_found_exits(mi, fresh_vault):
+    """cmd_invalidate with nonexistent path should raise SystemExit."""
+    nonexistent = str(fresh_vault / "Atoms" / "does-not-exist.md")
+    with pytest.raises(SystemExit):
+        mi.cmd_invalidate(nonexistent, "test")
+
+
+# ── New coverage: error paths ────────────────────────────────────────────────
+
+
+def test_cmd_add_file_not_found_exits(mi):
+    """cmd_add with a nonexistent path should raise SystemExit."""
+    with pytest.raises(SystemExit):
+        mi.cmd_add("/nonexistent/path/session.md")
+
+
+def test_cmd_extract_file_not_found_exits(mi):
+    """cmd_extract with a nonexistent path should raise SystemExit."""
+    with pytest.raises(SystemExit):
+        mi.cmd_extract("/nonexistent/path/session.md")
+
+
+def test_cmd_query_empty_index_exits(mi):
+    """cmd_query on an empty DB should raise SystemExit."""
+    with pytest.raises(SystemExit):
+        mi.cmd_query("anything")
+
+
+def test_cmd_extract_no_decisions_skips(mi, fresh_vault, capsys):
+    """Session with no decisions section should print 'skipping extraction'."""
+    session = fresh_vault / "Session-Logs" / "2024-01-01" / "no-dec.md"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text(
+        "---\ndate: 2024-01-01\ntldr: no decisions here\ntopics: [test]\n---\n"
+        "## Summary\nJust a plain session with no decisions or decision frontmatter.\n"
+    )
+    mi.cmd_extract(str(session))
+    output = capsys.readouterr().out
+    assert "skipping" in output.lower() or "No decisions" in output
+
+
+def test_extract_content_for_llm_truncation(mi):
+    """Content > 6000 chars should be truncated, keeping frontmatter + key sections."""
+    frontmatter = "---\ndate: 2024-01-01\ntldr: test\n---\n"
+    decisions = "## Decisions Made\nUse pytest. Always.\n"
+    filler = "x" * 7000
+    content = frontmatter + decisions + filler
+    result = mi._extract_content_for_llm(content)
+    assert len(result) <= 6000
+    # Frontmatter should be preserved
+    assert "date: 2024-01-01" in result
+    # Decisions should be preserved
+    assert "Decisions Made" in result
+
+
+# ── New coverage: CLI flags ──────────────────────────────────────────────────
+
+
+def test_query_recency_boost(mi, monkeypatch, capsys):
+    """With recency_boost=True, a 1-day-old entry should rank above a 30-day-old one."""
+    from datetime import date, timedelta
+    today = date.today()
+    recent_date = (today - timedelta(days=1)).isoformat()
+    old_date = (today - timedelta(days=30)).isoformat()
+
+    db = mi.open_db()
+    # Both sessions get the same embedding so ANN distance is equal;
+    # recency boost should separate them.
+    vec = [0.5] * mi.EMBED_DIM
+    cur1 = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, decisions) "
+        "VALUES (?, ?, 'auth stuff', 'frontmatter', 'recent session', 'dev', '')",
+        ["/tmp/recent.md", recent_date],
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur1.lastrowid, mi.serialize(vec)])
+    cur2 = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, decisions) "
+        "VALUES (?, ?, 'auth stuff', 'frontmatter', 'old session', 'dev', '')",
+        ["/tmp/old.md", old_date],
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur2.lastrowid, mi.serialize(vec)])
+    db.commit()
+    db.close()
+
+    mi.cmd_query("auth stuff", top=5, recency_boost=True)
+    out = capsys.readouterr().out
+    # Recent entry should appear before old entry
+    assert "recent.md" in out
+    recent_pos = out.find("recent.md")
+    old_pos = out.find("old.md")
+    assert recent_pos < old_pos, "Recent entry should rank before old entry"
+
+
+def test_query_show_source(mi, capsys):
+    """cmd_query with show_source=True should print 'Source context:' for atoms with source_chunk."""
+    db = mi.open_db()
+    vec = [0.5] * mi.EMBED_DIM
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, "
+        "source_chunk, domain, privacy, temperature) "
+        "VALUES ('/tmp/src-atom.md', '2024-01-01', 'user prefers pytest', 'atom', "
+        "'user prefers pytest', '', 0.70, 2, 'Source context: pytest over unittest', 'dev', 'internal', 1.0)"
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur.lastrowid, mi.serialize(vec)])
+    db.commit()
+    db.close()
+
+    mi.cmd_query("pytest", top=5, show_source=True)
+    out = capsys.readouterr().out
+    assert "Source context:" in out
+
+
+def test_query_domain_filter(mi, capsys):
+    """cmd_query with domain='dev' should only return atoms in the dev domain."""
+    db = mi.open_db()
+    vec_dev = [0.5] * mi.EMBED_DIM
+    vec_study = [0.6] * mi.EMBED_DIM
+
+    cur_dev = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, "
+        "domain, privacy, temperature) "
+        "VALUES ('/tmp/dev-atom.md', '2024-01-01', 'typescript build pipeline', 'atom', "
+        "'typescript build pipeline', '', 0.70, 2, 'dev', 'internal', 1.0)"
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur_dev.lastrowid, mi.serialize(vec_dev)])
+
+    cur_study = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, "
+        "domain, privacy, temperature) "
+        "VALUES ('/tmp/study-atom.md', '2024-01-01', 'linear algebra theorem', 'atom', "
+        "'linear algebra theorem', '', 0.70, 2, 'study', 'internal', 1.0)"
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur_study.lastrowid, mi.serialize(vec_study)])
+    db.commit()
+    db.close()
+
+    mi.cmd_query("build test", top=5, domain="dev")
+    out = capsys.readouterr().out
+    # The atom text (stored as chunk/tldr) appears in output; study atom must be absent
+    assert "typescript build pipeline" in out
+    assert "linear algebra theorem" not in out
+
+
+def test_cmd_extract_no_contradict_skips_detection(mi, fresh_vault, monkeypatch):
+    """With no_contradict=True, detect_contradictions should NOT be called."""
+    session = fresh_vault / "Session-Logs" / "2024-01-01" / "test-nc.md"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text(
+        "---\ndate: 2024-01-01\ntldr: test\ntopics: [dev]\n"
+        "decisions:\n  - \"use pytest\"\n---\n## Decisions Made\n- use pytest\n"
+    )
+
+    called = []
+    monkeypatch.setattr(mi, "extract_atoms",
+                        lambda c: [{"text": "user prefers pytest", "category": "preference"}])
+    monkeypatch.setattr(mi, "embed", lambda t: [0.1] * mi.EMBED_DIM)
+    monkeypatch.setattr(mi, "extract_entities_and_relations",
+                        lambda c: {"entities": [], "relationships": []})
+    monkeypatch.setattr(mi, "detect_contradictions",
+                        lambda db, aid, txt, vec: called.append(True) or [])
+
+    mi.cmd_extract(str(session), no_contradict=True)
+
+    assert called == [], "detect_contradictions should NOT have been called"
+
+
+def test_compress_digests_monthly(mi, monkeypatch, capsys):
+    """cmd_compress_digests('monthly') should produce period_key in 'YYYY-MM' format."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/june.md', '2024-06-15', 'june session', 'frontmatter', 'did stuff', 'dev')"
+    )
+    db.commit()
+    db.close()
+
+    fake_models = _FakeModels(response_text="Monthly summary for June 2024")
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.cmd_compress_digests("monthly")
+
+    db = mi.open_db()
+    row = db.execute(
+        "SELECT period_key FROM digests WHERE level = 'monthly'"
+    ).fetchone()
+    db.close()
+    assert row is not None
+    # Should be YYYY-MM format
+    import re
+    assert re.match(r"^\d{4}-\d{2}$", row[0]), f"Expected YYYY-MM format, got: {row[0]}"
+
+
+# ── New coverage: edge cases ─────────────────────────────────────────────────
+
+
+def test_cmd_add_stale_entity_articles_notification(mi, fresh_vault, monkeypatch, capsys):
+    """After adding a new atom linked to an entity, cmd_add should print '[stale]'."""
+    session = fresh_vault / "Session-Logs" / "2024-01-01" / "stale-test.md"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text(
+        "---\ndate: 2024-01-01\ntldr: test\ntopics: [dev]\n"
+        "decisions:\n  - \"use docker\"\n---\n## Decisions Made\n- use docker\n"
+    )
+    monkeypatch.setattr(mi, "embed", lambda t: [0.1] * mi.EMBED_DIM)
+    monkeypatch.setattr(mi, "cmd_extract", lambda path: None)
+
+    # Seed a stale entity article (hash won't match the empty atom set)
+    db = mi.open_db()
+    eid = _seed_entity(db, mi, "Docker", "tool", mention_count=3)
+    # Compute hash with no atoms linked, store it, then add an atom to make it stale
+    initial_hash = mi._compute_entity_source_hash(db, eid)
+    today = "2024-01-01"
+    db.execute(
+        "INSERT INTO entity_articles (entity_id, vault_path, generated_at, source_hash) "
+        "VALUES (?, '/tmp/docker.md', ?, ?)",
+        [eid, today, initial_hash],
+    )
+    # Add an atom linked to the entity to invalidate the hash
+    _seed_atom_for_entity(db, mi, eid, "docker uses containers")
+    db.commit()
+    db.close()
+
+    # cmd_add should detect the now-stale article and print [stale]
+    mi.cmd_add(str(session), extract=False)
+    out = capsys.readouterr().out
+    assert "[stale]" in out
+
+
+def test_classify_privacy_keyword_private_non_personal_domain(mi):
+    """Text containing 'family' in domain='dev' should return 'private' via keyword match."""
+    # domain is not 'personal', but keyword 'family' triggers private
+    result = mi.classify_privacy("talked about family reunion plans", "dev")
+    assert result == "private"
+
+
+def test_cmd_compress_digests_all_up_to_date(mi, monkeypatch, capsys):
+    """When all periods already have digests, print 'up to date'."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/s.md', '2024-06-15', 'session', 'frontmatter', 'did stuff', 'dev')"
+    )
+    # Pre-seed the digest for the only period that exists
+    db.execute(
+        "INSERT INTO digests (level, period_key, content, created_at) "
+        "VALUES ('weekly', '2024-W24', 'existing digest', '2024-06-15')"
+    )
+    db.commit()
+    db.close()
+
+    fake_models = _FakeModels(response_text="should not be called")
+    fake_client = type("C", (), {"models": fake_models})()
+    monkeypatch.setattr(mi, "_client", fake_client)
+
+    mi.cmd_compress_digests("weekly")
+    out = capsys.readouterr().out
+    assert "up to date" in out
+    assert fake_models.call_count == 0
+
+
+def test_query_exhaustive_includes_digests(mi, monkeypatch, capsys):
+    """cmd_query with intent='exhaustive' should include 'Period Digests' in output."""
+    db = mi.open_db()
+    # Seed a session entry so query doesn't exit empty
+    _seed_session_entry(db, mi, "/tmp/exhaustive-session.md", "2024-06-15",
+                        "exhaustive session", "auth middleware")
+    # Seed a digest
+    db.execute(
+        "INSERT INTO digests (level, period_key, content, created_at) "
+        "VALUES ('weekly', '2024-W24', 'Weekly summary of auth work', '2024-06-15')"
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_query("auth middleware", top=5, intent="exhaustive")
+    out = capsys.readouterr().out
+    assert "Period Digests" in out
+
+
+# ── Privacy: default sensitive exclusion ─────────────────────────────────────
+
+
+def _seed_privacy_atoms(db, mi):
+    """Seed atoms at each privacy level for privacy filter tests."""
+    levels = {
+        "public": ("public study fact", "/tmp/pub.md"),
+        "internal": ("internal dev fact", "/tmp/int.md"),
+        "private": ("private family fact", "/tmp/prv.md"),
+        "sensitive": ("sensitive trading secret", "/tmp/sen.md"),
+    }
+    for privacy, (text, path) in levels.items():
+        vec = mi.embed(text)
+        cur = db.execute(
+            "INSERT INTO entries (path, date, chunk, type, tldr, topics, "
+            "confidence, corroborations, domain, privacy, temperature) "
+            "VALUES (?, '2024-01-01', ?, 'atom', ?, '', 0.5, 2, 'dev', ?, 1.0)",
+            [path, text, text, privacy],
+        )
+        db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+                   [cur.lastrowid, mi.serialize(vec)])
+    db.commit()
+
+
+def test_query_default_excludes_sensitive(mi, capsys):
+    """Without --privacy flag, sensitive atoms should be excluded by default."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    mi.cmd_query("fact secret", top=10)
+    out = capsys.readouterr().out
+    assert "sensitive trading secret" not in out
+    # Public, internal, and private should all appear
+    assert "public study fact" in out or "internal dev fact" in out or "private family fact" in out
+
+
+def test_query_default_includes_private(mi, capsys):
+    """Private atoms should be visible by default (not blocked like sensitive)."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    mi.cmd_query("private family fact", top=10)
+    out = capsys.readouterr().out
+    assert "private family fact" in out
+
+
+def test_query_explicit_sensitive_shows_sensitive(mi, capsys):
+    """Passing --privacy sensitive should show ONLY sensitive atoms."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    mi.cmd_query("fact secret", top=10, privacy="sensitive")
+    out = capsys.readouterr().out
+    assert "sensitive trading secret" in out
+    # Other levels should NOT appear
+    assert "public study fact" not in out
+    assert "internal dev fact" not in out
+
+
+def test_query_default_shows_blocked_notice(mi, capsys):
+    """When sensitive atoms are filtered, output should mention how many were blocked."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    mi.cmd_query("sensitive trading secret", top=10)
+    out = capsys.readouterr().out
+    assert "blocked by privacy filter" in out
+    assert "sensitive atoms are excluded by default" in out
+
+
+def test_export_default_excludes_sensitive_and_private(mi, tmp_path):
+    """Default export should only include public and internal atoms."""
+    db = mi.open_db()
+    _seed_privacy_atoms(db, mi)
+    db.close()
+
+    out_path = tmp_path / "export.md"
+    mi.cmd_export(str(out_path))
+    content = out_path.read_text()
+    assert "internal dev fact" in content
+    assert "public study fact" in content
+    assert "sensitive trading secret" not in content
+    assert "private family fact" not in content
