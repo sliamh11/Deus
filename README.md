@@ -312,7 +312,7 @@ packages/
   mcp-gmail/              # Gmail channel (googleapis + OAuth polling)
   mcp-gcal/               # Google Calendar MCP server (tool server for container agents)
 scripts/
-  memory_indexer.py       # Semantic memory: index, query, extract, wander
+  memory_indexer.py       # Semantic memory: index, query, extract, wander, prune, gaps
   import_seeds.py         # Import curated seed reflections into evolution DB
   stop_hook.py            # Auto-checkpoint on session end
 seeds/

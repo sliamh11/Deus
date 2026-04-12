@@ -1205,3 +1205,261 @@ def test_rebuild_proceeds_if_no_db_exists(mi, tmp_path, fresh_vault):
     # Should NOT raise
     mi.cmd_rebuild()
     assert mi.DB_PATH.exists()
+
+
+# ── KB Phase 1: Schema migration ────────────────────────────────────────────
+
+
+def test_schema_has_expired_at_column(mi):
+    db = mi.open_db()
+    cols = {r[1] for r in db.execute("PRAGMA table_info(entries)").fetchall()}
+    assert "expired_at" in cols
+    assert "expired_reason" in cols
+    db.close()
+
+
+def test_schema_has_domain_column(mi):
+    db = mi.open_db()
+    cols = {r[1] for r in db.execute("PRAGMA table_info(entries)").fetchall()}
+    assert "domain" in cols
+    db.close()
+
+
+# ── KB Phase 1: Temporal invalidation ───────────────────────────────────────
+
+
+def test_invalidate_atom_sets_expired_at(mi, fresh_vault):
+    db = mi.open_db()
+    # Create a test atom
+    atom_path = fresh_vault / "Atoms" / "fact-test.md"
+    atom_path.write_text(
+        "---\ntype: atom\ncategory: fact\nconfidence: 0.70\ncorroborations: 1\n"
+        "domain: dev\ncreated_at: 2024-01-01\nupdated_at: 2024-01-01\nttl_days: null\n---\n"
+        "User prefers Python over Java\n"
+    )
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, confidence, corroborations, domain) "
+        "VALUES (?, '2024-01-01', 'test', 'atom', 'test', 0.70, 1, 'dev')",
+        [str(atom_path)],
+    )
+    db.commit()
+    entry_id = cur.lastrowid
+
+    mi.invalidate_atom(db, entry_id, "contradicted")
+
+    row = db.execute("SELECT expired_at, expired_reason FROM entries WHERE id = ?", [entry_id]).fetchone()
+    assert row[0] is not None  # expired_at set
+    assert row[1] == "contradicted"
+
+    # Frontmatter also updated
+    content = atom_path.read_text()
+    assert "expired_at:" in content
+    db.close()
+
+
+def test_query_filters_expired_atoms(mi, fresh_vault, monkeypatch):
+    db = mi.open_db()
+    import struct
+
+    # Insert a live atom
+    live_vec = [0.1] * mi.EMBED_DIM
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, confidence, corroborations, domain) "
+        "VALUES ('live.md', '2024-01-01', 'live atom', 'atom', 'live', 0.70, 2, 'dev')",
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur.lastrowid, mi.serialize(live_vec)])
+
+    # Insert an expired atom (very similar embedding)
+    expired_vec = [0.1] * mi.EMBED_DIM
+    expired_vec[0] = 0.11  # tiny difference
+    cur2 = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, confidence, corroborations, domain, expired_at, expired_reason) "
+        "VALUES ('expired.md', '2024-01-01', 'expired atom', 'atom', 'expired', 0.70, 2, 'dev', '2024-06-01', 'contradicted')",
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur2.lastrowid, mi.serialize(expired_vec)])
+    db.commit()
+
+    # Mock embed to return a vector close to both
+    monkeypatch.setattr(mi, "embed", lambda text: [0.1] * mi.EMBED_DIM)
+
+    # Capture output
+    import io
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        mi.cmd_query("test query", top=5)
+    except SystemExit:
+        pass
+    output = sys.stdout.getvalue()
+    sys.stdout = old_stdout
+
+    assert "expired" not in output.lower() or "expired atom" not in output
+    db.close()
+
+
+def test_find_duplicate_atom_ignores_expired(mi):
+    db = mi.open_db()
+    vec = [0.5] * mi.EMBED_DIM
+
+    # Insert an expired atom
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence, expired_at) "
+        "VALUES ('old.md', '2024-01-01', 'test', 'atom', 0.50, '2024-06-01')",
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur.lastrowid, mi.serialize(vec)])
+    db.commit()
+
+    # Same vector should NOT match the expired atom
+    result = mi.find_duplicate_atom(db, vec)
+    assert result is None
+    db.close()
+
+
+def test_cmd_prune_expires_ttl_atoms(mi, fresh_vault, capsys):
+    db = mi.open_db()
+    # Create an atom with TTL=30 created 60 days ago
+    atom_path = fresh_vault / "Atoms" / "belief-old.md"
+    atom_path.write_text(
+        "---\ntype: atom\ncategory: belief\nconfidence: 0.40\ncorroborations: 1\n"
+        "created_at: 2024-01-01\nupdated_at: 2024-01-01\nttl_days: 30\n---\n"
+        "Some old belief\n"
+    )
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence, corroborations) "
+        "VALUES (?, '2024-01-01', 'old belief', 'atom', 0.40, 1)",
+        [str(atom_path)],
+    )
+    db.commit()
+
+    mi.cmd_prune(dry_run=False)
+
+    row = db.execute("SELECT expired_at, expired_reason FROM entries WHERE id = ?", [cur.lastrowid]).fetchone()
+    assert row[0] is not None  # should be expired
+    assert row[1] == "ttl"
+    db.close()
+
+
+def test_cmd_prune_removes_orphans(mi, fresh_vault, capsys):
+    db = mi.open_db()
+    # Insert a DB row pointing to a non-existent file
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence) "
+        "VALUES ('/nonexistent/atom.md', '2024-01-01', 'orphan', 'atom', 0.50)",
+    )
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [cur.lastrowid, mi.serialize([0.1] * mi.EMBED_DIM)])
+    db.commit()
+
+    mi.cmd_prune(dry_run=False)
+
+    row = db.execute("SELECT id FROM entries WHERE id = ?", [cur.lastrowid]).fetchone()
+    assert row is None  # orphan should be deleted
+    db.close()
+
+
+# ── KB Phase 1: Domain tagging ──────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("using typescript to build docker containers with npm", "dev"),
+    ("linear algebra exam preparation study notes", "study"),
+    ("portfolio rebalancing stock trading", "trading"),
+    ("birthday party with family and friends", "personal"),
+    ("random sentence about weather patterns", "general"),
+])
+def test_classify_domain_matches_keyword_map(mi, text, expected):
+    assert mi.classify_domain(text) == expected
+
+
+def test_write_atom_file_includes_domain(mi, fresh_vault):
+    atom = {"text": "user prefers docker", "category": "preference"}
+    path = mi.write_atom_file(atom, "/src/log.md", "2024-01-01", domain="dev")
+    content = path.read_text()
+    assert "domain: dev" in content
+
+
+def test_write_atom_file_uses_confidence_prior(mi, fresh_vault):
+    atom = {"text": "always use eslint", "category": "constraint"}
+    path = mi.write_atom_file(atom, "/src/log.md", "2024-01-01")
+    content = path.read_text()
+    assert "confidence: 0.65" in content  # constraint prior
+
+
+# ── KB Phase 1: Confidence priors ───────────────────────────────────────────
+
+
+def test_confidence_prior_by_category(mi, fresh_vault):
+    """New atoms of each category get the correct initial confidence."""
+    for cat, expected_conf in mi.CONFIDENCE_PRIOR.items():
+        atom = {"text": f"test {cat} atom", "category": cat}
+        path = mi.write_atom_file(atom, "/src/log.md", "2024-01-01")
+        content = path.read_text()
+        assert f"confidence: {expected_conf:.2f}" in content
+        path.unlink()  # cleanup for next iteration
+
+
+def test_bump_corroboration_uses_category_prior(mi, fresh_vault):
+    db = mi.open_db()
+    # Create a belief atom (prior=0.40)
+    atom_path = fresh_vault / "Atoms" / "belief-test-bump.md"
+    atom_path.write_text(
+        "---\ntype: atom\ncategory: belief\nconfidence: 0.40\ncorroborations: 1\n"
+        "created_at: 2024-01-01\nupdated_at: 2024-01-01\nttl_days: 90\n---\n"
+        "Some belief\n"
+    )
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence, corroborations) "
+        "VALUES (?, '2024-01-01', 'belief', 'atom', 0.40, 1)",
+        [str(atom_path)],
+    )
+    db.commit()
+
+    mi.bump_corroboration(db, cur.lastrowid)
+
+    row = db.execute("SELECT confidence, corroborations FROM entries WHERE id = ?", [cur.lastrowid]).fetchone()
+    # belief prior=0.40, 2 corroborations: min(0.40 + 2*0.1, 0.95) = 0.60
+    assert row[0] == pytest.approx(0.60, abs=0.01)
+    assert row[1] == 2
+    db.close()
+
+
+# ── KB Phase 1: --gaps command ──────────────────────────────────────────────
+
+
+def test_cmd_gaps_surfaces_uncovered_topics(mi, fresh_vault, capsys):
+    # Create 4 sessions all tagged "docker"
+    for i in range(4):
+        log_dir = fresh_vault / "Session-Logs" / f"2024-01-0{i+1}"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"session-{i}.md").write_text(
+            f"---\ndate: 2024-01-0{i+1}\ntopics: [docker, ci]\n---\n# Session {i}\n"
+        )
+
+    # No atoms exist → docker should be a gap
+    mi.cmd_gaps(top=5)
+    output = capsys.readouterr().out
+    assert "docker" in output
+    assert "4 sessions" in output
+
+
+def test_cmd_gaps_no_gaps_when_covered(mi, fresh_vault, capsys):
+    # Create 3 sessions tagged "python"
+    for i in range(3):
+        log_dir = fresh_vault / "Session-Logs" / f"2024-02-0{i+1}"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / f"session-{i}.md").write_text(
+            f"---\ndate: 2024-02-0{i+1}\ntopics: [python]\n---\n# Session {i}\n"
+        )
+
+    # Create atoms covering "python"
+    for i in range(3):
+        (fresh_vault / "Atoms" / f"fact-python-{i}.md").write_text(
+            f"---\ntype: atom\ncategory: fact\n---\nUser uses python for scripting task {i}\n"
+        )
+
+    mi.cmd_gaps(top=5)
+    output = capsys.readouterr().out
+    assert "python" not in output or "No significant gaps" in output

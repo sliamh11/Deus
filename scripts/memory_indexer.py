@@ -77,6 +77,30 @@ DEDUP_L2_THRESHOLD = 0.55  # ≈ cosine similarity 0.85 for unit-normalized vect
 RECENCY_BOOST_7D = 0.3    # last 7 days — strong boost
 RECENCY_BOOST_30D = 0.15  # 7-30 days — moderate boost
 
+# Domain keyword map for automatic atom classification (no LLM call needed)
+DOMAIN_KEYWORDS: dict[str, set[str]] = {
+    "dev": {"code", "typescript", "python", "docker", "npm", "git", "test", "bug",
+            "refactor", "api", "deploy", "container", "ci", "build", "lint",
+            "commit", "branch", "merge", "webpack", "eslint", "jest", "node"},
+    "study": {"exam", "study", "textbook", "lecture", "theorem", "proof", "notes",
+              "flashcard", "syllabus", "homework", "quiz", "course", "calculus",
+              "algebra", "physics", "mechanics", "integral", "derivative"},
+    "trading": {"trade", "stock", "option", "portfolio", "ticker", "market",
+                "position", "strike", "etf", "ibkr", "tradingview", "chart",
+                "candle", "indicator", "earnings", "dividend"},
+    "personal": {"family", "friend", "meal", "exercise", "sleep", "mood",
+                 "appointment", "birthday", "hobby", "drum", "music", "roommate"},
+}
+
+# Category-based initial confidence priors (replaces hardcoded 0.50)
+CONFIDENCE_PRIOR: dict[str, float] = {
+    "fact": 0.70,
+    "decision": 0.70,
+    "constraint": 0.65,
+    "preference": 0.55,
+    "belief": 0.40,
+}
+
 _client: genai.Client | None = None
 
 
@@ -155,6 +179,9 @@ def open_db() -> sqlite3.Connection:
         ("confidence", "REAL DEFAULT 0.0"),
         ("corroborations", "INTEGER DEFAULT 0"),
         ("source_chunk", "TEXT"),
+        ("expired_at", "TEXT DEFAULT NULL"),
+        ("expired_reason", "TEXT DEFAULT NULL"),
+        ("domain", "TEXT DEFAULT 'general'"),
     ]:
         try:
             db.execute(f"ALTER TABLE entries ADD COLUMN {col} {definition}")
@@ -723,7 +750,8 @@ def _rrf_fuse(
     return [p for p, _ in sorted(scores.items(), key=lambda x: -x[1])[:top]]
 
 
-def cmd_query(query: str, top: int = 3, recency_boost: bool = False, show_source: bool = False):
+def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
+              show_source: bool = False, domain: str | None = None):
     db = open_db()
 
     # Check if anything is indexed
@@ -743,6 +771,7 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False, show_source
         JOIN entries e ON e.id = v.rowid
         WHERE v.embedding MATCH ?
           AND k = ?
+          AND (e.expired_at IS NULL OR e.expired_at > date('now'))
         ORDER BY v.distance
         """,
         [serialize(q_vec), max(top * 6, 30)],  # 6x headroom: turn chunks multiply rows per session
@@ -754,11 +783,19 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False, show_source
 
     for path, date, tldr, topics, decisions, chunk_type, confidence, corroborations, dist, source_chunk in rows:
         if chunk_type == "atom":
+            # Apply domain filter if specified
+            if domain:
+                entry_domain = db.execute(
+                    "SELECT domain FROM entries WHERE path = ? LIMIT 1", [path]
+                ).fetchone()
+                if entry_domain and entry_domain[0] != domain:
+                    continue
             if has_atoms and len(atom_results) < top:
                 atom_results.append({
                     "path": path, "chunk": tldr, "confidence": confidence or 0.0,
                     "corroborations": corroborations or 1,
                     "source_chunk": source_chunk or "",
+                    "dist": dist,
                 })
         else:
             if path not in seen or (chunk_type == "frontmatter" and seen[path]["type"] != "frontmatter"):
@@ -815,6 +852,11 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False, show_source
         sys.exit(1)  # trigger fallback in /resume
 
     lines = []
+
+    # Confidence-weighted re-ranking: lower score = better (L2 distance - confidence bonus)
+    for a in atom_results:
+        a["score"] = a.get("dist", 999.0) - 0.25 * a["confidence"]
+    atom_results.sort(key=lambda a: a["score"])
 
     # Known Facts — only atoms with ≥ 2 corroborations (well-established)
     high_conf = [a for a in atom_results if a["corroborations"] >= 2]
@@ -1046,6 +1088,7 @@ def find_duplicate_atom(db: sqlite3.Connection, vec: list[float]) -> int | None:
         FROM embeddings v
         JOIN entries e ON e.id = v.rowid
         WHERE e.type = 'atom'
+          AND (e.expired_at IS NULL OR e.expired_at > date('now'))
           AND v.embedding MATCH ?
           AND k = 1
         ORDER BY v.distance
@@ -1063,13 +1106,21 @@ def bump_corroboration(db: sqlite3.Connection, entry_id: int):
     if not row:
         return
     new_corr = row[1] + 1
-    new_conf = min(0.5 + new_corr * 0.1, 0.95)
+    # Read category from atom file for category-aware confidence prior
+    cat = "fact"
+    atom_path = Path(row[0])
+    if atom_path.exists():
+        text = atom_path.read_text()
+        m = re.search(r"^category:\s*(\S+)", text, re.MULTILINE)
+        if m:
+            cat = m.group(1)
+    prior = CONFIDENCE_PRIOR.get(cat, 0.50)
+    new_conf = min(prior + new_corr * 0.1, 0.95)
     today = datetime.now().strftime("%Y-%m-%d")
     db.execute(
         "UPDATE entries SET corroborations = ?, confidence = ? WHERE id = ?",
         [new_corr, new_conf, entry_id],
     )
-    atom_path = Path(row[0])
     if atom_path.exists():
         text = atom_path.read_text()
         text = re.sub(r"^confidence:.*$", f"confidence: {new_conf:.2f}", text, flags=re.MULTILINE)
@@ -1078,10 +1129,47 @@ def bump_corroboration(db: sqlite3.Connection, entry_id: int):
         atom_path.write_text(text)
 
 
-def write_atom_file(atom: dict, source_path: str, today: str, source_excerpt: str = "") -> Path:
+def invalidate_atom(db: sqlite3.Connection, entry_id: int, reason: str):
+    """Soft-delete an atom by setting expired_at. Atom file is updated with expired frontmatter."""
+    row = db.execute("SELECT path FROM entries WHERE id = ?", [entry_id]).fetchone()
+    if not row:
+        return
+    today = datetime.now().strftime("%Y-%m-%d")
+    db.execute(
+        "UPDATE entries SET expired_at = ?, expired_reason = ? WHERE id = ?",
+        [today, reason, entry_id],
+    )
+    db.commit()
+    atom_path = Path(row[0])
+    if atom_path.exists():
+        text = atom_path.read_text()
+        if re.search(r"^expired_at:", text, re.MULTILINE):
+            text = re.sub(r"^expired_at:.*$", f"expired_at: {today}", text, flags=re.MULTILINE)
+        else:
+            text = text.replace("\n---\n", f"\nexpired_at: {today}\nexpired_reason: {reason}\n---\n", 1)
+        atom_path.write_text(text)
+    print(f"  invalidated: {atom_path.name} ({reason})")
+
+
+def classify_domain(text: str) -> str:
+    """Classify atom text into a domain using keyword matching. No LLM call."""
+    words = set(re.findall(r'\w+', text.lower()))
+    best_domain = "general"
+    best_count = 0
+    for domain, keywords in DOMAIN_KEYWORDS.items():
+        count = len(words & keywords)
+        if count > best_count:
+            best_count = count
+            best_domain = domain
+    return best_domain
+
+
+def write_atom_file(atom: dict, source_path: str, today: str,
+                    source_excerpt: str = "", domain: str = "general") -> Path:
     """Write an atom to the vault Atoms/ directory and return its path."""
     VAULT_ATOMS.mkdir(parents=True, exist_ok=True)
     cat = atom["category"]
+    conf = CONFIDENCE_PRIOR.get(cat, 0.50)
     ttl_map = {"fact": None, "decision": None, "preference": 365, "constraint": 365, "belief": 90}
     ttl = ttl_map.get(cat, 365)
     ttl_line = f"ttl_days: {ttl}" if ttl is not None else "ttl_days: null"
@@ -1099,7 +1187,7 @@ def write_atom_file(atom: dict, source_path: str, today: str, source_excerpt: st
         excerpt_lines = f"source_excerpt: |\n{indented}\n"
     path.write_text(
         f"---\ntype: atom\ncategory: {cat}\ntags: []\n"
-        f"confidence: 0.50\ncorroborations: 1\n"
+        f"confidence: {conf:.2f}\ncorroborations: 1\ndomain: {domain}\n"
         f"source: {source_path}\ncreated_at: {today}\nupdated_at: {today}\n{ttl_line}\n"
         f"{excerpt_lines}---\n"
         f"{atom['text']}\n"
@@ -1169,16 +1257,19 @@ def cmd_extract(session_path: str):
             corroborated_count += 1
             print(f"  corroborated: {atom['text'][:70]}")
         else:
-            atom_path = write_atom_file(atom, str(path), today, source_excerpt)
+            cat = atom["category"]
+            domain = classify_domain(atom["text"])
+            conf = CONFIDENCE_PRIOR.get(cat, 0.50)
+            atom_path = write_atom_file(atom, str(path), today, source_excerpt, domain=domain)
             cur = db.execute(
-                "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, source_chunk) "
-                "VALUES (?, ?, ?, 'atom', ?, '', 0.50, 1, ?)",
-                [str(atom_path), today, atom["text"], atom["text"], source_excerpt],
+                "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, source_chunk, domain) "
+                "VALUES (?, ?, ?, 'atom', ?, '', ?, 1, ?, ?)",
+                [str(atom_path), today, atom["text"], atom["text"], conf, source_excerpt, domain],
             )
             db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
                        [cur.lastrowid, serialize(vec)])
             new_count += 1
-            print(f"  new atom: {atom['text'][:70]}")
+            print(f"  new atom [{domain}]: {atom['text'][:70]}")
 
     db.commit()
     print(f"Extracted {new_count + corroborated_count} atoms ({new_count} new, {corroborated_count} corroborated)")
@@ -1243,18 +1334,34 @@ def cmd_rebuild():
                 conf = float(fm.get("confidence", 0.5))
                 corr = int(fm.get("corroborations", 1))
                 date_str = fm.get("created_at", "")
+                # Read domain and expired_at from atom frontmatter
+                raw = fm.get("raw", "")
+                atom_domain = "general"
+                atom_expired_at = None
+                atom_expired_reason = None
+                for line in raw.splitlines():
+                    if line.startswith("domain:"):
+                        atom_domain = line.split(":", 1)[1].strip()
+                    elif line.startswith("expired_at:"):
+                        val = line.split(":", 1)[1].strip()
+                        if val and val != "null":
+                            atom_expired_at = val
+                    elif line.startswith("expired_reason:"):
+                        atom_expired_reason = line.split(":", 1)[1].strip() or None
+                # If no domain in frontmatter, classify from body
+                if atom_domain == "general":
+                    atom_domain = classify_domain(body)
                 # Restore source_excerpt from .md frontmatter into source_chunk column
                 stored_excerpt = None
-                raw = fm.get("raw", "")
                 excerpt_m = re.search(
                     r"^source_excerpt:\s*\|\n((?:  .*\n?)*)", raw, re.MULTILINE
                 )
                 if excerpt_m:
                     stored_excerpt = re.sub(r"^ {2}", "", excerpt_m.group(1), flags=re.MULTILINE).strip()
                 cur = db.execute(
-                    "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, source_chunk) "
-                    "VALUES (?, ?, ?, 'atom', ?, ?, ?, ?, ?)",
-                    [str(af), date_str, body, body, fm.get("tags", ""), conf, corr, stored_excerpt],
+                    "INSERT INTO entries (path, date, chunk, type, tldr, topics, confidence, corroborations, source_chunk, domain, expired_at, expired_reason) "
+                    "VALUES (?, ?, ?, 'atom', ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [str(af), date_str, body, body, fm.get("tags", ""), conf, corr, stored_excerpt, atom_domain, atom_expired_at, atom_expired_reason],
                 )
                 db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
                            [cur.lastrowid, serialize(vec)])
@@ -1273,30 +1380,38 @@ def _collect_health_metrics(db: sqlite3.Connection) -> dict:
     from datetime import date as _date
     try:
         rows = db.execute(
-            "SELECT path, confidence, corroborations, source_chunk FROM entries WHERE type='atom'"
+            "SELECT path, confidence, corroborations, source_chunk, expired_at, domain "
+            "FROM entries WHERE type='atom'"
         ).fetchall()
     except sqlite3.OperationalError:
         rows = db.execute(
-            "SELECT path, confidence, corroborations, NULL FROM entries WHERE type='atom'"
+            "SELECT path, confidence, corroborations, NULL, NULL, 'general' FROM entries WHERE type='atom'"
         ).fetchall()
     total_atoms = len(rows)
     snapshot: dict = {"date": _date.today().isoformat(), "atoms": total_atoms}
     if total_atoms > 0:
-        snapshot["avg_confidence"] = round(sum(r[1] or 0.0 for r in rows) / total_atoms, 3)
-        snapshot["corr_1x"]    = sum(1 for r in rows if (r[2] or 1) == 1)
-        snapshot["corr_2x"]    = sum(1 for r in rows if (r[2] or 1) == 2)
-        snapshot["corr_3plus"] = sum(1 for r in rows if (r[2] or 1) >= 3)
-        snapshot["source_chunk_coverage"] = round(sum(1 for r in rows if r[3]) / total_atoms, 3)
+        live_rows = [r for r in rows if not r[4]]  # r[4] = expired_at
+        snapshot["expired"] = len(rows) - len(live_rows)
+        snapshot["avg_confidence"] = round(sum(r[1] or 0.0 for r in live_rows) / max(len(live_rows), 1), 3)
+        snapshot["corr_1x"]    = sum(1 for r in live_rows if (r[2] or 1) == 1)
+        snapshot["corr_2x"]    = sum(1 for r in live_rows if (r[2] or 1) == 2)
+        snapshot["corr_3plus"] = sum(1 for r in live_rows if (r[2] or 1) >= 3)
+        snapshot["source_chunk_coverage"] = round(sum(1 for r in live_rows if r[3]) / max(len(live_rows), 1), 3)
         cats: dict[str, int] = {}
-        for path, *_ in rows:
+        for path, *_ in live_rows:
             stem = Path(path).stem
             cat = stem.split("-")[0] if "-" in stem else "unknown"
             cats[cat] = cats.get(cat, 0) + 1
         snapshot["categories"] = cats
+        domains: dict[str, int] = {}
+        for r in live_rows:
+            d = r[5] or "general"
+            domains[d] = domains.get(d, 0) + 1
+        snapshot["domains"] = domains
     else:
         snapshot.update({
             "avg_confidence": 0.0, "corr_1x": 0, "corr_2x": 0, "corr_3plus": 0,
-            "source_chunk_coverage": 0.0, "categories": {},
+            "source_chunk_coverage": 0.0, "categories": {}, "expired": 0, "domains": {},
         })
     snapshot["sessions"] = (
         len([f for f in VAULT_SESSION_LOGS.rglob("*.md") if ".obsidian" not in str(f)])
@@ -1352,10 +1467,17 @@ def cmd_health(save: bool = True) -> None:
         f"Atoms: {current['atoms']}"
         + _delta(current["atoms"], prev["atoms"] if prev else None),
     ]
+    if current.get("expired", 0) > 0:
+        out.append(f"  expired: {current['expired']}")
     cats = current.get("categories", {})
     if cats:
         out.append("  categories: " + "  ".join(
             f"{k}:{v}" for k, v in sorted(cats.items(), key=lambda x: -x[1])
+        ))
+    domains = current.get("domains", {})
+    if domains:
+        out.append("  domains: " + "  ".join(
+            f"{k}:{v}" for k, v in sorted(domains.items(), key=lambda x: -x[1])
         ))
     out.append(
         f"  avg confidence: {current['avg_confidence']:.3f}"
@@ -1436,6 +1558,131 @@ def cmd_health(save: bool = True) -> None:
             print(f"\n[snapshot saved → {HEALTH_LOG_PATH}]")
 
 
+def cmd_prune(dry_run: bool = False):
+    """Enforce TTL-based expiry and clean up DB orphans.
+
+    - Atoms whose TTL has elapsed get expired_at set (soft-delete).
+    - DB rows whose atom file no longer exists get hard-deleted.
+    """
+    from datetime import date as _date
+    db = open_db()
+    today = _date.today()
+
+    # 1. TTL enforcement
+    ttl_expired = 0
+    rows = db.execute(
+        "SELECT id, path FROM entries WHERE type = 'atom' AND expired_at IS NULL"
+    ).fetchall()
+    for entry_id, path_str in rows:
+        atom_path = Path(path_str)
+        if not atom_path.exists():
+            continue
+        content = atom_path.read_text(encoding="utf-8")
+        ttl_days = None
+        created_at = None
+        for line in content.splitlines():
+            if line.startswith("ttl_days:"):
+                val = line.split(":", 1)[1].strip()
+                if val not in ("null", ""):
+                    try:
+                        ttl_days = int(val)
+                    except ValueError:
+                        pass
+            elif line.startswith("created_at:"):
+                created_at = line.split(":", 1)[1].strip()
+        if ttl_days is not None and created_at:
+            try:
+                age = (today - _date.fromisoformat(created_at)).days
+                if age > ttl_days:
+                    if dry_run:
+                        print(f"  [dry-run] would expire: {atom_path.name} (age={age}d, ttl={ttl_days}d)")
+                    else:
+                        invalidate_atom(db, entry_id, "ttl")
+                    ttl_expired += 1
+            except (ValueError, TypeError):
+                pass
+
+    # 2. Orphan cleanup: DB rows whose file is gone
+    orphans = 0
+    all_atom_rows = db.execute("SELECT id, path FROM entries WHERE type = 'atom'").fetchall()
+    for entry_id, path_str in all_atom_rows:
+        if not Path(path_str).exists():
+            if dry_run:
+                print(f"  [dry-run] would delete orphan: {Path(path_str).name}")
+            else:
+                db.execute("DELETE FROM embeddings WHERE rowid = ?", [entry_id])
+                try:
+                    db.execute("DELETE FROM entries_fts WHERE rowid = ?", [entry_id])
+                except sqlite3.OperationalError:
+                    pass
+                db.execute("DELETE FROM entries WHERE id = ?", [entry_id])
+            orphans += 1
+
+    if not dry_run:
+        db.commit()
+
+    prefix = "[dry-run] " if dry_run else ""
+    print(f"{prefix}Prune complete: {ttl_expired} TTL-expired, {orphans} orphans cleaned")
+
+
+def cmd_invalidate(path_str: str, reason: str):
+    """Manually invalidate a specific atom by path."""
+    db = open_db()
+    path = Path(path_str).expanduser().resolve()
+    row = db.execute("SELECT id FROM entries WHERE path = ? AND type = 'atom' LIMIT 1", [str(path)]).fetchone()
+    if not row:
+        print(f"ERROR: no atom entry found for {path}", file=sys.stderr)
+        sys.exit(1)
+    invalidate_atom(db, row[0], reason)
+
+
+def cmd_gaps(top: int = 10):
+    """Identify knowledge gaps: high-frequency session topics with low atom coverage."""
+    if not VAULT_SESSION_LOGS.exists():
+        print(f"ERROR: session logs not found at {VAULT_SESSION_LOGS}", file=sys.stderr)
+        sys.exit(1)
+
+    # 1. Count topic frequency across sessions
+    session_topic_count: dict[str, int] = {}
+    log_files = [f for f in VAULT_SESSION_LOGS.rglob("*.md") if ".obsidian" not in str(f)]
+    for log_file in log_files:
+        fm = extract_frontmatter(log_file.read_text(encoding="utf-8"))
+        if not fm.get("topics"):
+            continue
+        for topic in fm["topics"].split(","):
+            t = topic.strip().lower()
+            if t:
+                session_topic_count[t] = session_topic_count.get(t, 0) + 1
+
+    # 2. Count atom coverage per topic
+    atom_topic_coverage: dict[str, int] = {}
+    if VAULT_ATOMS.exists():
+        for atom_file in VAULT_ATOMS.glob("*.md"):
+            body = atom_file.read_text(encoding="utf-8").lower()
+            for topic in session_topic_count:
+                if topic in body:
+                    atom_topic_coverage[topic] = atom_topic_coverage.get(topic, 0) + 1
+
+    # 3. Find gaps: frequent topics with no/low atom coverage
+    gaps = []
+    for topic, session_count in session_topic_count.items():
+        if session_count < 3:
+            continue
+        atom_count = atom_topic_coverage.get(topic, 0)
+        if atom_count <= 1:
+            label = f"{atom_count} atom (weak)" if atom_count == 1 else "0 atoms"
+            gaps.append((topic, session_count, atom_count, label))
+
+    gaps.sort(key=lambda x: (-x[1], x[2]))
+
+    print("## Knowledge Gaps")
+    if gaps:
+        for topic, sess, _, label in gaps[:top]:
+            print(f"- {topic} — {sess} sessions, {label}")
+    else:
+        print("- No significant gaps found (all frequent topics have atom coverage)")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main():
@@ -1462,6 +1709,12 @@ def main():
     group.add_argument("--health", action="store_true",
                        help="Print memory health report (atom quality, confidence, coverage trends) "
                             "and save a daily snapshot to ~/.deus/memory_health.jsonl (no API call)")
+    group.add_argument("--prune", action="store_true",
+                       help="Enforce TTL expiry + clean orphan DB rows (no API call)")
+    group.add_argument("--invalidate", metavar="PATH",
+                       help="Manually invalidate (soft-delete) an atom by path")
+    group.add_argument("--gaps", action="store_true",
+                       help="Show knowledge gaps: frequent topics with low atom coverage (no API call)")
     parser.add_argument("--no-extract", action="store_true",
                         help="Skip atom extraction when using --add (useful for CI/benchmarks)")
     parser.add_argument("--top", type=int, default=3, help="Number of results for --query")
@@ -1477,6 +1730,12 @@ def main():
                              "collapse cluster entries. Auto-triggered at >= 12 sessions.")
     parser.add_argument("--no-save", action="store_true",
                         help="Skip saving snapshot for --health (useful for CI/dry-run)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Preview --prune changes without applying them")
+    parser.add_argument("--reason", default="manual",
+                        help="Reason for --invalidate (default: manual)")
+    parser.add_argument("--domain", metavar="DOMAIN",
+                        help="Filter --query results by domain (dev/study/trading/personal/general)")
     args = parser.parse_args()
 
     global _client
@@ -1496,13 +1755,23 @@ def main():
     if args.health:
         cmd_health(save=not args.no_save)
         return
+    if args.prune:
+        cmd_prune(dry_run=args.dry_run)
+        return
+    if args.invalidate:
+        cmd_invalidate(args.invalidate, reason=args.reason)
+        return
+    if args.gaps:
+        cmd_gaps(top=args.top)
+        return
 
     _client = genai.Client(api_key=load_api_key())
 
     if args.add:
         cmd_add(args.add, extract=not args.no_extract)
     elif args.query:
-        cmd_query(args.query, top=args.top, recency_boost=args.recency_boost, show_source=args.source)
+        cmd_query(args.query, top=args.top, recency_boost=args.recency_boost,
+                  show_source=args.source, domain=args.domain)
     elif args.rebuild:
         cmd_rebuild()
     elif args.extract:
