@@ -11,10 +11,43 @@ vi.mock('../logger.js', () => ({
 
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
-  return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+  return {
+    ...actual,
+    readFileSync: vi.fn(actual.readFileSync),
+    writeFileSync: vi.fn(),
+  };
 });
 
-import { readFileSync } from 'fs';
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return {
+    ...actual,
+    execFileSync: vi.fn(() => {
+      throw new Error('no keychain in test');
+    }),
+  };
+});
+
+// Platform flags — mutable so tests can override per-case
+const platformMock = { IS_MACOS: false, IS_LINUX: false, IS_WINDOWS: false };
+vi.mock('../platform.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../platform.js')>();
+  return {
+    ...actual,
+    get IS_MACOS() {
+      return platformMock.IS_MACOS;
+    },
+    get IS_LINUX() {
+      return platformMock.IS_LINUX;
+    },
+    get IS_WINDOWS() {
+      return platformMock.IS_WINDOWS;
+    },
+  };
+});
+
+import { readFileSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import { AuthProviderRegistry, NoProviderAvailableError } from './types.js';
 import type { AuthProvider } from './types.js';
 import {
@@ -23,6 +56,8 @@ import {
 } from './anthropic.js';
 
 const mockReadFileSync = readFileSync as ReturnType<typeof vi.fn>;
+const mockWriteFileSync = writeFileSync as ReturnType<typeof vi.fn>;
+const mockExecFileSync = execFileSync as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Helper: create a minimal mock provider
@@ -165,12 +200,21 @@ describe('AnthropicAuthProvider', () => {
     mockReadFileSync.mockImplementation(() => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     });
+    mockWriteFileSync.mockReset();
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error('no keychain in test');
+    });
+    platformMock.IS_MACOS = false;
+    platformMock.IS_LINUX = false;
+    platformMock.IS_WINDOWS = false;
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
   });
 
   afterEach(() => {
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
     mockReadFileSync.mockReset();
+    mockWriteFileSync.mockReset();
+    mockExecFileSync.mockReset();
     _resetCredentialsCacheForTest();
   });
 
@@ -265,5 +309,413 @@ describe('AnthropicAuthProvider', () => {
     const provider = new AnthropicAuthProvider();
     expect(provider.name).toBe('anthropic');
     expect(provider.priority).toBe(10);
+  });
+
+  // -------------------------------------------------------------------------
+  // Credential store fallback tests
+  // -------------------------------------------------------------------------
+  describe('credential store fallback', () => {
+    const keychainCreds = JSON.stringify({
+      claudeAiOauth: {
+        accessToken: 'keychain-tok',
+        refreshToken: 'keychain-refresh',
+        expiresAt: Date.now() + 7200000,
+      },
+    });
+
+    it('macOS: reads from Keychain when file is missing', () => {
+      platformMock.IS_MACOS = true;
+      mockExecFileSync.mockReturnValue(keychainCreds);
+      const provider = new AnthropicAuthProvider();
+      expect(provider.isAvailable()).toBe(true);
+      // Verify the right CLI was called
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'security',
+        expect.arrayContaining([
+          'find-generic-password',
+          '-s',
+          'Claude Code-credentials',
+        ]),
+        expect.any(Object),
+      );
+    });
+
+    it('Linux: reads from secret-tool when file is missing', () => {
+      platformMock.IS_LINUX = true;
+      mockExecFileSync.mockReturnValue(keychainCreds);
+      const provider = new AnthropicAuthProvider();
+      expect(provider.isAvailable()).toBe(true);
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'secret-tool',
+        expect.arrayContaining([
+          'lookup',
+          'service',
+          'Claude Code-credentials',
+        ]),
+        expect.any(Object),
+      );
+    });
+
+    it('Windows: reads from Credential Manager when file is missing', () => {
+      platformMock.IS_WINDOWS = true;
+      mockExecFileSync.mockReturnValue(keychainCreds);
+      const provider = new AnthropicAuthProvider();
+      expect(provider.isAvailable()).toBe(true);
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'powershell.exe',
+        expect.arrayContaining([
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          expect.stringContaining('Get-StoredCredential'),
+        ]),
+        expect.any(Object),
+      );
+    });
+
+    it('syncs keychain credentials to disk via writeFileSync', () => {
+      platformMock.IS_MACOS = true;
+      mockExecFileSync.mockReturnValue(keychainCreds);
+      const provider = new AnthropicAuthProvider();
+      provider.isAvailable(); // triggers getDynamicOAuthToken → keychain read → write
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('.credentials.json'),
+        expect.stringContaining('keychain-tok'),
+        expect.objectContaining({ mode: 0o600 }),
+      );
+    });
+
+    it('returns undefined when both file and credential store are empty', () => {
+      platformMock.IS_MACOS = true;
+      // readFileSync throws (no file), execFileSync throws (no keychain entry)
+      const provider = new AnthropicAuthProvider();
+      expect(provider.isAvailable()).toBe(false);
+    });
+
+    it('prefers file over credential store when file exists', () => {
+      platformMock.IS_MACOS = true;
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'file-tok',
+            expiresAt: Date.now() + 7200000,
+          },
+        }),
+      );
+      mockExecFileSync.mockReturnValue(keychainCreds);
+      const provider = new AnthropicAuthProvider();
+      const headers: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer placeholder',
+      };
+      provider.injectAuth(headers);
+      expect(headers['authorization']).toBe('Bearer file-tok');
+      // Keychain should not have been called
+      expect(mockExecFileSync).not.toHaveBeenCalled();
+    });
+
+    it('credential store token is injected into Authorization header', () => {
+      platformMock.IS_LINUX = true;
+      mockExecFileSync.mockReturnValue(keychainCreds);
+      const provider = new AnthropicAuthProvider();
+      const headers: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer placeholder',
+      };
+      provider.injectAuth(headers);
+      expect(headers['authorization']).toBe('Bearer keychain-tok');
+    });
+
+    it('handles malformed JSON from credential store gracefully', () => {
+      platformMock.IS_MACOS = true;
+      mockExecFileSync.mockReturnValue('not-json{{{');
+      const provider = new AnthropicAuthProvider();
+      expect(provider.isAvailable()).toBe(false);
+    });
+
+    it('handles credential store returning empty accessToken', () => {
+      platformMock.IS_MACOS = true;
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: { accessToken: '', expiresAt: Date.now() + 3600000 },
+        }),
+      );
+      const provider = new AnthropicAuthProvider();
+      expect(provider.isAvailable()).toBe(false);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Cache behavior tests
+  // -------------------------------------------------------------------------
+  describe('cache behavior', () => {
+    it('returns cached token without re-reading file', () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'cached-tok',
+            expiresAt: Date.now() + 7200000,
+          },
+        }),
+      );
+      const provider = new AnthropicAuthProvider();
+
+      const h1: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer x',
+      };
+      provider.injectAuth(h1);
+      expect(h1['authorization']).toBe('Bearer cached-tok');
+
+      // Change what the file returns — should still get cached value
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'new-tok',
+            expiresAt: Date.now() + 7200000,
+          },
+        }),
+      );
+      const h2: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer x',
+      };
+      provider.injectAuth(h2);
+      expect(h2['authorization']).toBe('Bearer cached-tok');
+    });
+
+    it('invalidates cache when token is about to expire', () => {
+      // Token expires in 10 min (within 30-min early-expire window)
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'expiring-tok',
+            expiresAt: Date.now() + 10 * 60 * 1000,
+          },
+        }),
+      );
+      const provider = new AnthropicAuthProvider();
+
+      const h1: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer x',
+      };
+      provider.injectAuth(h1);
+      expect(h1['authorization']).toBe('Bearer expiring-tok');
+
+      // Now update the file — cache should be stale due to early-expire window
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'refreshed-tok',
+            expiresAt: Date.now() + 7200000,
+          },
+        }),
+      );
+      const h2: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer x',
+      };
+      provider.injectAuth(h2);
+      expect(h2['authorization']).toBe('Bearer refreshed-tok');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Auto-refresh tests
+  // -------------------------------------------------------------------------
+  describe('auto-refresh', () => {
+    let fetchSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('triggers refresh when token expires within 30-min window', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            access_token: 'fresh-tok',
+            refresh_token: 'fresh-refresh',
+            expires_in: 28800,
+          }),
+      });
+
+      // Token expires in 10 min, has refresh_token
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'old-tok',
+            refreshToken: 'old-refresh',
+            expiresAt: Date.now() + 10 * 60 * 1000,
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      provider.isAvailable(); // triggers getDynamicOAuthToken
+
+      // Wait for the async refresh to complete
+      await vi.waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://platform.claude.com/v1/oauth/token',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('old-refresh'),
+        }),
+      );
+
+      // After refresh, writeFileSync should have been called with the new token
+      await vi.waitFor(() => {
+        expect(mockWriteFileSync).toHaveBeenCalledWith(
+          expect.stringContaining('.credentials.json'),
+          expect.stringContaining('fresh-tok'),
+          expect.objectContaining({ mode: 0o600 }),
+        );
+      });
+    });
+
+    it('does not trigger refresh when token has plenty of time left', () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'good-tok',
+            refreshToken: 'refresh-tok',
+            expiresAt: Date.now() + 7200000, // 2 hours
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      provider.isAvailable();
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not trigger refresh when no refresh_token available', () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'no-refresh-tok',
+            expiresAt: Date.now() + 10 * 60 * 1000, // expiring soon
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      provider.isAvailable();
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
+    it('deduplicates concurrent refresh attempts', async () => {
+      fetchSpy.mockImplementation(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () =>
+                resolve({
+                  ok: true,
+                  json: () =>
+                    Promise.resolve({
+                      access_token: 'deduped-tok',
+                      refresh_token: 'deduped-refresh',
+                      expires_in: 28800,
+                    }),
+                }),
+              50,
+            ),
+          ),
+      );
+
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'dup-tok',
+            refreshToken: 'dup-refresh',
+            expiresAt: Date.now() + 10 * 60 * 1000,
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      // First call triggers refresh, sets refreshInFlight = true
+      const h1: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer x',
+      };
+      provider.injectAuth(h1);
+      // Second call while refresh is still in flight — should be deduped
+      // Manually clear just the credentials cache (not refreshInFlight)
+      // by calling injectAuth again which re-enters getDynamicOAuthToken
+      const h2: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer x',
+      };
+      provider.injectAuth(h2);
+
+      await vi.waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalled();
+      });
+
+      // Only one fetch call despite two injectAuth calls
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('handles failed refresh gracefully', async () => {
+      fetchSpy.mockResolvedValue({ ok: false, status: 401 });
+
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'stale-tok',
+            refreshToken: 'bad-refresh',
+            expiresAt: Date.now() + 10 * 60 * 1000,
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      const headers: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer placeholder',
+      };
+      provider.injectAuth(headers);
+
+      // Should still return the stale token
+      expect(headers['authorization']).toBe('Bearer stale-tok');
+
+      // Wait for the failed refresh to complete
+      await vi.waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+
+      // writeFileSync should NOT have been called (refresh failed)
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it('handles network error during refresh gracefully', async () => {
+      fetchSpy.mockRejectedValue(new Error('network error'));
+
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'net-err-tok',
+            refreshToken: 'net-refresh',
+            expiresAt: Date.now() + 10 * 60 * 1000,
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      expect(provider.isAvailable()).toBe(true);
+
+      await vi.waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+
+      // No crash, no write
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
   });
 });

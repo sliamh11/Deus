@@ -11,23 +11,34 @@
  *
  * OAuth token resolution order (per-request, with 5-min cache):
  *   1. CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN from env file
- *   2. ~/.claude/.credentials.json (auto-refreshed by Claude Code CLI)
+ *   2. ~/.claude/.credentials.json → macOS Keychain fallback
+ *   3. Auto-refresh via refresh_token when token is about to expire
  */
-import { readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 
 import { readEnvFile } from '../env.js';
-import { homeDir } from '../platform.js';
+import { homeDir, IS_LINUX, IS_MACOS, IS_WINDOWS } from '../platform.js';
 import type { AuthProvider } from './types.js';
 import type { AuthMode } from '../credential-proxy.js';
 
 // ---------------------------------------------------------------------------
-// Dynamic OAuth token — read from ~/.claude/.credentials.json with a 5-min TTL.
-// The env-file value always takes priority when set.
+// Dynamic OAuth token — read from credentials file, keychain fallback,
+// auto-refresh when expiring. The env-file value always takes priority.
 // ---------------------------------------------------------------------------
 const CREDENTIALS_PATH = path.join(homeDir, '.claude', '.credentials.json');
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const EARLY_EXPIRE_WINDOW_MS = 5 * 60 * 1000;
+const EARLY_EXPIRE_WINDOW_MS = 30 * 60 * 1000; // 30 min — trigger refresh early
+const REFRESH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
+const REFRESH_SCOPES =
+  'user:inference user:profile user:sessions:claude_code user:mcp_servers user:file_upload';
+
+interface OAuthCredentials {
+  accessToken: string;
+  refreshToken?: string;
+  expiresAt: number;
+}
 
 interface CredentialsCache {
   token: string;
@@ -36,26 +47,185 @@ interface CredentialsCache {
 }
 
 let credentialsCache: CredentialsCache | null = null;
+let refreshInFlight = false;
 
 /** @internal exposed for testing only */
 export function _resetCredentialsCacheForTest(): void {
   credentialsCache = null;
+  refreshInFlight = false;
 }
 
-function readCredentialsFile():
-  | { token: string; expiresAt: number }
-  | undefined {
+function readCredentialsFile(): OAuthCredentials | undefined {
   try {
     const raw = readFileSync(CREDENTIALS_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as {
-      claudeAiOauth?: { accessToken?: string; expiresAt?: number };
+      claudeAiOauth?: {
+        accessToken?: string;
+        refreshToken?: string;
+        expiresAt?: number;
+      };
     };
     const oauth = parsed?.claudeAiOauth;
     if (!oauth?.accessToken) return undefined;
-    return { token: oauth.accessToken, expiresAt: oauth.expiresAt ?? Infinity };
+    return {
+      accessToken: oauth.accessToken,
+      refreshToken: oauth.refreshToken,
+      expiresAt: oauth.expiresAt ?? Infinity,
+    };
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Read credentials from the OS credential store.
+ * Claude Code stores OAuth tokens in the platform-native keychain:
+ *   macOS:   Keychain (security CLI)
+ *   Linux:   libsecret / GNOME Keyring (secret-tool CLI)
+ *   Windows: Credential Manager (PowerShell)
+ */
+function readKeychainCredentials(): OAuthCredentials | undefined {
+  const raw = readRawFromCredentialStore();
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(raw) as {
+      claudeAiOauth?: {
+        accessToken?: string;
+        refreshToken?: string;
+        expiresAt?: number;
+      };
+    };
+    const oauth = parsed?.claudeAiOauth;
+    if (!oauth?.accessToken) return undefined;
+    return {
+      accessToken: oauth.accessToken,
+      refreshToken: oauth.refreshToken,
+      expiresAt: oauth.expiresAt ?? Infinity,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function readRawFromCredentialStore(): string | undefined {
+  const execOpts = {
+    encoding: 'utf-8' as const,
+    timeout: 5000,
+    stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'],
+  };
+  try {
+    if (IS_MACOS) {
+      return execFileSync(
+        'security',
+        [
+          'find-generic-password',
+          '-s',
+          'Claude Code-credentials',
+          '-a',
+          process.env.USER ?? '',
+          '-w',
+        ],
+        execOpts,
+      ).trim();
+    }
+    if (IS_LINUX) {
+      // libsecret (GNOME Keyring / KDE Wallet via freedesktop Secret Service)
+      return execFileSync(
+        'secret-tool',
+        [
+          'lookup',
+          'service',
+          'Claude Code-credentials',
+          'account',
+          process.env.USER ?? '',
+        ],
+        execOpts,
+      ).trim();
+    }
+    if (IS_WINDOWS) {
+      // Windows Credential Manager via PowerShell
+      const ps = [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `$c = Get-StoredCredential -Target 'Claude Code-credentials' -ErrorAction SilentlyContinue; ` +
+          `if ($c) { [System.Net.NetworkCredential]::new('', $c.Password).Password } else { '' }`,
+      ];
+      const result = execFileSync('powershell.exe', ps, execOpts).trim();
+      return result || undefined;
+    }
+  } catch {
+    // Credential store unavailable or entry not found
+  }
+  return undefined;
+}
+
+/** Write credentials to disk so the file stays in sync with keychain. */
+function writeCredentialsFile(creds: OAuthCredentials): void {
+  try {
+    const data = {
+      claudeAiOauth: {
+        accessToken: creds.accessToken,
+        refreshToken: creds.refreshToken,
+        expiresAt: creds.expiresAt,
+      },
+    };
+    writeFileSync(CREDENTIALS_PATH, JSON.stringify(data), { mode: 0o600 });
+  } catch {
+    // Best-effort — proxy still works with in-memory cache
+  }
+}
+
+/** Refresh the OAuth token using the refresh_token grant. */
+async function refreshOAuthToken(
+  refreshToken: string,
+): Promise<OAuthCredentials | undefined> {
+  try {
+    const res = await fetch('https://platform.claude.com/v1/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: REFRESH_CLIENT_ID,
+        scope: REFRESH_SCOPES,
+      }),
+    });
+    if (!res.ok) return undefined;
+    const body = (await res.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      expires_in?: number;
+    };
+    if (!body.access_token) return undefined;
+    return {
+      accessToken: body.access_token,
+      refreshToken: body.refresh_token ?? refreshToken,
+      expiresAt: Date.now() + (body.expires_in ?? 28800) * 1000,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Attempt token refresh and persist the result. Fire-and-forget. */
+function triggerRefresh(refreshToken: string): void {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
+  refreshOAuthToken(refreshToken)
+    .then((newCreds) => {
+      if (newCreds) {
+        writeCredentialsFile(newCreds);
+        credentialsCache = {
+          token: newCreds.accessToken,
+          fetchedAt: Date.now(),
+          tokenExpiresAt: newCreds.expiresAt,
+        };
+      }
+    })
+    .finally(() => {
+      refreshInFlight = false;
+    });
 }
 
 function getDynamicOAuthToken(): string | undefined {
@@ -68,14 +238,29 @@ function getDynamicOAuthToken(): string | undefined {
     if (cacheAge < CACHE_TTL_MS && !aboutToExpire)
       return credentialsCache.token;
   }
-  const creds = readCredentialsFile();
+
+  // Try file first, then keychain fallback
+  let creds = readCredentialsFile();
+  if (!creds) {
+    creds = readKeychainCredentials();
+    if (creds) writeCredentialsFile(creds); // sync to disk
+  }
   if (!creds) return undefined;
+
+  // Trigger background refresh if token is expiring within the window
+  const aboutToExpire =
+    creds.expiresAt !== Infinity &&
+    creds.expiresAt < now + EARLY_EXPIRE_WINDOW_MS;
+  if (aboutToExpire && creds.refreshToken) {
+    triggerRefresh(creds.refreshToken);
+  }
+
   credentialsCache = {
-    token: creds.token,
+    token: creds.accessToken,
     fetchedAt: now,
     tokenExpiresAt: creds.expiresAt,
   };
-  return creds.token;
+  return creds.accessToken;
 }
 
 /**
