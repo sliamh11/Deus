@@ -183,11 +183,14 @@ def main() -> None:
     if redacted == original:
         print(f"redact_session: no changes needed — {log_path.name}")
     else:
+        # Backup original before irreversible redaction
+        backup_path = log_path.with_suffix(".pre-redact.md")
+        backup_path.write_text(original, encoding="utf-8")
         log_path.write_text(redacted, encoding="utf-8")
         # Count redacted sections for feedback
         count = redacted.count(REDACT_MARKER)
         print(
-            f"redact_session: {count} section(s) redacted from {log_path.name}"
+            f"redact_session: {count} section(s) redacted from {log_path.name} (backup: {backup_path.name})"
         )
 
 

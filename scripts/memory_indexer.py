@@ -140,13 +140,14 @@ def _backfill_fts(db: sqlite3.Connection) -> None:
     """
     try:
         fts_count = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
-        entries_count = db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+        entries_count = db.execute("SELECT COUNT(*) FROM entries WHERE orphaned_at IS NULL").fetchone()[0]
         if fts_count < entries_count:
-            # Insert all entries rows that don't yet have an FTS5 counterpart
+            # Insert active entries rows that don't yet have an FTS5 counterpart
             db.execute("""
                 INSERT INTO entries_fts(rowid, chunk)
                 SELECT e.id, e.chunk FROM entries e
                 WHERE e.id NOT IN (SELECT rowid FROM entries_fts)
+                AND e.orphaned_at IS NULL
             """)
             db.commit()
     except sqlite3.OperationalError:
@@ -308,6 +309,8 @@ def open_db() -> sqlite3.Connection:
     for col, definition in [
         ("privacy", "TEXT DEFAULT 'internal'"),
         ("temperature", "REAL DEFAULT 1.0"),
+        ("orphaned_at", "TEXT DEFAULT NULL"),
+        ("orphan_reason", "TEXT DEFAULT NULL"),
     ]:
         try:
             db.execute(f"ALTER TABLE entries ADD COLUMN {col} {definition}")
@@ -319,19 +322,17 @@ def open_db() -> sqlite3.Connection:
 
 
 def entry_exists(db: sqlite3.Connection, path: str) -> bool:
-    row = db.execute("SELECT 1 FROM entries WHERE path = ? LIMIT 1", [path]).fetchone()
+    row = db.execute("SELECT 1 FROM entries WHERE path = ? AND orphaned_at IS NULL LIMIT 1", [path]).fetchone()
     return row is not None
 
 
-def delete_entries(db: sqlite3.Connection, path: str):
-    ids = [r[0] for r in db.execute("SELECT id FROM entries WHERE path = ?", [path]).fetchall()]
-    for eid in ids:
-        db.execute("DELETE FROM embeddings WHERE rowid = ?", [eid])
-        try:
-            db.execute("DELETE FROM entries_fts WHERE rowid = ?", [eid])
-        except sqlite3.OperationalError:
-            pass
-    db.execute("DELETE FROM entries WHERE path = ?", [path])
+def soft_delete_entries(db: sqlite3.Connection, path: str, reason: str = "re-indexed"):
+    """Mark entries for a path as orphaned (soft-delete). See ADR: no-db-deletion.md."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.execute(
+        "UPDATE entries SET orphaned_at = ?, orphan_reason = ? WHERE path = ? AND orphaned_at IS NULL",
+        [now, reason, path],
+    )
     db.commit()
 
 
@@ -495,8 +496,8 @@ def cmd_add(path_str: str, extract: bool = True):
         sys.exit(1)
 
     db = open_db()
-    # Remove stale entries for this path (re-indexing)
-    delete_entries(db, str(path))
+    # Soft-delete stale entries for this path (re-indexing)
+    soft_delete_entries(db, str(path), reason="re-indexed")
 
     content = path.read_text(encoding="utf-8")
     chunks = chunks_for_log(path, content)
@@ -891,7 +892,7 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
     db = open_db()
 
     # Check if anything is indexed
-    count = db.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+    count = db.execute("SELECT COUNT(*) FROM entries WHERE orphaned_at IS NULL").fetchone()[0]
     if count == 0:
         print("(index empty — run --rebuild first)", file=sys.stderr)
         sys.exit(1)
@@ -899,7 +900,7 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
     # Intent classification
     resolved_intent = intent or classify_query_intent(query)
 
-    has_atoms = db.execute("SELECT COUNT(*) FROM entries WHERE type = 'atom'").fetchone()[0] > 0
+    has_atoms = db.execute("SELECT COUNT(*) FROM entries WHERE type = 'atom' AND orphaned_at IS NULL").fetchone()[0] > 0
 
     # Exhaustive mode: widen the search
     effective_top = 20 if resolved_intent == "exhaustive" else top
@@ -911,6 +912,7 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
         "v.embedding MATCH ?",
         "k = ?",
         "(e.expired_at IS NULL OR e.expired_at > date('now'))",
+        "e.orphaned_at IS NULL",
     ]
     params: list = [serialize(q_vec), max(effective_top * 6, 30)]
     if as_of:
@@ -999,7 +1001,7 @@ def cmd_query(query: str, top: int = 3, recency_boost: bool = False,
             else:
                 row = db.execute(
                     "SELECT path, date, tldr, topics, decisions, type FROM entries "
-                    "WHERE path = ? LIMIT 1", [path]
+                    "WHERE path = ? AND orphaned_at IS NULL LIMIT 1", [path]
                 ).fetchone()
                 if row:
                     fused_seen[path] = {
@@ -1311,7 +1313,7 @@ def extract_atoms(content: str) -> list[dict]:
 
 def find_duplicate_atom(db: sqlite3.Connection, vec: list[float]) -> int | None:
     """Return the entry id of an existing atom within DEDUP_L2_THRESHOLD, or None."""
-    atom_count = db.execute("SELECT COUNT(*) FROM entries WHERE type = 'atom'").fetchone()[0]
+    atom_count = db.execute("SELECT COUNT(*) FROM entries WHERE type = 'atom' AND orphaned_at IS NULL").fetchone()[0]
     if atom_count == 0:
         return None  # short-circuit: nothing to compare against
     row = db.execute(
@@ -1321,6 +1323,7 @@ def find_duplicate_atom(db: sqlite3.Connection, vec: list[float]) -> int | None:
         JOIN entries e ON e.id = v.rowid
         WHERE e.type = 'atom'
           AND (e.expired_at IS NULL OR e.expired_at > date('now'))
+          AND e.orphaned_at IS NULL
           AND v.embedding MATCH ?
           AND k = 1
         ORDER BY v.distance
@@ -1763,7 +1766,7 @@ def generate_entity_article(db: sqlite3.Connection, entity_id: int) -> Path:
         "SELECT e.chunk FROM entries e "
         "JOIN atom_entities ae ON ae.atom_id = e.id "
         "WHERE ae.entity_id = ? AND e.type = 'atom' "
-        "AND (e.expired_at IS NULL OR e.expired_at > date('now'))",
+        "AND (e.expired_at IS NULL OR e.expired_at > date('now')) AND e.orphaned_at IS NULL",
         [entity_id]
     ).fetchall()
     atoms = [{"text": r[0]} for r in atoms_raw]
@@ -1865,7 +1868,7 @@ def compress_period(db: sqlite3.Connection, level: str, period_key: str) -> str:
     """Generate a digest for a time period. One Gemini Flash call."""
     # Collect sessions in this period
     all_entries = db.execute(
-        "SELECT date, tldr, decisions FROM entries WHERE type IN ('frontmatter', 'session') AND date IS NOT NULL"
+        "SELECT date, tldr, decisions FROM entries WHERE type IN ('frontmatter', 'session') AND date IS NOT NULL AND orphaned_at IS NULL"
     ).fetchall()
     matching = [
         (date, tldr, decisions) for date, tldr, decisions in all_entries
@@ -1919,7 +1922,7 @@ def cmd_compress_digests(level: str = "weekly") -> None:
     db = open_db()
     # Find all period keys present in entries
     all_entries = db.execute(
-        "SELECT DISTINCT date FROM entries WHERE date IS NOT NULL AND type IN ('frontmatter', 'session')"
+        "SELECT DISTINCT date FROM entries WHERE date IS NOT NULL AND type IN ('frontmatter', 'session') AND orphaned_at IS NULL"
     ).fetchall()
     all_periods = {_get_period_key(r[0], level) for r in all_entries if r[0]}
 
@@ -2014,7 +2017,7 @@ def cmd_decay(dry_run: bool = False):
     """Recompute temperature for all live atoms."""
     db = open_db()
     atoms = db.execute(
-        "SELECT id, path FROM entries WHERE type = 'atom' AND (expired_at IS NULL OR expired_at > date('now'))"
+        "SELECT id, path FROM entries WHERE type = 'atom' AND (expired_at IS NULL OR expired_at > date('now')) AND orphaned_at IS NULL"
     ).fetchall()
     hot, warm, cold = 0, 0, 0
     for entry_id, path in atoms:
@@ -2349,7 +2352,7 @@ def cmd_export(output_path: str, privacy_levels: list[str] | None = None):
     atoms = db.execute(
         f"SELECT path, chunk, confidence, domain, privacy FROM entries "
         f"WHERE type = 'atom' AND (expired_at IS NULL OR expired_at > date('now')) "
-        f"AND privacy IN ({placeholders})",
+        f"AND orphaned_at IS NULL AND privacy IN ({placeholders})",
         levels,
     ).fetchall()
 
@@ -2429,7 +2432,7 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
     # Load existing atom texts for cheap text-equality dedup before embedding
     existing_texts = {
         r[0].strip().lower()
-        for r in db.execute("SELECT chunk FROM entries WHERE type = 'atom'").fetchall()
+        for r in db.execute("SELECT chunk FROM entries WHERE type = 'atom' AND orphaned_at IS NULL").fetchall()
     }
 
     for atom in atoms:
@@ -2438,7 +2441,7 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
         # 1. Text equality check — free, no API call
         if text_lower in existing_texts:
             row = db.execute(
-                "SELECT id FROM entries WHERE type = 'atom' AND lower(chunk) = ? LIMIT 1",
+                "SELECT id FROM entries WHERE type = 'atom' AND orphaned_at IS NULL AND lower(chunk) = ? LIMIT 1",
                 [text_lower],
             ).fetchone()
             if row:
@@ -2558,9 +2561,15 @@ def cmd_rebuild():
         shutil.copy2(DB_PATH, backup_path)
         print(f"Backed up to {backup_path}")
 
-        # Clear rebuildable tables (rows only, keep schema intact)
+        # Soft-delete entries; clear derived tables (see ADR: no-db-deletion.md)
         db = open_db()
-        for table in rebuildable_tables:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db.execute(
+            "UPDATE entries SET orphaned_at = ?, orphan_reason = ? WHERE orphaned_at IS NULL",
+            [now, "rebuild"],
+        )
+        # Derived tables (no primary user data) — safe to clear during rebuild
+        for table in ["embeddings", "entries_fts", "entities", "relationships", "atom_entities"]:
             try:
                 db.execute(f"DELETE FROM [{table}]")
             except sqlite3.OperationalError:
@@ -2599,7 +2608,7 @@ def cmd_rebuild():
                     continue
                 # Mtime skip: if path + updated_at already in DB, skip embed call
                 existing = db.execute(
-                    "SELECT id FROM entries WHERE path = ? LIMIT 1", [str(af)]
+                    "SELECT id FROM entries WHERE path = ? AND orphaned_at IS NULL LIMIT 1", [str(af)]
                 ).fetchone()
                 if existing:
                     continue
@@ -2665,11 +2674,11 @@ def _collect_health_metrics(db: sqlite3.Connection) -> dict:
     try:
         rows = db.execute(
             "SELECT path, confidence, corroborations, source_chunk, expired_at, domain "
-            "FROM entries WHERE type='atom'"
+            "FROM entries WHERE type='atom' AND orphaned_at IS NULL"
         ).fetchall()
     except sqlite3.OperationalError:
         rows = db.execute(
-            "SELECT path, confidence, corroborations, NULL, NULL, 'general' FROM entries WHERE type='atom'"
+            "SELECT path, confidence, corroborations, NULL, NULL, 'general' FROM entries WHERE type='atom' AND orphaned_at IS NULL"
         ).fetchall()
     total_atoms = len(rows)
     snapshot: dict = {"date": _date.today().isoformat(), "atoms": total_atoms}
@@ -2733,7 +2742,7 @@ def _collect_health_metrics(db: sqlite3.Connection) -> dict:
     # Phase 4: temperature, query success, privacy
     try:
         temp_rows = db.execute(
-            "SELECT temperature FROM entries WHERE type = 'atom' AND (expired_at IS NULL OR expired_at > date('now'))"
+            "SELECT temperature FROM entries WHERE type = 'atom' AND (expired_at IS NULL OR expired_at > date('now')) AND orphaned_at IS NULL"
         ).fetchall()
         temps = [r[0] if r[0] is not None else 1.0 for r in temp_rows]
         if temps:
@@ -2754,7 +2763,7 @@ def _collect_health_metrics(db: sqlite3.Connection) -> dict:
     try:
         privacy_rows = db.execute(
             "SELECT privacy, COUNT(*) FROM entries WHERE type = 'atom' "
-            "AND (expired_at IS NULL OR expired_at > date('now')) GROUP BY privacy"
+            "AND (expired_at IS NULL OR expired_at > date('now')) AND orphaned_at IS NULL GROUP BY privacy"
         ).fetchall()
         snapshot["privacy"] = {p: c for p, c in privacy_rows} if privacy_rows else {}
     except sqlite3.OperationalError:
@@ -2930,7 +2939,7 @@ def cmd_prune(dry_run: bool = False):
     """Enforce TTL-based expiry and clean up DB orphans.
 
     - Atoms whose TTL has elapsed get expired_at set (soft-delete).
-    - DB rows whose atom file no longer exists get hard-deleted.
+    - DB rows whose atom file no longer exists get orphaned_at set (soft-delete).
     """
     from datetime import date as _date
     db = open_db()
@@ -2939,7 +2948,7 @@ def cmd_prune(dry_run: bool = False):
     # 1. TTL enforcement
     ttl_expired = 0
     rows = db.execute(
-        "SELECT id, path FROM entries WHERE type = 'atom' AND expired_at IS NULL"
+        "SELECT id, path FROM entries WHERE type = 'atom' AND expired_at IS NULL AND orphaned_at IS NULL"
     ).fetchall()
     for entry_id, path_str in rows:
         atom_path = Path(path_str)
@@ -2970,34 +2979,33 @@ def cmd_prune(dry_run: bool = False):
             except (ValueError, TypeError):
                 pass
 
-    # 2. Orphan cleanup: DB rows whose file is gone
+    # 2. Orphan cleanup: DB rows whose file is gone — soft-delete (see ADR: no-db-deletion.md)
     orphans = 0
-    all_atom_rows = db.execute("SELECT id, path FROM entries WHERE type = 'atom'").fetchall()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    all_atom_rows = db.execute("SELECT id, path FROM entries WHERE type = 'atom' AND orphaned_at IS NULL").fetchall()
     for entry_id, path_str in all_atom_rows:
         if not Path(path_str).exists():
             if dry_run:
-                print(f"  [dry-run] would delete orphan: {Path(path_str).name}")
+                print(f"  [dry-run] would orphan: {Path(path_str).name}")
             else:
-                db.execute("DELETE FROM embeddings WHERE rowid = ?", [entry_id])
-                try:
-                    db.execute("DELETE FROM entries_fts WHERE rowid = ?", [entry_id])
-                except sqlite3.OperationalError:
-                    pass
-                db.execute("DELETE FROM entries WHERE id = ?", [entry_id])
+                db.execute(
+                    "UPDATE entries SET orphaned_at = ?, orphan_reason = ? WHERE id = ?",
+                    [now, "file_deleted", entry_id],
+                )
             orphans += 1
 
     if not dry_run:
         db.commit()
 
     prefix = "[dry-run] " if dry_run else ""
-    print(f"{prefix}Prune complete: {ttl_expired} TTL-expired, {orphans} orphans cleaned")
+    print(f"{prefix}Prune complete: {ttl_expired} TTL-expired, {orphans} orphans soft-deleted")
 
 
 def cmd_invalidate(path_str: str, reason: str):
     """Manually invalidate a specific atom by path."""
     db = open_db()
     path = Path(path_str).expanduser().resolve()
-    row = db.execute("SELECT id FROM entries WHERE path = ? AND type = 'atom' LIMIT 1", [str(path)]).fetchone()
+    row = db.execute("SELECT id FROM entries WHERE path = ? AND type = 'atom' AND orphaned_at IS NULL LIMIT 1", [str(path)]).fetchone()
     if not row:
         print(f"ERROR: no atom entry found for {path}", file=sys.stderr)
         sys.exit(1)

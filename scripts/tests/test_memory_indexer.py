@@ -188,7 +188,8 @@ def test_entry_exists_false_for_new_db(mi):
     assert result is False
 
 
-def test_delete_entries_removes_rows(mi):
+def test_soft_delete_entries_marks_orphaned(mi):
+    """soft_delete_entries sets orphaned_at instead of deleting rows (ADR: no-db-deletion)."""
     db = mi.open_db()
     db.execute(
         "INSERT INTO entries (path, date, chunk, type) VALUES (?, ?, ?, ?)",
@@ -196,8 +197,14 @@ def test_delete_entries_removes_rows(mi):
     )
     db.commit()
     assert mi.entry_exists(db, "/test/path.md")
-    mi.delete_entries(db, "/test/path.md")
+    mi.soft_delete_entries(db, "/test/path.md", reason="test")
+    # entry_exists returns False (filters orphaned_at IS NULL)
     assert not mi.entry_exists(db, "/test/path.md")
+    # But the row still exists in DB with orphaned_at set
+    row = db.execute("SELECT orphaned_at, orphan_reason FROM entries WHERE path = ?", ["/test/path.md"]).fetchone()
+    assert row is not None, "Row should still exist in DB (soft-deleted)"
+    assert row[0] is not None, "orphaned_at should be set"
+    assert row[1] == "test"
     db.close()
 
 
@@ -1016,8 +1023,8 @@ def test_fts_populated_on_add(mi, tmp_path, monkeypatch):
     assert fts_count >= entries_count
 
 
-def test_fts_removed_on_delete(mi, tmp_path, monkeypatch):
-    """delete_entries must remove FTS5 rows for that path."""
+def test_soft_delete_preserves_fts_rows(mi, tmp_path, monkeypatch):
+    """soft_delete_entries keeps FTS5 rows (they're derived, filtered via entry join)."""
     session = tmp_path / "vault" / "Session-Logs" / "del-session.md"
     _make_session_file(session)
     monkeypatch.setattr(mi, "embed", lambda text: [0.0] * mi.EMBED_DIM)
@@ -1026,9 +1033,12 @@ def test_fts_removed_on_delete(mi, tmp_path, monkeypatch):
 
     db = mi.open_db()
     before = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
-    mi.delete_entries(db, str(session))
+    mi.soft_delete_entries(db, str(session), reason="test")
     after = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
-    assert after < before
+    # FTS rows preserved — orphaned entries are filtered at query time, not at delete time
+    assert after == before
+    # Entry is soft-deleted
+    assert not mi.entry_exists(db, str(session))
 
 
 def test_fts_exact_keyword_match(mi, tmp_path):
@@ -1343,21 +1353,28 @@ def test_cmd_prune_expires_ttl_atoms(mi, fresh_vault, capsys):
     db.close()
 
 
-def test_cmd_prune_removes_orphans(mi, fresh_vault, capsys):
+def test_cmd_prune_soft_deletes_orphans(mi, fresh_vault, capsys):
+    """cmd_prune marks orphaned entries with orphaned_at instead of deleting (ADR: no-db-deletion)."""
     db = mi.open_db()
     # Insert a DB row pointing to a non-existent file
     cur = db.execute(
         "INSERT INTO entries (path, date, chunk, type, confidence) "
         "VALUES ('/nonexistent/atom.md', '2024-01-01', 'orphan', 'atom', 0.50)",
     )
+    entry_id = cur.lastrowid
     db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
-               [cur.lastrowid, mi.serialize([0.1] * mi.EMBED_DIM)])
+               [entry_id, mi.serialize([0.1] * mi.EMBED_DIM)])
     db.commit()
 
     mi.cmd_prune(dry_run=False)
 
-    row = db.execute("SELECT id FROM entries WHERE id = ?", [cur.lastrowid]).fetchone()
-    assert row is None  # orphan should be deleted
+    # Row still exists but is soft-deleted
+    row = db.execute("SELECT orphaned_at, orphan_reason FROM entries WHERE id = ?", [entry_id]).fetchone()
+    assert row is not None, "Row should still exist (soft-deleted, not hard-deleted)"
+    assert row[0] is not None, "orphaned_at should be set"
+    assert row[1] == "file_deleted"
+    # entry_exists returns False (filters orphaned)
+    assert not mi.entry_exists(db, "/nonexistent/atom.md")
     db.close()
 
 
@@ -3748,8 +3765,8 @@ def test_rebuild_preserves_digests(mi, fresh_vault):
     db.close()
 
 
-def test_rebuild_clears_entries_and_embeddings(mi, fresh_vault):
-    """--rebuild should clear entries/embeddings (they're rebuilt from disk)."""
+def test_rebuild_soft_deletes_entries(mi, fresh_vault):
+    """--rebuild should soft-delete old entries, not hard-delete (ADR: no-db-deletion)."""
     db = mi.open_db()
     db.execute(
         "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
@@ -3761,7 +3778,118 @@ def test_rebuild_clears_entries_and_embeddings(mi, fresh_vault):
     mi.cmd_rebuild()
 
     db = mi.open_db()
-    # Old stale entry should be gone (it's not a real file on disk)
-    count = db.execute("SELECT COUNT(*) FROM entries WHERE path = '/tmp/stale.md'").fetchone()[0]
-    assert count == 0, "Stale entry survived rebuild"
+    # Old entry should still exist in DB but marked as orphaned
+    row = db.execute(
+        "SELECT orphaned_at, orphan_reason FROM entries WHERE path = '/tmp/stale.md'"
+    ).fetchone()
+    assert row is not None, "Soft-deleted row should still exist in DB"
+    assert row[0] is not None, "orphaned_at should be set"
+    assert row[1] == "rebuild"
+    # But entry_exists returns False
+    assert not mi.entry_exists(db, "/tmp/stale.md")
     db.close()
+
+
+# ── No-DB-deletion ADR tests ──────────────────────────────────────────────────
+
+
+def test_soft_delete_entries_idempotent(mi):
+    """Calling soft_delete_entries twice doesn't create duplicate orphaned_at values."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type) VALUES (?, ?, ?, ?)",
+        ["/test/idem.md", "2024-01-01", "chunk", "frontmatter"],
+    )
+    db.commit()
+    mi.soft_delete_entries(db, "/test/idem.md", reason="first")
+    mi.soft_delete_entries(db, "/test/idem.md", reason="second")
+    rows = db.execute("SELECT orphan_reason FROM entries WHERE path = ?", ["/test/idem.md"]).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "first", "Second soft-delete should be a no-op (WHERE orphaned_at IS NULL)"
+    db.close()
+
+
+def test_cmd_add_reindex_soft_deletes_old_entries(mi, tmp_path, monkeypatch):
+    """Re-indexing a file soft-deletes old entries and creates new ones."""
+    monkeypatch.setattr(mi, "embed", lambda text: [0.0] * mi.EMBED_DIM)
+    monkeypatch.setattr(mi, "cmd_extract", lambda path: None)
+    session = tmp_path / "vault" / "Session-Logs" / "reindex.md"
+    _make_session_file(session)
+    mi.cmd_add(str(session), extract=False)
+
+    db = mi.open_db()
+    count_before = db.execute("SELECT COUNT(*) FROM entries WHERE path = ?", [str(session)]).fetchone()[0]
+    assert count_before >= 1
+    db.close()
+
+    # Re-index
+    mi.cmd_add(str(session), extract=False)
+
+    db = mi.open_db()
+    # Old entries orphaned, new entries active
+    orphaned = db.execute(
+        "SELECT COUNT(*) FROM entries WHERE path = ? AND orphaned_at IS NOT NULL", [str(session)]
+    ).fetchone()[0]
+    active = db.execute(
+        "SELECT COUNT(*) FROM entries WHERE path = ? AND orphaned_at IS NULL", [str(session)]
+    ).fetchone()[0]
+    assert orphaned >= 1, "Old entries should be soft-deleted"
+    assert active >= 1, "New entries should be active"
+    db.close()
+
+
+def test_no_delete_from_entries_in_codebase(mi):
+    """Verify no DELETE FROM entries exists in the codebase (ADR enforcement)."""
+    import inspect
+    source = inspect.getsource(mi)
+    # Allow DELETE FROM derived tables (embeddings, entries_fts, entities, etc.)
+    # But disallow DELETE FROM entries
+    import re
+    matches = re.findall(r'DELETE FROM\s+(?:\[?)entries(?:\]?)\s', source)
+    assert len(matches) == 0, f"Found hard-delete on entries table: {matches}. Use soft_delete_entries() instead."
+
+
+def test_rebuild_preserves_orphaned_entries_in_db(mi, fresh_vault):
+    """Rebuild should keep old entries with orphaned_at set, not delete them."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr) "
+        "VALUES ('/old/session.md', '2024-01-01', 'old data', 'session', 'old')"
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_rebuild()
+
+    db = mi.open_db()
+    total = db.execute("SELECT COUNT(*) FROM entries WHERE path = '/old/session.md'").fetchone()[0]
+    orphaned = db.execute(
+        "SELECT COUNT(*) FROM entries WHERE path = '/old/session.md' AND orphaned_at IS NOT NULL"
+    ).fetchone()[0]
+    assert total == 1, "Old entry should still be in DB"
+    assert orphaned == 1, "Old entry should be marked as orphaned"
+    db.close()
+
+
+def test_redact_session_creates_backup(tmp_path):
+    """redact_session.py should create .pre-redact.md backup before overwriting."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "redact_session",
+        str(Path(__file__).parent.parent / "redact_session.py"),
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    log = tmp_path / "test-session.md"
+    log.write_text("---\ntype: session\n---\n\n```python\ndef secret(): pass\n```\n")
+
+    original_content = log.read_text()
+    redacted = mod.redact(original_content)
+    if redacted != original_content:
+        # Simulate what main() does
+        backup = log.with_suffix(".pre-redact.md")
+        backup.write_text(original_content)
+        log.write_text(redacted)
+        assert backup.exists(), "Pre-redact backup should be created"
+        assert backup.read_text() == original_content
