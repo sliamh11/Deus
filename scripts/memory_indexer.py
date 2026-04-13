@@ -1353,6 +1353,7 @@ def bump_corroboration(db: sqlite3.Connection, entry_id: int):
         "UPDATE entries SET corroborations = ?, confidence = ? WHERE id = ?",
         [new_corr, new_conf, entry_id],
     )
+    db.commit()
     if atom_path.exists():
         text = atom_path.read_text()
         text = re.sub(r"^confidence:.*$", f"confidence: {new_conf:.2f}", text, flags=re.MULTILINE)
@@ -2520,12 +2521,12 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
                 conflicts = detect_contradictions(db, atom_id, atom_text, atom_vec)
                 total_conflicts += len(conflicts)
             if total_conflicts:
-                print(f"  contradictions: {total_conflicts} older atom(s) invalidated")
+                print(f"  contradictions: {total_conflicts} conflict(s) logged for review (use --resolve-conflicts)")
         except Exception as e:
             print(f"  WARN: contradiction detection failed: {e}", file=sys.stderr)
 
 
-def cmd_rebuild():
+def cmd_rebuild(force: bool = False):
     if not VAULT_SESSION_LOGS.exists():
         print(f"ERROR: session logs not found at {VAULT_SESSION_LOGS}", file=sys.stderr)
         sys.exit(1)
@@ -2537,13 +2538,42 @@ def cmd_rebuild():
         _tables = {r[0] for r in _check.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
+        # Report what will be lost
+        runtime_tables = {"access_log", "query_log", "entity_articles", "digests",
+                          "synthesis_suggestions", "pending_conflicts"}
+        populated = {}
+        for t in runtime_tables & _tables:
+            try:
+                count = _check.execute(f"SELECT COUNT(*) FROM [{t}]").fetchone()[0]
+                if count > 0:
+                    populated[t] = count
+            except _sql.OperationalError:
+                pass
         _check.close()
+
         _evolution_tables = {"interactions", "reflections", "principles"}
         if _tables & _evolution_tables:
             print(f"ABORT: {DB_PATH} contains evolution tables {_tables & _evolution_tables}. "
                   f"Refusing to delete. Evolution data should be in DEUS_EVOLUTION_DB, not here.",
                   file=sys.stderr)
             sys.exit(1)
+
+        if populated and not force:
+            print("WARNING: --rebuild will permanently delete the following runtime data:",
+                  file=sys.stderr)
+            for table, count in populated.items():
+                print(f"  {table}: {count} row(s)", file=sys.stderr)
+            print("\nPass --force to confirm, or back up ~/.deus/memory.db first.",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        if populated:
+            # Backup before destructive operation
+            backup_path = DB_PATH.with_suffix(f".bak-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+            import shutil
+            shutil.copy2(DB_PATH, backup_path)
+            print(f"Backed up to {backup_path}")
+
         DB_PATH.unlink()
     db = open_db()
     db.close()
@@ -3097,6 +3127,8 @@ def main():
                         help="Skip saving snapshot for --health (useful for CI/dry-run)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview --prune changes without applying them")
+    parser.add_argument("--force", action="store_true",
+                        help="Confirm destructive operations (e.g. --rebuild when runtime data exists)")
     parser.add_argument("--reason", default="manual",
                         help="Reason for --invalidate (default: manual)")
     parser.add_argument("--domain", metavar="DOMAIN",
@@ -3188,7 +3220,7 @@ def main():
                   intent=args.intent, as_of=args.as_of, privacy=args.privacy,
                   allowed_privacy=ap)
     elif args.rebuild:
-        cmd_rebuild()
+        cmd_rebuild(force=args.force)
     elif args.extract:
         cmd_extract(args.extract, no_contradict=args.no_contradict)
 
