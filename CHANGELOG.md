@@ -4,6 +4,13 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0](https://github.com/sliamh11/Deus/compare/v1.5.1...v1.6.0) (2026-04-13)
+
+
+### Features
+
+* add automated KB maintenance via system scheduler ([#156](https://github.com/sliamh11/Deus/issues/156)) ([ea2202c](https://github.com/sliamh11/Deus/commit/ea2202c489ce34f13489bf5790a3f65989c2b07f))
+
 ## [1.5.1](https://github.com/sliamh11/Deus/compare/v1.5.0...v1.5.1) (2026-04-13)
 
 
