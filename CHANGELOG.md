@@ -4,6 +4,15 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.1](https://github.com/sliamh11/Deus/compare/v1.5.0...v1.5.1) (2026-04-13)
+
+
+### Bug Fixes
+
+* **ci:** prevent cascading drift failures across sequential PRs ([#150](https://github.com/sliamh11/Deus/issues/150)) ([65c2305](https://github.com/sliamh11/Deus/commit/65c230578404703bc80dd875739735391949f220))
+* **memory:** prevent silent data loss in rebuild, decay, and contradiction detection ([#152](https://github.com/sliamh11/Deus/issues/152)) ([9dc87e7](https://github.com/sliamh11/Deus/commit/9dc87e7e43034748bbe2291bf3b5774dae7acf80))
+* **memory:** rebuild preserves runtime tables instead of deleting entire DB ([#153](https://github.com/sliamh11/Deus/issues/153)) ([6fd41fe](https://github.com/sliamh11/Deus/commit/6fd41fea8666beedf2b30705b56a13efadc87eb2))
+
 ## [1.5.0](https://github.com/sliamh11/Deus/compare/v1.4.0...v1.5.0) (2026-04-12)
 
 
