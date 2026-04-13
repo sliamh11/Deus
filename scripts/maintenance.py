@@ -6,7 +6,7 @@ Intended to be called by a system scheduler (launchd/systemd/Task Scheduler).
 Each task runs independently; one failure does not block others.
 
 Daily tasks: memory_gc, prune, decay, health
-Weekly tasks (Sunday only): compress-digests, compile entities
+Weekly tasks (Sunday only): compress-digests, compile entities, compression-check
 
 Usage:
     python3 scripts/maintenance.py              # daily tasks only
@@ -86,6 +86,11 @@ def main():
         print("\n── Weekly ──")
         results["digests"] = run_task("digests", [indexer, "--compress-digests", "weekly"], dry_run)
         results["compile"] = run_task("compile", [indexer, "--compile"], dry_run)
+        results["compression"] = run_task(
+            "compression_check",
+            [str(SCRIPTS_DIR / "compression_benchmark.py"), "--auto"],
+            dry_run,
+        )
     else:
         print(f"\n── Weekly tasks skipped (not Sunday, use --weekly to force) ──")
 
