@@ -3647,3 +3647,121 @@ def test_dismiss_conflict_marks_resolved(mi):
     assert conflict[0] == 1
     assert conflict[1] == "dismissed"
     db.close()
+
+
+# ── Data integrity: rebuild backup and runtime preservation ──────────────────
+
+
+def test_rebuild_creates_backup(mi, fresh_vault):
+    """--rebuild should create a timestamped .bak file before clearing tables."""
+    # Seed the DB so it exists
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/x.md', '2024-01-01', 'test', 'session', 'test', '')"
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_rebuild()
+
+    # Check backup was created
+    import glob
+    backups = glob.glob(str(mi.DB_PATH.with_suffix(".bak-*")))
+    assert len(backups) >= 1, "No backup file created by --rebuild"
+
+
+def test_rebuild_preserves_access_log(mi, fresh_vault):
+    """--rebuild should NOT destroy access_log (runtime data with no disk source)."""
+    db = mi.open_db()
+    # Seed an entry + access_log row
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/x.md', '2024-01-01', 'test', 'atom', 'test', '')"
+    )
+    db.execute(
+        "INSERT INTO access_log (entry_id, accessed_at, access_type) VALUES (?, '2024-06-01', 'query')",
+        [cur.lastrowid],
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_rebuild()
+
+    db = mi.open_db()
+    count = db.execute("SELECT COUNT(*) FROM access_log").fetchone()[0]
+    assert count == 1, f"access_log was destroyed by rebuild (expected 1, got {count})"
+    db.close()
+
+
+def test_rebuild_preserves_query_log(mi, fresh_vault):
+    """--rebuild should NOT destroy query_log."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO query_log (query_text, intent, result_count, atom_hit, queried_at) "
+        "VALUES ('test query', 'factual', 3, 1, '2024-06-01')"
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_rebuild()
+
+    db = mi.open_db()
+    count = db.execute("SELECT COUNT(*) FROM query_log").fetchone()[0]
+    assert count == 1, f"query_log was destroyed by rebuild (expected 1, got {count})"
+    db.close()
+
+
+def test_rebuild_preserves_pending_conflicts(mi, fresh_vault):
+    """--rebuild should NOT destroy pending_conflicts."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO pending_conflicts (older_id, newer_id, older_text, newer_text, created_at) "
+        "VALUES (1, 2, 'old', 'new', '2024-06-01')"
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_rebuild()
+
+    db = mi.open_db()
+    count = db.execute("SELECT COUNT(*) FROM pending_conflicts").fetchone()[0]
+    assert count == 1, f"pending_conflicts was destroyed by rebuild (expected 1, got {count})"
+    db.close()
+
+
+def test_rebuild_preserves_digests(mi, fresh_vault):
+    """--rebuild should NOT destroy digests."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO digests (level, period_key, content, created_at) "
+        "VALUES ('weekly', '2024-W24', 'Weekly summary', '2024-06-15')"
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_rebuild()
+
+    db = mi.open_db()
+    count = db.execute("SELECT COUNT(*) FROM digests").fetchone()[0]
+    assert count == 1, f"digests was destroyed by rebuild (expected 1, got {count})"
+    db.close()
+
+
+def test_rebuild_clears_entries_and_embeddings(mi, fresh_vault):
+    """--rebuild should clear entries/embeddings (they're rebuilt from disk)."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
+        "VALUES ('/tmp/stale.md', '2024-01-01', 'stale', 'session', 'stale', '')"
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_rebuild()
+
+    db = mi.open_db()
+    # Old stale entry should be gone (it's not a real file on disk)
+    count = db.execute("SELECT COUNT(*) FROM entries WHERE path = '/tmp/stale.md'").fetchone()[0]
+    assert count == 0, "Stale entry survived rebuild"
+    db.close()

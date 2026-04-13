@@ -2526,29 +2526,23 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
             print(f"  WARN: contradiction detection failed: {e}", file=sys.stderr)
 
 
-def cmd_rebuild(force: bool = False):
+def cmd_rebuild():
     if not VAULT_SESSION_LOGS.exists():
         print(f"ERROR: session logs not found at {VAULT_SESSION_LOGS}", file=sys.stderr)
         sys.exit(1)
 
-    # Wipe and recreate DB — safety check: never delete a file with evolution data
+    # Tables that CAN be rebuilt from disk (session logs + atom .md files):
+    rebuildable_tables = ["entries", "embeddings", "entries_fts", "entities",
+                          "relationships", "atom_entities"]
+    # Tables with NO disk source — runtime data that must be preserved:
+    # access_log, query_log, entity_articles, digests, synthesis_suggestions, pending_conflicts
+
     if DB_PATH.exists():
         import sqlite3 as _sql
         _check = _sql.connect(DB_PATH)
         _tables = {r[0] for r in _check.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
-        # Report what will be lost
-        runtime_tables = {"access_log", "query_log", "entity_articles", "digests",
-                          "synthesis_suggestions", "pending_conflicts"}
-        populated = {}
-        for t in runtime_tables & _tables:
-            try:
-                count = _check.execute(f"SELECT COUNT(*) FROM [{t}]").fetchone()[0]
-                if count > 0:
-                    populated[t] = count
-            except _sql.OperationalError:
-                pass
         _check.close()
 
         _evolution_tables = {"interactions", "reflections", "principles"}
@@ -2558,23 +2552,22 @@ def cmd_rebuild(force: bool = False):
                   file=sys.stderr)
             sys.exit(1)
 
-        if populated and not force:
-            print("WARNING: --rebuild will permanently delete the following runtime data:",
-                  file=sys.stderr)
-            for table, count in populated.items():
-                print(f"  {table}: {count} row(s)", file=sys.stderr)
-            print("\nPass --force to confirm, or back up ~/.deus/memory.db first.",
-                  file=sys.stderr)
-            sys.exit(1)
+        # Always back up before rebuild
+        import shutil
+        backup_path = DB_PATH.with_suffix(f".bak-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+        shutil.copy2(DB_PATH, backup_path)
+        print(f"Backed up to {backup_path}")
 
-        if populated:
-            # Backup before destructive operation
-            backup_path = DB_PATH.with_suffix(f".bak-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
-            import shutil
-            shutil.copy2(DB_PATH, backup_path)
-            print(f"Backed up to {backup_path}")
+        # Clear rebuildable tables (rows only, keep schema intact)
+        db = open_db()
+        for table in rebuildable_tables:
+            try:
+                db.execute(f"DELETE FROM [{table}]")
+            except sqlite3.OperationalError:
+                pass
+        db.commit()
+        db.close()
 
-        DB_PATH.unlink()
     db = open_db()
     db.close()
 
@@ -3127,8 +3120,6 @@ def main():
                         help="Skip saving snapshot for --health (useful for CI/dry-run)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview --prune changes without applying them")
-    parser.add_argument("--force", action="store_true",
-                        help="Confirm destructive operations (e.g. --rebuild when runtime data exists)")
     parser.add_argument("--reason", default="manual",
                         help="Reason for --invalidate (default: manual)")
     parser.add_argument("--domain", metavar="DOMAIN",
@@ -3220,7 +3211,7 @@ def main():
                   intent=args.intent, as_of=args.as_of, privacy=args.privacy,
                   allowed_privacy=ap)
     elif args.rebuild:
-        cmd_rebuild(force=args.force)
+        cmd_rebuild()
     elif args.extract:
         cmd_extract(args.extract, no_contradict=args.no_contradict)
 
