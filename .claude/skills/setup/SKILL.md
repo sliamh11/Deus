@@ -459,3 +459,5 @@ Tell the user: "Don't start with test messages. Give Deus a real task from your 
 **Channel not connecting:** Verify the channel's credentials are set in `.env`. Channels auto-enable when their credentials are present. For WhatsApp: check `store/auth/creds.json` exists. For token-based channels: check token values in `.env`. Restart the service after any `.env` change.
 
 **Unload service:** macOS: `launchctl unload ~/Library/LaunchAgents/com.deus.plist` | Linux: `systemctl --user stop deus`
+
+**KB maintenance:** Setup also installs a daily maintenance job (04:30) that runs prune, decay, health, memory_gc, and weekly digest/compile tasks. macOS: `com.deus.maintenance` launchd agent | Linux: `deus-maintenance.timer` systemd timer | Windows: `DeusMaintenance` scheduled task. Logs at `logs/maintenance.log`. Unload: macOS `launchctl unload ~/Library/LaunchAgents/com.deus.maintenance.plist` | Linux `systemctl --user stop deus-maintenance.timer`

@@ -259,3 +259,109 @@ echo $! > ${JSON.stringify(pidFile)}`;
     expect(wrapper).toContain('deus.pid');
   });
 });
+
+describe('Maintenance service generation', () => {
+  function generateMaintenancePlist(
+    pythonPath: string,
+    projectRoot: string,
+    homeDir: string,
+  ): string {
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.deus.maintenance</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${pythonPath}</string>
+        <string>${projectRoot}/scripts/maintenance.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${projectRoot}</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${homeDir}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>${projectRoot}/logs/maintenance.log</string>
+    <key>StandardErrorPath</key>
+    <string>${projectRoot}/logs/maintenance.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>`;
+  }
+
+  function generateMaintenanceSystemdService(
+    pythonPath: string,
+    projectRoot: string,
+    homeDir: string,
+  ): string {
+    return `[Unit]
+Description=Deus KB maintenance
+
+[Service]
+Type=oneshot
+ExecStart=${pythonPath} ${projectRoot}/scripts/maintenance.py
+WorkingDirectory=${projectRoot}
+Environment=HOME=${homeDir}
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin
+StandardOutput=append:${projectRoot}/logs/maintenance.log
+StandardError=append:${projectRoot}/logs/maintenance.log`;
+  }
+
+  function generateMaintenanceSystemdTimer(): string {
+    return `[Unit]
+Description=Deus KB maintenance timer
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target`;
+  }
+
+  it('macOS plist contains maintenance.py path and 04:30 schedule', () => {
+    const plist = generateMaintenancePlist(
+      '/usr/bin/python3',
+      '/Users/test/deus',
+      '/Users/test',
+    );
+    expect(plist).toContain('com.deus.maintenance');
+    expect(plist).toContain('scripts/maintenance.py');
+    expect(plist).toContain('<integer>4</integer>');
+    expect(plist).toContain('<integer>30</integer>');
+    expect(plist).toContain('RunAtLoad');
+    expect(plist).toContain('<false/>');
+  });
+
+  it('systemd service unit contains correct ExecStart', () => {
+    const unit = generateMaintenanceSystemdService(
+      '/usr/bin/python3',
+      '/home/user/deus',
+      '/home/user',
+    );
+    expect(unit).toContain('Type=oneshot');
+    expect(unit).toContain('scripts/maintenance.py');
+    expect(unit).toContain('maintenance.log');
+  });
+
+  it('systemd timer fires daily at 04:30', () => {
+    const timer = generateMaintenanceSystemdTimer();
+    expect(timer).toContain('OnCalendar=*-*-* 04:30:00');
+    expect(timer).toContain('Persistent=true');
+    expect(timer).toContain('timers.target');
+  });
+});

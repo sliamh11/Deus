@@ -55,10 +55,13 @@ export async function run(_args: string[]): Promise<void> {
   if (platform === 'macos') {
     setupLaunchd(projectRoot, nodePath, homeDir);
     setupLogReviewLaunchd(projectRoot, homeDir);
+    setupMaintenanceLaunchd(projectRoot, homeDir);
   } else if (platform === 'linux') {
     setupLinux(projectRoot, nodePath, homeDir);
+    setupMaintenanceLinux(projectRoot, homeDir);
   } else if (platform === 'windows') {
     setupWindows(projectRoot, nodePath, homeDir);
+    setupMaintenanceWindows(projectRoot, homeDir);
   } else {
     emitStatus('SETUP_SERVICE', {
       SERVICE_TYPE: 'unknown',
@@ -631,4 +634,166 @@ function setupNohupFallback(
     STATUS: 'success',
     LOG: 'logs/setup.log',
   });
+}
+
+// ── Maintenance service setup (all platforms) ─────────────────────────────
+
+function getPythonPath(): string {
+  for (const bin of ['python3', 'python']) {
+    try {
+      return execSync(`command -v ${bin}`, { encoding: 'utf-8' }).trim();
+    } catch {
+      /* try next */
+    }
+  }
+  return 'python3';
+}
+
+function getWindowsPythonPath(): string {
+  try {
+    return execSync('where python3', { encoding: 'utf-8' }).trim().split('\n')[0].trim();
+  } catch {
+    try {
+      return execSync('where python', { encoding: 'utf-8' }).trim().split('\n')[0].trim();
+    } catch {
+      return 'python3';
+    }
+  }
+}
+
+function setupMaintenanceLaunchd(projectRoot: string, homeDir: string): void {
+  const pythonPath = getPythonPath();
+  const plistPath = path.join(
+    homeDir,
+    'Library',
+    'LaunchAgents',
+    'com.deus.maintenance.plist',
+  );
+
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.deus.maintenance</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${pythonPath}</string>
+        <string>${projectRoot}/scripts/maintenance.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${projectRoot}</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${homeDir}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>${projectRoot}/logs/maintenance.log</string>
+    <key>StandardErrorPath</key>
+    <string>${projectRoot}/logs/maintenance.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>`;
+
+  fs.writeFileSync(plistPath, plist);
+  try {
+    execSync(`launchctl load ${JSON.stringify(plistPath)}`, {
+      stdio: 'ignore',
+    });
+    logger.info({ plistPath }, 'Maintenance job scheduled (daily 04:30)');
+  } catch {
+    logger.warn('launchctl load for maintenance failed (may already be loaded)');
+  }
+}
+
+function setupMaintenanceLinux(
+  projectRoot: string,
+  homeDir: string,
+): void {
+  const serviceManager = getServiceManager();
+  if (serviceManager !== 'systemd') {
+    logger.info('No systemd — skipping maintenance timer (run scripts/maintenance.py manually or via cron)');
+    return;
+  }
+
+  const pythonPath = getPythonPath();
+  const runningAsRoot = isRoot();
+  const unitDir = runningAsRoot
+    ? '/etc/systemd/system'
+    : path.join(homeDir, '.config', 'systemd', 'user');
+  const systemctlPrefix = runningAsRoot ? 'systemctl' : 'systemctl --user';
+
+  fs.mkdirSync(unitDir, { recursive: true });
+
+  // Service unit
+  const serviceUnit = `[Unit]
+Description=Deus KB maintenance
+
+[Service]
+Type=oneshot
+ExecStart=${pythonPath} ${projectRoot}/scripts/maintenance.py
+WorkingDirectory=${projectRoot}
+Environment=HOME=${homeDir}
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin
+StandardOutput=append:${projectRoot}/logs/maintenance.log
+StandardError=append:${projectRoot}/logs/maintenance.log`;
+
+  // Timer unit
+  const timerUnit = `[Unit]
+Description=Deus KB maintenance timer
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target`;
+
+  fs.writeFileSync(path.join(unitDir, 'deus-maintenance.service'), serviceUnit);
+  fs.writeFileSync(path.join(unitDir, 'deus-maintenance.timer'), timerUnit);
+
+  try {
+    execSync(`${systemctlPrefix} daemon-reload`, { stdio: 'ignore' });
+    execSync(`${systemctlPrefix} enable deus-maintenance.timer`, { stdio: 'ignore' });
+    execSync(`${systemctlPrefix} start deus-maintenance.timer`, { stdio: 'ignore' });
+    logger.info('Maintenance timer scheduled (daily 04:30)');
+  } catch {
+    logger.warn('systemd maintenance timer setup failed');
+  }
+}
+
+function setupMaintenanceWindows(
+  projectRoot: string,
+  _homeDir: string,
+): void {
+  const pythonPath = getWindowsPythonPath();
+  const taskName = 'DeusMaintenance';
+
+  try {
+    // Delete existing task if present
+    execSync(`schtasks /Delete /TN "${taskName}" /F`, { stdio: 'ignore' });
+  } catch {
+    /* does not exist */
+  }
+
+  try {
+    execSync(
+      `schtasks /Create /TN "${taskName}" /TR "${pythonPath} ${projectRoot}\\scripts\\maintenance.py" /SC DAILY /ST 04:30 /F`,
+      { stdio: 'pipe' },
+    );
+    logger.info('Windows Task Scheduler: maintenance scheduled (daily 04:30)');
+  } catch (err) {
+    logger.warn({ err }, 'Windows Task Scheduler setup failed — run scripts/maintenance.py manually');
+  }
 }
