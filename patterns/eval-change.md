@@ -21,6 +21,7 @@ Before any change to `evolution/`, read `docs/decisions/INDEX.md`. Three decisio
 | `eval-ipc-file-output.md` | Results via shared-volume files, **not stdout** — do not revert | Docker pipe buffering is a runtime constraint, not a fixable bug. Deadlock is guaranteed under load. |
 | `eval-no-disk-cache.md` | In-memory cache only | Disk cache silently masks regressions across builds — a passing cached result hides a regression in the new build. |
 | `eval-selective-warmup.md` | Warm only active test datasets | Full suite = ~40 container starts; cold start ~10 min. Warming inactive sets wastes time and saturates API rate limits. |
+| `no-db-deletion.md` | Never DELETE/DROP rows — use `orphaned_at`/`expired_at` soft-delete flags | Data loss is irreversible. Derived tables (embeddings, FTS, entities) exempt during `--rebuild` only. |
 
 ## Database isolation
 
