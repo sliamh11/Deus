@@ -103,7 +103,7 @@ After saving the session log:
 
    a. Extract the one-liner tldr from the session log just saved (first line of the `tldr:` frontmatter field).
 
-   b. Extract all unchecked `[ ]` items from the `## Pending Tasks` section of the session log. Max 10 items. If the section is missing or has 0 items, keep the current `pending:` unchanged and only update `previous:`.
+   b. Extract all unchecked `[ ]` items from the `## Pending Tasks` section of the session log. Also extract any checked `[x]` items — these are tasks completed during this session.
 
    c. In vault CLAUDE.md:
       - Update the `previous:` block as a rolling list of the last 3 sessions (parallel-safe, prepend-only):
@@ -113,8 +113,12 @@ After saving the session log:
         - Trim to the 3 most recent entries (drop the oldest).
         - Replace the entire `previous:` block with the updated list.
         - If `previous:` doesn't exist yet, add it before `pending:`.
-      - Replace the entire `pending:` block with the extracted `[ ]` items — one item per line, formatted as `  - [ ] ...`.
-      - Append the OLD pending block content to `$VAULT/CLAUDE-Archive.md` with header `## Archived YYYY-MM-DD` (create file if missing).
+      - **Merge** pending tasks (never replace):
+        1. Read the current `pending:` block from CLAUDE.md. If missing, treat as empty list.
+        2. Remove any items that match `[x]` completed tasks from the session log (fuzzy match on description).
+        3. Add any new `[ ]` items from the session log that don't already exist in the current pending list (avoid duplicates).
+        4. Cap at 10 items. If over 10, archive the oldest items to `$VAULT/CLAUDE-Archive.md`.
+        5. Write the merged list back to `pending:`.
 
    d. After writing, count total lines in CLAUDE.md. If > 60 lines: identify the oldest non-identity content block (not name/location/style/channels/security/goal/previous/pending) and move it to `$VAULT/CLAUDE-Archive.md` with a date header. Never archive identity fields.
 

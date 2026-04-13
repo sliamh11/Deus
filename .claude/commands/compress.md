@@ -53,7 +53,12 @@ After saving the session log, do three things:
    - Prepend the new entry at the top. Trim to 3 entries max (drop the oldest).
    - If `previous:` doesn't exist, add it before `pending:`.
 
-   **`pending:` block** — replace entirely with unchecked `[ ]` items from `## Pending Tasks` (max 10). If section is missing or empty, keep current `pending:` unchanged.
+   **`pending:` block** — merge, never replace:
+   1. Read the current `pending:` block from CLAUDE.md. If missing, treat as empty list.
+   2. Remove any items that match `[x]` completed tasks from the session log (fuzzy match on description).
+   3. Add any new `[ ]` items from the session log that don't already exist (avoid duplicates).
+   4. Cap at 10 items. If over 10, archive the oldest to `$VAULT/CLAUDE-Archive.md`.
+   5. Write the merged list back to `pending:`.
 
 2. Index the new log into the semantic memory index by running:
    python3 scripts/memory_indexer.py --add "<full path to saved log>"
