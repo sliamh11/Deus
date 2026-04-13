@@ -1751,9 +1751,19 @@ def test_detect_contradictions_invalidates_on_conflict(mi, fresh_vault, monkeypa
     assert len(conflicts) == 1
     assert conflicts[0]["older_id"] == old_id
 
-    # Old atom should be expired
+    # Old atom should NOT be auto-expired — conflicts are logged for user review
     row = db.execute("SELECT expired_at FROM entries WHERE id = ?", [old_id]).fetchone()
-    assert row[0] is not None
+    assert row[0] is None  # not auto-invalidated
+
+    # Conflict should be logged in pending_conflicts table
+    pending = db.execute(
+        "SELECT older_id, newer_id, resolved FROM pending_conflicts WHERE older_id = ?",
+        [old_id],
+    ).fetchone()
+    assert pending is not None
+    assert pending[0] == old_id
+    assert pending[1] == 999
+    assert pending[2] == 0  # unresolved
     db.close()
 
 
@@ -2434,6 +2444,7 @@ def test_compute_temperature_multiple_accesses_cumulative(mi):
 
 
 def test_compute_temperature_no_accesses(mi):
+    """Atoms with no access history get 0.5 baseline (not 0.0) to avoid permanent bottom-ranking."""
     db = mi.open_db()
     db.execute(
         "INSERT INTO entries (path, date, chunk, type, tldr, topics) "
@@ -2441,7 +2452,7 @@ def test_compute_temperature_no_accesses(mi):
     )
     db.commit()
     temp = mi.compute_temperature(db, 1)
-    assert temp == 0.0
+    assert temp == 0.5
     db.close()
 
 
@@ -2456,9 +2467,9 @@ def test_cmd_decay_updates_temperature_column(mi, capsys):
     mi.cmd_decay()
     db = mi.open_db()
     row = db.execute("SELECT temperature FROM entries WHERE id = 1").fetchone()
-    assert row[0] == 0.0  # no accesses → cold
+    assert row[0] == 0.5  # no accesses → baseline (not 0.0)
     out = capsys.readouterr().out
-    assert "cold" in out
+    assert "warm" in out  # 0.5 is in warm range (0.1-0.5)
     db.close()
 
 
@@ -3480,3 +3491,159 @@ def test_resolve_privacy_allowlist_all_invalid_returns_none(mi):
     """_resolve_privacy_allowlist with all-invalid input returns None."""
     result = mi._resolve_privacy_allowlist(["bogus", "fake"])
     assert result is None
+
+
+# ── Data integrity: rebuild preserves metadata ───────────────────────────────
+
+
+def test_rebuild_preserves_privacy_from_atom_files(mi, fresh_vault, monkeypatch):
+    """--rebuild should read privacy from atom file frontmatter, not reset to 'internal'."""
+    atoms_dir = fresh_vault / "Atoms"
+    atoms_dir.mkdir(parents=True, exist_ok=True)
+    (atoms_dir / "fact-test.md").write_text(
+        "---\ntype: atom\ncategory: fact\ntags: []\n"
+        "confidence: 0.80\ncorroborations: 2\ndomain: trading\nprivacy: sensitive\n"
+        "source: /tmp/src.md\ncreated_at: 2024-01-01\nupdated_at: 2024-01-01\nttl_days: null\n"
+        "---\nMy trading account number is 12345\n"
+    )
+    # Run rebuild (session logs dir already exists from fresh_vault fixture)
+    mi.cmd_rebuild()
+
+    db = mi.open_db()
+    row = db.execute(
+        "SELECT privacy FROM entries WHERE type = 'atom' LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "sensitive"  # preserved, not reset to 'internal'
+    db.close()
+
+
+def test_rebuild_preserves_expired_at_from_atom_files(mi, fresh_vault, monkeypatch):
+    """--rebuild should read expired_at from atom file frontmatter."""
+    atoms_dir = fresh_vault / "Atoms"
+    atoms_dir.mkdir(parents=True, exist_ok=True)
+    (atoms_dir / "fact-expired.md").write_text(
+        "---\ntype: atom\ncategory: fact\ntags: []\n"
+        "confidence: 0.50\ncorroborations: 1\ndomain: dev\nprivacy: internal\n"
+        "expired_at: 2024-06-01\nexpired_reason: superseded\n"
+        "source: /tmp/src.md\ncreated_at: 2024-01-01\nupdated_at: 2024-01-01\nttl_days: null\n"
+        "---\nOld fact that was invalidated\n"
+    )
+    mi.cmd_rebuild()
+
+    db = mi.open_db()
+    row = db.execute(
+        "SELECT expired_at, expired_reason FROM entries WHERE type = 'atom' LIMIT 1"
+    ).fetchone()
+    assert row[0] == "2024-06-01"
+    assert row[1] == "superseded"
+    db.close()
+
+
+def test_compute_temperature_baseline_for_unaccessed(mi):
+    """Atoms with no access_log should get 0.5 baseline, not 0.0."""
+    db = mi.open_db()
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence) "
+        "VALUES ('/tmp/t.md', '2024-01-01', 'test', 'atom', 0.5)"
+    )
+    db.commit()
+    temp = mi.compute_temperature(db, cur.lastrowid)
+    assert temp == 0.5  # baseline, not 0.0
+    db.close()
+
+
+def test_contradiction_does_not_auto_invalidate(mi, monkeypatch):
+    """Contradictions should be logged, not auto-invalidated."""
+    db = mi.open_db()
+    vec = [0.5] * mi.EMBED_DIM
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence) "
+        "VALUES ('/tmp/old.md', '2024-01-01', 'User prefers Python', 'atom', 0.5)"
+    )
+    old_id = cur.lastrowid
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [old_id, mi.serialize(vec)])
+    db.commit()
+
+    class FakeResponse:
+        text = "CONTRADICT"
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            return FakeResponse()
+
+    class FakeClient:
+        models = FakeModels()
+
+    monkeypatch.setattr(mi, "_client", FakeClient())
+
+    new_vec = [0.5] * mi.EMBED_DIM
+    new_vec[0] = 0.501
+    mi.detect_contradictions(db, 999, "User prefers Rust", new_vec)
+
+    # Atom should NOT be expired
+    row = db.execute("SELECT expired_at FROM entries WHERE id = ?", [old_id]).fetchone()
+    assert row[0] is None
+
+    # Conflict should be in pending_conflicts
+    conflict = db.execute("SELECT resolved FROM pending_conflicts WHERE older_id = ?", [old_id]).fetchone()
+    assert conflict is not None
+    assert conflict[0] == 0
+    db.close()
+
+
+def test_invalidate_conflict_expires_atom(mi):
+    """--invalidate-conflict should expire the older atom after user confirmation."""
+    db = mi.open_db()
+    # Create atom + conflict
+    atom_path = mi.VAULT_ATOMS
+    atom_path.mkdir(parents=True, exist_ok=True)
+    af = atom_path / "fact-conflict-test.md"
+    af.write_text("---\ntype: atom\n---\nOld fact\n")
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence) "
+        "VALUES (?, '2024-01-01', 'Old fact', 'atom', 0.5)", [str(af)]
+    )
+    old_id = cur.lastrowid
+    db.execute(
+        "INSERT INTO pending_conflicts (older_id, newer_id, older_text, newer_text, created_at) "
+        "VALUES (?, 999, 'Old fact', 'New fact', '2024-06-01')", [old_id]
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_invalidate_conflict(1)
+
+    db = mi.open_db()
+    row = db.execute("SELECT expired_at FROM entries WHERE id = ?", [old_id]).fetchone()
+    assert row[0] is not None  # now expired after user confirmation
+    conflict = db.execute("SELECT resolved, resolution FROM pending_conflicts WHERE id = 1").fetchone()
+    assert conflict[0] == 1
+    assert conflict[1] == "invalidated"
+    db.close()
+
+
+def test_dismiss_conflict_marks_resolved(mi):
+    """--dismiss-conflict should mark conflict as dismissed without expiring."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence) "
+        "VALUES ('/tmp/x.md', '2024-01-01', 'Some fact', 'atom', 0.5)"
+    )
+    db.execute(
+        "INSERT INTO pending_conflicts (older_id, newer_id, older_text, newer_text, created_at) "
+        "VALUES (1, 999, 'Some fact', 'Other fact', '2024-06-01')"
+    )
+    db.commit()
+    db.close()
+
+    mi.cmd_dismiss_conflict(1)
+
+    db = mi.open_db()
+    row = db.execute("SELECT expired_at FROM entries WHERE id = 1").fetchone()
+    assert row[0] is None  # not expired
+    conflict = db.execute("SELECT resolved, resolution FROM pending_conflicts WHERE id = 1").fetchone()
+    assert conflict[0] == 1
+    assert conflict[1] == "dismissed"
+    db.close()

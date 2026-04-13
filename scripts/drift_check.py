@@ -254,6 +254,21 @@ def main(base_ref: str | None = None) -> int:
         pattern_time = _git_commit_time(pattern_path, PROJECT_ROOT)
         governs = parse_governs(pattern_path)
 
+        # In --base mode: if the pattern file itself is changed in this PR,
+        # skip drift check entirely — the pattern is being updated alongside
+        # its governed files in the same PR. This handles the case where
+        # multiple commits within a single PR touch pattern and source at
+        # different times.
+        if changed_files is not None:
+            pattern_rel = str(pattern_path.relative_to(PROJECT_ROOT))
+            if pattern_rel in changed_files:
+                rows.append({
+                    "pattern": pattern_path.name,
+                    "status": "OK",
+                    "drifted": "—",
+                })
+                continue
+
         drifted: list[str] = []
         for rel_path in governs:
             governed = PROJECT_ROOT / rel_path
