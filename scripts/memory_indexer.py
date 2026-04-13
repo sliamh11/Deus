@@ -2558,17 +2558,16 @@ def cmd_rebuild():
         shutil.copy2(DB_PATH, backup_path)
         print(f"Backed up to {backup_path}")
 
-        # Selective clear: only drop rebuildable tables, preserve runtime data
+        # Clear rebuildable tables (rows only, keep schema intact)
         db = open_db()
         for table in rebuildable_tables:
             try:
-                db.execute(f"DROP TABLE IF EXISTS [{table}]")
+                db.execute(f"DELETE FROM [{table}]")
             except sqlite3.OperationalError:
                 pass
         db.commit()
         db.close()
 
-    # Recreate schema (open_db creates missing tables with IF NOT EXISTS)
     db = open_db()
     db.close()
 
