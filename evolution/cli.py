@@ -7,6 +7,7 @@ Usage:
     python evolution/cli.py get_reflections <query_json>
     python evolution/cli.py log_interaction <json>
     python evolution/cli.py reflect <interaction_id>
+    python evolution/cli.py dismiss_review_finding <json>
     python evolution/cli.py optimize [--module qa|tool_selection|summarization|all]
     python evolution/cli.py serve
 """
@@ -309,6 +310,62 @@ def cmd_archive_reflections(days: int = 30, dry_run: bool = False) -> None:
     print(f"{prefix} {count} stale reflections (threshold: {days} days)")
 
 
+def cmd_dismiss_review_finding(json_str: str) -> None:
+    """Create a reflection directly from a dismissed code review finding, bypassing the judge."""
+    try:
+        params = json.loads(json_str)
+    except json.JSONDecodeError:
+        print(json.dumps({"error": "Invalid JSON"}))
+        return
+
+    finding = params.get("finding", "")
+    reason = params.get("reason", "")
+    file_path = params.get("file", "")
+    line = params.get("line")
+    group_folder = params.get("group_folder")
+
+    # Validate required fields
+    if not finding or not finding.strip():
+        print(json.dumps({"error": "finding is required"}))
+        return
+    if not reason or not reason.strip():
+        print(json.dumps({"error": "reason is required"}))
+        return
+
+    # Sanitize inputs: strip newlines, cap length
+    finding = finding.replace("\n", " ").strip()[:500]
+    reason = reason.replace("\n", " ").strip()[:1000]
+    file_path = file_path.replace("\n", "").strip()[:300]
+    location = f"{file_path}:{line}" if line is not None else file_path
+
+    # Build a reflection content that serves as a negative example
+    content = (
+        f"- What went wrong: Code review flagged '{finding}' at {location} "
+        f"but the user dismissed it — this is a false positive.\n"
+        f"- Next time: Do NOT flag this pattern. Reason: {reason}\n"
+        f"- Category: code_review"
+    )
+
+    from .reflexion.store import save_reflection
+
+    try:
+        rid = save_reflection(
+            content=content,
+            category="code_review",
+            score_at_gen=0.3,  # Low score = negative signal
+            interaction_id=None,
+            group_folder=group_folder,
+        )
+    except Exception as exc:
+        print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
+        return
+
+    if rid:
+        print(json.dumps({"id": rid, "status": "ok", "content": content}))
+    else:
+        print(json.dumps({"id": None, "status": "duplicate", "reason": "Similar reflection already exists"}))
+
+
 def cmd_serve() -> None:
     from .mcp_server import _run_mcp_server
     _run_mcp_server()
@@ -355,6 +412,10 @@ def main() -> None:
     p_archive.add_argument("--days", type=int, default=30, help="Age threshold in days (default: 30)")
     p_archive.add_argument("--dry-run", action="store_true", help="Preview without archiving")
 
+    # dismiss_review_finding
+    p_dismiss = sub.add_parser("dismiss_review_finding", help="Create reflection from dismissed code review finding")
+    p_dismiss.add_argument("json_str", help='JSON: {"finding": "...", "category": "...", "reason": "...", ...}')
+
     # serve
     sub.add_parser("serve", help="Start MCP stdio server")
 
@@ -400,6 +461,8 @@ def main() -> None:
         cmd_principles(domain=args.domain, top_k=args.top_k, min_new=args.min_new, force=args.force)
     elif args.cmd == "archive-reflections":
         cmd_archive_reflections(days=args.days, dry_run=args.dry_run)
+    elif args.cmd == "dismiss_review_finding":
+        cmd_dismiss_review_finding(args.json_str)
     elif args.cmd == "serve":
         cmd_serve()
     elif args.cmd == "backfill":

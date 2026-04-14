@@ -27,7 +27,10 @@
     "drift-check:coverage": "python3 scripts/drift_check.py --coverage",
     "pattern-validate": "python3 scripts/drift_check.py --validate",
     "pattern-validate-router": "python3 scripts/drift_check.py --validate-router",
-    "pattern-contradictions": "python3 scripts/drift_check.py --contradictions"
+    "pattern-contradictions": "python3 scripts/drift_check.py --contradictions",
+    "benchmark:review": "python3 scripts/review_benchmark.py run --count 10",
+    "benchmark:review:inject": "python3 scripts/review_benchmark.py inject --count 10",
+    "benchmark:review:revert": "python3 scripts/review_benchmark.py revert"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

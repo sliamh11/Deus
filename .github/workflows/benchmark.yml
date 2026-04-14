@@ -1,0 +1,94 @@
+name: Code Review Benchmark
+
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Monday 9am UTC (12pm Israel)
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'Number of bugs to inject'
+        default: '10'
+        type: string
+      seed:
+        description: 'Random seed (empty = random)'
+        default: ''
+        type: string
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Inject bugs on throwaway branch
+        id: inject
+        run: |
+          SEED_ARG=""
+          COUNT="${{ inputs.count || '10' }}"
+          if [ -n "${{ inputs.seed }}" ]; then
+            SEED_ARG="--seed ${{ inputs.seed }}"
+          fi
+          python3 scripts/review_benchmark.py inject --count "$COUNT" $SEED_ARG 2>&1 | tee /tmp/inject.log
+
+          # Extract injection count
+          INJECTED=$(grep -oP 'Injected \K\d+' /tmp/inject.log || echo "0")
+          SKIPPED=$(grep -c '\[SKIP' /tmp/inject.log || echo "0")
+          echo "injected=$INJECTED" >> "$GITHUB_OUTPUT"
+          echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
+
+      - name: Save diff and manifest as artifacts
+        run: |
+          mkdir -p /tmp/benchmark-artifacts
+          python3 scripts/review_benchmark.py diff > /tmp/benchmark-artifacts/injected-diff.patch
+          cp .review-benchmark-manifest.json /tmp/benchmark-artifacts/manifest.json
+
+      - name: Discard throwaway branch
+        if: always()
+        run: python3 scripts/review_benchmark.py revert
+
+      - name: Verify original branch is clean
+        run: |
+          BRANCH=$(git branch --show-current)
+          REMAINING=$(git diff --stat | wc -l)
+          BENCHMARK_EXISTS=$(git branch --list 'benchmark/injected-bugs' | wc -l)
+          if [ "$REMAINING" -ne 0 ]; then
+            echo "::error::Original branch has unexpected changes"
+            git diff --stat
+            exit 1
+          fi
+          if [ "$BENCHMARK_EXISTS" -ne 0 ]; then
+            echo "::error::Benchmark branch was not deleted"
+            exit 1
+          fi
+          echo "Clean: on branch '$BRANCH', no benchmark branch, no dirty files"
+
+      - name: Check pattern coverage
+        run: |
+          INJECTED="${{ steps.inject.outputs.injected }}"
+          SKIPPED="${{ steps.inject.outputs.skipped }}"
+          TOTAL=$((INJECTED + SKIPPED))
+          COVERAGE=$((INJECTED * 100 / TOTAL))
+
+          echo "## Benchmark Results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Metric | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|--------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Bugs injected | $INJECTED |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Patterns skipped | $SKIPPED |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Pattern coverage | ${COVERAGE}% |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Revert status | Clean |" >> "$GITHUB_STEP_SUMMARY"
+
+          # Warn if coverage drops below 70%
+          if [ "$COVERAGE" -lt 70 ]; then
+            echo "::warning::Pattern coverage dropped to ${COVERAGE}% — some patterns can't find injection points"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-${{ github.run_number }}
+          path: /tmp/benchmark-artifacts/
+          retention-days: 30
