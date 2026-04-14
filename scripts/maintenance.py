@@ -6,7 +6,7 @@ Intended to be called by a system scheduler (launchd/systemd/Task Scheduler).
 Each task runs independently; one failure does not block others.
 
 Daily tasks: memory_gc, prune, decay, health
-Weekly tasks (Sunday only): compress-digests, compile entities
+Weekly tasks (Sunday only): compress-digests, compile entities, compression benchmark, vault integrity
 
 Usage:
     python3 scripts/maintenance.py              # daily tasks only
@@ -22,7 +22,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 PYTHON = sys.executable
 
 
-def run_task(name: str, args: list[str], dry_run: bool = False) -> bool:
+def run_task(name: str, args: list[str], dry_run: bool = False, timeout: int = 300) -> bool:
     """Run a single maintenance task. Returns True on success."""
     cmd = [PYTHON] + args
     if dry_run:
@@ -31,7 +31,7 @@ def run_task(name: str, args: list[str], dry_run: bool = False) -> bool:
     print(f"  [{name}] running...", flush=True)
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=300,
+            cmd, capture_output=True, text=True, timeout=timeout,
         )
         if result.stdout.strip():
             for line in result.stdout.strip().splitlines():
@@ -45,7 +45,7 @@ def run_task(name: str, args: list[str], dry_run: bool = False) -> bool:
         print(f"  [{name}] OK")
         return True
     except subprocess.TimeoutExpired:
-        print(f"  [{name}] TIMEOUT (300s)")
+        print(f"  [{name}] TIMEOUT ({timeout}s)")
         return False
     except Exception as e:
         print(f"  [{name}] ERROR: {e}")
@@ -86,6 +86,19 @@ def main():
         print("\n── Weekly ──")
         results["digests"] = run_task("digests", [indexer, "--compress-digests", "weekly"], dry_run)
         results["compile"] = run_task("compile", [indexer, "--compile"], dry_run)
+
+        compression_bench = str(SCRIPTS_DIR / "compression_benchmark.py")
+        results["compression_check"] = run_task(
+            "compression_check",
+            [compression_bench, "--auto"],
+            dry_run,
+            timeout=900,  # LLM-based: multiple Ollama calls
+        )
+        results["vault_integrity"] = run_task(
+            "vault_integrity",
+            [compression_bench, "--vault-integrity"],
+            dry_run,
+        )
     else:
         print(f"\n── Weekly tasks skipped (not Sunday, use --weekly to force) ──")
 
