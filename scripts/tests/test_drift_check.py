@@ -644,3 +644,114 @@ class TestFileInChangedSet:
 
     def test_empty_changed_set(self, tmp_path):
         assert not drift_check._file_in_changed_set("src/", set(), tmp_path)
+
+
+# ── check_shadow ─────────────────────────────────────────────────────────────
+
+
+def _build_shadow_project(
+    tmp_path: Path,
+    public_files: list[str],
+    private_files: list[str],
+) -> Path:
+    """Create a project tree with public and private script files."""
+    for f in public_files:
+        p = tmp_path / f
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"# public {f}")
+    for f in private_files:
+        p = tmp_path / "src" / "private" / f
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(f"# private {f}")
+    return tmp_path
+
+
+class TestCheckShadow:
+    def test_no_private_dir(self, tmp_path, monkeypatch):
+        """No src/private/ at all — should pass cleanly."""
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+        assert drift_check.check_shadow(tmp_path) == 0
+
+    def test_private_only_file_no_warning(self, tmp_path, monkeypatch):
+        """Private file with no public equivalent — no shadow, no warning."""
+        _build_shadow_project(tmp_path, [], ["scripts/secret.py"])
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+        assert drift_check.check_shadow(tmp_path) == 0
+
+    def test_shadow_with_correct_symlink(self, tmp_path, monkeypatch):
+        """Private shadows public and /tmp/ symlink points to private — OK."""
+        _build_shadow_project(
+            tmp_path,
+            ["scripts/tool.py"],
+            ["scripts/tool.py"],
+        )
+        private_path = tmp_path / "src" / "private" / "scripts" / "tool.py"
+        tmp_link = Path("/tmp") / "tool.py"
+        # Clean up any pre-existing symlink
+        if tmp_link.exists() or tmp_link.is_symlink():
+            tmp_link.unlink()
+        tmp_link.symlink_to(private_path)
+        try:
+            monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+            assert drift_check.check_shadow(tmp_path) == 0
+        finally:
+            tmp_link.unlink()
+
+    def test_shadow_with_missing_symlink(self, tmp_path, monkeypatch, capsys):
+        """Private shadows public but no /tmp/ symlink — should warn."""
+        # Use a unique filename to avoid collisions with real /tmp/ files
+        fname = "_drift_test_shadow_missing.py"
+        _build_shadow_project(
+            tmp_path,
+            [f"scripts/{fname}"],
+            [f"scripts/{fname}"],
+        )
+        tmp_link = Path("/tmp") / fname
+        if tmp_link.exists() or tmp_link.is_symlink():
+            tmp_link.unlink()
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+        assert drift_check.check_shadow(tmp_path) == 1
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert fname in out
+
+    def test_shadow_with_wrong_symlink(self, tmp_path, monkeypatch, capsys):
+        """Private shadows public but /tmp/ symlink points to public — should warn."""
+        fname = "_drift_test_shadow_wrong.py"
+        _build_shadow_project(
+            tmp_path,
+            [f"scripts/{fname}"],
+            [f"scripts/{fname}"],
+        )
+        public_path = tmp_path / "scripts" / fname
+        tmp_link = Path("/tmp") / fname
+        if tmp_link.exists() or tmp_link.is_symlink():
+            tmp_link.unlink()
+        tmp_link.symlink_to(public_path)
+        try:
+            monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+            assert drift_check.check_shadow(tmp_path) == 1
+            out = capsys.readouterr().out
+            assert "WARN" in out
+            assert "should point to" in out
+        finally:
+            tmp_link.unlink()
+
+    def test_skips_dotfiles(self, tmp_path, monkeypatch):
+        """Hidden files in src/private/ should be ignored."""
+        _build_shadow_project(tmp_path, ["scripts/.hidden"], ["scripts/.hidden"])
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+        assert drift_check.check_shadow(tmp_path) == 0
+
+    def test_included_in_check_all(self, tmp_path, monkeypatch, capsys):
+        """check_all should include the shadow check."""
+        (tmp_path / "patterns").mkdir()
+        (tmp_path / "patterns" / "INDEX.md").write_text(
+            "| task | pattern | source |\n|---|---|---|\n"
+        )
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "src" / "private").mkdir(parents=True)
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+        drift_check.check_all(tmp_path)
+        out = capsys.readouterr().out
+        assert "shadow" in out.lower()

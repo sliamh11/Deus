@@ -16,6 +16,7 @@ Usage:
   python3 scripts/drift_check.py --coverage        # report uncovered docs/
   python3 scripts/drift_check.py --paths           # verify all pattern path refs exist
   python3 scripts/drift_check.py --adr             # flag patterns stale vs ADRs
+  python3 scripts/drift_check.py --shadow          # check private/public symlink integrity
   python3 scripts/drift_check.py --all             # run every fast check above
   python3 scripts/drift_check.py --validate        # LLM pattern content check (slow)
   python3 scripts/drift_check.py --validate-router # LLM router selection check (slow)
@@ -1063,16 +1064,68 @@ def check_all(project_root: Path, base_ref: str | None = None) -> int:
     adr_rc = check_adr(project_root)
     print("\n=== test_tasks frontmatter ===")
     tt_rc = check_test_tasks(project_root)
+    print("\n=== shadow (private overrides) ===")
+    shadow_rc = check_shadow(project_root)
     print("\n=== coverage (informational) ===")
     cov_rc = check_coverage(project_root)
 
-    worst = max(drift_rc, paths_rc, adr_rc, tt_rc, cov_rc)
+    worst = max(drift_rc, paths_rc, adr_rc, tt_rc, shadow_rc, cov_rc)
     print()
     if worst == 0:
         print("ALL CHECKS PASSED")
     else:
         print(f"FAILED (worst exit code: {worst})")
     return worst
+
+
+def check_shadow(project_root: Path) -> int:
+    """Check that src/private/ mirrors are properly symlinked.
+
+    Scans src/private/ for files that shadow public equivalents (e.g.,
+    src/private/scripts/foo.py shadows scripts/foo.py). Warns if:
+    - A shadow exists but /tmp/ symlink points to the public version
+    - A shadow exists but no /tmp/ symlink exists at all
+    Returns 0 if all shadows are properly linked, 1 if issues found.
+    """
+    private_root = project_root / "src" / "private"
+    if not private_root.exists():
+        print("No src/private/ directory — nothing to check.")
+        return 0
+
+    issues = 0
+    for private_file in sorted(private_root.rglob("*")):
+        if private_file.is_dir() or private_file.name.startswith("."):
+            continue
+        # Compute the public equivalent path
+        # src/private/scripts/foo.py → scripts/foo.py
+        rel = private_file.relative_to(private_root)
+        public_file = project_root / rel
+        if not public_file.exists():
+            continue  # No shadow — private-only file, fine
+
+        # Check /tmp/ symlink
+        tmp_link = Path("/tmp") / private_file.name
+        if tmp_link.is_symlink():
+            target = tmp_link.resolve()
+            if target != private_file.resolve():
+                print(f"  WARN: /tmp/{private_file.name} → {target}")
+                print(f"        should point to {private_file}")
+                issues += 1
+            else:
+                print(f"  OK: /tmp/{private_file.name} → private (correct)")
+        elif tmp_link.exists():
+            print(f"  WARN: /tmp/{private_file.name} exists but is not a symlink")
+            issues += 1
+        else:
+            print(f"  WARN: {rel} shadows public version but no /tmp/ symlink")
+            print(f"        run: ln -sf {private_file} /tmp/{private_file.name}")
+            issues += 1
+
+    if issues == 0:
+        print("All private shadows properly linked.")
+    else:
+        print(f"\n{issues} shadow issue(s) found.")
+    return 1 if issues else 0
 
 
 def check_coverage(project_root: Path) -> int:
@@ -1162,6 +1215,11 @@ if __name__ == "__main__":
              "GEMINI_API_KEY). Optional PATTERN arg filters to matching files.",
     )
     parser.add_argument(
+        "--shadow",
+        action="store_true",
+        help="Check src/private/ files shadow public equivalents with correct /tmp/ symlinks",
+    )
+    parser.add_argument(
         "--base",
         metavar="REF",
         help="Only check governed files changed since REF (e.g. origin/main). "
@@ -1169,7 +1227,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.contradictions is not None:
+    if args.shadow:
+        sys.exit(check_shadow(PROJECT_ROOT))
+    elif args.contradictions is not None:
         sys.exit(check_contradictions(PROJECT_ROOT, args.contradictions or None))
     elif args.validate_router is not None:
         sys.exit(check_validate_router(PROJECT_ROOT, args.validate_router or None))
