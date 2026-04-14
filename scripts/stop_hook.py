@@ -22,20 +22,28 @@ from pathlib import Path
 # ── Config ────────────────────────────────────────────────────────────────────
 
 
-def _load_checkpoints_dir() -> Path:
-    """Resolve vault Checkpoints/ path from config.json or DEUS_VAULT_PATH env var."""
+def _load_vault_root() -> Path | None:
+    """Resolve vault root from DEUS_VAULT_PATH env var or config.json."""
     env_path = os.environ.get("DEUS_VAULT_PATH")
     if env_path:
-        return Path(env_path).expanduser() / "Checkpoints"
+        return Path(env_path).expanduser()
     cfg_path = Path("~/.config/deus/config.json").expanduser()
     if cfg_path.exists():
         try:
             cfg = json.loads(cfg_path.read_text())
-            if cfg.get("vault_path"):
-                return Path(cfg["vault_path"]).expanduser() / "Checkpoints"
+            vp = cfg.get("vault_path")
+            if vp:
+                return Path(vp).expanduser()
         except (json.JSONDecodeError, OSError):
             pass
-    # Silent fallback — stop hook must never block Claude Code
+    return None
+
+
+def _load_checkpoints_dir() -> Path:
+    """Resolve vault Checkpoints/ path. Silent fallback so the hook never blocks."""
+    vault = _load_vault_root()
+    if vault is not None:
+        return vault / "Checkpoints"
     return Path("~/.deus/checkpoints").expanduser()
 
 
@@ -148,26 +156,74 @@ status: auto
     path.write_text(content, encoding="utf-8")
 
 
+# ── Memory-tree drift scan (Phase 5) ──────────────────────────────────────────
+
+def _scan_vault_drift(vault: Path, limit: int = 5) -> int:
+    """Re-embed up to `limit` tracked files whose mtime exceeds the last node
+    update. Hash-gated via reembed_file — most edits cost 0. Gated by
+    DEUS_MEMORY_TREE=1. Silent on all errors. Returns number attempted."""
+    if os.environ.get("DEUS_MEMORY_TREE", "0") != "1":
+        return 0
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        import memory_tree as mt  # type: ignore
+    except ImportError:
+        return 0
+    try:
+        db = mt.open_db()
+        rows = db.execute(
+            "SELECT path, updated_at FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchall()
+    except Exception:
+        return 0
+    candidates: list[tuple[int, str]] = []
+    for path, updated_at in rows:
+        try:
+            full = vault / path
+            if not full.exists():
+                continue
+            mtime = int(full.stat().st_mtime)
+            if mtime > (updated_at or 0):
+                candidates.append((mtime - (updated_at or 0), path))
+        except OSError:
+            continue
+    candidates.sort(reverse=True)
+    attempted = 0
+    for _, path in candidates[:limit]:
+        try:
+            mt.reembed_file(vault, path, db)
+            attempted += 1
+        except Exception:
+            continue
+    return attempted
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
+
+def _maybe_drift_scan():
+    vault = _load_vault_root()
+    if vault is not None:
+        try:
+            _scan_vault_drift(vault, limit=5)
+        except Exception:
+            pass
+
 
 def main():
     try:
         hook_data = json.loads(sys.stdin.read() or "{}")
     except Exception:
+        _maybe_drift_scan()
         return
 
-    if not should_checkpoint():
-        return
+    if should_checkpoint():
+        transcript_path = hook_data.get("transcript_path", "")
+        if transcript_path:
+            turns = read_transcript(transcript_path)
+            if len(turns) >= MIN_TURNS:
+                write_checkpoint(turns)
 
-    transcript_path = hook_data.get("transcript_path", "")
-    if not transcript_path:
-        return
-
-    turns = read_transcript(transcript_path)
-    if len(turns) < MIN_TURNS:
-        return
-
-    write_checkpoint(turns)
+    _maybe_drift_scan()
 
 
 if __name__ == "__main__":
