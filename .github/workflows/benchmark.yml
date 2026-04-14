@@ -23,7 +23,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Inject bugs
+      - name: Inject bugs on throwaway branch
         id: inject
         run: |
           SEED_ARG=""
@@ -39,34 +39,31 @@ jobs:
           echo "injected=$INJECTED" >> "$GITHUB_OUTPUT"
           echo "skipped=$SKIPPED" >> "$GITHUB_OUTPUT"
 
-      - name: Verify diff exists
-        run: |
-          DIFF_LINES=$(git diff --stat | wc -l)
-          if [ "$DIFF_LINES" -eq 0 ]; then
-            echo "::error::No diff generated — injection may have failed"
-            exit 1
-          fi
-          echo "Diff covers $DIFF_LINES files"
-          git diff --stat
-
-      - name: Save diff as artifact
+      - name: Save diff and manifest as artifacts
         run: |
           mkdir -p /tmp/benchmark-artifacts
-          git diff > /tmp/benchmark-artifacts/injected-diff.patch
+          python3 scripts/review_benchmark.py diff > /tmp/benchmark-artifacts/injected-diff.patch
           cp .review-benchmark-manifest.json /tmp/benchmark-artifacts/manifest.json
 
-      - name: Revert all changes
+      - name: Discard throwaway branch
+        if: always()
         run: python3 scripts/review_benchmark.py revert
 
-      - name: Verify clean revert
+      - name: Verify original branch is clean
         run: |
+          BRANCH=$(git branch --show-current)
           REMAINING=$(git diff --stat | wc -l)
+          BENCHMARK_EXISTS=$(git branch --list 'benchmark/injected-bugs' | wc -l)
           if [ "$REMAINING" -ne 0 ]; then
-            echo "::error::Revert incomplete — $REMAINING files still modified"
+            echo "::error::Original branch has unexpected changes"
             git diff --stat
             exit 1
           fi
-          echo "Clean revert confirmed"
+          if [ "$BENCHMARK_EXISTS" -ne 0 ]; then
+            echo "::error::Benchmark branch was not deleted"
+            exit 1
+          fi
+          echo "Clean: on branch '$BRANCH', no benchmark branch, no dirty files"
 
       - name: Check pattern coverage
         run: |

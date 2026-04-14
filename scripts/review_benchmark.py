@@ -638,12 +638,61 @@ def find_and_inject(
     return None
 
 
+BENCHMARK_BRANCH = "benchmark/injected-bugs"
+
+
+def _git(*args: str, check: bool = True, **kwargs) -> subprocess.CompletedProcess:
+    """Run a git command in the repo root."""
+    return subprocess.run(
+        ["git", *args],
+        capture_output=True, text=True, cwd=REPO_ROOT,
+        check=check, **kwargs,
+    )
+
+
+def _get_current_branch() -> str:
+    return _git("branch", "--show-current").stdout.strip()
+
+
 def cmd_inject(count: int = 8, seed: Optional[int] = None):
-    """Inject N disguised bugs into the codebase."""
+    """Inject bugs on a throwaway branch. Original branch stays untouched."""
+    # Refuse if working tree is dirty
+    dirty = _git("diff", "--name-only")
+    if dirty.stdout.strip():
+        print(f"ERROR: Working tree has uncommitted changes. Commit or stash first.")
+        sys.exit(1)
+
+    # Refuse if benchmark branch already exists (leftover from a failed run)
+    existing = _git("branch", "--list", BENCHMARK_BRANCH)
+    if existing.stdout.strip():
+        print(f"ERROR: Branch '{BENCHMARK_BRANCH}' already exists. Run `revert` first to clean up.")
+        sys.exit(1)
+
     if seed is None:
         seed = random.randint(0, 2**32)
 
+    # Record which branch we came from
+    original_branch = _get_current_branch() or _git("rev-parse", "HEAD").stdout.strip()
+
+    # === CRITICAL: Create throwaway branch BEFORE any file modifications ===
+    # This is the safety gate — if this fails, no files have been touched.
+    try:
+        _git("checkout", "-b", BENCHMARK_BRANCH)
+    except subprocess.CalledProcessError as e:
+        print(f"CRITICAL: Failed to create benchmark branch. No files were modified.")
+        print(f"  Error: {e.stderr.strip() if e.stderr else e}")
+        sys.exit(1)
+
+    # Verify we're actually on the benchmark branch (belt + suspenders)
+    current = _get_current_branch()
+    if current != BENCHMARK_BRANCH:
+        print(f"CRITICAL: Expected to be on '{BENCHMARK_BRANCH}' but on '{current}'. Aborting.")
+        sys.exit(1)
+
+    print(f"Created throwaway branch: {BENCHMARK_BRANCH}")
+    print(f"Original branch: {original_branch}")
     print(f"Seed: {seed} (reuse with --seed {seed} to reproduce)")
+
     patterns = select_patterns(count, seed)
     results: list[InjectionResult] = []
     used_files: set[str] = set()
@@ -656,28 +705,50 @@ def cmd_inject(count: int = 8, seed: Optional[int] = None):
         else:
             print(f"  [SKIP    ] {pattern.name:25} — no suitable injection point found")
 
+    if not results:
+        # Nothing injected — clean up the branch
+        _git("checkout", original_branch)
+        _git("branch", "-D", BENCHMARK_BRANCH)
+        print("No bugs injected. Branch deleted.")
+        return results
+
+    # Commit the injected bugs on the throwaway branch
+    _git("add", "-A")
+    _git("commit", "-m", f"benchmark: inject {len(results)} bugs (seed {seed})", check=False)
+
     # Save manifest (ground truth)
     manifest = {
         "seed": seed,
+        "original_branch": original_branch,
         "count": len(results),
         "injections": [asdict(r) for r in results],
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
-    print(f"\nInjected {len(results)} bugs. Manifest: {MANIFEST_PATH}")
+    print(f"\nInjected {len(results)} bugs on '{BENCHMARK_BRANCH}'.")
+    print(f"Manifest: {MANIFEST_PATH}")
     print("Run `python3 scripts/review_benchmark.py diff` to see the diff.")
     return results
 
 
 def cmd_diff():
-    """Show the unified diff of all injected changes."""
-    result = subprocess.run(
-        ["git", "diff", "--unified=5"],
-        capture_output=True, text=True, cwd=REPO_ROOT,
-    )
+    """Show the unified diff of injected changes vs the original branch."""
+    if not MANIFEST_PATH.exists():
+        print("No manifest found. Run `inject` first.")
+        return
+
+    manifest = json.loads(MANIFEST_PATH.read_text())
+    original = manifest.get("original_branch", "main")
+
+    result = _git("diff", f"{original}...{BENCHMARK_BRANCH}", "--unified=5", check=False)
     if result.stdout:
         print(result.stdout)
     else:
-        print("No changes detected. Run `inject` first.")
+        # Fallback: diff working tree
+        result = _git("diff", "--unified=5", check=False)
+        if result.stdout:
+            print(result.stdout)
+        else:
+            print("No changes detected.")
 
 
 def cmd_score(findings_json: str):
@@ -762,37 +833,47 @@ def cmd_score(findings_json: str):
 
 
 def cmd_revert():
-    """Revert all injected changes using git checkout."""
+    """Discard the throwaway branch and return to the original branch.
+
+    The bugs only exist on the benchmark branch — deleting it removes them
+    completely. The original branch is never modified.
+    """
+    original_branch = None
+
     if MANIFEST_PATH.exists():
         manifest = json.loads(MANIFEST_PATH.read_text())
-        files = [inj["file"] for inj in manifest["injections"]]
-        if files:
-            subprocess.run(
-                ["git", "checkout", "--"] + files,
-                cwd=REPO_ROOT,
-            )
-            print(f"Reverted {len(files)} files.")
+        original_branch = manifest.get("original_branch")
         MANIFEST_PATH.unlink()
-        print("Manifest deleted.")
+
+    current = _get_current_branch()
+
+    # Safety: refuse to delete main/master
+    PROTECTED = {"main", "master"}
+    if BENCHMARK_BRANCH in PROTECTED:
+        print(f"CRITICAL: benchmark branch name '{BENCHMARK_BRANCH}' is a protected branch. Aborting.")
+        sys.exit(1)
+
+    # If we're on the benchmark branch, switch away first
+    if current == BENCHMARK_BRANCH:
+        target = original_branch or "main"
+        _git("checkout", target)
+        print(f"Switched to {target}.")
+
+    # Delete the benchmark branch if it exists
+    existing = _git("branch", "--list", BENCHMARK_BRANCH)
+    if existing.stdout.strip():
+        _git("branch", "-D", BENCHMARK_BRANCH)
+        print(f"Deleted branch '{BENCHMARK_BRANCH}'. All injected bugs are gone.")
     else:
-        # Fallback: revert all changes
-        result = subprocess.run(
-            ["git", "diff", "--name-only"],
-            capture_output=True, text=True, cwd=REPO_ROOT,
-        )
-        if result.stdout.strip():
-            files = result.stdout.strip().split("\n")
-            subprocess.run(
-                ["git", "checkout", "--"] + files,
-                cwd=REPO_ROOT,
-            )
-            print(f"Reverted {len(files)} files (no manifest found).")
-        else:
-            print("Nothing to revert.")
+        print("No benchmark branch found — nothing to clean up.")
 
 
 def cmd_run(count: int = 8, seed: Optional[int] = None):
-    """Full pipeline: inject → diff → manifest → revert. Outputs everything needed for scoring."""
+    """Full pipeline: inject on throwaway branch → diff → cleanup.
+
+    The diff and manifest are printed to stdout. The throwaway branch
+    is deleted at the end — the original branch is never touched.
+    """
     results = cmd_inject(count, seed)
 
     if not results:
@@ -809,7 +890,7 @@ def cmd_run(count: int = 8, seed: Optional[int] = None):
     print(f"{'='*50}\n")
     print(MANIFEST_PATH.read_text())
 
-    # Revert
+    # Cleanup: delete the throwaway branch
     print(f"\n{'='*50}")
     print("CLEANUP")
     print(f"{'='*50}\n")
