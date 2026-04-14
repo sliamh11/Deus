@@ -319,15 +319,28 @@ def cmd_dismiss_review_finding(json_str: str) -> None:
         return
 
     finding = params.get("finding", "")
-    category = params.get("category", "style")  # style|logic|security
     reason = params.get("reason", "")
     file_path = params.get("file", "")
-    line = params.get("line", 0)
+    line = params.get("line")
     group_folder = params.get("group_folder")
+
+    # Validate required fields
+    if not finding or not finding.strip():
+        print(json.dumps({"error": "finding is required"}))
+        return
+    if not reason or not reason.strip():
+        print(json.dumps({"error": "reason is required"}))
+        return
+
+    # Sanitize inputs: strip newlines, cap length
+    finding = finding.replace("\n", " ").strip()[:500]
+    reason = reason.replace("\n", " ").strip()[:1000]
+    file_path = file_path.replace("\n", "").strip()[:300]
+    location = f"{file_path}:{line}" if line is not None else file_path
 
     # Build a reflection content that serves as a negative example
     content = (
-        f"- What went wrong: Code review flagged '{finding}' at {file_path}:{line} "
+        f"- What went wrong: Code review flagged '{finding}' at {location} "
         f"but the user dismissed it — this is a false positive.\n"
         f"- Next time: Do NOT flag this pattern. Reason: {reason}\n"
         f"- Category: code_review"
@@ -335,13 +348,17 @@ def cmd_dismiss_review_finding(json_str: str) -> None:
 
     from .reflexion.store import save_reflection
 
-    rid = save_reflection(
-        content=content,
-        category="code_review",
-        score_at_gen=0.3,  # Low score = negative signal
-        interaction_id=None,
-        group_folder=group_folder,
-    )
+    try:
+        rid = save_reflection(
+            content=content,
+            category="code_review",
+            score_at_gen=0.3,  # Low score = negative signal
+            interaction_id=None,
+            group_folder=group_folder,
+        )
+    except Exception as exc:
+        print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
+        return
 
     if rid:
         print(json.dumps({"id": rid, "status": "ok", "content": content}))

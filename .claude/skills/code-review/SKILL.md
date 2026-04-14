@@ -240,20 +240,23 @@ When a finding is dismissed, two things happen:
 - **Rule:** Do NOT flag <specific pattern> when <specific context>
 ```
 
-**B. Evolution reflexion** — run this bash command to create a forced reflection:
+**B. Evolution reflexion** — create a forced reflection by building the JSON safely with Python:
 
 ```bash
-python3 evolution/cli.py dismiss_review_finding '{
-  "finding": "<title>",
-  "category": "<style|logic|security>",
-  "reason": "<user reason>",
-  "file": "<path>",
-  "line": <number>,
-  "group_folder": "<current group or null>"
-}'
+python3 -c "
+import json, subprocess, sys
+payload = json.dumps({
+    'finding': sys.argv[1],
+    'reason': sys.argv[2],
+    'file': sys.argv[3],
+    'line': int(sys.argv[4]) if sys.argv[4] != 'null' else None,
+    'group_folder': sys.argv[5] if sys.argv[5] != 'null' else None
+})
+subprocess.run([sys.executable, 'evolution/cli.py', 'dismiss_review_finding', payload])
+" "<title>" "<user reason>" "<path>" "<line or null>" "<group or null>"
 ```
 
-This bypasses the judge and directly creates a negative reflection that will be retrieved in future reviews via `getReflections()`.
+This bypasses the judge and directly creates a negative reflection that will be retrieved in future reviews via `getReflections()`. Using `json.dumps` avoids shell injection from special characters in finding titles or reasons.
 
 ### Step 9: Log review commit SHA
 
