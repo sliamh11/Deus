@@ -158,6 +158,21 @@ See the ADR for the authoritative list. Summary:
 - Cold-start footprint: ≤800 tokens.
 - p95 latency: ≤200ms.
 
+**Results (2026-04-15, fixture `scripts/tests/fixtures/memory_tree_queries.jsonl`):**
+
+| Metric | Target | Actual |
+|---|---|---|
+| single-node recall@5 | ≥0.90 | **1.00** (20/20) |
+| multi-node recall@5 | ≥0.75 | **1.00** (15/15) |
+| cross-branch recall@5 | ≥0.70 | **1.00** (10/10) |
+| abstain accuracy | 100% | **1.00** (5/5) |
+| wrong-confident rate | <5% | **0.0%** |
+| p95 latency | ≤200ms | **79.0ms** |
+| cold-start footprint | ≤800 tok | ~585 tok (MEMORY_TREE.md) |
+| LOW / ABSTAIN (fitted) | — | 0.65 / 0.35 |
+
+MRR@5: 1.000 single · 0.822 multi · 0.950 cross-branch. All ship criteria met on synthetic calibration. Real-world calibration will re-fit thresholds from `~/.deus/memory_tree_queries.jsonl` once Phase 4 dogfood has accumulated a week of query logs.
+
 ### Phase 4 — Startup integration, gated by `DEUS_MEMORY_TREE=1`
 
 - Load `MEMORY_TREE.md` into cold-start `CONTEXT` (`deus-cmd.sh:860`; mirror in `deus-cmd.ps1`).

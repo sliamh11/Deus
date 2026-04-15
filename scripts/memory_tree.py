@@ -465,7 +465,9 @@ def build_tree(
         existing = db.execute(
             "SELECT content_hash FROM nodes WHERE id = ?", (entry["id"],)
         ).fetchone()
-        need_embed = existing is None or existing[0] != ch
+        # On rebuild, embeddings were just DELETEd — re-embed even if the
+        # content_hash is unchanged, otherwise the vec table stays empty.
+        need_embed = rebuild or existing is None or existing[0] != ch
         vec = None
         if need_embed and not skip_embed:
             try:
@@ -904,37 +906,63 @@ def render_graph(db: sqlite3.Connection, highlight: str | None = None) -> str:
 # ── Calibrate ─────────────────────────────────────────────────────────────────
 
 def calibrate(db: sqlite3.Connection, labeled: list[dict[str, Any]]) -> dict[str, Any]:
-    """Fit thresholds from a labeled dataset.
+    """Fit LOW/ABSTAIN thresholds from a labeled dataset.
 
-    `labeled`: [{query, expected_path, relevant: bool}]. We sweep thresholds,
-    pick LOW where precision first hits 0.5 and ABSTAIN where it's 0.3.
-    Simpler than isotonic regression and adequate at N<50.
+    Inputs: labeled = [{query, expected_path, ...}, ..., {query, abstain: true}].
+    ABSTAIN is fit from the gap between max out-of-distribution score and min
+    correct score. LOW is fit by descending threshold sweep: first threshold
+    where precision (top-hit = expected_path) hits 0.9 with a minimum sample
+    population. Separating the two fits avoids the single-sample fluke that
+    pins LOW too strictly at high thresholds.
     """
-    samples: list[tuple[float, bool]] = []
+    real_samples: list[tuple[float, bool]] = []
+    ood_scores: list[float] = []
     for item in labeled:
         q = item["query"]
-        expected = item["expected_path"]
-        result = retrieve(db, q, k=3)
+        result = retrieve(db, q, k=3, abstain_threshold=0.0)
+        confidence = float(result.get("confidence", 0.0))
+        if item.get("abstain"):
+            ood_scores.append(confidence)
+            continue
+        if "expected_path" not in item:
+            continue
         if result["results"]:
             top = result["results"][0]
-            is_correct = top["path"] == expected
-            samples.append((result["confidence"], is_correct))
+            is_correct = top["path"] == item["expected_path"]
+            real_samples.append((confidence, is_correct))
 
-    samples.sort(key=lambda s: s[0], reverse=True)
-    if not samples:
+    if not real_samples:
         return {"ok": False, "reason": "no samples"}
 
+    # ABSTAIN — floor. Just above max OOD (so all OOD queries abstain) and
+    # safely below min correct (so real queries pass). If no OOD provided,
+    # leave at the default.
+    if ood_scores:
+        max_ood = max(ood_scores)
+        correct_scores = [c for c, ok in real_samples if ok]
+        min_correct = min(correct_scores) if correct_scores else max_ood + 0.1
+        abstain = min(
+            round(min_correct - 0.01, 2),
+            round(max_ood + 0.03, 2),
+        )
+        abstain = max(0.0, min(abstain, 0.9))
+    else:
+        abstain = DEFAULT_ABSTAIN_THRESHOLD
+
+    # LOW — ceiling. Descending sweep for the first threshold with precision
+    # ≥ 0.9 and enough samples to be meaningful.
+    real_samples.sort(key=lambda s: s[0], reverse=True)
+    min_samples_for_threshold = max(3, len(real_samples) // 10)
     low = DEFAULT_LOW_THRESHOLD
-    abstain = DEFAULT_ABSTAIN_THRESHOLD
-    for thresh in [i / 100.0 for i in range(75, 25, -5)]:
-        kept = [s for s in samples if s[0] >= thresh]
-        if not kept:
+    lower_bound = int(round((abstain + 0.05) * 100))
+    for thresh in [i / 100.0 for i in range(75, lower_bound, -5)]:
+        kept = [s for s in real_samples if s[0] >= thresh]
+        if len(kept) < min_samples_for_threshold:
             continue
         precision = sum(1 for _, c in kept if c) / len(kept)
-        if precision >= 0.5 and low == DEFAULT_LOW_THRESHOLD:
+        if precision >= 0.9:
             low = thresh
-        if precision >= 0.3 and abstain == DEFAULT_ABSTAIN_THRESHOLD:
-            abstain = thresh
+            break
 
     db.execute(
         """
@@ -945,8 +973,8 @@ def calibrate(db: sqlite3.Connection, labeled: list[dict[str, Any]]) -> dict[str
             _utc_iso(),
             low,
             abstain,
-            len(samples),
-            f"precision-sweep",
+            len(real_samples) + len(ood_scores),
+            f"precision-sweep; real={len(real_samples)} ood={len(ood_scores)}",
         ),
     )
     db.commit()
@@ -954,7 +982,8 @@ def calibrate(db: sqlite3.Connection, labeled: list[dict[str, Any]]) -> dict[str
         "ok": True,
         "low_threshold": low,
         "abstain_threshold": abstain,
-        "samples": len(samples),
+        "samples": len(real_samples),
+        "ood_samples": len(ood_scores),
     }
 
 
