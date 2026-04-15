@@ -43,8 +43,48 @@
 {"query": "infrastructure and project state together", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "CLAUDE.md"], "tag": "cross-branch"}
 {"query": "movies shared with housemates and music tastes", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/life/household.md", "Persona/taste/music.md"], "tag": "cross-branch"}
 {"query": "home routine and shared media", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md", "Persona/taste/movies.md"], "tag": "cross-branch"}
-{"query": "how to cook a chocolate souffle", "abstain": true}
-{"query": "best hiking trails in Norway", "abstain": true}
-{"query": "fix a leaking bathroom faucet", "abstain": true}
-{"query": "who won the 2024 Oscar for best picture", "abstain": true}
-{"query": "JavaScript async await tutorial", "abstain": true}
+{"query": "how to cook a chocolate souffle", "abstain": true, "tag": "abstain-far"}
+{"query": "best hiking trails in Norway", "abstain": true, "tag": "abstain-far"}
+{"query": "fix a leaking bathroom faucet", "abstain": true, "tag": "abstain-far"}
+{"query": "who won the 2024 Oscar for best picture", "abstain": true, "tag": "abstain-far"}
+{"query": "JavaScript async await tutorial", "abstain": true, "tag": "abstain-far"}
+{"query": "who shares my apartment", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "adversarial", "notes": "paraphrase of 'who do I live with'"}
+{"query": "people I share the rent with", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "adversarial", "notes": "apartment vocab"}
+{"query": "wo do I live with", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "adversarial", "notes": "typo"}
+{"query": "who is moving into my flat this august", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "adversarial", "notes": "specific paraphrase — Eden transition"}
+{"query": "my prior employment", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "adversarial", "notes": "avoids work-history vocab"}
+{"query": "the college program I'm enrolled in", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "adversarial", "notes": "avoids OUI/university naming"}
+{"query": "cinema I enjoy", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md"], "tag": "adversarial", "notes": "avoids films/Nolan/Fincher/crime"}
+{"query": "directors whose work I rate highly", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md"], "tag": "adversarial", "notes": "avoids favorite/films"}
+{"query": "the instrument I've played for years", "expected_path": "Persona/taste/music.md", "expected_paths": ["Persona/taste/music.md"], "tag": "adversarial", "notes": "avoids drums/drummer"}
+{"query": "types of music I'm into", "expected_path": "Persona/taste/music.md", "expected_paths": ["Persona/taste/music.md"], "tag": "adversarial", "notes": "avoids genres/rock/metal"}
+{"query": "the way I pick up new things", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "adversarial", "notes": "avoids learn/style/visuals"}
+{"query": "how explanations should be framed for me", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "adversarial", "notes": "avoids learning/style"}
+{"query": "how to phrase requests to me", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md"], "tag": "adversarial", "notes": "avoids communicate/concise/direct"}
+{"query": "what tone works best when addressing me", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md"], "tag": "adversarial", "notes": "avoids communicate"}
+{"query": "my recurring schedule for coursework", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md"], "tag": "adversarial", "notes": "avoids weekly/study/routine"}
+{"query": "the assistant's core configuration", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "adversarial", "notes": "avoids deus/models/state"}
+{"query": "system services and background jobs", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "adversarial", "notes": "avoids tools/integrations/backups"}
+{"query": "shows I can watch with housemates", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/life/household.md"], "tag": "adversarial", "notes": "avoids movies+roommates"}
+{"query": "tying the way I learn to test prep", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "STUDY.md"], "tag": "adversarial", "notes": "avoids learning-style+study-routine"}
+{"query": "system models plus their storage setup", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md", "INFRA.md"], "tag": "adversarial", "notes": "avoids configuration+infrastructure"}
+{"query": "what's my birthday", "abstain": true, "tag": "abstain-near", "notes": "personal-sounding, not in vault"}
+{"query": "who is my girlfriend", "abstain": true, "tag": "abstain-near", "notes": "personal-sounding, not in vault"}
+{"query": "what's my cat's name", "abstain": true, "tag": "abstain-near", "notes": "pet info not stored"}
+{"query": "where did I grow up", "abstain": true, "tag": "abstain-near", "notes": "childhood not stored"}
+{"query": "what's my favorite food", "abstain": true, "tag": "abstain-near", "notes": "food taste not stored"}
+{"query": "what car do I drive", "abstain": true, "tag": "abstain-near", "notes": "vehicle not stored"}
+{"query": "what was my salary at AWS", "abstain": true, "tag": "abstain-near", "notes": "knows AWS but salary not stored"}
+{"query": "my parent's names", "abstain": true, "tag": "abstain-near", "notes": "family not stored"}
+{"query": "when did I start programming", "abstain": true, "tag": "abstain-near", "notes": "career start date not stored"}
+{"query": "do I have siblings", "abstain": true, "tag": "abstain-near", "notes": "family not stored"}
+{"query": "my style", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md", "Persona/work-style/learning.md", "Persona/taste/movies.md"], "tag": "ambiguous"}
+{"query": "what do I enjoy", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/taste/music.md", "Persona/life/household.md"], "tag": "ambiguous"}
+{"query": "my routine", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md", "Persona/work-style/learning.md", "Persona/work-style/communication.md"], "tag": "ambiguous"}
+{"query": "who I am as a person", "expected_path": "Persona/INDEX.md", "expected_paths": ["Persona/INDEX.md", "Persona/life/background.md", "Persona/life/household.md"], "tag": "ambiguous"}
+{"query": "what I care about", "expected_path": "Persona/INDEX.md", "expected_paths": ["Persona/INDEX.md", "Persona/taste/movies.md", "Persona/work-style/learning.md"], "tag": "ambiguous"}
+{"query": "my work", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "Persona/work-style/communication.md", "CLAUDE.md"], "tag": "ambiguous"}
+{"query": "home stuff", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md", "Persona/taste/movies.md"], "tag": "ambiguous"}
+{"query": "tools I use", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "CLAUDE.md", "STUDY.md"], "tag": "ambiguous"}
+{"query": "how to describe me", "expected_path": "Persona/INDEX.md", "expected_paths": ["Persona/INDEX.md", "Persona/life/background.md", "Persona/work-style/communication.md"], "tag": "ambiguous"}
+{"query": "me and my world", "expected_path": "Persona/INDEX.md", "expected_paths": ["Persona/INDEX.md", "Persona/life/household.md", "Persona/life/background.md"], "tag": "ambiguous"}

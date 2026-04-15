@@ -586,8 +586,15 @@ def retrieve(
     low_threshold: float = DEFAULT_LOW_THRESHOLD,
     abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
     query_vec: list[float] | None = None,
+    use_see_also: bool = True,
+    use_abstain: bool = True,
 ) -> dict[str, Any]:
     """3-phase retrieval: collapsed flat → graph expansion → abstain.
+
+    `use_see_also=False` skips Phase 2 (flat-only mode). `use_abstain=False`
+    skips Phase 3 (surface results regardless of confidence). Together they
+    support V0/V1/V2/V3 ablation for benchmarking. Defaults keep current
+    production behavior unchanged.
 
     Returns {results: [{id, path, score, route}], confidence, fell_back, trace}.
     """
@@ -616,8 +623,9 @@ def retrieve(
     trace = [f"flat_top={top[0][1]}:{best:.3f}" if top else "flat_empty"]
     fell_back = False
 
-    # Phase 2: graph expansion on medium confidence.
-    if best >= low_threshold:
+    # Phase 2: graph expansion when the seed is confident (best ≥ LOW).
+    # Expanding a low-confidence seed would pull in noise, so we skip it.
+    if use_see_also and best >= low_threshold:
         expanded: dict[str, tuple[str, str, str, float, str]] = {r[0]: r for r in top}
         for (nid, npath, ntitle, _score, _route) in top[:3]:
             # see_also + alias_of + backlinks
@@ -662,8 +670,8 @@ def retrieve(
         top = merged
         trace.append(f"expanded→{len(expanded)}")
 
-    # Phase 3: abstain.
-    if best < abstain_threshold:
+    # Phase 3: abstain when the best score is below the floor.
+    if use_abstain and best < abstain_threshold:
         fell_back = True
         trace.append("abstain")
         top = []
@@ -990,18 +998,33 @@ def calibrate(db: sqlite3.Connection, labeled: list[dict[str, Any]]) -> dict[str
 # ── Benchmark ─────────────────────────────────────────────────────────────────
 
 def benchmark(
-    db: sqlite3.Connection, dataset: list[dict[str, Any]], *, k: int = 5
+    db: sqlite3.Connection,
+    dataset: list[dict[str, Any]],
+    *,
+    k: int = 5,
+    low_threshold: float = DEFAULT_LOW_THRESHOLD,
+    abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
+    use_see_also: bool = True,
+    use_abstain: bool = True,
+    wrong_confident_score: float = 0.65,
 ) -> dict[str, Any]:
-    """Run dataset queries, compute recall@k, MRR@k, cross-branch recall, latency."""
+    """Run dataset queries, compute recall@k, MRR@k, per-tag breakdown, latency.
+
+    Every non-abstain result feeds per-tag buckets so single/multi/cross-branch/
+    adversarial/ambiguous can be read independently. Abstain queries split into
+    abstain-far vs abstain-near depending on item tag. Threshold + ablation
+    params flow through to retrieve() so the same dataset can be re-scored
+    under different configurations.
+    """
     import time as _time
 
     n = len(dataset)
     if n == 0:
         return {"error": "empty dataset"}
+
+    by_tag: dict[str, dict[str, Any]] = {}
     recall_at_k = 0
     mrr_sum = 0.0
-    cross_branch_recall = 0
-    cross_branch_total = 0
     abstain_correct = 0
     abstain_total = 0
     wrong_confident = 0
@@ -1010,45 +1033,239 @@ def benchmark(
     for item in dataset:
         q = item["query"]
         expected = item.get("expected_paths") or ([item["expected_path"]] if item.get("expected_path") else [])
-        tag = item.get("tag", "single")
-        expect_abstain = item.get("abstain", False)
+        tag = item.get("tag", "abstain" if item.get("abstain") else "single")
+        expect_abstain = bool(item.get("abstain"))
+
+        bucket = by_tag.setdefault(tag, {"n": 0, "hits": 0, "mrr": 0.0,
+                                         "abstain_correct": 0, "wrong_confident": 0})
+        bucket["n"] += 1
 
         t0 = _time.monotonic()
-        result = retrieve(db, q, k=k)
+        result = retrieve(
+            db, q, k=k,
+            low_threshold=low_threshold,
+            abstain_threshold=abstain_threshold,
+            use_see_also=use_see_also,
+            use_abstain=use_abstain,
+        )
         latencies.append(_time.monotonic() - t0)
 
         returned = [r["path"] for r in result["results"]]
         hit = any(p in returned for p in expected) if expected else False
         if hit:
             recall_at_k += 1
+            bucket["hits"] += 1
             for idx, r in enumerate(result["results"]):
                 if r["path"] in expected:
-                    mrr_sum += 1.0 / (idx + 1)
+                    reciprocal = 1.0 / (idx + 1)
+                    mrr_sum += reciprocal
+                    bucket["mrr"] += reciprocal
                     break
-        if tag == "cross-branch":
-            cross_branch_total += 1
-            if hit:
-                cross_branch_recall += 1
         if expect_abstain:
             abstain_total += 1
             if result["fell_back"]:
                 abstain_correct += 1
-        elif result["results"] and result["confidence"] > 0.7 and not hit:
+                bucket["abstain_correct"] += 1
+        elif result["results"] and result["confidence"] >= wrong_confident_score and not hit:
             wrong_confident += 1
+            bucket["wrong_confident"] += 1
 
     latencies.sort()
     p50 = latencies[len(latencies) // 2] if latencies else 0
     p95 = latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))] if latencies else 0
 
+    tag_report = {}
+    for tag, s in by_tag.items():
+        entry = {"n": s["n"]}
+        if s["n"] > 0 and not tag.startswith("abstain"):
+            entry["recall_at_k"] = round(s["hits"] / s["n"], 3)
+            entry["mrr_at_k"] = round(s["mrr"] / s["n"], 3)
+            entry["wrong_confident"] = s["wrong_confident"]
+        elif tag.startswith("abstain"):
+            entry["abstain_accuracy"] = round(s["abstain_correct"] / s["n"], 3) if s["n"] else None
+        tag_report[tag] = entry
+
     return {
         "n": n,
-        "recall_at_k": recall_at_k / n,
-        "mrr_at_k": mrr_sum / n,
-        "cross_branch_recall": cross_branch_recall / cross_branch_total if cross_branch_total else None,
-        "abstain_accuracy": abstain_correct / abstain_total if abstain_total else None,
-        "wrong_confident_rate": wrong_confident / n,
+        "recall_at_k": round(recall_at_k / n, 3),
+        "mrr_at_k": round(mrr_sum / n, 3),
+        "abstain_accuracy": round(abstain_correct / abstain_total, 3) if abstain_total else None,
+        "wrong_confident_rate": round(wrong_confident / n, 3),
         "latency_p50_ms": round(p50 * 1000, 1),
         "latency_p95_ms": round(p95 * 1000, 1),
+        "by_tag": tag_report,
+        "config": {
+            "k": k,
+            "low_threshold": low_threshold,
+            "abstain_threshold": abstain_threshold,
+            "use_see_also": use_see_also,
+            "use_abstain": use_abstain,
+        },
+    }
+
+
+def benchmark_ablation(
+    db: sqlite3.Connection,
+    dataset: list[dict[str, Any]],
+    *,
+    k: int = 5,
+    low_threshold: float = DEFAULT_LOW_THRESHOLD,
+    abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
+) -> dict[str, Any]:
+    """Run the same dataset under four variants so we can read the marginal
+    value of each retrieval phase:
+
+        V0  — flat only, no see_also, no abstain (baseline)
+        V1  — flat + abstain only
+        V2  — flat + see_also only
+        V3  — full (current production behavior)
+    """
+    variants = [
+        ("V0_flat_only", False, False),
+        ("V1_flat_abstain", False, True),
+        ("V2_flat_seealso", True, False),
+        ("V3_full", True, True),
+    ]
+    out = {}
+    for name, use_sa, use_ab in variants:
+        out[name] = benchmark(
+            db, dataset,
+            k=k,
+            low_threshold=low_threshold,
+            abstain_threshold=abstain_threshold,
+            use_see_also=use_sa,
+            use_abstain=use_ab,
+        )
+    return out
+
+
+def benchmark_loo(
+    db: sqlite3.Connection,
+    dataset: list[dict[str, Any]],
+    *,
+    k: int = 5,
+) -> dict[str, Any]:
+    """Leave-one-out CV with precomputed retrieval cache.
+
+    Retrieval results depend only on (query, db state) — not on which other
+    items are in the dataset. So we cache each query's retrieve() output once,
+    then LOO becomes pure arithmetic: re-fit thresholds from N-1 cached
+    (confidence, correct) pairs, evaluate the held-out one with those
+    thresholds.
+
+    Thresholds never see the item they're scoring — the honest generalization
+    estimate. O(N × sweep_size) instead of O(N²) retrievals.
+    """
+    n = len(dataset)
+    if n == 0:
+        return {"error": "empty dataset"}
+
+    # Precompute retrieve() once per query. abstain_threshold=0 so we get
+    # full results regardless of confidence (we'll apply thresholds in-loop).
+    cache: list[dict[str, Any]] = []
+    for item in dataset:
+        r = retrieve(db, item["query"], k=k, abstain_threshold=0.0)
+        expected = item.get("expected_paths") or ([item["expected_path"]] if item.get("expected_path") else [])
+        returned = [res["path"] for res in r["results"]]
+        hit = any(p in returned for p in expected) if expected else False
+        first_rank = next((idx + 1 for idx, res in enumerate(r["results"]) if res["path"] in expected), None)
+        top_correct = (r["results"][0]["path"] in expected) if (r["results"] and expected) else False
+        cache.append({
+            "confidence": r["confidence"],
+            "top_correct": top_correct,
+            "hit_at_k": hit,
+            "first_rank": first_rank,
+            "top_path": r["results"][0]["path"] if r["results"] else None,
+            "expect_abstain": bool(item.get("abstain")),
+            "has_expected": "expected_path" in item or "expected_paths" in item,
+        })
+
+    # For each i: fit thresholds from cache minus i, then evaluate cache[i].
+    hits = 0
+    non_abstain = 0
+    abstain_correct = 0
+    abstain_total = 0
+    wrong_confident = 0
+    mrr_sum = 0.0
+    low_fits: list[float] = []
+    abstain_fits: list[float] = []
+
+    for i in range(n):
+        # Build (confidence, top_correct) samples and OOD scores from the
+        # cache, skipping index i.
+        real_samples = [
+            (c["confidence"], c["top_correct"])
+            for j, c in enumerate(cache)
+            if j != i and c["has_expected"] and not c["expect_abstain"]
+        ]
+        ood_scores = [
+            c["confidence"]
+            for j, c in enumerate(cache)
+            if j != i and c["expect_abstain"]
+        ]
+        if not real_samples:
+            continue
+
+        # Same logic as calibrate() but pure-arithmetic over the cache.
+        if ood_scores:
+            max_ood = max(ood_scores)
+            correct_scores = [s for s, ok in real_samples if ok]
+            min_correct = min(correct_scores) if correct_scores else max_ood + 0.1
+            abstain_fit = min(round(min_correct - 0.01, 2), round(max_ood + 0.03, 2))
+            abstain_fit = max(0.0, min(abstain_fit, 0.9))
+        else:
+            abstain_fit = DEFAULT_ABSTAIN_THRESHOLD
+
+        real_sorted = sorted(real_samples, key=lambda s: s[0], reverse=True)
+        min_samples = max(3, len(real_sorted) // 10)
+        low_fit = DEFAULT_LOW_THRESHOLD
+        lower_bound = int(round((abstain_fit + 0.05) * 100))
+        for thresh in [t / 100.0 for t in range(75, lower_bound, -5)]:
+            kept = [s for s in real_sorted if s[0] >= thresh]
+            if len(kept) < min_samples:
+                continue
+            prec = sum(1 for _, ok in kept if ok) / len(kept)
+            if prec >= 0.9:
+                low_fit = thresh
+                break
+
+        low_fits.append(low_fit)
+        abstain_fits.append(abstain_fit)
+
+        # Evaluate cache[i] under these fitted thresholds.
+        c = cache[i]
+        if c["expect_abstain"]:
+            abstain_total += 1
+            if c["confidence"] < abstain_fit:
+                abstain_correct += 1
+            continue
+        non_abstain += 1
+        # Abstain gate kills recall; the item only counts as a hit if the
+        # gate lets it through AND it was in top-k.
+        if c["confidence"] >= abstain_fit and c["hit_at_k"]:
+            hits += 1
+            if c["first_rank"]:
+                mrr_sum += 1.0 / c["first_rank"]
+        elif c["confidence"] >= 0.65 and not c["hit_at_k"]:
+            wrong_confident += 1
+
+    mean_low = sum(low_fits) / len(low_fits) if low_fits else 0.0
+    mean_ab = sum(abstain_fits) / len(abstain_fits) if abstain_fits else 0.0
+    return {
+        "n": n,
+        "non_abstain_evaluated": non_abstain,
+        "recall_at_k_loo": round(hits / non_abstain, 3) if non_abstain else None,
+        "mrr_at_k_loo": round(mrr_sum / non_abstain, 3) if non_abstain else None,
+        "abstain_accuracy_loo": round(abstain_correct / abstain_total, 3) if abstain_total else None,
+        "wrong_confident_rate_loo": round(wrong_confident / non_abstain, 3) if non_abstain else None,
+        "low_threshold_fit_mean": round(mean_low, 3),
+        "low_threshold_fit_stddev": round(
+            (sum((x - mean_low) ** 2 for x in low_fits) / len(low_fits)) ** 0.5, 3
+        ) if low_fits else 0.0,
+        "abstain_threshold_fit_mean": round(mean_ab, 3),
+        "abstain_threshold_fit_stddev": round(
+            (sum((x - mean_ab) ** 2 for x in abstain_fits) / len(abstain_fits)) ** 0.5, 3
+        ) if abstain_fits else 0.0,
     }
 
 
@@ -1088,6 +1305,10 @@ def main(argv: list[str] | None = None) -> int:
     p_bench.add_argument("dataset_jsonl", help="Path to JSONL benchmark dataset")
     p_bench.add_argument("-k", type=int, default=5)
     p_bench.add_argument("--json", action="store_true")
+    p_bench.add_argument("--low", type=float, default=DEFAULT_LOW_THRESHOLD)
+    p_bench.add_argument("--abstain", type=float, default=DEFAULT_ABSTAIN_THRESHOLD)
+    p_bench.add_argument("--ablation", action="store_true", help="Run V0/V1/V2/V3 variants side by side")
+    p_bench.add_argument("--loo", action="store_true", help="Leave-one-out CV (honest generalization estimate)")
 
     args = parser.parse_args(argv)
     db = open_db()
@@ -1150,12 +1371,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "benchmark":
         data = [json.loads(l) for l in Path(args.dataset_jsonl).read_text().splitlines() if l.strip()]
-        report = benchmark(db, data, k=args.k)
-        if args.json:
-            print(json.dumps(report, indent=2))
+        if args.ablation:
+            report = benchmark_ablation(db, data, k=args.k, low_threshold=args.low, abstain_threshold=args.abstain)
+        elif args.loo:
+            report = benchmark_loo(db, data, k=args.k)
         else:
-            for k, v in report.items():
-                print(f"{k}: {v}")
+            report = benchmark(db, data, k=args.k, low_threshold=args.low, abstain_threshold=args.abstain)
+        print(json.dumps(report, indent=2))
         return 0
 
     return 1
