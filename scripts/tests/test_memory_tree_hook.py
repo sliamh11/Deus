@@ -182,8 +182,10 @@ class TestDriftScan:
         attempted = stop_hook._scan_vault_drift(fake_vault, limit=1)
         assert attempted == 1
 
-    def test_missing_db_silent(self, fake_vault, monkeypatch, tmp_path):
-        """If DB doesn't exist, scan returns 0 silently."""
+    def test_missing_db_recovers_via_discovery(self, fake_vault, stub_embed, monkeypatch, tmp_path):
+        """If DB doesn't exist, scan rebuilds it via discovery on the next pass."""
         monkeypatch.setenv("DEUS_MEMORY_TREE", "1")
         monkeypatch.setattr(mt, "DB_PATH", tmp_path / "nonexistent.db")
-        assert stop_hook._scan_vault_drift(fake_vault, limit=5) == 0
+        attempted = stop_hook._scan_vault_drift(fake_vault, limit=5)
+        # Both fixture files (MEMORY_TREE.md + household.md) should be discovered.
+        assert attempted == 2

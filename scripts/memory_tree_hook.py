@@ -43,7 +43,8 @@ def dispatch(data: dict) -> str:
     """Pure dispatch: returns a status string for tests; does not raise.
 
     Statuses: gate_off | bad_input | no_vault | not_vault_file | not_markdown |
-              reembedded | unchanged | not_in_tree | no_description | missing |
+              reembedded | unchanged | discovered | not_in_tree | no_id |
+              no_description | missing | skipped_dir | already_tracked |
               embed_failed | import_failed
     """
     if os.environ.get("DEUS_MEMORY_TREE", "0") != "1":
@@ -68,7 +69,10 @@ def dispatch(data: dict) -> str:
         return "import_failed"
     try:
         db = mt.open_db()
-        return mt.reembed_file(vault, str(rel), db)
+        status = mt.reembed_file(vault, str(rel), db)
+        if status == "not_in_tree":
+            return mt.discover_node(vault, str(rel), db)
+        return status
     except Exception:
         return "embed_failed"
 

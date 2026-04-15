@@ -160,8 +160,9 @@ status: auto
 
 def _scan_vault_drift(vault: Path, limit: int = 5) -> int:
     """Re-embed up to `limit` tracked files whose mtime exceeds the last node
-    update. Hash-gated via reembed_file — most edits cost 0. Gated by
-    DEUS_MEMORY_TREE=1. Silent on all errors. Returns number attempted."""
+    update, then discover up to `limit` new vault files not yet in the tree.
+    Both paths are hash-gated and silent on errors. Gated by
+    DEUS_MEMORY_TREE=1. Returns total files attempted (reembed + discover)."""
     if os.environ.get("DEUS_MEMORY_TREE", "0") != "1":
         return 0
     try:
@@ -176,6 +177,7 @@ def _scan_vault_drift(vault: Path, limit: int = 5) -> int:
         ).fetchall()
     except Exception:
         return 0
+    tracked: set[str] = {row[0] for row in rows}
     candidates: list[tuple[int, str]] = []
     for path, updated_at in rows:
         try:
@@ -195,7 +197,35 @@ def _scan_vault_drift(vault: Path, limit: int = 5) -> int:
             attempted += 1
         except Exception:
             continue
+    attempted += _discover_new_files(vault, tracked, db, mt, limit=limit)
     return attempted
+
+
+def _discover_new_files(vault: Path, tracked: set[str], db, mt, *, limit: int) -> int:
+    """Walk vault for .md files not in `tracked` and attempt discover_node.
+    Stops after `limit` successful discoveries to cap per-turn cost."""
+    discovered = 0
+    try:
+        for p in vault.rglob("*.md"):
+            if discovered >= limit:
+                break
+            try:
+                rel = str(p.relative_to(vault))
+            except ValueError:
+                continue
+            if rel in tracked:
+                continue
+            if any(part in mt.TREE_SKIP_DIRS for part in p.relative_to(vault).parts):
+                continue
+            try:
+                status = mt.discover_node(vault, rel, db)
+            except Exception:
+                continue
+            if status == "discovered":
+                discovered += 1
+    except OSError:
+        pass
+    return discovered
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
