@@ -66,6 +66,15 @@ _LOG_PATH = Path(os.environ.get(
     "DEUS_TREE_LOG", "~/.deus/memory_tree_queries.jsonl"
 )).expanduser()
 
+_AUDIT_PATH = Path(os.environ.get(
+    "DEUS_TREE_AUDIT", "~/.deus/memory_tree_audit.jsonl"
+)).expanduser()
+
+# Rebuild safety: abort if vault walk would produce fewer than this fraction
+# of the current active node count (protects against DEUS_VAULT_PATH misconfig
+# silently wiping live data — see 2026-04-15 incident). `--force` bypasses.
+REBUILD_MIN_RETENTION = 0.5
+
 
 # ── ID + hashing ──────────────────────────────────────────────────────────────
 
@@ -364,27 +373,23 @@ def build_tree(
     *,
     rebuild: bool = False,
     skip_embed: bool = False,
+    force: bool = False,
 ) -> dict[str, int]:
     """Walk the vault, upsert nodes and edges.
 
-    Returns counts: {nodes: N, embedded: M, edges: E, skipped: S}."""
+    `rebuild=True` orphans all existing active nodes before re-upserting. A
+    safety abort fires if the vault walk would produce fewer than
+    REBUILD_MIN_RETENTION (50%) of the current active count unless
+    `force=True` — protects against DEUS_VAULT_PATH misconfig silently
+    wiping live data (2026-04-15 incident).
+
+    Returns counts: {nodes: N, embedded: M, edges: E, skipped: S, orphaned: O}.
+    Raises ValueError if the safety abort fires.
+    """
     counts = {"nodes": 0, "embedded": 0, "skipped": 0, "edges": 0, "orphaned": 0}
 
-    if rebuild:
-        _backup_db()
-        now_iso = _utc_iso()
-        db.execute(
-            "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'rebuild' WHERE orphaned_at IS NULL",
-            (now_iso,),
-        )
-        db.execute(
-            "UPDATE edges SET expired_at = ? WHERE expired_at IS NULL", (now_iso,)
-        )
-        if sqlite_vec is not None:
-            db.execute("DELETE FROM embeddings")
-        db.commit()
-
-    # Build path → id map from the vault files (so edges can be written by path).
+    # Walk the vault FIRST so the safety check can compare walk size to the
+    # current active row count before any orphaning happens.
     path_to_id: dict[str, str] = {}
     node_inputs: list[dict[str, Any]] = []
     for p in iter_tree_files(vault):
@@ -405,6 +410,46 @@ def build_tree(
                 "content": content,
             }
         )
+
+    if rebuild:
+        current_active = db.execute(
+            "SELECT COUNT(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0]
+        threshold = max(1, int(current_active * REBUILD_MIN_RETENTION))
+        if current_active > 0 and len(node_inputs) < threshold and not force:
+            _emit_audit({
+                "action": "rebuild_aborted",
+                "vault": str(vault),
+                "current_active": current_active,
+                "walked": len(node_inputs),
+                "threshold_fraction": REBUILD_MIN_RETENTION,
+                "reason": "walk_too_small",
+            })
+            raise ValueError(
+                f"Refusing rebuild: vault walk found {len(node_inputs)} files "
+                f"but DB has {current_active} active nodes (would retain <"
+                f"{int(REBUILD_MIN_RETENTION * 100)}%). "
+                f"Check DEUS_VAULT_PATH={vault!s}. Pass force=True to override."
+            )
+        _backup_db()
+        now_iso = _utc_iso()
+        db.execute(
+            "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'rebuild' WHERE orphaned_at IS NULL",
+            (now_iso,),
+        )
+        db.execute(
+            "UPDATE edges SET expired_at = ? WHERE expired_at IS NULL", (now_iso,)
+        )
+        if sqlite_vec is not None:
+            db.execute("DELETE FROM embeddings")
+        db.commit()
+        _emit_audit({
+            "action": "rebuild",
+            "vault": str(vault),
+            "orphaned": current_active,
+            "walked": len(node_inputs),
+            "forced": force,
+        })
 
     # Upsert nodes + embeddings.
     for entry in node_inputs:
@@ -664,6 +709,24 @@ def _log_query(db: sqlite3.Connection, query: str, result: dict[str, Any]) -> No
                 "results": [r["path"] for r in result["results"][:3]],
                 "fell_back": result["fell_back"],
             }) + "\n")
+    except OSError:
+        pass
+
+
+def _emit_audit(record: dict[str, Any]) -> None:
+    """Append a structured audit line for rebuild + orphan operations.
+
+    Silent on write failures — auditing must never block the caller. The
+    audit trail lives at ~/.deus/memory_tree_audit.jsonl (override via
+    DEUS_TREE_AUDIT). Forensic record for incidents like the 2026-04-15
+    wipe, where a rebuild with a misconfigured vault path left 13 active
+    rows orphaned.
+    """
+    payload = {"ts": _utc_iso(), "argv": list(sys.argv), **record}
+    try:
+        _AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with _AUDIT_PATH.open("a") as f:
+            f.write(json.dumps(payload) + "\n")
     except OSError:
         pass
 
@@ -969,6 +1032,7 @@ def main(argv: list[str] | None = None) -> int:
     p_build = sub.add_parser("build", help="Walk vault, upsert nodes + edges")
     p_build.add_argument("--rebuild", action="store_true", help="Mark all nodes orphaned first")
     p_build.add_argument("--skip-embed", action="store_true", help="Skip embedding API calls (structure only)")
+    p_build.add_argument("--force", action="store_true", help="Bypass rebuild safety abort when walk retains under half of current active rows")
 
     p_query = sub.add_parser("query", help="Retrieve top nodes for a query")
     p_query.add_argument("text", help="Query text")
@@ -1001,7 +1065,16 @@ def main(argv: list[str] | None = None) -> int:
     vault = resolve_vault_path()
 
     if args.cmd == "build":
-        counts = build_tree(vault, db, rebuild=args.rebuild, skip_embed=args.skip_embed)
+        try:
+            counts = build_tree(
+                vault, db,
+                rebuild=args.rebuild,
+                skip_embed=args.skip_embed,
+                force=args.force,
+            )
+        except ValueError as exc:
+            print(f"ABORT: {exc}", file=sys.stderr)
+            return 2
         print(json.dumps(counts, indent=2))
         return 0
 

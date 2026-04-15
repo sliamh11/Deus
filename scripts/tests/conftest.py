@@ -59,6 +59,7 @@ def isolate_memory_tree_paths(tmp_path, monkeypatch):
     """
     tmp_db = tmp_path / "tree.db"
     tmp_log = tmp_path / "queries.jsonl"
+    tmp_audit = tmp_path / "audit.jsonl"
     for mod in list(sys.modules.values()):
         if mod is None:
             continue
@@ -66,4 +67,5 @@ def isolate_memory_tree_paths(tmp_path, monkeypatch):
             continue
         monkeypatch.setattr(mod, "DB_PATH", tmp_db, raising=False)
         monkeypatch.setattr(mod, "_LOG_PATH", tmp_log, raising=False)
+        monkeypatch.setattr(mod, "_AUDIT_PATH", tmp_audit, raising=False)
     yield

@@ -322,6 +322,62 @@ class TestBuild:
         counts = mt.build_tree(fake_vault, tmp_db)
         assert counts["orphaned"] == 1
 
+    def test_rebuild_aborts_when_vault_shrinks(
+        self, tmp_db, fake_vault, stub_embed, tmp_path, monkeypatch
+    ):
+        """Rebuild with empty vault must abort — protects the 2026-04-15 wipe case."""
+        monkeypatch.setattr(mt, "DB_PATH", tmp_path / "tree.db")
+        monkeypatch.setattr(mt, "_AUDIT_PATH", tmp_path / "audit.jsonl")
+        mt.build_tree(fake_vault, tmp_db)  # populate
+        empty_vault = tmp_path / "empty-vault"
+        empty_vault.mkdir()
+        with pytest.raises(ValueError, match="Refusing rebuild"):
+            mt.build_tree(empty_vault, tmp_db, rebuild=True)
+        # Active nodes survive.
+        active = tmp_db.execute(
+            "SELECT COUNT(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0]
+        assert active == 4
+        # Audit line was written.
+        audit = (tmp_path / "audit.jsonl").read_text().strip().splitlines()
+        assert any('"action": "rebuild_aborted"' in line for line in audit)
+
+    def test_rebuild_force_bypasses_safety(
+        self, tmp_db, fake_vault, stub_embed, tmp_path, monkeypatch
+    ):
+        """force=True lets the rebuild proceed on an empty walk — explicit override."""
+        monkeypatch.setattr(mt, "DB_PATH", tmp_path / "tree.db")
+        monkeypatch.setattr(mt, "_AUDIT_PATH", tmp_path / "audit.jsonl")
+        mt.build_tree(fake_vault, tmp_db)
+        empty_vault = tmp_path / "empty-vault"
+        empty_vault.mkdir()
+        mt.build_tree(empty_vault, tmp_db, rebuild=True, force=True)
+        # Everything orphaned, nothing reinserted.
+        active = tmp_db.execute(
+            "SELECT COUNT(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0]
+        assert active == 0
+
+    def test_rebuild_first_run_has_no_active_no_abort(
+        self, tmp_db, fake_vault, stub_embed, tmp_path, monkeypatch
+    ):
+        """Fresh DB (0 active rows) must allow rebuild — no prior data to protect."""
+        monkeypatch.setattr(mt, "DB_PATH", tmp_path / "tree.db")
+        monkeypatch.setattr(mt, "_AUDIT_PATH", tmp_path / "audit.jsonl")
+        counts = mt.build_tree(fake_vault, tmp_db, rebuild=True)
+        assert counts["nodes"] == 4
+
+    def test_rebuild_emits_audit_line(
+        self, tmp_db, fake_vault, stub_embed, tmp_path, monkeypatch
+    ):
+        """Successful rebuild appends a structured audit entry."""
+        monkeypatch.setattr(mt, "DB_PATH", tmp_path / "tree.db")
+        monkeypatch.setattr(mt, "_AUDIT_PATH", tmp_path / "audit.jsonl")
+        mt.build_tree(fake_vault, tmp_db)
+        mt.build_tree(fake_vault, tmp_db, rebuild=True)
+        audit = (tmp_path / "audit.jsonl").read_text().strip().splitlines()
+        assert any('"action": "rebuild"' in line for line in audit)
+
 
 # ── Retrieve ──────────────────────────────────────────────────────────────────
 
