@@ -4,6 +4,24 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0](https://github.com/sliamh11/Deus/compare/v1.6.0...v1.7.0) (2026-04-15)
+
+
+### Features
+
+* add Gemini OCR script and shadow check ([#172](https://github.com/sliamh11/Deus/issues/172)) ([49e850a](https://github.com/sliamh11/Deus/commit/49e850a9e6275d4131f729740758d97163cfde03))
+* add src/private/ for local-only features ([2321b21](https://github.com/sliamh11/Deus/commit/2321b2191024c5b986ac867c747e736f269b4fd9))
+* compression benchmark with fact classification ([#168](https://github.com/sliamh11/Deus/issues/168)) ([6c719ea](https://github.com/sliamh11/Deus/commit/6c719eaeb7ca30ae092ec99ad0bd5967f5357f74))
+* **memory-tree:** add auto-discovery + check --auto-fix + coverage hardening ([#174](https://github.com/sliamh11/Deus/issues/174)) ([a113585](https://github.com/sliamh11/Deus/commit/a1135858bbd747ff40ea5dc4c91214962caa180f))
+* **memory-tree:** hierarchical cold-start retrieval [WIP] ([#173](https://github.com/sliamh11/Deus/issues/173)) ([ce87b31](https://github.com/sliamh11/Deus/commit/ce87b311d89d835b91d504686308e0e96caa4871))
+* multi-agent code review skill with benchmark and safety tests ([#170](https://github.com/sliamh11/Deus/issues/170)) ([fe201e5](https://github.com/sliamh11/Deus/commit/fe201e505241351e29b1962d7b074d6b52db98b1))
+* **setup:** require Ollama + background auto-pull of all models ([#175](https://github.com/sliamh11/Deus/issues/175)) ([7ddfac3](https://github.com/sliamh11/Deus/commit/7ddfac33c26217010631f3b34fe306ff9dfc05d3))
+
+
+### Bug Fixes
+
+* sync compress skills to merge pending tasks instead of replacing ([28eafdc](https://github.com/sliamh11/Deus/commit/28eafdc095ae8fda83759ae47b8972705f8fee19))
+
 ## [1.6.0](https://github.com/sliamh11/Deus/compare/v1.5.1...v1.6.0) (2026-04-13)
 
 
