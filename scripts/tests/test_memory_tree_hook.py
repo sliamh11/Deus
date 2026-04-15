@@ -18,6 +18,9 @@ _ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _load(name: str, path: Path):
+    """Reuse conftest's pre-loaded instance if present — otherwise load once."""
+    if name in sys.modules:
+        return sys.modules[name]
     spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod

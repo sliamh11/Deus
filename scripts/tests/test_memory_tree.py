@@ -14,13 +14,18 @@ import pytest
 
 
 # Load the script as a module (it's a CLI tool, not installed as a package).
+# Reuse the instance conftest pre-loaded so conftest's autouse path-isolation
+# fixture applies to this file's tests too. See scripts/tests/conftest.py.
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_SPEC = importlib.util.spec_from_file_location(
-    "memory_tree", _ROOT / "scripts" / "memory_tree.py"
-)
-mt = importlib.util.module_from_spec(_SPEC)
-sys.modules["memory_tree"] = mt
-_SPEC.loader.exec_module(mt)
+if "memory_tree" in sys.modules:
+    mt = sys.modules["memory_tree"]
+else:
+    _SPEC = importlib.util.spec_from_file_location(
+        "memory_tree", _ROOT / "scripts" / "memory_tree.py"
+    )
+    mt = importlib.util.module_from_spec(_SPEC)
+    sys.modules["memory_tree"] = mt
+    _SPEC.loader.exec_module(mt)
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
