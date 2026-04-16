@@ -1013,3 +1013,124 @@ class TestAutofixTree:
         )
         counts = mt.autofix_tree(tmp_db, vault)
         assert counts["discovered"] == 0
+
+
+# ── TestRetrieveWithPolicy — ported evo exp_0006 gating ───────────────────────
+
+class TestRetrieveWithPolicy:
+    """Guards the persona-trigger gating, focused retry, supplementary hint,
+    and adaptive-K behavior ported from ~/deus-memory-evo exp_0006.
+
+    Monkeypatches retrieve() so we drive (query → confidence/path/fell_back)
+    deterministically. Tests the policy layer in isolation.
+    """
+
+    @staticmethod
+    def _stub(outcomes: dict[str, dict]):
+        """Build a fake retrieve() returning dicts from `outcomes` by query.
+
+        outcomes value keys: confidence, paths (list), fell_back.
+        """
+        def _fake(db, query, **kw):
+            o = outcomes.get(query)
+            if o is None:
+                return {"results": [], "confidence": 0.0, "fell_back": True, "trace": ["miss"]}
+            results = [
+                {"id": f"id{i}", "path": p, "title": p, "score": o["confidence"], "route": "flat"}
+                for i, p in enumerate(o.get("paths", []))
+            ]
+            return {
+                "results": results,
+                "confidence": o["confidence"],
+                "fell_back": o.get("fell_back", False),
+                "trace": ["stub"],
+            }
+        return _fake
+
+    def test_high_confidence_accept_adaptive_k_high(self, tmp_db, monkeypatch):
+        """conf >= low_threshold → cap at POLICY_K_HIGH_CONF."""
+        monkeypatch.setattr(mt, "retrieve", self._stub({
+            "q": {"confidence": 0.70, "paths": ["a.md", "b.md", "c.md", "d.md"], "fell_back": False},
+        }))
+        out = mt.retrieve_with_policy(tmp_db, "q", low_threshold=0.55)
+        assert out["fell_back"] is False
+        assert len(out["results"]) == mt.POLICY_K_HIGH_CONF
+        assert f"k={mt.POLICY_K_HIGH_CONF}" in out["policy_trace"]
+
+    def test_low_conf_with_trigger_accepts_adaptive_k_low(self, tmp_db, monkeypatch):
+        """Below threshold but query has PERSONA_TRIGGER → accept with K_LOW."""
+        monkeypatch.setattr(mt, "retrieve", self._stub({
+            "what about my roommates": {
+                "confidence": 0.40, "paths": ["a.md", "b.md", "c.md", "d.md", "e.md"], "fell_back": False,
+            },
+        }))
+        out = mt.retrieve_with_policy(tmp_db, "what about my roommates", low_threshold=0.55)
+        assert out["fell_back"] is False
+        assert len(out["results"]) == mt.POLICY_K_LOW_CONF
+        assert any(p.startswith("k=") for p in out["policy_trace"])
+
+    def test_low_conf_no_trigger_abstains(self, tmp_db, monkeypatch):
+        """Below threshold and no persona trigger → abstain."""
+        monkeypatch.setattr(mt, "retrieve", self._stub({
+            "what was my salary": {"confidence": 0.40, "paths": ["noise.md"], "fell_back": False},
+        }))
+        out = mt.retrieve_with_policy(tmp_db, "what was my salary", low_threshold=0.55)
+        assert out["fell_back"] is True
+        assert out["results"] == []
+        assert "abstain:low_conf_no_trigger" in out["policy_trace"]
+
+    def test_fell_back_with_trigger_retries(self, tmp_db, monkeypatch):
+        """fell_back=True + trigger → retry with alias → accept retry result."""
+        calls = []
+        def _fake(db, query, **kw):
+            calls.append(query)
+            if query == "directors whose work I rate highly":
+                return {"results": [], "confidence": 0.0, "fell_back": True, "trace": ["no_match"]}
+            if query == "directors":
+                return {
+                    "results": [{"id": "m", "path": "Persona/taste/movies.md", "title": "Movies",
+                                 "score": 0.62, "route": "flat"}],
+                    "confidence": 0.62, "fell_back": False, "trace": ["retry_hit"],
+                }
+            return {"results": [], "confidence": 0.0, "fell_back": True, "trace": []}
+        monkeypatch.setattr(mt, "retrieve", _fake)
+        out = mt.retrieve_with_policy(tmp_db, "directors whose work I rate highly")
+        assert out["fell_back"] is False
+        assert out["results"][0]["path"] == "Persona/taste/movies.md"
+        assert "retry:directors" in out["policy_trace"]
+        assert "directors whose work I rate highly" in calls and "directors" in calls
+
+    def test_fell_back_no_trigger_abstains_without_retry(self, tmp_db, monkeypatch):
+        """fell_back=True with no trigger → no retry, abstain."""
+        calls = []
+        def _fake(db, query, **kw):
+            calls.append(query)
+            return {"results": [], "confidence": 0.1, "fell_back": True, "trace": []}
+        monkeypatch.setattr(mt, "retrieve", _fake)
+        out = mt.retrieve_with_policy(tmp_db, "random unrelated question")
+        assert out["fell_back"] is True
+        assert "abstain:fell_back" in out["policy_trace"]
+        assert calls == ["random unrelated question"]  # no retry
+
+    def test_supplementary_hint_merges_household(self, tmp_db, monkeypatch):
+        """Low-conf 'home' query → primary result + hint result merged."""
+        def _fake(db, query, **kw):
+            if query == "home stuff":
+                return {
+                    "results": [{"id": "c", "path": "Persona/work-style/communication.md",
+                                 "title": "Comm", "score": 0.44, "route": "flat"}],
+                    "confidence": 0.44, "fell_back": False, "trace": [],
+                }
+            if query == "roommates":
+                return {
+                    "results": [{"id": "h", "path": "Persona/life/household.md",
+                                 "title": "Household", "score": 0.70, "route": "flat"}],
+                    "confidence": 0.70, "fell_back": False, "trace": [],
+                }
+            return {"results": [], "confidence": 0.0, "fell_back": True, "trace": []}
+        monkeypatch.setattr(mt, "retrieve", _fake)
+        out = mt.retrieve_with_policy(tmp_db, "home stuff", low_threshold=0.55)
+        paths = [r["path"] for r in out["results"]]
+        assert "Persona/life/household.md" in paths
+        assert "Persona/work-style/communication.md" in paths
+        assert "hint:roommates" in out["policy_trace"]
