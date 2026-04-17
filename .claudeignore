@@ -1,0 +1,34 @@
+# .claudeignore — prevents Claude Code from reading these paths
+# during searches or accidentally pulling them into context.
+# Format mirrors .gitignore.
+
+# Dependencies & build output (huge trees, never needed in context)
+node_modules/
+dist/
+.npm-cache/
+coverage/
+.coverage
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Local data / logs / caches
+store/
+data/
+logs/
+results/latest.json
+results/latest-*.json
+*.log
+
+# Local Python env
+.venv/
+venv/
+
+# CC's own temp output files
+/private/tmp/claude-*/
+
+# Large generated assets
+*.tar.gz
+*.zst
+*.sqlite
+*.db
