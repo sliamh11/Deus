@@ -1,4 +1,4 @@
-"""Tests for the memory and token suite adapters (no real benchmarks)."""
+"""Tests for the memory, token, and hygiene suite adapters (no real benchmarks)."""
 import sys
 import types
 from pathlib import Path
@@ -30,12 +30,12 @@ def _make_mb_mock() -> MagicMock:
             "reduction_pct": 30.0,
             "sessions": 5,
         },
-        "local_recall": {"hits": 8, "total": 10, "rate": 0.8},
-        "pending_accuracy": {
-            "items": 3,
-            "within_limit": True,
-            "all_checkbox_format": True,
-            "issues": [],
+        "local_recall": {
+            "hits": 8,
+            "total": 10,
+            "rate": 0.8,
+            "mrr": 0.65,
+            "ranks": [1, 2, None, 1, 3, 1, 2, 1, None, 1],
         },
     }
     return mb
@@ -78,8 +78,24 @@ def test_memory_internal_cases(patched_mb):
     result = run_memory(["--mode", "internal"])
     case_ids = {c.case_id for c in result.cases}
     assert "local_recall" in case_ids
+    assert "local_recall_mrr" in case_ids
     assert "token_efficiency" in case_ids
-    assert "pending_accuracy" in case_ids
+    assert "pending_accuracy" not in case_ids
+
+
+def test_memory_internal_mrr_case(patched_mb):
+    from scripts.bench.suites.memory import run_memory
+    result = run_memory(["--mode", "internal"])
+    mrr_case = next(c for c in result.cases if c.case_id == "local_recall_mrr")
+    assert abs(mrr_case.score - 0.65) < 1e-6
+    assert "ranks" in mrr_case.meta
+
+
+def test_memory_internal_meta_has_mrr(patched_mb):
+    from scripts.bench.suites.memory import run_memory
+    result = run_memory(["--mode", "internal"])
+    assert "mrr" in result.meta
+    assert abs(result.meta["mrr"] - 0.65) < 1e-6
 
 
 # ── Token adapter ─────────────────────────────────────────────────────────────
@@ -206,3 +222,135 @@ def test_token_case_over_budget_score_fractional(monkeypatch):
     # budget=700, tokens_in=1400 → score=0.5
     assert abs(c.score - 0.5) < 1e-6
     assert c.meta["over_by"] == 700
+
+
+# ── MRR calculation ───────────────────────────────────────────────────────────
+
+def test_mrr_known_ranks():
+    """MRR for [1, 2, None] = (1/1 + 1/2 + 0) / 3."""
+    from scripts.bench.suites.hygiene import run_claude_md_hygiene  # noqa: F401 (import check)
+    # Verify formula directly against known values
+    ranks = [1, 2, None]
+    total = len(ranks)
+    mrr = sum(1.0 / r for r in ranks if r is not None) / max(1, total)
+    assert abs(mrr - (1.0 + 0.5) / 3) < 1e-9
+
+
+def test_mrr_all_hits_rank_one():
+    ranks = [1, 1, 1]
+    mrr = sum(1.0 / r for r in ranks if r is not None) / max(1, len(ranks))
+    assert abs(mrr - 1.0) < 1e-9
+
+
+def test_mrr_all_none():
+    ranks = [None, None]
+    mrr = sum(1.0 / r for r in ranks if r is not None) / max(1, len(ranks))
+    assert abs(mrr - 0.0) < 1e-9
+
+
+# ── Hygiene suite ─────────────────────────────────────────────────────────────
+
+def _make_hygiene_mock(within_limit: bool = True, all_checkbox: bool = True) -> MagicMock:
+    mb = MagicMock()
+    mb._load_vault_root.return_value = None
+    return mb
+
+
+@pytest.fixture()
+def patched_hygiene_mb(monkeypatch, tmp_path):
+    mb = MagicMock()
+    mb._load_vault_root.return_value = None
+    monkeypatch.setitem(sys.modules, "memory_benchmark", mb)
+    import scripts.bench.suites.hygiene as hygiene_suite
+    monkeypatch.setattr(hygiene_suite, "_load_mb", lambda: mb)
+
+    claude_md = tmp_path / "CLAUDE.md"
+    # Valid CLAUDE.md: pending section with checkbox items within limit
+    claude_md.write_text(
+        "# Main\n\n"
+        "## Pending\n"
+        "- [x] item one\n"
+        "- [ ] item two\n"
+    )
+    monkeypatch.setattr(
+        "scripts.bench.suites.hygiene.run_claude_md_hygiene",
+        lambda: {
+            "items": 2,
+            "within_limit": True,
+            "all_checkbox_format": True,
+            "issues": [],
+        },
+    )
+    return mb
+
+
+def test_hygiene_suite_returns_expected_cases(patched_hygiene_mb):
+    from scripts.bench.suites.hygiene import run_hygiene
+    result = run_hygiene([])
+    assert isinstance(result, RunResult)
+    assert result.suite == "hygiene"
+    case_ids = {c.case_id for c in result.cases}
+    assert "pending_items_within_limit" in case_ids
+    assert "pending_all_checkbox_format" in case_ids
+
+
+def test_hygiene_suite_score_both_passed(patched_hygiene_mb):
+    from scripts.bench.suites.hygiene import run_hygiene
+    result = run_hygiene([])
+    assert result.score == 1.0
+    for c in result.cases:
+        assert c.passed is True
+
+
+def test_hygiene_suite_score_fails_when_over_limit(monkeypatch):
+    import scripts.bench.suites.hygiene as hygiene_suite
+    monkeypatch.setattr(
+        hygiene_suite,
+        "run_claude_md_hygiene",
+        lambda: {
+            "items": 15,
+            "within_limit": False,
+            "all_checkbox_format": True,
+            "issues": [],
+        },
+    )
+    result = hygiene_suite.run_hygiene([])
+    assert result.score == 0.0
+    limit_case = next(c for c in result.cases if c.case_id == "pending_items_within_limit")
+    assert limit_case.passed is False
+    assert limit_case.score == 0.0
+
+
+def test_hygiene_suite_score_fails_when_bad_format(monkeypatch):
+    import scripts.bench.suites.hygiene as hygiene_suite
+    monkeypatch.setattr(
+        hygiene_suite,
+        "run_claude_md_hygiene",
+        lambda: {
+            "items": 3,
+            "within_limit": True,
+            "all_checkbox_format": False,
+            "issues": ["bad item here"],
+        },
+    )
+    result = hygiene_suite.run_hygiene([])
+    assert result.score == 0.0
+    fmt_case = next(c for c in result.cases if c.case_id == "pending_all_checkbox_format")
+    assert fmt_case.passed is False
+
+
+def test_hygiene_meta_includes_item_count_and_issues(monkeypatch):
+    import scripts.bench.suites.hygiene as hygiene_suite
+    monkeypatch.setattr(
+        hygiene_suite,
+        "run_claude_md_hygiene",
+        lambda: {
+            "items": 4,
+            "within_limit": True,
+            "all_checkbox_format": True,
+            "issues": [],
+        },
+    )
+    result = hygiene_suite.run_hygiene([])
+    assert result.meta["items"] == 4
+    assert "issues" in result.meta

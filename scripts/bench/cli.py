@@ -103,6 +103,7 @@ def cmd_report(args: argparse.Namespace) -> int:
 def cmd_diff(args: argparse.Namespace) -> int:
     suite_filter: str | None = args.suite
     tolerance: float = args.tolerance
+    growth_threshold: float = args.growth_threshold
 
     run_a = resolve_run(args.a, suite=suite_filter)
     run_b = resolve_run(args.b, suite=suite_filter)
@@ -189,7 +190,48 @@ def cmd_diff(args: argparse.Namespace) -> int:
         f" added={n_added} dropped={n_dropped}"
     )
 
-    return 1 if has_regression else 0
+    has_growth_alert = False
+
+    # Per-case growth alerts
+    for cid in common_ids:
+        ca = cases_a[cid]
+        cb = cases_b[cid]
+        tok_a = ca.get("tokens_in") or 0
+        tok_b = cb.get("tokens_in") or 0
+        sa = ca["score"] if ca["score"] is not None else 0.0
+        sb = cb["score"] if cb["score"] is not None else 0.0
+        score_unchanged = abs(sb - sa) <= tolerance
+        if tok_a > 0 and score_unchanged:
+            baseline = min(tok_a, tok_b)
+            growth = (tok_b - tok_a) / baseline if baseline > 0 else 0.0
+            if growth > growth_threshold:
+                pct = growth * 100
+                print(
+                    f"growth alert: {cid} tokens_in grew +{pct:.1f}%"
+                    f" (A: {tok_a} → B: {tok_b}) with unchanged score"
+                )
+                has_growth_alert = True
+
+    # Suite-level growth alert
+    suite_tok_a = run_a.get("tokens_in") or 0
+    suite_tok_b = run_b.get("tokens_in") or 0
+    suite_score_unchanged = (
+        score_a is not None
+        and score_b is not None
+        and abs(score_b - score_a) <= tolerance
+    )
+    if suite_tok_a > 0 and suite_score_unchanged:
+        baseline = min(suite_tok_a, suite_tok_b)
+        suite_growth = (suite_tok_b - suite_tok_a) / baseline if baseline > 0 else 0.0
+        if suite_growth > growth_threshold:
+            pct = suite_growth * 100
+            print(
+                f"growth alert: <suite> tokens_in grew +{pct:.1f}%"
+                f" (A: {suite_tok_a} → B: {suite_tok_b}) with unchanged score"
+            )
+            has_growth_alert = True
+
+    return 1 if (has_regression or has_growth_alert) else 0
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -215,6 +257,8 @@ def _build_parser() -> argparse.ArgumentParser:
     diff_p.add_argument("--suite", default=None, help="restrict resolution to this suite")
     diff_p.add_argument("--tolerance", type=float, default=0.01,
                         help="min |delta| to count as improved/regressed (default 0.01)")
+    diff_p.add_argument("--growth-threshold", type=float, default=0.05,
+                        help="tokens_in growth fraction that triggers an alert (default 0.05 = 5%%)")
 
     return p
 

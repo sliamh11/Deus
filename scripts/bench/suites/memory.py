@@ -69,7 +69,6 @@ def run_memory(argv: list[str]) -> RunResult:
 
         lr = result["local_recall"]
         te = result["token_efficiency"]
-        pa = result["pending_accuracy"]
 
         score = lr["rate"]
 
@@ -81,22 +80,18 @@ def run_memory(argv: list[str]) -> RunResult:
                 meta={"hits": lr["hits"], "total": lr["total"]},
             ),
             CaseResult(
+                case_id="local_recall_mrr",
+                score=lr["mrr"],
+                passed=lr["mrr"] > 0.0,
+                meta={"mrr": lr["mrr"], "ranks": lr["ranks"]},
+            ),
+            CaseResult(
                 case_id="token_efficiency",
                 score=1.0,
                 meta={
                     "full_chars": te["full_chars"],
                     "compact_chars": te["compact_chars"],
                     "reduction_pct": te["reduction_pct"],
-                },
-            ),
-            CaseResult(
-                case_id="pending_accuracy",
-                score=1.0 if pa["within_limit"] and pa["all_checkbox_format"] else 0.0,
-                passed=pa["within_limit"] and pa["all_checkbox_format"],
-                meta={
-                    "items": pa["items"],
-                    "within_limit": pa["within_limit"],
-                    "all_checkbox_format": pa["all_checkbox_format"],
                 },
             ),
         ]
@@ -106,5 +101,5 @@ def run_memory(argv: list[str]) -> RunResult:
             score=score,
             cases=cases,
             latency_ms=elapsed_ms,
-            meta={"mode": "internal"},
+            meta={"mode": "internal", "mrr": lr["mrr"]},
         )

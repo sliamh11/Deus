@@ -41,6 +41,7 @@ def test_list_shows_memory_and_token(isolate_bench_db):
     names = r.stdout.strip().splitlines()
     assert "memory" in names
     assert "token" in names
+    assert "hygiene" in names
 
 
 def test_report_empty_db(isolate_bench_db):
@@ -153,3 +154,66 @@ def test_diff_added_dropped_cases(isolate_bench_db):
     assert r.returncode == 0, r.stderr + r.stdout
     assert "dropped" in r.stdout
     assert "added" in r.stdout
+
+
+# ── growth alert ──────────────────────────────────────────────────────────────
+
+def _seed_run_with_tokens(
+    suite: str,
+    score: float,
+    cases: list[tuple[str, float, int]],
+    suite_tokens_in: int = 0,
+    label: str | None = None,
+) -> str:
+    """Seed a run with per-case tokens_in and suite-level tokens_in."""
+    result = RunResult(
+        suite=suite,
+        score=score,
+        cases=[
+            CaseResult(case_id=cid, score=s, tokens_in=tok)
+            for cid, s, tok in cases
+        ],
+        tokens_in=suite_tokens_in,
+    )
+    return save_run(result, label=label)
+
+
+def test_diff_growth_alert_fires_on_token_growth_unchanged_score(isolate_bench_db):
+    """tokens_in grew >5% with unchanged score → growth alert + exit 1."""
+    db = str(isolate_bench_db)
+    # c1: score unchanged 0.8→0.8, tokens 1000→1100 (10% growth > 5% threshold)
+    id_a = _seed_run_with_tokens("token", 0.8, [("c1", 0.8, 1000)])
+    id_b = _seed_run_with_tokens("token", 0.8, [("c1", 0.8, 1100)])
+    r = _run_cli("diff", id_a, id_b, env={"DEUS_BENCH_DB": db})
+    assert r.returncode == 1, f"expected exit 1, got {r.returncode}\n{r.stdout}"
+    assert "growth alert" in r.stdout
+    assert "c1" in r.stdout
+    assert "+10.0%" in r.stdout
+
+
+def test_diff_growth_alert_does_not_fire_when_score_changed(isolate_bench_db):
+    """Score improved → no growth alert even if tokens grew."""
+    db = str(isolate_bench_db)
+    # c1: score changed 0.5→0.9, tokens 1000→1200 (20% growth but score changed)
+    id_a = _seed_run_with_tokens("token", 0.5, [("c1", 0.5, 1000)])
+    id_b = _seed_run_with_tokens("token", 0.9, [("c1", 0.9, 1200)])
+    r = _run_cli("diff", id_a, id_b, env={"DEUS_BENCH_DB": db})
+    assert "growth alert" not in r.stdout
+
+
+def test_diff_growth_alert_does_not_fire_below_threshold(isolate_bench_db):
+    """tokens grew 3% (below 5% default threshold) → no alert."""
+    db = str(isolate_bench_db)
+    id_a = _seed_run_with_tokens("token", 0.8, [("c1", 0.8, 1000)])
+    id_b = _seed_run_with_tokens("token", 0.8, [("c1", 0.8, 1030)])
+    r = _run_cli("diff", id_a, id_b, env={"DEUS_BENCH_DB": db})
+    assert "growth alert" not in r.stdout
+
+
+def test_diff_growth_alert_respects_custom_threshold(isolate_bench_db):
+    """--growth-threshold 0.20 → 10% growth does not fire."""
+    db = str(isolate_bench_db)
+    id_a = _seed_run_with_tokens("token", 0.8, [("c1", 0.8, 1000)])
+    id_b = _seed_run_with_tokens("token", 0.8, [("c1", 0.8, 1100)])
+    r = _run_cli("diff", id_a, id_b, "--growth-threshold", "0.20", env={"DEUS_BENCH_DB": db})
+    assert "growth alert" not in r.stdout

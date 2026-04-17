@@ -237,10 +237,11 @@ def test_run_internal_token_efficiency():
     assert te["full_chars"] == 2000
     assert te["compact_chars"] == 600
     assert te["reduction_pct"] == pytest.approx(70.0)
+    assert "pending_accuracy" not in result
 
 
 def test_run_internal_local_recall_hit():
-    """Local recall: session stem found in query output -> hit."""
+    """Local recall: session stem found in query output -> hit, rank=1, mrr=1.0."""
     session = {"path": "/vault/Session-Logs/my-great-session.md", "query": "algebra exam"}
     query_output = (
         "## Relevant Past Sessions\n"
@@ -262,10 +263,12 @@ def test_run_internal_local_recall_hit():
     assert result["local_recall"]["hits"] == 1
     assert result["local_recall"]["total"] == 1
     assert result["local_recall"]["rate"] == pytest.approx(1.0)
+    assert result["local_recall"]["mrr"] == pytest.approx(1.0)
+    assert result["local_recall"]["ranks"] == [1]
 
 
 def test_run_internal_local_recall_miss():
-    """Local recall: unrelated path in query output -> miss."""
+    """Local recall: unrelated path in query output -> miss, rank=None, mrr=0.0."""
     session = {"path": "/vault/Session-Logs/my-session.md", "query": "algebra exam"}
     query_output = (
         "## Relevant Past Sessions\n"
@@ -286,10 +289,12 @@ def test_run_internal_local_recall_miss():
 
     assert result["local_recall"]["hits"] == 0
     assert result["local_recall"]["rate"] == pytest.approx(0.0)
+    assert result["local_recall"]["mrr"] == pytest.approx(0.0)
+    assert result["local_recall"]["ranks"] == [None]
 
 
 def test_run_internal_no_sessions():
-    """With no vault sessions, local recall reports 0/0 gracefully."""
+    """With no vault sessions, local recall reports 0/0 gracefully, mrr=0.0."""
     with (
         patch.object(mb, "_run_indexer_real", lambda args: _make_completed()),
         patch.object(mb, "_sample_real_sessions", return_value=[]),
@@ -298,6 +303,8 @@ def test_run_internal_no_sessions():
 
     assert result["local_recall"]["total"] == 0
     assert result["local_recall"]["rate"] == pytest.approx(0.0)
+    assert result["local_recall"]["mrr"] == pytest.approx(0.0)
+    assert result["local_recall"]["ranks"] == []
 
 
 # ── print helpers (smoke tests) ───────────────────────────────────────────────
@@ -329,19 +336,14 @@ def test_print_internal_results_runs(capsys):
             "reduction_pct": 64.3,
             "sessions": 5,
         },
-        "local_recall": {"hits": 17, "total": 20, "rate": 0.85},
-        "pending_accuracy": {
-            "items": 4,
-            "within_limit": True,
-            "all_checkbox_format": True,
-            "issues": [],
-        },
+        "local_recall": {"hits": 17, "total": 20, "rate": 0.85, "mrr": 0.72, "ranks": []},
     }
     mb.print_internal_results(result)
     out = capsys.readouterr().out
     assert "Internal Benchmarks" in out
     assert "Token efficiency" in out
     assert "recall@3" in out.lower()
+    assert "MRR" in out
 
 
 # ── save_results ──────────────────────────────────────────────────────────────

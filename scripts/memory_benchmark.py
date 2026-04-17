@@ -462,40 +462,24 @@ def run_internal(limit: int = 20) -> dict:
 
     recall3_hits = 0
     recall3_total = 0
+    ranks: list[Optional[int]] = []
     for sess in sessions:
         proc = _run_indexer_real(["--query", sess["query"], "--top", "3"])
         result_paths = _parse_query_output(proc.stdout)
         sess_stem = Path(sess["path"]).stem
-        hit = any(Path(rp).stem == sess_stem for rp in result_paths)
+        first_rank: Optional[int] = None
+        for pos, rp in enumerate(result_paths[:3], start=1):
+            if Path(rp).stem == sess_stem:
+                first_rank = pos
+                break
+        hit = first_rank is not None
         if hit:
             recall3_hits += 1
+        ranks.append(first_rank)
         recall3_total += 1
 
     recall3_rate = recall3_hits / recall3_total if recall3_total else 0.0
-
-    # ── Pending accuracy (CLAUDE.md) ─────────────────────────────────────────
-    print("  Pending accuracy (CLAUDE.md)...", flush=True)
-    vault_root = _load_vault_root()
-    claude_md = (vault_root / "CLAUDE.md") if vault_root else Path(__file__).resolve().parent.parent / "CLAUDE.md"
-    pending_items = 0
-    all_checkbox_format = True
-    pending_issues: list[str] = []
-
-    if claude_md.exists():
-        content = claude_md.read_text(encoding="utf-8")
-        pending_section = re.search(
-            r"(?i)#+\s*(pending|todo|backlog).*?\n(.*?)(?=\n#+|\Z)",
-            content,
-            re.DOTALL,
-        )
-        if pending_section:
-            section_body = pending_section.group(2)
-            items = re.findall(r"^\s*-\s+(.+)$", section_body, re.MULTILINE)
-            pending_items = len(items)
-            for item in items:
-                if not re.match(r"\[[ x]\]", item):
-                    all_checkbox_format = False
-                    pending_issues.append(item[:60])
+    mrr = sum(1.0 / r for r in ranks if r is not None) / max(1, recall3_total)
 
     return {
         "mode": "internal",
@@ -509,12 +493,8 @@ def run_internal(limit: int = 20) -> dict:
             "hits": recall3_hits,
             "total": recall3_total,
             "rate": recall3_rate,
-        },
-        "pending_accuracy": {
-            "items": pending_items,
-            "within_limit": pending_items <= 10,
-            "all_checkbox_format": all_checkbox_format,
-            "issues": pending_issues[:3],
+            "mrr": mrr,
+            "ranks": ranks,
         },
     }
 
@@ -522,7 +502,6 @@ def run_internal(limit: int = 20) -> dict:
 def print_internal_results(result: dict) -> None:
     te = result["token_efficiency"]
     lr = result["local_recall"]
-    pa = result["pending_accuracy"]
 
     print("\n=== Internal Benchmarks ===")
 
@@ -541,21 +520,9 @@ def print_internal_results(result: dict) -> None:
     print(f"\nLocal recall@3 (sample={lr['total']}):")
     if lr["total"] > 0:
         print(f"  Hit rate: {lr['rate'] * 100:.1f}% ({lr['hits']}/{lr['total']})")
+        print(f"  MRR:      {lr['mrr']:.3f}")
     else:
         print("  Hit rate: N/A (no indexed sessions found in real DB)")
-
-    print("\nPending accuracy:")
-    items = pa["items"]
-    if items == 0:
-        print("  Items: none found in CLAUDE.md pending section")
-    else:
-        limit_mark = "within 10-item limit" if pa["within_limit"] else "EXCEEDS 10-item limit"
-        limit_ok = "ok" if pa["within_limit"] else "FAIL"
-        fmt_ok = "all [ ] ok" if pa["all_checkbox_format"] else "some missing [ ] format FAIL"
-        print(f"  Items: {items} ({limit_mark}) [{limit_ok}]")
-        print(f"  Format: {fmt_ok}")
-        for issue in pa["issues"]:
-            print(f"    - bad format: {issue}")
 
 
 # ── Save results ──────────────────────────────────────────────────────────────
