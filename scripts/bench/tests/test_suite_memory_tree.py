@@ -224,6 +224,25 @@ class TestPolicyDispatch:
         assert r_policy.meta["policy"] is True
         assert r_raw.meta["policy"] is False
 
+    def test_default_is_no_policy(self, tmp_path, monkeypatch):
+        mt = _make_mt_mock(
+            policy_outcomes={},
+            raw_outcomes={
+                "who do I live with": {"results": [], "fell_back": True, "confidence": 0.1},
+                "my favorite directors and movies": {"results": [], "fell_back": True, "confidence": 0.1},
+                "how to cook a chocolate souffle": {"results": [], "fell_back": True, "confidence": 0.1},
+            },
+        )
+        _inject_mt(monkeypatch, mt)
+        dataset_path = _write_dataset(tmp_path, _FIXTURE_ITEMS)
+
+        from scripts.bench.suites.memory_tree import run_memory_tree
+        result = run_memory_tree(["--dataset", str(dataset_path)])
+
+        assert mt.retrieve.called
+        assert not mt.retrieve_with_policy.called
+        assert result.meta["policy"] is False
+
 
 # ── Tests — abstentions ───────────────────────────────────────────────────────
 

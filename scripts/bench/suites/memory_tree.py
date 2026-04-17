@@ -122,10 +122,10 @@ def run_memory_tree(argv: list[str]) -> RunResult:
     p.add_argument("--dataset", type=Path, default=_DEFAULT_DATASET,
                    help="Path to JSONL benchmark dataset")
     policy_grp = p.add_mutually_exclusive_group()
-    policy_grp.add_argument("--policy", dest="policy", action="store_true", default=True,
-                            help="Use retrieve_with_policy (default)")
+    policy_grp.add_argument("--policy", dest="policy", action="store_true", default=False,
+                            help="Use retrieve_with_policy (opt-in as of 2026-04-18; raw retrieve is default)")
     policy_grp.add_argument("--no-policy", dest="policy", action="store_false",
-                            help="Use raw retrieve instead of retrieve_with_policy")
+                            help="Use raw retrieve instead of retrieve_with_policy (default)")
     args = p.parse_args(argv)
 
     mt = _load_mt()

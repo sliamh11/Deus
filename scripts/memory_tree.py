@@ -1612,9 +1612,14 @@ def main(argv: list[str] | None = None) -> int:
     p_query.add_argument("--low", type=float, default=DEFAULT_LOW_THRESHOLD)
     p_query.add_argument("--abstain", type=float, default=DEFAULT_ABSTAIN_THRESHOLD)
     p_query.add_argument(
+        "--policy", action="store_true",
+        help="Opt into retrieve_with_policy (persona gating / retry / hints / adaptive-K). "
+             "Raw retrieve is the default as of 2026-04-18 after bench showed --no-policy "
+             "at 0.944 vs --policy at 0.844 on the 90-item fixture.",
+    )
+    p_query.add_argument(
         "--raw", action="store_true",
-        help="Bypass retrieve_with_policy (persona gating / retry / hints / adaptive-K). "
-             "Used by benchmarks that need the raw embedding similarity path.",
+        help="[deprecated] No-op kept for backward compatibility — raw retrieve is now the default.",
     )
 
     p_reembed = sub.add_parser("reembed", help="Re-embed a single file")
@@ -1670,13 +1675,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.cmd == "query":
-        if args.raw:
-            result = retrieve(
+        if args.policy:
+            result = retrieve_with_policy(
                 db, args.text, k=args.k,
                 low_threshold=args.low, abstain_threshold=args.abstain,
             )
         else:
-            result = retrieve_with_policy(
+            result = retrieve(
                 db, args.text, k=args.k,
                 low_threshold=args.low, abstain_threshold=args.abstain,
             )
