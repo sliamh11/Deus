@@ -452,3 +452,55 @@ def test_sample_real_sessions_inline_tldr(tmp_path):
     assert len(sessions) == 1
     # topics takes priority but either way the query must be non-empty
     assert len(sessions[0]["query"]) > 10
+
+
+# ── _run_indexer_real fail-loud ───────────────────────────────────────────────
+
+
+def test_run_indexer_real_raises_on_nonzero_rc():
+    proc = MagicMock()
+    proc.returncode = 1
+    proc.stderr = "boom"
+    proc.stdout = ""
+    with patch("subprocess.run", return_value=proc):
+        with pytest.raises(RuntimeError) as exc_info:
+            mb._run_indexer_real(["--query", "test"])
+    msg = str(exc_info.value)
+    assert "boom" in msg
+    assert "memory_indexer.py" in msg
+
+
+def test_run_indexer_real_ok_on_zero_rc():
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.stdout = "ok"
+    proc.stderr = ""
+    with patch("subprocess.run", return_value=proc):
+        result = mb._run_indexer_real(["--query", "test"])
+    assert result.stdout == "ok"
+
+
+# ── _run_indexer_with_home fail-loud ─────────────────────────────────────────
+
+
+def test_run_indexer_with_home_raises_on_nonzero_rc():
+    proc = MagicMock()
+    proc.returncode = 1
+    proc.stderr = "boom"
+    proc.stdout = ""
+    with patch("subprocess.run", return_value=proc):
+        with pytest.raises(RuntimeError) as exc_info:
+            mb._run_indexer_with_home(["--query", "test"], fake_home="/tmp/fake", vault_path="/tmp/vault")
+    msg = str(exc_info.value)
+    assert "boom" in msg
+    assert "memory_indexer.py" in msg
+
+
+def test_run_indexer_with_home_ok_on_zero_rc():
+    proc = MagicMock()
+    proc.returncode = 0
+    proc.stdout = "ok"
+    proc.stderr = ""
+    with patch("subprocess.run", return_value=proc):
+        result = mb._run_indexer_with_home(["--query", "test"], fake_home="/tmp/fake", vault_path="/tmp/vault")
+    assert result.stdout == "ok"

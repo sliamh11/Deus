@@ -72,11 +72,14 @@ def _run_indexer(
 
 def _run_indexer_real(args: list[str]) -> subprocess.CompletedProcess:
     """Run memory_indexer.py against the REAL production vault/DB."""
-    return subprocess.run(
-        [sys.executable, str(_INDEXER)] + args,
-        capture_output=True,
-        text=True,
-    )
+    cmd = [sys.executable, str(_INDEXER)] + args
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"memory_indexer.py failed (rc={proc.returncode}): {proc.stderr.strip()}\n"
+            f"command: {cmd}"
+        )
+    return proc
 
 
 def _run_indexer_with_home(
@@ -85,13 +88,15 @@ def _run_indexer_with_home(
     vault_path: str,
 ) -> subprocess.CompletedProcess:
     """Run indexer with HOME overridden so DB_PATH resolves to fake_home/.deus/memory.db."""
+    cmd = [sys.executable, str(_INDEXER)] + args
     env = {**os.environ, "HOME": fake_home, "DEUS_VAULT_PATH": vault_path}
-    return subprocess.run(
-        [sys.executable, str(_INDEXER)] + args,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"memory_indexer.py failed (rc={proc.returncode}): {proc.stderr.strip()}\n"
+            f"command: {cmd}"
+        )
+    return proc
 
 
 # ── Dataset download ──────────────────────────────────────────────────────────
