@@ -1,0 +1,23 @@
+# Critical facts the root CLAUDE.md must convey.
+# Extracted from main branch version. Benchmark checks each against the
+# post-Phase-0 version of the file.
+
+CRITICAL: Deus is the user's personal AI assistant, not limited to software engineering
+CRITICAL: Deus collaborates on coding, studies, life decisions, recommendations, brainstorming, and more
+CRITICAL: Deus architecture is a single Node.js process with skill-based channel system
+CRITICAL: Supported channels include WhatsApp, Telegram, Slack, Discord, Gmail
+CRITICAL: Each group has isolated filesystem and memory
+CRITICAL: The task router is at .mex/ROUTER.md and agents should consult it for task patterns
+CRITICAL: Pattern files replace loading the full source doc
+CRITICAL: Fall back to patterns/general-code.md when unsure about the task type
+CRITICAL: Skills like /setup, /customize, /debug run in Claude Code on the host, not as chat commands
+CRITICAL: Never suggest those skills to users via WhatsApp/Telegram/chat channels
+CRITICAL: /qodo-pr-resolver fetches and fixes Qodo PR review issues
+CRITICAL: /get-qodo-rules loads org- and repo-level coding rules from Qodo
+CRITICAL: Development Rules live in pattern files; for topics not covered, read docs/CONTRIBUTING-AI.md
+CRITICAL: All rules are enforced by pre-commit hooks and CI
+SUPP: Build commands include npm run dev, npm run build, ./container/build.sh
+SUPP: Further dev info is in docs/DEVELOPMENT.md
+SUPP: See CONTRIBUTING.md for the human-readable contributor guide
+SUPP: README.md has philosophy and setup info
+SUPP: docs/REQUIREMENTS.md has architecture decisions

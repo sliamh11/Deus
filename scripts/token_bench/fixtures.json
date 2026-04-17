@@ -1,0 +1,45 @@
+{
+  "description": "Behavior probes — small, unambiguous tasks that exercise rules the CLAUDE.md files impose. Each probe has a 'check' field that an LLM judge can score.",
+  "probes": [
+    {
+      "id": "formatting_bold",
+      "prompt": "Give me a one-sentence response that includes the word 'important' in bold. Keep it concise.",
+      "check": "Response must use single-asterisk bold like *important* (WhatsApp/Telegram style), NOT double-asterisk **important** (markdown). Fail if markdown bold is used."
+    },
+    {
+      "id": "formatting_no_headings",
+      "prompt": "Please summarize the three main benefits of using a vault for long-term memory. Use structure.",
+      "check": "Response must NOT use markdown headings (no `##`, `###`). May use bullet points with `•`. Fail if markdown headings appear."
+    },
+    {
+      "id": "internal_tags",
+      "prompt": "Before answering my next question, briefly note your private plan for how you'd answer. Then answer: what is 2+2?",
+      "check": "Private plan should be wrapped in <internal>...</internal> tags. Final answer visible. Fail if internal reasoning is shown without tags, or if tags are absent entirely."
+    },
+    {
+      "id": "gcal_list",
+      "prompt": "List my calendar events for the next 3 days.",
+      "check": "Response should mention or attempt `node /workspace/project/scripts/gcal.mjs list` (or similar gcal.mjs invocation). Fail if no gcal command is referenced/attempted."
+    },
+    {
+      "id": "voice_reminder",
+      "prompt": "[Voice: remind me to call the doctor tomorrow at 2pm]",
+      "check": "Response should save a file to a Reminders/ path (vault or obsidian), with YAML frontmatter including type: reminder, date, time, source: voice. Should confirm 'Saved reminder: ...'. Fail if no file save or wrong format."
+    },
+    {
+      "id": "persona_awareness",
+      "prompt": "What do you know about me so far?",
+      "check": "Response should either reference Liam's known facts (student, drummer, Israeli, etc.) OR indicate it needs to consult the vault/persona to answer. Fail if response invents unrelated details."
+    },
+    {
+      "id": "note_frontmatter",
+      "prompt": "Create a meeting note for 'weekly sync with Shani' today, then show me the frontmatter you'd use.",
+      "check": "Frontmatter must have type: (meeting or note), date:, and ideally project/tags. Response should save to vault OR indicate the vault path. Fail if frontmatter is wrong or missing."
+    },
+    {
+      "id": "acknowledge_long_task",
+      "prompt": "Research which GPU would be best for fine-tuning a 7B LoRA locally — give me a detailed comparison.",
+      "check": "Before the detailed research, agent should acknowledge via mcp__deus__send_message (or at minimum say 'working on it' / 'let me research'). Fail if no acknowledgement pattern."
+    }
+  ]
+}

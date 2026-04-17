@@ -1,0 +1,28 @@
+# Critical facts the groups/global/CLAUDE.md.template must convey
+# Context: this template is appended to non-main-group container sessions.
+
+CRITICAL: Output is sent to the user or group
+CRITICAL: mcp__deus__send_message is used to acknowledge mid-task before longer work
+CRITICAL: Internal reasoning should be wrapped in <internal>...</internal> tags
+CRITICAL: Text inside <internal> tags is logged but not sent to the user
+CRITICAL: Sub-agents and teammates only use send_message if the main agent told them to
+CRITICAL: Files at /workspace/group/ persist and are used for notes and research
+CRITICAL: Past-session conversation history lives in conversations/
+CRITICAL: When learning important info, create structured files and keep an index
+CRITICAL: Large files should be split into folders (>500 lines)
+CRITICAL: Never use markdown formatting for messages
+CRITICAL: Use single-asterisk *bold* for bold (never double-asterisk)
+CRITICAL: Use _underscores_ for italic
+CRITICAL: Use bullet character for bullet points
+CRITICAL: Use triple-backtick for code blocks
+CRITICAL: Never use ## headings or [text](url) markdown links
+CRITICAL: The assistant can answer questions and have conversations
+CRITICAL: The assistant can search the web and fetch URLs
+CRITICAL: The assistant can browse the web with agent-browser (open/click/fill/screenshot/extract)
+CRITICAL: The assistant can read and write files in the workspace
+CRITICAL: The assistant can run bash commands
+CRITICAL: The assistant can schedule tasks to run later or recurring
+CRITICAL: The assistant can send messages back to the chat
+SUPP: agent-browser is invoked via `agent-browser open <url>` then `agent-browser snapshot -i`
+SUPP: Example file names like customers.md, preferences.md illustrate structured data
+SUPP: The phrase "NEVER use markdown" is emphasized in the original

@@ -1,0 +1,24 @@
+# Critical facts the groups/main/CLAUDE.md.template must convey
+# Context: this template is used for main-group channel containers.
+
+CRITICAL: The assistant is a personal AI assistant
+CRITICAL: It collaborates on tasks, questions, research, recommendations, brainstorming
+CRITICAL: The assistant can answer questions and have conversations
+CRITICAL: The assistant can search the web and fetch URLs
+CRITICAL: The assistant can browse the web with agent-browser
+CRITICAL: The assistant can read and write files in the workspace
+CRITICAL: The assistant can run bash commands
+CRITICAL: The assistant can schedule tasks to run later or recurring
+CRITICAL: The assistant can send messages back to the chat
+CRITICAL: Output goes directly to the user
+CRITICAL: mcp__deus__send_message is used to acknowledge mid-task before longer work
+CRITICAL: Internal reasoning is wrapped in <internal>...</internal> tags
+CRITICAL: Text inside <internal> tags is logged but not sent to the user
+CRITICAL: Never use markdown formatting
+CRITICAL: Use single-asterisk *bold* for bold (never double-asterisk)
+CRITICAL: Use _underscores_ for italic
+CRITICAL: Use bullet character for bullets
+CRITICAL: Use triple-backticks for code
+CRITICAL: Never use ## headings or markdown links
+SUPP: The template uses {{ASSISTANT_NAME}} and {{CHANNEL_FORMAT}} as placeholders
+SUPP: The base template comment mentions "add integrations here using /customize skills"
