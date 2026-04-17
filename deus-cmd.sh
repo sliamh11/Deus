@@ -1026,7 +1026,15 @@ $STARTUP_INSTRUCTION"
         cd "$HOME/deus" && launch_claude
       fi
     else
-      STARTUP_INSTRUCTION="STARTUP INSTRUCTION: Context from the memory vault has been pre-loaded above. Catch the user up using exactly this format:
+      STARTUP_INSTRUCTION="STARTUP INSTRUCTION: Context from the memory vault has been pre-loaded above, BUT it is a snapshot taken at deus launch and does not refresh across /clear or same-session work. Before drafting the catch-up, verify freshness:
+
+  1. ls -t \"$VAULT/Checkpoints\" | head -3
+  2. ls -t \"$VAULT/Session-Logs/$(date +%Y-%m-%d)\" 2>/dev/null
+  3. If anything on disk is newer than the newest date in the === RECENT SESSIONS === block, re-run: python3 \$HOME/deus/scripts/memory_indexer.py --recent 3
+     and lead the catch-up from that output plus the newest same-day checkpoint's next_action / in_progress fields. Ignore the stale pre-loaded block.
+  4. If disk matches the block, the snapshot is fresh — use it.
+
+Then catch the user up using exactly this format:
 
 • Previous session: [1-2 lines of ongoing context and last session topic]
 • Pending: [bullet list of pending tasks, max 3 items]
