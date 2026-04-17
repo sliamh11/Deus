@@ -107,8 +107,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run_p = sub.add_parser("run", help="run a suite")
     run_p.add_argument("suite", help="suite name or 'all'")
-    run_p.add_argument("--save", action="store_true", help="persist result to DB")
     run_p.add_argument("suite_args", nargs=argparse.REMAINDER)
+    # --save is consumed before argparse in main() so it can appear anywhere
+    # around the suite name without being eaten by REMAINDER.
 
     report_p = sub.add_parser("report", help="show recent runs")
     report_p.add_argument("--suite", default=None)
@@ -119,13 +120,26 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+
+    save = False
+    if argv and argv[0] == "run":
+        filtered = ["run"]
+        for token in argv[1:]:
+            if token == "--save":
+                save = True
+            else:
+                filtered.append(token)
+        argv = filtered
+
     p = _build_parser()
     args = p.parse_args(argv)
 
     if args.command == "list":
         return cmd_list(args)
     if args.command == "run":
-        # Strip leading "--" separator that argparse REMAINDER includes
+        args.save = save
         if args.suite_args and args.suite_args[0] == "--":
             args.suite_args = args.suite_args[1:]
         return cmd_run(args)
