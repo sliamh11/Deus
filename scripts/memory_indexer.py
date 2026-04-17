@@ -36,6 +36,7 @@ from evolution.config import (
     GEN_MODELS,
     load_api_key as _load_api_key,
 )
+from evolution.providers.embeddings import warmup_embedding_provider
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -3151,6 +3152,12 @@ def main():
                              "(e.g. public,internal,private). Overrides --privacy. "
                              "Also reads from DEUS_MEMORY_PRIVACY env var.")
     args = parser.parse_args()
+
+    # Warm up embedding provider before batch workloads when requested.
+    # Only fires when the caller sets DEUS_EMBED_WARMUP=1 to avoid adding
+    # latency to single-file indexer invocations.
+    if os.getenv("DEUS_EMBED_WARMUP") == "1":
+        warmup_embedding_provider()
 
     global _client
     # Commands that need no API key

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ..registry import register
 from ..types import CaseResult, RunResult
+from evolution.providers.embeddings import warmup_embedding_provider
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent
 _MB_PATH = _SCRIPTS_DIR / "memory_benchmark.py"
@@ -29,6 +30,7 @@ def run_memory(argv: list[str]) -> RunResult:
     p.add_argument("--k", default="1,3,5,10")
     args = p.parse_args(argv)
 
+    warmup_embedding_provider()
     mb = _load_mb()
     t_start = time.monotonic()
 

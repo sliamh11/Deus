@@ -6,11 +6,17 @@ Override via EMBEDDING_PROVIDER env var: 'gemini', 'ollama', or 'auto'.
 'auto' (default) tries Ollama first, falls back to Gemini if unavailable.
 """
 import json
+import logging
 import os
+import socket
+import time
+import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
 
 from ..config import EMBED_DIM, EMBED_MODELS, load_api_key
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_EMBED_MODEL = os.environ.get("OLLAMA_EMBED_MODEL", "embeddinggemma")
@@ -52,6 +58,18 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         self._model = model
         self._url = f"{host.rstrip('/')}/api/embed"
 
+    _MAX_ATTEMPTS = 3
+    _BACKOFF_BASE = 1.0  # seconds; doubles each retry
+
+    @staticmethod
+    def _is_timeout(exc: BaseException) -> bool:
+        """Return True if exc represents a transient socket timeout."""
+        if isinstance(exc, (TimeoutError, socket.timeout)):
+            return True
+        if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, (TimeoutError, socket.timeout)):
+            return True
+        return False
+
     def embed(self, text: str) -> list[float]:
         payload = json.dumps({"model": self._model, "input": text}).encode()
         req = urllib.request.Request(
@@ -59,8 +77,28 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
             data=payload,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
+        last_exc: BaseException | None = None
+        for attempt in range(1, self._MAX_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=60) as resp:
+                    data = json.loads(resp.read())
+                break
+            except BaseException as exc:
+                if not self._is_timeout(exc):
+                    raise
+                last_exc = exc
+                if attempt < self._MAX_ATTEMPTS:
+                    delay = self._BACKOFF_BASE * (2 ** (attempt - 1))
+                    logger.warning(
+                        "Ollama embed timeout (attempt %d/%d), retrying in %.0fs: %s",
+                        attempt,
+                        self._MAX_ATTEMPTS,
+                        delay,
+                        exc,
+                    )
+                    time.sleep(delay)
+        else:
+            raise last_exc  # type: ignore[misc]
         vec = data["embeddings"][0]
         # Truncate or pad to EMBED_DIM for compatibility with existing vec0 tables
         if len(vec) > EMBED_DIM:
@@ -68,6 +106,16 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         elif len(vec) < EMBED_DIM:
             vec = vec + [0.0] * (EMBED_DIM - len(vec))
         return vec
+
+    def warmup(self) -> None:
+        """Send a throwaway embed to warm up the Ollama model.
+
+        If Ollama is cold-starting or loading the model, the first real embed
+        call can hit the per-attempt timeout.  Calling warmup() before the main
+        workload absorbs that startup latency.  If the warmup itself fails after
+        all retries, the exception propagates — caller decides how to handle it.
+        """
+        self.embed("warmup")
 
 
 def _is_ollama_available() -> bool:
@@ -114,3 +162,18 @@ def get_embedding_provider() -> EmbeddingProvider:
 def embed(text: str) -> list[float]:
     """Convenience: embed a single text using the configured provider."""
     return get_embedding_provider().embed(text)
+
+
+def warmup_embedding_provider() -> None:
+    """Warm up the embedding provider if it supports warmup.
+
+    Uses duck-typing so that Gemini and other providers that don't implement
+    warmup() are silently skipped.  Only OllamaEmbeddingProvider defines
+    warmup() today.
+
+    Call this once before a batch embedding workload to absorb Ollama cold-start
+    latency.  Any exception from warmup() propagates to the caller.
+    """
+    provider = get_embedding_provider()
+    if hasattr(provider, "warmup"):
+        provider.warmup()
