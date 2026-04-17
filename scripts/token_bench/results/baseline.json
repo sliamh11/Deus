@@ -1,0 +1,87 @@
+{
+  "label": "baseline",
+  "chars_per_token": 3.7,
+  "files": {
+    "host_claude_md": {
+      "path": "CLAUDE.md",
+      "exists": true,
+      "chars": 2902,
+      "lines": 47,
+      "est_tokens": 784,
+      "sha256_8": "09ec2de1"
+    },
+    "global_template": {
+      "path": "groups/global/CLAUDE.md.template",
+      "exists": true,
+      "chars": 2231,
+      "lines": 58,
+      "est_tokens": 603,
+      "sha256_8": "68a44d32"
+    },
+    "main_template": {
+      "path": "groups/main/CLAUDE.md.template",
+      "exists": true,
+      "chars": 1834,
+      "lines": 44,
+      "est_tokens": 496,
+      "sha256_8": "c1312977"
+    },
+    "whatsapp_main": {
+      "path": "groups/whatsapp_main/CLAUDE.md",
+      "exists": true,
+      "chars": 3145,
+      "lines": 74,
+      "est_tokens": 850,
+      "sha256_8": "77e70f57"
+    },
+    "telegram_main": {
+      "path": "groups/telegram_main/CLAUDE.md",
+      "exists": true,
+      "chars": 2460,
+      "lines": 64,
+      "est_tokens": 665,
+      "sha256_8": "a9c7f762"
+    },
+    "router": {
+      "path": ".mex/ROUTER.md",
+      "exists": true,
+      "chars": 2099,
+      "lines": 42,
+      "est_tokens": 567,
+      "sha256_8": "9921cb17"
+    },
+    "pattern_general": {
+      "path": "patterns/general-code.md",
+      "exists": true,
+      "chars": 2913,
+      "lines": 65,
+      "est_tokens": 787,
+      "sha256_8": "f9bf356d"
+    }
+  },
+  "scenarios": {
+    "host_cc_session": {
+      "components": [
+        "host_claude_md"
+      ],
+      "total_chars": 2902,
+      "est_tokens": 784
+    },
+    "container_whatsapp_main_turn1": {
+      "components": [
+        "global_template",
+        "whatsapp_main"
+      ],
+      "total_chars": 5376,
+      "est_tokens": 1453
+    },
+    "container_telegram_main_turn1": {
+      "components": [
+        "global_template",
+        "telegram_main"
+      ],
+      "total_chars": 4691,
+      "est_tokens": 1268
+    }
+  }
+}

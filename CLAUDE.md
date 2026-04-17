@@ -20,10 +20,6 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
 
-## Architecture Decisions (ADRs)
-
-**REQUIRED: Before making any change to `eval/`, `evolution/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `scripts/memory_indexer.py`, read `docs/decisions/INDEX.md` in full.** Do not skip this step, even for small changes. The index is short (one line per decision) and tells you which full ADR file to load if the topic is relevant. Past decisions have non-obvious constraints (e.g. a "revert this" that looks like an improvement is documented as permanently rejected). Skipping the index has caused regressions before.
-
 ## Task Routing
 
 Consult [`.mex/ROUTER.md`](.mex/ROUTER.md) to find the distilled pattern file for your task type. **The pattern file replaces loading the full source doc** — it contains the rules that apply to that task slice. If you need more detail, the pattern's "Extra doc" line tells you what to load. Fall back to `patterns/general-code.md` when unsure.
