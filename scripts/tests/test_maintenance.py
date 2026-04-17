@@ -29,10 +29,11 @@ import evolution.db as db_mod
 
 @pytest.fixture(autouse=True)
 def patch_db_path(tmp_path, monkeypatch):
-    """Redirect evolution DB_PATH to a temp file and ensure providers are registered."""
+    """Redirect evolution EVOLUTION_DB_PATH to a temp file and ensure providers are registered."""
     test_db_path = tmp_path / "test_maint.db"
-    monkeypatch.setattr(db_mod, "DB_PATH", test_db_path)
-    monkeypatch.setattr(config_mod, "DB_PATH", test_db_path)
+    monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", test_db_path)
+    monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", test_db_path)
+    monkeypatch.setattr(config_mod, "DB_PATH", tmp_path / "nonexistent_legacy.db")
 
     # Re-register built-in storage providers unconditionally.
     # test_storage_provider.py has an autouse fixture that calls StorageRegistry.reset()
