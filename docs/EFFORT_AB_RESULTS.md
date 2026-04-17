@@ -50,27 +50,47 @@ visible to users — exactly what `low` is designed for (per migration guide:
 "Reserve for short, scoped tasks and latency-sensitive workloads that are
 not intelligence-sensitive").
 
-## Recommendation
+## Decision: ship now
 
-Adopt `effort: 'low'` in `container/agent-runner/src/index.ts` for
-main-group container sessions, gated by a feature flag so it can be
-reverted per channel if a quality issue surfaces. Would require:
+Wired `effort: 'low'` into `container/agent-runner/src/index.ts`, gated by
+`DEUS_AGENT_EFFORT` env var:
 
-1. Add `effort: 'low'` to the `options` object passed to `query()`.
-2. Feature-flag it via an env var (`DEUS_AGENT_EFFORT=low|default|high`)
-   so a rollback is one env change, no deploy.
-3. Monitor for a week via reflexion scores in `evolution/`.
+| env value                 | effort passed to SDK |
+|---------------------------|----------------------|
+| unset (default)           | `'low'`              |
+| `low` / `medium` / `high` / `max` | matching value |
+| `default`                 | `undefined` (SDK default) |
+| anything else             | `'low'` (fallback)   |
 
-Not in the original token-optimization PR (#179) — that PR shipped the
-compression gains. Effort-tuning is a separate concern and deserves its own
-rollout cycle.
+Rationale for shipping now vs gating on more data:
 
-## Bigger samples (follow-up)
+- **Rollback is one env change + restart** — no code deploy, no risk of
+  leaving bad code in `main`.
+- **Zero regressions in the A/B** (n=5 but 5-for-5, not 3-of-5).
+- **Migration guide explicitly endorses `low`** for short, scoped,
+  latency-sensitive workloads. WhatsApp/Telegram personal-assistant
+  traffic fits the profile exactly.
+- **More synthetic benchmarking won't move the needle.** The real answer
+  comes from production usage, which needs the flag shipped to observe.
 
-Before flipping the flag on all channels:
-- Run the probe with 20–30 more varied prompts (tool-using queries, gcal,
-  voice reminders with complex detail, research queries).
-- Add `gemma4:e4b` judge-scoring on the response pairs for a quantitative
+## Monitoring
+
+After deployment, watch for a week:
+
+- Reflexion scores in `evolution/ilog/interaction_log.py` — any downward
+  shift in judge quality scores.
+- User-reported quality issues.
+- p95 latency in container logs.
+
+If anything regresses, revert with `DEUS_AGENT_EFFORT=default` and restart.
+
+## Bigger samples (future work)
+
+To tighten the quantitative picture:
+
+- Expand `effort_probe.sh` to 20–30 more varied prompts (tool-using
+  queries, gcal, voice reminders with complex detail, research queries).
+- Add `gemma4:e4b` judge-scoring on the response pairs for a numeric
   quality score, not just eyeball inspection.
-- Measure token usage via the Messages API usage metadata (the CLI path
-  here doesn't expose it directly).
+- Measure input/output tokens via the Messages API usage metadata (the
+  `claude -p` CLI path in this probe doesn't expose it directly).

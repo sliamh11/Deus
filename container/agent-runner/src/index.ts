@@ -487,6 +487,20 @@ async function runQuery(
   let messageCount = 0;
   let resultCount = 0;
 
+  // Effort level (Opus 4.7): default 'low' for latency-sensitive
+  // personal-assistant traffic. Override via DEUS_AGENT_EFFORT env var.
+  // Valid values: low | medium | high | max | default (unset).
+  // Migration guide: 'low' is recommended for "short, scoped tasks and
+  // latency-sensitive workloads that are not intelligence-sensitive".
+  const effortEnv = (process.env.DEUS_AGENT_EFFORT || 'low').toLowerCase();
+  const effort =
+    effortEnv === 'default'
+      ? undefined
+      : (['low', 'medium', 'high', 'max'].includes(effortEnv)
+          ? (effortEnv as 'low' | 'medium' | 'high' | 'max')
+          : 'low');
+  log(`Effort level: ${effort ?? 'SDK default'}`);
+
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
   let globalClaudeMd: string | undefined;
@@ -586,6 +600,7 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
+      effort,
       systemPrompt: globalClaudeMd
         ? {
             type: 'preset' as const,
