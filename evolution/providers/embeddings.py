@@ -80,7 +80,7 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         last_exc: BaseException | None = None
         for attempt in range(1, self._MAX_ATTEMPTS + 1):
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with urllib.request.urlopen(req, timeout=60) as resp:
                     data = json.loads(resp.read())
                 break
             except BaseException as exc:
@@ -106,6 +106,16 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         elif len(vec) < EMBED_DIM:
             vec = vec + [0.0] * (EMBED_DIM - len(vec))
         return vec
+
+    def warmup(self) -> None:
+        """Send a throwaway embed to warm up the Ollama model.
+
+        If Ollama is cold-starting or loading the model, the first real embed
+        call can hit the per-attempt timeout.  Calling warmup() before the main
+        workload absorbs that startup latency.  If the warmup itself fails after
+        all retries, the exception propagates — caller decides how to handle it.
+        """
+        self.embed("warmup")
 
 
 def _is_ollama_available() -> bool:
@@ -152,3 +162,18 @@ def get_embedding_provider() -> EmbeddingProvider:
 def embed(text: str) -> list[float]:
     """Convenience: embed a single text using the configured provider."""
     return get_embedding_provider().embed(text)
+
+
+def warmup_embedding_provider() -> None:
+    """Warm up the embedding provider if it supports warmup.
+
+    Uses duck-typing so that Gemini and other providers that don't implement
+    warmup() are silently skipped.  Only OllamaEmbeddingProvider defines
+    warmup() today.
+
+    Call this once before a batch embedding workload to absorb Ollama cold-start
+    latency.  Any exception from warmup() propagates to the caller.
+    """
+    provider = get_embedding_provider()
+    if hasattr(provider, "warmup"):
+        provider.warmup()

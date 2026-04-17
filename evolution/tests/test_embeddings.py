@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from evolution.providers.embeddings import OllamaEmbeddingProvider
+from evolution.providers.embeddings import OllamaEmbeddingProvider, warmup_embedding_provider
 
 
 # ---------------------------------------------------------------------------
@@ -146,3 +146,78 @@ def test_embed_does_not_retry_on_connection_refused():
 
     mock_open.assert_called_once()
     mock_sleep.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Timeout bumped to 60 s
+# ---------------------------------------------------------------------------
+
+
+def test_urlopen_called_with_timeout_60():
+    """urlopen must be called with timeout=60 (bumped from 30 s per 2026-04-18 bench incident)."""
+    provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
+    with patch("urllib.request.urlopen", return_value=_ok_response()) as mock_open:
+        provider.embed("hello")
+
+    call_positional = mock_open.call_args.args
+    call_keyword = mock_open.call_args.kwargs
+    # urlopen(req, timeout=60) — timeout may be positional or keyword
+    all_args = list(call_positional) + list(call_keyword.values())
+    assert 60 in all_args, f"Expected timeout=60 in urlopen call args, got: {mock_open.call_args}"
+
+
+# ---------------------------------------------------------------------------
+# warmup() on OllamaEmbeddingProvider
+# ---------------------------------------------------------------------------
+
+
+def test_warmup_calls_embed_with_warmup_string():
+    """warmup() must call embed() exactly once with the string 'warmup'."""
+    provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
+    with patch("urllib.request.urlopen", return_value=_ok_response()) as mock_open, \
+         patch("time.sleep"):
+        provider.warmup()
+
+    mock_open.assert_called_once()
+    # The request body should contain 'warmup' as the input
+    req_obj = mock_open.call_args.args[0]
+    body = req_obj.data.decode()
+    assert '"warmup"' in body
+
+
+def test_warmup_raises_on_failure_after_retries():
+    """warmup() must propagate the exception if embed() exhausts all retries."""
+    provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
+    side_effects = [TimeoutError("timed out")] * 3
+
+    with patch("urllib.request.urlopen", side_effect=side_effects), \
+         patch("time.sleep"):
+        with pytest.raises(TimeoutError):
+            provider.warmup()
+
+
+# ---------------------------------------------------------------------------
+# warmup_embedding_provider() facade
+# ---------------------------------------------------------------------------
+
+
+def test_warmup_embedding_provider_calls_warmup_on_ollama():
+    """warmup_embedding_provider() calls warmup() when provider has that method."""
+    mock_provider = MagicMock(spec=OllamaEmbeddingProvider)
+
+    with patch("evolution.providers.embeddings.get_embedding_provider", return_value=mock_provider):
+        warmup_embedding_provider()
+
+    mock_provider.warmup.assert_called_once_with()
+
+
+def test_warmup_embedding_provider_skips_providers_without_warmup():
+    """warmup_embedding_provider() is a no-op for providers that don't define warmup()."""
+    from evolution.providers.embeddings import GeminiEmbeddingProvider
+
+    mock_provider = MagicMock(spec=GeminiEmbeddingProvider)
+    # GeminiEmbeddingProvider has no warmup — spec ensures hasattr returns False
+    assert not hasattr(mock_provider, "warmup")
+
+    with patch("evolution.providers.embeddings.get_embedding_provider", return_value=mock_provider):
+        warmup_embedding_provider()  # should not raise
