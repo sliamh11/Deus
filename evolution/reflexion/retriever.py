@@ -2,6 +2,7 @@
 Reflection retriever: semantic top-k lookup keyed by query + planned tools.
 Returns a formatted <reflections> block ready to prepend to the agent prompt.
 """
+import math
 from typing import Optional
 
 from ..config import MAX_REFLECTIONS_PER_QUERY
@@ -9,6 +10,9 @@ from ..db import serialize_vec
 from ..providers.embeddings import embed as _embed
 from ..storage import get_storage
 from .store import increment_retrieved
+
+# Small tiebreaker weight for helpful_count re-ranking. Monkeypatch in tests.
+HELPFUL_WEIGHT = 0.05
 
 
 def get_reflections(
@@ -21,6 +25,8 @@ def get_reflections(
     Return top-k reflections most semantically relevant to the query.
     Merges the query with planned tool names for better retrieval.
     Group-scoped reflections are prioritised over cross-group ones.
+    Helpful count applies a log-scaled tiebreaker bonus so frequently-useful
+    reflections float up without overriding cosine similarity.
     """
     search_text = query
     if tools_planned:
@@ -33,6 +39,14 @@ def get_reflections(
     results = store.get_reflections_by_embedding(
         embedding=blob, top_k=top_k, group_folder=group_folder,
     )
+
+    # Re-rank: lower distance = better; subtract helpful bonus to keep unified ordering
+    if results:
+        for r in results:
+            helpful_count = r.get("times_helpful") or 0
+            base_score = r.get("distance", 0.0)
+            r["_adjusted"] = base_score - math.log(1 + helpful_count) * HELPFUL_WEIGHT
+        results.sort(key=lambda r: r["_adjusted"])
 
     # Track retrieval counts
     for r in results:

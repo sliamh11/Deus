@@ -205,13 +205,16 @@ def cmd_log_interaction(json_str: str) -> None:
         print(json.dumps({"id": params.get("id", ""), "status": "skipped", "reason": "group opted out"}))
         return
 
-    from .ilog.interaction_log import log_interaction
+    from .ilog.interaction_log import log_interaction, get_previous_in_session
 
     domain_presets = params.get("domain_presets") or None
     user_signal = params.get("user_signal") or None
+    retrieved_reflection_ids: list = params.get("retrieved_reflection_ids") or []
     context_tokens = params.get("context_tokens")
     if context_tokens is not None:
         context_tokens = int(context_tokens)
+
+    session_id = params.get("session_id")
 
     iid = log_interaction(
         prompt=params.get("prompt", ""),
@@ -219,7 +222,7 @@ def cmd_log_interaction(json_str: str) -> None:
         group_folder=params.get("group_folder", "unknown"),
         latency_ms=params.get("latency_ms"),
         tools_used=params.get("tools_used"),
-        session_id=params.get("session_id"),
+        session_id=session_id,
         interaction_id=params.get("id"),
         domain_presets=domain_presets if isinstance(domain_presets, list) else None,
         user_signal=user_signal,
@@ -239,7 +242,97 @@ def cmd_log_interaction(json_str: str) -> None:
     except Exception as exc:
         log.warning('evolution: maintenance failed — %s: %s', type(exc).__name__, exc)
 
+    # Feedback loop — user_signal: generate reflection for the PREVIOUS interaction.
+    if user_signal and session_id:
+        try:
+            _handle_user_signal(
+                user_signal=user_signal,
+                current_iid=iid,
+                session_id=session_id,
+                group_folder=group_folder,
+            )
+        except Exception as exc:
+            log.warning('evolution: user_signal handling failed — %s: %s', type(exc).__name__, exc)
+
+    # Feedback loop — increment helpful counts when current interaction scored well.
+    if retrieved_reflection_ids:
+        try:
+            _handle_retrieved_reflections(
+                current_iid=iid,
+                retrieved_reflection_ids=retrieved_reflection_ids,
+            )
+        except Exception as exc:
+            log.warning('evolution: retrieved_reflection increment failed — %s: %s', type(exc).__name__, exc)
+
     print(json.dumps({"id": iid, "status": "ok"}))
+
+
+def _handle_user_signal(
+    *,
+    user_signal: str,
+    current_iid: str,
+    session_id: str,
+    group_folder: str,
+) -> None:
+    """Generate a reflection for the previous session interaction based on user feedback."""
+    from .ilog.interaction_log import get_previous_in_session
+    from .reflexion.generator import generate_reflection, generate_positive_reflection
+    from .reflexion.store import save_reflection
+
+    prev = get_previous_in_session(session_id=session_id, exclude_id=current_iid)
+    if prev is None:
+        log.warning('evolution: user_signal=%s but no previous interaction in session %s', user_signal, session_id)
+        return
+
+    # Use judge score if available; fall back to 0.5 (neutral — judge hasn't run yet)
+    resolved_score: float = prev.get("judge_score") or 0.5
+
+    if user_signal == "positive":
+        content, category = generate_positive_reflection(
+            prompt=prev["prompt"],
+            response=prev.get("response") or "",
+            score=resolved_score,
+            rationale="user marked positive",
+        )
+    else:
+        content, category = generate_reflection(
+            prompt=prev["prompt"],
+            response=prev.get("response") or "",
+            score=resolved_score,
+            rationale="user marked negative",
+        )
+
+    save_reflection(
+        content=content,
+        category=category,
+        score_at_gen=resolved_score,
+        interaction_id=prev["id"],
+        group_folder=prev.get("group_folder"),
+    )
+
+
+def _handle_retrieved_reflections(
+    *,
+    current_iid: str,
+    retrieved_reflection_ids: list,
+) -> None:
+    """Increment helpful count for retrieved reflections when current interaction scored high."""
+    from .config import POSITIVE_THRESHOLD
+    from .reflexion.store import increment_helpful
+    from .storage import get_storage
+
+    store = get_storage()
+    row = store.get_interaction(current_iid)
+    if row is None:
+        return
+
+    judge_score = row.get("judge_score")
+    # Only reward retrievals for responses we know scored well NOW; skip if unjudged
+    if judge_score is None or judge_score < POSITIVE_THRESHOLD:
+        return
+
+    for rid in retrieved_reflection_ids:
+        increment_helpful(rid)
 
 
 def cmd_reflect(interaction_id: str) -> None:

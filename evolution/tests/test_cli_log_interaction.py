@@ -39,7 +39,7 @@ def mock_judge(monkeypatch):
         rationale="Great response",
     )
     judge_mock = MagicMock()
-    judge_mock.a_evaluate = AsyncMock(return_value=result)
+    judge_mock.evaluate = MagicMock(return_value=result)
 
     monkeypatch.setattr(
         "evolution.judge.make_runtime_judge",
@@ -60,7 +60,7 @@ def mock_low_score_judge(monkeypatch):
         rationale="Poor response",
     )
     judge_mock = MagicMock()
-    judge_mock.a_evaluate = AsyncMock(return_value=result)
+    judge_mock.evaluate = MagicMock(return_value=result)
 
     monkeypatch.setattr(
         "evolution.judge.make_runtime_judge",
@@ -229,7 +229,7 @@ def mock_high_score_judge(monkeypatch):
         rationale="Excellent response",
     )
     judge_mock = MagicMock()
-    judge_mock.a_evaluate = AsyncMock(return_value=result)
+    judge_mock.evaluate = MagicMock(return_value=result)
     monkeypatch.setattr(
         "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,
@@ -249,7 +249,7 @@ def mock_mid_score_judge(monkeypatch):
         rationale="Decent response",
     )
     judge_mock = MagicMock()
-    judge_mock.a_evaluate = AsyncMock(return_value=result)
+    judge_mock.evaluate = MagicMock(return_value=result)
     monkeypatch.setattr(
         "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,
@@ -398,9 +398,17 @@ def test_cmd_log_interaction_user_signal_negative_generates_reflection_for_prev(
 def test_cmd_log_interaction_user_signal_no_prev_judge_score_uses_fallback(
     mock_mid_score_judge, mock_embed, monkeypatch
 ):
-    """user_signal present but previous interaction has no judge_score → uses fallback score."""
+    """user_signal present but previous interaction has no judge_score → uses neutral fallback 0.5.
+
+    We use 0.5 (not 0.8) because the judge hasn't run yet; assuming a high score
+    would introduce bias.
+    """
     from evolution.ilog.interaction_log import log_interaction
     from evolution.cli import cmd_log_interaction
+
+    # Disable maintenance so it cannot score the previous interaction before _handle_user_signal runs
+    monkeypatch.setattr("evolution.cli._maybe_batch_judge", lambda *a, **kw: None)
+    monkeypatch.setattr("evolution.maintenance.run_maintenance", lambda **kw: {})
 
     monkeypatch.setattr("evolution.reflexion.store._embed", lambda text: [0.1] * 768)
     session_id = "session-signal-no-score"
@@ -410,7 +418,7 @@ def test_cmd_log_interaction_user_signal_no_prev_judge_score_uses_fallback(
         group_folder="g",
         session_id=session_id,
     )
-    # Leave judge_score as NULL — code uses fallback score (0.8 for positive)
+    # Leave judge_score as NULL — code uses neutral fallback score (0.5)
 
     signal_gen_calls = []
 
@@ -440,7 +448,7 @@ def test_cmd_log_interaction_user_signal_no_prev_judge_score_uses_fallback(
     ]
     assert len(prev_calls) >= 1, "expected reflection for prev interaction with fallback score"
     assert prev_calls[0][0] == "positive"
-    assert prev_calls[0][1]["score"] == 0.8  # fallback score for positive signal
+    assert prev_calls[0][1]["score"] == 0.5  # neutral fallback — judge hasn't run yet
 
 
 # 4. Feedback loop — increment_helpful called for each retrieved_reflection_id when score is high
@@ -498,6 +506,38 @@ def test_cmd_log_interaction_feedback_loop_not_called_for_low_score(
     assert "ref-zzz" not in incremented, "increment_helpful should not be called for low-score interactions"
 
 
+def test_cmd_log_interaction_feedback_loop_skips_on_low_score(
+    mock_low_score_judge, mock_embed, mock_reflection_generator, monkeypatch
+):
+    """increment_helpful is NOT called when judge_score is below POSITIVE_THRESHOLD."""
+    import evolution.config as config_mod
+    from evolution.cli import cmd_log_interaction
+
+    # Confirm the mock judge produces a score below POSITIVE_THRESHOLD
+    assert mock_low_score_judge[1].score < config_mod.POSITIVE_THRESHOLD
+
+    incremented = []
+    monkeypatch.setattr(
+        "evolution.reflexion.store.increment_helpful",
+        lambda ref_id: incremented.append(ref_id),
+    )
+    monkeypatch.setattr("evolution.reflexion.store._embed", lambda text: [0.1] * 768)
+
+    ref_ids = ["below-threshold-ref-1", "below-threshold-ref-2"]
+    payload = json.dumps({
+        "prompt": "A prompt",
+        "response": "A poor answer",
+        "group_folder": "g",
+        "retrieved_reflection_ids": ref_ids,
+    })
+    cmd_log_interaction(payload)
+
+    assert len(incremented) == 0, (
+        f"increment_helpful must not be called below POSITIVE_THRESHOLD ({config_mod.POSITIVE_THRESHOLD}); "
+        f"called for: {incremented}"
+    )
+
+
 # 5. Judge exception: interaction still saved, no crash
 
 def test_cmd_log_interaction_judge_exception_does_not_crash(monkeypatch, mock_embed):
@@ -509,7 +549,7 @@ def test_cmd_log_interaction_judge_exception_does_not_crash(monkeypatch, mock_em
     monkeypatch.setattr("evolution.reflexion.store._embed", lambda text: [0.1] * 768)
 
     judge_mock = MagicMock()
-    judge_mock.a_evaluate = AsyncMock(side_effect=RuntimeError("Judge API exploded"))
+    judge_mock.evaluate = MagicMock(side_effect=RuntimeError("Judge API exploded"))
     monkeypatch.setattr(
         "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,
@@ -610,7 +650,7 @@ def test_main_log_interaction_dispatch(monkeypatch, tmp_path):
         rationale="Good",
     )
     judge_mock = MagicMock()
-    judge_mock.a_evaluate = AsyncMock(return_value=result)
+    judge_mock.evaluate = MagicMock(return_value=result)
     monkeypatch.setattr(
         "evolution.judge.make_runtime_judge",
         lambda *args, **kwargs: judge_mock,

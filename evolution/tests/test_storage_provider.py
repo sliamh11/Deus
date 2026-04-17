@@ -46,6 +46,8 @@ class FakeStorageProvider(StorageProvider):
     def get_previous_in_session(self, *a): ...
     def count_interactions(self, **kw): return 0
     def score_trend(self, **kw): return []
+    def token_trend(self, **kw): return []
+    def score_by_reflection_count(self): return []
     def save_reflection(self, **kw): ...
     def get_reflections_by_embedding(self, *a, **kw): return []
     def check_reflection_duplicate(self, *a): return False
