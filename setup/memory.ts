@@ -187,21 +187,100 @@ export async function run(args: string[]): Promise<void> {
     fs.mkdirSync(path.join(vaultPath, subdir), { recursive: true });
   }
 
-  // Create a minimal CLAUDE.md if it doesn't exist
+  // Seed CLAUDE.md + STATE.md if missing. Structure: CLAUDE.md holds stable
+  // identity + critical rules + index pointers (auto-loaded every turn).
+  // STATE.md holds churny previous/pending (auto-loaded, written by /compress).
+  // Opt out: set DEUS_VAULT_MONOLITHIC=1 before setup to seed the legacy
+  // single-file CLAUDE.md instead (previous/pending live inside CLAUDE.md,
+  // no STATE.md). /compress transparently falls back to CLAUDE.md when
+  // STATE.md is absent, so switching later is lossless.
+  const today = new Date().toISOString().split('T')[0];
+  const monolithic = process.env.DEUS_VAULT_MONOLITHIC === '1';
+
   const claudeMdPath = path.join(vaultPath, 'CLAUDE.md');
   if (!fs.existsSync(claudeMdPath)) {
+    const slimBody = [
+      '---',
+      'type: permanent-memory',
+      'title: Deus User Profile',
+      'description: >',
+      '  Identity + critical rules + index of where everything else lives.',
+      '  Stable and small — state goes to STATE.md, leaves load on demand.',
+      `updated: ${today}`,
+      'critical:',
+      '  - identity',
+      '  - security',
+      '  - data-integrity',
+      '  - wait-for-approval',
+      '  - feature-branch',
+      '---',
+      '',
+      '# Identity',
+      'name:  # your name',
+      '',
+      '# Critical rules (enforced every turn)',
+      'security: never commit credentials, API keys, or tokens — treat every repo as public',
+      'data-integrity: never lose, overwrite, or downgrade data; merge, do not replace; ask before destructive ops',
+      'wait-for-approval: risky or irreversible actions (rm -rf, force-push, hard-reset, drop table) require explicit user approval',
+      'feature-branch: create a feature branch before non-trivial changes; never commit directly to main',
+      '',
+      '# User-specific rules',
+      '# Add your own rules below in `key: value` format.',
+      '',
+      '# Index (load on demand)',
+      'State:   STATE.md         (previous sessions + pending tasks, auto-loaded)',
+      'Study:   STUDY.md         (load on demand for study sessions)',
+      'Infra:   INFRA.md         (load on demand for tooling/infra work)',
+      'Persona: Persona/INDEX.md (load on demand for user preferences / background)',
+      '',
+      '# Memory priority',
+      '# 1. `python3 ~/deus/scripts/memory_tree.py query "<q>"` → read top result',
+      '# 2. Persona/INDEX.md fallback if the tree abstains',
+      '# 3. CLAUDE.md hints only as last resort',
+      '',
+    ].join('\n');
+
+    const monolithicBody = [
+      '---',
+      'type: permanent-memory',
+      `updated: ${today}`,
+      '---',
+      '',
+      '# Deus Memory',
+      '',
+      'This file is the root of your Deus memory vault.',
+      'Session logs, atoms, and checkpoints are stored alongside it.',
+      '',
+      'previous:',
+      '  # Last 3 session summaries, rewritten by /compress.',
+      '',
+      'pending:',
+      '  # Open tasks in `- [ ] ...` format, rewritten by /compress.',
+      '',
+    ].join('\n');
+
+    fs.writeFileSync(claudeMdPath, monolithic ? monolithicBody : slimBody);
+  }
+
+  const stateMdPath = path.join(vaultPath, 'STATE.md');
+  if (!monolithic && !fs.existsSync(stateMdPath)) {
     fs.writeFileSync(
-      claudeMdPath,
+      stateMdPath,
       [
         '---',
         'type: permanent-memory',
-        `updated: ${new Date().toISOString().split('T')[0]}`,
+        'title: Session State',
+        'description: >',
+        '  Live snapshot of recent sessions and open tasks. Written by /compress,',
+        '  auto-loaded every turn alongside CLAUDE.md.',
+        `updated: ${today}`,
         '---',
         '',
-        '# Deus Memory',
+        'previous:',
+        '  # Last 3 session summaries, one per line. Rewritten by /compress.',
         '',
-        'This file is the root of your Deus memory vault.',
-        'Session logs, atoms, and checkpoints are stored alongside it.',
+        'pending:',
+        '  # Open tasks in `- [ ] ...` format. Rewritten by /compress.',
         '',
       ].join('\n'),
     );

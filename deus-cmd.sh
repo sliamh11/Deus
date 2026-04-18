@@ -124,7 +124,7 @@ _run_onboarding() {
 _ensure_resume_skill() {
   local skill_dir="$DEUS_SKILLS_DIR/resume"
   local marker="$skill_dir/.deus-version"
-  local current_version="2"
+  local current_version="3"
   if [ -f "$marker" ] && [ "$(cat "$marker")" = "$current_version" ]; then
     return
   fi
@@ -152,6 +152,7 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
 
 1. Always read core memory:
    $VAULT/CLAUDE.md
+   $VAULT/STATE.md (slim-structure vaults only; skip silently if missing)
 
 2. Based on likely task context, also read:
    - Study session → $VAULT/STUDY.md
@@ -461,7 +462,7 @@ SKILLEOF
 _ensure_compress_skill() {
   local skill_dir="$DEUS_SKILLS_DIR/compress"
   local marker="$skill_dir/.deus-version"
-  local current_version="2"
+  local current_version="3"
   if [ -f "$marker" ] && [ "$(cat "$marker")" = "$current_version" ]; then
     return
   fi
@@ -549,8 +550,9 @@ Keep `tldr` to 2–3 lines. Skip sections with no content.
 
 After saving the session log:
 
-1. **Update vault CLAUDE.md** (home mode only):
-   Update the `pending:` block in $VAULT/CLAUDE.md
+1. **Update state file** (home mode only):
+   Update the `pending:` block. Prefer $VAULT/STATE.md if it exists (slim structure);
+   otherwise fall back to $VAULT/CLAUDE.md (legacy monolithic structure).
 
 2. **Auto-redact sensitive patterns** (External Project Mode, standard memory level only):
    After saving the file, run the redaction script to strip any code snippets or file contents that leaked through:
@@ -855,12 +857,15 @@ Additional instructions from the user: $PREFS_PERSONA"
     CONTEXT=""
 
     printf "  Reading vault...\r"
+    # Auto-load only the two files that belong in every turn: CLAUDE.md (stable
+    # identity + critical rules + index) and STATE.md (churny previous/pending,
+    # written by /compress). Other leaves (STUDY.md, INFRA.md, Persona/INDEX.md)
+    # load on demand via memory_tree. Missing files are skipped silently so
+    # vaults that haven't been split yet still work.
     CLAUDE_MD=$(cat "$VAULT/CLAUDE.md" 2>/dev/null)
-    STUDY_MD=$(cat "$VAULT/STUDY.md" 2>/dev/null)
-    INFRA_MD=$(cat "$VAULT/INFRA.md" 2>/dev/null)
+    STATE_MD=$(cat "$VAULT/STATE.md" 2>/dev/null)
     [ -n "$CLAUDE_MD" ] && CONTEXT="=== VAULT: CLAUDE.md ===\n$CLAUDE_MD"
-    [ -n "$STUDY_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: STUDY.md ===\n$STUDY_MD"
-    [ -n "$INFRA_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: INFRA.md ===\n$INFRA_MD"
+    [ -n "$STATE_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: STATE.md ===\n$STATE_MD"
 
     # Memory tree (Phase 4, gated by DEUS_MEMORY_TREE=1 during dogfood).
     if [ "${DEUS_MEMORY_TREE:-0}" = "1" ]; then

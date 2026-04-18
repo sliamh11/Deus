@@ -99,13 +99,16 @@ Keep `tldr` to 2–3 lines. Skip sections with no content.
 
 After saving the session log:
 
-1. **Update vault CLAUDE.md** (home mode only):
+1. **Update state file** (home mode only):
+
+   Resolve `STATE_FILE`: prefer `$VAULT/STATE.md` if it exists (slim vault structure, recommended).
+   Otherwise fall back to `$VAULT/CLAUDE.md` (legacy monolithic structure — pre-restructure vaults).
 
    a. Extract the one-liner tldr from the session log just saved (first line of the `tldr:` frontmatter field).
 
    b. Extract all unchecked `[ ]` items from the `## Pending Tasks` section of the session log. Also extract any checked `[x]` items — these are tasks completed during this session.
 
-   c. In vault CLAUDE.md:
+   c. In `STATE_FILE`:
       - Update the `previous:` block as a rolling list of the last 3 sessions (parallel-safe, prepend-only):
         - Format each entry as: `  - "YYYY-MM-DD: <tldr one-liner>"` (date prefix + first line of tldr, ≤120 chars total)
         - Read the current `previous:` block. If it's a single line (`previous: "..."`), convert it to list format with that entry as the first item.
@@ -114,13 +117,13 @@ After saving the session log:
         - Replace the entire `previous:` block with the updated list.
         - If `previous:` doesn't exist yet, add it before `pending:`.
       - **Merge** pending tasks (never replace):
-        1. Read the current `pending:` block from CLAUDE.md. If missing, treat as empty list.
+        1. Read the current `pending:` block from `STATE_FILE`. If missing, treat as empty list.
         2. Remove any items that match `[x]` completed tasks from the session log (fuzzy match on description).
         3. Add any new `[ ]` items from the session log that don't already exist in the current pending list (avoid duplicates).
         4. Cap at 10 items. If over 10, archive the oldest items to `$VAULT/CLAUDE-Archive.md`.
         5. Write the merged list back to `pending:`.
 
-   d. After writing, count total lines in CLAUDE.md. If > 60 lines: identify the oldest non-identity content block (not name/location/style/channels/security/goal/previous/pending) and move it to `$VAULT/CLAUDE-Archive.md` with a date header. Never archive identity fields.
+   d. **CLAUDE.md size cap (legacy monolithic vaults only):** if `STATE_FILE` resolved to `$VAULT/CLAUDE.md`, count total lines. If > 75 lines: identify the oldest non-identity content block (not name/location/style/channels/security/goal/previous/pending, and not any key listed under the frontmatter `critical:` array) and move it to `$VAULT/CLAUDE-Archive.md` with a date header. Never archive identity or critical fields. Slim vaults (STATE.md present) skip this step — STATE.md only holds previous+pending which have their own caps, and CLAUDE.md stays stable.
 
 2. **Auto-redact sensitive patterns** (External Project Mode, standard memory level only):
    After saving the file, run the redaction script to strip any code snippets or file contents that leaked through:

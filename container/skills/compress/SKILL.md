@@ -58,8 +58,8 @@ The vault is mounted at `/workspace/vault/`. If it doesn't exist, check `/worksp
    Keep `tldr` to 2–3 lines max — this is what gets loaded every session.
    Skip any full section that has no content.
 
-5. **Update pending tasks in CLAUDE.md** if there are carry-forward items:
-   - Read `$VAULT_DIR/CLAUDE.md`
+5. **Update pending tasks in the state file** if there are carry-forward items:
+   - Prefer `$VAULT_DIR/STATE.md` (slim structure); fall back to `$VAULT_DIR/CLAUDE.md` (legacy monolithic).
    - Update the `pending:` block
    - Write it back
 

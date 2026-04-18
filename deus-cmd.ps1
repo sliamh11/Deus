@@ -219,15 +219,17 @@ function Invoke-ClaudeWithContext {
     }
 
     # -- Load context (mirrors deus-cmd.sh context loading) ------------------
+    # Auto-load only CLAUDE.md (stable identity + critical rules + index) and
+    # STATE.md (churny previous/pending written by /compress). Other leaves
+    # (STUDY.md, INFRA.md, Persona) load on demand via memory_tree. Missing
+    # files silent-skip so legacy monolithic vaults still work unchanged.
     Write-Status "Reading vault..."
     $claudeMd  = Read-VaultFile "$vault\CLAUDE.md"
-    $studyMd   = Read-VaultFile "$vault\STUDY.md"
-    $infraMd   = Read-VaultFile "$vault\INFRA.md"
+    $stateMd   = Read-VaultFile "$vault\STATE.md"
 
     $context = ""
     if ($claudeMd) { $context += "=== VAULT: CLAUDE.md ===`n$claudeMd" }
-    if ($studyMd)  { $context += "`n`n=== VAULT: STUDY.md ===`n$studyMd" }
-    if ($infraMd)  { $context += "`n`n=== VAULT: INFRA.md ===`n$infraMd" }
+    if ($stateMd)  { $context += "`n`n=== VAULT: STATE.md ===`n$stateMd" }
 
     # Memory tree (Phase 4, gated by DEUS_MEMORY_TREE=1 during dogfood).
     if ($env:DEUS_MEMORY_TREE -eq "1") {
