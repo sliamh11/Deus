@@ -4,6 +4,39 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0](https://github.com/sliamh11/Deus/compare/v1.7.0...v1.8.0) (2026-04-18)
+
+
+### Features
+
+* **bench:** --label, diff subcommand, token budget-based scoring ([#185](https://github.com/sliamh11/Deus/issues/185)) ([6a91658](https://github.com/sliamh11/Deus/commit/6a916583f657d63818e798c49ec20761dd657ca2))
+* **bench:** memory_tree suite adapter ([#189](https://github.com/sliamh11/Deus/issues/189)) ([0247286](https://github.com/sliamh11/Deus/commit/02472869086e4f136969d40322600e40f0095e8c))
+* **bench:** MRR in recall, growth alerts in diff, hygiene suite ([#190](https://github.com/sliamh11/Deus/issues/190)) ([c004f81](https://github.com/sliamh11/Deus/commit/c004f818cbece45c6a3f5f9a894eebd305e0da18))
+* **bench:** multi-turn token suite ([#188](https://github.com/sliamh11/Deus/issues/188)) ([9036ad4](https://github.com/sliamh11/Deus/commit/9036ad44aaa2b287f03eab7f4ab3982383f8b3ff))
+* **bench:** paraphrased-query suite ([#195](https://github.com/sliamh11/Deus/issues/195)) ([6b07207](https://github.com/sliamh11/Deus/commit/6b072078d5279093f7add8644f6ed45ed3b4f164))
+* **bench:** reflexion-retrieval-quality suite ([#197](https://github.com/sliamh11/Deus/issues/197)) ([fe087d0](https://github.com/sliamh11/Deus/commit/fe087d0a407bbc27a7e42d075519abda959737f4))
+* **bench:** unified benchmarking harness with SQLite store ([#182](https://github.com/sliamh11/Deus/issues/182)) ([e9ec634](https://github.com/sliamh11/Deus/commit/e9ec63423c5af2db266a6d0023f8042af01da5fc))
+* **memory-tree:** port evo exp_0006 retrieval policy ([#177](https://github.com/sliamh11/Deus/issues/177)) ([f8062c1](https://github.com/sliamh11/Deus/commit/f8062c1d074ddf1e3c70e8d71fe24bd7181272b9))
+* **reactions:** emoji → userSignal foundation (PR A) ([#192](https://github.com/sliamh11/Deus/issues/192)) ([7dcfafa](https://github.com/sliamh11/Deus/commit/7dcfafa4e026dcb6e2bd8021f618d4ce539dafb4))
+* **reactions:** wire WhatsApp + Telegram reactions to logReactionSignal (PR B) ([#194](https://github.com/sliamh11/Deus/issues/194)) ([aef7c8f](https://github.com/sliamh11/Deus/commit/aef7c8f1739213cfa3dc55f205c34887a571d809))
+* **vault:** slim CLAUDE.md + STATE.md structure + drift-check index coverage ([#202](https://github.com/sliamh11/Deus/issues/202)) ([7d48e38](https://github.com/sliamh11/Deus/commit/7d48e380061d74de979a8ada327e7d3471ef6265))
+
+
+### Bug Fixes
+
+* **bench:** fail loud on indexer subprocess error ([#183](https://github.com/sliamh11/Deus/issues/183)) ([b4b0c61](https://github.com/sliamh11/Deus/commit/b4b0c6163e072481ffb6d989a0bf813f54b8a03f))
+* **config:** fall back to ~/.config/deus/.env for GEMINI_API_KEY ([#184](https://github.com/sliamh11/Deus/issues/184)) ([0307578](https://github.com/sliamh11/Deus/commit/0307578d5d63630a4553ae86e60f40b731f7ef64))
+* **embed:** batch + persistent HTTP + keep_alive for hours-long Ollama runs ([#198](https://github.com/sliamh11/Deus/issues/198)) ([246eb0a](https://github.com/sliamh11/Deus/commit/246eb0af16af57faee8156da7dd317355452603f))
+* **embeddings:** retry Ollama embed on transient timeout ([#193](https://github.com/sliamh11/Deus/issues/193)) ([f0f4792](https://github.com/sliamh11/Deus/commit/f0f4792b43586c181178ba2e1789f49e9b433733))
+* **evolution:** revive 20 failing tests + wire feedback loop ([#186](https://github.com/sliamh11/Deus/issues/186)) ([7f66580](https://github.com/sliamh11/Deus/commit/7f66580013e5d73b5b7b257a44d47d5303c5927f))
+* **memory_tree:** flip default to raw retrieve ([#191](https://github.com/sliamh11/Deus/issues/191)) ([4b2d6bf](https://github.com/sliamh11/Deus/commit/4b2d6bf8e6fa55b754bc91308b857101bed1816c))
+* **tests:** repair test_maintenance.py autouse fixture ([#187](https://github.com/sliamh11/Deus/issues/187)) ([341032b](https://github.com/sliamh11/Deus/commit/341032b6f35a8484e6c688cd44f29a1e268e1419))
+
+
+### Performance Improvements
+
+* token optimization — dedupe CLAUDE.md + .claudeignore (~20-35% turn-1 savings) ([#179](https://github.com/sliamh11/Deus/issues/179)) ([f9a39ba](https://github.com/sliamh11/Deus/commit/f9a39ba48392bea60db446b0ab93c7cca8d269ec))
+
 ## [1.7.0](https://github.com/sliamh11/Deus/compare/v1.6.0...v1.7.0) (2026-04-15)
 
 
