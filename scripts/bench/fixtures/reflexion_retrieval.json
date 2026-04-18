@@ -1,0 +1,42 @@
+[
+  {
+    "id": "case-1",
+    "query": "how to debug container agent logs",
+    "group_folder": "whatsapp_main",
+    "tools_planned": ["bash", "read"],
+    "expected_reflection_contains": ["container", "log"],
+    "top_k": 5
+  },
+  {
+    "id": "case-2",
+    "query": "multi-step instruction completion and task sequencing",
+    "group_folder": "whatsapp_main",
+    "tools_planned": [],
+    "expected_reflection_contains": ["multi-step", "instruction"],
+    "top_k": 5
+  },
+  {
+    "id": "case-3",
+    "query": "structured status report from skill execution logs",
+    "group_folder": "whatsapp_main",
+    "tools_planned": ["bash"],
+    "expected_reflection_contains": ["skill", "log"],
+    "top_k": 5
+  },
+  {
+    "id": "case-4",
+    "query": "image compression and file size optimization",
+    "group_folder": "whatsapp_main",
+    "tools_planned": [],
+    "expected_reflection_contains": ["compression", "dimension"],
+    "top_k": 5
+  },
+  {
+    "id": "case-5",
+    "query": "evidence-based data validation for repository analysis",
+    "group_folder": "whatsapp_main",
+    "tools_planned": ["bash", "grep"],
+    "expected_reflection_contains": ["evidence", "data"],
+    "top_k": 5
+  }
+]
