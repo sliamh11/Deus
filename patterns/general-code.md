@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-04-18"  # re-reviewed for reactions channel wiring (PR B, #194) — general patterns unchanged
+last_verified: "2026-04-18"  # re-reviewed for Ollama batch embed (PR #198) — general patterns unchanged
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"
