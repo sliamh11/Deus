@@ -24,6 +24,7 @@
     "drift-check:mtime": "python3 scripts/drift_check.py",
     "drift-check:paths": "python3 scripts/drift_check.py --paths",
     "drift-check:adr": "python3 scripts/drift_check.py --adr",
+    "drift-check:indexes": "python3 scripts/drift_check.py --indexes",
     "drift-check:coverage": "python3 scripts/drift_check.py --coverage",
     "pattern-validate": "python3 scripts/drift_check.py --validate",
     "pattern-validate-router": "python3 scripts/drift_check.py --validate-router",

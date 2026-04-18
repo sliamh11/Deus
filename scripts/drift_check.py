@@ -17,6 +17,7 @@ Usage:
   python3 scripts/drift_check.py --paths           # verify all pattern path refs exist
   python3 scripts/drift_check.py --adr             # flag patterns stale vs ADRs
   python3 scripts/drift_check.py --shadow          # check private/public symlink integrity
+  python3 scripts/drift_check.py --indexes         # verify every indexed dir: INDEX.md refs match on-disk leaves
   python3 scripts/drift_check.py --all             # run every fast check above
   python3 scripts/drift_check.py --validate        # LLM pattern content check (slow)
   python3 scripts/drift_check.py --validate-router # LLM router selection check (slow)
@@ -1060,6 +1061,8 @@ def check_all(project_root: Path, base_ref: str | None = None) -> int:
     drift_rc = main(base_ref=base_ref)
     print("\n=== paths ===")
     paths_rc = check_paths(project_root)
+    print("\n=== index completeness ===")
+    idx_rc = check_index_completeness(project_root)
     print("\n=== adr freshness ===")
     adr_rc = check_adr(project_root)
     print("\n=== test_tasks frontmatter ===")
@@ -1069,7 +1072,7 @@ def check_all(project_root: Path, base_ref: str | None = None) -> int:
     print("\n=== coverage (informational) ===")
     cov_rc = check_coverage(project_root)
 
-    worst = max(drift_rc, paths_rc, adr_rc, tt_rc, shadow_rc, cov_rc)
+    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, cov_rc)
     print()
     if worst == 0:
         print("ALL CHECKS PASSED")
@@ -1126,6 +1129,102 @@ def check_shadow(project_root: Path) -> int:
     else:
         print(f"\n{issues} shadow issue(s) found.")
     return 1 if issues else 0
+
+
+# Index files whose completeness we enforce: (index_path, leaves_glob).
+# For each glob, every match (minus INDEX.md itself) must be referenced in
+# the index; every reference in the index must resolve to a real file.
+# Keep this list in sync with new index files as the repo grows.
+_INDEX_COVERAGE: list[tuple[str, str]] = [
+    ("patterns/INDEX.md",       "patterns/*.md"),
+    ("docs/decisions/INDEX.md", "docs/decisions/*.md"),
+]
+
+
+def _extract_index_refs(index_path: Path, leaf_dir: Path) -> set[str]:
+    """Extract the set of leaf filenames referenced by an index file.
+
+    Matches markdown links `[text](path/file.md)` and backtick-quoted
+    `path/file.md` tokens where the path is under `leaf_dir`. Returns the
+    basenames only so we can compare against a directory listing.
+    """
+    try:
+        text = index_path.read_text()
+    except FileNotFoundError:
+        return set()
+    # Leaf filenames live at the end of either [](...) or `...` tokens.
+    # Examples: `[general](patterns/general-code.md)`, `` `0042-name.md` ``.
+    # We match both with or without a directory prefix, then grab the basename.
+    refs: set[str] = set()
+    for m in re.finditer(r"(?:\(|`)([^`)\s]+?\.md)(?:\)|`)", text):
+        token = m.group(1).strip()
+        if not token:
+            continue
+        # Only keep references that live under leaf_dir (or its basename),
+        # so we don't cross-count e.g. patterns/INDEX.md referring to
+        # `docs/foo.md`.
+        leaf_prefix = leaf_dir.name + "/"
+        if token.startswith(leaf_prefix) or "/" not in token:
+            refs.add(Path(token).name)
+    return refs
+
+
+def check_index_completeness(project_root: Path) -> int:
+    """Detect drift between an index file and the leaves it indexes.
+
+    For each (index, leaves_glob) pair in _INDEX_COVERAGE:
+      - Orphans: leaf files on disk not referenced by the index
+      - Dangling: references in the index with no matching file
+
+    Protects against the common failure mode where a contributor adds a new
+    pattern/decision doc but forgets to wire it into the index, leaving the
+    agent unable to route to it.
+    """
+    issues: list[str] = []
+    for index_rel, leaves_glob in _INDEX_COVERAGE:
+        index_path = project_root / index_rel
+        leaf_dir = (project_root / leaves_glob).parent
+        # Skip entirely if the indexed directory doesn't exist in this project.
+        # Repos that don't use one of the indexed dirs (e.g. no docs/decisions/)
+        # shouldn't fail this check.
+        if not leaf_dir.exists():
+            continue
+        if not index_path.exists():
+            issues.append(f"  {index_rel}: index file is missing")
+            continue
+
+        # Listing via glob keeps it deterministic and ignores non-.md files.
+        on_disk: set[str] = {
+            p.name for p in project_root.glob(leaves_glob)
+            if p.is_file() and p.name != "INDEX.md"
+        }
+        referenced = _extract_index_refs(index_path, leaf_dir)
+        # INDEX.md may reference itself ("this file"); exclude it from the diff.
+        referenced = {r for r in referenced if r != "INDEX.md"}
+
+        orphans = sorted(on_disk - referenced)
+        dangling = sorted(referenced - on_disk)
+
+        if orphans:
+            for name in orphans:
+                issues.append(f"  {index_rel}: orphan (leaf exists, not in index): {leaf_dir.name}/{name}")
+        if dangling:
+            for name in dangling:
+                issues.append(f"  {index_rel}: dangling (in index, leaf missing): {leaf_dir.name}/{name}")
+
+    if not issues:
+        total = sum(
+            len([p for p in project_root.glob(g) if p.is_file() and p.name != "INDEX.md"])
+            for _, g in _INDEX_COVERAGE
+        )
+        print(f"All indexes in sync with leaves ({total} leaves across {len(_INDEX_COVERAGE)} indexes).")
+        return 0
+
+    print(f"Index drift ({len(issues)} issue(s)):")
+    for i in issues:
+        print(i)
+    print("\nFIX: add the orphaned leaf to its index, or delete the dangling reference.")
+    return 1
 
 
 def check_coverage(project_root: Path) -> int:
@@ -1220,6 +1319,11 @@ if __name__ == "__main__":
         help="Check src/private/ files shadow public equivalents with correct /tmp/ symlinks",
     )
     parser.add_argument(
+        "--indexes",
+        action="store_true",
+        help="Check every indexed directory: index file references match on-disk leaves (orphans + dangling)",
+    )
+    parser.add_argument(
         "--base",
         metavar="REF",
         help="Only check governed files changed since REF (e.g. origin/main). "
@@ -1229,6 +1333,8 @@ if __name__ == "__main__":
 
     if args.shadow:
         sys.exit(check_shadow(PROJECT_ROOT))
+    elif args.indexes:
+        sys.exit(check_index_completeness(PROJECT_ROOT))
     elif args.contradictions is not None:
         sys.exit(check_contradictions(PROJECT_ROOT, args.contradictions or None))
     elif args.validate_router is not None:

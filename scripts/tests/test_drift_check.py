@@ -755,3 +755,102 @@ class TestCheckShadow:
         drift_check.check_all(tmp_path)
         out = capsys.readouterr().out
         assert "shadow" in out.lower()
+
+
+# ── check_index_completeness ─────────────────────────────────────────────
+
+class TestCheckIndexCompleteness:
+    """Bidirectional check: every leaf referenced, every reference resolves.
+
+    Guards against the common mistake of adding a pattern (or ADR) file but
+    forgetting to wire it into the index — which would leave the agent unable
+    to route to it.
+    """
+
+    def _build(self, tmp_path, pattern_files, index_refs, decisions_files=None, decisions_refs=None):
+        """Seed tmp_path with patterns/ and docs/decisions/ at fabricated contents.
+
+        pattern_files / decisions_files: filenames to create under the dir.
+        index_refs / decisions_refs: filenames to reference from INDEX.md.
+        """
+        (tmp_path / "patterns").mkdir()
+        for name in pattern_files:
+            (tmp_path / "patterns" / name).write_text("# stub\n")
+        refs = "\n".join(f"- [x](patterns/{n})" for n in index_refs)
+        (tmp_path / "patterns" / "INDEX.md").write_text(f"# Patterns\n{refs}\n")
+
+        if decisions_files is not None:
+            (tmp_path / "docs" / "decisions").mkdir(parents=True)
+            for name in decisions_files:
+                (tmp_path / "docs" / "decisions" / name).write_text("# stub\n")
+            drefs = "\n".join(f"- `{n}`" for n in (decisions_refs or []))
+            (tmp_path / "docs" / "decisions" / "INDEX.md").write_text(f"# Decisions\n{drefs}\n")
+
+    def test_all_synced_returns_zero(self, tmp_path, capsys):
+        self._build(tmp_path, ["a.md", "b.md"], ["a.md", "b.md"])
+        assert drift_check.check_index_completeness(tmp_path) == 0
+        out = capsys.readouterr().out
+        assert "in sync" in out
+
+    def test_orphan_leaf_is_flagged(self, tmp_path, capsys):
+        # b.md exists on disk but INDEX.md only references a.md.
+        self._build(tmp_path, ["a.md", "b.md"], ["a.md"])
+        rc = drift_check.check_index_completeness(tmp_path)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "orphan" in out.lower()
+        assert "b.md" in out
+
+    def test_dangling_reference_is_flagged(self, tmp_path, capsys):
+        # INDEX.md references c.md, but it doesn't exist on disk.
+        self._build(tmp_path, ["a.md"], ["a.md", "c.md"])
+        rc = drift_check.check_index_completeness(tmp_path)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "dangling" in out.lower()
+        assert "c.md" in out
+
+    def test_orphan_and_dangling_both_reported(self, tmp_path, capsys):
+        self._build(tmp_path, ["a.md", "b.md"], ["a.md", "c.md"])
+        rc = drift_check.check_index_completeness(tmp_path)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "b.md" in out  # orphan
+        assert "c.md" in out  # dangling
+
+    def test_index_md_itself_is_not_an_orphan(self, tmp_path):
+        # INDEX.md is always excluded from the on-disk set even though it
+        # matches the *.md glob — otherwise every index would self-flag.
+        self._build(tmp_path, ["a.md"], ["a.md"])
+        assert drift_check.check_index_completeness(tmp_path) == 0
+
+    def test_decisions_index_also_checked(self, tmp_path, capsys):
+        # Orphan in docs/decisions/ is caught just like patterns/.
+        self._build(
+            tmp_path,
+            pattern_files=["a.md"], index_refs=["a.md"],
+            decisions_files=["0001.md", "0002-orphan.md"], decisions_refs=["0001.md"],
+        )
+        rc = drift_check.check_index_completeness(tmp_path)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "0002-orphan.md" in out
+
+    def test_missing_index_file_is_flagged(self, tmp_path, capsys):
+        # patterns dir exists with a leaf, but no INDEX.md at all.
+        (tmp_path / "patterns").mkdir()
+        (tmp_path / "patterns" / "a.md").write_text("# stub\n")
+        rc = drift_check.check_index_completeness(tmp_path)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "index file is missing" in out.lower()
+
+    def test_included_in_check_all(self, tmp_path, monkeypatch, capsys):
+        # --all must run the new check; look for the section header.
+        self._build(tmp_path, ["a.md"], ["a.md"])
+        (tmp_path / "docs").mkdir(exist_ok=True)
+        (tmp_path / "src" / "private").mkdir(parents=True)
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+        drift_check.check_all(tmp_path)
+        out = capsys.readouterr().out
+        assert "index completeness" in out.lower()
