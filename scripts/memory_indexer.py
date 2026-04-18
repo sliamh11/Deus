@@ -121,6 +121,11 @@ def embed(text: str) -> list[float]:
     return _provider_embed(text)
 
 
+def embed_batch(texts: list[str]) -> list[list[float]]:
+    from evolution.providers.embeddings import embed_batch as _provider_embed_batch
+    return _provider_embed_batch(texts)
+
+
 def serialize(vec: list[float]) -> bytes:
     return struct.pack(f"{len(vec)}f", *vec)
 
@@ -490,6 +495,70 @@ def chunks_for_log(path: Path, content: str) -> list[dict]:
 
 # ── Commands ──────────────────────────────────────────────────────────────────
 
+def _collect_chunks_for_file(path: Path):
+    """Read a file and return (path, chunks) — no embedding, no DB writes yet."""
+    content = path.read_text(encoding="utf-8")
+    return path, chunks_for_log(path, content)
+
+
+def _write_chunks_batched(
+    db, path_to_chunks: list[tuple[Path, list[dict]]]
+) -> int:
+    """Batch-embed all chunks across multiple files, then persist.
+
+    One HTTP call (or a few, sub-batched inside the provider) handles every
+    chunk in the input — the hot-path optimization for bulk indexing. Falls
+    back to per-chunk embed if the batched helper is unavailable.
+    """
+    flat: list[tuple[Path, dict]] = []
+    for path, chunks in path_to_chunks:
+        for ch in chunks:
+            flat.append((path, ch))
+    if not flat:
+        return 0
+
+    texts = [ch["chunk"] for _, ch in flat]
+    try:
+        vecs = embed_batch(texts)
+    except Exception as exc:
+        # If the provider doesn't support true batching (or it failed),
+        # fall back to sequential embeds so the caller still makes progress.
+        print(
+            f"  WARN: batch embed failed ({exc}); falling back to sequential",
+            file=sys.stderr,
+        )
+        vecs = [embed(t) for t in texts]
+
+    indexed = 0
+    for (path, chunk), vec in zip(flat, vecs):
+        cur = db.execute(
+            "INSERT INTO entries (path, date, chunk, type, tldr, topics, decisions) VALUES (?,?,?,?,?,?,?)",
+            [
+                str(path),
+                chunk["date"],
+                chunk["chunk"],
+                chunk["type"],
+                chunk["tldr"],
+                chunk["topics"],
+                chunk["decisions"],
+            ],
+        )
+        rowid = cur.lastrowid
+        db.execute(
+            "INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+            [rowid, serialize(vec)],
+        )
+        try:
+            db.execute(
+                "INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)",
+                [rowid, chunk["chunk"]],
+            )
+        except sqlite3.OperationalError:
+            pass
+        indexed += 1
+    return indexed
+
+
 def cmd_add(path_str: str, extract: bool = True):
     path = Path(path_str).expanduser().resolve()
     if not path.exists():
@@ -500,32 +569,56 @@ def cmd_add(path_str: str, extract: bool = True):
     # Soft-delete stale entries for this path (re-indexing)
     soft_delete_entries(db, str(path), reason="re-indexed")
 
-    content = path.read_text(encoding="utf-8")
-    chunks = chunks_for_log(path, content)
+    _, chunks = _collect_chunks_for_file(path)
     if not chunks:
         print(f"No indexable content in {path.name}")
         return
 
-    indexed = 0
-    for chunk in chunks:
-        vec = embed(chunk["chunk"])
-        cur = db.execute(
-            "INSERT INTO entries (path, date, chunk, type, tldr, topics, decisions) VALUES (?,?,?,?,?,?,?)",
-            [str(path), chunk["date"], chunk["chunk"], chunk["type"],
-             chunk["tldr"], chunk["topics"], chunk["decisions"]],
-        )
-        rowid = cur.lastrowid
-        db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
-                   [rowid, serialize(vec)])
-        try:
-            db.execute("INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)",
-                       [rowid, chunk["chunk"]])
-        except sqlite3.OperationalError:
-            pass
-        indexed += 1
-
+    indexed = _write_chunks_batched(db, [(path, chunks)])
     db.commit()
     print(f"Indexed {indexed} chunk(s) from {path.name}")
+
+
+def cmd_add_dir(dir_str: str, extract: bool = True):
+    """Batch-index every .md file under a directory.
+
+    Written for bulk workloads (benchmarks, initial vault ingestion): chunks
+    are collected up front, embedded in a single batched HTTP call, then
+    persisted. This is the path that avoids the "spawn N subprocesses, make N
+    one-shot HTTP requests" hazard that stalled LongMemEval around example 31.
+    """
+    dir_path = Path(dir_str).expanduser().resolve()
+    if not dir_path.is_dir():
+        print(f"ERROR: directory not found: {dir_path}", file=sys.stderr)
+        sys.exit(1)
+
+    files = sorted(
+        p for p in dir_path.rglob("*.md") if ".obsidian" not in str(p)
+    )
+    if not files:
+        print(f"No .md files in {dir_path}")
+        return
+
+    db = open_db()
+    path_to_chunks: list[tuple[Path, list[dict]]] = []
+    for f in files:
+        soft_delete_entries(db, str(f), reason="re-indexed")
+        _, chunks = _collect_chunks_for_file(f)
+        if chunks:
+            path_to_chunks.append((f, chunks))
+
+    indexed = _write_chunks_batched(db, path_to_chunks)
+    db.commit()
+    print(f"Indexed {indexed} chunk(s) across {len(path_to_chunks)} file(s) in {dir_path.name}")
+
+    if extract:
+        for f, _ in path_to_chunks:
+            try:
+                cmd_extract(str(f))
+            except SystemExit:
+                pass
+            except Exception as exc:
+                print(f"  WARN: atom extraction failed for {f.name}: {exc}", file=sys.stderr)
 
     if extract:
         try:
@@ -3066,6 +3159,12 @@ def main():
     parser = argparse.ArgumentParser(description="Deus memory indexer")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--add", metavar="PATH", help="Index a single session log")
+    group.add_argument(
+        "--add-dir",
+        metavar="DIR",
+        help="Batch-index every .md file under DIR in a single embedding pass "
+             "(single HTTP call to Ollama). Used by benchmarks and bulk ingestion.",
+    )
     group.add_argument("--query", metavar="TEXT", help="Semantic search, returns top-K results")
     group.add_argument("--rebuild", action="store_true", help="Rebuild full index from scratch")
     group.add_argument(
@@ -3219,6 +3318,10 @@ def main():
 
     if args.add:
         cmd_add(args.add, extract=not args.no_extract)
+        return
+    if args.add_dir:
+        cmd_add_dir(args.add_dir, extract=not args.no_extract)
+        return
     elif args.query:
         ap = _parse_allowed_privacy_arg(args.allowed_privacy)
         cmd_query(args.query, top=args.top, recency_boost=args.recency_boost,
