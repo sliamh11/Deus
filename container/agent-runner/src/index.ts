@@ -21,6 +21,7 @@ import {
   HookCallback,
   PreCompactHookInput,
   PostToolUseHookInput,
+  SDKResultMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
@@ -261,6 +262,38 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 
     return {};
   };
+}
+
+/**
+ * Append SDK-reported per-turn usage metadata to JSONL. This is the direct
+ * billing signal (inputTokens, outputTokens, cache read/create, cost) and the
+ * basis for before/after token-efficiency comparisons. Opt-out: DEUS_USAGE_LOG=0.
+ */
+function logUsage(msg: SDKResultMessage): void {
+  if (process.env.DEUS_USAGE_LOG === '0') return;
+  try {
+    const logPath = '/workspace/group/logs/usage.jsonl';
+    const entry = {
+      ts: new Date().toISOString(),
+      session_id: msg.session_id,
+      subtype: msg.subtype,
+      num_turns: msg.num_turns,
+      duration_ms: msg.duration_ms,
+      duration_api_ms: msg.duration_api_ms,
+      total_cost_usd: msg.total_cost_usd,
+      input_tokens: msg.usage.inputTokens,
+      output_tokens: msg.usage.outputTokens,
+      cache_read_input_tokens: msg.usage.cacheReadInputTokens,
+      cache_creation_input_tokens: msg.usage.cacheCreationInputTokens,
+      model_usage: msg.modelUsage,
+    };
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    fs.appendFileSync(logPath, JSON.stringify(entry) + '\n');
+  } catch (err) {
+    log(
+      `usage-log failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**
@@ -742,6 +775,7 @@ async function runQuery(
       log(
         `Result #${resultCount}: subtype=${message.subtype}${textResult ? ` text=${textResult.slice(0, 200)}` : ''}`,
       );
+      logUsage(message as SDKResultMessage);
       writeOutput({
         status: 'success',
         result: textResult || null,
