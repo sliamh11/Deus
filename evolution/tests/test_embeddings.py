@@ -1,4 +1,5 @@
-"""Tests for OllamaEmbeddingProvider retry-with-backoff logic."""
+"""Tests for OllamaEmbeddingProvider batched + retry-with-backoff logic."""
+import http.client
 import json
 import socket
 import urllib.error
@@ -6,8 +7,10 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from evolution.providers.embeddings import OllamaEmbeddingProvider, warmup_embedding_provider
-
+from evolution.providers.embeddings import (
+    OllamaEmbeddingProvider,
+    warmup_embedding_provider,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -17,14 +20,26 @@ _EMBED_DIM = 768  # must match config.EMBED_DIM
 _FAKE_VEC = [0.1] * _EMBED_DIM
 
 
-def _ok_response(vec: list[float] = _FAKE_VEC) -> MagicMock:
-    """Build a context-manager mock that returns a valid embed response."""
-    body = json.dumps({"embeddings": [vec]}).encode()
+def _ok_response(vecs: list[list[float]] | None = None) -> MagicMock:
+    """Mock http.client HTTPResponse returning a 200 with embeddings body."""
+    if vecs is None:
+        vecs = [_FAKE_VEC]
     resp = MagicMock()
-    resp.read.return_value = body
-    resp.__enter__ = MagicMock(return_value=resp)
-    resp.__exit__ = MagicMock(return_value=False)
+    resp.status = 200
+    resp.read.return_value = json.dumps({"embeddings": vecs}).encode()
     return resp
+
+
+def _mock_conn(responses: list, exceptions_on_request: list | None = None) -> MagicMock:
+    """Mock HTTPConnection whose getresponse() returns each element of `responses`
+    in order. If `exceptions_on_request` is provided, those are raised by
+    `request()` instead of producing a response.
+    """
+    conn = MagicMock(spec=http.client.HTTPConnection)
+    if exceptions_on_request:
+        conn.request.side_effect = exceptions_on_request + [None] * len(responses)
+    conn.getresponse.side_effect = responses
+    return conn
 
 
 # ---------------------------------------------------------------------------
@@ -35,10 +50,41 @@ def _ok_response(vec: list[float] = _FAKE_VEC) -> MagicMock:
 def test_embed_success_no_retry():
     """Single successful call returns the vector without any retry."""
     provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    with patch("urllib.request.urlopen", return_value=_ok_response()) as mock_open:
+    mock = _mock_conn([_ok_response()])
+    with patch.object(provider, "_get_conn", return_value=mock):
         result = provider.embed("hello")
-    mock_open.assert_called_once()
+    mock.request.assert_called_once()
     assert result == _FAKE_VEC
+
+
+def test_embed_batch_single_http_call():
+    """embed_batch for a small list issues exactly one http request."""
+    provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
+    texts = ["a", "b", "c"]
+    mock = _mock_conn([_ok_response(vecs=[_FAKE_VEC] * 3)])
+    with patch.object(provider, "_get_conn", return_value=mock):
+        out = provider.embed_batch(texts)
+    assert mock.request.call_count == 1
+    assert len(out) == 3
+
+
+def test_embed_batch_chunked_when_over_batch_max(monkeypatch):
+    """Over OLLAMA_EMBED_BATCH_MAX triggers multiple requests."""
+    monkeypatch.setattr(
+        "evolution.providers.embeddings.OLLAMA_EMBED_BATCH_MAX", 2
+    )
+    provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
+    texts = ["a", "b", "c", "d", "e"]
+    responses = [
+        _ok_response(vecs=[_FAKE_VEC, _FAKE_VEC]),
+        _ok_response(vecs=[_FAKE_VEC, _FAKE_VEC]),
+        _ok_response(vecs=[_FAKE_VEC]),
+    ]
+    mock = _mock_conn(responses)
+    with patch.object(provider, "_get_conn", return_value=mock):
+        out = provider.embed_batch(texts)
+    assert mock.request.call_count == 3
+    assert len(out) == 5
 
 
 # ---------------------------------------------------------------------------
@@ -47,16 +93,28 @@ def test_embed_success_no_retry():
 
 
 def test_embed_retries_on_timeout_error():
-    """urlopen raises TimeoutError twice, then succeeds; embed returns the vector."""
+    """getresponse() raises TimeoutError twice, then succeeds on attempt 3."""
     provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    side_effects = [TimeoutError("timed out"), TimeoutError("timed out"), _ok_response()]
+    # Each attempt rebuilds the connection, so we need a fresh mock per attempt.
+    call_seq = iter([
+        TimeoutError("timed out"),
+        TimeoutError("timed out"),
+        _ok_response(),
+    ])
 
-    with patch("urllib.request.urlopen", side_effect=side_effects) as mock_open, \
+    def fake_get_conn():
+        item = next(call_seq)
+        conn = MagicMock(spec=http.client.HTTPConnection)
+        if isinstance(item, Exception):
+            conn.getresponse.side_effect = item
+        else:
+            conn.getresponse.return_value = item
+        return conn
+
+    with patch.object(provider, "_get_conn", side_effect=fake_get_conn), \
          patch("time.sleep") as mock_sleep:
         result = provider.embed("hello")
 
-    assert mock_open.call_count == 3
-    # Two sleeps: 1s after attempt 1, 2s after attempt 2
     assert mock_sleep.call_count == 2
     assert mock_sleep.call_args_list == [call(1.0), call(2.0)]
     assert result == _FAKE_VEC
@@ -65,27 +123,44 @@ def test_embed_retries_on_timeout_error():
 def test_embed_retries_on_socket_timeout():
     """socket.timeout is also treated as a transient timeout."""
     provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    side_effects = [socket.timeout("timed out"), _ok_response()]
+    call_seq = iter([socket.timeout("timed out"), _ok_response()])
 
-    with patch("urllib.request.urlopen", side_effect=side_effects) as mock_open, \
+    def fake_get_conn():
+        item = next(call_seq)
+        conn = MagicMock(spec=http.client.HTTPConnection)
+        if isinstance(item, Exception):
+            conn.getresponse.side_effect = item
+        else:
+            conn.getresponse.return_value = item
+        return conn
+
+    with patch.object(provider, "_get_conn", side_effect=fake_get_conn), \
          patch("time.sleep"):
         result = provider.embed("hello")
-
-    assert mock_open.call_count == 2
     assert result == _FAKE_VEC
 
 
-def test_embed_retries_on_urlerror_wrapping_timeout():
-    """urllib.error.URLError wrapping a socket.timeout is treated as transient."""
+def test_embed_retries_on_http_client_exception():
+    """http.client.HTTPException (e.g., BadStatusLine) is treated as transient —
+    a keep-alive connection dropped server-side hits this path."""
     provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    wrapped = urllib.error.URLError(reason=socket.timeout("timed out"))
-    side_effects = [wrapped, _ok_response()]
+    call_seq = iter([
+        http.client.BadStatusLine("connection dropped"),
+        _ok_response(),
+    ])
 
-    with patch("urllib.request.urlopen", side_effect=side_effects) as mock_open, \
+    def fake_get_conn():
+        item = next(call_seq)
+        conn = MagicMock(spec=http.client.HTTPConnection)
+        if isinstance(item, Exception):
+            conn.getresponse.side_effect = item
+        else:
+            conn.getresponse.return_value = item
+        return conn
+
+    with patch.object(provider, "_get_conn", side_effect=fake_get_conn), \
          patch("time.sleep"):
         result = provider.embed("hello")
-
-    assert mock_open.call_count == 2
     assert result == _FAKE_VEC
 
 
@@ -97,16 +172,16 @@ def test_embed_retries_on_urlerror_wrapping_timeout():
 def test_embed_raises_after_all_retries_exhausted():
     """After MAX_ATTEMPTS timeouts the original exception propagates (fail-loud)."""
     provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    exc = TimeoutError("timed out")
-    side_effects = [exc, TimeoutError("timed out again"), TimeoutError("still timing out")]
 
-    with patch("urllib.request.urlopen", side_effect=side_effects) as mock_open, \
+    def fake_get_conn():
+        conn = MagicMock(spec=http.client.HTTPConnection)
+        conn.getresponse.side_effect = TimeoutError("timed out")
+        return conn
+
+    with patch.object(provider, "_get_conn", side_effect=fake_get_conn), \
          patch("time.sleep"):
         with pytest.raises(TimeoutError):
             provider.embed("hello")
-
-    # All 3 attempts were made
-    assert mock_open.call_count == 3
 
 
 # ---------------------------------------------------------------------------
@@ -114,56 +189,59 @@ def test_embed_raises_after_all_retries_exhausted():
 # ---------------------------------------------------------------------------
 
 
-def test_embed_does_not_retry_on_http_error():
-    """HTTP 500 is a hard failure — no retry, exception propagates immediately."""
+def test_embed_does_not_retry_on_http_500():
+    """HTTP 500 surfaces as RuntimeError on first attempt — no retry."""
     provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    http_err = urllib.error.HTTPError(
-        url="http://localhost:11434/api/embed",
-        code=500,
-        msg="Internal Server Error",
-        hdrs=None,  # type: ignore[arg-type]
-        fp=None,
-    )
+    err_resp = MagicMock()
+    err_resp.status = 500
+    err_resp.read.return_value = b"internal error"
+    mock = _mock_conn([err_resp])
 
-    with patch("urllib.request.urlopen", side_effect=http_err) as mock_open, \
+    with patch.object(provider, "_get_conn", return_value=mock), \
          patch("time.sleep") as mock_sleep:
-        with pytest.raises(urllib.error.HTTPError):
+        with pytest.raises(RuntimeError):
             provider.embed("hello")
-
-    mock_open.assert_called_once()
-    mock_sleep.assert_not_called()
-
-
-def test_embed_does_not_retry_on_connection_refused():
-    """A URLError whose reason is not a timeout is not retried."""
-    provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    conn_err = urllib.error.URLError(reason=ConnectionRefusedError("Connection refused"))
-
-    with patch("urllib.request.urlopen", side_effect=conn_err) as mock_open, \
-         patch("time.sleep") as mock_sleep:
-        with pytest.raises(urllib.error.URLError):
-            provider.embed("hello")
-
-    mock_open.assert_called_once()
     mock_sleep.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# Timeout bumped to 60 s
+# Connection reset on exception — the post-timeout conn is dropped so the
+# next call reconnects cleanly (prevents the half-closed-socket hang class).
 # ---------------------------------------------------------------------------
 
 
-def test_urlopen_called_with_timeout_60():
-    """urlopen must be called with timeout=60 (bumped from 30 s per 2026-04-18 bench incident)."""
+def test_connection_reset_after_exception():
+    """After any _post_embed exception, _conn is reset to None."""
     provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    with patch("urllib.request.urlopen", return_value=_ok_response()) as mock_open:
-        provider.embed("hello")
+    mock = MagicMock(spec=http.client.HTTPConnection)
+    mock.getresponse.side_effect = TimeoutError("timed out")
+    provider._conn = mock
 
-    call_positional = mock_open.call_args.args
-    call_keyword = mock_open.call_args.kwargs
-    # urlopen(req, timeout=60) — timeout may be positional or keyword
-    all_args = list(call_positional) + list(call_keyword.values())
-    assert 60 in all_args, f"Expected timeout=60 in urlopen call args, got: {mock_open.call_args}"
+    with pytest.raises(TimeoutError):
+        provider._post_embed(["hello"])
+    assert provider._conn is None
+
+
+# ---------------------------------------------------------------------------
+# keep_alive + batched payload shape
+# ---------------------------------------------------------------------------
+
+
+def test_payload_includes_keep_alive_and_batch_input():
+    """Payload sent to /api/embed contains keep_alive and an input array."""
+    provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
+    mock = _mock_conn([_ok_response(vecs=[_FAKE_VEC] * 2)])
+    with patch.object(provider, "_get_conn", return_value=mock):
+        provider.embed_batch(["a", "b"])
+
+    kwargs = mock.request.call_args.kwargs
+    body = kwargs.get("body")
+    if body is None:
+        body = mock.request.call_args.args[2]
+    payload = json.loads(body)
+    assert payload["input"] == ["a", "b"]
+    assert payload["model"] == "test-model"
+    assert "keep_alive" in payload
 
 
 # ---------------------------------------------------------------------------
@@ -174,23 +252,25 @@ def test_urlopen_called_with_timeout_60():
 def test_warmup_calls_embed_with_warmup_string():
     """warmup() must call embed() exactly once with the string 'warmup'."""
     provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    with patch("urllib.request.urlopen", return_value=_ok_response()) as mock_open, \
+    mock = _mock_conn([_ok_response()])
+    with patch.object(provider, "_get_conn", return_value=mock), \
          patch("time.sleep"):
         provider.warmup()
-
-    mock_open.assert_called_once()
-    # The request body should contain 'warmup' as the input
-    req_obj = mock_open.call_args.args[0]
-    body = req_obj.data.decode()
-    assert '"warmup"' in body
+    mock.request.assert_called_once()
+    body = mock.request.call_args.kwargs.get("body") or mock.request.call_args.args[2]
+    assert '"warmup"' in body.decode()
 
 
 def test_warmup_raises_on_failure_after_retries():
     """warmup() must propagate the exception if embed() exhausts all retries."""
     provider = OllamaEmbeddingProvider(model="test-model", host="http://localhost:11434")
-    side_effects = [TimeoutError("timed out")] * 3
 
-    with patch("urllib.request.urlopen", side_effect=side_effects), \
+    def fake_get_conn():
+        conn = MagicMock(spec=http.client.HTTPConnection)
+        conn.getresponse.side_effect = TimeoutError("timed out")
+        return conn
+
+    with patch.object(provider, "_get_conn", side_effect=fake_get_conn), \
          patch("time.sleep"):
         with pytest.raises(TimeoutError):
             provider.warmup()
@@ -205,9 +285,11 @@ def test_warmup_embedding_provider_calls_warmup_on_ollama():
     """warmup_embedding_provider() calls warmup() when provider has that method."""
     mock_provider = MagicMock(spec=OllamaEmbeddingProvider)
 
-    with patch("evolution.providers.embeddings.get_embedding_provider", return_value=mock_provider):
+    with patch(
+        "evolution.providers.embeddings.get_embedding_provider",
+        return_value=mock_provider,
+    ):
         warmup_embedding_provider()
-
     mock_provider.warmup.assert_called_once_with()
 
 
@@ -216,8 +298,10 @@ def test_warmup_embedding_provider_skips_providers_without_warmup():
     from evolution.providers.embeddings import GeminiEmbeddingProvider
 
     mock_provider = MagicMock(spec=GeminiEmbeddingProvider)
-    # GeminiEmbeddingProvider has no warmup — spec ensures hasattr returns False
     assert not hasattr(mock_provider, "warmup")
 
-    with patch("evolution.providers.embeddings.get_embedding_provider", return_value=mock_provider):
+    with patch(
+        "evolution.providers.embeddings.get_embedding_provider",
+        return_value=mock_provider,
+    ):
         warmup_embedding_provider()  # should not raise
