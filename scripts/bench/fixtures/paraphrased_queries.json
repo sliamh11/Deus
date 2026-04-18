@@ -1,0 +1,62 @@
+[
+  {
+    "id": "reactions-foundation",
+    "expected_path_stem": "memory-tree-reactions-ollama-catchup-hook",
+    "canonical": "reactions pr a foundation shipped",
+    "paraphrase": "emoji signal foundation merged for user feedback loop"
+  },
+  {
+    "id": "deus-web-subcmd",
+    "expected_path_stem": "deus-web-command",
+    "canonical": "deus web subcommand chrome mcp",
+    "paraphrase": "added new CLI verb to launch claude with browser tools"
+  },
+  {
+    "id": "claude-md-archive",
+    "expected_path_stem": "claude-md-archive-protection",
+    "canonical": "compress archived critical rule",
+    "paraphrase": "load-bearing instruction line got dropped during auto-save"
+  },
+  {
+    "id": "ollama-retry",
+    "expected_path_stem": "memory-tree-reactions-ollama-catchup-hook",
+    "canonical": "ollama embedding retry warmup",
+    "paraphrase": "transient timeout during local embedding call handled"
+  },
+  {
+    "id": "memtree-raw-default",
+    "expected_path_stem": "memory-tree-reactions-ollama-catchup-hook",
+    "canonical": "memory tree default raw retrieve",
+    "paraphrase": "flipped retrieval mode away from policy after benchmark"
+  },
+  {
+    "id": "catchup-hook",
+    "expected_path_stem": "memory-tree-reactions-ollama-catchup-hook",
+    "canonical": "catch up freshness hook userpromptsubmit",
+    "paraphrase": "runtime injected disk snapshot when resume prompts arrive"
+  },
+  {
+    "id": "launch-posts",
+    "expected_path_stem": "launch-posts-and-calendar",
+    "canonical": "launch posts hacker news reddit",
+    "paraphrase": "drafted announcements for external forums and scheduled them"
+  },
+  {
+    "id": "bench-infra-sprint",
+    "expected_path_stem": "bench-infrastructure-sprint",
+    "canonical": "benchmark harness sqlite store MRR",
+    "paraphrase": "evaluation tooling upgrade with persistent result storage"
+  },
+  {
+    "id": "bci-career",
+    "expected_path_stem": "bci-career-research",
+    "canonical": "BCI neural engineering career",
+    "paraphrase": "long-term trajectory in brain-computer interfaces engineering"
+  },
+  {
+    "id": "stt-listen",
+    "expected_path_stem": "stt-feature",
+    "canonical": "deus listen stt whisper",
+    "paraphrase": "voice input mode using local speech recognition"
+  }
+]
