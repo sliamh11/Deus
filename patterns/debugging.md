@@ -2,7 +2,7 @@
 governs:
   - src/container-runner.ts
   - src/message-orchestrator.ts
-last_verified: "2026-04-16"
+last_verified: "2026-04-18"  # re-reviewed for token-efficiency tier 1 project-hint move (PR #199) — debugging rules unchanged
 test_tasks:
   - "Messages from a Telegram group arrive but the agent never responds"
   - "A container exits with code 137 instead of returning a result"

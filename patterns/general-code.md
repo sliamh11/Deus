@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-04-18"  # re-reviewed for slim vault seed in setup/memory.ts (PR #202) — general patterns unchanged
+last_verified: "2026-04-18"  # re-reviewed for token-efficiency tier 1 project-hint move (PR #199) — general patterns unchanged
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"

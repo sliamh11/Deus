@@ -48,6 +48,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
+  projectHint?: string;
 }
 
 export interface ContainerOutput {
@@ -141,9 +142,9 @@ export async function runContainerAgent(
   const userSignal = detectUserSignal(input.prompt);
   const domains = await detectDomainsWithFallback(input.prompt);
 
-  // Pre-dispatch: inject project type hint if group has an associated project.
-  // This gives the agent immediate context about the project without waiting
-  // for it to inspect files. The hint is kept brief to minimize token overhead.
+  // Pre-dispatch: build project type hint if group has an associated project.
+  // Placed on systemPrompt (session-stable) instead of per-turn user prompt so
+  // it's sent once and doesn't repeat across turns in a resumed session.
   if (group.projectId) {
     const project = getProjectById(group.projectId);
     if (project?.type) {
@@ -154,10 +155,10 @@ export async function runContainerAgent(
       if (project.type.testRunner)
         parts.push(`test:${project.type.testRunner}`);
       const hint = `[Project: ${project.name} (${parts.join(', ')}) at /workspace/project${project.readonly ? ' — READ-ONLY' : ''}]`;
-      input = { ...input, prompt: `${hint}\n\n${input.prompt}` };
+      input = { ...input, projectHint: hint };
     } else if (project) {
       const hint = `[Project: ${project.name} at /workspace/project${project.readonly ? ' — READ-ONLY' : ''}]`;
-      input = { ...input, prompt: `${hint}\n\n${input.prompt}` };
+      input = { ...input, projectHint: hint };
     }
   }
 

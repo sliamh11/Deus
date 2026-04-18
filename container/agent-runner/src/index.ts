@@ -34,6 +34,7 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
+  projectHint?: string;
 }
 
 interface ImageContentBlock {
@@ -566,9 +567,9 @@ async function runQuery(
   const effort =
     effortEnv === 'default'
       ? undefined
-      : (['low', 'medium', 'high', 'max'].includes(effortEnv)
-          ? (effortEnv as 'low' | 'medium' | 'high' | 'max')
-          : 'low');
+      : ['low', 'medium', 'high', 'max'].includes(effortEnv)
+        ? (effortEnv as 'low' | 'medium' | 'high' | 'max')
+        : 'low';
   log(`Effort level: ${effort ?? 'SDK default'}`);
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
@@ -577,6 +578,13 @@ async function runQuery(
   if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
     globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
   }
+
+  // Session-stable system append: global CLAUDE.md (non-main groups) plus the
+  // project hint (when the group has a project). Placing the hint here instead
+  // of prepending to every user prompt avoids re-billing it per turn.
+  const systemAppend = [globalClaudeMd, containerInput.projectHint]
+    .filter((s): s is string => !!s && s.length > 0)
+    .join('\n\n');
 
   // Detect external project mount: if /workspace/project exists and has content,
   // use it as the primary cwd. The agent works in the user's project directory
@@ -671,11 +679,11 @@ async function runQuery(
       resume: sessionId,
       resumeSessionAt: resumeAt,
       effort,
-      systemPrompt: globalClaudeMd
+      systemPrompt: systemAppend
         ? {
             type: 'preset' as const,
             preset: 'claude_code' as const,
-            append: globalClaudeMd,
+            append: systemAppend,
           }
         : undefined,
       allowedTools: [
