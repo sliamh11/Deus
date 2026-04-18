@@ -58,6 +58,10 @@ cycles. Runtime-only filter.
 - `preservation_bench.py` — alternative LLM-based fact check (Ollama gemma4).
   Kept for reference; proved unreliable on small template files, documented
   below.
+- `real_claude_probe.sh` — end-to-end behavior probe. Drops a CLAUDE.md into
+  an isolated temp cwd and runs `claude -p` with 5 fixed prompts (formatting,
+  bullets, internal-tag, voice-reminder, persona), emitting JSONL. Usable as
+  a before/after check when compressing any CLAUDE.md.
 - `aggregate_compression.py`, `fixtures.json` — supporting aggregator and
   fixtures.
 
@@ -99,6 +103,26 @@ returned non-deterministic empty responses even with `num_predict: 256` and
 `gemma4 quirk — or response is empty` pattern documented elsewhere in the
 codebase. Kept in the repo so future work can revisit with a different
 judge, but not used as a gate here.
+
+For a concrete read on how unreliable, the numbers per file (Ollama bench
+vs the deterministic keyword bench vs a manual audit of every keyword-bench
+MISS):
+
+| File              | Ollama bench | Keyword bench | Manual audit |
+|-------------------|-------------:|--------------:|-------------:|
+| root `CLAUDE.md`  |        42.9% |         92.9% |         100% |
+| global template   |        54.5% |         90.9% |         100% |
+| main template     |        84.2% |         89.5% |         100% |
+
+Typical failure mode: the bench flags a fact as missing (e.g. "agent
+must skip INDEX read on session start") when the compressed file contains
+the same directive in a paraphrased form one line down. Spot-checking a
+sample of "missing" facts against the compressed source confirmed every
+one was actually present. Conclusion: **gemma4:e4b is not a viable
+single-question fact-verification judge at this doc scale.** Use
+`keyword_bench.py` (deterministic — can false-negative on paraphrase but
+never false-positive) and manually verify the flagged misses, or use
+`real_claude_probe.sh` for a real-behavior read.
 
 ## What's on the table but blocked
 
