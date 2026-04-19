@@ -155,7 +155,23 @@ export function registerCommonTools(
   // ── Lifecycle ───────────────────────────────────────────────────────
 
   server.tool('connect', 'Connect to the messaging platform', {}, async () => {
-    await provider.connect();
+    try {
+      await provider.connect();
+    } catch (err: unknown) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              error: 'connect failed',
+              detail: err instanceof Error ? err.message : String(err),
+              source: `${provider.name}.connect-tool`,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
     return { content: [{ type: 'text' as const, text: 'Connected.' }] };
   });
 
@@ -164,7 +180,23 @@ export function registerCommonTools(
     'Disconnect from the messaging platform',
     {},
     async () => {
-      await provider.disconnect();
+      try {
+        await provider.disconnect();
+      } catch (err: unknown) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: 'disconnect failed',
+                detail: err instanceof Error ? err.message : String(err),
+                source: `${provider.name}.disconnect-tool`,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
       return { content: [{ type: 'text' as const, text: 'Disconnected.' }] };
     },
   );
