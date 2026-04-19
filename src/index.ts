@@ -226,7 +226,15 @@ async function main(): Promise<void> {
       continue;
     }
     channels.push(channel);
-    await channel.connect();
+    try {
+      await channel.connect();
+    } catch (err: unknown) {
+      logger.error(
+        { err, channel: channelName },
+        'channel connect failed during startup',
+      );
+      throw err;
+    }
   }
   if (channels.length === 0) {
     logger.warn(
