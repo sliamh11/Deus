@@ -1,5 +1,5 @@
 /**
- * Deus error taxonomy — see docs/decisions/error-discipline.md
+ * Deus error taxonomy — see `docs/decisions/error-discipline.md`.
  *
  * Four disjoint error classes. Choose the one that answers "what should the
  * caller do?":
