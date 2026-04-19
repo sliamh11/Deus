@@ -2,7 +2,7 @@
 governs:
   - src/channels
   - packages/
-last_verified: "2026-04-18"  # re-reviewed for reactions channel wiring (PR B, #194)
+last_verified: "2026-04-19"  # re-reviewed for error-discipline ADR (PR #214) — channel patterns unaffected by error taxonomy
 test_tasks:
   - "Add a Discord channel with OAuth login"
   - "Add capabilities: logging to a new MCP channel server so notifications are delivered"

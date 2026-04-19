@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-04-19"  # re-verified for OAuth auto-refresh CLI (PR #211) — rules unchanged
+last_verified: "2026-04-19"  # re-verified for OAuth auto-refresh CLI (PR #211) + error-discipline ADR (PR #214) — added Error handling section
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"
@@ -49,6 +49,23 @@ Add new checks via `registerStartupCheck()` — never modify the gate's control 
 - **suggest** — one-line hint. For truly optional features (channels, groups, Gemini key).
 
 **Channels are optional, not fatal.** The `process.exit(1)` on zero channels was intentionally removed (ADR: startup-gate.md). Never make a channel check fatal — it breaks new-user onboarding.
+
+## Error handling
+
+Use the four-class error taxonomy from `src/errors/` (ADR: `docs/decisions/error-discipline.md`). Pick the class that answers *what should the caller do?* — not "what went wrong?":
+
+- `RetryableError` — transient (HTTP 5xx, ECONNRESET, rate limits) → caller retries with backoff
+- `UserError` — bad input / denied auth → surface to user, log at `warn`, not `error`
+- `FatalError` — corrupt state / missing required config → log + shut down this boundary
+- `DeusError` — base class; use only when none of the three fits (e.g. wrapping an unclassified 3rd-party error)
+
+Rules:
+- Every throw in new code picks a subclass. Prefer a subclass over bare `throw new Error(...)`.
+- Pass wrapped errors as `cause: err` — never stringify into `message`. The `toJSON()` serializer flattens the chain for structured logs.
+- Narrow with `instanceof` (or `isDeusError`) when catching. `catch (e) { log; throw; }` is fine — silent swallows without classification are not.
+- Structured context goes in `context: { ... }`. Never put secrets in `context`.
+
+Async primitives (`fireAndForget`, `withTimeout`, `allSettledOrThrow`) and the `bootstrap()` entry-point harness land in follow-up PRs #2/#4; this pattern will reference them once those files exist on main.
 
 ## Security
 
