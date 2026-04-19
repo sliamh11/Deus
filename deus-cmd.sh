@@ -124,7 +124,7 @@ _run_onboarding() {
 _ensure_resume_skill() {
   local skill_dir="$DEUS_SKILLS_DIR/resume"
   local marker="$skill_dir/.deus-version"
-  local current_version="3"
+  local current_version="2"
   if [ -f "$marker" ] && [ "$(cat "$marker")" = "$current_version" ]; then
     return
   fi
@@ -152,7 +152,6 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
 
 1. Always read core memory:
    $VAULT/CLAUDE.md
-   $VAULT/STATE.md (slim-structure vaults only; skip silently if missing)
 
 2. Based on likely task context, also read:
    - Study session → $VAULT/STUDY.md
@@ -462,7 +461,7 @@ SKILLEOF
 _ensure_compress_skill() {
   local skill_dir="$DEUS_SKILLS_DIR/compress"
   local marker="$skill_dir/.deus-version"
-  local current_version="3"
+  local current_version="2"
   if [ -f "$marker" ] && [ "$(cat "$marker")" = "$current_version" ]; then
     return
   fi
@@ -550,9 +549,8 @@ Keep `tldr` to 2–3 lines. Skip sections with no content.
 
 After saving the session log:
 
-1. **Update state file** (home mode only):
-   Update the `pending:` block. Prefer $VAULT/STATE.md if it exists (slim structure);
-   otherwise fall back to $VAULT/CLAUDE.md (legacy monolithic structure).
+1. **Update vault CLAUDE.md** (home mode only):
+   Update the `pending:` block in $VAULT/CLAUDE.md
 
 2. **Auto-redact sensitive patterns** (External Project Mode, standard memory level only):
    After saving the file, run the redaction script to strip any code snippets or file contents that leaked through:
@@ -762,7 +760,11 @@ case "$1" in
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     echo "Deus built and restarted (CLI symlink refreshed)."
     ;;
-  home|"")
+  home|web|"")
+    # `deus web` launches with --chrome for Claude-in-Chrome browser integration.
+    # Otherwise identical to bare `deus` / `deus home`.
+    CHROME_FLAG=""
+    [ "$1" = "web" ] && CHROME_FLAG="--chrome"
     TOKEN=$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["claudeAiOauth"]["accessToken"])' "$HOME/.claude/.credentials.json" 2>/dev/null)
     if [ -z "$TOKEN" ]; then
       echo "Error: could not read token from ~/.claude/.credentials.json"
@@ -775,9 +777,9 @@ case "$1" in
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     # Launch claude with bypass mode; fall back to normal mode if user declines
     launch_claude() {
-      claude --dangerously-skip-permissions "$@"
+      claude $CHROME_FLAG --dangerously-skip-permissions "$@"
       if [ $? -ne 0 ]; then
-        claude "$@"
+        claude $CHROME_FLAG "$@"
       fi
     }
 
@@ -808,7 +810,7 @@ case "$1" in
     # Override launch_claude based on bypass preference
     if [ "$PREFS_BYPASS" = "false" ]; then
       launch_claude() {
-        claude "$@"
+        claude $CHROME_FLAG "$@"
       }
     fi
 
@@ -857,15 +859,12 @@ Additional instructions from the user: $PREFS_PERSONA"
     CONTEXT=""
 
     printf "  Reading vault...\r"
-    # Auto-load only the two files that belong in every turn: CLAUDE.md (stable
-    # identity + critical rules + index) and STATE.md (churny previous/pending,
-    # written by /compress). Other leaves (STUDY.md, INFRA.md, Persona/INDEX.md)
-    # load on demand via memory_tree. Missing files are skipped silently so
-    # vaults that haven't been split yet still work.
     CLAUDE_MD=$(cat "$VAULT/CLAUDE.md" 2>/dev/null)
-    STATE_MD=$(cat "$VAULT/STATE.md" 2>/dev/null)
+    STUDY_MD=$(cat "$VAULT/STUDY.md" 2>/dev/null)
+    INFRA_MD=$(cat "$VAULT/INFRA.md" 2>/dev/null)
     [ -n "$CLAUDE_MD" ] && CONTEXT="=== VAULT: CLAUDE.md ===\n$CLAUDE_MD"
-    [ -n "$STATE_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: STATE.md ===\n$STATE_MD"
+    [ -n "$STUDY_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: STUDY.md ===\n$STUDY_MD"
+    [ -n "$INFRA_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: INFRA.md ===\n$INFRA_MD"
 
     # Memory tree (Phase 4, gated by DEUS_MEMORY_TREE=1 during dogfood).
     if [ "${DEUS_MEMORY_TREE:-0}" = "1" ]; then
@@ -1082,11 +1081,12 @@ $STARTUP_INSTRUCTION" "Catch me up."
     esac
     ;;
   *)
-    echo "Usage: deus [home|auth|listen|logs]"
+    echo "Usage: deus [home|auth|web|listen|logs]"
     echo ""
     echo "  deus        Launch in current directory (external project mode if not ~/deus)"
     echo "  deus home   Launch in home mode (~/deus) regardless of current directory"
     echo "  deus auth   Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
+    echo "  deus web    Same as 'deus' but launches claude with --chrome (Claude-in-Chrome integration)"
     echo "  deus listen Record from mic, transcribe, and copy to clipboard"
     echo "  deus logs   Review system health logs (rotate|review|summary|pinned)"
     ;;
