@@ -4,6 +4,9 @@ node_modules/
 # Build output
 dist/
 
+# Plan-review gate marker (user-local; refreshed by plan-reviewer agent)
+.claude/.plan-reviewed
+
 # Local data & auth
 store/
 data/
