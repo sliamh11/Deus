@@ -40,6 +40,7 @@ export function bootstrap(
     .then(() => mainFn())
     .catch((err: unknown) => {
       logError(name, `${name} main() failed`, err);
+      // eslint-disable-next-line no-restricted-syntax -- harness-managed exit on main() reject; the no-process-exit rule explicitly exempts the bootstrap harness itself
       process.exit(exitCode);
     });
 }
@@ -53,11 +54,13 @@ function installGlobalHandlers(
 
   process.on('uncaughtException', (err: Error) => {
     logError(name, 'uncaughtException', err);
+    // eslint-disable-next-line no-restricted-syntax -- harness-managed exit on uncaught exception; safer to crash than continue in undefined state
     process.exit(1);
   });
 
   process.on('unhandledRejection', (reason: unknown) => {
     logError(name, 'unhandledRejection', reason);
+    // eslint-disable-next-line no-restricted-syntax -- harness-managed conditional exit; default is opt-out so this only fires when a caller explicitly chose strict-mode
     if (exitOnUnhandledRejection) process.exit(1);
   });
 }

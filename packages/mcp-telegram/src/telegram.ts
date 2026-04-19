@@ -396,6 +396,7 @@ export class TelegramProvider implements ChannelProvider {
       'Telegram bot failed to reconnect after %d retries — exiting',
       MAX_RECONNECT_RETRIES,
     );
+    // eslint-disable-next-line no-restricted-syntax -- intentional MCP server suicide after MAX_RECONNECT_RETRIES; the host orchestrator restarts the stdio process; throwing here would only log via the fireAndForget caller (telegram.ts:290), leaving the MCP server alive but advertising tools that won't work
     process.exit(1);
   }
 
