@@ -55,6 +55,7 @@ export async function run(_args: string[]): Promise<void> {
   if (platform === 'macos') {
     setupLaunchd(projectRoot, nodePath, homeDir);
     setupLogReviewLaunchd(projectRoot, homeDir);
+    setupOAuthRefreshLaunchd(projectRoot, nodePath, homeDir);
     setupMaintenanceLaunchd(projectRoot, homeDir);
   } else if (platform === 'linux') {
     setupLinux(projectRoot, nodePath, homeDir);
@@ -214,6 +215,101 @@ function setupLogReviewLaunchd(projectRoot: string, homeDir: string): void {
     logger.info({ plistPath }, 'Log review job scheduled (daily 08:00)');
   } catch {
     logger.warn('launchctl load for log-review failed (may already be loaded)');
+  }
+}
+
+/**
+ * Proactive Claude OAuth refresh job (macOS only).
+ *
+ * Runs every 30 min via launchd. Refreshes the token when it's within 45 min
+ * of expiring so idle container agents don't hit /login after 8h silence.
+ * See src/auth-refresh.ts for the CLI implementation.
+ */
+function setupOAuthRefreshLaunchd(
+  projectRoot: string,
+  nodePath: string,
+  homeDir: string,
+): void {
+  const plistPath = path.join(
+    homeDir,
+    'Library',
+    'LaunchAgents',
+    'com.deus.oauth-refresh.plist',
+  );
+  const logPath = path.join(
+    homeDir,
+    'Library',
+    'Logs',
+    'com.deus.oauth-refresh.log',
+  );
+  fs.mkdirSync(path.dirname(logPath), { recursive: true });
+
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.deus.oauth-refresh</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${nodePath}</string>
+        <string>${projectRoot}/dist/auth-refresh.js</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>${projectRoot}</string>
+    <key>StartInterval</key>
+    <integer>1800</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>${homeDir}</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>${logPath}</string>
+    <key>StandardErrorPath</key>
+    <string>${logPath}</string>
+</dict>
+</plist>`;
+
+  fs.writeFileSync(plistPath, plist);
+
+  // Prefer bootstrap (modern launchd), fall back to load for older macOS.
+  const uid = process.getuid ? process.getuid() : 0;
+  try {
+    // bootout any stale instance first so bootstrap doesn't fail with "already loaded"
+    try {
+      execSync(`launchctl bootout gui/${uid} ${JSON.stringify(plistPath)}`, {
+        stdio: 'ignore',
+      });
+    } catch {
+      /* not previously bootstrapped */
+    }
+    execSync(`launchctl bootstrap gui/${uid} ${JSON.stringify(plistPath)}`, {
+      stdio: 'ignore',
+    });
+    logger.info(
+      { plistPath },
+      'OAuth refresh job scheduled (every 30 min, launchd bootstrap)',
+    );
+  } catch {
+    // Older macOS: fall back to launchctl load
+    try {
+      execSync(`launchctl load ${JSON.stringify(plistPath)}`, {
+        stdio: 'ignore',
+      });
+      logger.info(
+        { plistPath },
+        'OAuth refresh job scheduled (every 30 min, launchctl load)',
+      );
+    } catch {
+      logger.warn(
+        'launchctl bootstrap/load for oauth-refresh failed (may already be loaded)',
+      );
+    }
   }
 }
 
@@ -651,10 +747,16 @@ function getPythonPath(): string {
 
 function getWindowsPythonPath(): string {
   try {
-    return execSync('where python3', { encoding: 'utf-8' }).trim().split('\n')[0].trim();
+    return execSync('where python3', { encoding: 'utf-8' })
+      .trim()
+      .split('\n')[0]
+      .trim();
   } catch {
     try {
-      return execSync('where python', { encoding: 'utf-8' }).trim().split('\n')[0].trim();
+      return execSync('where python', { encoding: 'utf-8' })
+        .trim()
+        .split('\n')[0]
+        .trim();
     } catch {
       return 'python3';
     }
@@ -713,17 +815,18 @@ function setupMaintenanceLaunchd(projectRoot: string, homeDir: string): void {
     });
     logger.info({ plistPath }, 'Maintenance job scheduled (daily 04:30)');
   } catch {
-    logger.warn('launchctl load for maintenance failed (may already be loaded)');
+    logger.warn(
+      'launchctl load for maintenance failed (may already be loaded)',
+    );
   }
 }
 
-function setupMaintenanceLinux(
-  projectRoot: string,
-  homeDir: string,
-): void {
+function setupMaintenanceLinux(projectRoot: string, homeDir: string): void {
   const serviceManager = getServiceManager();
   if (serviceManager !== 'systemd') {
-    logger.info('No systemd — skipping maintenance timer (run scripts/maintenance.py manually or via cron)');
+    logger.info(
+      'No systemd — skipping maintenance timer (run scripts/maintenance.py manually or via cron)',
+    );
     return;
   }
 
@@ -765,18 +868,19 @@ WantedBy=timers.target`;
 
   try {
     execSync(`${systemctlPrefix} daemon-reload`, { stdio: 'ignore' });
-    execSync(`${systemctlPrefix} enable deus-maintenance.timer`, { stdio: 'ignore' });
-    execSync(`${systemctlPrefix} start deus-maintenance.timer`, { stdio: 'ignore' });
+    execSync(`${systemctlPrefix} enable deus-maintenance.timer`, {
+      stdio: 'ignore',
+    });
+    execSync(`${systemctlPrefix} start deus-maintenance.timer`, {
+      stdio: 'ignore',
+    });
     logger.info('Maintenance timer scheduled (daily 04:30)');
   } catch {
     logger.warn('systemd maintenance timer setup failed');
   }
 }
 
-function setupMaintenanceWindows(
-  projectRoot: string,
-  _homeDir: string,
-): void {
+function setupMaintenanceWindows(projectRoot: string, _homeDir: string): void {
   const pythonPath = getWindowsPythonPath();
   const taskName = 'DeusMaintenance';
 
@@ -794,6 +898,9 @@ function setupMaintenanceWindows(
     );
     logger.info('Windows Task Scheduler: maintenance scheduled (daily 04:30)');
   } catch (err) {
-    logger.warn({ err }, 'Windows Task Scheduler setup failed — run scripts/maintenance.py manually');
+    logger.warn(
+      { err },
+      'Windows Task Scheduler setup failed — run scripts/maintenance.py manually',
+    );
   }
 }

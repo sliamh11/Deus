@@ -15,7 +15,7 @@
  *   3. Auto-refresh via refresh_token when token is about to expire
  */
 import { execFileSync } from 'child_process';
-import { readFileSync, writeFileSync } from 'fs';
+import { readFileSync, renameSync, writeFileSync } from 'fs';
 import path from 'path';
 
 import { readEnvFile } from '../env.js';
@@ -27,14 +27,18 @@ import type { AuthMode } from '../credential-proxy.js';
 // Dynamic OAuth token — read from credentials file, keychain fallback,
 // auto-refresh when expiring. The env-file value always takes priority.
 // ---------------------------------------------------------------------------
-const CREDENTIALS_PATH = path.join(homeDir, '.claude', '.credentials.json');
+export const CREDENTIALS_PATH = path.join(
+  homeDir,
+  '.claude',
+  '.credentials.json',
+);
 const CACHE_TTL_MS = 5 * 60 * 1000;
-const EARLY_EXPIRE_WINDOW_MS = 30 * 60 * 1000; // 30 min — trigger refresh early
+export const EARLY_EXPIRE_WINDOW_MS = 30 * 60 * 1000; // 30 min — trigger refresh early
 const REFRESH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const REFRESH_SCOPES =
   'user:inference user:profile user:sessions:claude_code user:mcp_servers user:file_upload';
 
-interface OAuthCredentials {
+export interface OAuthCredentials {
   accessToken: string;
   refreshToken?: string;
   expiresAt: number;
@@ -55,7 +59,7 @@ export function _resetCredentialsCacheForTest(): void {
   refreshInFlight = false;
 }
 
-function readCredentialsFile(): OAuthCredentials | undefined {
+export function readCredentialsFile(): OAuthCredentials | undefined {
   try {
     const raw = readFileSync(CREDENTIALS_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as {
@@ -160,8 +164,14 @@ function readRawFromCredentialStore(): string | undefined {
   return undefined;
 }
 
-/** Write credentials to disk so the file stays in sync with keychain. */
-function writeCredentialsFile(creds: OAuthCredentials): void {
+/**
+ * Write credentials to disk so the file stays in sync with keychain.
+ *
+ * Atomic: writes to a sibling tmp file and renames into place. Never leaves
+ * a half-written credentials.json that would cause a login loop if the
+ * process dies mid-write.
+ */
+export function writeCredentialsFile(creds: OAuthCredentials): void {
   try {
     const data = {
       claudeAiOauth: {
@@ -170,14 +180,16 @@ function writeCredentialsFile(creds: OAuthCredentials): void {
         expiresAt: creds.expiresAt,
       },
     };
-    writeFileSync(CREDENTIALS_PATH, JSON.stringify(data), { mode: 0o600 });
+    const tmpPath = `${CREDENTIALS_PATH}.tmp-${process.pid}-${Date.now()}`;
+    writeFileSync(tmpPath, JSON.stringify(data), { mode: 0o600 });
+    renameSync(tmpPath, CREDENTIALS_PATH);
   } catch {
     // Best-effort — proxy still works with in-memory cache
   }
 }
 
 /** Refresh the OAuth token using the refresh_token grant. */
-async function refreshOAuthToken(
+export async function refreshOAuthToken(
   refreshToken: string,
 ): Promise<OAuthCredentials | undefined> {
   try {
