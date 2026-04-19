@@ -819,7 +819,7 @@ async function main(): Promise<void> {
       result: null,
       error: `Failed to parse input: ${err instanceof Error ? err.message : String(err)}`,
     });
-    process.exit(1);
+    throw err instanceof Error ? err : new Error(String(err));
   }
 
   // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
@@ -1022,7 +1022,7 @@ async function main(): Promise<void> {
       newSessionId: sessionId,
       error: errorMessage,
     });
-    process.exit(1);
+    throw err instanceof Error ? err : new Error(errorMessage);
   }
 }
 
