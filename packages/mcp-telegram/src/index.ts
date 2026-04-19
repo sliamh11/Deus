@@ -14,9 +14,15 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import pino from 'pino';
 import { registerCommonTools } from '@deus-ai/channel-core';
 
 import { TelegramProvider } from './telegram.js';
+
+const logger = pino(
+  { level: process.env.LOG_LEVEL || 'info' },
+  pino.destination(2),
+);
 
 const server = new McpServer(
   { name: '@deus-ai/telegram-mcp', version: '1.0.0' },
@@ -31,8 +37,11 @@ registerCommonTools(server, provider);
 // ── Auto-connect if token is configured ───────────────────────────────
 
 if (provider.hasToken()) {
-  provider.connect().catch((err) => {
-    console.error('[@deus-ai/telegram-mcp] Auto-connect failed:', err.message);
+  provider.connect().catch((err: unknown) => {
+    logger.error(
+      { err, source: 'telegram.auto-connect' },
+      'provider connect failed at startup',
+    );
   });
 }
 

@@ -2,7 +2,7 @@
 governs:
   - src/channels
   - packages/
-last_verified: "2026-04-20"  # re-reviewed for floating-promise migration (PR #5/10) — packages/ inline .catch pattern (no workspace root → no cross-package src/async/ import); IncomingReaction now re-exported from mcp-channel-core entry point
+last_verified: "2026-04-20"  # re-reviewed for stream-error migration (PR #6/10) — 6 mcp-*/src/index.ts auto-connect .catch blocks upgraded to structured pino logger.error; start_auth + channel-core connect/disconnect tool handlers wrapped in try/catch returning {isError:true, content:[...]} with owner labels
 test_tasks:
   - "Add a Discord channel with OAuth login"
   - "Add capabilities: logging to a new MCP channel server so notifications are delivered"

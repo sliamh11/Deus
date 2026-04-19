@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-04-20"  # re-reviewed for floating-promise migration (PR #5/10) — pattern rules unchanged, ipc.ts + task-scheduler.ts kickoffs now routed through src/async/fireAndForget with named owners
+last_verified: "2026-04-20"  # re-reviewed for stream-error migration (PR #6/10) — pattern rules unchanged, src/index.ts channel-startup loop now logs per-channel {err, channel} before rethrowing so main().catch() sees attributed failures
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"

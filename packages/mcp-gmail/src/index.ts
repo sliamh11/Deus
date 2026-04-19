@@ -14,10 +14,16 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import pino from 'pino';
 import { registerCommonTools } from '@deus-ai/channel-core';
 import { z } from 'zod';
 
 import { GmailProvider } from './gmail.js';
+
+const logger = pino(
+  { level: process.env.LOG_LEVEL || 'info' },
+  pino.destination(2),
+);
 
 const server = new McpServer(
   { name: '@deus-ai/gmail-mcp', version: '1.0.0' },
@@ -99,8 +105,11 @@ server.tool(
 // ── Auto-connect if credentials exist ────────────────────────────────
 
 if (provider.hasCredentials()) {
-  provider.connect().catch((err) => {
-    console.error('[@deus-ai/gmail-mcp] Auto-connect failed:', err.message);
+  provider.connect().catch((err: unknown) => {
+    logger.error(
+      { err, source: 'gmail.auto-connect' },
+      'provider connect failed at startup',
+    );
   });
 }
 

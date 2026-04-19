@@ -15,10 +15,16 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import pino from 'pino';
 import { z } from 'zod';
 import { registerCommonTools } from '@deus-ai/channel-core';
 
 import { WhatsAppProvider } from './whatsapp.js';
+
+const logger = pino(
+  { level: process.env.LOG_LEVEL || 'info' },
+  pino.destination(2),
+);
 
 const server = new McpServer(
   { name: '@deus-ai/whatsapp-mcp', version: '1.0.0' },
@@ -79,7 +85,27 @@ server.tool(
     // Auth is handled by the connect flow — this tool triggers it.
     // The provider writes QR data to disk; the client reads it.
     if (!provider.isConnected()) {
-      await provider.connect();
+      try {
+        await provider.connect();
+      } catch (err: unknown) {
+        logger.error(
+          { err, source: 'whatsapp.start_auth.connect' },
+          'provider connect failed during start_auth',
+        );
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: 'connect failed during start_auth',
+                detail: err instanceof Error ? err.message : String(err),
+                source: 'whatsapp.start_auth.connect',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
     }
     const status = provider.getStatus();
     return {
@@ -99,9 +125,12 @@ server.tool(
 // ── Auto-connect if credentials exist ─────────────────────────────────
 
 if (provider.hasAuth()) {
-  provider.connect().catch((err) => {
+  provider.connect().catch((err: unknown) => {
     // Log to stderr — don't crash, stay available for auth tools
-    console.error('[@deus-ai/whatsapp-mcp] Auto-connect failed:', err.message);
+    logger.error(
+      { err, source: 'whatsapp.auto-connect' },
+      'provider connect failed at startup',
+    );
   });
 }
 

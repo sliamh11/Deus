@@ -110,6 +110,27 @@ This ADR is PR #1 of a 10-PR series, **ordered by blast-radius ascending**:
 
 Each PR ships independently. If any downstream migration causes regressions, PRs #1–4 stand on their own.
 
+### PR #6 addendum: TrueCourse `missing-error-event-handler` — false-positive inventory
+
+The original plan framed PR #6 as *"stream-error installer + 19 channel wire-ups"* on the assumption that the 19 uniform findings pointed to a missing base-class helper. Source review found that assumption wrong: **0 of the 19 flagged sites are EventEmitter/Stream sites**. The rule's regex over `.connect()` and `createWriteStream()` matches more than the rule's intent.
+
+Breakdown of the 19 findings:
+
+| Category                                              | Count | Disposition                                                                                                                    |
+| ----------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `provider.connect().catch(console.error)` in `packages/mcp-*/src/index.ts` auto-connect | 6     | **Fixed**: `console.error` → `logger.error({err, source: '<pkg>.auto-connect'})` with structured owner label               |
+| `provider.connect()` in tool handler without try/catch | 2     | **Fixed**: wrap in try/catch, return `{ isError: true, content: [...] }` with owner attribution (whatsapp:83, channel-core:158) |
+| `await channel.connect()` in `src/index.ts:229`       | 1     | **Fixed**: per-channel try/catch with `{err, channel}` log before rethrow; outer `main().catch()` still owns the exit path  |
+| `server.connect(new StdioServerTransport())` in 7× `index.ts` | 7     | **False positive**: the SDK's `StdioServerTransport.start()` registers `this._stdin.on('error', this._onerror)` itself     |
+| `client.connect(new StdioClientTransport())` in `src/channels/mcp-adapter.ts` + `container/agent-runner/src/ipc-mcp-stdio.ts` | 2     | **False positive**: the SDK's `StdioClientTransport` wires `process.stdin.on('error')`, `process.stdout.on('error')`, and `process.on('error')` internally |
+| `pipeline(res.body, createWriteStream(...))` in `src/transcription.ts:71` | 1     | **False positive**: `stream/promises.pipeline()` propagates stream errors as a rejected Promise — `.on('error')` would be redundant |
+
+**Total: 9 real fixes + 10 documented false positives = 19.** (The table above is 6+2+1+7+2+1 = 19 — the "2 false positives in 2 files" row covers mcp-adapter + ipc-mcp-stdio.)
+
+Corollary rule added to `For future contributors` (below): static-analyzer "missing error handler" findings on `.connect()` must be cross-checked against the actual return type. If the call returns `Promise<T>` rather than an `EventEmitter`, the correct fix is structured `.catch()` or try/catch, not `.on('error')`.
+
+No shared `installStreamErrorLogger` helper shipped — YAGNI. If a real EventEmitter site surfaces later, the helper can be added at that time.
+
 ## For future contributors
 
 When you catch or throw an error in Deus:
@@ -118,6 +139,7 @@ When you catch or throw an error in Deus:
 2. **Catching?** Narrow with `instanceof` (or `isDeusError`) and handle each class. `catch (e) { log; throw; }` is fine — swallowing without classification is not.
 3. **Wrapping a third-party error?** Pass it as `cause`. Never stringify it into the message.
 4. **Awaiting a promise you don't plan to block on?** Use `fireAndForget` (PR #4). Don't let it float.
+5. **Static analyzer flagging a `.connect()` site as "missing error handler"?** Check the return type first. `Promise<T>` → structured `.catch()` or try/catch with an owner label (PR #6 pattern). `EventEmitter` → `.on('error', ...)`. SDK-internal transports (e.g. `StdioServerTransport`) wire their own stdin/stdout error listeners — leave them alone.
 
 See `src/errors/index.ts` for the full API and `src/errors/index.test.ts` for examples.
 

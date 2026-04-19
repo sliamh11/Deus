@@ -17,9 +17,15 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import pino from 'pino';
 import { registerCommonTools } from '@deus-ai/channel-core';
 
 import { SlackProvider } from './slack.js';
+
+const logger = pino(
+  { level: process.env.LOG_LEVEL || 'info' },
+  pino.destination(2),
+);
 
 const server = new McpServer(
   { name: '@deus-ai/slack-mcp', version: '1.0.0' },
@@ -34,8 +40,11 @@ registerCommonTools(server, provider);
 // ── Auto-connect if tokens are configured ────────────────────────────
 
 if (provider.hasTokens()) {
-  provider.connect().catch((err) => {
-    console.error('[@deus-ai/slack-mcp] Auto-connect failed:', err.message);
+  provider.connect().catch((err: unknown) => {
+    logger.error(
+      { err, source: 'slack.auto-connect' },
+      'provider connect failed at startup',
+    );
   });
 }
 
