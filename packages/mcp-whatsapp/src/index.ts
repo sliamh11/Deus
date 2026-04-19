@@ -85,7 +85,27 @@ server.tool(
     // Auth is handled by the connect flow — this tool triggers it.
     // The provider writes QR data to disk; the client reads it.
     if (!provider.isConnected()) {
-      await provider.connect();
+      try {
+        await provider.connect();
+      } catch (err: unknown) {
+        logger.error(
+          { err, source: 'whatsapp.start_auth.connect' },
+          'provider connect failed during start_auth',
+        );
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                error: 'connect failed during start_auth',
+                detail: err instanceof Error ? err.message : String(err),
+                source: 'whatsapp.start_auth.connect',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
     }
     const status = provider.getStatus();
     return {
