@@ -546,3 +546,31 @@ class TestFullCycle:
         rb.cmd_revert()
 
         assert files1 != files2, "Different seeds produced identical results"
+
+
+class TestHardcodedSecretInject:
+    """HardcodedSecret.inject previously referenced an undefined `filepath`
+    (only defined in the sibling `find_targets`). Regression: ensure it now
+    reads `filepath` from the `context` dict the caller passes."""
+
+    def test_inject_does_not_raise_nameerror_on_py(self):
+        pattern = rb.HardcodedSecret()
+        content = "API_TIMEOUT = 30\n"
+        line_no, match = 1, "API_TIMEOUT = 30"
+        context = {"filepath": "src/example.py", "rng": __import__("random").Random(0)}
+
+        modified, desc, disguise = pattern.inject(content, line_no, match, context)
+        assert "API_TIMEOUT" in modified
+        assert "fallback for CI environments" in modified
+        # Python path → should emit `NAME = "..."`, not `const NAME = "..."`
+        assert "const " not in modified
+
+    def test_inject_does_not_raise_nameerror_on_ts(self):
+        pattern = rb.HardcodedSecret()
+        content = "const API_TIMEOUT = 30;\n"
+        line_no, match = 1, "const API_TIMEOUT = 30;"
+        context = {"filepath": "src/example.ts", "rng": __import__("random").Random(0)}
+
+        modified, _, _ = pattern.inject(content, line_no, match, context)
+        assert "const " in modified
+        assert "fallback for CI environments" in modified

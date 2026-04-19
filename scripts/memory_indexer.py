@@ -621,14 +621,6 @@ def cmd_add_dir(dir_str: str, extract: bool = True):
             except Exception as exc:
                 print(f"  WARN: atom extraction failed for {f.name}: {exc}", file=sys.stderr)
 
-    if extract:
-        try:
-            cmd_extract(str(path))
-        except SystemExit:
-            pass  # cmd_extract uses sys.exit(1) for missing files — already resolved above
-        except Exception as exc:
-            print(f"  WARN: atom extraction failed for {path.name}: {exc}", file=sys.stderr)
-
     # Phase 3: check for stale entity articles
     try:
         stale_count = 0

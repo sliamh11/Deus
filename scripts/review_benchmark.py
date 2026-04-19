@@ -156,6 +156,7 @@ class HardcodedSecret(BugPattern):
         ])
 
         name, value = secret_type
+        filepath = context["filepath"]
         is_py = filepath.endswith(".py")
 
         if is_py:
