@@ -3,7 +3,7 @@ governs:
   - src/
   - setup/
   - packages/
-last_verified: "2026-04-20"  # re-reviewed for stream-error migration (PR #6/10) — deploy rules unchanged; each mcp-* package now initializes its own pino logger in index.ts (pino was already declared dep), no dep additions or dist/ shape changes
+last_verified: "2026-04-20"  # re-reviewed for process.exit ban (PR #7/10) — deploy rules unchanged; agent-runner index.ts converts 2 process.exit(1) sites to throws (bootstrap harness now handles structured exit), no dist/ shape change
 test_tasks:
   - "Deploy a hotfix to a running service and restart it after rebuilding dist/"
   - "Rebuild the WhatsApp MCP package and pick up the change live"

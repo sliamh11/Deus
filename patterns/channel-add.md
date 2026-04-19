@@ -2,7 +2,7 @@
 governs:
   - src/channels
   - packages/
-last_verified: "2026-04-20"  # re-reviewed for stream-error migration (PR #6/10) — 6 mcp-*/src/index.ts auto-connect .catch blocks upgraded to structured pino logger.error; start_auth + channel-core connect/disconnect tool handlers wrapped in try/catch returning {isError:true, content:[...]} with owner labels
+last_verified: "2026-04-20"  # re-reviewed for process.exit ban (PR #7/10) — packages/mcp-telegram/src/telegram.ts:399 process.exit kept (intentional MCP-server suicide on irrecoverable polling failure) with eslint-disable + rationale; new lint rule covers all packages/*/src/**/*.ts
 test_tasks:
   - "Add a Discord channel with OAuth login"
   - "Add capabilities: logging to a new MCP channel server so notifications are delivered"
