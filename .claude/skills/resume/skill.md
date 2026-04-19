@@ -20,7 +20,6 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
 
 1. Always read core memory:
    $VAULT/CLAUDE.md
-   $VAULT/STATE.md (slim-structure vaults only; skip silently if missing)
 
 2. Based on likely task context, also read:
    - Study session → $VAULT/STUDY.md
@@ -28,7 +27,8 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
    - If unclear → read both (they're small, ~10 lines each)
 
 3. Check for a mid-session checkpoint from today:
-   Run: find "$VAULT/Checkpoints" -name "$(date +%Y-%m-%d)-*.md" 2>/dev/null | xargs ls -t 2>/dev/null | head -1
+   Run: ls -t "$VAULT/Checkpoints/"$(date +%Y-%m-%d)-*.md 2>/dev/null | head -1
+   (A shell glob — not `find | xargs`. `find | xargs` breaks when the vault path contains spaces/unicode, because xargs word-splits the filenames and ls silently fails on the broken partials.)
    If a file is found → read it fully. Note "resuming mid-session checkpoint" in the summary.
 
 4a. Load warm tier — gap-aware (no API cost):
@@ -54,7 +54,8 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
     Include combined output as "Recent Sessions" context.
     
     FALLBACK — if the script fails, fall back to:
-    find "$VAULT/Session-Logs" -name "*.md" -not -path "*/.obsidian/*" | xargs ls -t 2>/dev/null | head -6
+    find "$VAULT/Session-Logs" -name "*.md" -not -path "*/.obsidian/*" -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -6
+    (Must use `-print0 | xargs -0` — plain `find | xargs` word-splits on whitespace and silently drops paths with spaces/unicode.)
     Then read frontmatter only (lines between the two --- markers) of those files.
 
 4b. Load learnings — what's new since last /resume (no API cost):
@@ -77,7 +78,7 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
 5. If a search term was passed as argument, grep session logs for it and read frontmatters of matches.
 
 6. Summarize in 2–3 lines: ongoing context, pending tasks, ready to continue.
-   The `previous:` field (in STATE.md for slim vaults, or CLAUDE.md for legacy monolithic vaults) is a rolling list of the last 3 sessions (format: `"YYYY-MM-DD: <tldr>"`). Read all 3 entries to understand recent context — not just the most recent one.
+   The `previous:` field in CLAUDE.md is a rolling list of the last 3 sessions (format: `"YYYY-MM-DD: <tldr>"`). Read all 3 entries to understand recent context — not just the most recent one.
    If a checkpoint was loaded, prepend: "Resuming mid-session: [checkpoint next_action]"
 
    **Time-label rule (enforced here, no exceptions):** Always label prior work as "Previous session:" — never use "Yesterday", "Earlier today", "Last week", or any relative time phrase. Compare session dates against `currentDate` from system context before writing anything. If the most recent session date equals today → still say "Previous session:", not "Earlier today". Relative labels are always wrong because sessions can span days or repeat within a day.
