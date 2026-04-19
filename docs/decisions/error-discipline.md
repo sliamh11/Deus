@@ -131,6 +131,24 @@ Corollary rule added to `For future contributors` (below): static-analyzer "miss
 
 No shared `installStreamErrorLogger` helper shipped — YAGNI. If a real EventEmitter site surfaces later, the helper can be added at that time.
 
+### PR #7 addendum: when `process.exit` is OK
+
+PR #7 adds an ESLint rule (`no-restricted-syntax`) banning `process.exit` in `packages/*/src/**/*.ts` and `container/*/src/**/*.ts`. The rule fires as an error. Legitimate exits are documented via `eslint-disable-next-line` with a rationale comment.
+
+**Allowed categories:**
+
+1. **The bootstrap harness itself** — `container/agent-runner/src/bootstrap.ts` (and the mirror in `src/bootstrap.ts`, which is not in the rule's file glob). The harness IS the one place that terminates the process on behalf of everyone else; exits here are exactly what the PR is promoting, not an escape hatch.
+
+2. **MCP server suicide signal** — e.g. `packages/mcp-telegram/src/telegram.ts:399`. When a long-running channel loop hits unrecoverable state (e.g. `MAX_RECONNECT_RETRIES` polling failures in a row), the MCP server exits so the host orchestrator detects the dead process and can restart it. Throwing in these specific sites would only reach a `fireAndForget` log boundary and leave the MCP server alive but advertising tools that silently no-op.
+
+3. **Short-lived CLI scripts** — `setup/*.ts`, `src/deus-listen.ts`. These are one-shot entry points, not long-lived daemons. `process.exit(N)` on a user-facing error is idiomatic and the existing TrueCourse hits here are false positives for this rule's intent. Not covered by the rule's file glob.
+
+**Banned categories:**
+
+1. **Anywhere inside `main()` that runs under bootstrap.** After PR #3 (#219), `agent-runner` and the main deus process both wrap their `main()` in `bootstrap()`. Any throw inside `main()` propagates to `bootstrap.ts:43 .catch → process.exit(exitCode)` with structured `[<name>]` attribution. Direct `process.exit` bypasses the harness and loses that attribution — the exact anti-pattern the error-discipline initiative exists to prevent. PR #7 converts the two remaining such sites (`container/agent-runner/src/index.ts:822, 1025`) from `process.exit(1)` to `throw err`.
+
+2. **Library code generally.** A package or module should throw; the caller decides whether that's fatal. If you find yourself wanting `process.exit` in a file other than the three categories above, the correct question is "where is the upstream catcher, and why doesn't it exit on this error?" — not "how do I exit here?"
+
 ## For future contributors
 
 When you catch or throw an error in Deus:
