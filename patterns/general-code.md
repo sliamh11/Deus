@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-04-19"  # re-verified for OAuth auto-refresh CLI (PR #211) + error-discipline ADR (PR #214) — added Error handling section
+last_verified: "2026-04-19"  # re-reviewed for bootstrap entry-point harness (PR #215) — pattern rules unchanged, bootstrap() integration lands in PR #3/10
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"
