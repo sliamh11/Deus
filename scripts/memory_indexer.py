@@ -18,6 +18,7 @@ import re
 import sqlite3
 import struct
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -1358,6 +1359,75 @@ def _extract_content_for_llm(content: str, max_chars: int = 6000) -> str:
     return trimmed[:max_chars]
 
 
+def _is_quota_error(exc: Exception) -> bool:
+    """Return True if `exc` looks like a Gemini per-minute / per-day quota error."""
+    msg = str(exc)
+    return "429" in msg or "RESOURCE_EXHAUSTED" in msg
+
+
+def _generate_with_fallback(
+    prompt,
+    *,
+    config=None,
+    label: str = "gen",
+):
+    """Call Gemini generate_content cascading through GEN_MODELS on 429.
+
+    Behavior:
+      - For each model in GEN_MODELS: call once; on 429 sleep 1s and retry
+        the SAME model once more; on second 429, move to the next model.
+      - Non-429 exceptions propagate to the caller (do not silently swallow).
+      - On full exhaustion: emit a JSON-parseable warning line and return None.
+
+    `prompt`  — `contents` arg passed straight through to generate_content.
+    `config`  — a `genai_types.GenerateContentConfig` (or None).
+    `label`   — short tag for the structured log; helps identify the call site
+                when greping `/compress` output.
+
+    Returns the response object on first success, or None if all models are
+    quota-exhausted.
+    """
+    if _client is None:
+        # Keep parity with callers that would otherwise crash on attribute access.
+        raise RuntimeError("Gemini client not initialized (call main() entry first).")
+
+    kwargs = {"contents": prompt}
+    if config is not None:
+        kwargs["config"] = config
+
+    for model in GEN_MODELS:
+        for attempt in (1, 2):
+            try:
+                return _client.models.generate_content(model=model, **kwargs)
+            except Exception as exc:
+                if _is_quota_error(exc):
+                    if attempt == 1:
+                        # brief within-model backoff — helps per-minute RPM caps
+                        time.sleep(1)
+                        continue
+                    # second 429: move on to the next model
+                    print(
+                        f"  quota exhausted on {model} ({label}), trying fallback...",
+                        file=sys.stderr,
+                    )
+                    break
+                # non-quota error: re-raise so caller can decide
+                raise
+    # All models exhausted — structured, JSON-parseable warning for log scraping.
+    print(
+        "WARN "
+        + json.dumps(
+            {
+                "event": "gen_exhausted",
+                "label": label,
+                "models_tried": len(GEN_MODELS),
+            }
+        ),
+        file=sys.stderr,
+    )
+    return None
+
+
 def extract_atoms(content: str) -> list[dict]:
     """Call Gemini Flash to extract 2-5 atomic facts from a session log."""
     prompt = (
@@ -1378,31 +1448,28 @@ def extract_atoms(content: str) -> list[dict]:
         "If nothing is worth extracting (casual/social session with no stable decisions), respond with: []\n\n"
         f"SESSION LOG:\n{_extract_content_for_llm(content)}"
     )
-    for model in GEN_MODELS:
-        try:
-            response = _client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(temperature=0.1, max_output_tokens=1024),
-            )
-            raw = response.text.strip()
-            # Strip markdown fencing (opening and closing) if model adds it
-            if raw.startswith("```"):
-                raw = re.sub(r"```[a-z]*\n?", "", raw).strip()
-            atoms = json.loads(raw)
-            return [a for a in atoms if isinstance(a, dict) and "text" in a and "category" in a]
-        except json.JSONDecodeError:
-            return []
-        except Exception as e:
-            err = str(e)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                print(f"  quota exhausted on {model}, trying fallback...", file=sys.stderr)
-                continue  # try next model
-            # Non-quota error (bad key, network, etc.) — no point retrying
-            print(f"  WARN: extraction error ({model}): {e}", file=sys.stderr)
-            return []
-    print("  WARN: all generation models quota-exhausted, skipping extraction.", file=sys.stderr)
-    return []
+    try:
+        response = _generate_with_fallback(
+            prompt,
+            config=genai_types.GenerateContentConfig(temperature=0.1, max_output_tokens=1024),
+            label="extract_atoms",
+        )
+    except Exception as e:
+        # Non-quota error (bad key, network, etc.) — no point retrying
+        print(f"  WARN: extraction error: {e}", file=sys.stderr)
+        return []
+    if response is None:
+        print("  WARN: all generation models quota-exhausted, skipping extraction.", file=sys.stderr)
+        return []
+    try:
+        raw = response.text.strip()
+        # Strip markdown fencing (opening and closing) if model adds it
+        if raw.startswith("```"):
+            raw = re.sub(r"```[a-z]*\n?", "", raw).strip()
+        atoms = json.loads(raw)
+        return [a for a in atoms if isinstance(a, dict) and "text" in a and "category" in a]
+    except json.JSONDecodeError:
+        return []
 
 
 def find_duplicate_atom(db: sqlite3.Connection, vec: list[float]) -> int | None:
@@ -1577,31 +1644,28 @@ def _ent_rel_prompt(content: str) -> str:
 def extract_entities_and_relations(content: str) -> dict:
     """Extract entities and relationships from a session log via Gemini Flash."""
     prompt = _ent_rel_prompt(content)
-    for model in GEN_MODELS:
-        try:
-            response = _client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(temperature=0.1, max_output_tokens=1024),
-            )
-            raw = response.text.strip()
-            if raw.startswith("```"):
-                raw = re.sub(r"```[a-z]*\n?", "", raw).strip()
-            result = json.loads(raw)
-            if isinstance(result, dict) and "entities" in result:
-                return result
-            return {"entities": [], "relationships": []}
-        except json.JSONDecodeError:
-            return {"entities": [], "relationships": []}
-        except Exception as e:
-            err = str(e)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                print(f"  quota exhausted on {model}, trying fallback...", file=sys.stderr)
-                continue
-            print(f"  WARN: entity extraction error ({model}): {e}", file=sys.stderr)
-            return {"entities": [], "relationships": []}
-    print("  WARN: all models quota-exhausted, skipping entity extraction.", file=sys.stderr)
-    return {"entities": [], "relationships": []}
+    try:
+        response = _generate_with_fallback(
+            prompt,
+            config=genai_types.GenerateContentConfig(temperature=0.1, max_output_tokens=1024),
+            label="extract_entities_and_relations",
+        )
+    except Exception as e:
+        print(f"  WARN: entity extraction error: {e}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
+    if response is None:
+        print("  WARN: all models quota-exhausted, skipping entity extraction.", file=sys.stderr)
+        return {"entities": [], "relationships": []}
+    try:
+        raw = response.text.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"```[a-z]*\n?", "", raw).strip()
+        result = json.loads(raw)
+        if isinstance(result, dict) and "entities" in result:
+            return result
+        return {"entities": [], "relationships": []}
+    except json.JSONDecodeError:
+        return {"entities": [], "relationships": []}
 
 
 def _contradiction_prompt(fact_a: str, fact_b: str) -> str:
@@ -1649,11 +1713,14 @@ def detect_contradictions(db: sqlite3.Connection, new_atom_id: int,
             break
         try:
             prompt = _contradiction_prompt(existing_text, new_atom_text)
-            response = _client.models.generate_content(
-                model=GEN_MODELS[0],
-                contents=prompt,
+            response = _generate_with_fallback(
+                prompt,
                 config=genai_types.GenerateContentConfig(temperature=0.0, max_output_tokens=10),
+                label="detect_contradictions",
             )
+            if response is None:
+                # All models quota-exhausted — stop checking further pairs.
+                break
             llm_calls += 1
             verdict = response.text.strip().upper().split()[0] if response.text else ""
             if verdict == "CONTRADICT":
@@ -1868,22 +1935,20 @@ def generate_entity_article(db: sqlite3.Connection, entity_id: int) -> Path:
     prompt = _entity_article_prompt(entity, relationships, atoms)
 
     article_text = ""
-    for model in GEN_MODELS:
-        try:
-            response = _client.models.generate_content(
-                model=model, contents=prompt,
-                config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=2048),
-            )
-            article_text = response.text.strip()
-            break
-        except Exception as e:
-            err = str(e)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                continue
-            print(f"  WARN: article generation error ({model}): {e}", file=sys.stderr)
-            return Path()
-    if not article_text:
+    try:
+        response = _generate_with_fallback(
+            prompt,
+            config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=2048),
+            label="generate_entity_article",
+        )
+    except Exception as e:
+        print(f"  WARN: article generation error: {e}", file=sys.stderr)
+        return Path()
+    if response is None:
         print("  WARN: all models quota-exhausted for article generation", file=sys.stderr)
+        return Path()
+    article_text = response.text.strip()
+    if not article_text:
         return Path()
 
     slug = slugify(entity["name"])
@@ -1983,20 +2048,18 @@ def compress_period(db: sqlite3.Connection, level: str, period_key: str) -> str:
 
     prompt = "\n".join(prompt_lines)
     digest_text = ""
-    for model in GEN_MODELS:
-        try:
-            response = _client.models.generate_content(
-                model=model, contents=prompt,
-                config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=1024),
-            )
-            digest_text = response.text.strip()
-            break
-        except Exception as e:
-            err = str(e)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                continue
-            print(f"  WARN: digest generation error ({model}): {e}", file=sys.stderr)
-            return ""
+    try:
+        response = _generate_with_fallback(
+            prompt,
+            config=genai_types.GenerateContentConfig(temperature=0.3, max_output_tokens=1024),
+            label="compress_period",
+        )
+    except Exception as e:
+        print(f"  WARN: digest generation error: {e}", file=sys.stderr)
+        return ""
+    if response is None:
+        return ""
+    digest_text = response.text.strip()
     if not digest_text:
         return ""
 
@@ -2263,20 +2326,18 @@ def generate_synthesis(db: sqlite3.Connection, entity_a_id: int,
     )
 
     synthesis_text = ""
-    for model in GEN_MODELS:
-        try:
-            response = _client.models.generate_content(
-                model=model, contents=prompt,
-                config=genai_types.GenerateContentConfig(temperature=0.5, max_output_tokens=512),
-            )
-            synthesis_text = response.text.strip()
-            break
-        except Exception as e:
-            err = str(e)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err:
-                continue
-            print(f"  WARN: synthesis error ({model}): {e}", file=sys.stderr)
-            return ""
+    try:
+        response = _generate_with_fallback(
+            prompt,
+            config=genai_types.GenerateContentConfig(temperature=0.5, max_output_tokens=512),
+            label="generate_synthesis",
+        )
+    except Exception as e:
+        print(f"  WARN: synthesis error: {e}", file=sys.stderr)
+        return ""
+    if response is None:
+        return ""
+    synthesis_text = response.text.strip()
     if not synthesis_text:
         return ""
 
