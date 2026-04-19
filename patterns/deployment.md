@@ -3,7 +3,7 @@ governs:
   - src/
   - setup/
   - packages/
-last_verified: "2026-04-19"  # re-reviewed for bootstrap entry-point harness (PR #215) — deploy rules unchanged, bootstrap() is a pure addition
+last_verified: "2026-04-19"  # re-reviewed for async-boundary helpers (PR #216) — deploy rules unchanged, async primitives are pure additions
 test_tasks:
   - "Deploy a hotfix to a running service and restart it after rebuilding dist/"
   - "Rebuild the WhatsApp MCP package and pick up the change live"

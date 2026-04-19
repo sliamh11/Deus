@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-04-19"  # re-reviewed for bootstrap entry-point harness (PR #215) — pattern rules unchanged, bootstrap() integration lands in PR #3/10
+last_verified: "2026-04-19"  # re-reviewed for async-boundary helpers (PR #216) — pattern rules unchanged, fireAndForget/withTimeout/allSettledOrThrow add non-breaking utilities
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"
