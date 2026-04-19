@@ -44,6 +44,7 @@ scripts/rename-repo.sh
 # Python virtual env
 .venv/
 __pycache__/
+.coverage
 
 # Temp files
 .tmp-*
