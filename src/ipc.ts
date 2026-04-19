@@ -3,6 +3,7 @@ import path from 'path';
 
 import { CronExpressionParser } from 'cron-parser';
 
+import { fireAndForget } from './async/index.js';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { getSkillIpcHandlers } from './skills/registry.js';
 import { AvailableGroup } from './container-runner.js';
@@ -159,7 +160,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
     setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
   };
 
-  processIpcFiles();
+  fireAndForget(() => processIpcFiles(), { name: 'ipc.poller' });
   logger.info('IPC watcher started (per-group namespaces)');
 }
 
