@@ -10,6 +10,7 @@ the memory indexer's database (memory.db). This prevents the memory indexer's
 interactions, reflections, and other expensive evolution data.
 """
 import logging
+import re
 import sqlite3
 import struct
 import threading
@@ -21,6 +22,25 @@ from ... import config as _config
 from ..provider import StorageProvider
 
 log = logging.getLogger(__name__)
+
+# Identifiers (table/column names) that we have to interpolate into SQL because
+# SQLite cannot parameterize them. Anything from sqlite_master or the schema
+# tuple-list above is implicitly trusted; this regex is defense in depth so a
+# corrupted/poisoned DB row can't sneak a payload through DROP TABLE.
+_SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+# Allow-list for update_interaction(**fields). Each entry must correspond to a
+# column on `interactions` that the rest of the codebase legitimately writes
+# after initial insert. Adding a new entry is intentional — never widen this
+# to "all column names" or trust kwargs blindly. See PR #9 in
+# docs/decisions/error-discipline.md.
+_UPDATABLE_INTERACTION_COLS = frozenset({
+    "judge_score",
+    "judge_dims",
+    "parse_error",
+    "latency_ms",
+    "timestamp",
+})
 
 # Guard against concurrent schema migrations from multiple threads
 _migration_lock = threading.Lock()
@@ -101,6 +121,8 @@ class SQLiteStorageProvider(StorageProvider):
             has_data = False
             for t in evolution_tables:
                 if t in tables:
+                    # safe: t comes from the literal `evolution_tables` allow-list
+                    # above. SQLite cannot parameterize identifiers in FROM clauses.
                     count = legacy.execute(f"SELECT COUNT(*) FROM [{t}]").fetchone()[0]
                     if count > 0:
                         has_data = True
@@ -123,7 +145,15 @@ class SQLiteStorageProvider(StorageProvider):
             ).fetchall()]
             for t in indexer_tables:
                 if t not in evolution_tables:
+                    # Defense in depth: sqlite_master table names should be
+                    # well-formed, but pin the contract with a regex check
+                    # before interpolating into a DROP statement.
+                    if not _SAFE_IDENT.match(t):
+                        log.warning("Skipping drop of non-identifier table name %r", t)
+                        continue
                     try:
+                        # safe: t passed the _SAFE_IDENT regex above; SQLite
+                        # cannot parameterize identifiers in DROP TABLE.
                         target.execute(f"DROP TABLE IF EXISTS [{t}]")
                     except sqlite3.OperationalError:
                         pass  # virtual tables may need special handling
@@ -133,7 +163,12 @@ class SQLiteStorageProvider(StorageProvider):
                 "SELECT name FROM sqlite_master WHERE type='table' AND sql LIKE '%virtual%'"
             ).fetchall()]:
                 if vt not in ("reflection_embeddings",):
+                    if not _SAFE_IDENT.match(vt):
+                        log.warning("Skipping drop of non-identifier virtual table %r", vt)
+                        continue
                     try:
+                        # safe: vt passed _SAFE_IDENT; identifiers can't be
+                        # parameterized in DROP TABLE.
                         target.execute(f"DROP TABLE IF EXISTS [{vt}]")
                     except sqlite3.OperationalError:
                         pass
@@ -204,6 +239,9 @@ class SQLiteStorageProvider(StorageProvider):
         """)
 
         # Reflection embeddings (vec0 virtual table)
+        # safe: same DDL pattern as evolution/db.py:97 — _config.EMBED_DIM
+        # is a module-level int constant. SQLite cannot parameterize the
+        # vec0 dimension. See PR #9 in docs/decisions/error-discipline.md.
         try:
             db.execute(f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS reflection_embeddings
@@ -220,6 +258,8 @@ class SQLiteStorageProvider(StorageProvider):
             ("context_tokens", "INTEGER"),
         ]:
             try:
+                # safe: col + coltype come from the literal tuple-list
+                # above. SQLite DDL cannot parameterize identifiers.
                 db.execute(f"ALTER TABLE interactions ADD COLUMN {col} {coltype}")
             except sqlite3.OperationalError:
                 pass  # Column already exists
@@ -299,8 +339,16 @@ class SQLiteStorageProvider(StorageProvider):
     def update_interaction(self, interaction_id: str, **fields) -> None:
         if not fields:
             return
+        unknown = set(fields) - _UPDATABLE_INTERACTION_COLS
+        if unknown:
+            raise ValueError(
+                f"update_interaction: unknown column(s) {sorted(unknown)}; "
+                f"allowed: {sorted(_UPDATABLE_INTERACTION_COLS)}"
+            )
         db = self._connect()
         set_clause = ", ".join(f"{k} = ?" for k in fields)
+        # safe: fields.keys() is gated by _UPDATABLE_INTERACTION_COLS above
+        # (see module-level allow-list); values are bound parameters.
         db.execute(
             f"UPDATE interactions SET {set_clause} WHERE id = ?",
             list(fields.values()) + [interaction_id],
@@ -347,6 +395,8 @@ class SQLiteStorageProvider(StorageProvider):
             params.append(f'%"{domain}"%')
 
         where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        # safe: where_clause is built from local literal-string clauses
+        # above; user values are bound through `params`.
         rows = db.execute(
             f"SELECT * FROM interactions {where_clause} ORDER BY timestamp DESC LIMIT ?",
             params + [limit],
@@ -388,6 +438,8 @@ class SQLiteStorageProvider(StorageProvider):
                 clauses.append("domain_presets LIKE ?")
                 params.append(f'%"{v}"%')
         where_clause = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        # safe: same pattern as get_recent_interactions — where_clause
+        # built from literal strings, user values bound through params.
         count = db.execute(
             f"SELECT COUNT(*) FROM interactions {where_clause}", params,
         ).fetchone()[0]
@@ -412,12 +464,19 @@ class SQLiteStorageProvider(StorageProvider):
         if domain:
             extra_clauses += " AND domain_presets LIKE ?"
             params.append(f'%"{domain}"%')
+        # Coerce + clamp days to a positive int. SQLite cannot parameterize
+        # a literal inside DATETIME('now', '-? days'), so we interpolate;
+        # the clamp also rejects days <= 0 which would silently widen the
+        # window to all rows.
+        days_clamped = max(1, int(days))
+        # safe: days_clamped is an int (post-clamp); extra_clauses built
+        # from local literal strings above. User values bound via params.
         rows = db.execute(
             f"""
             SELECT DATE(timestamp) AS day, AVG(judge_score) AS avg_score, COUNT(*) AS count
             FROM interactions
             WHERE judge_score IS NOT NULL
-              AND timestamp >= DATETIME('now', '-{days} days')
+              AND timestamp >= DATETIME('now', '-{days_clamped} days')
               {extra_clauses}
             GROUP BY day
             ORDER BY day
@@ -435,6 +494,9 @@ class SQLiteStorageProvider(StorageProvider):
         days: int = 30,
     ) -> list[dict]:
         db = self._connect()
+        # See score_trend for the same int-coerce + clamp rationale.
+        days_clamped = max(1, int(days))
+        # safe: days_clamped is a clamped int; no other interpolation.
         rows = db.execute(
             f"""
             SELECT DATE(timestamp) AS day,
@@ -442,7 +504,7 @@ class SQLiteStorageProvider(StorageProvider):
                    COUNT(*) AS count
             FROM interactions
             WHERE context_tokens IS NOT NULL
-              AND timestamp >= DATETIME('now', '-{days} days')
+              AND timestamp >= DATETIME('now', '-{days_clamped} days')
             GROUP BY day
             ORDER BY day
             """,
@@ -797,6 +859,8 @@ class SQLiteStorageProvider(StorageProvider):
         if domain:
             clauses.append("domain_presets LIKE ?")
             params.append(f'%"{domain}"%')
+        # safe: clauses is built from literal-string fragments above;
+        # user values bound through params.
         count = db.execute(
             f"SELECT COUNT(*) FROM interactions WHERE {' AND '.join(clauses)}",
             params,

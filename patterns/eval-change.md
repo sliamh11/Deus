@@ -3,7 +3,7 @@ governs:
   - evolution/
   - eval/
   - scripts/memory_indexer.py
-last_verified: "2026-04-20"  # re-verified for datetime-TZ migration in memory_indexer.py (PR #8/10) — eval rules unchanged, just UTC vs local-Jerusalem split for DB timestamps vs user-facing date strings
+last_verified: "2026-04-20"  # re-verified for SQL injection hardening in evolution/ (PR #9/10) — eval rules unchanged; allow-list update_interaction kwargs, regex-gate DROP TABLE identifiers, int-clamp DATETIME days; rationale comments added on structural-safe DDL/where-clause f-strings
 test_tasks:
   - "Add a new DeepEval metric under eval/ for the core_qa test suite"
   - "Add a new judge backend to evolution/judge/ using the provider registry"

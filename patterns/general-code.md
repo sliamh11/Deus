@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-04-20"  # re-reviewed for stream-error migration (PR #6/10) — pattern rules unchanged, src/index.ts channel-startup loop now logs per-channel {err, channel} before rethrowing so main().catch() sees attributed failures
+last_verified: "2026-04-20"  # re-reviewed for SQL injection hardening in evolution/ (PR #9/10) — pattern rules unchanged; new project conventions documented in ADR (allow-lists for kwarg-driven UPDATE; _SAFE_IDENT regex; int-coerce + clamp for DATETIME days; `# safe:` rationale comments on unavoidable f-string .execute() sites)
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"

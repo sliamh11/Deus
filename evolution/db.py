@@ -93,6 +93,9 @@ def _migrate(db: sqlite3.Connection) -> None:
     """)
 
     # Reflection embeddings (vec0 virtual table)
+    # safe: SQLite DDL cannot accept ? placeholders for type dimensions;
+    # EMBED_DIM is a module-level int constant — no user input reaches the
+    # f-string. See docs/decisions/error-discipline.md "PR #9 addendum".
     try:
         db.execute(f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS reflection_embeddings
@@ -108,6 +111,8 @@ def _migrate(db: sqlite3.Connection) -> None:
         ("parse_error", "INTEGER DEFAULT 0"),  # 1 if judge score is a parse-failure fallback
     ]:
         try:
+            # safe: col + coltype come from the literal tuple-list above —
+            # not user input. SQLite DDL cannot parameterize identifiers.
             db.execute(f"ALTER TABLE interactions ADD COLUMN {col} {coltype}")
         except sqlite3.OperationalError:
             pass  # Column already exists
