@@ -82,14 +82,26 @@ export class TelegramProvider implements ChannelProvider {
         chatType === 'private'
           ? ctx.from?.first_name || 'Private'
           : (ctx.chat as any).title || 'Unknown';
-      ctx.reply(
-        `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
-        { parse_mode: 'Markdown' },
-      );
+      ctx
+        .reply(
+          `Chat ID: \`tg:${chatId}\`\nName: ${chatName}\nType: ${chatType}`,
+          { parse_mode: 'Markdown' },
+        )
+        .catch((err: unknown) => {
+          logger.error(
+            { err, task: 'telegram.command.chatid.reply' },
+            'floating-promise',
+          );
+        });
     });
 
     this.bot.command('ping', (ctx) => {
-      ctx.reply(`${ASSISTANT_NAME} is online.`);
+      ctx.reply(`${ASSISTANT_NAME} is online.`).catch((err: unknown) => {
+        logger.error(
+          { err, task: 'telegram.command.ping.reply' },
+          'floating-promise',
+        );
+      });
     });
 
     const BOT_COMMANDS = new Set(['chatid', 'ping']);
@@ -287,7 +299,12 @@ export class TelegramProvider implements ChannelProvider {
       );
 
       if (this.consecutiveErrors >= MAX_CONSECUTIVE_ERRORS && !this.resetting) {
-        this.resetPolling();
+        this.resetPolling().catch((err: unknown) => {
+          logger.error(
+            { err, task: 'telegram.error-handler.resetPolling' },
+            'floating-promise',
+          );
+        });
       }
     });
 
@@ -322,7 +339,12 @@ export class TelegramProvider implements ChannelProvider {
     );
 
     const bot = this.bot;
-    bot.stop();
+    bot.stop().catch((err: unknown) => {
+      logger.error(
+        { err, task: 'telegram.resetPolling.stop.pre-retry' },
+        'floating-promise',
+      );
+    });
     this.consecutiveErrors = 0;
 
     for (let attempt = 0; attempt < MAX_RECONNECT_RETRIES; attempt++) {
@@ -361,7 +383,12 @@ export class TelegramProvider implements ChannelProvider {
           { attempt: attempt + 1, err },
           'Polling reset attempt failed',
         );
-        bot.stop();
+        bot.stop().catch((stopErr: unknown) => {
+          logger.error(
+            { err: stopErr, task: 'telegram.resetPolling.stop.post-error' },
+            'floating-promise',
+          );
+        });
       }
     }
 
@@ -411,7 +438,12 @@ export class TelegramProvider implements ChannelProvider {
     if (this.bot) {
       this.resetting = false;
       this.consecutiveErrors = 0;
-      this.bot.stop();
+      this.bot.stop().catch((err: unknown) => {
+        logger.error(
+          { err, task: 'telegram.disconnect.stop' },
+          'floating-promise',
+        );
+      });
       this.bot = null;
       logger.info('Telegram bot stopped');
     }
