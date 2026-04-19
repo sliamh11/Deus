@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Memory Map — How AI Finds the Right Concept</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --text: #e0e0e0;
+    --sidebar-bg: #12121a;
+    --sidebar-border: #1e1e2e;
+    --input-bg: #1a1a28;
+    --input-border: #2a2a3e;
+    --input-text: #e0e0e0;
+    --placeholder: #555;
+    --muted: #888;
+    --muted2: #666;
+    --muted3: #777;
+    --muted4: #555;
+    --panel-bg: #1a1a28;
+    --result-bg: #14141f;
+    --grid-color: #1a1a28;
+    --heading-color: #fff;
+    --hover-bg: #1a1a28;
+    --tooltip-bg: #1a1a28ee;
+    --tooltip-border: #2a2a3e;
+    --label-color: #aaa;
+    --dot-highlight: #fff;
+    --query-diamond: rgba(255,255,255,0.9);
+    --query-label: rgba(255,255,255,1);
+    --pulse-ring: rgba(255,255,255,0.15);
+    --cloud-alpha: 15;
+    --glow-alpha: 40;
+  }
+  [data-theme="light"] {
+    --bg: #f4f4f8;
+    --text: #222;
+    --sidebar-bg: #fff;
+    --sidebar-border: #e0e0e8;
+    --input-bg: #f0f0f5;
+    --input-border: #d0d0da;
+    --input-text: #222;
+    --placeholder: #999;
+    --muted: #666;
+    --muted2: #888;
+    --muted3: #777;
+    --muted4: #999;
+    --panel-bg: #f0f0f5;
+    --result-bg: #e8e8f0;
+    --grid-color: #e0e0e8;
+    --heading-color: #111;
+    --hover-bg: #eeeef4;
+    --tooltip-bg: #ffffffee;
+    --tooltip-border: #d0d0da;
+    --label-color: #555;
+    --dot-highlight: #111;
+    --query-diamond: rgba(80,50,180,0.85);
+    --query-label: rgba(30,30,30,1);
+    --pulse-ring: rgba(80,50,180,0.15);
+    --cloud-alpha: 18;
+    --glow-alpha: 30;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    overflow: hidden;
+    height: 100vh;
+    transition: background 0.3s, color 0.3s;
+  }
+  #app {
+    display: grid;
+    grid-template-columns: 320px 1fr;
+    height: 100vh;
+  }
+  .sidebar {
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    overflow-y: auto;
+    transition: background 0.3s, border-color 0.3s;
+  }
+  .header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 700;
+    background: linear-gradient(135deg, #7c6aef, #e06080);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .header-buttons {
+    display: flex;
+    gap: 6px;
+  }
+  .icon-btn {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    border: 1px solid var(--input-border);
+    background: var(--input-bg);
+    color: var(--text);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    transition: background 0.2s, border-color 0.2s;
+    flex-shrink: 0;
+  }
+  .icon-btn:hover { border-color: #7c6aef; }
+  .subtitle {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .search-box {
+    position: relative;
+  }
+  .search-box input {
+    width: 100%;
+    padding: 12px 16px;
+    background: var(--input-bg);
+    border: 1px solid var(--input-border);
+    border-radius: 10px;
+    color: var(--input-text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s, background 0.3s, color 0.3s;
+  }
+  .search-box input:focus {
+    border-color: #7c6aef;
+  }
+  .search-box input::placeholder {
+    color: var(--placeholder);
+  }
+  .legend {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .legend-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted2);
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 6px;
+    transition: background 0.15s;
+  }
+  .legend-item:hover { background: var(--hover-bg); }
+  .legend-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .info-panel {
+    background: var(--panel-bg);
+    border-radius: 10px;
+    padding: 16px;
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    transition: background 0.3s;
+  }
+  .info-panel.active { display: flex; }
+  .info-panel h3 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--heading-color);
+  }
+  .info-panel p {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  .match-bar {
+    height: 6px;
+    background: var(--input-border);
+    border-radius: 3px;
+    overflow: hidden;
+    margin-top: 4px;
+  }
+  .match-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.4s ease;
+  }
+  .match-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--muted3);
+  }
+  .results {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .result-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px;
+    background: var(--result-bg);
+    border-radius: 6px;
+    transition: background 0.3s;
+  }
+  .explainer {
+    background: var(--panel-bg);
+    border-radius: 10px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: background 0.3s;
+  }
+  .explainer-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted2);
+  }
+  .explainer p {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.55;
+  }
+  .explainer b {
+    color: var(--text);
+  }
+  .hint {
+    font-size: 11px;
+    color: var(--muted4);
+    line-height: 1.6;
+    margin-top: auto;
+    padding-top: 16px;
+    border-top: 1px solid var(--sidebar-border);
+  }
+  canvas {
+    display: block;
+    cursor: crosshair;
+  }
+  .canvas-wrap {
+    position: relative;
+    overflow: hidden;
+  }
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: var(--tooltip-bg);
+    border: 1px solid var(--tooltip-border);
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 13px;
+    color: var(--text);
+    display: none;
+    white-space: nowrap;
+    z-index: 10;
+    transition: background 0.3s, border-color 0.3s, color 0.3s;
+  }
+  .tooltip.active { display: block; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="sidebar">
+    <div>
+      <div class="header-row">
+        <h1>Memory Map</h1>
+        <div class="header-buttons">
+          <button class="icon-btn" id="resetBtn" title="Reset view and clear query">&#8634;</button>
+          <button class="icon-btn" id="themeToggle" title="Toggle light/dark mode">
+            <span id="themeIcon">&#9788;</span>
+          </button>
+        </div>
+      </div>
+      <p class="subtitle">Type a concept and watch the AI navigate to the closest match on its internal map.</p>
+    </div>
+
+    <div class="search-box">
+      <input type="text" id="query" placeholder="Try: eigenvalue, pasta, python..." autofocus />
+    </div>
+
+    <div class="legend" id="legend"></div>
+
+    <div class="info-panel" id="info">
+      <h3 id="info-title"></h3>
+      <p id="info-desc"></p>
+      <div class="results" id="results"></div>
+    </div>
+
+    <div class="explainer">
+      <div class="explainer-title">What are the dots?</div>
+      <p>Each dot is a <b>concept</b> that the AI "knows." In a real AI, every word and idea gets a position in a huge space with thousands of dimensions. Here we simplified it to 2D so you can see it.</p>
+      <p><b>Close dots = similar meaning.</b> "Eigenvalue" sits near "Matrix" because they're related. "Pasta" is far away because it has nothing to do with math.</p>
+      <p>When you type a query, the AI finds where your question would land on this map, then draws lines to the nearest concepts — that's how it "retrieves" the right knowledge.</p>
+    </div>
+
+    <p class="hint">
+      Click any dot to inspect it. Type to place a query on the map and see which concepts are nearest.
+      Scroll to zoom. Drag to pan.
+    </p>
+  </div>
+
+  <div class="canvas-wrap">
+    <canvas id="canvas"></canvas>
+    <div class="tooltip" id="tooltip"></div>
+  </div>
+</div>
+
+<script>
+// ── Concept database ────────────────────────────────────────────────
+// Each concept has a 2D position (simplified from high-dimensional embeddings)
+// grouped into clusters to show how meaning organizes spatially.
+
+const CLUSTERS = [
+  {
+    name: 'Mathematics',
+    color: '#7c6aef',
+    concepts: [
+      { label: 'Linear Algebra', x: 0.12, y: 0.18, desc: 'Study of vectors, matrices, and linear transformations' },
+      { label: 'Eigenvalue', x: 0.08, y: 0.22, desc: 'Scalar that scales an eigenvector under a transformation' },
+      { label: 'Matrix', x: 0.15, y: 0.15, desc: 'Rectangular array of numbers arranged in rows and columns' },
+      { label: 'Determinant', x: 0.11, y: 0.25, desc: 'Scalar value encoding properties of a matrix' },
+      { label: 'Vector Space', x: 0.17, y: 0.21, desc: 'Collection of vectors that can be added and scaled' },
+      { label: 'Calculus', x: 0.25, y: 0.14, desc: 'Study of change through derivatives and integrals' },
+      { label: 'Derivative', x: 0.28, y: 0.11, desc: 'Rate of change of a function' },
+      { label: 'Integral', x: 0.27, y: 0.18, desc: 'Accumulation of quantities, area under a curve' },
+      { label: 'Tensor', x: 0.10, y: 0.13, desc: 'Generalization of vectors and matrices to higher dimensions' },
+      { label: 'Polynomial', x: 0.22, y: 0.22, desc: 'Expression of variables raised to powers with coefficients' },
+    ]
+  },
+  {
+    name: 'Physics',
+    color: '#e06080',
+    concepts: [
+      { label: 'Gravity', x: 0.35, y: 0.25, desc: 'Force attracting objects with mass toward each other' },
+      { label: 'Relativity', x: 0.40, y: 0.20, desc: 'Einstein\'s theory linking space, time, and gravity' },
+      { label: 'Quantum', x: 0.38, y: 0.30, desc: 'Physics of very small particles and wave-particle duality' },
+      { label: 'Momentum', x: 0.32, y: 0.28, desc: 'Mass times velocity — conserved in collisions' },
+      { label: 'Energy', x: 0.36, y: 0.32, desc: 'Capacity to do work, comes in many forms' },
+      { label: 'Wave', x: 0.42, y: 0.27, desc: 'Disturbance that transfers energy through a medium' },
+      { label: 'Force', x: 0.33, y: 0.22, desc: 'Push or pull that changes an object\'s motion' },
+      { label: 'Photon', x: 0.41, y: 0.34, desc: 'Particle of light carrying electromagnetic energy' },
+    ]
+  },
+  {
+    name: 'Programming',
+    color: '#40c080',
+    concepts: [
+      { label: 'Python', x: 0.65, y: 0.15, desc: 'High-level programming language known for readability' },
+      { label: 'JavaScript', x: 0.70, y: 0.12, desc: 'Language of the web — runs in browsers and servers' },
+      { label: 'Function', x: 0.68, y: 0.20, desc: 'Reusable block of code that performs a task' },
+      { label: 'Variable', x: 0.63, y: 0.22, desc: 'Named container that stores a value' },
+      { label: 'Algorithm', x: 0.60, y: 0.18, desc: 'Step-by-step procedure for solving a problem' },
+      { label: 'Database', x: 0.72, y: 0.22, desc: 'Organized collection of structured data' },
+      { label: 'API', x: 0.75, y: 0.17, desc: 'Interface that lets programs talk to each other' },
+      { label: 'Recursion', x: 0.62, y: 0.25, desc: 'Function that calls itself to solve smaller subproblems' },
+      { label: 'Array', x: 0.67, y: 0.26, desc: 'Ordered list of elements accessed by index' },
+    ]
+  },
+  {
+    name: 'Food & Cooking',
+    color: '#e0a040',
+    concepts: [
+      { label: 'Pasta', x: 0.20, y: 0.70, desc: 'Italian staple made from wheat dough in many shapes' },
+      { label: 'Pizza', x: 0.17, y: 0.75, desc: 'Flatbread topped with sauce, cheese, and toppings' },
+      { label: 'Sushi', x: 0.28, y: 0.72, desc: 'Japanese dish of vinegared rice with fish or vegetables' },
+      { label: 'Recipe', x: 0.22, y: 0.65, desc: 'Set of instructions for preparing a dish' },
+      { label: 'Baking', x: 0.15, y: 0.68, desc: 'Cooking with dry heat in an oven' },
+      { label: 'Spice', x: 0.25, y: 0.78, desc: 'Aromatic substance used to flavor food' },
+      { label: 'Chef', x: 0.19, y: 0.62, desc: 'Professional cook trained in culinary arts' },
+    ]
+  },
+  {
+    name: 'Nature & Animals',
+    color: '#50b0e0',
+    concepts: [
+      { label: 'Dog', x: 0.75, y: 0.65, desc: 'Domesticated mammal, loyal companion to humans' },
+      { label: 'Cat', x: 0.78, y: 0.70, desc: 'Independent domesticated feline' },
+      { label: 'Wolf', x: 0.72, y: 0.62, desc: 'Wild ancestor of dogs, lives in packs' },
+      { label: 'Eagle', x: 0.80, y: 0.60, desc: 'Large bird of prey with powerful vision' },
+      { label: 'Ocean', x: 0.70, y: 0.75, desc: 'Vast body of salt water covering most of Earth' },
+      { label: 'Forest', x: 0.74, y: 0.78, desc: 'Large area dominated by trees and wildlife' },
+      { label: 'Mountain', x: 0.68, y: 0.72, desc: 'Large natural elevation of Earth\'s surface' },
+    ]
+  },
+  {
+    name: 'AI & Machine Learning',
+    color: '#c060e0',
+    concepts: [
+      { label: 'Neural Network', x: 0.45, y: 0.50, desc: 'Computing system inspired by the brain\'s neurons' },
+      { label: 'Embedding', x: 0.42, y: 0.55, desc: 'Mapping of concepts to points in a numeric space' },
+      { label: 'Transformer', x: 0.48, y: 0.48, desc: 'Architecture behind modern language models' },
+      { label: 'Training', x: 0.50, y: 0.55, desc: 'Process of teaching a model from data' },
+      { label: 'Attention', x: 0.46, y: 0.44, desc: 'Mechanism that lets models focus on relevant parts' },
+      { label: 'Token', x: 0.52, y: 0.50, desc: 'Small piece of text that models process' },
+      { label: 'Gradient', x: 0.44, y: 0.58, desc: 'Direction of steepest change, used to update weights' },
+      { label: 'Loss Function', x: 0.50, y: 0.60, desc: 'Measures how wrong the model\'s predictions are' },
+      { label: 'Backpropagation', x: 0.47, y: 0.62, desc: 'Algorithm for computing gradients through a network' },
+    ]
+  }
+];
+
+// ── Theme ───────────────────────────────────────────────────────────
+let isDark = true;
+const themeToggle = document.getElementById('themeToggle');
+const themeIcon = document.getElementById('themeIcon');
+
+function getVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+themeToggle.addEventListener('click', () => {
+  isDark = !isDark;
+  document.documentElement.setAttribute('data-theme', isDark ? '' : 'light');
+  if (!isDark) document.documentElement.setAttribute('data-theme', 'light');
+  else document.documentElement.removeAttribute('data-theme');
+  themeIcon.innerHTML = isDark ? '&#9788;' : '&#9790;';
+});
+
+// ── State ───────────────────────────────────────────────────────────
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('tooltip');
+const queryInput = document.getElementById('query');
+
+// ── Reset ───────────────────────────────────────────────────────────
+document.getElementById('resetBtn').addEventListener('click', () => {
+  queryInput.value = '';
+  queryPoint = null;
+  queryMatches = [];
+  queryExplanation = '';
+  selectedConcept = null;
+  hoveredConcept = null;
+  animating = false;
+  animProgress = 0;
+  pan = { x: 0, y: 0 };
+  zoom = 1;
+  document.getElementById('info').classList.remove('active');
+});
+
+let W, H;
+let pan = { x: 0, y: 0 };
+let zoom = 1;
+let dragging = false;
+let dragStart = { x: 0, y: 0 };
+let panStart = { x: 0, y: 0 };
+let hoveredConcept = null;
+let selectedConcept = null;
+let queryPoint = null;
+let queryMatches = [];
+let queryExplanation = '';
+let animProgress = 0;
+let animating = false;
+
+// Flatten concepts for quick lookup
+const allConcepts = [];
+CLUSTERS.forEach(cluster => {
+  cluster.concepts.forEach(c => {
+    allConcepts.push({ ...c, cluster: cluster.name, color: cluster.color });
+  });
+});
+
+// ── Coordinate transforms ───────────────────────────────────────────
+function worldToScreen(wx, wy) {
+  return {
+    x: (wx * W * zoom) + pan.x + W / 2 * (1 - zoom),
+    y: (wy * H * zoom) + pan.y + H / 2 * (1 - zoom)
+  };
+}
+
+function screenToWorld(sx, sy) {
+  return {
+    x: (sx - pan.x - W / 2 * (1 - zoom)) / (W * zoom),
+    y: (sy - pan.y - H / 2 * (1 - zoom)) / (H * zoom)
+  };
+}
+
+// ── Similarity (cosine-like in 2D) ─────────────────────────────────
+function distance(a, b) {
+  return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+}
+
+function similarity(a, b) {
+  const d = distance(a, b);
+  return Math.max(0, 1 - d * 2.5);
+}
+
+// ── Query placement ─────────────────────────────────────────────────
+// Simple keyword matching to place the query near relevant concepts
+function placeQuery(text) {
+  const lower = text.toLowerCase().trim();
+  if (!lower) { queryPoint = null; queryMatches = []; return; }
+
+  // Score each concept by text similarity, tracking reasons
+  let scores = allConcepts.map(c => {
+    const cLower = c.label.toLowerCase();
+    const dLower = c.desc.toLowerCase();
+    let score = 0;
+    const reasons = [];
+
+    // Exact match
+    if (cLower === lower) { score += 10; reasons.push('Exact name match (+10)'); }
+    // Starts with
+    else if (cLower.startsWith(lower)) { score += 6; reasons.push(`Name starts with "${lower}" (+6)`); }
+    // Contains
+    else if (cLower.includes(lower)) { score += 4; reasons.push(`Name contains "${lower}" (+4)`); }
+    // Description contains
+    if (dLower.includes(lower)) { score += 2; reasons.push(`Description mentions "${lower}" (+2)`); }
+
+    // Word overlap (require min 3 chars to avoid false substring matches)
+    const queryWords = lower.split(/\s+/).filter(w => w.length >= 3);
+    const descWords = dLower.split(/\s+/);
+    const labelWords = cLower.split(/\s+/);
+    queryWords.forEach(qw => {
+      const labelHit = labelWords.find(lw => lw.includes(qw) || (qw.includes(lw) && lw.length >= 3));
+      if (labelHit) { score += 3; reasons.push(`Word "${qw}" matches name (+3)`); }
+      const descHit = descWords.find(dw => dw.includes(qw) || (qw.includes(dw) && dw.length >= 3));
+      if (descHit) { score += 1; reasons.push(`Word "${qw}" in description (+1)`); }
+    });
+
+    return { concept: c, score, reasons };
+  });
+
+  scores.sort((a, b) => b.score - a.score);
+
+  // Deterministic small offset based on text (so it doesn't land exactly on a dot)
+  function hashOffset(str) {
+    let h = 0;
+    for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+    return ((h & 0xffff) / 0xffff - 0.5) * 0.015;
+  }
+
+  // If no meaningful match, place in center with low confidence
+  if (scores[0].score === 0) {
+    queryPoint = { x: 0.5 + hashOffset(lower), y: 0.5 + hashOffset(lower + '_y'), label: text };
+    queryExplanation = `No concept matches "${text}". Placed at the center of the map — the AI has no strong association for this term.`;
+    queryMatches = scores.slice(0, 5).map((s, i) => ({
+      concept: s.concept,
+      similarity: 0.05 + i * 0.02,
+      score: s.score,
+      reasons: s.reasons
+    }));
+  } else {
+    // Place diamond near the best match (not averaged across all)
+    const best = scores[0];
+    const qx = best.concept.x + hashOffset(lower);
+    const qy = best.concept.y + hashOffset(lower + '_y');
+    queryPoint = { x: qx, y: qy, label: text };
+
+    const runner = scores[1];
+    const gap = best.score - runner.score;
+    if (gap >= 5) {
+      queryExplanation = `Placed next to "${best.concept.label}" (score ${best.score}) — a strong match, far ahead of runner-up "${runner.concept.label}" (score ${runner.score}). The AI is confident this is the right neighborhood.`;
+    } else if (gap >= 2) {
+      queryExplanation = `Placed next to "${best.concept.label}" (score ${best.score}), slightly ahead of "${runner.concept.label}" (score ${runner.score}). Moderate confidence — two concepts are close in relevance.`;
+    } else {
+      queryExplanation = `Placed next to "${best.concept.label}" (score ${best.score}), but "${runner.concept.label}" scored almost the same (${runner.score}). Low confidence — the AI could have gone either way. This is where retrieval errors happen.`;
+    }
+
+    queryMatches = scores.slice(0, 5).map(s => ({
+      concept: s.concept,
+      similarity: similarity(queryPoint, s.concept),
+      score: s.score,
+      reasons: s.reasons
+    }));
+    // Boost top match similarity for better visual
+    if (best.score >= 6) {
+      queryMatches[0].similarity = Math.max(queryMatches[0].similarity, 0.85);
+    }
+  }
+
+  // Trigger animation
+  animProgress = 0;
+  animating = true;
+
+  // Update info panel
+  showResults();
+}
+
+// ── Info panel ──────────────────────────────────────────────────────
+function showResults() {
+  const info = document.getElementById('info');
+  const title = document.getElementById('info-title');
+  const desc = document.getElementById('info-desc');
+  const results = document.getElementById('results');
+
+  if (!queryPoint || queryMatches.length === 0) {
+    info.classList.remove('active');
+    return;
+  }
+
+  info.classList.add('active');
+  title.textContent = `Query: "${queryPoint.label}"`;
+  desc.textContent = queryExplanation;
+
+  results.innerHTML = '';
+  queryMatches.forEach((m, i) => {
+    const pct = Math.round(m.similarity * 100);
+    const reasonsHtml = m.reasons && m.reasons.length > 0
+      ? `<div style="font-size:10px;color:var(--muted2);margin-top:3px;line-height:1.4">${m.reasons.join(' · ')}</div>`
+      : `<div style="font-size:10px;color:var(--muted2);margin-top:3px">No direct text match</div>`;
+    const item = document.createElement('div');
+    item.className = 'result-item';
+    item.innerHTML = `
+      <div class="match-label">
+        <span style="color:${m.concept.color}">${m.concept.label}</span>
+        <span>score ${m.score} · ${pct}%</span>
+      </div>
+      <div class="match-bar">
+        <div class="match-bar-fill" style="width:${pct}%;background:${m.concept.color}"></div>
+      </div>
+      ${reasonsHtml}
+    `;
+    results.appendChild(item);
+  });
+}
+
+function showConceptInfo(concept) {
+  const info = document.getElementById('info');
+  const title = document.getElementById('info-title');
+  const desc = document.getElementById('info-desc');
+  const results = document.getElementById('results');
+
+  info.classList.add('active');
+  title.innerHTML = `<span style="color:${concept.color}">${concept.label}</span>`;
+  desc.textContent = concept.desc;
+
+  // Show nearest neighbors
+  const neighbors = allConcepts
+    .filter(c => c !== concept)
+    .map(c => ({ concept: c, similarity: similarity(concept, c) }))
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, 5);
+
+  results.innerHTML = '<div style="font-size:11px;color:#666;margin-bottom:4px;">Nearest neighbors:</div>';
+  neighbors.forEach(n => {
+    const pct = Math.round(n.similarity * 100);
+    const item = document.createElement('div');
+    item.className = 'result-item';
+    item.innerHTML = `
+      <div class="match-label">
+        <span style="color:${n.concept.color}">${n.concept.label}</span>
+        <span>${pct}% similar</span>
+      </div>
+      <div class="match-bar">
+        <div class="match-bar-fill" style="width:${pct}%;background:${n.concept.color}"></div>
+      </div>
+    `;
+    results.appendChild(item);
+  });
+}
+
+// ── Legend ───────────────────────────────────────────────────────────
+function buildLegend() {
+  const legend = document.getElementById('legend');
+  legend.innerHTML = '<div class="legend-title">Concept Clusters</div>';
+  CLUSTERS.forEach(cluster => {
+    const item = document.createElement('div');
+    item.className = 'legend-item';
+    item.innerHTML = `<div class="legend-dot" style="background:${cluster.color}"></div>${cluster.name} (${cluster.concepts.length})`;
+    legend.appendChild(item);
+  });
+}
+
+// ── Drawing ─────────────────────────────────────────────────────────
+function drawGrid() {
+  ctx.strokeStyle = getVar('--grid-color');
+  ctx.lineWidth = 1;
+  const step = 0.1;
+  for (let i = 0; i <= 1; i += step) {
+    const a = worldToScreen(i, 0);
+    const b = worldToScreen(i, 1);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    const c = worldToScreen(0, i);
+    const d = worldToScreen(1, i);
+    ctx.beginPath(); ctx.moveTo(c.x, c.y); ctx.lineTo(d.x, d.y); ctx.stroke();
+  }
+}
+
+function drawClusterClouds() {
+  CLUSTERS.forEach(cluster => {
+    if (cluster.concepts.length < 2) return;
+    // Draw a soft glow behind each cluster
+    let cx = 0, cy = 0;
+    cluster.concepts.forEach(c => { cx += c.x; cy += c.y; });
+    cx /= cluster.concepts.length;
+    cy /= cluster.concepts.length;
+
+    const center = worldToScreen(cx, cy);
+    const radius = 80 * zoom;
+
+    const cloudAlpha = getVar('--cloud-alpha');
+    const grad = ctx.createRadialGradient(center.x, center.y, 0, center.x, center.y, radius);
+    grad.addColorStop(0, cluster.color + cloudAlpha);
+    grad.addColorStop(1, cluster.color + '00');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(center.x, center.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function drawConnections() {
+  if (!queryPoint || queryMatches.length === 0) return;
+
+  const qScreen = worldToScreen(queryPoint.x, queryPoint.y);
+  const progress = Math.min(animProgress, 1);
+
+  queryMatches.forEach((m, i) => {
+    const cScreen = worldToScreen(m.concept.x, m.concept.y);
+    const alpha = m.similarity * progress * (i === 0 ? 0.8 : 0.3);
+
+    // Animated line (animates in, then stays)
+    const lineProgress = Math.max(0, Math.min(1, (progress - i * 0.1) / 0.5));
+    const endX = qScreen.x + (cScreen.x - qScreen.x) * lineProgress;
+    const endY = qScreen.y + (cScreen.y - qScreen.y) * lineProgress;
+
+    ctx.beginPath();
+    ctx.moveTo(qScreen.x, qScreen.y);
+    ctx.lineTo(endX, endY);
+    ctx.strokeStyle = m.concept.color + Math.round(alpha * 255).toString(16).padStart(2, '0');
+    ctx.lineWidth = i === 0 ? 2.5 : 1.5;
+    ctx.setLineDash(i === 0 ? [] : [6, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  });
+}
+
+function drawConcepts() {
+  allConcepts.forEach(c => {
+    const pos = worldToScreen(c.x, c.y);
+    const isHovered = hoveredConcept === c;
+    const isSelected = selectedConcept === c;
+    const isMatch = queryMatches.some(m => m.concept === c);
+    const baseRadius = isHovered || isSelected ? 7 : isMatch ? 6 : 4.5;
+    const r = baseRadius * Math.min(zoom, 2);
+
+    // Glow for matches
+    if (isMatch && queryPoint) {
+      const glowAlpha = getVar('--glow-alpha');
+      const glowR = r * 3 * Math.min(animProgress, 1);
+      const grad = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, glowR);
+      grad.addColorStop(0, c.color + glowAlpha);
+      grad.addColorStop(1, c.color + '00');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, glowR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Dot
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
+    const dotHighlight = getVar('--dot-highlight');
+    const labelColor = getVar('--label-color');
+    ctx.fillStyle = isHovered || isSelected ? dotHighlight : c.color;
+    ctx.fill();
+
+    if (isHovered || isSelected) {
+      ctx.strokeStyle = c.color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // Label
+    if (zoom > 0.6 || isHovered || isSelected || isMatch) {
+      ctx.font = `${isHovered || isSelected ? '13' : '11'}px Inter, system-ui, sans-serif`;
+      ctx.fillStyle = isHovered || isSelected ? dotHighlight : labelColor;
+      ctx.textAlign = 'center';
+      ctx.fillText(c.label, pos.x, pos.y - r - 6);
+    }
+  });
+}
+
+function drawQueryPoint() {
+  if (!queryPoint) return;
+  const progress = Math.min(animProgress, 1);
+  const pos = worldToScreen(queryPoint.x, queryPoint.y);
+  const r = 8 * Math.min(zoom, 2);
+
+  // Pulse ring (Math.abs to prevent negative radius crash)
+  const pulseR = Math.abs(r + 8 * Math.sin(Date.now() / 400) * progress);
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, pulseR, 0, Math.PI * 2);
+  ctx.strokeStyle = isDark
+    ? `rgba(255,255,255,${0.15 * progress})`
+    : `rgba(80,50,180,${0.15 * progress})`;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Diamond shape
+  ctx.save();
+  ctx.translate(pos.x, pos.y);
+  ctx.rotate(Math.PI / 4);
+  ctx.beginPath();
+  ctx.rect(-r / 2, -r / 2, r, r);
+  ctx.fillStyle = isDark
+    ? `rgba(255,255,255,${0.9 * progress})`
+    : `rgba(80,50,180,${0.9 * progress})`;
+  ctx.fill();
+  ctx.strokeStyle = '#7c6aef';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+
+  // Label
+  ctx.font = 'bold 13px Inter, system-ui, sans-serif';
+  ctx.fillStyle = isDark
+    ? `rgba(255,255,255,${progress})`
+    : `rgba(30,30,30,${progress})`;
+  ctx.textAlign = 'center';
+  ctx.fillText(`"${queryPoint.label}"`, pos.x, pos.y + r + 18);
+}
+
+function draw() {
+  try {
+    ctx.fillStyle = getVar('--bg');
+    ctx.fillRect(0, 0, W, H);
+    drawGrid();
+    drawClusterClouds();
+    drawConnections();
+    drawConcepts();
+    drawQueryPoint();
+
+    if (animating) {
+      animProgress += 0.025;
+      if (animProgress > 1.5) animating = false;
+    }
+  } catch (e) {
+    console.error('draw error:', e);
+  }
+  requestAnimationFrame(draw);
+}
+
+// ── Interaction ─────────────────────────────────────────────────────
+function resize() {
+  const wrap = canvas.parentElement;
+  W = wrap.clientWidth;
+  H = wrap.clientHeight;
+  canvas.width = W * devicePixelRatio;
+  canvas.height = H * devicePixelRatio;
+  canvas.style.width = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+
+function findConcept(sx, sy) {
+  const world = screenToWorld(sx, sy);
+  let closest = null;
+  let closestDist = Infinity;
+  allConcepts.forEach(c => {
+    const d = distance(world, c);
+    if (d < closestDist) { closestDist = d; closest = c; }
+  });
+  const threshold = 20 / (W * zoom);
+  return closestDist < threshold ? closest : null;
+}
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if (dragging) {
+    pan.x = panStart.x + (e.clientX - dragStart.x);
+    pan.y = panStart.y + (e.clientY - dragStart.y);
+    return;
+  }
+
+  hoveredConcept = findConcept(mx, my);
+  if (hoveredConcept) {
+    tooltip.classList.add('active');
+    tooltip.textContent = `${hoveredConcept.label} — ${hoveredConcept.cluster}`;
+    tooltip.style.left = (mx + 15) + 'px';
+    tooltip.style.top = (my - 10) + 'px';
+    canvas.style.cursor = 'pointer';
+  } else {
+    tooltip.classList.remove('active');
+    canvas.style.cursor = 'crosshair';
+  }
+});
+
+canvas.addEventListener('mousedown', e => {
+  dragging = true;
+  dragStart = { x: e.clientX, y: e.clientY };
+  panStart = { ...pan };
+});
+
+canvas.addEventListener('mouseup', e => {
+  const moved = Math.abs(e.clientX - dragStart.x) + Math.abs(e.clientY - dragStart.y);
+  dragging = false;
+  if (moved < 5) {
+    const rect = canvas.getBoundingClientRect();
+    const c = findConcept(e.clientX - rect.left, e.clientY - rect.top);
+    if (c) {
+      selectedConcept = c;
+      showConceptInfo(c);
+    } else {
+      selectedConcept = null;
+      // Show query results if active, otherwise hide panel
+      if (queryPoint) {
+        showResults();
+      } else {
+        document.getElementById('info').classList.remove('active');
+      }
+    }
+  }
+});
+
+// Zoom works anywhere on the page (not just canvas)
+document.addEventListener('wheel', e => {
+  // Don't hijack scroll inside scrollable sidebar panels
+  if (e.target.closest('.results')) return;
+  e.preventDefault();
+  const factor = e.deltaY > 0 ? 0.92 : 1.08;
+  zoom = Math.max(0.3, Math.min(5, zoom * factor));
+}, { passive: false });
+
+// Debounced query input
+let queryTimer;
+queryInput.addEventListener('input', () => {
+  clearTimeout(queryTimer);
+  queryTimer = setTimeout(() => placeQuery(queryInput.value), 200);
+});
+
+queryInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    clearTimeout(queryTimer);
+    placeQuery(queryInput.value);
+  }
+});
+
+// ── Init ────────────────────────────────────────────────────────────
+window.addEventListener('resize', resize);
+resize();
+buildLegend();
+draw();
+</script>
+</body>
+</html>
