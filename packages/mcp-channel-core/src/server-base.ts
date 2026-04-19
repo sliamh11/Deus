@@ -22,21 +22,44 @@ export function registerCommonTools(
   provider.onMessage = (msg: IncomingMessage) => {
     buffer.push(msg);
 
-    // Push to MCP client via logging notification (real-time path)
-    server.server.sendLoggingMessage({
-      level: 'info',
-      logger: 'incoming_message',
-      data: msg,
-    });
+    // Push to MCP client via logging notification (real-time path).
+    // Fire-and-forget: a failed notification must not break ingestion.
+    server.server
+      .sendLoggingMessage({
+        level: 'info',
+        logger: 'incoming_message',
+        data: msg,
+      })
+      .catch((err: unknown) => {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            task: 'channel-core.onMessage.notify',
+            err: err instanceof Error ? err.message : err,
+            msg: 'floating-promise',
+          }),
+        );
+      });
   };
 
   // Reactions are ephemeral signals — push to client, don't buffer for polling.
   provider.onReaction = (reaction: IncomingReaction) => {
-    server.server.sendLoggingMessage({
-      level: 'info',
-      logger: 'incoming_reaction',
-      data: reaction,
-    });
+    server.server
+      .sendLoggingMessage({
+        level: 'info',
+        logger: 'incoming_reaction',
+        data: reaction,
+      })
+      .catch((err: unknown) => {
+        console.error(
+          JSON.stringify({
+            level: 'error',
+            task: 'channel-core.onReaction.notify',
+            err: err instanceof Error ? err.message : err,
+            msg: 'floating-promise',
+          }),
+        );
+      });
   };
 
   // ── Core messaging ──────────────────────────────────────────────────
