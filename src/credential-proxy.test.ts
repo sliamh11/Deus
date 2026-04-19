@@ -16,7 +16,13 @@ vi.mock('fs', async (importOriginal) => {
   return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
 });
 
+vi.mock('child_process', () => ({
+  execFileSync: vi.fn(),
+  execSync: vi.fn(),
+}));
+
 import { readFileSync } from 'fs';
+import { execFileSync } from 'child_process';
 import {
   startCredentialProxy,
   _resetCredentialsCacheForTest,
@@ -24,6 +30,7 @@ import {
 import { AuthProviderRegistry } from './auth-providers/types.js';
 
 const mockReadFileSync = readFileSync as ReturnType<typeof vi.fn>;
+const mockExecFileSync = vi.mocked(execFileSync);
 
 function makeRequest(
   port: number,
@@ -72,6 +79,11 @@ describe('credential-proxy', () => {
     mockReadFileSync.mockImplementation(() => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     });
+    // Default: keychain lookup fails — prevents real OS credentials leaking
+    // into tests on macOS/Linux/Windows dev machines.
+    mockExecFileSync.mockImplementation(() => {
+      throw new Error('no keychain (test isolation)');
+    });
 
     upstreamServer = http.createServer((req, res) => {
       lastUpstreamHeaders = { ...req.headers };
@@ -89,6 +101,7 @@ describe('credential-proxy', () => {
     await new Promise<void>((r) => upstreamServer?.close(() => r()));
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
     mockReadFileSync.mockReset();
+    mockExecFileSync.mockReset();
     _resetCredentialsCacheForTest();
     AuthProviderRegistry.reset();
   });
