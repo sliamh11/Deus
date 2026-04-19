@@ -738,6 +738,12 @@ SKILLEOF
 
 case "$1" in
   auth)
+    # `deus auth refresh [--dry-run]` → proactive OAuth refresh CLI
+    # (keeps idle containers from hitting /login after 8h token expiry).
+    if [ "$2" = "refresh" ]; then
+      shift 2
+      exec node "$SCRIPT_DIR/dist/auth-refresh.js" "$@"
+    fi
     # Validate credentials file is readable before restarting
     python3 -c 'import sys,json; d=json.load(open(sys.argv[1])); assert d.get("claudeAiOauth",{}).get("accessToken")' "$HOME/.claude/.credentials.json" 2>/dev/null
     if [ $? -ne 0 ]; then
@@ -1086,6 +1092,7 @@ $STARTUP_INSTRUCTION" "Catch me up."
     echo "  deus        Launch in current directory (external project mode if not ~/deus)"
     echo "  deus home   Launch in home mode (~/deus) regardless of current directory"
     echo "  deus auth   Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
+    echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
     echo "  deus web    Same as 'deus' but launches claude with --chrome (Claude-in-Chrome integration)"
     echo "  deus listen Record from mic, transcribe, and copy to clipboard"
     echo "  deus logs   Review system health logs (rotate|review|summary|pinned)"
