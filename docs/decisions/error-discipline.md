@@ -169,6 +169,23 @@ Both helpers live in `scripts/_time.py` and return tz-aware datetimes. `datetime
 
 **Rule for new Python code in `scripts/`:** never write bare `datetime.now()`. Pick `utc_now()` or `local_now()` explicitly. The choice forces an answer to "is this a moment, or is this a calendar day?".
 
+### PR #9 addendum: SQL injection surface (Python `evolution/`)
+
+TrueCourse flagged 13 `security/deterministic/sql-injection` HIGHs in `evolution/db.py` + `evolution/storage/providers/sqlite.py`. Audit found two distinct categories: **structural-safe** sites that can't be parameterized, and **real risk** sites where blind kwargs / unvalidated ints would let a caller forge SQL.
+
+**SQLite parameterization rules (the "why" behind the policy):**
+
+1. **DDL cannot be parameterized.** `?` placeholders only work in DML expression positions. `CREATE VIRTUAL TABLE ... USING vec0(embedding float[?])` is a syntax error. Same for `ALTER TABLE foo ADD COLUMN ? ?`. When the schema demands an identifier or a type, you must interpolate.
+2. **Identifiers (table/column names) cannot be parameterized.** `SELECT COUNT(*) FROM ?` is invalid. When you need a dynamic table or column name, interpolate from a closed allow-list (a literal tuple in code, or a regex-validated string from `sqlite_master`). Never accept identifier names from untrusted callers.
+3. **Data values must be parameterized.** Anything that's user input or function argument data — strings, ints, floats — goes through `?` bound parameters. The exception is integer values inside SQLite expressions like `DATETIME('now', '-N days')` that don't accept placeholders, in which case explicit `int()` coercion + a sane clamp is mandatory before interpolation.
+
+**Project conventions adopted in PR #9:**
+
+- `# safe: <reason>` comment on f-string `.execute()` sites that are structurally parameterizable-impossible. Examples: vec0 dimension constants, ALTER TABLE column tuples from a literal list, WHERE clauses assembled from local literal-string fragments. The comment is for human reviewers — TrueCourse does not consume inline suppressions; closing the violation happens in the dashboard after merge.
+- **Allow-list module constants** for kwarg-driven UPDATEs. `evolution/storage/providers/sqlite.py:_UPDATABLE_INTERACTION_COLS` enumerates the 5 columns callers actually write after initial insert. `update_interaction(**fields)` raises `ValueError` on unknown keys. Widening the set is intentional and visible in code review.
+- **Identifier regex** (`_SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")`) before interpolating a name from `sqlite_master` into DDL. Rejects payloads that survived a corrupted-DB or hostile-environment edge case.
+- **Int-coerce + clamp** for time-window parameters that interpolate into `DATETIME('now', '-N days')`: `max(1, int(days))`. The clamp also prevents `days=0` from silently widening the window to all rows.
+
 ## For future contributors
 
 When you catch or throw an error in Deus:
@@ -179,6 +196,7 @@ When you catch or throw an error in Deus:
 4. **Awaiting a promise you don't plan to block on?** Use `fireAndForget` (PR #4). Don't let it float.
 5. **Static analyzer flagging a `.connect()` site as "missing error handler"?** Check the return type first. `Promise<T>` → structured `.catch()` or try/catch with an owner label (PR #6 pattern). `EventEmitter` → `.on('error', ...)`. SDK-internal transports (e.g. `StdioServerTransport`) wire their own stdin/stdout error listeners — leave them alone.
 6. **Writing Python in `scripts/`?** Never `datetime.now()`. Use `utc_now()` for internal timestamps, `local_now()` for user-facing strings (PR #8). The naming forces you to answer "moment or calendar day?".
+7. **Building SQL?** Always parameterize data values. Identifiers (table/column names) and DDL must come from a closed allow-list (a literal tuple in code) or pass through `_SAFE_IDENT` regex validation (PR #9). Annotate the unavoidable f-string `.execute()` sites with `# safe: <reason>`.
 
 See `src/errors/index.ts` for the full API and `src/errors/index.test.ts` for examples.
 
