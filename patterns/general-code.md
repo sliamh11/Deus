@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-04-20"  # re-reviewed for SQL injection hardening in evolution/ (PR #9/10) — pattern rules unchanged; new project conventions documented in ADR (allow-lists for kwarg-driven UPDATE; _SAFE_IDENT regex; int-coerce + clamp for DATETIME days; `# safe:` rationale comments on unavoidable f-string .execute() sites)
+last_verified: "2026-04-20"  # re-reviewed for bootstrap mirror enforcement (#218) — pattern rules unchanged; src/bootstrap.ts gains MIRROR-IGNORE markers wrapping logger divergence; new `# MIRROR-IGNORE-START / MIRROR-IGNORE-END` convention documented in ADR for any future intentionally-divergent mirrored files
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"

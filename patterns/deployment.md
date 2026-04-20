@@ -3,7 +3,7 @@ governs:
   - src/
   - setup/
   - packages/
-last_verified: "2026-04-20"  # re-reviewed for process.exit ban (PR #7/10) — deploy rules unchanged; agent-runner index.ts converts 2 process.exit(1) sites to throws (bootstrap harness now handles structured exit), no dist/ shape change
+last_verified: "2026-04-20"  # re-reviewed for bootstrap mirror enforcement (#218) — deploy rules unchanged; src/bootstrap.ts and container/agent-runner/src/bootstrap.ts now have MIRROR-IGNORE markers around logger divergence; mechanical drift check via `drift_check.py --bootstrap-mirror` (also in --all)
 test_tasks:
   - "Deploy a hotfix to a running service and restart it after rebuilding dist/"
   - "Rebuild the WhatsApp MCP package and pick up the change live"
