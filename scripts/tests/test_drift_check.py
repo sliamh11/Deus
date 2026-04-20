@@ -854,3 +854,132 @@ class TestCheckIndexCompleteness:
         drift_check.check_all(tmp_path)
         out = capsys.readouterr().out
         assert "index completeness" in out.lower()
+
+
+class TestBootstrapMirror:
+    """Tests for `check_bootstrap_mirror` — issue #218."""
+
+    SRC_TEMPLATE = """\
+/**
+ * Header comment for src copy.
+ */
+
+// MIRROR-IGNORE-START -- src uses pino
+import { logger } from './logger.js';
+// MIRROR-IGNORE-END
+
+export interface BootstrapOptions {
+  readonly name: string;
+}
+
+export function bootstrap(opts: BootstrapOptions): void {
+  // MIRROR-IGNORE-START -- logger call
+  logger.info(opts.name);
+  // MIRROR-IGNORE-END
+  process.exit(0);
+}
+"""
+
+    CONTAINER_TEMPLATE = """\
+/**
+ * Different header for container copy.
+ */
+
+// MIRROR-IGNORE-START -- container has no pino
+// MIRROR-IGNORE-END
+
+export interface BootstrapOptions {
+  readonly name: string;
+}
+
+export function bootstrap(opts: BootstrapOptions): void {
+  // MIRROR-IGNORE-START -- console.error call instead
+  console.error(opts.name);
+  // MIRROR-IGNORE-END
+  process.exit(0);
+}
+"""
+
+    def _build_pair(self, tmp_path: Path, src_text: str, container_text: str) -> None:
+        (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "container" / "agent-runner" / "src").mkdir(
+            parents=True, exist_ok=True
+        )
+        (tmp_path / "src" / "bootstrap.ts").write_text(src_text)
+        (tmp_path / "container" / "agent-runner" / "src" / "bootstrap.ts").write_text(
+            container_text
+        )
+
+    def test_aligned_pair_passes(self, tmp_path, capsys):
+        self._build_pair(tmp_path, self.SRC_TEMPLATE, self.CONTAINER_TEMPLATE)
+        rc = drift_check.check_bootstrap_mirror(tmp_path)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "aligned" in out.lower()
+
+    def test_signature_drift_fails(self, tmp_path, capsys):
+        # Mutate src to add a parameter; container stays single-arg.
+        mutated = self.SRC_TEMPLATE.replace(
+            "bootstrap(opts: BootstrapOptions): void {",
+            "bootstrap(opts: BootstrapOptions, extra: number): void {",
+        )
+        self._build_pair(tmp_path, mutated, self.CONTAINER_TEMPLATE)
+        rc = drift_check.check_bootstrap_mirror(tmp_path)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "drift" in out.lower()
+        assert "extra: number" in out  # diff body shows the offending line
+
+    def test_extra_function_drift_fails(self, tmp_path):
+        # Insert an entire helper function into the container copy outside
+        # any MIRROR-IGNORE block — should be flagged as drift.
+        mutated = self.CONTAINER_TEMPLATE.replace(
+            "process.exit(0);\n}\n",
+            "process.exit(0);\n}\n\nexport function extra(): void { }\n",
+        )
+        self._build_pair(tmp_path, self.SRC_TEMPLATE, mutated)
+        rc = drift_check.check_bootstrap_mirror(tmp_path)
+        assert rc == 1
+
+    def test_logger_only_diff_inside_ignore_block_passes(self, tmp_path):
+        # Different content inside MIRROR-IGNORE blocks must NOT trip the
+        # check — that's the whole point of the markers.
+        ctn_with_extra_logger = self.CONTAINER_TEMPLATE.replace(
+            "console.error(opts.name);",
+            "console.error('[' + opts.name + ']: ready'); console.error('boot done');",
+        )
+        self._build_pair(tmp_path, self.SRC_TEMPLATE, ctn_with_extra_logger)
+        rc = drift_check.check_bootstrap_mirror(tmp_path)
+        assert rc == 0
+
+    def test_jsdoc_mention_of_marker_keyword_does_not_trip(self, tmp_path):
+        # File header that documents the marker convention must not be
+        # parsed as an actual marker — JSDoc state takes precedence.
+        src_with_doc = self.SRC_TEMPLATE.replace(
+            "Header comment for src copy.",
+            "Header copy. Wrap divergent code in MIRROR-IGNORE-START / MIRROR-IGNORE-END.",
+        )
+        ctn_with_doc = self.CONTAINER_TEMPLATE.replace(
+            "Different header for container copy.",
+            "Container header. Wrap divergent code in MIRROR-IGNORE-START / MIRROR-IGNORE-END.",
+        )
+        self._build_pair(tmp_path, src_with_doc, ctn_with_doc)
+        rc = drift_check.check_bootstrap_mirror(tmp_path)
+        assert rc == 0
+
+    def test_missing_file_returns_one(self, tmp_path, capsys):
+        # Only one of the two files exists — must fail loudly.
+        (tmp_path / "src").mkdir(parents=True)
+        (tmp_path / "src" / "bootstrap.ts").write_text(self.SRC_TEMPLATE)
+        rc = drift_check.check_bootstrap_mirror(tmp_path)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "missing" in out.lower()
+
+    def test_real_repo_files_align(self):
+        # Sanity check: the actual files in the repo must pass at all times.
+        # If this test breaks, somebody mutated one bootstrap copy without
+        # mirroring the change to the other (or without a MIRROR-IGNORE wrap).
+        repo_root = Path(__file__).resolve().parents[2]
+        rc = drift_check.check_bootstrap_mirror(repo_root)
+        assert rc == 0, "Real bootstrap.ts copies have drifted out of alignment"
