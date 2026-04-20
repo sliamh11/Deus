@@ -4,6 +4,37 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0](https://github.com/sliamh11/Deus/compare/v1.8.0...v1.9.0) (2026-04-20)
+
+
+### Features
+
+* **agent-runner:** token-efficiency instrumentation (logging only, no behavior change) ([#200](https://github.com/sliamh11/Deus/issues/200)) ([385e4da](https://github.com/sliamh11/Deus/commit/385e4da0916a42c7c33553a864e38f6e308c49e8))
+* **agent-runner:** token-efficiency tier 1 — prefix unpoisoning + tool-size logging ([#199](https://github.com/sliamh11/Deus/issues/199)) ([7609bce](https://github.com/sliamh11/Deus/commit/7609bce3588800dddec4e628a9e95fc5da64b014))
+* **async:** boundary helpers for fire-and-forget, timeout, fanout (PR [#4](https://github.com/sliamh11/Deus/issues/4)/10) ([#216](https://github.com/sliamh11/Deus/issues/216)) ([6595830](https://github.com/sliamh11/Deus/commit/65958302d12933c0b5003c14e495f62828505076))
+* **auth:** launchd-driven OAuth token auto-refresh ([#211](https://github.com/sliamh11/Deus/issues/211)) ([d788295](https://github.com/sliamh11/Deus/commit/d7882959e4fff3326f5570e35296e02a87819844))
+* **bootstrap:** process-level entry-point harness (PR [#2](https://github.com/sliamh11/Deus/issues/2)/10) ([#215](https://github.com/sliamh11/Deus/issues/215)) ([5b10110](https://github.com/sliamh11/Deus/commit/5b101103eca58b9ba8e6fb42112c0ba644804263))
+* **bootstrap:** wire process harness into entry points (PR [#3](https://github.com/sliamh11/Deus/issues/3)/10) ([#219](https://github.com/sliamh11/Deus/issues/219)) ([6187b49](https://github.com/sliamh11/Deus/commit/6187b4909d3b06028e66e01266ff017079198c3f))
+* **cli:** add `deus web` subcommand for Claude-in-Chrome ([#209](https://github.com/sliamh11/Deus/issues/209)) ([988d3c6](https://github.com/sliamh11/Deus/commit/988d3c6eaa61021ad40703fdb304b214b789c1c3))
+* **demo:** interactive memory-map visualization ([#210](https://github.com/sliamh11/Deus/issues/210)) ([3745a81](https://github.com/sliamh11/Deus/commit/3745a8124e167a16bc7462af4b68d3f97ed05603))
+* **errors:** introduce four-class error taxonomy (PR [#1](https://github.com/sliamh11/Deus/issues/1)/10) ([#214](https://github.com/sliamh11/Deus/issues/214)) ([09b9c31](https://github.com/sliamh11/Deus/commit/09b9c312a1d0229595bb7e13d59a74721492b485))
+* **scripts:** token-efficiency analyzer (container + CLI) ([#201](https://github.com/sliamh11/Deus/issues/201)) ([abecf2c](https://github.com/sliamh11/Deus/commit/abecf2cf6823fbe91beec591d83aecd0617b3e12))
+* **skills:** harden compress + resume against edge cases ([#208](https://github.com/sliamh11/Deus/issues/208)) ([5c13deb](https://github.com/sliamh11/Deus/commit/5c13deb9d6dcc3a0b9ba6a7cb663a02f7103791b))
+* **token-bench:** ci gate for CLAUDE.md keyword coverage ([#207](https://github.com/sliamh11/Deus/issues/207)) ([a8c9908](https://github.com/sliamh11/Deus/commit/a8c99085f260563fba35a7ee4d9ae8d8d348b6b1))
+* **wardens:** add plan-reviewer + code-reviewer review agents ([#220](https://github.com/sliamh11/Deus/issues/220)) ([e85bb34](https://github.com/sliamh11/Deus/commit/e85bb34f491b713cb2b9d3ae6802e5ac3b4bd6f0))
+
+
+### Bug Fixes
+
+* **async:** migrate 12 floating-promise HIGHs (PR [#5](https://github.com/sliamh11/Deus/issues/5)/10) ([#221](https://github.com/sliamh11/Deus/issues/221)) ([c79bcda](https://github.com/sliamh11/Deus/commit/c79bcdabac9c8970ab4e7474b0416fafb650c4b1))
+* **errors:** structured attribution on 9 connect sites + 10 false-positives documented (PR [#6](https://github.com/sliamh11/Deus/issues/6)/10) ([#223](https://github.com/sliamh11/Deus/issues/223)) ([7a04005](https://github.com/sliamh11/Deus/commit/7a04005d73ff5ef8f6abdeb35e32c0d76cac48d7))
+* **evolution:** harden 13 SQL f-string sites with allow-list + regex + ADR (PR [#9](https://github.com/sliamh11/Deus/issues/9)/10) ([#226](https://github.com/sliamh11/Deus/issues/226)) ([d35750b](https://github.com/sliamh11/Deus/commit/d35750b2b568299920d8c7b73752a714990c5b02))
+* **lint:** ban process.exit in long-lived libraries + convert pre-bootstrap exits (PR [#7](https://github.com/sliamh11/Deus/issues/7)/10) ([#224](https://github.com/sliamh11/Deus/issues/224)) ([9dc3f56](https://github.com/sliamh11/Deus/commit/9dc3f56df37e0212f34fcb0d618bbe917b728dcf))
+* **memory-indexer:** cascade Gemini models on 429 for all gen sites ([#213](https://github.com/sliamh11/Deus/issues/213)) ([ed3ecd4](https://github.com/sliamh11/Deus/commit/ed3ecd4772a02982aac35bf6f672f5d6aa3f2359))
+* **scripts:** datetime-TZ policy + migrate 25 naive datetime.now() sites (PR [#8](https://github.com/sliamh11/Deus/issues/8)/10) ([#225](https://github.com/sliamh11/Deus/issues/225)) ([69b84eb](https://github.com/sliamh11/Deus/commit/69b84eb455d72c97d4fd0281aae780ad2e2f9730))
+* **scripts:** two NameError bugs in memory_indexer + review_benchmark ([#217](https://github.com/sliamh11/Deus/issues/217)) ([ff736f4](https://github.com/sliamh11/Deus/commit/ff736f46e39999a12dcee76a40a41aa7abd03392))
+* **test:** isolate credential-proxy OAuth tests from host keychain ([#212](https://github.com/sliamh11/Deus/issues/212)) ([aeddd53](https://github.com/sliamh11/Deus/commit/aeddd53e1a9f802780dfc5822c8f848b5d57974b))
+
 ## [1.8.0](https://github.com/sliamh11/Deus/compare/v1.7.0...v1.8.0) (2026-04-18)
 
 
