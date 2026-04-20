@@ -188,6 +188,19 @@ TrueCourse flagged 13 `security/deterministic/sql-injection` HIGHs in `evolution
 
 PR #11 audited the remaining 10 non-evolution `sql-injection` HIGHs in `scripts/bench/store.py`, `scripts/memory_indexer.py`, and `scripts/memory_tree.py`; all confirmed structural-safe (vec0 dims from module int constants, ALTER TABLE col/coltype from literal tuple-lists, WHERE clauses joined from local literal-string fragments, DELETE FROM iterating a hard-coded schema list). Annotated with `# safe: <reason>` per the PR #9 convention. SQL injection backlog from the TrueCourse 2026-04-19 scan is closed.
 
+### Issue #218: bootstrap mirror discipline
+
+PR #2 (#215) shipped `src/bootstrap.ts`. PR #3 (#219) wired it into the agent-runner entry point — but `container/agent-runner/` has its own `tsconfig.json` and `node_modules` and cannot import from `src/`. The harness was duplicated as `container/agent-runner/src/bootstrap.ts`, with the only divergence being the logger: pino + `FatalError` discrimination in the main process, plain `console.error` in the container (which has no pino dep). Issue #218 was opened to track extracting both copies into a shared `packages/bootstrap` workspace.
+
+After investigation, **extraction was rejected** in favor of mechanical drift enforcement:
+
+1. **Extraction needs a third logging abstraction.** The container copy was deliberately stripped of pino + `FatalError` to keep the runtime image small and avoid a `src/`-side dep. Sharing one harness requires either (a) the container takes on pino, (b) `src/` downgrades to `console.error` (loses the `FatalError` → `fatal` severity discrimination), or (c) introduce a `LogAdapter` interface and inject the logger. Option (c) is a bigger design call than the duplication itself.
+2. **No workspace tooling.** The repo has no `workspaces` field in root `package.json`. Channel packages use `file:../mcp-channel-core` pseudo-deps that require manual pre-builds. There is no `src/` → `packages/` consumer relationship anywhere today; making `src/bootstrap.ts` consume `packages/bootstrap` would be the first such direction in the repo.
+
+The actual risk — silent drift between the two copies — is closed mechanically by `python3 scripts/drift_check.py --bootstrap-mirror` (also runs as part of `--all` in CI). The check normalizes both files (strips JSDoc, single-line comments, blank lines, and `// MIRROR-IGNORE-START / MIRROR-IGNORE-END` blocks) and asserts byte-equal structural shape. Deliberately divergent regions — imports, logger call sites, and the `console.error` helper — are wrapped in `MIRROR-IGNORE` markers; everything else must mirror exactly. Adding a parameter, removing a function, or changing the control flow on one side now fails CI until the other side mirrors the change.
+
+If a future PR resolves the logger divergence (e.g., a `LogAdapter` shipped in another initiative, or the container gains pino), the extraction becomes straightforward and the mirror check can be retired. Until then, two files + one mechanical check is the proportionate trade-off.
+
 ## For future contributors
 
 When you catch or throw an error in Deus:

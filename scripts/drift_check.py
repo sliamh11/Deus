@@ -1069,16 +1069,145 @@ def check_all(project_root: Path, base_ref: str | None = None) -> int:
     tt_rc = check_test_tasks(project_root)
     print("\n=== shadow (private overrides) ===")
     shadow_rc = check_shadow(project_root)
+    print("\n=== bootstrap mirror ===")
+    bm_rc = check_bootstrap_mirror(project_root)
     print("\n=== coverage (informational) ===")
     cov_rc = check_coverage(project_root)
 
-    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, cov_rc)
+    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, bm_rc, cov_rc)
     print()
     if worst == 0:
         print("ALL CHECKS PASSED")
     else:
         print(f"FAILED (worst exit code: {worst})")
     return worst
+
+
+# Two copies of the bootstrap harness exist by design — `src/bootstrap.ts`
+# logs through pino+FatalError, `container/agent-runner/src/bootstrap.ts`
+# logs through console.error (no pino dep). Issue #218 considered extracting
+# them into a shared package and rejected it: the only divergence is the
+# logger, which would require a third LogAdapter abstraction that's a bigger
+# design call than the duplication is worth. Instead we mechanically enforce
+# structural mirror with this check.
+_BOOTSTRAP_MIRROR_PAIR = (
+    "src/bootstrap.ts",
+    "container/agent-runner/src/bootstrap.ts",
+)
+
+
+def _strip_for_mirror(text: str) -> str:
+    """Normalize a bootstrap.ts file for structural diff against its mirror.
+
+    Strips:
+      1. Lines between `// MIRROR-IGNORE-START` and `// MIRROR-IGNORE-END`
+         (inclusive). These mark the deliberately-divergent sections —
+         logger calls, helper functions for logging, and supporting imports.
+      2. JSDoc blocks (`/** ... */`).
+      3. Single-line `// ...` comments (NOT URLs in code, since they'd be
+         in string literals — bootstrap.ts has no URL strings).
+      4. Blank lines.
+      5. Leading/trailing whitespace on each remaining line.
+
+    The result is a structure-only view: function signatures, control flow,
+    interface definitions, and the harness skeleton. Two mirror copies must
+    produce byte-identical normalized text.
+    """
+    lines = text.splitlines()
+    stripped: list[str] = []
+
+    in_jsdoc = False
+    in_mirror_ignore = False
+    for line in lines:
+        s = line.strip()
+
+        # JSDoc state first — text inside a JSDoc block can mention the
+        # MIRROR-IGNORE keywords (e.g., the file header documenting the
+        # marker convention), and those mentions must not be mistaken for
+        # actual markers.
+        if in_jsdoc:
+            if "*/" in s:
+                in_jsdoc = False
+            continue
+        if s.startswith("/**"):
+            # Handle single-line JSDoc like `/** foo */`.
+            if s.endswith("*/") and len(s) > 3:
+                continue
+            in_jsdoc = True
+            continue
+
+        # Mirror-ignore markers (only outside JSDoc).
+        if not in_mirror_ignore and (
+            s == "// MIRROR-IGNORE-START"
+            or s.startswith("// MIRROR-IGNORE-START ")
+        ):
+            in_mirror_ignore = True
+            continue
+        if in_mirror_ignore:
+            if s == "// MIRROR-IGNORE-END" or s.startswith("// MIRROR-IGNORE-END "):
+                in_mirror_ignore = False
+            continue
+
+        # Single-line comment lines
+        if s.startswith("//"):
+            continue
+        if not s:
+            continue
+
+        stripped.append(s)
+
+    return "\n".join(stripped)
+
+
+def check_bootstrap_mirror(project_root: Path) -> int:
+    """Verify `src/bootstrap.ts` and `container/agent-runner/src/bootstrap.ts`
+    stay structurally aligned. See issue #218.
+
+    Both files must be structurally identical after stripping JSDoc, single-
+    line comments, blank lines, and the deliberately divergent regions
+    bracketed by `// MIRROR-IGNORE-START` / `// MIRROR-IGNORE-END`.
+
+    Returns 0 on match, 1 on diff or missing file.
+    """
+    paths = [project_root / p for p in _BOOTSTRAP_MIRROR_PAIR]
+    for p in paths:
+        if not p.exists():
+            print(f"MISSING: {p.relative_to(project_root)}")
+            return 1
+
+    normalized = [_strip_for_mirror(p.read_text()) for p in paths]
+    if normalized[0] == normalized[1]:
+        print(
+            f"Both bootstrap copies aligned "
+            f"({len(normalized[0].splitlines())} structural lines each)."
+        )
+        return 0
+
+    # Show a unified diff so the failure is actionable.
+    import difflib
+    diff = list(
+        difflib.unified_diff(
+            normalized[0].splitlines(),
+            normalized[1].splitlines(),
+            fromfile=_BOOTSTRAP_MIRROR_PAIR[0] + " (normalized)",
+            tofile=_BOOTSTRAP_MIRROR_PAIR[1] + " (normalized)",
+            lineterm="",
+        )
+    )
+    print("BOOTSTRAP MIRROR DRIFT — structural shape diverges between:")
+    print(f"  {_BOOTSTRAP_MIRROR_PAIR[0]}")
+    print(f"  {_BOOTSTRAP_MIRROR_PAIR[1]}")
+    print()
+    for line in diff:
+        print(line)
+    print()
+    print(
+        "FIX: apply the same change to both files. The two harnesses must "
+        "stay behaviorally aligned — see issue #218 for why they live in "
+        "two places. Wrap deliberately-divergent regions (logger calls and "
+        "their helpers) in `// MIRROR-IGNORE-START` / `// MIRROR-IGNORE-END`."
+    )
+    return 1
 
 
 def check_shadow(project_root: Path) -> int:
@@ -1319,6 +1448,12 @@ if __name__ == "__main__":
         help="Check src/private/ files shadow public equivalents with correct /tmp/ symlinks",
     )
     parser.add_argument(
+        "--bootstrap-mirror",
+        action="store_true",
+        dest="bootstrap_mirror",
+        help="Verify src/bootstrap.ts and container/agent-runner/src/bootstrap.ts stay structurally aligned (issue #218)",
+    )
+    parser.add_argument(
         "--indexes",
         action="store_true",
         help="Check every indexed directory: index file references match on-disk leaves (orphans + dangling)",
@@ -1333,6 +1468,8 @@ if __name__ == "__main__":
 
     if args.shadow:
         sys.exit(check_shadow(PROJECT_ROOT))
+    elif args.bootstrap_mirror:
+        sys.exit(check_bootstrap_mirror(PROJECT_ROOT))
     elif args.indexes:
         sys.exit(check_index_completeness(PROJECT_ROOT))
     elif args.contradictions is not None:

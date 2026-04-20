@@ -17,8 +17,10 @@
  * so attribution is correct regardless of import order.
  */
 
+// MIRROR-IGNORE-START -- intentional logger divergence: src/ uses pino + FatalError; container/agent-runner/src/bootstrap.ts uses console.error (no pino dep)
 import { FatalError, isDeusError } from './errors/index.js';
 import { logger } from './logger.js';
+// MIRROR-IGNORE-END
 
 export interface BootstrapOptions {
   /**
@@ -62,12 +64,14 @@ export function bootstrap(
   Promise.resolve()
     .then(() => mainFn())
     .catch((err: unknown) => {
+      // MIRROR-IGNORE-START -- intentional logger divergence (see file header)
       const severity = err instanceof FatalError ? 'fatal' : 'error';
       logger[severity](
         { err: serializeError(err), entry: name },
         `${name} main() failed`,
       );
       process.exit(exitCode);
+      // MIRROR-IGNORE-END
     });
 }
 
@@ -79,22 +83,27 @@ function installGlobalHandlers(
   globalHandlersInstalled = true;
 
   process.on('uncaughtException', (err: Error) => {
+    // MIRROR-IGNORE-START -- intentional logger divergence (see file header)
     logger.fatal(
       { err: serializeError(err), entry: name },
       'uncaughtException',
     );
     process.exit(1);
+    // MIRROR-IGNORE-END
   });
 
   process.on('unhandledRejection', (reason: unknown) => {
+    // MIRROR-IGNORE-START -- intentional logger divergence (see file header)
     logger.error(
       { err: serializeError(reason), entry: name },
       'unhandledRejection',
     );
     if (exitOnUnhandledRejection) process.exit(1);
+    // MIRROR-IGNORE-END
   });
 }
 
+// MIRROR-IGNORE-START -- serializeError body diverges: src/ checks isDeusError; container/ has no DeusError dep so falls through to plain Error handling
 function serializeError(err: unknown): unknown {
   if (isDeusError(err)) return err.toJSON();
   if (err instanceof Error) {
@@ -102,6 +111,7 @@ function serializeError(err: unknown): unknown {
   }
   return err;
 }
+// MIRROR-IGNORE-END
 
 /**
  * Test-only: reset the install-once guard so `bootstrap()` can be exercised
