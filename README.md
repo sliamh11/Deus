@@ -15,16 +15,16 @@ A personal AI assistant that lives in your messaging apps, remembers everything,
 ## Features
 
 1. **Memory** — Remembers everything across all your conversations. Ask it something you discussed weeks ago and it'll recall it precisely, using semantic search plus a hierarchical memory tree that makes recall work even on a cold first turn, without you having to name the topic.
-2. **Messaging apps** — WhatsApp, Telegram, Slack, Discord, and Gmail — each a standalone MCP package you install as needed. Switch between them freely — memory and context follow you everywhere.
-3. **Voice** — Send a voice message and it transcribes and responds. Runs locally on Apple Silicon — nothing leaves your machine.
-4. **Vision** — Send a photo or screenshot and it sees and responds to it.
-5. **Calendar** — Reads and creates Google Calendar events. Ask what's on your schedule, or tell it to book something.
-6. **Web & video** — Fetch YouTube transcripts, summarize videos, or browse the web — all from a chat message.
+2. **Sandboxed & secure** — Every conversation runs in an isolated Linux container. The AI can't access your host system beyond what you explicitly allow.
+3. **Self-improvement** — Scores its own responses over time and learns from both failures and successes. Low-scoring responses generate corrective reflections; high-scoring ones extract positive patterns. Uses DSPy to optimize its own system prompt per domain once enough samples accumulate.
+4. **Domain detection** — Automatically tags conversations by topic (marketing, engineering, study, writing, strategy) so the self-improvement loop can learn per-domain patterns and optimize accordingly.
+5. **External projects** — Run `deus` in any project directory to get a coding agent with your full Deus memory and preferences. Or register a project and work on it through your messaging apps — Deus mounts it into an isolated container, auto-detects the tech stack, and shadows sensitive files automatically.
+6. **Messaging apps** — WhatsApp, Telegram, Slack, Discord, and Gmail — each a standalone MCP package you install as needed. Switch between them freely — memory and context follow you everywhere.
 7. **Scheduled tasks** — Set it to do things automatically on a schedule (daily summaries, weekly recaps, reminders).
-8. **Self-improvement** — Scores its own responses over time and learns from both failures and successes. Low-scoring responses generate corrective reflections; high-scoring ones extract positive patterns. Uses DSPy to optimize its own system prompt per domain once enough samples accumulate.
-9. **Domain detection** — Automatically tags conversations by topic (marketing, engineering, study, writing, strategy) so the self-improvement loop can learn per-domain patterns and optimize accordingly.
-10. **Sandboxed & secure** — Every conversation runs in an isolated Linux container. The AI can't access your host system beyond what you explicitly allow.
-11. **External projects** — Run `deus` in any project directory to get a coding agent with your full Deus memory and preferences. Or register a project and work on it through your messaging apps — Deus mounts it into an isolated container, auto-detects the tech stack, and shadows sensitive files automatically.
+8. **Voice** — Send a voice message and it transcribes and responds. Runs locally on Apple Silicon — nothing leaves your machine.
+9. **Vision** — Send a photo or screenshot and it sees and responds to it.
+10. **Calendar** — Reads and creates Google Calendar events. Ask what's on your schedule, or tell it to book something.
+11. **Web & video** — Fetch YouTube transcripts, summarize videos, or browse the web — all from a chat message.
 
 ---
 
@@ -163,6 +163,19 @@ Why it matters:
 
 Gated by `DEUS_MEMORY_TREE=1` so it runs alongside flat search. Embeddings use local `embeddinggemma` (via Ollama).
 
+#### What cold-start recall looks like
+
+Three weeks ago, in a conversation about infrastructure:
+
+> **You:** Switched the analytics pipeline to Kafka to handle the backfill volume — Redis streams were choking above ~5k/s.
+
+Today, in a different conversation about data migration:
+
+> **You:** @Deus what's the plan for the historical import?
+> **Deus:** You moved the pipeline to Kafka three weeks ago specifically to handle backfill volume. The historical import should flow through the same path — here's the decision note with the throughput numbers.
+
+You never said "Kafka" or "analytics." The tree walked from `MEMORY_TREE.md` down to the infra branch, matched the decision note on its own terms, then hopped to it via `see_also` from the data-migration branch the current question lives in. Flat semantic search would miss this — your question doesn't share vocabulary with the answer.
+
 ### Retrieval Benchmarks
 
 Evaluated on [LongMemEval-S](https://arxiv.org/abs/2410.10813) (ICLR 2025) — a needle-in-a-haystack benchmark with multi-session reasoning across 500+ turn histories. Numbers below are for the flat hybrid retriever; memory-tree is benchmarked separately on identity/cross-branch queries.
@@ -219,6 +232,19 @@ Commands require admin access (sent from the owner account, or from any sender i
 | **Modular** | Components connect and disconnect cleanly. Adding or removing a channel or integration shouldn't touch unrelated code. |
 | **Token-efficient** | Minimize redundant API calls. Cache aggressively. Prefer local models (Ollama) for workloads where quality allows it. Tool lists are filtered per-query — Deus uses ~600 fewer tool tokens than vanilla Claude Code on personal-assistant queries. |
 | **Secure by default** | Credentials never appear in code or git history. Use .env files + .gitignore. Designed as if the repo is already public. |
+
+---
+
+## Tradeoffs
+
+Everything in Deus is a choice with a cost attached. The honest version:
+
+- **Container per group** — strong isolation and clean per-conversation state; you pay a cold-start cost the first time a group wakes up after being idle, and the container runtime (Docker or Apple Container) is a hard prerequisite.
+- **DSPy per-domain optimization** — prompt tuning that actually converges on your usage patterns instead of staying generic; it needs a few dozen scored interactions per domain before it has enough signal to fire.
+- **Local-first memory and judging** — no API bill for retrieval or scoring, no cloud sync, no data leaves the machine; in exchange you host Ollama and a few GB of model weights locally.
+- **Hierarchical memory tree** — cold-start recall across branches without you naming the topic; each new vault file triggers a local embedding (free via Ollama, adds a few hundred ms) and the tree needs a one-time index build on first run.
+- **Claude-only agent** — the Claude Agent SDK is the core and isn't swappable; eval and judge backends are pluggable (Ollama, Gemini, Claude), but the agent itself is Claude today.
+- **Skill-based channels** — each channel is a standalone MCP package you opt into, so a fresh clone has zero channels and zero external surface; in exchange, installing a channel is an explicit step (`/add-whatsapp`, `/add-telegram`, …) rather than an out-of-the-box default.
 
 ---
 
