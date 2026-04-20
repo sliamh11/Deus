@@ -182,8 +182,8 @@ def _extract_pairs(jsonl_path: Path) -> Iterator[dict]:
 
 def _infer_project_name(jsonl_path: Path) -> str:
     """Infer project name from the Claude Code project directory structure."""
-    # Path: ~/.claude/projects/-Users-liam10play-deus/<uuid>.jsonl
-    project_dir = jsonl_path.parent.name  # e.g. "-Users-liam10play-deus"
+    # Path: ~/.claude/projects/-Users-<user>-<project>/<uuid>.jsonl
+    project_dir = jsonl_path.parent.name  # e.g. "-Users-<user>-<project>"
     # Convert back to readable name: take last segment
     parts = project_dir.strip("-").split("-")
     return parts[-1] if parts else "unknown"

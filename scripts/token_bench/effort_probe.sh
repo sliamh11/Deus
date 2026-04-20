@@ -12,7 +12,7 @@ set -euo pipefail
 effort="${1:?effort (default|low|medium|high)}"
 group="${2:?group (wa|tg)}"
 
-REPO=/Users/liam10play/deus-token-opt
+REPO="${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}"
 
 if [[ "$group" == "wa" ]]; then
   SRC="$REPO/groups/whatsapp_main/CLAUDE.md"

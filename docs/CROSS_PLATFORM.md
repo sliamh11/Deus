@@ -94,7 +94,7 @@ function killProcess(pid: number): void {
 ```ts
 // BAD — Unix absolute paths
 fs.readFileSync('/proc/version');        // Linux only
-const home = '/Users/liam/deus';        // macOS only
+const home = '/Users/alice/deus';       // macOS only
 const nullDev = '/dev/null';            // Unix only
 
 // GOOD

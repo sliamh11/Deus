@@ -36,7 +36,7 @@ Usage:
 
     # Override CLI transcript dir (useful when running from a worktree):
     python3 scripts/analyze_token_efficiency.py \\
-        --cli-project-dir ~/.claude/projects/-Users-liam10play-deus
+        --cli-project-dir ~/.claude/projects/-Users-<username>-<project>
 
     # JSON output for scripting:
     python3 scripts/analyze_token_efficiency.py --json

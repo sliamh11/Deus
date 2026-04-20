@@ -30,7 +30,7 @@ Claude Code already provides per-project memory isolation. When running in any d
 - **Three scopes**: user-level (`~/.claude/CLAUDE.md`), project-level (repo root), folder-level (nested)
 - **No cross-project leakage** — sessions from different projects never mix
 
-**Key insight:** When `deus` runs in `~/projects/foo`, Claude Code automatically creates isolated memory at `~/.claude/projects/-Users-liam10play-projects-foo/memory/`. This native isolation is our starting point — Deus doesn't need to build a separate memory system.
+**Key insight:** When `deus` runs in `~/projects/foo`, Claude Code automatically creates isolated memory at `~/.claude/projects/-Users-<user>-projects-<name>/memory/`. This native isolation is our starting point — Deus doesn't need to build a separate memory system.
 
 ### Cursor
 
@@ -218,7 +218,7 @@ Project settings stored at `~/.config/deus/projects/<path-hash>.json`:
 
 ```json
 {
-  "path": "/Users/liam/projects/client-api",
+  "path": "/Users/alice/projects/client-api",
   "name": "client-api",
   "memory_level": "standard",
   "save_summaries": true,

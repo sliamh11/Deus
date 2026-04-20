@@ -253,11 +253,11 @@ class TestDeterministicId:
 
 class TestInferProjectName:
     def test_deus_project(self, tmp_path):
-        fpath = tmp_path / "-Users-liam10play-deus" / "abc.jsonl"
+        fpath = tmp_path / "-Users-testuser-deus" / "abc.jsonl"
         fpath.parent.mkdir(parents=True)
         assert _infer_project_name(fpath) == "deus"
 
     def test_nested_path(self, tmp_path):
-        fpath = tmp_path / "-Users-liam10play-Dev-myapp" / "abc.jsonl"
+        fpath = tmp_path / "-Users-testuser-Dev-myapp" / "abc.jsonl"
         fpath.parent.mkdir(parents=True)
         assert _infer_project_name(fpath) == "myapp"

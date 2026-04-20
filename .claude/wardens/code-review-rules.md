@@ -79,7 +79,7 @@
 ## no-hardcoded-personal
 **Severity:** blocking
 **Applies when:** Diff touches public-repo files.
-**Check:** Grep the diff for hardcoded personal values — usernames (e.g. `liam10play`), emails, government IDs, Hebrew names, absolute paths under `/Users/...`, personal project IDs.
+**Check:** Grep the diff for hardcoded personal values — macOS usernames (e.g. a literal like `<user>`), emails, government IDs, Hebrew names, absolute paths under `/Users/...`, personal project IDs.
 **Rule:** Public-repo code must be user-agnostic in reality, not just in intent.
 **Cite:** `feedback_public_repo_generic`
 

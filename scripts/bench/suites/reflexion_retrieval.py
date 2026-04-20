@@ -23,11 +23,6 @@ Fixture format: scripts/bench/fixtures/reflexion_retrieval.json
     ...
   ]
 
-# TODO: expand to 20 cases — sample additional reflections with:
-#   python3 -c "import sqlite3; c=sqlite3.connect('/Users/liam10play/.deus/evolution.db').cursor(); \\
-#     c.execute('SELECT content FROM reflections WHERE archived_at IS NULL LIMIT 20'); \\
-#     [print(r[0][:120]) for r in c.fetchall()]"
-
 Missing vault / import errors are handled gracefully: the suite returns score
 0.0 with an ``error`` key in meta rather than crashing.
 """

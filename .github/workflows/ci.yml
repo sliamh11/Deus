@@ -20,6 +20,23 @@ jobs:
           python-version: "3.12"
       - run: npm ci
 
+      - name: No personal identifiers in diff
+        # Pattern is stored as a repo secret to avoid committing the values
+        # themselves into this file. Excludes this workflow file from the scan
+        # so editing the gate doesn't trip it.
+        env:
+          PATTERN: ${{ secrets.PERSONAL_ID_PATTERN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${PATTERN:-}" ]; then
+            echo "::warning::PERSONAL_ID_PATTERN secret not set; skipping check"
+            exit 0
+          fi
+          if git diff origin/${{ github.base_ref }}...HEAD -- ':(exclude).github/workflows/ci.yml' | grep -qE "${PATTERN}"; then
+            echo "::error::Personal identifiers found in diff — public-repo code must be user-agnostic (feedback_public_repo_generic)"
+            exit 1
+          fi
+
       - name: Lint
         run: npm run lint
 
