@@ -100,3 +100,16 @@
 - "orphan file" → `grep -r '<filename>' .` returns no callers across `.ts`, `.sh`, `.json`, `.py`, launchd plists, `package.json` scripts.
 - "drift between two paths" → grep for code that writes to the derived path (`cpSync`, `shutil.copytree`, `fs.mkdirSync` + write). If a writer exists, the divergence is a cache, not a bug — plan must address why the cache is wrong, not treat it as rot.
 **Cite:** Slice A postmortem (2026-04-20 — the agent-runner-src cache was wrongly flagged as tracked drift); system-prompt "Trust but verify."
+
+## means-end-consistency
+**Severity:** blocking
+**Applies when:** Plan's stated purpose is to remove, block, protect, redact, or prevent X — where X is personal data, secrets, deprecated APIs, vulnerable patterns, unsafe inputs, or any other value/pattern the plan aims to eliminate from the committed repo.
+**Check:** Does the implementation itself contain, expose, enable, or reproduce X in another form?
+Common traps:
+- "Scrub personal values from repo" — but the CI pattern matching those values is committed inline in a workflow file.
+- "Redact secrets from logs" — but the redactor logs them before masking.
+- "Block deprecated API" — but the blocking rule's usage example calls the API.
+- "Allowlist safe inputs" — but the allowlist itself contains an unsafe value.
+- "Delete file X" — but a new file references X's old path.
+**Rule:** The fix must not reproduce the problem it solves. For patterns/regexes over sensitive values, source them from a GitHub Actions secret, an external gitignored file, a hash-based match, or other indirection — never commit the values inline. Run the fix through the same check it creates: if the implementation would trigger its own gate, revise.
+**Cite:** Slice C round 3 postmortem (2026-04-20 — CI gate was going to hardcode the very personal IDs it was designed to block).
