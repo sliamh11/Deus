@@ -74,8 +74,8 @@ def dispatch(data: dict) -> str:
     ext_root = _auto_memory_root()
     if ext_root is not None:
         try:
-            abs_path.relative_to(ext_root.resolve())
-            ns_path = mt.EXTERNAL_NAMESPACE + abs_path.name
+            rel_to_ext = abs_path.relative_to(ext_root.resolve())
+            ns_path = mt.EXTERNAL_NAMESPACE + str(rel_to_ext)
             try:
                 db = mt.open_db()
                 status = mt.reembed_file(mt.resolve_vault_path(), ns_path, db)

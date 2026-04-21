@@ -555,7 +555,7 @@ class TestWriteIdToFrontmatter:
         mt._write_id_to_frontmatter(p, "new_id")
         content = p.read_text()
         assert "id: existing_id" in content
-        assert "id: new_id" in content  # both present — caller must check first
+        assert "id: new_id" not in content
 
     def test_no_frontmatter(self, tmp_path):
         p = tmp_path / "test.md"
@@ -744,3 +744,92 @@ class TestParseFrontmatterName:
     def test_name_absent(self):
         fm = mt.parse_frontmatter("---\ndescription: Desc\n---\n")
         assert "name" not in fm
+
+
+class TestEmbeddingSource:
+    def test_appends_body(self):
+        content = "---\ndescription: Short desc\n---\nThis is the body with more detail."
+        result = mt.embedding_source("Short desc", content)
+        assert result.startswith("Short desc")
+        assert "body with more detail" in result
+
+    def test_no_body(self):
+        content = "---\ndescription: Short desc\n---\n"
+        result = mt.embedding_source("Short desc", content)
+        assert result == "Short desc"
+
+    def test_truncates_long_body(self):
+        body = " ".join(f"word{i}" for i in range(500))
+        content = f"---\ndescription: Desc\n---\n{body}"
+        result = mt.embedding_source("Desc", content)
+        words_after_dash = result.split(" — ", 1)[1].split()
+        assert len(words_after_dash) == mt.EMBED_BODY_WORDS
+
+
+class TestScoreGapAbstain:
+    """Verify score-gap abstain catches flat distributions."""
+
+    @pytest.fixture
+    def flat_db(self, tmp_db):
+        """DB with nodes that all have nearly identical embeddings (flat scores)."""
+        base_vec = [0.5] * mt.EMBED_DIM
+        for i in range(5):
+            vec = list(base_vec)
+            vec[i] = 0.501 + i * 0.001
+            mt.upsert_node(
+                tmp_db,
+                node_id=f"flat_{i:03d}",
+                path=f"auto-memory/flat_{i}.md",
+                title=f"Flat node {i}",
+                description=f"Generic description {i}",
+                level=0,
+                node_type="feedback",
+                embedding=vec,
+                content_hash_val=f"hash_flat_{i}",
+            )
+        tmp_db.commit()
+        return tmp_db
+
+    def test_flat_distribution_abstains(self, flat_db):
+        # Query vector orthogonal to the flat cluster — produces low, flat scores.
+        query_vec = [0.0] * mt.EMBED_DIM
+        query_vec[mt.EMBED_DIM - 1] = 1.0
+        result = mt.retrieve(
+            flat_db, "anything", k=5,
+            query_vec=query_vec,
+            abstain_threshold=0.01,
+            low_threshold=0.55,
+        )
+        assert result["fell_back"] is True
+        gap_traces = [t for t in result["trace"] if "abstain" in t]
+        assert len(gap_traces) > 0
+
+    def test_spike_distribution_passes(self, tmp_db):
+        # Spike aligned with query; noise vectors orthogonal.
+        spike_vec = [0.0] * mt.EMBED_DIM
+        spike_vec[0] = 1.0
+        query_vec = list(spike_vec)
+        mt.upsert_node(
+            tmp_db, node_id="spike_001", path="auto-memory/spike.md",
+            title="Spike", description="Very relevant",
+            level=0, node_type="feedback",
+            embedding=spike_vec, content_hash_val="spike_h",
+        )
+        for i in range(3):
+            noise = [0.0] * mt.EMBED_DIM
+            noise[i + 1] = 1.0  # orthogonal to query
+            mt.upsert_node(
+                tmp_db, node_id=f"noise_{i:03d}", path=f"auto-memory/noise_{i}.md",
+                title=f"Noise {i}", description=f"Irrelevant {i}",
+                level=0, node_type="feedback",
+                embedding=noise, content_hash_val=f"noise_h_{i}",
+            )
+        tmp_db.commit()
+        result = mt.retrieve(
+            tmp_db, "relevant", k=5,
+            query_vec=query_vec,
+            abstain_threshold=0.30,
+            low_threshold=0.55,
+        )
+        assert result["fell_back"] is False
+        assert result["results"][0]["path"] == "auto-memory/spike.md"

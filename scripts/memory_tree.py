@@ -1210,8 +1210,11 @@ def autofix_tree(db: sqlite3.Connection, vault: Path) -> dict[str, int]:
 # ── External population (auto-memory) ────────────────────────────────────────
 
 def _write_id_to_frontmatter(path: Path, new_id: str) -> None:
-    """Inject `id: <new_id>` into an existing YAML frontmatter block."""
+    """Inject `id: <new_id>` into an existing YAML frontmatter block. No-op if id already present."""
     text = path.read_text(encoding="utf-8", errors="replace")
+    fm = parse_frontmatter(text)
+    if fm.get("id"):
+        return
     m = _FM_RE.match(text)
     if not m:
         return

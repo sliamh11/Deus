@@ -12,8 +12,8 @@
 ## Execution Gates
 - Never execute without explicit user approval. Wait to be told.
 - Show commit message and wait for approval before committing.
-- Every Edit/Write in ~/deus/ requires fresh plan-reviewer (Warden) approval.
-- Never proceed while plan-reviewer is running. Wait for verdict.
+- Source edits require plan review approval before proceeding.
+- Never proceed while a review agent is running. Wait for its verdict.
 - Never merge failing CI. Never use --admin/direct push except emergencies.
 
 ## Verification & Honesty
