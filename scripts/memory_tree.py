@@ -72,6 +72,10 @@ NODE_TYPES_TRACKED = {"memory-tree-root", "persona-index", "persona-node", "proj
 EXTERNAL_NAMESPACE = "auto-memory/"
 EXTERNAL_DIR_ENV = "DEUS_AUTO_MEMORY_DIR"
 
+# Score-gap abstain: OOD queries produce flat score distributions (gap ~0.01),
+# real matches produce a spike (gap ~0.10). Abstain when gap is below this.
+DEFAULT_SCORE_GAP_THRESHOLD = float(os.environ.get("DEUS_TREE_GAP", "0.04"))
+
 _LOG_PATH = Path(os.environ.get(
     "DEUS_TREE_LOG", "~/.deus/memory_tree_queries.jsonl"
 )).expanduser()
@@ -259,6 +263,23 @@ def parse_frontmatter(content: str) -> dict[str, Any]:
                 out[listkey] = [i for i in items if i]
 
     return out
+
+
+EMBED_BODY_WORDS = 200
+
+
+def embedding_source(description: str, content: str) -> str:
+    """Build richer embedding input from description + body excerpt.
+
+    The description alone (~15 words) can't discriminate 130+ nodes.
+    Appending the first ~200 words of the body (after frontmatter) gives
+    the embedding model the semantic specifics it needs.
+    """
+    body = _FM_RE.sub("", content, count=1).strip()
+    body_words = body.split()[:EMBED_BODY_WORDS]
+    if body_words:
+        return description + " — " + " ".join(body_words)
+    return description
 
 
 def token_estimate(text: str) -> int:
@@ -558,6 +579,7 @@ def build_tree(
         title = fm.get("title") or entry["abs"].stem
         level = int(fm.get("level", 0))
         node_type = fm.get("type", "persona-node")
+        # Vault files have long dense bodies that dilute the description signal.
         ch = content_hash(description)
         existing = db.execute(
             "SELECT content_hash FROM nodes WHERE id = ?", (entry["id"],)
@@ -638,15 +660,28 @@ def _backup_db() -> None:
 # ── Reembed ────────────────────────────────────────────────────────────────────
 
 def reembed_file(vault: Path, rel_path: str, db: sqlite3.Connection) -> str:
-    """Re-embed a single node; no-op if description hash unchanged."""
+    """Re-embed a single node; no-op if content hash unchanged."""
     p = vault / rel_path
     if not p.exists():
-        return "missing"
-    fm = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        # External-namespace paths aren't under vault; resolve via env.
+        if is_external_namespace(rel_path):
+            ext_dir = os.environ.get(EXTERNAL_DIR_ENV)
+            if ext_dir:
+                filename = rel_path[len(EXTERNAL_NAMESPACE):]
+                p = Path(ext_dir).expanduser() / filename
+                if not p.exists():
+                    return "missing"
+            else:
+                return "missing"
+        else:
+            return "missing"
+    content = p.read_text(encoding="utf-8", errors="replace")
+    fm = parse_frontmatter(content)
     desc = fm.get("description", "").strip()
     if not desc:
         return "no_description"
-    ch = content_hash(desc)
+    embed_src = embedding_source(desc, content) if is_external_namespace(rel_path) else desc
+    ch = content_hash(embed_src)
     row = db.execute(
         "SELECT id, content_hash FROM nodes WHERE path = ? AND orphaned_at IS NULL",
         (rel_path,),
@@ -657,7 +692,7 @@ def reembed_file(vault: Path, rel_path: str, db: sqlite3.Connection) -> str:
     if old_hash == ch:
         return "unchanged"
     try:
-        vec = embed_text(desc)
+        vec = embed_text(embed_src)
     except Exception as exc:
         print(f"ERROR: embed failed: {exc}", file=sys.stderr)
         return "embed_failed"
@@ -699,7 +734,8 @@ def discover_node(vault: Path, rel_path: str, db: sqlite3.Connection) -> str:
     p = vault / rel_path
     if not p.exists():
         return "missing"
-    fm = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+    content = p.read_text(encoding="utf-8", errors="replace")
+    fm = parse_frontmatter(content)
     node_id = fm.get("id")
     if not node_id:
         return "no_id"
@@ -839,11 +875,23 @@ def retrieve(
         top = merged
         trace.append(f"expanded→{len(expanded)}")
 
-    # Phase 3: abstain when the best score is below the floor.
+    # Phase 3: abstain when the best score is below the floor OR when the
+    # score distribution is flat (no clear winner). OOD queries produce
+    # near-uniform scores; real matches produce a spike.
     if use_abstain and best < abstain_threshold:
         fell_back = True
-        trace.append("abstain")
+        trace.append("abstain:threshold")
         top = []
+    elif use_abstain and len(top) >= 2:
+        others_avg = sum(r[3] for r in top[1:]) / len(top[1:])
+        gap = best - others_avg
+        gap_threshold = DEFAULT_SCORE_GAP_THRESHOLD
+        if gap < gap_threshold and best < low_threshold:
+            fell_back = True
+            trace.append(f"abstain:gap={gap:.3f}<{gap_threshold}")
+            top = []
+        else:
+            trace.append(f"gap={gap:.3f}")
 
     result = {
         "results": [
@@ -1230,7 +1278,8 @@ def reindex_external(
 
         title = fm.get("name") or p.stem
         node_type = fm.get("type", "feedback")
-        ch = content_hash(description)
+        embed_src = embedding_source(description, content)
+        ch = content_hash(embed_src)
 
         existing = db.execute(
             "SELECT content_hash FROM nodes WHERE id = ?", (node_id,)
@@ -1240,7 +1289,7 @@ def reindex_external(
         vec = None
         if need_embed and not skip_embed:
             try:
-                vec = embed_text(description)
+                vec = embed_text(embed_src)
                 counts["embedded"] += 1
             except Exception as exc:
                 print(f"WARN: embed failed for {ns_path}: {exc}", file=sys.stderr)
