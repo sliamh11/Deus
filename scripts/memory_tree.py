@@ -61,7 +61,7 @@ VAULT_PATH_ENV = "DEUS_VAULT_PATH"
 # Thresholds — pinned by `calibrate` on real data. Defaults here are initial
 # estimates; do not hardcode against these in production code.
 DEFAULT_LOW_THRESHOLD = float(os.environ.get("DEUS_TREE_LOW", "0.55"))
-DEFAULT_ABSTAIN_THRESHOLD = float(os.environ.get("DEUS_TREE_ABSTAIN", "0.35"))
+DEFAULT_ABSTAIN_THRESHOLD = float(os.environ.get("DEUS_TREE_ABSTAIN", "0.30"))
 DEFAULT_TOP_K = 5
 NEIGHBOR_HOPS = 1
 ROOT_TOKEN_BUDGET = 800  # MEMORY_TREE.md cold-start cap
