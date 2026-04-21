@@ -6,7 +6,7 @@ plus 1-hop graph expansion via see_also/alias_of edges. Storage is sqlite-vec at
 ~/.deus/memory_tree.db (override via DEUS_MEMORY_TREE_DB). Embeddings reuse the
 evolution provider (Ollama embeddinggemma by default, Gemini fallback).
 
-Subcommands: build | query | reembed | check | graph | calibrate | benchmark
+Subcommands: build | query | reembed | reindex-external | check | graph | calibrate | benchmark
 
 See docs/decisions/no-db-deletion.md (soft-delete only) and
 docs/decisions/evolution-db-split.md (separate DB file per subsystem).
@@ -61,12 +61,20 @@ VAULT_PATH_ENV = "DEUS_VAULT_PATH"
 # Thresholds — pinned by `calibrate` on real data. Defaults here are initial
 # estimates; do not hardcode against these in production code.
 DEFAULT_LOW_THRESHOLD = float(os.environ.get("DEUS_TREE_LOW", "0.55"))
-DEFAULT_ABSTAIN_THRESHOLD = float(os.environ.get("DEUS_TREE_ABSTAIN", "0.35"))
+DEFAULT_ABSTAIN_THRESHOLD = float(os.environ.get("DEUS_TREE_ABSTAIN", "0.30"))
 DEFAULT_TOP_K = 5
 NEIGHBOR_HOPS = 1
 ROOT_TOKEN_BUDGET = 800  # MEMORY_TREE.md cold-start cap
 
-NODE_TYPES_TRACKED = {"memory-tree-root", "persona-index", "persona-node", "project-node", "infra-node"}
+NODE_TYPES_TRACKED = {"memory-tree-root", "persona-index", "persona-node", "project-node", "infra-node",
+                      "feedback", "project", "reference", "user"}
+
+EXTERNAL_NAMESPACE = "auto-memory/"
+EXTERNAL_DIR_ENV = "DEUS_AUTO_MEMORY_DIR"
+
+# Score-gap abstain: OOD queries produce flat score distributions (gap ~0.01),
+# real matches produce a spike (gap ~0.10). Abstain when gap is below this.
+DEFAULT_SCORE_GAP_THRESHOLD = float(os.environ.get("DEUS_TREE_GAP", "0.04"))
 
 _LOG_PATH = Path(os.environ.get(
     "DEUS_TREE_LOG", "~/.deus/memory_tree_queries.jsonl"
@@ -80,6 +88,11 @@ _AUDIT_PATH = Path(os.environ.get(
 # of the current active node count (protects against DEUS_VAULT_PATH misconfig
 # silently wiping live data — see 2026-04-15 incident). `--force` bypasses.
 REBUILD_MIN_RETENTION = 0.5
+
+
+def is_external_namespace(path: str) -> bool:
+    """True if path belongs to an external population (e.g. auto-memory/)."""
+    return path.startswith(EXTERNAL_NAMESPACE)
 
 
 # ── Retrieval policy (ported from ~/deus-memory-evo exp_0006) ─────────────────
@@ -217,7 +230,7 @@ def parse_frontmatter(content: str) -> dict[str, Any]:
     fm = m.group(1)
     out: dict[str, Any] = {}
 
-    for scalar in ("id", "description", "summary", "alias_of", "title", "type", "orphaned_at"):
+    for scalar in ("id", "name", "description", "summary", "alias_of", "title", "type", "orphaned_at"):
         sm = re.search(
             rf"^{scalar}:\s*>?\s*\n?\s*(.+?)(?=\n\S|\n---|\Z)",
             fm,
@@ -250,6 +263,23 @@ def parse_frontmatter(content: str) -> dict[str, Any]:
                 out[listkey] = [i for i in items if i]
 
     return out
+
+
+EMBED_BODY_WORDS = 200
+
+
+def embedding_source(description: str, content: str) -> str:
+    """Build richer embedding input from description + body excerpt.
+
+    The description alone (~15 words) can't discriminate 130+ nodes.
+    Appending the first ~200 words of the body (after frontmatter) gives
+    the embedding model the semantic specifics it needs.
+    """
+    body = _FM_RE.sub("", content, count=1).strip()
+    body_words = body.split()[:EMBED_BODY_WORDS]
+    if body_words:
+        return description + " — " + " ".join(body_words)
+    return description
 
 
 def token_estimate(text: str) -> int:
@@ -499,7 +529,8 @@ def build_tree(
 
     if rebuild:
         current_active = db.execute(
-            "SELECT COUNT(*) FROM nodes WHERE orphaned_at IS NULL"
+            "SELECT COUNT(*) FROM nodes WHERE orphaned_at IS NULL AND path NOT LIKE ? || '%'",
+            (EXTERNAL_NAMESPACE,),
         ).fetchone()[0]
         threshold = max(1, int(current_active * REBUILD_MIN_RETENTION))
         if current_active > 0 and len(node_inputs) < threshold and not force:
@@ -520,8 +551,9 @@ def build_tree(
         _backup_db()
         now_iso = _utc_iso()
         db.execute(
-            "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'rebuild' WHERE orphaned_at IS NULL",
-            (now_iso,),
+            "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'rebuild' "
+            "WHERE orphaned_at IS NULL AND path NOT LIKE ? || '%'",
+            (now_iso, EXTERNAL_NAMESPACE),
         )
         db.execute(
             "UPDATE edges SET expired_at = ? WHERE expired_at IS NULL", (now_iso,)
@@ -547,6 +579,7 @@ def build_tree(
         title = fm.get("title") or entry["abs"].stem
         level = int(fm.get("level", 0))
         node_type = fm.get("type", "persona-node")
+        # Vault files have long dense bodies that dilute the description signal.
         ch = content_hash(description)
         existing = db.execute(
             "SELECT content_hash FROM nodes WHERE id = ?", (entry["id"],)
@@ -597,12 +630,15 @@ def build_tree(
                 counts["edges"] += 1
             expire_edges_missing(db, src=src, kind=kind, keep_dst=keep)
 
-    # Orphan: any active node in DB whose path didn't show up in this walk.
+    # Orphan: any active vault node in DB whose path didn't show up in this walk.
+    # External-namespace nodes (auto-memory/*) are managed by reindex_external.
     active = db.execute(
         "SELECT id, path FROM nodes WHERE orphaned_at IS NULL"
     ).fetchall()
     now_iso = _utc_iso()
     for (nid, npath) in active:
+        if is_external_namespace(npath):
+            continue
         if npath not in path_to_id:
             db.execute(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
@@ -624,15 +660,31 @@ def _backup_db() -> None:
 # ── Reembed ────────────────────────────────────────────────────────────────────
 
 def reembed_file(vault: Path, rel_path: str, db: sqlite3.Connection) -> str:
-    """Re-embed a single node; no-op if description hash unchanged."""
+    """Re-embed a single node; no-op if content hash unchanged."""
     p = vault / rel_path
     if not p.exists():
-        return "missing"
-    fm = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+        # External-namespace paths aren't under vault; resolve via env.
+        if is_external_namespace(rel_path):
+            ext_dir = os.environ.get(EXTERNAL_DIR_ENV)
+            if ext_dir:
+                filename = rel_path[len(EXTERNAL_NAMESPACE):]
+                base = Path(ext_dir).expanduser().resolve()
+                p = (base / filename).resolve()
+                if not p.is_relative_to(base):
+                    return "missing"
+                if not p.exists():
+                    return "missing"
+            else:
+                return "missing"
+        else:
+            return "missing"
+    content = p.read_text(encoding="utf-8", errors="replace")
+    fm = parse_frontmatter(content)
     desc = fm.get("description", "").strip()
     if not desc:
         return "no_description"
-    ch = content_hash(desc)
+    embed_src = embedding_source(desc, content) if is_external_namespace(rel_path) else desc
+    ch = content_hash(embed_src)
     row = db.execute(
         "SELECT id, content_hash FROM nodes WHERE path = ? AND orphaned_at IS NULL",
         (rel_path,),
@@ -643,7 +695,7 @@ def reembed_file(vault: Path, rel_path: str, db: sqlite3.Connection) -> str:
     if old_hash == ch:
         return "unchanged"
     try:
-        vec = embed_text(desc)
+        vec = embed_text(embed_src)
     except Exception as exc:
         print(f"ERROR: embed failed: {exc}", file=sys.stderr)
         return "embed_failed"
@@ -685,7 +737,8 @@ def discover_node(vault: Path, rel_path: str, db: sqlite3.Connection) -> str:
     p = vault / rel_path
     if not p.exists():
         return "missing"
-    fm = parse_frontmatter(p.read_text(encoding="utf-8", errors="replace"))
+    content = p.read_text(encoding="utf-8", errors="replace")
+    fm = parse_frontmatter(content)
     node_id = fm.get("id")
     if not node_id:
         return "no_id"
@@ -825,11 +878,23 @@ def retrieve(
         top = merged
         trace.append(f"expanded→{len(expanded)}")
 
-    # Phase 3: abstain when the best score is below the floor.
+    # Phase 3: abstain when the best score is below the floor OR when the
+    # score distribution is flat (no clear winner). OOD queries produce
+    # near-uniform scores; real matches produce a spike.
     if use_abstain and best < abstain_threshold:
         fell_back = True
-        trace.append("abstain")
+        trace.append("abstain:threshold")
         top = []
+    elif use_abstain and len(top) >= 2:
+        others_avg = sum(r[3] for r in top[1:]) / len(top[1:])
+        gap = best - others_avg
+        gap_threshold = DEFAULT_SCORE_GAP_THRESHOLD
+        if gap < gap_threshold and best < low_threshold:
+            fell_back = True
+            trace.append(f"abstain:gap={gap:.3f}<{gap_threshold}")
+            top = []
+        else:
+            trace.append(f"gap={gap:.3f}")
 
     result = {
         "results": [
@@ -1038,19 +1103,20 @@ def check_tree(db: sqlite3.Connection, vault: Path) -> dict[str, Any]:
                 f"MEMORY_TREE.md = {tokens} tokens > budget {ROOT_TOKEN_BUDGET}"
             )
 
-    # Every active node should be reachable from root via child edges.
+    # Every active vault node should be reachable from root via child edges.
+    # External-namespace nodes (auto-memory/*) have no parent in the vault tree.
     root_row = db.execute(
         "SELECT id FROM nodes WHERE path = 'MEMORY_TREE.md' AND orphaned_at IS NULL"
     ).fetchone()
     unreachable: list[str] = []
     if root_row:
         reachable = _reachable_via_child(db, root_row[0])
-        active_ids = {
-            r[0]
-            for r in db.execute(
-                "SELECT id FROM nodes WHERE orphaned_at IS NULL"
-            ).fetchall()
-        }
+        active_ids = set()
+        for r in db.execute(
+            "SELECT id, path FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchall():
+            if not is_external_namespace(r[1]):
+                active_ids.add(r[0])
         unreachable = sorted(active_ids - reachable)
         if unreachable:
             report["ok"] = False
@@ -1099,8 +1165,11 @@ def autofix_tree(db: sqlite3.Connection, vault: Path) -> dict[str, int]:
     ).fetchall()
     tracked: set[str] = {row[1] for row in active}
 
-    # 1) Orphan nodes whose files are missing.
+    # 1) Orphan vault nodes whose files are missing.
+    # External-namespace nodes are managed by reindex_external.
     for (nid, npath, _) in active:
+        if is_external_namespace(npath):
+            continue
         if not (vault / npath).exists():
             db.execute(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
@@ -1139,6 +1208,176 @@ def autofix_tree(db: sqlite3.Connection, vault: Path) -> dict[str, int]:
     db.commit()
     _emit_audit({"action": "autofix", "vault": str(vault), **counts})
     return counts
+
+
+# ── External population (auto-memory) ────────────────────────────────────────
+
+def _write_id_to_frontmatter(path: Path, new_id: str) -> None:
+    """Inject `id: <new_id>` into an existing YAML frontmatter block. No-op if id already present."""
+    text = path.read_text(encoding="utf-8", errors="replace")
+    fm = parse_frontmatter(text)
+    if fm.get("id"):
+        return
+    m = _FM_RE.match(text)
+    if not m:
+        return
+    fm_end = m.end(1)
+    updated = text[:fm_end] + f"\nid: {new_id}" + text[fm_end:]
+    path.write_text(updated, encoding="utf-8")
+
+
+def reindex_external(
+    db: sqlite3.Connection,
+    external_dir: Path,
+    *,
+    skip_embed: bool = False,
+) -> dict[str, int]:
+    """Index auto-memory files from an external directory into the tree.
+
+    Files are stored with the `auto-memory/<filename>` namespace prefix to
+    avoid vault path collisions. Frontmatter mapping: `name` -> title,
+    `description` -> embedding source, `type` -> kept as-is.
+
+    ULID write-back is idempotent: files already carrying `id:` are not
+    modified. Bypasses REBUILD_MIN_RETENTION (separate population).
+    """
+    counts = {"indexed": 0, "embedded": 0, "skipped": 0, "orphaned": 0, "id_written": 0}
+    _backup_db()
+
+    external_dir = external_dir.expanduser().resolve()
+    if not external_dir.is_dir():
+        raise FileNotFoundError(f"DEUS_AUTO_MEMORY_DIR not found: {external_dir}")
+
+    skip_dirs = {"ARCHIVE", ".git"}
+    walked_paths: set[str] = set()
+
+    for p in sorted(external_dir.rglob("*.md")):
+        try:
+            rel_to_ext = p.relative_to(external_dir)
+        except ValueError:
+            continue
+        if any(part in skip_dirs for part in rel_to_ext.parts):
+            continue
+        if p.name == "MEMORY.md":
+            continue
+
+        ns_path = EXTERNAL_NAMESPACE + str(rel_to_ext)
+        walked_paths.add(ns_path)
+
+        try:
+            content = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            counts["skipped"] += 1
+            continue
+
+        fm = parse_frontmatter(content)
+        description = fm.get("description", "").strip()
+        if not description:
+            counts["skipped"] += 1
+            continue
+
+        node_id = fm.get("id")
+        if not node_id:
+            node_id = make_id()
+            _write_id_to_frontmatter(p, node_id)
+            counts["id_written"] += 1
+
+        title = fm.get("name") or p.stem
+        node_type = fm.get("type", "feedback")
+        embed_src = embedding_source(description, content)
+        ch = content_hash(embed_src)
+
+        existing = db.execute(
+            "SELECT content_hash FROM nodes WHERE id = ?", (node_id,)
+        ).fetchone()
+        need_embed = existing is None or existing[0] != ch
+
+        vec = None
+        if need_embed and not skip_embed:
+            try:
+                vec = embed_text(embed_src)
+                counts["embedded"] += 1
+            except Exception as exc:
+                print(f"WARN: embed failed for {ns_path}: {exc}", file=sys.stderr)
+                vec = None
+
+        upsert_node(
+            db,
+            node_id=node_id,
+            path=ns_path,
+            title=title,
+            description=description,
+            level=0,
+            node_type=node_type,
+            embedding=vec,
+            content_hash_val=ch,
+        )
+        counts["indexed"] += 1
+
+    # Orphan external nodes no longer on disk.
+    now_iso = _utc_iso()
+    ext_active = db.execute(
+        "SELECT id, path FROM nodes WHERE orphaned_at IS NULL AND path LIKE ? || '%'",
+        (EXTERNAL_NAMESPACE,),
+    ).fetchall()
+    for (nid, npath) in ext_active:
+        if npath not in walked_paths:
+            db.execute(
+                "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
+                (now_iso, nid),
+            )
+            counts["orphaned"] += 1
+
+    db.commit()
+    _emit_audit({"action": "reindex_external", "dir": str(external_dir), **counts})
+    return counts
+
+
+# ── Manifest ─────────────────────────────────────────────────────────────────
+
+# Grouping map: node type → human-readable category for the manifest.
+_MANIFEST_CATEGORIES: dict[str, str] = {
+    "feedback": "Behavioral rules",
+    "project": "Project state",
+    "reference": "References",
+    "user": "Identity & persona",
+    "persona-node": "Persona",
+    "persona-index": "Persona",
+    "infra-node": "Infrastructure",
+    "project-node": "Project docs",
+    "memory-tree-root": "System",
+    "permanent-memory": "Vault core",
+    "permanent-reference": "Vault references",
+}
+
+
+def generate_manifest(db: sqlite3.Connection) -> str:
+    """Generate a ~200-token manifest from all active nodes, grouped by type."""
+    rows = db.execute(
+        "SELECT type, title, path FROM nodes WHERE orphaned_at IS NULL ORDER BY type, title"
+    ).fetchall()
+
+    groups: dict[str, list[str]] = {}
+    for (ntype, title, path) in rows:
+        cat = _MANIFEST_CATEGORIES.get(ntype or "", ntype or "other")
+        groups.setdefault(cat, []).append(title or path)
+
+    lines = [
+        "# Memory Manifest",
+        "",
+        "Memories are auto-retrieved per prompt by a semantic hook.",
+        'Manual retrieval: `memory_tree.py query "<topic>"`',
+        "",
+        "## Available Knowledge",
+    ]
+    for cat in sorted(groups.keys()):
+        items = groups[cat]
+        summary = ", ".join(items[:8])
+        if len(items) > 8:
+            summary += f", ... (+{len(items) - 8} more)"
+        lines.append(f"- **{cat}** ({len(items)}): {summary}")
+
+    return "\n".join(lines) + "\n"
 
 
 def _reachable_via_child(db: sqlite3.Connection, root_id: str) -> set[str]:
@@ -1650,6 +1889,12 @@ def main(argv: list[str] | None = None) -> int:
     p_calib = sub.add_parser("calibrate", help="Fit thresholds from labeled data")
     p_calib.add_argument("labeled_jsonl", help="Path to labeled dataset (JSONL)")
 
+    sub.add_parser("manifest", help="Generate thin manifest from all indexed nodes")
+
+    p_ext = sub.add_parser("reindex-external", help="Index auto-memory files from DEUS_AUTO_MEMORY_DIR")
+    p_ext.add_argument("--skip-embed", action="store_true", help="Skip embedding API calls")
+    p_ext.add_argument("--json", action="store_true")
+
     p_bench = sub.add_parser("benchmark", help="Run benchmark on labeled dataset")
     p_bench.add_argument("dataset_jsonl", help="Path to JSONL benchmark dataset")
     p_bench.add_argument("-k", type=int, default=5)
@@ -1739,6 +1984,32 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.output).write_text(dot)
         else:
             print(dot)
+        return 0
+
+    if args.cmd == "manifest":
+        print(generate_manifest(db))
+        return 0
+
+    if args.cmd == "reindex-external":
+        ext_dir = os.environ.get(EXTERNAL_DIR_ENV)
+        if not ext_dir:
+            print(f"ABORT: {EXTERNAL_DIR_ENV} not set", file=sys.stderr)
+            return 2
+        try:
+            counts = reindex_external(db, Path(ext_dir), skip_embed=args.skip_embed)
+        except (FileNotFoundError, ValueError) as exc:
+            print(f"ABORT: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(counts, indent=2))
+        else:
+            print(
+                f"reindex-external: indexed={counts['indexed']} "
+                f"embedded={counts['embedded']} "
+                f"orphaned={counts['orphaned']} "
+                f"id_written={counts['id_written']} "
+                f"skipped={counts['skipped']}"
+            )
         return 0
 
     if args.cmd == "calibrate":
