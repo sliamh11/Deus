@@ -1276,6 +1276,53 @@ def reindex_external(
     return counts
 
 
+# ── Manifest ─────────────────────────────────────────────────────────────────
+
+# Grouping map: node type → human-readable category for the manifest.
+_MANIFEST_CATEGORIES: dict[str, str] = {
+    "feedback": "Behavioral rules",
+    "project": "Project state",
+    "reference": "References",
+    "user": "Identity & persona",
+    "persona-node": "Persona",
+    "persona-index": "Persona",
+    "infra-node": "Infrastructure",
+    "project-node": "Project docs",
+    "memory-tree-root": "System",
+    "permanent-memory": "Vault core",
+    "permanent-reference": "Vault references",
+}
+
+
+def generate_manifest(db: sqlite3.Connection) -> str:
+    """Generate a ~200-token manifest from all active nodes, grouped by type."""
+    rows = db.execute(
+        "SELECT type, title, path FROM nodes WHERE orphaned_at IS NULL ORDER BY type, title"
+    ).fetchall()
+
+    groups: dict[str, list[str]] = {}
+    for (ntype, title, path) in rows:
+        cat = _MANIFEST_CATEGORIES.get(ntype or "", ntype or "other")
+        groups.setdefault(cat, []).append(title or path)
+
+    lines = [
+        "# Memory Manifest",
+        "",
+        "Memories are auto-retrieved per prompt by a semantic hook.",
+        'Manual retrieval: `memory_tree.py query "<topic>"`',
+        "",
+        "## Available Knowledge",
+    ]
+    for cat in sorted(groups.keys()):
+        items = groups[cat]
+        summary = ", ".join(items[:8])
+        if len(items) > 8:
+            summary += f", ... (+{len(items) - 8} more)"
+        lines.append(f"- **{cat}** ({len(items)}): {summary}")
+
+    return "\n".join(lines) + "\n"
+
+
 def _reachable_via_child(db: sqlite3.Connection, root_id: str) -> set[str]:
     visited = {root_id}
     frontier = [root_id]
@@ -1785,6 +1832,8 @@ def main(argv: list[str] | None = None) -> int:
     p_calib = sub.add_parser("calibrate", help="Fit thresholds from labeled data")
     p_calib.add_argument("labeled_jsonl", help="Path to labeled dataset (JSONL)")
 
+    sub.add_parser("manifest", help="Generate thin manifest from all indexed nodes")
+
     p_ext = sub.add_parser("reindex-external", help="Index auto-memory files from DEUS_AUTO_MEMORY_DIR")
     p_ext.add_argument("--skip-embed", action="store_true", help="Skip embedding API calls")
     p_ext.add_argument("--json", action="store_true")
@@ -1878,6 +1927,10 @@ def main(argv: list[str] | None = None) -> int:
             Path(args.output).write_text(dot)
         else:
             print(dot)
+        return 0
+
+    if args.cmd == "manifest":
+        print(generate_manifest(db))
         return 0
 
     if args.cmd == "reindex-external":
