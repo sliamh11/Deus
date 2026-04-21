@@ -1,22 +1,28 @@
 # Wardens
 
-Two specialized review agents that guard the Deus codebase. Both run on **Sonnet 4.6** (structured rule-matching + multi-doc reads; ~15× cheaper than Opus with negligible quality hit).
+Specialized review agents that guard the codebase. Validator wardens check correctness against rules; generator wardens produce artifacts.
 
-| Warden | Phase | Rules file | Invocation |
-|--------|-------|------------|------------|
-| **plan-reviewer** | BEFORE implementation | `plan-review-rules.md` | Gated by PreToolUse hook (auto-required for Edit/Write in `~/deus/`) |
-| **code-reviewer** | AFTER implementation, BEFORE commit | `code-review-rules.md` | Manual: `Agent(subagent_type="code-reviewer", prompt="review my changes")` |
+| Warden | Type | Model | Rules/Schema file | Invocation |
+|--------|------|-------|-------------------|------------|
+| **plan-reviewer** | Validator | Opus | `plan-review-rules.md` | Gated by PreToolUse hook (auto-required for Edit/Write in `~/deus/`) |
+| **code-reviewer** | Validator | Sonnet | `code-review-rules.md` | Manual: `Agent(subagent_type="code-reviewer", prompt="review my changes")` |
+| **threat-modeler** | Validator | Opus | `threat-modeling-rules.md` | Manual: invoke when plan touches auth, credentials, external APIs, or trust boundaries |
+| **architecture-snapshot** | Generator | Sonnet | `architecture-schema.md` | Manual: `Agent(subagent_type="architecture-snapshot", prompt="snapshot the architecture")` |
 
 ## Directory
 
 ```
 ~/deus/.claude/agents/
-  plan-reviewer.md       ← agent definition (read by Claude Code)
-  code-reviewer.md       ← agent definition
+  plan-reviewer.md          ← agent definition (read by Claude Code)
+  code-reviewer.md          ← agent definition
+  threat-modeler.md         ← agent definition
+  architecture-snapshot.md  ← agent definition
 ~/deus/.claude/wardens/
-  README.md              ← this file
-  plan-review-rules.md   ← rules loaded by plan-reviewer at invocation
-  code-review-rules.md   ← rules loaded by code-reviewer at invocation
+  README.md                 ← this file
+  plan-review-rules.md      ← rules loaded by plan-reviewer
+  code-review-rules.md      ← rules loaded by code-reviewer
+  threat-modeling-rules.md  ← rules loaded by threat-modeler
+  architecture-schema.md    ← output schema for architecture-snapshot
 ```
 
 ## How the plan-review gate works
