@@ -83,4 +83,13 @@ Keep rules concise. Total file size matters — every rule adds context cost per
 - Built-in `Plan` subagent — CREATES plans; doesn't review them. Wardens critique, Plan drafts.
 - `general-purpose`, `Explore` — no Deus-specific rule knowledge.
 
-Wardens are specifically the two rule-enforcing reviewers in this directory.
+Wardens are specifically the rule-enforcing reviewers and generators in this directory.
+
+## Agent discovery
+
+Claude Code discovers `.claude/agents/*.md` files at **session start**. Agents added mid-session won't appear in the `subagent_type` registry until the next session. To invoke a newly created agent in the current session, use a general-purpose agent with a prompt that reads the agent definition:
+
+```
+Agent(prompt="You are the <warden-name> warden. Read your agent definition at
+~/deus/.claude/agents/<warden-name>.md and follow its instructions exactly. <task>")
+```

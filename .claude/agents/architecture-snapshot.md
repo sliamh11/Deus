@@ -78,4 +78,5 @@ Accuracy > completeness. A precise map of 80% of the system beats a vague map of
 - **Read interfaces, not bodies.** Type definitions, exported functions, index files.
 - **State confidence.** If you only read 60% of the codebase, say Medium confidence.
 - **No `()` in Mermaid link labels.** Use `-->|register|` not `-->|register()|` -- parens break GitHub rendering.
+- **No HTML entities in Mermaid.** Write `-->` not `--&gt;`, `<` not `&lt;`. Mermaid is code, not HTML.
 - **Fail-closed on missing schema.** Use built-in defaults. No degradation.
