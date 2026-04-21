@@ -2,7 +2,7 @@
 
 A personal Claude assistant with multi-channel support, persistent memory per conversation, scheduled tasks, and container-isolated agent execution.
 
-> For architecture details, see [docs/architecture.md](architecture.md). For the security model, see [docs/SECURITY.md](SECURITY.md).
+> For architecture details, see [docs/ARCHITECTURE.md](ARCHITECTURE.md). For the security model, see [docs/SECURITY.md](SECURITY.md).
 
 ---
 
@@ -236,7 +236,7 @@ deus/
 
 ## Configuration
 
-Configuration constants are in `src/config.ts`. For a full description of the host process internals, see [architecture.md](architecture.md).
+Configuration constants are in `src/config.ts`. For a full description of the host process internals, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ```typescript
 import path from 'path';
@@ -432,7 +432,7 @@ From main channel:
 
 ## MCP Servers
 
-The `deus` MCP server is created dynamically per agent call with the current group's context. For the full list of MCP tools and how they integrate with the container system, see [architecture.md](architecture.md).
+The `deus` MCP server is created dynamically per agent call with the current group's context. For the full list of MCP tools and how they integrate with the container system, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 **Available Tools:**
 | Tool | Purpose |

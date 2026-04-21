@@ -108,88 +108,22 @@ A fresh clone has **zero channels** — you add only the ones you need:
 
 ## Architecture
 
-<p align="center">
-  <img src="assets/brand-production/diagrams/deus-channels-diagram.png" alt="Message flow: User → Host → Container → Response" width="700">
-</p>
+One Node.js process on the host. Each conversation group runs in its own Linux container with an isolated filesystem. Containers never see API keys -- all calls route through a credential proxy that injects credentials at request time.
 
-- One Node.js process on the host. No microservices.
-- Each conversation group runs in its own container with an isolated filesystem.
-- Domain detection tags conversations by topic so the self-improvement loop learns per-domain patterns.
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full reference with Mermaid diagrams covering the system overview, message flow, channel system, container mounts, memory retrieval, evolution loop, security model, and eval layer.
 
 ---
 
 ## Memory System
 
-<p align="center">
-  <img src="assets/brand-production/diagrams/deus-memory-system-diagram.png" alt="Deus Memory — Tree (cold-start + cross-branch) and Indexer (semantic recall), routed by query type" width="700">
-</p>
+Tiered retrieval: warm (last N sessions, free), cold (semantic search + recency boost), and a hierarchical memory tree for cold-start and cross-branch recall. Five-layer knowledge architecture from raw storage through atomic facts, semantic graph, compiled knowledge, to intent-classified retrieval.
 
 | Command | What it does |
 |---|---|
 | `/compress` | Save the current session to the vault and update the semantic index |
-| `/resume` | Load core memory + warm tier (last 3 sessions, free) + cold tier (semantic search) |
+| `/resume` | Load core memory + warm tier + cold tier |
 
-A stop hook auto-saves a checkpoint at the end of every Claude Code session with no LLM calls.
-
-### Knowledge Base Architecture
-
-Inspired by [Karpathy's LLM Knowledge Bases](https://x.com/karpathy/status/2039805659525644595) pattern and enhanced with ideas from [Zep/Graphiti](https://github.com/getzep/graphiti) (temporal knowledge graphs) and [Synapse](https://arxiv.org/html/2601.02744v2) (spreading activation for LLM memory).
-
-Deus goes beyond Karpathy's flat wiki approach with a five-layer knowledge architecture:
-
-1. **Raw storage** — Session logs in Obsidian vault, embeddings in sqlite-vec, FTS5 full-text index
-2. **Atomic facts** — Extracted facts with confidence scoring, temporal versioning, domain tagging, and contradiction detection on insert
-3. **Semantic graph** — Entity-relationship extraction with bi-temporal validity, enabling multi-hop reasoning and "as-of" temporal queries
-4. **Compiled knowledge** — Auto-generated entity articles, LLM-maintained indexes, and periodic compression (weekly/monthly digests)
-5. **Knowledge interface** — Intent-classified retrieval (factual/exploratory/temporal/exhaustive), spreading activation for cross-domain synthesis, knowledge gap identification
-
-Key differences from Karpathy's approach:
-- **Hybrid retrieval** — compiled knowledge for known-known queries, vector RAG for lateral discovery, spreading activation for cross-domain connections
-- **Temporal reasoning** — bi-temporal fact model tracks when knowledge was true vs when it was recorded, enabling graceful belief revision instead of silent overwrites
-- **Contradiction detection** — new facts are checked against semantically similar existing facts; conflicts are flagged and old facts invalidated rather than silently coexisting
-- **Forgetting curves** — facts decay based on access frequency; hot facts stay searchable, cold facts archive automatically
-
-### Hierarchical Memory Tree
-
-On top of flat semantic search, memory notes form a tree rooted at `MEMORY_TREE.md`: each note declares a parent and optional `see_also` cross-links. Retrieval walks from the root down the most relevant branches, then hops sideways via `see_also` to catch facts that live under a different topic than the query's wording would suggest.
-
-Why it matters:
-
-- **Cold-start recall** — finds the right note on the first turn, without the assistant needing to already know what to search for.
-- **Cross-branch discovery** — surfaces facts the flat embedding wouldn't rank highly (e.g. a persona preference that affects a coding decision).
-- **Auto-discovery** — new vault files are registered by a PostToolUse hook; no manual reindex.
-- **Self-healing** — `memory_tree.py check --auto-fix` repairs orphans and missing parents; drift-scan keeps the tree in sync with the vault.
-- **Abstention** — the retriever can return `abstained:true` instead of guessing, which falls back to the persona index.
-
-Gated by `DEUS_MEMORY_TREE=1` so it runs alongside flat search. Embeddings use local `embeddinggemma` (via Ollama).
-
-#### What cold-start recall looks like
-
-Three weeks ago, in a conversation about infrastructure:
-
-> **You:** Switched the analytics pipeline to Kafka to handle the backfill volume — Redis streams were choking above ~5k/s.
-
-Today, in a different conversation about data migration:
-
-> **You:** @Deus what's the plan for the historical import?
-> **Deus:** You moved the pipeline to Kafka three weeks ago specifically to handle backfill volume. The historical import should flow through the same path — here's the decision note with the throughput numbers.
-
-You never said "Kafka" or "analytics." The tree walked from `MEMORY_TREE.md` down to the infra branch, matched the decision note on its own terms, then hopped to it via `see_also` from the data-migration branch the current question lives in. Flat semantic search would miss this — your question doesn't share vocabulary with the answer.
-
-### Retrieval Benchmarks
-
-Evaluated on [LongMemEval-S](https://arxiv.org/abs/2410.10813) (ICLR 2025) — a needle-in-a-haystack benchmark with multi-session reasoning across 500+ turn histories. Numbers below are for the flat hybrid retriever; memory-tree is benchmarked separately on identity/cross-branch queries.
-
-| Metric | Score |
-|---|---|
-| Recall@1 | 90% |
-| Recall@3 | 95% |
-| Recall@10 | 100% |
-| MRR | 0.93 |
-
-Internal recall@3 on real vault sessions: **95%** (sampled 20 sessions, queried by topic).
-
-Retrieval uses hybrid ANN + FTS5/BM25 with Reciprocal Rank Fusion — embeddings via local [EmbeddingGemma](https://ollama.com/library/nomic-embed-text) (no API cost).
+Recall@3: **95%** on [LongMemEval-S](https://arxiv.org/abs/2410.10813) (ICLR 2025). Internal recall@3 on real vault sessions: **95%**. See [docs/ARCHITECTURE.md#memory-system](docs/ARCHITECTURE.md#memory-system) for the full breakdown.
 
 ---
 
@@ -265,25 +199,18 @@ See [docs/benchmarks.md](docs/benchmarks.md#token-efficiency) for the full break
 
 ## Self-Improvement
 
-<p align="center">
-  <img src="assets/brand-production/diagrams/deus-evolution-diagram.png" alt="Evolution loop: Score → Reflexion/Positive Pattern → Domain Principles → DSPy Optimizer" width="700">
-</p>
-
-Every production interaction is scored by a local judge (Ollama or Gemini). Low scores trigger corrective reflexions; high scores extract positive patterns. Both feed into per-domain principles that accumulate over time. Once enough samples exist, DSPy optimizes the system prompt automatically.
+Every production interaction is scored by a local judge (Ollama or Gemini). Low scores trigger corrective reflexions; high scores extract positive patterns. Both feed into per-domain principles that accumulate over time. Once enough samples exist, DSPy optimizes the system prompt automatically. See [docs/ARCHITECTURE.md#evolution-loop](docs/ARCHITECTURE.md#evolution-loop) for the full data flow.
 
 ---
 
 ## Security & Privacy
 
-<p align="center">
-  <img src="assets/brand-production/diagrams/deus-security-diagram.png" alt="Container isolation: Host vs Container security boundary" width="700">
-</p>
+- **Container isolation** -- every agent runs in a Linux container. Agents cannot access your host filesystem beyond explicitly mounted directories.
+- **No credentials in code** -- all secrets live in `.env` files that are gitignored. The codebase is designed as if the repo is always public.
+- **Mount allowlist** -- only directories you explicitly configure are visible to the agent.
+- **Local-first** -- memory lives in a local SQLite database. Voice transcription runs on-device.
 
-- **Container isolation** — Every agent runs in a Linux container (Docker). Agents cannot access your host filesystem beyond explicitly mounted directories.
-- **No credentials in code** — All secrets live in `.env` files that are gitignored. The codebase is designed as if the repo is always public.
-- **Mount allowlist** — Only directories you explicitly configure are visible to the agent. Everything else is inaccessible.
-- **Per-channel privacy** — Each channel (WhatsApp, Telegram, etc.) can be configured with its own memory privacy allowlist. Sensitive data is excluded by default; configure via `/settings memory_privacy=public,internal,private` per group.
-- **Local-first** — Memory lives in a local SQLite database. Voice transcription runs on-device. No data is sent to external services unless you configure it.
+See [docs/ARCHITECTURE.md#security-model](docs/ARCHITECTURE.md#security-model) for the trust boundary diagram and full details.
 
 ---
 
