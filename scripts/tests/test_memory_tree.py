@@ -843,3 +843,161 @@ class TestScoreGapAbstain:
         )
         assert result["fell_back"] is False
         assert result["results"][0]["path"] == "auto-memory/spike.md"
+
+
+# ── FTS5 helpers ─────────────────────────────────────────────────────────────
+
+class TestFTSHelpers:
+    def test_fts_escape_strips_operators_and_joins_or(self):
+        result = mt._fts_escape('hello AND "world" NOT (foo)')
+        assert result == "hello OR world OR foo"
+
+    def test_fts_escape_strips_punctuation(self):
+        result = mt._fts_escape("phone/ID goes on my Hebrew?")
+        assert "/" not in result
+        assert "?" not in result
+
+    def test_fts_escape_removes_stop_words(self):
+        assert mt._fts_escape("What is my name?") == "name"
+        assert mt._fts_escape("Where am I located?") == "located"
+
+    def test_fts_escape_empty(self):
+        assert mt._fts_escape("") == ""
+
+    def test_fts_escape_short_tokens_filtered(self):
+        assert mt._fts_escape("a b cd ef") == "cd OR ef"
+
+    def test_body_from_content_strips_frontmatter(self):
+        content = "---\nid: abc\ndescription: test\n---\nBody text here."
+        assert mt._body_from_content(content) == "Body text here."
+
+    def test_body_from_content_no_frontmatter(self):
+        assert mt._body_from_content("Just plain text") == "Just plain text"
+
+    def test_fts_available(self, tmp_db):
+        assert mt._fts_available(tmp_db) is True
+
+    def test_fts_upsert_and_delete(self, tmp_db):
+        nid = "fts_test_001"
+        mt._fts_upsert(tmp_db, nid, "My Title", "desc", "body text with keywords")
+        rowid = mt._rowid_for(nid)
+        row = tmp_db.execute("SELECT title FROM nodes_fts WHERE rowid = ?", (rowid,)).fetchone()
+        assert row is not None
+        assert row[0] == "My Title"
+        mt._fts_delete(tmp_db, nid)
+        row = tmp_db.execute("SELECT title FROM nodes_fts WHERE rowid = ?", (rowid,)).fetchone()
+        assert row is None
+
+
+class TestRRFFuse:
+    def test_fuse_combines_rankings(self):
+        vec = [("a", 1), ("b", 2), ("c", 3)]
+        fts = [("b", 1), ("d", 2), ("a", 3)]
+        fused = mt._rrf_fuse(vec, fts, k_rrf=60, top=5)
+        assert "a" in fused[:2]
+        assert "b" in fused[:2]
+
+    def test_fuse_single_list(self):
+        vec = [("a", 1), ("b", 2)]
+        fts = []
+        fused = mt._rrf_fuse(vec, fts, k_rrf=60, top=5)
+        assert fused == ["a", "b"]
+
+
+class TestFTSQuery:
+    def test_query_matches_body_keyword(self, tmp_db):
+        nid = "fts_q_001"
+        mt.upsert_node(
+            tmp_db, node_id=nid, path="auto-memory/profile.md",
+            title="User Profile", description="Identity facts",
+            level=0, node_type="user",
+            embedding=[0.0] * mt.EMBED_DIM, content_hash_val="h1",
+            body_text="Name: Liam. Location: Israel. Phone: 972527391393",
+        )
+        tmp_db.commit()
+        rowid_map = {mt._rowid_for(nid): nid}
+        results = mt._fts_query(tmp_db, "Liam name", k=5, _rowid_to_id=rowid_map)
+        assert len(results) >= 1
+        assert results[0][0] == nid
+
+    def test_query_no_match_returns_empty(self, tmp_db):
+        results = mt._fts_query(tmp_db, "xyznonexistent", k=5, _rowid_to_id={})
+        assert results == []
+
+
+class TestHybridRetrieve:
+    """Acceptance tests for FTS5 hybrid retrieval."""
+
+    def test_identity_query_via_fts(self, tmp_db, stub_embed):
+        """The motivating use case: 'what is my name?' matches body keyword."""
+        mt.upsert_node(
+            tmp_db, node_id="id_001", path="auto-memory/user_profile.md",
+            title="User Profile", description="Generic identity information",
+            level=0, node_type="user",
+            embedding=stub_embed("Generic identity information"),
+            content_hash_val="h_id",
+            body_text="Name: Liam. Location: Israel. Phone: 0527391393.",
+        )
+        mt.upsert_node(
+            tmp_db, node_id="id_002", path="auto-memory/feedback_style.md",
+            title="Style Prefs", description="Response style and communication preferences",
+            level=0, node_type="feedback",
+            embedding=stub_embed("Response style and communication preferences"),
+            content_hash_val="h_style",
+            body_text="Prefers simplicity over features. Concise. Direct.",
+        )
+        tmp_db.commit()
+        result_hybrid = mt.retrieve(
+            tmp_db, "what is my name", k=5,
+            use_abstain=False, use_fts=True,
+        )
+        result_vector = mt.retrieve(
+            tmp_db, "what is my name", k=5,
+            use_abstain=False, use_fts=False,
+        )
+        hybrid_paths = [r["path"] for r in result_hybrid["results"]]
+        assert "auto-memory/user_profile.md" in hybrid_paths[:2], \
+            f"Hybrid should rank user_profile in top 2, got {hybrid_paths}"
+        assert any("fts" in t for t in result_hybrid["trace"]), \
+            f"Should have FTS trace entry, got {result_hybrid['trace']}"
+
+    def test_use_fts_false_skips_fts(self, tmp_db, fake_vault, stub_embed):
+        mt.build_tree(fake_vault, tmp_db)
+        result = mt.retrieve(
+            tmp_db, "anything", k=5,
+            use_abstain=False, use_fts=False,
+        )
+        assert any("fts_off" in t for t in result["trace"])
+
+    def test_fts_promotes_keyword_match(self, tmp_db, stub_embed):
+        """FTS5 BM25 promotes results with keyword matches in body text."""
+        mt.upsert_node(
+            tmp_db, node_id="rrf_001", path="auto-memory/a.md",
+            title="Node A", description="Machine learning deep networks",
+            level=0, node_type="feedback",
+            embedding=stub_embed("Machine learning deep networks"),
+            content_hash_val="h_a",
+            body_text="This document is about trading stocks and IBKR.",
+        )
+        mt.upsert_node(
+            tmp_db, node_id="rrf_002", path="auto-memory/b.md",
+            title="Node B", description="Other unrelated topic",
+            level=0, node_type="feedback",
+            embedding=stub_embed("Other unrelated topic"),
+            content_hash_val="h_b",
+            body_text="Trading diary for IBKR interactive brokers stocks.",
+        )
+        tmp_db.commit()
+        result_hybrid = mt.retrieve(
+            tmp_db, "trading IBKR stocks", k=5,
+            use_abstain=False, use_fts=True,
+        )
+        result_vector = mt.retrieve(
+            tmp_db, "trading IBKR stocks", k=5,
+            use_abstain=False, use_fts=False,
+        )
+        h_paths = [r["path"] for r in result_hybrid["results"]]
+        v_paths = [r["path"] for r in result_vector["results"]]
+        assert len(h_paths) >= 2
+        assert any("rrf" in r["route"] for r in result_hybrid["results"]), \
+            "At least one result should be FTS-promoted"

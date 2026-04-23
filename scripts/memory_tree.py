@@ -58,10 +58,23 @@ DB_PATH = Path(os.environ.get(
 )).expanduser()
 VAULT_PATH_ENV = "DEUS_VAULT_PATH"
 
-# Thresholds — pinned by `calibrate` on real data. Defaults here are initial
-# estimates; do not hardcode against these in production code.
-DEFAULT_LOW_THRESHOLD = float(os.environ.get("DEUS_TREE_LOW", "0.55"))
-DEFAULT_ABSTAIN_THRESHOLD = float(os.environ.get("DEUS_TREE_ABSTAIN", "0.30"))
+# Thresholds are provider-specific: Gemini embeddings produce higher absolute
+# cosine scores (~0.55-0.73 in-domain, ~0.45-0.53 OOD) vs Ollama embeddinggemma
+# (~0.30-0.66 in-domain, ~0.25-0.39 OOD). Env vars always override.
+_EMBED_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "auto").lower()
+_IS_GEMINI = _EMBED_PROVIDER == "gemini" or (
+    _EMBED_PROVIDER == "auto" and not os.environ.get("OLLAMA_HOST")
+    and os.environ.get("GEMINI_API_KEY")
+)
+
+_THRESHOLD_DEFAULTS = {
+    "gemini": {"low": 0.55, "abstain": 0.54, "gap": 0.02},
+    "ollama": {"low": 0.55, "abstain": 0.30, "gap": 0.04},
+}
+_DEFAULTS = _THRESHOLD_DEFAULTS["gemini" if _IS_GEMINI else "ollama"]
+
+DEFAULT_LOW_THRESHOLD = float(os.environ.get("DEUS_TREE_LOW", str(_DEFAULTS["low"])))
+DEFAULT_ABSTAIN_THRESHOLD = float(os.environ.get("DEUS_TREE_ABSTAIN", str(_DEFAULTS["abstain"])))
 DEFAULT_TOP_K = 5
 NEIGHBOR_HOPS = 1
 ROOT_TOKEN_BUDGET = 800  # MEMORY_TREE.md cold-start cap
@@ -72,9 +85,11 @@ NODE_TYPES_TRACKED = {"memory-tree-root", "persona-index", "persona-node", "proj
 EXTERNAL_NAMESPACE = "auto-memory/"
 EXTERNAL_DIR_ENV = "DEUS_AUTO_MEMORY_DIR"
 
-# Score-gap abstain: OOD queries produce flat score distributions (gap ~0.01),
-# real matches produce a spike (gap ~0.10). Abstain when gap is below this.
-DEFAULT_SCORE_GAP_THRESHOLD = float(os.environ.get("DEUS_TREE_GAP", "0.04"))
+DEFAULT_SCORE_GAP_THRESHOLD = float(os.environ.get("DEUS_TREE_GAP", str(_DEFAULTS["gap"])))
+
+# Hybrid retrieval: FTS5 BM25 + vector cosine, fused via RRF.
+DEFAULT_USE_FTS = os.environ.get("DEUS_TREE_FTS", "1") == "1"
+DEFAULT_RRF_K = int(os.environ.get("DEUS_TREE_RRF_K", "60"))
 
 _LOG_PATH = Path(os.environ.get(
     "DEUS_TREE_LOG", "~/.deus/memory_tree_queries.jsonl"
@@ -212,6 +227,127 @@ def embed_text(text: str) -> list[float]:
     return _embed(text)
 
 
+# ── FTS5 helpers ─────────────────────────────────────────────────────────────
+
+def _fts_available(db: sqlite3.Connection) -> bool:
+    """Check if the nodes_fts table exists."""
+    row = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='nodes_fts'"
+    ).fetchone()
+    return row is not None
+
+
+_FTS_STOP_WORDS = frozenset({
+    "the", "is", "at", "which", "on", "in", "to", "for", "of", "an",
+    "it", "be", "as", "do", "by", "or", "if", "up", "so", "no", "we",
+    "my", "me", "am", "are", "was", "has", "had", "how", "its", "can",
+    "did", "but", "our", "you", "what", "when", "where", "who", "does",
+    "should", "would", "could", "this", "that", "with", "from", "have",
+    "there", "been", "were", "they", "them", "will", "about",
+})
+
+
+def _fts_escape(query: str) -> str:
+    """Strip FTS5 syntax + stop words, join remaining terms with OR.
+
+    FTS5 defaults to implicit AND, which is too strict for natural-language
+    queries against a knowledge base. Stop-word removal prevents common
+    words like 'what', 'is', 'my' from drowning out the content terms.
+    """
+    cleaned = re.sub(r'["()*\-/\\?!@#$%^&+=<>{}[\]|~`:;,.\']', " ", query)
+    cleaned = re.sub(r"\b(AND|OR|NOT|NEAR)\b", " ", cleaned, flags=re.IGNORECASE)
+    tokens = [t for t in cleaned.split() if len(t) >= 2 and t.lower() not in _FTS_STOP_WORDS]
+    if not tokens:
+        return ""
+    return " OR ".join(tokens)
+
+
+def _body_from_content(content: str) -> str:
+    """Strip frontmatter, return body text."""
+    m = _FM_RE.match(content)
+    if m:
+        return content[m.end():].strip()
+    return content.strip()
+
+
+def _fts_upsert(
+    db: sqlite3.Connection, node_id: str,
+    title: str, description: str, body: str,
+) -> None:
+    """Insert or replace a node's FTS5 entry. Silent no-op if FTS5 unavailable."""
+    try:
+        rowid = _rowid_for(node_id)
+        db.execute("DELETE FROM nodes_fts WHERE rowid = ?", (rowid,))
+        db.execute(
+            "INSERT INTO nodes_fts(rowid, title, description, body) VALUES (?, ?, ?, ?)",
+            (rowid, title or "", description or "", body or ""),
+        )
+    except sqlite3.OperationalError:
+        pass
+
+
+def _fts_delete(db: sqlite3.Connection, node_id: str) -> None:
+    """Remove a node from the FTS5 index. Silent no-op if FTS5 unavailable."""
+    try:
+        db.execute("DELETE FROM nodes_fts WHERE rowid = ?", (_rowid_for(node_id),))
+    except sqlite3.OperationalError:
+        pass
+
+
+def _fts_query(
+    db: sqlite3.Connection, query: str, k: int,
+    _rowid_to_id: dict[int, str] | None = None,
+) -> list[tuple[str, int]]:
+    """FTS5 BM25-ranked search. Returns [(node_id, 1-based rank)].
+
+    Returns [] if FTS5 is unavailable or the query matches nothing.
+    _rowid_to_id is built once per retrieve() call and passed in.
+    """
+    escaped = _fts_escape(query)
+    if not escaped.strip():
+        return []
+    if _rowid_to_id is None:
+        _rowid_to_id = {
+            _rowid_for(nid): nid
+            for (nid,) in db.execute(
+                "SELECT id FROM nodes WHERE orphaned_at IS NULL"
+            ).fetchall()
+        }
+    try:
+        rows = db.execute(
+            """
+            SELECT rowid FROM nodes_fts
+            WHERE nodes_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            [escaped, k * 3],
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    result: list[tuple[str, int]] = []
+    for (fts_rowid,) in rows:
+        nid = _rowid_to_id.get(fts_rowid)
+        if nid is not None:
+            result.append((nid, len(result) + 1))
+    return result[:k]
+
+
+def _rrf_fuse(
+    vec_ranked: list[tuple[str, int]],
+    fts_ranked: list[tuple[str, int]],
+    k_rrf: int = 60,
+    top: int = 10,
+) -> list[str]:
+    """Reciprocal Rank Fusion. Returns node IDs sorted by fused score."""
+    scores: dict[str, float] = {}
+    for nid, rank in vec_ranked:
+        scores[nid] = scores.get(nid, 0.0) + 1.0 / (k_rrf + rank)
+    for nid, rank in fts_ranked:
+        scores[nid] = scores.get(nid, 0.0) + 1.0 / (k_rrf + rank)
+    return [nid for nid, _ in sorted(scores.items(), key=lambda x: -x[1])[:top]]
+
+
 # ── Frontmatter parsing ───────────────────────────────────────────────────────
 
 _FM_RE = re.compile(r"^---\n(.*?)\n---", re.DOTALL)
@@ -334,6 +470,14 @@ def open_db(db_path: Path = None) -> sqlite3.Connection:
             CREATE VIRTUAL TABLE IF NOT EXISTS embeddings
             USING vec0(embedding float[{EMBED_DIM}])
         """)
+    try:
+        db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts
+            USING fts5(title, description, body, tokenize='porter unicode61')
+        """)
+    except sqlite3.OperationalError:
+        pass  # FTS5 unavailable — hybrid degrades to vector-only
+
     db.execute("""
         CREATE TABLE IF NOT EXISTS queries_log (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -376,10 +520,17 @@ def upsert_node(
     node_type: str,
     embedding: list[float] | None,
     content_hash_val: str,
+    body_text: str | None = None,
 ) -> None:
-    """Insert or update a node + its embedding. Soft-deletes prior versions
-    by path if the ID has changed (e.g. frontmatter ID was rotated)."""
+    """Insert or update a node + its embedding + FTS5 index. Soft-deletes
+    prior versions by path if the ID has changed."""
     now = int(time.time())
+    old_rows = db.execute(
+        "SELECT id FROM nodes WHERE path = ? AND id != ? AND orphaned_at IS NULL",
+        (path, node_id),
+    ).fetchall()
+    for (old_id,) in old_rows:
+        _fts_delete(db, old_id)
     db.execute(
         """
         UPDATE nodes SET orphaned_at = ?, orphan_reason = 'superseded'
@@ -411,6 +562,7 @@ def upsert_node(
             "INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
             (rowid, serialize(embedding)),
         )
+    _fts_upsert(db, node_id, title, description, body_text or "")
 
 
 def upsert_edge(
@@ -560,6 +712,10 @@ def build_tree(
         )
         if sqlite_vec is not None:
             db.execute("DELETE FROM embeddings")
+        try:
+            db.execute("DELETE FROM nodes_fts")
+        except sqlite3.OperationalError:
+            pass
         db.commit()
         _emit_audit({
             "action": "rebuild",
@@ -605,6 +761,7 @@ def build_tree(
             node_type=node_type,
             embedding=vec,
             content_hash_val=ch,
+            body_text=_body_from_content(entry["content"]),
         )
         counts["nodes"] += 1
 
@@ -644,6 +801,7 @@ def build_tree(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
                 (now_iso, nid),
             )
+            _fts_delete(db, nid)
             counts["orphaned"] += 1
     db.commit()
     return counts
@@ -710,6 +868,8 @@ def reembed_file(vault: Path, rel_path: str, db: sqlite3.Connection) -> str:
             "INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
             (rowid, serialize(vec)),
         )
+    title = fm.get("title") or fm.get("name") or Path(rel_path).stem
+    _fts_upsert(db, node_id, title, desc, _body_from_content(content))
     db.commit()
     return "reembedded"
 
@@ -770,6 +930,7 @@ def discover_node(vault: Path, rel_path: str, db: sqlite3.Connection) -> str:
         node_type=node_type,
         embedding=vec,
         content_hash_val=ch,
+        body_text=_body_from_content(content),
     )
     for kind, key in (("child", "children"), ("see_also", "see_also")):
         for tgt_path in fm.get(key, []):
@@ -796,24 +957,28 @@ def retrieve(
     query_vec: list[float] | None = None,
     use_see_also: bool = True,
     use_abstain: bool = True,
+    use_fts: bool = DEFAULT_USE_FTS,
+    rrf_k: int = DEFAULT_RRF_K,
 ) -> dict[str, Any]:
-    """3-phase retrieval: collapsed flat → graph expansion → abstain.
+    """4-phase retrieval: flat cosine → FTS5 BM25 → graph expansion → abstain.
 
-    `use_see_also=False` skips Phase 2 (flat-only mode). `use_abstain=False`
-    skips Phase 3 (surface results regardless of confidence). Together they
-    support V0/V1/V2/V3 ablation for benchmarking. Defaults keep current
-    production behavior unchanged.
+    Phase 1 (vector) and Phase 1b (FTS5 BM25) run independently, then
+    Reciprocal Rank Fusion reorders the union. Abstain still gates on raw
+    cosine confidence so calibrated thresholds are preserved.
 
     Returns {results: [{id, path, score, route}], confidence, fell_back, trace}.
     """
     qv = query_vec if query_vec is not None else embed_text(query)
 
-    # Phase 1: flat cosine over all active nodes. At N<500 this is the right answer.
+    # Phase 1: flat cosine over all active nodes.
     all_nodes = db.execute(
         "SELECT id, path, title FROM nodes WHERE orphaned_at IS NULL"
     ).fetchall()
+    node_lookup: dict[str, tuple[str, str]] = {}  # nid → (path, title)
+    cosine_scores: dict[str, float] = {}
     scored: list[tuple[str, str, str, float, str]] = []
     for (nid, npath, ntitle) in all_nodes:
+        node_lookup[nid] = (npath, ntitle)
         rowid = _rowid_for(nid)
         erow = db.execute(
             "SELECT embedding FROM embeddings WHERE rowid = ?", (rowid,)
@@ -822,21 +987,42 @@ def retrieve(
             continue
         vec = deserialize(erow[0])
         score = cosine(qv, vec)
+        cosine_scores[nid] = score
         scored.append((nid, npath, ntitle, score, "flat"))
 
     scored.sort(key=lambda r: r[3], reverse=True)
-    top = scored[:k]
-    best = top[0][3] if top else 0.0
+    best = scored[0][3] if scored else 0.0
 
-    trace = [f"flat_top={top[0][1]}:{best:.3f}" if top else "flat_empty"]
+    trace = [f"flat_top={scored[0][1]}:{best:.3f}" if scored else "flat_empty"]
     fell_back = False
 
+    # Phase 1b: FTS5 BM25 keyword search + RRF fusion.
+    fts_hits: list[tuple[str, int]] = []
+    if use_fts and _fts_available(db):
+        rowid_to_id = {_rowid_for(nid): nid for nid in node_lookup}
+        fts_hits = _fts_query(db, query, k=k, _rowid_to_id=rowid_to_id)
+        if fts_hits:
+            trace.append(f"fts_hits={len(fts_hits)}")
+            vec_ranked = [(r[0], rank + 1) for rank, r in enumerate(scored[:k * 2])]
+            fused_ids = _rrf_fuse(vec_ranked, fts_hits, k_rrf=rrf_k, top=k * 2)
+            reordered: list[tuple[str, str, str, float, str]] = []
+            for nid in fused_ids:
+                npath, ntitle = node_lookup.get(nid, ("?", "?"))
+                cs = cosine_scores.get(nid, 0.0)
+                route = "rrf" if nid in dict(fts_hits) else "flat"
+                reordered.append((nid, npath, ntitle, cs, route))
+            scored = reordered
+        else:
+            trace.append("fts_hits=0")
+    elif not use_fts:
+        trace.append("fts_off")
+
+    top = scored[:k]
+
     # Phase 2: graph expansion when the seed is confident (best ≥ LOW).
-    # Expanding a low-confidence seed would pull in noise, so we skip it.
     if use_see_also and best >= low_threshold:
         expanded: dict[str, tuple[str, str, str, float, str]] = {r[0]: r for r in top}
         for (nid, npath, ntitle, _score, _route) in top[:3]:
-            # see_also + alias_of + backlinks
             forward = db.execute(
                 """
                 SELECT dst_id FROM edges
@@ -878,15 +1064,16 @@ def retrieve(
         top = merged
         trace.append(f"expanded→{len(expanded)}")
 
-    # Phase 3: abstain when the best score is below the floor OR when the
-    # score distribution is flat (no clear winner). OOD queries produce
-    # near-uniform scores; real matches produce a spike.
+    # Phase 3: abstain gates on raw cosine scores (not RRF order).
+    # Compute gap from cosine-sorted scores so RRF reordering can't
+    # accidentally trigger abstain on queries that vector-only would surface.
+    cosine_sorted = sorted(cosine_scores.values(), reverse=True)
     if use_abstain and best < abstain_threshold:
         fell_back = True
         trace.append("abstain:threshold")
         top = []
-    elif use_abstain and len(top) >= 2:
-        others_avg = sum(r[3] for r in top[1:]) / len(top[1:])
+    elif use_abstain and len(cosine_sorted) >= 2:
+        others_avg = sum(cosine_sorted[1:k + 1]) / min(len(cosine_sorted) - 1, k)
         gap = best - others_avg
         gap_threshold = DEFAULT_SCORE_GAP_THRESHOLD
         if gap < gap_threshold and best < low_threshold:
@@ -1175,6 +1362,7 @@ def autofix_tree(db: sqlite3.Connection, vault: Path) -> dict[str, int]:
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
                 (now_iso, nid),
             )
+            _fts_delete(db, nid)
             counts["orphaned"] += 1
 
     # 2) Discover new .md files under the vault (honors iter_tree_files' skip set).
@@ -1311,6 +1499,7 @@ def reindex_external(
             node_type=node_type,
             embedding=vec,
             content_hash_val=ch,
+            body_text=_body_from_content(content),
         )
         counts["indexed"] += 1
 
@@ -1326,6 +1515,7 @@ def reindex_external(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
                 (now_iso, nid),
             )
+            _fts_delete(db, nid)
             counts["orphaned"] += 1
 
     db.commit()
@@ -1574,6 +1764,7 @@ def benchmark(
     abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
     use_see_also: bool = True,
     use_abstain: bool = True,
+    use_fts: bool = DEFAULT_USE_FTS,
     wrong_confident_score: float = 0.65,
 ) -> dict[str, Any]:
     """Run dataset queries, compute recall@k, MRR@k, per-tag breakdown, latency.
@@ -1615,6 +1806,7 @@ def benchmark(
             abstain_threshold=abstain_threshold,
             use_see_also=use_see_also,
             use_abstain=use_abstain,
+            use_fts=use_fts,
         )
         latencies.append(_time.monotonic() - t0)
 
@@ -1668,6 +1860,7 @@ def benchmark(
             "abstain_threshold": abstain_threshold,
             "use_see_also": use_see_also,
             "use_abstain": use_abstain,
+            "use_fts": use_fts,
         },
     }
 
@@ -1869,6 +2062,7 @@ def main(argv: list[str] | None = None) -> int:
         "--raw", action="store_true",
         help="[deprecated] No-op kept for backward compatibility — raw retrieve is now the default.",
     )
+    p_query.add_argument("--no-fts", action="store_true", help="Disable FTS5 hybrid search")
 
     p_reembed = sub.add_parser("reembed", help="Re-embed a single file")
     p_reembed.add_argument("path", help="Relative path from vault root")
@@ -1901,8 +2095,9 @@ def main(argv: list[str] | None = None) -> int:
     p_bench.add_argument("--json", action="store_true")
     p_bench.add_argument("--low", type=float, default=DEFAULT_LOW_THRESHOLD)
     p_bench.add_argument("--abstain", type=float, default=DEFAULT_ABSTAIN_THRESHOLD)
-    p_bench.add_argument("--ablation", action="store_true", help="Run V0/V1/V2/V3 variants side by side")
+    p_bench.add_argument("--ablation", action="store_true", help="Run V0/V1/V2/V3/V4 variants side by side")
     p_bench.add_argument("--loo", action="store_true", help="Leave-one-out CV (honest generalization estimate)")
+    p_bench.add_argument("--no-fts", action="store_true", help="Disable FTS5 hybrid search")
 
     args = parser.parse_args(argv)
     db = open_db()
@@ -1938,6 +2133,7 @@ def main(argv: list[str] | None = None) -> int:
             result = retrieve(
                 db, args.text, k=args.k,
                 low_threshold=args.low, abstain_threshold=args.abstain,
+                use_fts=not args.no_fts,
             )
         if args.json:
             print(json.dumps(result, indent=2))
@@ -2024,7 +2220,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.loo:
             report = benchmark_loo(db, data, k=args.k)
         else:
-            report = benchmark(db, data, k=args.k, low_threshold=args.low, abstain_threshold=args.abstain)
+            report = benchmark(db, data, k=args.k, low_threshold=args.low, abstain_threshold=args.abstain, use_fts=not args.no_fts)
         print(json.dumps(report, indent=2))
         return 0
 
