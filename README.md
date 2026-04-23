@@ -150,8 +150,9 @@ Commands require admin access (sent from the owner account, or from any sender i
 | Command | What it does |
 |---|---|
 | `deus` | Launch Claude Code in the current directory (external project mode if not `~/deus`) |
-| `deus codex` | Launch the same Deus context with Codex/OpenAI for this session |
-| `DEUS_CLI_AGENT=codex deus` | Make the global launcher use Codex by default |
+| `deus codex` | Launch the same Deus context with Codex/OpenAI and `DEUS_AGENT_BACKEND=openai` for this session |
+| `deus claude` | Force Claude Code and `DEUS_AGENT_BACKEND=claude` for this session |
+| `DEUS_AGENT_BACKEND=openai deus` | Make the global launcher use Codex/OpenAI by default |
 | `deus home` | Launch in home mode (`~/deus`) regardless of current directory |
 | `deus auth` | Rebuild and restart background services |
 | `deus listen` | Record from mic, transcribe with whisper.cpp, copy to clipboard |

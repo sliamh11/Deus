@@ -16,11 +16,17 @@ _resolve_script_dir() {
 }
 SCRIPT_DIR="$(_resolve_script_dir)"
 
-# CLI backend selection is intentionally separate from the container runtime
-# implementation, but follows the same defaults. Claude remains the default
-# experience; OpenAI maps to Codex when explicitly selected.
+# Prefix selection changes both the foreground CLI and runtime backend for this
+# invocation. Plain `deus` still defaults to Claude unless env/config says
+# otherwise.
 if [ "$1" = "codex" ] || [ "$1" = "openai" ] || [ "$1" = "claude" ]; then
-  DEUS_CLI_AGENT="$1"
+  if [ "$1" = "claude" ]; then
+    export DEUS_CLI_AGENT="claude"
+    export DEUS_AGENT_BACKEND="claude"
+  else
+    export DEUS_CLI_AGENT="codex"
+    export DEUS_AGENT_BACKEND="openai"
+  fi
   shift
 fi
 

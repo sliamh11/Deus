@@ -6,8 +6,8 @@ Deus now has a backend-neutral host runtime with per-group and per-task backend 
 
 **What this means today:**
 - Claude is still the most battle-tested backend for container execution, sessions, and tool orchestration.
-- OpenAI support depends on `OPENAI_API_KEY` plus `DEUS_AGENT_BACKEND=openai` or an explicit group/task override.
-- The global `deus` launcher can use Codex via `deus codex`, `DEUS_CLI_AGENT=codex`, or `DEUS_AGENT_BACKEND=openai`, but Claude Code remains the default CLI experience.
+- OpenAI support depends on `OPENAI_API_KEY` plus `deus codex`, `DEUS_AGENT_BACKEND=openai`, or an explicit group/task override.
+- The global `deus` launcher can use Codex via `deus codex`, `deus openai`, or `DEUS_AGENT_BACKEND=openai`; Claude Code remains the default CLI experience, and `deus claude` explicitly forces the Claude CLI/backend pair for one invocation.
 - The credential proxy now supports both Anthropic and OpenAI routes, but other providers still need adapters.
 - OpenAI now uses the container-side Deus tool broker for filesystem, shell, web, browser, IPC, and task tools, plus Deus-owned compacted-session metadata for `/compact`.
 - OpenAI still needs live container verification, dynamic skill MCP parity, and optional Agents SDK handoffs/tracing before it can be called parity-certified.

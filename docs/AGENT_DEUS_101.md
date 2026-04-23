@@ -100,8 +100,8 @@ CLI interface choices:
 
 - `deus`
 - `deus claude`
-- `deus codex`
-- `deus openai`
+- `deus codex` (sets CLI to Codex and runtime backend to OpenAI for that invocation)
+- `deus openai` (alias for `deus codex`)
 - `DEUS_CLI_AGENT=claude|codex`
 - `DEUS_AGENT_BACKEND=claude|openai`
 

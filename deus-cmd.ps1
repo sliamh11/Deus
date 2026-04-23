@@ -422,7 +422,13 @@ $gitContext
 # -- Commands -----------------------------------------------------------------
 
 if ($Command.ToLower() -in @("codex", "openai", "claude")) {
-    $env:DEUS_CLI_AGENT = if ($Command.ToLower() -eq "claude") { "claude" } else { "codex" }
+    if ($Command.ToLower() -eq "claude") {
+        $env:DEUS_CLI_AGENT = "claude"
+        $env:DEUS_AGENT_BACKEND = "claude"
+    } else {
+        $env:DEUS_CLI_AGENT = "codex"
+        $env:DEUS_AGENT_BACKEND = "openai"
+    }
     if ($args.Count -gt 0) {
         $Command = $args[0]
         $args = if ($args.Count -gt 1) { $args[1..($args.Count - 1)] } else { @() }
