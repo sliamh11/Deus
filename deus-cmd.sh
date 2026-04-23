@@ -16,6 +16,23 @@ _resolve_script_dir() {
 }
 SCRIPT_DIR="$(_resolve_script_dir)"
 
+# CLI backend selection is intentionally separate from the container runtime
+# implementation, but follows the same defaults. Claude remains the default
+# experience; OpenAI maps to Codex when explicitly selected.
+if [ "$1" = "codex" ] || [ "$1" = "openai" ] || [ "$1" = "claude" ]; then
+  DEUS_CLI_AGENT="$1"
+  shift
+fi
+
+_normalize_cli_agent() {
+  local agent="${DEUS_CLI_AGENT:-${DEUS_AGENT_BACKEND:-claude}}"
+  agent="$(printf '%s' "$agent" | tr '[:upper:]' '[:lower:]')"
+  case "$agent" in
+    openai|codex) echo "codex" ;;
+    *) echo "claude" ;;
+  esac
+}
+
 # ─── Project Config Helpers ───
 # Config stored at ~/.config/deus/projects/<md5-of-path>.json
 # Outside both the project dir (no pollution) and the Deus repo (no cross-user leakage).
@@ -789,6 +806,60 @@ case "$1" in
       fi
     }
 
+    launch_codex() {
+      if ! command -v codex >/dev/null 2>&1; then
+        echo "Error: Codex CLI not found. Install/login to Codex, or use DEUS_CLI_AGENT=claude."
+        return 127
+      fi
+
+      local prompt="$1"
+      local codex_args=()
+      local codex_model="${DEUS_CODEX_MODEL:-$DEUS_OPENAI_MODEL}"
+      [ -n "$codex_model" ] && codex_args+=("--model" "$codex_model")
+      [ "$CHROME_FLAG" = "--chrome" ] && codex_args+=("--search")
+
+      if [ "$PREFS_BYPASS" = "false" ]; then
+        codex "${codex_args[@]}" "$prompt"
+      else
+        codex "${codex_args[@]}" --dangerously-bypass-approvals-and-sandbox "$prompt"
+        if [ $? -ne 0 ]; then
+          codex "${codex_args[@]}" "$prompt"
+        fi
+      fi
+    }
+
+    launch_agent() {
+      if [ "$CLI_AGENT" != "codex" ]; then
+        launch_claude "$@"
+        return $?
+      fi
+
+      local system_prompt=""
+      local user_prompt=""
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          --append-system-prompt)
+            system_prompt="$2"
+            shift 2
+            ;;
+          *)
+            user_prompt="${user_prompt}${user_prompt:+
+}$1"
+            shift
+            ;;
+        esac
+      done
+
+      local prompt="$system_prompt"
+      if [ -n "$user_prompt" ]; then
+        prompt="$prompt
+
+USER REQUEST:
+$user_prompt"
+      fi
+      launch_codex "$prompt"
+    }
+
     # Resolve vault path from config (DEUS_VAULT_PATH env var → ~/.config/deus/config.json)
     VAULT="${DEUS_VAULT_PATH:-$(python3 -c "import json; from pathlib import Path; print(json.loads(Path('~/.config/deus/config.json').expanduser().read_text()).get('vault_path',''))" 2>/dev/null)}"
 
@@ -820,7 +891,41 @@ case "$1" in
       }
     fi
 
-    # ─── DEUS IDENTITY (always present, even without vault) ───
+	    CLI_AGENT="$(_normalize_cli_agent)"
+	    EXTERNAL_MODE="false"
+	    PROJECT_CONFIG=""
+	    JUST_ONBOARDED="false"
+	    MEMORY_LEVEL="standard"
+	    EXTRA_ENV=""
+
+	    if [ "$CURRENT_DIR" != "$DEUS_HOME" ]; then
+	      EXTERNAL_MODE="true"
+
+	      # Ensure external-project skills are installed before onboarding.
+	      _ensure_project_settings_skill
+	      _ensure_resume_skill
+	      _ensure_checkpoint_skill
+	      _ensure_compress_skill
+	      _ensure_preserve_skill
+	      _ensure_preferences_skill
+
+	      PROJECT_CONFIG=$(_read_project_config "$CURRENT_DIR")
+	      if [ -z "$PROJECT_CONFIG" ]; then
+	        _run_onboarding "$CURRENT_DIR"
+	        PROJECT_CONFIG=$(_read_project_config "$CURRENT_DIR")
+	        JUST_ONBOARDED="true"
+	      else
+	        _update_project_access "$CURRENT_DIR"
+	      fi
+
+	      MEMORY_LEVEL=$(echo "$PROJECT_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('memory_level','standard'))" 2>/dev/null)
+	      [ -z "$MEMORY_LEVEL" ] && MEMORY_LEVEL="standard"
+	      if [ "$MEMORY_LEVEL" = "restricted" ]; then
+	        EXTRA_ENV="CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"
+	      fi
+	    fi
+
+	    # ─── DEUS IDENTITY (always present, even without vault) ───
     DEUS_IDENTITY="You are Deus - the user's personal AI assistant. You are not a generic coding tool. You collaborate on everything: coding, studies, life decisions, recommendations, brainstorming, and anything the user brings to you.
 
 Key capabilities you have:
@@ -857,93 +962,74 @@ Additional instructions from the user: $PREFS_PERSONA"
     if [ -z "$VAULT" ]; then
       echo "Warning: No vault configured. Set DEUS_VAULT_PATH or vault_path in ~/.config/deus/config.json"
       if [ "$CURRENT_DIR" != "$DEUS_HOME" ]; then
-        launch_claude --append-system-prompt "$DEUS_IDENTITY"
+        launch_agent --append-system-prompt "$DEUS_IDENTITY"
+        exit $?
       else
-        cd "$HOME/deus" && launch_claude --append-system-prompt "$DEUS_IDENTITY"
+        cd "$HOME/deus" && launch_agent --append-system-prompt "$DEUS_IDENTITY"
+        exit $?
       fi
     fi
     CONTEXT=""
 
-    printf "  Reading vault...\r"
-    CLAUDE_MD=$(cat "$VAULT/CLAUDE.md" 2>/dev/null)
-    STUDY_MD=$(cat "$VAULT/STUDY.md" 2>/dev/null)
-    INFRA_MD=$(cat "$VAULT/INFRA.md" 2>/dev/null)
-    [ -n "$CLAUDE_MD" ] && CONTEXT="=== VAULT: CLAUDE.md ===\n$CLAUDE_MD"
-    [ -n "$STUDY_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: STUDY.md ===\n$STUDY_MD"
-    [ -n "$INFRA_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: INFRA.md ===\n$INFRA_MD"
+	    if [ "$EXTERNAL_MODE" = "true" ] && [ "$MEMORY_LEVEL" = "restricted" ]; then
+	      printf "  Restricted memory: skipping vault recall...\r"
+	    else
+	      printf "  Reading vault...\r"
+	      CLAUDE_MD=$(cat "$VAULT/CLAUDE.md" 2>/dev/null)
+	      AGENTS_MD=$(cat "$VAULT/AGENTS.md" 2>/dev/null)
+	      STATE_MD=$(cat "$VAULT/STATE.md" 2>/dev/null)
+	      STUDY_MD=$(cat "$VAULT/STUDY.md" 2>/dev/null)
+	      INFRA_MD=$(cat "$VAULT/INFRA.md" 2>/dev/null)
+	      [ -n "$CLAUDE_MD" ] && CONTEXT="=== VAULT: CLAUDE.md ===\n$CLAUDE_MD"
+	      [ -n "$AGENTS_MD" ] && CONTEXT="$CONTEXT\n\n=== VAULT: AGENTS.md ===\n$AGENTS_MD"
+	      [ -n "$STATE_MD" ] && CONTEXT="$CONTEXT\n\n=== VAULT: STATE.md ===\n$STATE_MD"
+	      [ -n "$STUDY_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: STUDY.md ===\n$STUDY_MD"
+	      [ -n "$INFRA_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: INFRA.md ===\n$INFRA_MD"
 
-    # Memory tree (Phase 4, gated by DEUS_MEMORY_TREE=1 during dogfood).
-    if [ "${DEUS_MEMORY_TREE:-0}" = "1" ]; then
-      MEMORY_TREE_MD=$(cat "$VAULT/MEMORY_TREE.md" 2>/dev/null)
-      if [ -n "$MEMORY_TREE_MD" ]; then
-        CONTEXT="$CONTEXT\n\n=== VAULT: MEMORY_TREE.md ===\n$MEMORY_TREE_MD\n\n=== MEMORY TREE USAGE ===\nFor factual personal questions (identity, household, preferences, cross-branch), call:\n  python3 \$HOME/deus/scripts/memory_tree.py query \"<question>\"\nThe top result's path is the vault file to Read. On abstained:true or low confidence, fall back to Persona/INDEX.md. Prefer this over guessing from CLAUDE.md hints."
-      fi
-    fi
+	      # Memory tree (Phase 4, gated by DEUS_MEMORY_TREE=1 during dogfood).
+	      if [ "${DEUS_MEMORY_TREE:-0}" = "1" ]; then
+	        MEMORY_TREE_MD=$(cat "$VAULT/MEMORY_TREE.md" 2>/dev/null)
+	        if [ -n "$MEMORY_TREE_MD" ]; then
+	          CONTEXT="$CONTEXT\n\n=== VAULT: MEMORY_TREE.md ===\n$MEMORY_TREE_MD\n\n=== MEMORY TREE USAGE ===\nFor factual personal questions (identity, household, preferences, cross-branch), call:\n  python3 \$HOME/deus/scripts/memory_tree.py query \"<question>\"\nThe top result's path is the vault file to Read. On abstained:true or low confidence, fall back to Persona/INDEX.md. Prefer this over guessing from CLAUDE.md hints."
+	        fi
+	      fi
 
-    printf "  Checking checkpoints...\r"
-    CHECKPOINT_FILE=$(find "$VAULT/Checkpoints" -name "$(date +%Y-%m-%d)-*.md" 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
-    if [ -n "$CHECKPOINT_FILE" ]; then
-      CHECKPOINT=$(cat "$CHECKPOINT_FILE" 2>/dev/null)
-      [ -n "$CHECKPOINT" ] && CONTEXT="$CONTEXT\n\n=== MID-SESSION CHECKPOINT ===\n$CHECKPOINT"
-    fi
+	      printf "  Checking checkpoints...\r"
+	      CHECKPOINT_FILE=$(find "$VAULT/Checkpoints" -name "$(date +%Y-%m-%d)-*.md" 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+	      if [ -n "$CHECKPOINT_FILE" ]; then
+	        CHECKPOINT=$(cat "$CHECKPOINT_FILE" 2>/dev/null)
+	        [ -n "$CHECKPOINT" ] && CONTEXT="$CONTEXT\n\n=== MID-SESSION CHECKPOINT ===\n$CHECKPOINT"
+	      fi
 
-    printf "  Loading recent sessions...\r"
-    RECENT=$(python3 "$HOME/deus/scripts/memory_indexer.py" --recent 3 2>/dev/null)
-    [ -n "$RECENT" ] && CONTEXT="$CONTEXT\n\n=== RECENT SESSIONS ===\n$RECENT"
+	      printf "  Loading recent sessions...\r"
+	      RECENT=$(python3 "$HOME/deus/scripts/memory_indexer.py" --recent 3 2>/dev/null)
+	      [ -n "$RECENT" ] && CONTEXT="$CONTEXT\n\n=== RECENT SESSIONS ===\n$RECENT"
 
-    SEMANTIC_CACHE="$HOME/.deus/resume_semantic_cache.txt"
-    SEMANTIC_TTL=14400  # 4 hours
-    SEMANTIC=""
-    USE_CACHE=false
-    if [ -f "$SEMANTIC_CACHE" ]; then
-      CACHE_AGE=$(( $(date +%s) - $(stat -f %m "$SEMANTIC_CACHE") ))
-      [ "$CACHE_AGE" -lt "$SEMANTIC_TTL" ] && USE_CACHE=true
-    fi
-    if $USE_CACHE; then
-      printf "  Recalling relevant sessions...\r"
-      SEMANTIC=$(cat "$SEMANTIC_CACHE" 2>/dev/null)
-    else
-      printf "  Retrieving relevant context...\r"
-      SEMANTIC=$(python3 "$HOME/deus/scripts/memory_indexer.py" --query "recent work ongoing tasks" --top 2 --recency-boost 2>/dev/null)
-      [ -n "$SEMANTIC" ] && echo "$SEMANTIC" > "$SEMANTIC_CACHE"
-    fi
-    [ -n "$SEMANTIC" ] && CONTEXT="$CONTEXT\n\n=== RELATED SESSIONS ===\n$SEMANTIC"
+	      SEMANTIC_CACHE="$HOME/.deus/resume_semantic_cache.txt"
+	      SEMANTIC_TTL=14400  # 4 hours
+	      SEMANTIC=""
+	      USE_CACHE=false
+	      if [ -f "$SEMANTIC_CACHE" ]; then
+	        CACHE_AGE=$(( $(date +%s) - $(stat -f %m "$SEMANTIC_CACHE") ))
+	        [ "$CACHE_AGE" -lt "$SEMANTIC_TTL" ] && USE_CACHE=true
+	      fi
+	      if $USE_CACHE; then
+	        printf "  Recalling relevant sessions...\r"
+	        SEMANTIC=$(cat "$SEMANTIC_CACHE" 2>/dev/null)
+	      else
+	        printf "  Retrieving relevant context...\r"
+	        SEMANTIC=$(python3 "$HOME/deus/scripts/memory_indexer.py" --query "recent work ongoing tasks" --top 2 --recency-boost 2>/dev/null)
+	        [ -n "$SEMANTIC" ] && echo "$SEMANTIC" > "$SEMANTIC_CACHE"
+	      fi
+	      [ -n "$SEMANTIC" ] && CONTEXT="$CONTEXT\n\n=== RELATED SESSIONS ===\n$SEMANTIC"
+	    fi
 
     printf "✓ Ready.                        \n"
 
     # ─── EXTERNAL PROJECT MODE ───
     # Same full Deus brain, different working directory and startup.
     # Memory level controls how much project data persists between sessions.
-    if [ "$CURRENT_DIR" != "$DEUS_HOME" ]; then
-
-      # Ensure skills are installed
-      _ensure_project_settings_skill
-      _ensure_resume_skill
-      _ensure_checkpoint_skill
-      _ensure_compress_skill
-      _ensure_preserve_skill
-      _ensure_preferences_skill
-
-      # Check for existing project config or run onboarding
-      PROJECT_CONFIG=$(_read_project_config "$CURRENT_DIR")
-      JUST_ONBOARDED="false"
-      if [ -z "$PROJECT_CONFIG" ]; then
-        _run_onboarding "$CURRENT_DIR"
-        PROJECT_CONFIG=$(_read_project_config "$CURRENT_DIR")
-        JUST_ONBOARDED="true"
-      else
-        _update_project_access "$CURRENT_DIR"
-      fi
-
-      # Parse memory level and summaries from config
-      MEMORY_LEVEL=$(echo "$PROJECT_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('memory_level','standard'))" 2>/dev/null)
-      [ -z "$MEMORY_LEVEL" ] && MEMORY_LEVEL="standard"
-
-      # Build env vars based on memory level
-      EXTRA_ENV=""
-      if [ "$MEMORY_LEVEL" = "restricted" ]; then
-        EXTRA_ENV="CLAUDE_CODE_DISABLE_AUTO_MEMORY=1"
-      fi
+	    if [ "$EXTERNAL_MODE" = "true" ]; then
 
       # Build memory-level-specific system prompt instructions
       MEMORY_INSTRUCTION=""
@@ -992,7 +1078,13 @@ Then ask what they'd like to work on. Use /resume for a deeper context reload."
         STARTUP_GREETING="Greet the user briefly: identify the project (from CLAUDE.md, package.json, or directory name), state the memory level ($MEMORY_LEVEL), and wait for instructions."
       fi
 
-      STARTUP_INSTRUCTION="STARTUP INSTRUCTION: You are Deus, operating in EXTERNAL PROJECT MODE. The current directory is an external codebase at $CURRENT_DIR — not the Deus project. You have your full memory, preferences, and capabilities. Focus on this codebase while applying all your behavioral rules and knowledge. The project may have its own CLAUDE.md — follow it alongside yours.
+	      if [ "$MEMORY_LEVEL" = "restricted" ]; then
+	        MEMORY_SCOPE="Saved vault/session memory was intentionally not preloaded for this project. Use Deus core behavior, live repo state, and live tools only."
+	      else
+	        MEMORY_SCOPE="You have your full memory, preferences, and capabilities."
+	      fi
+
+	      STARTUP_INSTRUCTION="STARTUP INSTRUCTION: You are Deus, operating in EXTERNAL PROJECT MODE. The current directory is an external codebase at $CURRENT_DIR — not the Deus project. $MEMORY_SCOPE Focus on this codebase while applying all your behavioral rules and knowledge. The project may have its own CLAUDE.md — follow it alongside yours.
 
 $MEMORY_INSTRUCTION
 
@@ -1008,11 +1100,13 @@ $STARTUP_GREETING"
       fi
 
       if [ -n "$CONTEXT" ]; then
-        launch_claude --append-system-prompt "$(printf '%s' "$CONTEXT")
+        launch_agent --append-system-prompt "$(printf '%s' "$CONTEXT")
 
 $STARTUP_INSTRUCTION"
+        exit $?
       else
-        launch_claude --append-system-prompt "$STARTUP_INSTRUCTION"
+        launch_agent --append-system-prompt "$STARTUP_INSTRUCTION"
+        exit $?
       fi
     fi
 
@@ -1029,11 +1123,11 @@ $STARTUP_INSTRUCTION"
     if [ "$PREFS_CATCH_ME_UP" = "false" ]; then
       STARTUP_INSTRUCTION="STARTUP INSTRUCTION: Context from the memory vault has been pre-loaded above. Wait for the user's instructions."
       if [ -n "$CONTEXT" ]; then
-        cd "$HOME/deus" && launch_claude --append-system-prompt "$(printf '%s' "$CONTEXT")
+        cd "$HOME/deus" && launch_agent --append-system-prompt "$(printf '%s' "$CONTEXT")
 
 $STARTUP_INSTRUCTION"
       else
-        cd "$HOME/deus" && launch_claude
+        cd "$HOME/deus" && launch_agent
       fi
     else
       STARTUP_INSTRUCTION="STARTUP INSTRUCTION: Context from the memory vault has been pre-loaded above, BUT it is a snapshot taken at deus launch and does not refresh across /clear or same-session work. Before drafting the catch-up, verify freshness:
@@ -1052,11 +1146,11 @@ Then catch the user up using exactly this format:
 Then stop and wait for the user."
 
       if [ -n "$CONTEXT" ]; then
-        cd "$HOME/deus" && launch_claude --append-system-prompt "$(printf '%s' "$CONTEXT")
+        cd "$HOME/deus" && launch_agent --append-system-prompt "$(printf '%s' "$CONTEXT")
 
 $STARTUP_INSTRUCTION" "Catch me up."
       else
-        cd "$HOME/deus" && launch_claude
+        cd "$HOME/deus" && launch_agent
       fi
     fi
     ;;
@@ -1087,9 +1181,10 @@ $STARTUP_INSTRUCTION" "Catch me up."
     esac
     ;;
   *)
-    echo "Usage: deus [home|auth|web|listen|logs]"
+    echo "Usage: deus [claude|codex|openai] [home|auth|web|listen|logs]"
     echo ""
     echo "  deus        Launch in current directory (external project mode if not ~/deus)"
+    echo "  deus codex  Launch the same Deus context with Codex/OpenAI for this session"
     echo "  deus home   Launch in home mode (~/deus) regardless of current directory"
     echo "  deus auth   Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"

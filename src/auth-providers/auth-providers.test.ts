@@ -50,10 +50,12 @@ import { readFileSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { AuthProviderRegistry, NoProviderAvailableError } from './types.js';
 import type { AuthProvider } from './types.js';
+import { ensureDefaultProviders } from './index.js';
 import {
   AnthropicAuthProvider,
   _resetCredentialsCacheForTest,
 } from './anthropic.js';
+import { OpenAIAuthProvider } from './openai.js';
 
 const mockReadFileSync = readFileSync as ReturnType<typeof vi.fn>;
 const mockWriteFileSync = writeFileSync as ReturnType<typeof vi.fn>;
@@ -188,6 +190,61 @@ describe('AuthProviderRegistry', () => {
     const replacement = mockProvider('a', 5, true);
     reg.register(replacement);
     expect(reg.get('a')).toBe(replacement);
+  });
+});
+
+describe('OpenAIAuthProvider', () => {
+  beforeEach(() => {
+    for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+  });
+
+  afterEach(() => {
+    for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+  });
+
+  it('is available when OPENAI_API_KEY is configured', () => {
+    Object.assign(mockEnv, { OPENAI_API_KEY: 'sk-openai-test' });
+    const provider = new OpenAIAuthProvider();
+
+    expect(provider.isAvailable()).toBe(true);
+    expect(provider.getUpstreamUrl()).toBe('https://api.openai.com');
+  });
+
+  it('injects bearer auth and strips x-api-key', () => {
+    Object.assign(mockEnv, {
+      OPENAI_API_KEY: 'sk-openai-real',
+      OPENAI_BASE_URL: 'https://proxy.example.com',
+    });
+    const provider = new OpenAIAuthProvider();
+
+    const headers: Record<string, string | string[] | undefined> = {
+      authorization: 'Bearer placeholder',
+      'x-api-key': 'temp-key',
+    };
+    provider.injectAuth(headers);
+
+    expect(provider.getUpstreamUrl()).toBe('https://proxy.example.com');
+    expect(headers.authorization).toBe('Bearer sk-openai-real');
+    expect(headers['x-api-key']).toBeUndefined();
+  });
+});
+
+describe('ensureDefaultProviders', () => {
+  beforeEach(() => {
+    AuthProviderRegistry.reset();
+  });
+
+  afterEach(() => {
+    AuthProviderRegistry.reset();
+  });
+
+  it('registers anthropic and openai providers once', () => {
+    ensureDefaultProviders();
+    ensureDefaultProviders();
+
+    const registry = AuthProviderRegistry.default();
+    expect(registry.listProviders()).toContain('anthropic');
+    expect(registry.listProviders()).toContain('openai');
   });
 });
 

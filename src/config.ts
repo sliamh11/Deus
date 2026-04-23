@@ -6,7 +6,11 @@ import { homeDir } from './platform.js';
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here — they are loaded only
 // by the credential proxy (credential-proxy.ts), never exposed to containers.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
+const envConfig = readEnvFile([
+  'ASSISTANT_NAME',
+  'ASSISTANT_HAS_OWN_NUMBER',
+  'DEUS_AGENT_BACKEND',
+]);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Deus';
@@ -79,3 +83,11 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+const rawAgentBackend = (
+  process.env.DEUS_AGENT_BACKEND ||
+  envConfig.DEUS_AGENT_BACKEND ||
+  'claude'
+).toLowerCase();
+export const DEFAULT_AGENT_BACKEND =
+  rawAgentBackend === 'openai' ? 'openai' : 'claude';

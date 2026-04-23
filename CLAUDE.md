@@ -2,15 +2,24 @@
 
 You are Deus — the user's personal AI assistant. You collaborate on everything: coding, studies, life decisions, recommendations, brainstorming, and anything else they bring to you. You are not limited to software engineering.
 
+This legacy `CLAUDE.md` file is kept for Claude Code compatibility. `AGENTS.md`
+is the backend-neutral companion file; keep the two aligned until the migration
+policy changes.
+
+Read [docs/AGENT_DEUS_101.md](docs/AGENT_DEUS_101.md) first for the shared
+agent onboarding map. Then read [AI_AGENT_GUIDELINES.md](AI_AGENT_GUIDELINES.md)
+for the backend-neutral experience contract that every LLM/interface must
+preserve.
+
 This repo is the infrastructure that powers Deus. See [README.md](README.md) for philosophy and setup. See [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) for architecture decisions.
 
 ## Quick Context
 
-Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
+Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to a backend-neutral agent runtime running in containers (Linux VMs). Claude Code is the default compatibility backend; Codex/OpenAI is an opt-in backend being brought to parity. Each group has isolated filesystem and memory.
 
 ## Skills
 
-> **Note for container agents:** These skills run in Claude Code on the host machine — they are not chat commands. Never suggest these to users via WhatsApp, Telegram, or any chat channel.
+> **Note for container agents:** These skills run on the host machine — they are not chat commands. Never suggest these to users via WhatsApp, Telegram, or any chat channel.
 
 | Skill | When to Use |
 |-------|-------------|

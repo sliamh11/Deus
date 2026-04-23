@@ -26,13 +26,27 @@ import {
 import { fileURLToPath } from 'url';
 
 import { bootstrap } from './bootstrap.js';
+import { loadRegisteredContextFiles } from './context-registry.js';
+import { runOpenAIConversation } from './openai-backend.js';
+
+type AgentBackendName = 'claude' | 'openai';
+
+interface BackendSessionRef {
+  backend: AgentBackendName;
+  session_id: string;
+  resume_cursor?: string;
+  metadata_json?: string;
+}
 
 interface ContainerInput {
   prompt: string;
+  backend?: AgentBackendName;
   sessionId?: string;
+  sessionRef?: BackendSessionRef;
   groupFolder: string;
   chatJid: string;
-  isMain: boolean;
+  isMain?: boolean;
+  isControlGroup?: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
@@ -52,6 +66,7 @@ type ContentBlock = ImageContentBlock | TextContentBlock;
 interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
+  newSessionRef?: BackendSessionRef;
   newSessionId?: string;
   error?: string;
 }
@@ -185,6 +200,21 @@ function writeOutput(output: ContainerOutput): void {
 
 function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
+}
+
+function defaultSessionRef(
+  sessionId: string | undefined,
+  backend: AgentBackendName = 'claude',
+): BackendSessionRef | undefined {
+  if (!sessionId) return undefined;
+  return {
+    backend,
+    session_id: sessionId,
+  };
+}
+
+function isControlGroup(containerInput: ContainerInput): boolean {
+  return containerInput.isControlGroup ?? containerInput.isMain ?? false;
 }
 
 function getSessionSummary(
@@ -574,20 +604,6 @@ async function runQuery(
         : 'low';
   log(`Effort level: ${effort ?? 'SDK default'}`);
 
-  // Load global CLAUDE.md as additional system context (shared across all groups)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  let globalClaudeMd: string | undefined;
-  if (!containerInput.isMain && fs.existsSync(globalClaudeMdPath)) {
-    globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-  }
-
-  // Session-stable system append: global CLAUDE.md (non-main groups) plus the
-  // project hint (when the group has a project). Placing the hint here instead
-  // of prepending to every user prompt avoids re-billing it per turn.
-  const systemAppend = [globalClaudeMd, containerInput.projectHint]
-    .filter((s): s is string => !!s && s.length > 0)
-    .join('\n\n');
-
   // Detect external project mount: if /workspace/project exists and has content,
   // use it as the primary cwd. The agent works in the user's project directory
   // while /workspace/group stays available as an additional directory for
@@ -612,6 +628,20 @@ async function runQuery(
   if (hasProject) {
     log(`External project detected at ${projectDir}, using as cwd`);
   }
+
+  // Session-stable system append. Claude Code still performs its native
+  // CLAUDE.md loading, but this registry is the provider-neutral contract for
+  // Deus-specific rule/context files and future AGENTS.md names.
+  const systemAppend = [
+    ...loadRegisteredContextFiles({
+      isControlGroup: isControlGroup(containerInput),
+      hasProject,
+      mode: 'claude-system-append',
+    }),
+    containerInput.projectHint,
+  ]
+    .filter((s): s is string => !!s && s.length > 0)
+    .join('\n\n');
 
   // Discover additional directories mounted at /workspace/extra/*
   // These are passed to the SDK so their CLAUDE.md files are loaded automatically
@@ -719,7 +749,7 @@ async function runQuery(
           env: {
             DEUS_CHAT_JID: containerInput.chatJid,
             DEUS_GROUP_FOLDER: containerInput.groupFolder,
-            DEUS_IS_MAIN: containerInput.isMain ? '1' : '0',
+            DEUS_IS_MAIN: isControlGroup(containerInput) ? '1' : '0',
           },
         },
         // Google Calendar MCP — only available when credentials exist on the host
@@ -789,6 +819,7 @@ async function runQuery(
       writeOutput({
         status: 'success',
         result: textResult || null,
+        newSessionRef: defaultSessionRef(newSessionId),
         newSessionId,
       });
     }
@@ -829,7 +860,10 @@ async function main(): Promise<void> {
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
-  let sessionId = containerInput.sessionId;
+  const backend =
+    containerInput.backend || containerInput.sessionRef?.backend || 'claude';
+  let sessionId =
+    containerInput.sessionRef?.session_id || containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });
 
   // Clean up stale _close sentinel from previous container runs
@@ -837,6 +871,21 @@ async function main(): Promise<void> {
     fs.unlinkSync(IPC_INPUT_CLOSE_SENTINEL);
   } catch {
     /* ignore */
+  }
+
+  if (backend === 'openai') {
+    await runOpenAIConversation({
+      containerInput: {
+        ...containerInput,
+        backend,
+      },
+      log,
+      writeOutput,
+      drainIpcInput,
+      waitForIpcMessage,
+      shouldClose,
+    });
+    return;
   }
 
   // Build initial prompt (drain any pending IPC messages too)
@@ -916,12 +965,14 @@ async function main(): Promise<void> {
               status: 'error',
               result: null,
               error: textResult || 'Session command failed.',
+              newSessionRef: defaultSessionRef(slashSessionId),
               newSessionId: slashSessionId,
             });
           } else {
             writeOutput({
               status: 'success',
               result: textResult || 'Conversation compacted.',
+              newSessionRef: defaultSessionRef(slashSessionId),
               newSessionId: slashSessionId,
             });
           }
@@ -953,6 +1004,7 @@ async function main(): Promise<void> {
         result: compactBoundarySeen
           ? 'Conversation compacted.'
           : 'Compaction requested but compact_boundary was not observed.',
+        newSessionRef: defaultSessionRef(slashSessionId),
         newSessionId: slashSessionId,
       });
     } else if (!hadError) {
@@ -960,6 +1012,7 @@ async function main(): Promise<void> {
       writeOutput({
         status: 'success',
         result: null,
+        newSessionRef: defaultSessionRef(slashSessionId),
         newSessionId: slashSessionId,
       });
     }
@@ -999,7 +1052,12 @@ async function main(): Promise<void> {
       }
 
       // Emit session update so host can track it
-      writeOutput({ status: 'success', result: null, newSessionId: sessionId });
+      writeOutput({
+        status: 'success',
+        result: null,
+        newSessionRef: defaultSessionRef(sessionId),
+        newSessionId: sessionId,
+      });
 
       log('Query ended, waiting for next IPC message...');
 
@@ -1019,6 +1077,7 @@ async function main(): Promise<void> {
     writeOutput({
       status: 'error',
       result: null,
+      newSessionRef: defaultSessionRef(sessionId),
       newSessionId: sessionId,
       error: errorMessage,
     });

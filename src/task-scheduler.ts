@@ -3,6 +3,11 @@ import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
 import { fireAndForget } from './async/index.js';
+import {
+  defaultSessionRef,
+  type BackendSessionRef,
+} from './agent-backends/types.js';
+import { resolveAgentBackend } from './agent-backends/resolve.js';
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
   ContainerOutput,
@@ -65,7 +70,12 @@ export function computeNextRun(task: ScheduledTask): string | null {
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, string>;
+  getSessions: () => Record<string, BackendSessionRef | string>;
+  getSession?: (
+    groupFolder: string,
+    backend?: BackendSessionRef['backend'],
+  ) => BackendSessionRef | undefined;
+  setSession?: (groupFolder: string, sessionRef: BackendSessionRef) => void;
   queue: GroupQueue;
   onProcess: (
     groupJid: string,
@@ -151,9 +161,19 @@ async function runTask(
   let error: string | null = null;
 
   // For group context mode, use the group's current session
+  const backend = resolveAgentBackend(group, task);
   const sessions = deps.getSessions();
-  const sessionId =
+  const rawSession =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;
+  const candidateSessionRef =
+    task.context_mode === 'group'
+      ? (deps.getSession?.(task.group_folder, backend) ??
+        (typeof rawSession === 'string'
+          ? defaultSessionRef(rawSession)
+          : rawSession))
+      : undefined;
+  const sessionRef =
+    candidateSessionRef?.backend === backend ? candidateSessionRef : undefined;
 
   // After the task produces a result, close the container promptly.
   // Tasks are single-turn — no need to wait IDLE_TIMEOUT (30 min) for the
@@ -174,7 +194,9 @@ async function runTask(
       group,
       {
         prompt: task.prompt,
-        sessionId,
+        backend,
+        sessionId: sessionRef?.session_id,
+        sessionRef,
         groupFolder: task.group_folder,
         chatJid: task.chat_jid,
         isControlGroup,
@@ -184,6 +206,12 @@ async function runTask(
       (proc, containerName) =>
         deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
       async (streamedOutput: ContainerOutput) => {
+        if (streamedOutput.newSessionId && streamedOutput.status !== 'error') {
+          const nextSessionRef =
+            streamedOutput.newSessionRef ??
+            defaultSessionRef(streamedOutput.newSessionId, backend);
+          deps.setSession?.(task.group_folder, nextSessionRef);
+        }
         if (streamedOutput.result) {
           result = streamedOutput.result;
           // Forward result to user (sendMessage handles formatting)
@@ -207,6 +235,15 @@ async function runTask(
     } else if (output.result) {
       // Result was already forwarded to the user via the streaming callback above
       result = output.result;
+    }
+    if (
+      (output.newSessionRef || output.newSessionId) &&
+      output.status !== 'error'
+    ) {
+      const nextSessionRef =
+        output.newSessionRef ??
+        defaultSessionRef(output.newSessionId!, backend);
+      deps.setSession?.(task.group_folder, nextSessionRef);
     }
 
     logger.info(

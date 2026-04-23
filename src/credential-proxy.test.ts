@@ -63,11 +63,16 @@ function makeRequest(
 }
 
 describe('credential-proxy', () => {
-  let proxyServer: http.Server;
-  let upstreamServer: http.Server;
+  let proxyServer: http.Server | undefined;
+  let upstreamServer: http.Server | undefined;
   let proxyPort: number;
   let upstreamPort: number;
   let lastUpstreamHeaders: http.IncomingHttpHeaders;
+
+  async function closeServer(server: http.Server | undefined): Promise<void> {
+    if (!server) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 
   beforeEach(async () => {
     lastUpstreamHeaders = {};
@@ -85,20 +90,21 @@ describe('credential-proxy', () => {
       throw new Error('no keychain (test isolation)');
     });
 
-    upstreamServer = http.createServer((req, res) => {
+    const server = http.createServer((req, res) => {
       lastUpstreamHeaders = { ...req.headers };
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
     });
+    upstreamServer = server;
     await new Promise<void>((resolve) =>
-      upstreamServer.listen(0, '127.0.0.1', resolve),
+      server.listen(0, '127.0.0.1', resolve),
     );
-    upstreamPort = (upstreamServer.address() as AddressInfo).port;
+    upstreamPort = (server.address() as AddressInfo).port;
   });
 
   afterEach(async () => {
-    await new Promise<void>((r) => proxyServer?.close(() => r()));
-    await new Promise<void>((r) => upstreamServer?.close(() => r()));
+    await closeServer(proxyServer);
+    await closeServer(upstreamServer);
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
     mockReadFileSync.mockReset();
     mockExecFileSync.mockReset();
@@ -107,8 +113,9 @@ describe('credential-proxy', () => {
   });
 
   async function startProxy(env: Record<string, string>): Promise<number> {
-    Object.assign(mockEnv, env, {
+    Object.assign(mockEnv, {
       ANTHROPIC_BASE_URL: `http://127.0.0.1:${upstreamPort}`,
+      ...env,
     });
     proxyServer = await startCredentialProxy(0);
     return (proxyServer.address() as AddressInfo).port;
@@ -131,6 +138,32 @@ describe('credential-proxy', () => {
     );
 
     expect(lastUpstreamHeaders['x-api-key']).toBe('sk-ant-real-key');
+  });
+
+  it('routes /openai requests to the OpenAI provider and injects bearer auth', async () => {
+    proxyPort = await startProxy({
+      OPENAI_API_KEY: 'sk-openai-real-key',
+      OPENAI_BASE_URL: `http://127.0.0.1:${upstreamPort}`,
+    });
+
+    await makeRequest(
+      proxyPort,
+      {
+        method: 'POST',
+        path: '/openai/v1/responses',
+        headers: {
+          'content-type': 'application/json',
+          authorization: 'Bearer placeholder',
+          'x-api-key': 'temp-key',
+        },
+      },
+      '{}',
+    );
+
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      'Bearer sk-openai-real-key',
+    );
+    expect(lastUpstreamHeaders['x-api-key']).toBeUndefined();
   });
 
   it('OAuth mode replaces Authorization when container sends one', async () => {

@@ -52,7 +52,7 @@ registerStartupCheck({
     name: 'API credentials',
     level: 'fatal',
     ok: hasApiCredentials(),
-    hint: 'Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN in .env (or run: deus auth)',
+    hint: 'Set ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN for Claude or OPENAI_API_KEY for OpenAI in .env',
   }),
 });
 

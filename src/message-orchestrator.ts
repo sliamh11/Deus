@@ -16,12 +16,14 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
+import { defaultSessionRef } from './agent-backends/types.js';
 import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { resolveAgentBackend } from './agent-backends/resolve.js';
 import {
   clearSession,
   getAllTasks,
@@ -65,7 +67,8 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     onOutput?: (output: ContainerOutput) => Promise<void>,
   ): Promise<'success' | 'error'> {
     const isControlGroup = group.isControlGroup === true;
-    let sessionId = state.getSession(group.folder);
+    const backend = resolveAgentBackend(group);
+    let sessionRef = state.getSession(group.folder, backend);
 
     // Idle session reset: per-group setting takes precedence over global default.
     const effectiveIdleHours =
@@ -73,8 +76,8 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         ? group.containerConfig.sessionIdleResetHours
         : SESSION_IDLE_RESET_HOURS;
 
-    if (sessionId && effectiveIdleHours > 0) {
-      const lastUsed = getSessionLastUsedAt(group.folder);
+    if (sessionRef && effectiveIdleHours > 0) {
+      const lastUsed = getSessionLastUsedAt(group.folder, backend);
       const idleMs = lastUsed
         ? Date.now() - new Date(lastUsed).getTime()
         : Infinity;
@@ -83,9 +86,9 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           { group: group.name, idleHours: (idleMs / 3_600_000).toFixed(1) },
           'Session idle too long — starting fresh',
         );
-        clearSession(group.folder);
-        state.clearSession(group.folder);
-        sessionId = undefined;
+        clearSession(group.folder, backend);
+        state.clearSession(group.folder, backend);
+        sessionRef = undefined;
       }
     }
 
@@ -115,8 +118,11 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     const wrappedOnOutput = onOutput
       ? async (output: ContainerOutput) => {
           if (output.newSessionId && output.status !== 'error') {
-            state.setSession(group.folder, output.newSessionId);
-            setSession(group.folder, output.newSessionId);
+            const nextSession =
+              output.newSessionRef ??
+              defaultSessionRef(output.newSessionId, backend);
+            state.setSession(group.folder, nextSession);
+            setSession(group.folder, nextSession);
           }
           await onOutput(output);
         }
@@ -127,7 +133,9 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         group,
         {
           prompt,
-          sessionId,
+          backend,
+          sessionId: sessionRef?.session_id,
+          sessionRef,
           groupFolder: group.folder,
           chatJid,
           isControlGroup,
@@ -139,9 +147,15 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         wrappedOnOutput,
       );
 
-      if (output.newSessionId && output.status !== 'error') {
-        state.setSession(group.folder, output.newSessionId);
-        setSession(group.folder, output.newSessionId);
+      if (
+        (output.newSessionRef || output.newSessionId) &&
+        output.status !== 'error'
+      ) {
+        const nextSession =
+          output.newSessionRef ??
+          defaultSessionRef(output.newSessionId!, backend);
+        state.setSession(group.folder, nextSession);
+        setSession(group.folder, nextSession);
       }
 
       if (output.status === 'error') {

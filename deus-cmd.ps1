@@ -42,6 +42,64 @@ function Invoke-Claude {
     }
 }
 
+function Get-DeusCliAgent {
+    $agent = if ($env:DEUS_CLI_AGENT) { $env:DEUS_CLI_AGENT } elseif ($env:DEUS_AGENT_BACKEND) { $env:DEUS_AGENT_BACKEND } else { "claude" }
+    switch ($agent.ToLower()) {
+        "openai" { return "codex" }
+        "codex"  { return "codex" }
+        default  { return "claude" }
+    }
+}
+
+function Invoke-Codex {
+    param([string[]]$ExtraArgs)
+    if (-not (Get-Command "codex" -ErrorAction SilentlyContinue)) {
+        Write-Error "Codex CLI not found. Install/login to Codex, or use DEUS_CLI_AGENT=claude."
+        return
+    }
+
+    $systemPrompt = ""
+    $userPromptParts = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $ExtraArgs.Count; $i++) {
+        if ($ExtraArgs[$i] -eq "--append-system-prompt" -and $i + 1 -lt $ExtraArgs.Count) {
+            $systemPrompt = $ExtraArgs[$i + 1]
+            $i++
+        } else {
+            $userPromptParts.Add($ExtraArgs[$i])
+        }
+    }
+
+    $prompt = $systemPrompt
+    if ($userPromptParts.Count -gt 0) {
+        $prompt += "`n`nUSER REQUEST:`n" + ($userPromptParts -join "`n")
+    }
+
+    $codexArgs = @()
+    $codexModel = if ($env:DEUS_CODEX_MODEL) { $env:DEUS_CODEX_MODEL } else { $env:DEUS_OPENAI_MODEL }
+    if ($codexModel) {
+        $codexArgs += @("--model", $codexModel)
+    }
+
+    $prefs = Get-DeusPreferences
+    if ($prefs.bypass_permissions) {
+        & codex @codexArgs --dangerously-bypass-approvals-and-sandbox $prompt
+        if ($LASTEXITCODE -ne 0) {
+            & codex @codexArgs $prompt
+        }
+    } else {
+        & codex @codexArgs $prompt
+    }
+}
+
+function Invoke-Agent {
+    param([string[]]$ExtraArgs)
+    if ((Get-DeusCliAgent) -eq "codex") {
+        Invoke-Codex $ExtraArgs
+    } else {
+        Invoke-Claude $ExtraArgs
+    }
+}
+
 function Get-ServiceManager {
     if (Get-Command "servy-cli" -ErrorAction SilentlyContinue) { return "servy" }
     if (Get-Command "nssm" -ErrorAction SilentlyContinue) { return "nssm" }
@@ -166,6 +224,29 @@ function Get-DeusPreferences {
     return $defaults
 }
 
+function Get-ProjectMemorySettings {
+    param([string]$WorkDir)
+    $defaults = @{
+        memory_level = "standard"
+        save_summaries = $true
+    }
+
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($WorkDir)
+        $md5 = [System.Security.Cryptography.MD5]::Create()
+        $hashBytes = $md5.ComputeHash($bytes)
+        $hash = -join ($hashBytes | ForEach-Object { $_.ToString("x2") })
+        $projectConfigPath = Join-Path $env:USERPROFILE ".config\deus\projects\$hash.json"
+        if (-not (Test-Path $projectConfigPath)) { return $defaults }
+
+        $cfg = Get-Content $projectConfigPath -Raw | ConvertFrom-Json
+        if ($cfg.memory_level) { $defaults.memory_level = [string]$cfg.memory_level }
+        if ($null -ne $cfg.save_summaries) { $defaults.save_summaries = [bool]$cfg.save_summaries }
+    } catch { }
+
+    return $defaults
+}
+
 function Invoke-ClaudeWithContext {
     param([string]$WorkDir)
 
@@ -186,6 +267,12 @@ function Invoke-ClaudeWithContext {
 
     $vault = Get-VaultPath
     $isHomeMode = ($WorkDir -eq $DeusHome)
+    $projectMemory = if ($isHomeMode) {
+        @{ memory_level = "home"; save_summaries = $true }
+    } else {
+        Get-ProjectMemorySettings -WorkDir $WorkDir
+    }
+    $skipVaultRecall = (-not $isHomeMode -and $projectMemory.memory_level -eq "restricted")
 
     # Git context
     Write-Status "Loading git status..."
@@ -214,58 +301,63 @@ function Invoke-ClaudeWithContext {
         if ($gitContext) { $prompt += "`n`ngitStatus:`n$gitContext" }
         Write-Host "Warning: No vault configured. Set DEUS_VAULT_PATH or vault_path in ~/.config/deus/config.json" -ForegroundColor Yellow
         Set-Location $WorkDir
-        Invoke-Claude @("--append-system-prompt", $prompt)
+        Invoke-Agent @("--append-system-prompt", $prompt)
         return
     }
 
-    # -- Load context (mirrors deus-cmd.sh context loading) ------------------
-    # Auto-load only CLAUDE.md (stable identity + critical rules + index) and
-    # STATE.md (churny previous/pending written by /compress). Other leaves
-    # (STUDY.md, INFRA.md, Persona) load on demand via memory_tree. Missing
-    # files silent-skip so legacy monolithic vaults still work unchanged.
-    Write-Status "Reading vault..."
-    $claudeMd  = Read-VaultFile "$vault\CLAUDE.md"
-    $stateMd   = Read-VaultFile "$vault\STATE.md"
-
     $context = ""
-    if ($claudeMd) { $context += "=== VAULT: CLAUDE.md ===`n$claudeMd" }
-    if ($stateMd)  { $context += "`n`n=== VAULT: STATE.md ===`n$stateMd" }
+    if ($skipVaultRecall) {
+        Write-Status "Restricted memory: skipping vault recall..."
+    } else {
+        # -- Load context (mirrors deus-cmd.sh context loading) ------------------
+        # Auto-load CLAUDE.md plus the future-neutral AGENTS.md alias, and STATE.md
+        # (churny previous/pending written by /compress). Other leaves load on
+        # demand via memory_tree. Missing files silent-skip for legacy vaults.
+        Write-Status "Reading vault..."
+        $claudeMd  = Read-VaultFile "$vault\CLAUDE.md"
+        $agentsMd  = Read-VaultFile "$vault\AGENTS.md"
+        $stateMd   = Read-VaultFile "$vault\STATE.md"
 
-    # Memory tree (Phase 4, gated by DEUS_MEMORY_TREE=1 during dogfood).
-    if ($env:DEUS_MEMORY_TREE -eq "1") {
-        $memoryTreeMd = Read-VaultFile "$vault\MEMORY_TREE.md"
-        if ($memoryTreeMd) {
-            $context += "`n`n=== VAULT: MEMORY_TREE.md ===`n$memoryTreeMd`n`n=== MEMORY TREE USAGE ===`nFor factual personal questions (identity, household, preferences, cross-branch), call:`n  python3 `$HOME/deus/scripts/memory_tree.py query `"<question>`"`nThe top result's path is the vault file to Read. On abstained:true or low confidence, fall back to Persona/INDEX.md. Prefer this over guessing from CLAUDE.md hints."
+        if ($claudeMd) { $context += "=== VAULT: CLAUDE.md ===`n$claudeMd" }
+        if ($agentsMd) { $context += "`n`n=== VAULT: AGENTS.md ===`n$agentsMd" }
+        if ($stateMd)  { $context += "`n`n=== VAULT: STATE.md ===`n$stateMd" }
+
+        # Memory tree (Phase 4, gated by DEUS_MEMORY_TREE=1 during dogfood).
+        if ($env:DEUS_MEMORY_TREE -eq "1") {
+            $memoryTreeMd = Read-VaultFile "$vault\MEMORY_TREE.md"
+            if ($memoryTreeMd) {
+                $context += "`n`n=== VAULT: MEMORY_TREE.md ===`n$memoryTreeMd`n`n=== MEMORY TREE USAGE ===`nFor factual personal questions (identity, household, preferences, cross-branch), call:`n  python3 `$HOME/deus/scripts/memory_tree.py query `"<question>`"`nThe top result's path is the vault file to Read. On abstained:true or low confidence, fall back to Persona/INDEX.md. Prefer this over guessing from CLAUDE.md hints."
+            }
         }
-    }
 
-    # Checkpoint (today's)
-    Write-Status "Checking checkpoints..."
-    $today = Get-Date -Format "yyyy-MM-dd"
-    $checkpointDir = "$vault\Checkpoints"
-    if (Test-Path $checkpointDir) {
-        $cpFile = Get-ChildItem $checkpointDir -Filter "$today-*.md" |
-            Sort-Object LastWriteTime -Descending | Select-Object -First 1
-        if ($cpFile) {
-            $cp = Get-Content $cpFile.FullName -Raw
-            if ($cp) { $context += "`n`n=== MID-SESSION CHECKPOINT ===`n$cp" }
+        # Checkpoint (today's)
+        Write-Status "Checking checkpoints..."
+        $today = Get-Date -Format "yyyy-MM-dd"
+        $checkpointDir = "$vault\Checkpoints"
+        if (Test-Path $checkpointDir) {
+            $cpFile = Get-ChildItem $checkpointDir -Filter "$today-*.md" |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($cpFile) {
+                $cp = Get-Content $cpFile.FullName -Raw
+                if ($cp) { $context += "`n`n=== MID-SESSION CHECKPOINT ===`n$cp" }
+            }
         }
-    }
 
-    # Recent sessions (via memory_indexer.py)
-    Write-Status "Loading recent sessions..."
-    $pythonCmd = if (Get-Command "python3" -ErrorAction SilentlyContinue) { "python3" } else { "python" }
-    $indexerPath = "$DeusHome\scripts\memory_indexer.py"
-    if ((Get-Command $pythonCmd -ErrorAction SilentlyContinue) -and (Test-Path $indexerPath)) {
-        $recent = & $pythonCmd $indexerPath --recent 3 2>$null
-        if ($recent) { $context += "`n`n=== RECENT SESSIONS ===`n$recent" }
-    }
+        # Recent sessions (via memory_indexer.py)
+        Write-Status "Loading recent sessions..."
+        $pythonCmd = if (Get-Command "python3" -ErrorAction SilentlyContinue) { "python3" } else { "python" }
+        $indexerPath = "$DeusHome\scripts\memory_indexer.py"
+        if ((Get-Command $pythonCmd -ErrorAction SilentlyContinue) -and (Test-Path $indexerPath)) {
+            $recent = & $pythonCmd $indexerPath --recent 3 2>$null
+            if ($recent) { $context += "`n`n=== RECENT SESSIONS ===`n$recent" }
+        }
 
-    # Query memory for related sessions
-    Write-Status "Retrieving relevant context..."
-    if ((Get-Command $pythonCmd -ErrorAction SilentlyContinue) -and (Test-Path $indexerPath)) {
-        $related = & $pythonCmd $indexerPath --query --top 2 --recency-boost 2>$null
-        if ($related) { $context += "`n`n=== RELATED SESSIONS ===`n$related" }
+        # Query memory for related sessions
+        Write-Status "Retrieving relevant context..."
+        if ((Get-Command $pythonCmd -ErrorAction SilentlyContinue) -and (Test-Path $indexerPath)) {
+            $related = & $pythonCmd $indexerPath --query --top 2 --recency-boost 2>$null
+            if ($related) { $context += "`n`n=== RELATED SESSIONS ===`n$related" }
+        }
     }
 
     # Git status for context
@@ -297,12 +389,17 @@ $identity
 Context from the memory vault has been pre-loaded above. Wait for the user's instructions.
 "@
     } else {
+        $memoryScope = if ($skipVaultRecall) {
+            "Saved vault/session memory was intentionally not preloaded for this project. Use Deus core behavior, live repo state, and live tools only."
+        } else {
+            "You have your full memory, preferences, and capabilities."
+        }
         $startupInstruction = @"
 STARTUP INSTRUCTION:
 
 $identity
 
-You are operating in EXTERNAL PROJECT MODE. The current directory is an external codebase at $WorkDir - not the Deus project. Focus on this codebase while applying all your behavioral rules and knowledge.
+You are operating in EXTERNAL PROJECT MODE. The current directory is an external codebase at $WorkDir - not the Deus project. $memoryScope Focus on this codebase while applying all your behavioral rules and knowledge.
 
 gitStatus:
 $gitContext
@@ -316,15 +413,33 @@ $gitContext
 
     Set-Location $WorkDir
     if ($isHomeMode -and $prefs.catch_me_up) {
-        Invoke-Claude @("--append-system-prompt", $fullPrompt, "Catch me up.")
+        Invoke-Agent @("--append-system-prompt", $fullPrompt, "Catch me up.")
     } else {
-        Invoke-Claude @("--append-system-prompt", $fullPrompt)
+        Invoke-Agent @("--append-system-prompt", $fullPrompt)
     }
 }
 
 # -- Commands -----------------------------------------------------------------
 
 switch ($Command.ToLower()) {
+    "codex" {
+        $env:DEUS_CLI_AGENT = "codex"
+        $target = if ($args.Count -gt 0 -and $args[0].ToLower() -eq "home") { $DeusHome } else { (Get-Location).Path }
+        Invoke-ClaudeWithContext -WorkDir $target
+    }
+
+    "openai" {
+        $env:DEUS_CLI_AGENT = "codex"
+        $target = if ($args.Count -gt 0 -and $args[0].ToLower() -eq "home") { $DeusHome } else { (Get-Location).Path }
+        Invoke-ClaudeWithContext -WorkDir $target
+    }
+
+    "claude" {
+        $env:DEUS_CLI_AGENT = "claude"
+        $target = if ($args.Count -gt 0 -and $args[0].ToLower() -eq "home") { $DeusHome } else { (Get-Location).Path }
+        Invoke-ClaudeWithContext -WorkDir $target
+    }
+
     "auth" {
         # Validate credentials before restarting
         $credPath = "$env:USERPROFILE\.claude\.credentials.json"
@@ -392,9 +507,10 @@ switch ($Command.ToLower()) {
     }
 
     default {
-        Write-Host "Usage: deus [home|auth|status|logs|listen]"
+        Write-Host "Usage: deus [claude|codex|openai] [home|auth|status|logs|listen]"
         Write-Host ""
         Write-Host "  deus        Launch in current directory (external project mode if not ~\deus)"
+        Write-Host "  deus codex  Launch the same Deus context with Codex/OpenAI for this session"
         Write-Host "  deus home   Launch in home mode (~\deus) regardless of current directory"
         Write-Host "  deus auth   Rebuild dist/ and restart background service"
         Write-Host "  deus status Show service status (NSSM or Servy)"

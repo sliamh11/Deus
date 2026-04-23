@@ -1,10 +1,6 @@
 import { pathToFileURL } from 'url';
 
-import {
-  ASSISTANT_NAME,
-  CREDENTIAL_PROXY_PORT,
-  MAX_MESSAGE_LENGTH,
-} from './config.js';
+import { CREDENTIAL_PROXY_PORT, MAX_MESSAGE_LENGTH } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -16,7 +12,12 @@ import {
   ensureContainerRuntimeRunning,
   PROXY_BIND_HOST,
 } from './container-runtime.js';
-import { initDatabase, storeChatMetadata, storeMessage } from './db.js';
+import {
+  initDatabase,
+  setSession as persistSession,
+  storeChatMetadata,
+  storeMessage,
+} from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
 import { loadSkillIpcHandlers } from './skills/index.js';
@@ -198,7 +199,7 @@ async function main(): Promise<void> {
       logReactionSignal({
         emoji: reaction.emoji,
         groupFolder: group.folder,
-        sessionId: state.getSession(group.folder),
+        sessionId: state.getSession(group.folder)?.session_id,
         reactedToMessageId: reaction.reacted_to_message_id,
       });
     },
@@ -249,6 +250,12 @@ async function main(): Promise<void> {
   startSchedulerLoop({
     registeredGroups: () => state.registeredGroups,
     getSessions: () => state.sessions,
+    getSession: (groupFolder, backend) =>
+      state.getSession(groupFolder, backend),
+    setSession: (groupFolder, sessionRef) => {
+      state.setSession(groupFolder, sessionRef);
+      persistSession(groupFolder, sessionRef);
+    },
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),

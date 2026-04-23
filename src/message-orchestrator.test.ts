@@ -19,6 +19,7 @@ vi.mock('./config.js', () => ({
   TIMEZONE: 'UTC',
   TRIGGER_PATTERN: /^@deus\b/i,
   SESSION_IDLE_RESET_HOURS: 8,
+  DEFAULT_AGENT_BACKEND: 'claude',
 }));
 
 vi.mock('./logger.js', () => ({

@@ -64,6 +64,7 @@ beforeEach(() => {
   delete process.env.ANTHROPIC_API_KEY;
   delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
   delete process.env.ANTHROPIC_AUTH_TOKEN;
+  delete process.env.OPENAI_API_KEY;
   delete process.env.GEMINI_API_KEY;
   delete process.env.DEUS_VAULT_PATH;
 });
@@ -84,6 +85,19 @@ describe('hasApiCredentials', () => {
   it('returns true when ANTHROPIC_API_KEY is in process.env', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-from-env';
     expect(hasApiCredentials()).toBe(true);
+  });
+
+  it('returns true when selected backend is OpenAI and OPENAI_API_KEY is configured', () => {
+    mockReadEnvFile.mockReturnValue({
+      DEUS_AGENT_BACKEND: 'openai',
+      OPENAI_API_KEY: 'sk-openai-test',
+    });
+    expect(hasApiCredentials()).toBe(true);
+  });
+
+  it('returns false when Claude is selected and only OpenAI credentials exist', () => {
+    mockReadEnvFile.mockReturnValue({ OPENAI_API_KEY: 'sk-openai-test' });
+    expect(hasApiCredentials()).toBe(false);
   });
 
   it('returns true when ~/.claude/.credentials.json has a valid OAuth token', () => {
