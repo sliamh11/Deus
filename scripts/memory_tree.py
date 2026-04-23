@@ -58,10 +58,23 @@ DB_PATH = Path(os.environ.get(
 )).expanduser()
 VAULT_PATH_ENV = "DEUS_VAULT_PATH"
 
-# Thresholds — pinned by `calibrate` on real data. Defaults here are initial
-# estimates; do not hardcode against these in production code.
-DEFAULT_LOW_THRESHOLD = float(os.environ.get("DEUS_TREE_LOW", "0.55"))
-DEFAULT_ABSTAIN_THRESHOLD = float(os.environ.get("DEUS_TREE_ABSTAIN", "0.30"))
+# Thresholds are provider-specific: Gemini embeddings produce higher absolute
+# cosine scores (~0.55-0.73 in-domain, ~0.45-0.53 OOD) vs Ollama embeddinggemma
+# (~0.30-0.66 in-domain, ~0.25-0.39 OOD). Env vars always override.
+_EMBED_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "auto").lower()
+_IS_GEMINI = _EMBED_PROVIDER == "gemini" or (
+    _EMBED_PROVIDER == "auto" and not os.environ.get("OLLAMA_HOST")
+    and os.environ.get("GEMINI_API_KEY")
+)
+
+_THRESHOLD_DEFAULTS = {
+    "gemini": {"low": 0.55, "abstain": 0.54, "gap": 0.02},
+    "ollama": {"low": 0.55, "abstain": 0.30, "gap": 0.04},
+}
+_DEFAULTS = _THRESHOLD_DEFAULTS["gemini" if _IS_GEMINI else "ollama"]
+
+DEFAULT_LOW_THRESHOLD = float(os.environ.get("DEUS_TREE_LOW", str(_DEFAULTS["low"])))
+DEFAULT_ABSTAIN_THRESHOLD = float(os.environ.get("DEUS_TREE_ABSTAIN", str(_DEFAULTS["abstain"])))
 DEFAULT_TOP_K = 5
 NEIGHBOR_HOPS = 1
 ROOT_TOKEN_BUDGET = 800  # MEMORY_TREE.md cold-start cap
@@ -72,9 +85,7 @@ NODE_TYPES_TRACKED = {"memory-tree-root", "persona-index", "persona-node", "proj
 EXTERNAL_NAMESPACE = "auto-memory/"
 EXTERNAL_DIR_ENV = "DEUS_AUTO_MEMORY_DIR"
 
-# Score-gap abstain: OOD queries produce flat score distributions (gap ~0.01),
-# real matches produce a spike (gap ~0.10). Abstain when gap is below this.
-DEFAULT_SCORE_GAP_THRESHOLD = float(os.environ.get("DEUS_TREE_GAP", "0.04"))
+DEFAULT_SCORE_GAP_THRESHOLD = float(os.environ.get("DEUS_TREE_GAP", str(_DEFAULTS["gap"])))
 
 # Hybrid retrieval: FTS5 BM25 + vector cosine, fused via RRF.
 DEFAULT_USE_FTS = os.environ.get("DEUS_TREE_FTS", "1") == "1"
