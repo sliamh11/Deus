@@ -52,7 +52,8 @@ function createSchema(database: Database.Database): void {
       last_result TEXT,
       status TEXT DEFAULT 'active',
       created_at TEXT NOT NULL,
-      agent_backend TEXT
+      agent_backend TEXT,
+      context_mode TEXT DEFAULT 'isolated'
     );
     CREATE INDEX IF NOT EXISTS idx_next_run ON scheduled_tasks(next_run);
     CREATE INDEX IF NOT EXISTS idx_status ON scheduled_tasks(status);

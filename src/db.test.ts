@@ -517,14 +517,14 @@ describe('backend-aware sessions', () => {
       backend: 'openai',
       session_id: 'resp_123',
       resume_cursor: 'cursor_1',
-      metadata_json: '{"model":"gpt-5.2"}',
+      metadata_json: '{"model":"gpt-4o"}',
     });
 
     expect(getSession('group-folder')).toEqual({
       backend: 'openai',
       session_id: 'resp_123',
       resume_cursor: 'cursor_1',
-      metadata_json: '{"model":"gpt-5.2"}',
+      metadata_json: '{"model":"gpt-4o"}',
     });
   });
 

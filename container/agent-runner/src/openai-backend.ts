@@ -1,8 +1,10 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
 import { loadRegisteredContextFiles } from './context-registry.js';
 import {
+  createOpenAIMcpToolBridge,
   executeBrokerTool,
   getOpenAIToolDefinitions,
   resolveGroupAttachmentPath as resolveBrokerGroupAttachmentPath,
@@ -137,10 +139,12 @@ export function assertOpenAIResponse(value: unknown): OpenAIResponse {
 
 function getRuntimeContext(containerInput: ContainerInput): {
   cwd: string;
+  hasProject: boolean;
   systemInstructions: string;
 } {
   const projectDir = '/workspace/project';
   let cwd = '/workspace/group';
+  let hasProject = false;
   try {
     const stat = fs.statSync(projectDir);
     if (stat.isDirectory()) {
@@ -150,6 +154,7 @@ function getRuntimeContext(containerInput: ContainerInput): {
         fs.readdirSync(projectDir).some((f) => !f.startsWith('.'))
       ) {
         cwd = projectDir;
+        hasProject = true;
       }
     }
   } catch {
@@ -176,7 +181,62 @@ function getRuntimeContext(containerInput: ContainerInput): {
     .filter(Boolean)
     .join('\n\n');
 
-  return { cwd, systemInstructions: instructions };
+  return { cwd, hasProject, systemInstructions: instructions };
+}
+
+function getOptionalMcpServerConfigs(containerInput: ContainerInput): Array<{
+  serverName: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+  required?: boolean;
+}> {
+  const configs: Array<{
+    serverName: string;
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+    required?: boolean;
+  }> = [];
+  const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+  configs.push({
+    serverName: 'deus',
+    command: 'node',
+    args: [path.join(__dirname, 'ipc-mcp-stdio.js')],
+    env: {
+      DEUS_CHAT_JID: containerInput.chatJid,
+      DEUS_GROUP_FOLDER: containerInput.groupFolder,
+      DEUS_IS_MAIN: isControlGroup(containerInput) ? '1' : '0',
+    },
+    required: true,
+  });
+
+  const projectDir = '/workspace/project';
+  const gcalDistPath = path.join(projectDir, 'packages/mcp-gcal/dist/index.js');
+  const gcalCredsPath = path.join(
+    projectDir,
+    'integrations/gcal/credentials.json',
+  );
+  const gcalTokensPath = path.join(projectDir, 'integrations/gcal/tokens.json');
+  if (
+    fs.existsSync(gcalDistPath) &&
+    fs.existsSync(gcalCredsPath) &&
+    fs.existsSync(gcalTokensPath)
+  ) {
+    configs.push({
+      serverName: 'gcal',
+      command: 'node',
+      args: [gcalDistPath],
+      env: {
+        DEUS_PROJECT_ROOT: projectDir,
+        LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+      },
+      required: false,
+    });
+  }
+
+  return configs;
 }
 
 function getAssistantText(response: OpenAIResponse): string | null {
@@ -285,7 +345,14 @@ async function runSingleTurn(
   previousResponseId: string | undefined,
   log: (message: string) => void,
 ): Promise<{ responseId: string; result: string | null }> {
-  const { cwd, systemInstructions } = getRuntimeContext(containerInput);
+  const { cwd, hasProject, systemInstructions } =
+    getRuntimeContext(containerInput);
+  const mcpBridge = await createOpenAIMcpToolBridge(
+    getOptionalMcpServerConfigs(containerInput).filter(
+      (config) => config.serverName !== 'gcal' || hasProject,
+    ),
+    log,
+  );
   let input: Array<Record<string, unknown>> = buildInitialInput(
     prompt,
     containerInput,
@@ -294,52 +361,59 @@ async function runSingleTurn(
     ? previousResponseId
     : undefined;
 
-  while (true) {
-    const response = await createResponse({
-      model: process.env.DEUS_OPENAI_MODEL || 'gpt-5.2',
-      input,
-      instructions: systemInstructions,
-      previous_response_id: responseId,
-      tools: getOpenAIToolDefinitions(),
-      parallel_tool_calls: true,
-    });
-
-    responseId = response.id;
-    const calls = getFunctionCalls(response);
-    if (calls.length === 0) {
-      return { responseId, result: getAssistantText(response) };
-    }
-
-    log(`OpenAI requested ${calls.length} tool call(s)`);
-    input = [];
-    for (const call of calls) {
-      let parsedArgs: Record<string, unknown> = {};
-      try {
-        parsedArgs = JSON.parse(call.arguments || '{}') as Record<
-          string,
-          unknown
-        >;
-      } catch {
-        parsedArgs = {};
-      }
-      let toolResult: Record<string, unknown>;
-      try {
-        toolResult = await executeBrokerTool(call.name, parsedArgs, {
-          cwd,
-          containerInput,
-        });
-      } catch (err) {
-        toolResult = {
-          ok: false,
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-      input.push({
-        type: 'function_call_output',
-        call_id: call.call_id,
-        output: JSON.stringify(toolResult),
+  try {
+    while (true) {
+      const response = await createResponse({
+        model: process.env.DEUS_OPENAI_MODEL || 'gpt-4o',
+        input,
+        instructions: systemInstructions,
+        previous_response_id: responseId,
+        tools: getOpenAIToolDefinitions(mcpBridge.definitions),
+        parallel_tool_calls: true,
       });
+
+      responseId = response.id;
+      const calls = getFunctionCalls(response);
+      if (calls.length === 0) {
+        return { responseId, result: getAssistantText(response) };
+      }
+
+      log(`OpenAI requested ${calls.length} tool call(s)`);
+      input = [];
+      for (const call of calls) {
+        let parsedArgs: Record<string, unknown> = {};
+        try {
+          parsedArgs = JSON.parse(call.arguments || '{}') as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          parsedArgs = {};
+        }
+        let toolResult =
+          (await mcpBridge.execute(call.name, parsedArgs)) ?? undefined;
+        if (!toolResult) {
+          try {
+            toolResult = await executeBrokerTool(call.name, parsedArgs, {
+              cwd,
+              containerInput,
+            });
+          } catch (err) {
+            toolResult = {
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+        }
+        input.push({
+          type: 'function_call_output',
+          call_id: call.call_id,
+          output: JSON.stringify(toolResult),
+        });
+      }
     }
+  } finally {
+    await mcpBridge.close();
   }
 }
 
@@ -353,7 +427,7 @@ async function compactOpenAISession(
 }> {
   const { systemInstructions } = getRuntimeContext(containerInput);
   const response = await createResponse({
-    model: process.env.DEUS_OPENAI_MODEL || 'gpt-5.2',
+    model: process.env.DEUS_OPENAI_MODEL || 'gpt-4o',
     instructions: `${systemInstructions}\n\nYou are compacting the active Deus conversation. Preserve durable user preferences, unresolved tasks, important decisions, project state, names, tone preferences, and any facts needed for continuity. Do not invent missing facts.`,
     previous_response_id: sessionId,
     input: [
