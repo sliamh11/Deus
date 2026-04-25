@@ -1076,7 +1076,7 @@ def retrieve(
         others_avg = sum(cosine_sorted[1:k + 1]) / min(len(cosine_sorted) - 1, k)
         gap = best - others_avg
         gap_threshold = DEFAULT_SCORE_GAP_THRESHOLD
-        if gap < gap_threshold and best < low_threshold:
+        if gap < gap_threshold and best < abstain_threshold + gap_threshold:
             fell_back = True
             trace.append(f"abstain:gap={gap:.3f}<{gap_threshold}")
             top = []
