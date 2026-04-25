@@ -7,7 +7,7 @@ import {
   defaultSessionRef,
   type BackendSessionRef,
 } from './agent-backends/types.js';
-import { resolveAgentBackend } from './agent-backends/resolve.js';
+import type { BackendRegistry } from './agent-backends/registry.js';
 import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import {
   ContainerOutput,
@@ -76,6 +76,7 @@ export interface SchedulerDependencies {
     backend?: BackendSessionRef['backend'],
   ) => BackendSessionRef | undefined;
   setSession?: (groupFolder: string, sessionRef: BackendSessionRef) => void;
+  registry: BackendRegistry;
   queue: GroupQueue;
   onProcess: (
     groupJid: string,
@@ -161,7 +162,8 @@ async function runTask(
   let error: string | null = null;
 
   // For group context mode, use the group's current session
-  const backend = resolveAgentBackend(group, task);
+  const resolvedBackend = deps.registry.resolve(group, task);
+  const backend = resolvedBackend.name();
   const sessions = deps.getSessions();
   const rawSession =
     task.context_mode === 'group' ? sessions[task.group_folder] : undefined;

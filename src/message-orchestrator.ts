@@ -17,13 +17,13 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import { defaultSessionRef } from './agent-backends/types.js';
+import type { BackendRegistry } from './agent-backends/registry.js';
 import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
-import { resolveAgentBackend } from './agent-backends/resolve.js';
 import {
   clearSession,
   getAllTasks,
@@ -50,13 +50,14 @@ import { Channel, NewMessage, RegisteredGroup } from './types.js';
 export interface OrchestratorDeps {
   state: RouterState;
   queue: GroupQueue;
+  registry: BackendRegistry;
   /** Mutable array — channels are pushed into it during startup before the
    *  orchestrator starts processing, so this reference stays valid. */
   channels: Channel[];
 }
 
 export function createMessageOrchestrator(deps: OrchestratorDeps) {
-  const { state, queue, channels } = deps;
+  const { state, queue, registry, channels } = deps;
   let messageLoopRunning = false;
 
   async function runAgent(
@@ -67,7 +68,8 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     onOutput?: (output: ContainerOutput) => Promise<void>,
   ): Promise<'success' | 'error'> {
     const isControlGroup = group.isControlGroup === true;
-    const backend = resolveAgentBackend(group);
+    const resolvedBackend = registry.resolve(group);
+    const backend = resolvedBackend.name();
     let sessionRef = state.getSession(group.folder, backend);
 
     // Idle session reset: per-group setting takes precedence over global default.

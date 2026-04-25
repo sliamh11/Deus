@@ -1,6 +1,10 @@
 import { pathToFileURL } from 'url';
 
-import { CREDENTIAL_PROXY_PORT, MAX_MESSAGE_LENGTH } from './config.js';
+import {
+  ASSISTANT_NAME,
+  CREDENTIAL_PROXY_PORT,
+  MAX_MESSAGE_LENGTH,
+} from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
@@ -41,6 +45,9 @@ import { writeGroupsSnapshot, writeTasksSnapshot } from './container-runner.js';
 import { Channel, NewMessage, NewReaction } from './types.js';
 import { logReactionSignal } from './evolution-client.js';
 import { logger } from './logger.js';
+import { initBackendRegistry } from './agent-backends/registry.js';
+import { createClaudeBackend } from './agent-backends/claude-backend.js';
+import { createOpenAIBackend } from './agent-backends/openai-backend.js';
 
 export { getAvailableGroups } from './router-state.js';
 
@@ -70,6 +77,25 @@ async function main(): Promise<void> {
 
   const channels: Channel[] = [];
   const queue = new GroupQueue();
+
+  // Initialize backend registry — all container-based backends share the same deps
+  const registry = initBackendRegistry();
+  const backendDeps = {
+    resolveGroup: (groupFolder: string) =>
+      Object.values(state.registeredGroups).find(
+        (g) => g.folder === groupFolder,
+      ),
+    assistantName: ASSISTANT_NAME,
+    registerProcess: (
+      chatJid: string,
+      proc: import('child_process').ChildProcess,
+      containerName: string,
+      groupFolder: string,
+    ) => queue.registerProcess(chatJid, proc, containerName, groupFolder),
+  };
+  registry.register(createClaudeBackend(backendDeps));
+  registry.register(createOpenAIBackend(backendDeps));
+  logger.info({ backends: registry.list() }, 'Backend registry initialized');
 
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
@@ -244,7 +270,12 @@ async function main(): Promise<void> {
     );
   }
 
-  const orchestrator = createMessageOrchestrator({ state, queue, channels });
+  const orchestrator = createMessageOrchestrator({
+    state,
+    queue,
+    registry,
+    channels,
+  });
 
   // Start subsystems (independently of connection handler)
   startSchedulerLoop({
@@ -256,6 +287,7 @@ async function main(): Promise<void> {
       state.setSession(groupFolder, sessionRef);
       persistSession(groupFolder, sessionRef);
     },
+    registry,
     queue,
     onProcess: (groupJid, proc, containerName, groupFolder) =>
       queue.registerProcess(groupJid, proc, containerName, groupFolder),

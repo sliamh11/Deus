@@ -8,6 +8,27 @@ import {
 } from './task-scheduler.js';
 import type { BackendSessionRef } from './agent-backends/types.js';
 import type { SchedulerDependencies } from './task-scheduler.js';
+import { BackendRegistry } from './agent-backends/registry.js';
+
+function makeStubRegistry(): BackendRegistry {
+  const registry = new BackendRegistry();
+  registry.register({
+    name: () => 'claude' as const,
+    capabilities: () => ({
+      shell: true,
+      filesystem: true,
+      web: true,
+      multimodal: true,
+      handoffs: false,
+      persistent_sessions: true,
+      tool_streaming: true,
+    }),
+    startOrResume: async () => ({ backend: 'claude' as const, session_id: '' }),
+    runTurn: async () => ({ status: 'success' as const, result: null }),
+    close: async () => {},
+  });
+  return registry;
+}
 
 // Module-level mocks (hoisted by Vitest). These are safe for existing tests:
 // - The invalid-folder test throws before fs.mkdirSync is reached
@@ -62,6 +83,7 @@ describe('task scheduler', () => {
     startSchedulerLoop({
       registeredGroups: () => ({}),
       getSessions: () => ({}),
+      registry: makeStubRegistry(),
       queue: { enqueueTask } as any,
       onProcess: () => {},
       sendMessage: async () => {},
@@ -229,6 +251,7 @@ describe('startSchedulerLoop execution path', () => {
       getSessions: () => overrides.sessions ?? {},
       getSession: overrides.getSession,
       setSession: overrides.setSession,
+      registry: makeStubRegistry(),
       queue: { enqueueTask, notifyIdle, closeStdin } as any,
       onProcess: () => {},
       sendMessage: sendMessage as unknown as (

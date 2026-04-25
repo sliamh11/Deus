@@ -147,6 +147,7 @@ import {
   extractSessionCommand,
 } from './session-commands.js';
 import type { RegisteredGroup } from './types.js';
+import { BackendRegistry } from './agent-backends/registry.js';
 
 const mockGetMessagesSince = vi.mocked(getMessagesSince);
 const mockGetNewMessages = vi.mocked(getNewMessages);
@@ -154,6 +155,26 @@ const mockRunContainerAgent = vi.mocked(runContainerAgent);
 const mockFindChannel = vi.mocked(findChannel);
 const mockHandleSessionCommand = vi.mocked(handleSessionCommand);
 const mockExtractSessionCommand = vi.mocked(extractSessionCommand);
+
+function makeRegistry(): BackendRegistry {
+  const registry = new BackendRegistry();
+  registry.register({
+    name: () => 'claude' as const,
+    capabilities: () => ({
+      shell: true,
+      filesystem: true,
+      web: true,
+      multimodal: true,
+      handoffs: false,
+      persistent_sessions: true,
+      tool_streaming: true,
+    }),
+    startOrResume: async () => ({ backend: 'claude' as const, session_id: '' }),
+    runTurn: async () => ({ status: 'success' as const, result: null }),
+    close: async () => {},
+  });
+  return registry;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -282,6 +303,7 @@ describe('processGroupMessages', () => {
     state.registeredGroups = {}; // JID not in map
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: queue as any,
       channels: [],
@@ -299,6 +321,7 @@ describe('processGroupMessages', () => {
     mockGetMessagesSince.mockReturnValue([]);
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: makeQueue() as any,
       channels: [channel as any],
@@ -322,6 +345,7 @@ describe('processGroupMessages', () => {
     });
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: makeQueue() as any,
       channels: [channel as any],
@@ -361,6 +385,7 @@ describe('processGroupMessages', () => {
     });
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: makeQueue() as any,
       channels: [channel as any],
@@ -390,6 +415,7 @@ describe('processGroupMessages', () => {
     ]);
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: makeQueue() as any,
       channels: [channel as any],
@@ -409,6 +435,7 @@ describe('processGroupMessages', () => {
     ]);
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: makeQueue() as any,
       channels: [channel as any],
@@ -428,6 +455,7 @@ describe('processGroupMessages', () => {
     ]);
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: makeQueue() as any,
       channels: [channel as any],
@@ -451,6 +479,7 @@ describe('processGroupMessages', () => {
     });
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: makeQueue() as any,
       channels: [channel as any],
@@ -481,6 +510,7 @@ describe('processGroupMessages', () => {
     });
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: makeQueue() as any,
       channels: [channel as any],
@@ -510,6 +540,7 @@ describe('processGroupMessages', () => {
     });
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: makeQueue() as any,
       channels: [channel as any],
@@ -533,6 +564,7 @@ describe('recoverPendingMessages', () => {
 
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: queue as any,
       channels: [],
@@ -548,6 +580,7 @@ describe('recoverPendingMessages', () => {
 
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: queue as any,
       channels: [],
@@ -583,6 +616,7 @@ describe('startMessageLoop', () => {
 
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: queue as any,
       channels: [channel as any],
@@ -616,6 +650,7 @@ describe('startMessageLoop', () => {
     queue.sendMessage.mockReturnValue(true); // active container exists
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: queue as any,
       channels: [channel as any],
@@ -645,6 +680,7 @@ describe('startMessageLoop', () => {
     queue.sendMessage.mockReturnValue(false); // no active container
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: queue as any,
       channels: [channel as any],
@@ -675,6 +711,7 @@ describe('startMessageLoop', () => {
     queue.sendMessage.mockReturnValue(true);
 
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: queue as any,
       channels: [channel as any],
@@ -695,6 +732,7 @@ describe('startMessageLoop', () => {
 
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
       state: state as any,
       queue: queue as any,
       channels: [],
