@@ -10,4 +10,5 @@
 | `patterns/debugging.md` | Diagnosing silent failures in the message pipeline | `docs/CONTRIBUTING-AI.md` §Debugging + §Message Pipeline Stages |
 | `patterns/cross-platform.md` | Any code that touches paths, signals, shells, or env vars | `docs/CROSS_PLATFORM.md` (CI-enforced violations only) |
 | `patterns/security-review.md` | IPC, mounts, credentials, container boundary | `docs/SECURITY.md` |
+| `patterns/documentation.md` | Adding or editing docs, ADRs, research write-ups | `docs/decisions/INDEX.md`, `docs/ARCHITECTURE.md` |
 | `patterns/general-code.md` | Catch-all: branch, tests, commits, ADR gate | `docs/CONTRIBUTING-AI.md` core rules |
