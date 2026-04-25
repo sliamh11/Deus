@@ -77,6 +77,17 @@ def mi(tmp_path, fresh_vault, monkeypatch):
     return mod
 
 
+def test_db_path_honors_deus_db_env(tmp_path, fresh_vault, monkeypatch):
+    custom_db = tmp_path / "custom-memory.db"
+    monkeypatch.setenv("DEUS_DB", str(custom_db))
+    if "memory_indexer" in sys.modules:
+        del sys.modules["memory_indexer"]
+
+    mod = importlib.import_module("memory_indexer")
+
+    assert mod.DB_PATH == custom_db
+
+
 # ── extract_frontmatter ───────────────────────────────────────────────────
 
 

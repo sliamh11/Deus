@@ -108,9 +108,9 @@ A fresh clone has **zero channels** — you add only the ones you need:
 
 ## Architecture
 
-One Node.js process on the host. Each conversation group runs in its own Linux container with an isolated filesystem. Containers never see API keys -- all calls route through a credential proxy that injects credentials at request time.
+One Node.js process on the host. Each conversation group runs in its own Linux container with an isolated filesystem. Containers never see API keys -- all calls route through a credential proxy that injects credentials at request time. The agent runtime is backend-neutral: Claude is the default, OpenAI is opt-in, and new backends can be added without changing the core.
 
-See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full reference with Mermaid diagrams covering the system overview, message flow, channel system, container mounts, memory retrieval, evolution loop, security model, and eval layer.
+See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the full reference with Mermaid diagrams. See **[docs/MULTI_BACKEND.md](docs/MULTI_BACKEND.md)** for how to use different AI backends.
 
 ---
 
@@ -149,7 +149,10 @@ Commands require admin access (sent from the owner account, or from any sender i
 
 | Command | What it does |
 |---|---|
-| `deus` | Launch Claude Code in the current directory (external project mode if not `~/deus`) |
+| `deus` | Launch Deus in the current directory using the configured CLI/backend (external project mode if not `~/deus`) |
+| `deus codex` | Launch the same Deus context with Codex/OpenAI and `DEUS_AGENT_BACKEND=openai` for this session |
+| `deus claude` | Force Claude Code and `DEUS_AGENT_BACKEND=claude` for this session |
+| `DEUS_AGENT_BACKEND=openai deus` | Make the global launcher use Codex/OpenAI by default |
 | `deus home` | Launch in home mode (`~/deus`) regardless of current directory |
 | `deus auth` | Rebuild and restart background services |
 | `deus listen` | Record from mic, transcribe with whisper.cpp, copy to clipboard |
@@ -177,7 +180,7 @@ Everything in Deus is a choice with a cost attached. The honest version:
 - **DSPy per-domain optimization** — prompt tuning that actually converges on your usage patterns instead of staying generic; it needs a few dozen scored interactions per domain before it has enough signal to fire.
 - **Local-first memory and judging** — no API bill for retrieval or scoring, no cloud sync, no data leaves the machine; in exchange you host Ollama and a few GB of model weights locally.
 - **Hierarchical memory tree** — cold-start recall across branches without you naming the topic; each new vault file triggers a local embedding (free via Ollama, adds a few hundred ms) and the tree needs a one-time index build on first run.
-- **Claude-only agent** — the Claude Agent SDK is the core and isn't swappable; eval and judge backends are pluggable (Ollama, Gemini, Claude), but the agent itself is Claude today.
+- **Backend-neutral runtime, Claude-first parity** — Deus now owns sessions, routing, and tool plumbing so the container agent can be selected per environment/group/task. Claude remains the default and most battle-tested path while OpenAI is brought up to parity.
 - **Skill-based channels** — each channel is a standalone MCP package you opt into, so a fresh clone has zero channels and zero external surface; in exchange, installing a channel is an explicit step (`/add-whatsapp`, `/add-telegram`, …) rather than an out-of-the-box default.
 
 ---
@@ -223,7 +226,7 @@ Claude API usage (for the agent) plus optionally Gemini (free tier is sufficient
 macOS (Apple Silicon recommended), Linux, and Windows (via Docker Desktop). Windows uses NSSM or Servy for service management instead of pm2/launchd.
 
 **Can I use a different LLM?**
-The core agent uses the Claude Agent SDK — this is architectural and not swappable. The evolution/eval judges can use Ollama (local, free) or Gemini.
+Yes. `DEUS_AGENT_BACKEND` selects the default container agent backend (`claude` or `openai`), and groups/tasks can override it. Claude is still the default compatibility baseline; OpenAI support is the first backend-neutral adapter and is still catching up to full Claude parity.
 
 **Where is my data?**
 All local. Memory in SQLite, session logs in a local vault directory, no cloud sync.
@@ -248,7 +251,7 @@ See [`docs/ENVIRONMENT.md`](docs/ENVIRONMENT.md) for the full reference with def
 | **Memory** | Semantic vector search + tiered retrieval | Markdown files | Via OpenClaw | Basic persistence | Conversation only |
 | **Self-improvement** | Judge → reflexion → DSPy optimization | No | No | No | No |
 | **Credential isolation** | Proxy injection (keys never in container) | Keys in env | Policy-controlled | Keys in env | N/A |
-| **LLM support** | Claude only | Any provider | Any (via OpenClaw) | Any | Claude only |
+| **LLM support** | Claude default; OpenAI/Codex opt-in | Any provider | Any (via OpenClaw) | Any | Claude only |
 | **Codebase** | ~9.5K lines | ~430K lines | OpenClaw wrapper | Single binary | N/A |
 
 **Deus optimizes for depth** (memory, self-improvement, security). **OpenClaw optimizes for breadth** (channels, community, model flexibility). See [docs/benchmarks.md](docs/benchmarks.md) for a detailed comparison.

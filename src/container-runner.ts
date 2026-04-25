@@ -9,10 +9,17 @@ import fs from 'fs';
 import path from 'path';
 
 import {
+  AgentBackendName,
+  BackendSessionRef,
+  defaultSessionRef,
+} from './agent-backends/types.js';
+import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
+  DEUS_CONTEXT_FILE_MAX_CHARS,
+  DEUS_OPENAI_MODEL,
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
@@ -41,7 +48,9 @@ const OUTPUT_END_MARKER = '---DEUS_OUTPUT_END---';
 
 export interface ContainerInput {
   prompt: string;
+  backend?: AgentBackendName;
   sessionId?: string;
+  sessionRef?: BackendSessionRef;
   groupFolder: string;
   chatJid: string;
   isControlGroup: boolean;
@@ -54,6 +63,7 @@ export interface ContainerInput {
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
+  newSessionRef?: BackendSessionRef;
   newSessionId?: string;
   error?: string;
 }
@@ -61,12 +71,19 @@ export interface ContainerOutput {
 function buildContainerArgs(
   mounts: ReturnType<typeof buildVolumeMounts>,
   containerName: string,
+  backend: AgentBackendName,
   group?: RegisteredGroup,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+  if (DEUS_CONTEXT_FILE_MAX_CHARS) {
+    args.push(
+      '-e',
+      `DEUS_CONTEXT_FILE_MAX_CHARS=${DEUS_CONTEXT_FILE_MAX_CHARS}`,
+    );
+  }
 
   // Inject per-channel memory privacy allowlist if configured
   if (group?.containerConfig?.memoryPrivacy?.length) {
@@ -76,22 +93,33 @@ function buildContainerArgs(
     );
   }
 
-  // Route API traffic through the credential proxy (containers never see real secrets)
-  args.push(
-    '-e',
-    `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
-  );
+  if (backend === 'openai') {
+    args.push(
+      '-e',
+      `OPENAI_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}/openai`,
+    );
+    args.push('-e', 'OPENAI_API_KEY=placeholder');
+    if (DEUS_OPENAI_MODEL) {
+      args.push('-e', `DEUS_OPENAI_MODEL=${DEUS_OPENAI_MODEL}`);
+    }
+  } else {
+    // Route API traffic through the credential proxy (containers never see real secrets)
+    args.push(
+      '-e',
+      `ANTHROPIC_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${CREDENTIAL_PROXY_PORT}`,
+    );
 
-  // Mirror the host's auth method with a placeholder value.
-  // API key mode: SDK sends x-api-key, proxy replaces with real key.
-  // OAuth mode:   Placeholder .credentials.json is written into the group's
-  //               session .claude/ dir by container-mounter.ts. The SDK reads
-  //               it, sends Bearer placeholder, and the proxy swaps with the
-  //               real token. No separate mount needed (avoids Docker conflicts
-  //               with the overlapping /home/node/.claude bind mount).
-  const authMode = detectAuthMode();
-  if (authMode === 'api-key') {
-    args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    // Mirror the host's auth method with a placeholder value.
+    // API key mode: SDK sends x-api-key, proxy replaces with real key.
+    // OAuth mode:   Placeholder .credentials.json is written into the group's
+    //               session .claude/ dir by container-mounter.ts. The SDK reads
+    //               it, sends Bearer placeholder, and the proxy swaps with the
+    //               real token. No separate mount needed (avoids Docker conflicts
+    //               with the overlapping /home/node/.claude bind mount).
+    const authMode = detectAuthMode();
+    if (authMode === 'api-key') {
+      args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
+    }
   }
 
   // Runtime-specific args for host gateway resolution
@@ -168,7 +196,12 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isControlGroup);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `deus-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName, group);
+  const containerArgs = buildContainerArgs(
+    mounts,
+    containerName,
+    input.backend || 'claude',
+    group,
+  );
 
   logger.debug(
     {
@@ -214,6 +247,7 @@ export async function runContainerAgent(
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
     let newSessionId: string | undefined;
+    let newSessionRef: BackendSessionRef | undefined;
     let outputChain = Promise.resolve();
 
     container.stdout.on('data', (data) => {
@@ -249,6 +283,9 @@ export async function runContainerAgent(
 
           try {
             const parsed: ContainerOutput = JSON.parse(jsonStr);
+            if (parsed.newSessionRef) {
+              newSessionRef = parsed.newSessionRef;
+            }
             if (parsed.newSessionId) {
               newSessionId = parsed.newSessionId;
             }
@@ -362,6 +399,11 @@ export async function runContainerAgent(
             resolve({
               status: 'success',
               result: null,
+              newSessionRef:
+                newSessionRef ??
+                (newSessionId
+                  ? defaultSessionRef(newSessionId, input.backend || 'claude')
+                  : undefined),
               newSessionId,
             });
           });
@@ -410,7 +452,7 @@ export async function runContainerAgent(
           logLines.push(
             `=== Input Summary ===`,
             `Prompt length: ${input.prompt.length} chars`,
-            `Session ID: ${input.sessionId || 'new'}`,
+            `Session ID: ${input.sessionRef?.session_id || input.sessionId || 'new'}`,
             ``,
           );
         }
@@ -436,7 +478,7 @@ export async function runContainerAgent(
         logLines.push(
           `=== Input Summary ===`,
           `Prompt length: ${input.prompt.length} chars`,
-          `Session ID: ${input.sessionId || 'new'}`,
+          `Session ID: ${input.sessionRef?.session_id || input.sessionId || 'new'}`,
           ``,
           `=== Mounts ===`,
           mounts
@@ -484,7 +526,7 @@ export async function runContainerAgent(
             response: null,
             groupFolder: group.folder,
             latencyMs: duration,
-            sessionId: input.sessionId,
+            sessionId: input.sessionRef?.session_id,
             domainPresets: domains.length > 0 ? domains : undefined,
             userSignal: userSignal ?? undefined,
             retrievedReflectionIds:
@@ -496,6 +538,11 @@ export async function runContainerAgent(
           resolve({
             status: 'success',
             result: null,
+            newSessionRef:
+              newSessionRef ??
+              (newSessionId
+                ? defaultSessionRef(newSessionId, input.backend || 'claude')
+                : undefined),
             newSessionId,
           });
         });
@@ -538,7 +585,10 @@ export async function runContainerAgent(
           response: output.result,
           groupFolder: group.folder,
           latencyMs: duration,
-          sessionId: input.sessionId ?? output.newSessionId,
+          sessionId:
+            input.sessionRef?.session_id ??
+            output.newSessionRef?.session_id ??
+            output.newSessionId,
           domainPresets: domains.length > 0 ? domains : undefined,
           userSignal: userSignal ?? undefined,
           retrievedReflectionIds:
@@ -625,7 +675,7 @@ export function writeGroupsSnapshot(
   groupFolder: string,
   isControlGroup: boolean,
   groups: AvailableGroup[],
-  registeredJids: Set<string>,
+  _registeredJids: Set<string>,
 ): void {
   const groupIpcDir = resolveGroupIpcPath(groupFolder);
   fs.mkdirSync(groupIpcDir, { recursive: true });

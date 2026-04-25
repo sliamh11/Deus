@@ -4,7 +4,7 @@
  * RouterState is the single source of truth for:
  *   - lastTimestamp        — "seen" cursor for all incoming messages
  *   - lastAgentTimestamp   — per-group cursor of last message sent to the agent
- *   - sessions             — per-group Claude Code session IDs
+ *   - sessions             — per-group backend session references
  *   - registeredGroups     — groups that Deus is configured to handle
  *
  * All persistence (DB reads/writes) is centralised here.
@@ -16,19 +16,26 @@ import path from 'path';
 import {
   getAllChats,
   getAllRegisteredGroups,
-  getAllSessions,
+  getAllBackendSessions,
   getRouterState,
   setRegisteredGroup,
   setRouterState,
 } from './db.js';
 import type { AvailableGroup } from './container-runner.js';
+import type {
+  AgentBackendName,
+  BackendSessionRef,
+} from './agent-backends/types.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
 export class RouterState {
   private _lastTimestamp = '';
-  private _sessions: Record<string, string> = {};
+  private _sessions: Record<
+    string,
+    Partial<Record<AgentBackendName, BackendSessionRef>>
+  > = {};
   private _registeredGroups: Record<string, RegisteredGroup> = {};
   private _lastAgentTimestamp: Record<string, string> = {};
 
@@ -41,7 +48,7 @@ export class RouterState {
       logger.warn('Corrupted last_agent_timestamp in DB, resetting');
       this._lastAgentTimestamp = {};
     }
-    this._sessions = getAllSessions();
+    this._sessions = getAllBackendSessions();
     this._registeredGroups = getAllRegisteredGroups();
     logger.info(
       { groupCount: Object.keys(this._registeredGroups).length },
@@ -73,20 +80,38 @@ export class RouterState {
     this._lastAgentTimestamp[jid] = ts;
   }
 
-  get sessions(): Record<string, string> {
-    return this._sessions;
+  get sessions(): Record<string, BackendSessionRef> {
+    const flat: Record<string, BackendSessionRef> = {};
+    for (const [folder, refs] of Object.entries(this._sessions)) {
+      const ref = refs.claude ?? refs.openai;
+      if (ref) flat[folder] = ref;
+    }
+    return flat;
   }
 
-  getSession(folder: string): string | undefined {
-    return this._sessions[folder];
+  getSession(
+    folder: string,
+    backend?: AgentBackendName,
+  ): BackendSessionRef | undefined {
+    const refs = this._sessions[folder];
+    if (!refs) return undefined;
+    return backend ? refs[backend] : (refs.claude ?? refs.openai);
   }
 
-  setSession(folder: string, sessionId: string): void {
-    this._sessions[folder] = sessionId;
+  setSession(folder: string, session: BackendSessionRef): void {
+    this._sessions[folder] ??= {};
+    this._sessions[folder][session.backend] = session;
   }
 
-  clearSession(folder: string): void {
-    delete this._sessions[folder];
+  clearSession(folder: string, backend?: AgentBackendName): void {
+    if (!backend) {
+      delete this._sessions[folder];
+      return;
+    }
+    delete this._sessions[folder]?.[backend];
+    if (Object.keys(this._sessions[folder] ?? {}).length === 0) {
+      delete this._sessions[folder];
+    }
   }
 
   get registeredGroups(): Record<string, RegisteredGroup> {

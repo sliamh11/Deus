@@ -1,17 +1,36 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  _initTestDatabase,
-  createTask,
-  getTaskById,
-  logTaskRun,
-  updateTaskAfterRun,
-} from './db.js';
+import { _initTestDatabase, createTask, getTaskById } from './db.js';
 import {
   _resetSchedulerLoopForTests,
   computeNextRun,
   startSchedulerLoop,
 } from './task-scheduler.js';
+import type { BackendSessionRef } from './agent-backends/types.js';
+import type { SchedulerDependencies } from './task-scheduler.js';
+import { BackendRegistry } from './agent-backends/registry.js';
+
+function makeStubRegistry(): BackendRegistry {
+  const registry = new BackendRegistry();
+  const stub = (name: 'claude' | 'openai') => ({
+    name: () => name,
+    capabilities: () => ({
+      shell: true,
+      filesystem: true,
+      web: true,
+      multimodal: true,
+      handoffs: false,
+      persistent_sessions: true,
+      tool_streaming: name === 'claude',
+    }),
+    startOrResume: async () => ({ backend: name, session_id: '' }),
+    runTurn: async () => ({ status: 'success' as const, result: null }),
+    close: async () => {},
+  });
+  registry.register(stub('claude'));
+  registry.register(stub('openai'));
+  return registry;
+}
 
 // Module-level mocks (hoisted by Vitest). These are safe for existing tests:
 // - The invalid-folder test throws before fs.mkdirSync is reached
@@ -66,6 +85,7 @@ describe('task scheduler', () => {
     startSchedulerLoop({
       registeredGroups: () => ({}),
       getSessions: () => ({}),
+      registry: makeStubRegistry(),
       queue: { enqueueTask } as any,
       onProcess: () => {},
       sendMessage: async () => {},
@@ -201,13 +221,15 @@ describe('startSchedulerLoop execution path', () => {
   function makeDeps(
     overrides: Partial<{
       registeredGroups: Record<string, import('./types.js').RegisteredGroup>;
-      sessions: Record<string, string>;
+      sessions: Record<string, string | BackendSessionRef>;
+      getSession: SchedulerDependencies['getSession'];
+      setSession: SchedulerDependencies['setSession'];
       enqueueTask: ReturnType<typeof vi.fn>;
       sendMessage: ReturnType<typeof vi.fn>;
       notifyIdle: ReturnType<typeof vi.fn>;
       closeStdin: ReturnType<typeof vi.fn>;
     }> = {},
-  ) {
+  ): SchedulerDependencies {
     const enqueueTask =
       overrides.enqueueTask ??
       vi.fn((_jid: string, _taskId: string, fn: () => Promise<void>) => {
@@ -229,6 +251,9 @@ describe('startSchedulerLoop execution path', () => {
     return {
       registeredGroups: () => registeredGroups,
       getSessions: () => overrides.sessions ?? {},
+      getSession: overrides.getSession,
+      setSession: overrides.setSession,
+      registry: makeStubRegistry(),
       queue: { enqueueTask, notifyIdle, closeStdin } as any,
       onProcess: () => {},
       sendMessage: sendMessage as unknown as (
@@ -440,5 +465,68 @@ describe('startSchedulerLoop execution path', () => {
       unknown,
     ];
     expect(input.sessionId).toBe('session-abc-123');
+  });
+
+  it('uses backend-specific group sessions for scheduled task overrides', async () => {
+    createTask(
+      makeTask({
+        id: 'task-openai',
+        context_mode: 'group',
+        agent_backend: 'openai',
+      }),
+    );
+
+    mockRunContainerAgent.mockResolvedValue({
+      status: 'success',
+      result: null,
+    });
+
+    const getSession: NonNullable<SchedulerDependencies['getSession']> = vi.fn(
+      (): BackendSessionRef => ({
+        backend: 'openai',
+        session_id: 'resp-session-123',
+      }),
+    );
+    const sessions = {
+      testgroup: {
+        backend: 'claude',
+        session_id: 'claude-session-123',
+      } satisfies BackendSessionRef,
+    };
+
+    startSchedulerLoop(makeDeps({ sessions, getSession }));
+    await vi.advanceTimersByTimeAsync(10);
+
+    const [, input] = mockRunContainerAgent.mock.calls[0] as [
+      unknown,
+      import('./container-runner.js').ContainerInput,
+      unknown,
+      unknown,
+    ];
+    expect(getSession).toHaveBeenCalledWith('testgroup', 'openai');
+    expect(input.backend).toBe('openai');
+    expect(input.sessionId).toBe('resp-session-123');
+  });
+
+  it('stores new backend session refs produced by scheduled tasks', async () => {
+    createTask(makeTask({ id: 'task-save-session', context_mode: 'group' }));
+
+    mockRunContainerAgent.mockResolvedValue({
+      status: 'success',
+      result: null,
+      newSessionRef: {
+        backend: 'claude',
+        session_id: 'claude-session-next',
+      },
+    });
+
+    const setSession = vi.fn();
+    startSchedulerLoop(makeDeps({ setSession }));
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(setSession).toHaveBeenCalledWith('testgroup', {
+      backend: 'claude',
+      session_id: 'claude-session-next',
+    });
   });
 });

@@ -29,8 +29,8 @@
 
 ## cross-platform-actual
 **Severity:** blocking
-**Applies when:** Diff adds/modifies code under `~/deus/src/` or `~/deus/scripts/`.
-**Check:** Are paths constructed via `src/platform.ts` helpers? Are OS-specific commands (e.g., `pngpaste`, `launchctl`, `osascript`) gated by a platform check? Does the diff use `~`/`$HOME` instead of `/Users/...`?
+**Applies when:** Diff adds/modifies code under `~/deus/src/`, `~/deus/scripts/`, or `~/deus/deus-cmd.*`.
+**Check:** Are paths constructed via `src/platform.ts` helpers? Are OS-specific commands (e.g., `pngpaste`, `launchctl`, `osascript`, `sed -i ''`) gated by a platform check or replaced with portable alternatives? Does the diff use `~`/`$HOME` instead of `/Users/...`?
 **Rule:** Default to cross-platform; guard OS-specific code.
 **Cite:** `feedback_cross_platform_default`
 

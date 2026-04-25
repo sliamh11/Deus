@@ -1,3 +1,8 @@
+import type {
+  AgentBackendName,
+  BackendSessionRef,
+} from './agent-backends/types.js';
+
 export interface AdditionalMount {
   hostPath: string; // Absolute path on host (supports ~ for home)
   containerPath?: string; // Optional — defaults to basename of hostPath. Mounted at /workspace/extra/{value}
@@ -33,6 +38,7 @@ export interface ContainerConfig {
   sessionIdleResetHours?: number; // Override global SESSION_IDLE_RESET_HOURS. 0 = never reset.
   memoryPrivacy?: string[]; // Privacy levels the container can access (e.g. ["public","internal","private"]).
   // Injected as DEUS_MEMORY_PRIVACY env var. Default: all except sensitive.
+  agentBackend?: AgentBackendName; // Optional override for this group's default backend.
 }
 
 export interface ProjectType {
@@ -97,6 +103,7 @@ export interface ScheduledTask {
   last_result: string | null;
   status: 'active' | 'paused' | 'completed';
   created_at: string;
+  agent_backend?: AgentBackendName | null;
 }
 
 export interface TaskRunLog {
@@ -142,3 +149,5 @@ export type OnChatMetadata = (
   channel?: string,
   isGroup?: boolean,
 ) => void;
+
+export type { AgentBackendName, BackendSessionRef };

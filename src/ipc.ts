@@ -19,6 +19,7 @@ import {
   getProjectById,
 } from './project-registry.js';
 import { RegisteredGroup } from './types.js';
+import type { AgentBackendName } from './agent-backends/types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -36,6 +37,12 @@ export interface IpcDeps {
 }
 
 let ipcWatcherRunning = false;
+
+function parseAgentBackend(value: unknown): AgentBackendName | undefined {
+  return value === 'claude' || value === 'openai' || value === 'ollama'
+    ? value
+    : undefined;
+}
 
 export function startIpcWatcher(deps: IpcDeps): void {
   if (ipcWatcherRunning) {
@@ -172,6 +179,7 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
+    agent_backend?: AgentBackendName;
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;
@@ -269,6 +277,7 @@ export async function processTaskIpc(
           data.context_mode === 'group' || data.context_mode === 'isolated'
             ? data.context_mode
             : 'isolated';
+        const agentBackend = parseAgentBackend(data.agent_backend);
         createTask({
           id: taskId,
           group_folder: targetFolder,
@@ -280,6 +289,7 @@ export async function processTaskIpc(
           next_run: nextRun,
           status: 'active',
           created_at: new Date().toISOString(),
+          agent_backend: agentBackend,
         });
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
@@ -373,6 +383,8 @@ export async function processTaskIpc(
             | 'once';
         if (data.schedule_value !== undefined)
           updates.schedule_value = data.schedule_value;
+        if (data.agent_backend !== undefined)
+          updates.agent_backend = parseAgentBackend(data.agent_backend);
 
         // Recompute next_run if schedule changed
         if (data.schedule_type || data.schedule_value) {

@@ -18,6 +18,8 @@ Usage:
   python3 scripts/drift_check.py --adr             # flag patterns stale vs ADRs
   python3 scripts/drift_check.py --shadow          # check private/public symlink integrity
   python3 scripts/drift_check.py --indexes         # verify every indexed dir: INDEX.md refs match on-disk leaves
+  python3 scripts/drift_check.py --bench-labels    # validate benchmark expected paths exist in vault
+  python3 scripts/drift_check.py --bench-snapshot  # run benchmark and check against stored snapshot (local)
   python3 scripts/drift_check.py --all             # run every fast check above
   python3 scripts/drift_check.py --validate        # LLM pattern content check (slow)
   python3 scripts/drift_check.py --validate-router # LLM router selection check (slow)
@@ -25,6 +27,7 @@ Usage:
   npm run drift-check
 """
 import argparse
+import os
 import re
 import subprocess
 import sys
@@ -1071,10 +1074,12 @@ def check_all(project_root: Path, base_ref: str | None = None) -> int:
     shadow_rc = check_shadow(project_root)
     print("\n=== bootstrap mirror ===")
     bm_rc = check_bootstrap_mirror(project_root)
+    print("\n=== bench labels ===")
+    bench_rc = check_bench_labels(project_root)
     print("\n=== coverage (informational) ===")
     cov_rc = check_coverage(project_root)
 
-    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, bm_rc, cov_rc)
+    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, bm_rc, bench_rc, cov_rc)
     print()
     if worst == 0:
         print("ALL CHECKS PASSED")
@@ -1395,6 +1400,183 @@ def check_coverage(project_root: Path) -> int:
     return 0  # informational only — not a blocking failure
 
 
+# ── Benchmark label validation ────────────────────────────────────────────────
+
+_BENCH_FIXTURE = "scripts/tests/fixtures/memory_tree_queries.jsonl"
+_BENCH_SNAPSHOT = "scripts/tests/fixtures/memory_tree_snapshot.json"
+
+_VAULT_SKIP_DIRS = frozenset(
+    {"Session-Logs", "Checkpoints", "Atoms", "ARCHIVE", ".git", ".obsidian"}
+)
+
+_AUTO_MEMORY_GLOBS = (
+    Path("~/.claude/projects").expanduser(),
+)
+
+
+def _collect_vault_paths(vault: Path) -> set[str]:
+    """Collect all .md relative paths from the vault that could be tree nodes."""
+    paths: set[str] = set()
+    if not vault.is_dir():
+        return paths
+    for p in vault.rglob("*.md"):
+        rel = p.relative_to(vault)
+        if any(part in _VAULT_SKIP_DIRS for part in rel.parts):
+            continue
+        paths.add(str(rel))
+    return paths
+
+
+def _collect_auto_memory_paths() -> set[str]:
+    """Collect auto-memory/ namespace paths from all Claude project memory dirs."""
+    paths: set[str] = set()
+    for base in _AUTO_MEMORY_GLOBS:
+        if not base.is_dir():
+            continue
+        for memory_dir in base.rglob("memory"):
+            if not memory_dir.is_dir():
+                continue
+            for p in memory_dir.glob("*.md"):
+                if p.name == "MEMORY.md":
+                    continue
+                paths.add(f"auto-memory/{p.name}")
+    return paths
+
+
+def check_bench_labels(project_root: Path) -> int:
+    """Validate that benchmark expected paths exist as vault or auto-memory files.
+
+    Catches stale benchmark labels after vault restructures — the specific
+    failure mode that masked the Apr 2026 recall regression for 7 days.
+    """
+    import json
+
+    bench_path = project_root / _BENCH_FIXTURE
+    if not bench_path.exists():
+        print(f"Benchmark fixture not found: {_BENCH_FIXTURE} (skipped)")
+        return 0
+
+    # Resolve vault path (same logic as memory_tree.py)
+    vault_env = os.environ.get("DEUS_VAULT_PATH")
+    vault = Path(vault_env).expanduser() if vault_env else Path(
+        "~/Desktop/אישי/Brain Dump/Second Brain/Deus"
+    ).expanduser()
+
+    vault_paths = _collect_vault_paths(vault) if vault.is_dir() else set()
+    auto_paths = _collect_auto_memory_paths()
+    all_known = vault_paths | auto_paths
+
+    if not all_known:
+        print("No vault or auto-memory paths found (vault not mounted?). Skipped.")
+        return 0
+
+    data = [
+        json.loads(line)
+        for line in bench_path.read_text().splitlines()
+        if line.strip()
+    ]
+
+    issues: list[str] = []
+    for i, item in enumerate(data, 1):
+        paths = item.get("expected_paths") or []
+        if isinstance(item.get("expected_path"), str):
+            paths = [item["expected_path"]] + [p for p in paths if p != item["expected_path"]]
+        for p in paths:
+            if p and p not in all_known:
+                issues.append(f"  line {i}: expected_path '{p}' not found in vault or auto-memory")
+
+    if not issues:
+        print(f"Benchmark labels OK: {len(data)} queries, all expected paths exist in vault.")
+        return 0
+
+    print(f"Stale benchmark labels ({len(issues)} issue(s)):")
+    for issue in issues:
+        print(issue)
+    print("\nFIX: update expected_path in", _BENCH_FIXTURE, "to match current vault structure.")
+    return 1
+
+
+def check_bench_snapshot(project_root: Path) -> int:
+    """Compare current benchmark results against a stored snapshot.
+
+    The snapshot records last-known-good recall and threshold. If the snapshot
+    exists and current results are below threshold, this fails. If no snapshot
+    exists, this is informational only.
+
+    Requires: EMBEDDING_PROVIDER env, Ollama running, ~/.deus/memory_tree.db.
+    Skips gracefully if any dependency is missing.
+    """
+    import json
+
+    snapshot_path = project_root / _BENCH_SNAPSHOT
+    bench_path = project_root / _BENCH_FIXTURE
+    if not snapshot_path.exists():
+        print(f"No benchmark snapshot at {_BENCH_SNAPSHOT}. Run `npm run bench:snapshot` to create one.")
+        return 0
+    if not bench_path.exists():
+        return 0
+
+    snapshot = json.loads(snapshot_path.read_text())
+    min_recall = snapshot.get("min_retrieval_recall", 0.85)
+
+    # Try to import and run the benchmark
+    try:
+        sys.path.insert(0, str(project_root / "scripts"))
+        from memory_tree import open_db, retrieve
+    except Exception:
+        print("memory_tree import failed (sqlite-vec not available?). Skipped.")
+        return 0
+
+    db_path = Path("~/.deus/memory_tree.db").expanduser()
+    if not db_path.exists():
+        print("No memory_tree.db found. Skipped.")
+        return 0
+
+    try:
+        db = open_db()
+    except Exception:
+        print("Could not open memory_tree.db. Skipped.")
+        return 0
+
+    data = [
+        json.loads(line)
+        for line in bench_path.read_text().splitlines()
+        if line.strip()
+    ]
+
+    hits = 0
+    total = 0
+    for item in data:
+        if item.get("abstain"):
+            continue
+        total += 1
+        try:
+            r = retrieve(db, item["query"], k=5)
+        except Exception:
+            continue
+        expected = item.get("expected_paths") or []
+        if isinstance(item.get("expected_path"), str):
+            expected = [item["expected_path"]] + [p for p in expected if p != item["expected_path"]]
+        found = [x["path"] for x in r.get("results", [])]
+        if any(e in found for e in expected):
+            hits += 1
+
+    if total == 0:
+        print("No retrieval queries in benchmark. Skipped.")
+        return 0
+
+    recall = hits / total
+    passed = recall >= min_recall
+    status = "PASS" if passed else "REGRESSION"
+    print(f"Benchmark {status}: retrieval recall = {recall:.1%} ({hits}/{total}), threshold = {min_recall:.1%}")
+
+    if not passed:
+        print(f"\nRecall dropped below {min_recall:.1%}. Investigate before merging.")
+        print(f"Snapshot from: {snapshot.get('created', 'unknown')}")
+        return 1
+    return 0
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Drift checker for pattern files.")
     parser.add_argument(
@@ -1459,6 +1641,18 @@ if __name__ == "__main__":
         help="Check every indexed directory: index file references match on-disk leaves (orphans + dangling)",
     )
     parser.add_argument(
+        "--bench-labels",
+        action="store_true",
+        dest="bench_labels",
+        help="Validate memory_tree benchmark expected paths exist in vault",
+    )
+    parser.add_argument(
+        "--bench-snapshot",
+        action="store_true",
+        dest="bench_snapshot",
+        help="Run memory_tree benchmark and compare against stored snapshot (needs Ollama)",
+    )
+    parser.add_argument(
         "--base",
         metavar="REF",
         help="Only check governed files changed since REF (e.g. origin/main). "
@@ -1466,7 +1660,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.shadow:
+    if args.bench_labels:
+        sys.exit(check_bench_labels(PROJECT_ROOT))
+    elif args.bench_snapshot:
+        sys.exit(check_bench_snapshot(PROJECT_ROOT))
+    elif args.shadow:
         sys.exit(check_shadow(PROJECT_ROOT))
     elif args.bootstrap_mirror:
         sys.exit(check_bootstrap_mirror(PROJECT_ROOT))

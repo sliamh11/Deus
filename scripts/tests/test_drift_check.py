@@ -983,3 +983,60 @@ export function bootstrap(opts: BootstrapOptions): void {
         repo_root = Path(__file__).resolve().parents[2]
         rc = drift_check.check_bootstrap_mirror(repo_root)
         assert rc == 0, "Real bootstrap.ts copies have drifted out of alignment"
+
+
+class TestCheckBenchLabels:
+    @staticmethod
+    def _make_bench(tmp_path, queries):
+        import json
+        fixture_dir = tmp_path / "scripts" / "tests" / "fixtures"
+        fixture_dir.mkdir(parents=True, exist_ok=True)
+        bench = fixture_dir / "memory_tree_queries.jsonl"
+        bench.write_text("\n".join(json.dumps(q) for q in queries))
+        return tmp_path
+
+    def test_all_paths_valid_returns_zero(self, tmp_path, monkeypatch, capsys):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "INFRA.md").write_text("---\ndescription: tools\n---\n")
+        monkeypatch.setenv("DEUS_VAULT_PATH", str(vault))
+
+        root = self._make_bench(tmp_path, [
+            {"query": "test", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"]},
+        ])
+        assert drift_check.check_bench_labels(root) == 0
+        assert "OK" in capsys.readouterr().out
+
+    def test_missing_path_returns_one(self, tmp_path, monkeypatch, capsys):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "INFRA.md").write_text("---\ndescription: tools\n---\n")
+        monkeypatch.setenv("DEUS_VAULT_PATH", str(vault))
+
+        root = self._make_bench(tmp_path, [
+            {"query": "test", "expected_path": "GONE.md", "expected_paths": ["GONE.md"]},
+        ])
+        assert drift_check.check_bench_labels(root) == 1
+        out = capsys.readouterr().out
+        assert "GONE.md" in out
+        assert "Stale" in out
+
+    def test_no_fixture_skips_gracefully(self, tmp_path, capsys):
+        assert drift_check.check_bench_labels(tmp_path) == 0
+        assert "skipped" in capsys.readouterr().out.lower()
+
+    def test_no_vault_skips_gracefully(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setenv("DEUS_VAULT_PATH", str(tmp_path / "nonexistent"))
+        monkeypatch.setattr(drift_check, "_AUTO_MEMORY_GLOBS", (tmp_path / "no-such",))
+        root = self._make_bench(tmp_path, [
+            {"query": "test", "expected_path": "X.md"},
+        ])
+        assert drift_check.check_bench_labels(root) == 0
+
+    def test_real_fixture_passes(self):
+        repo_root = Path(__file__).resolve().parents[2]
+        fixture = repo_root / "scripts" / "tests" / "fixtures" / "memory_tree_queries.jsonl"
+        if not fixture.exists():
+            pytest.skip("benchmark fixture not in repo")
+        rc = drift_check.check_bench_labels(repo_root)
+        assert rc == 0, "Benchmark labels have drifted from vault — run drift_check.py --bench-labels"

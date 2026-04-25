@@ -35,13 +35,24 @@ function hasClaudeCredentialsFile(): boolean {
   }
 }
 
-/** Check if Anthropic API credentials are configured (API key or OAuth token). */
+/** Check if credentials for the selected default agent backend are configured. */
 export function hasApiCredentials(): boolean {
   const env = readEnvFile([
+    'DEUS_AGENT_BACKEND',
     'ANTHROPIC_API_KEY',
     'CLAUDE_CODE_OAUTH_TOKEN',
     'ANTHROPIC_AUTH_TOKEN',
+    'OPENAI_API_KEY',
   ]);
+  const backend = (
+    process.env.DEUS_AGENT_BACKEND ||
+    env.DEUS_AGENT_BACKEND ||
+    'claude'
+  ).toLowerCase();
+  if (backend === 'openai') {
+    return !!(env.OPENAI_API_KEY || process.env.OPENAI_API_KEY);
+  }
+
   return !!(
     env.ANTHROPIC_API_KEY ||
     env.CLAUDE_CODE_OAUTH_TOKEN ||
