@@ -25,7 +25,13 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | — | OpenAI API key (used for Whisper transcription) |
+| `DEUS_AGENT_BACKEND` | `claude` | Default container agent backend: `claude` or `openai` |
+| `DEUS_CLI_AGENT` | `DEUS_AGENT_BACKEND` | Default `deus` global command agent: `claude`, `codex`, or `openai` |
+| `DEUS_OPENAI_MODEL` | `gpt-4o` | Default OpenAI model for the `openai` agent backend |
+| `DEUS_CODEX_MODEL` | `DEUS_OPENAI_MODEL` | Optional Codex CLI model override for the `deus codex` launcher |
+| `DEUS_CONTEXT_FILE_MAX_CHARS` | `20000` | Per-file cap for registered agent context surfaces before provider tokenization |
+| `OPENAI_API_KEY` | — | OpenAI API key for the `openai` agent backend and Whisper transcription |
+| `OPENAI_BASE_URL` | `https://api.openai.com` | Optional OpenAI-compatible upstream base URL for the credential proxy |
 | `GEMINI_API_KEY` | — | Gemini API key for embeddings, memory indexer, and production judge |
 
 ## Voice Transcription
@@ -53,7 +59,7 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 |----------|---------|-------------|
 | `CREDENTIAL_PROXY_PORT` | `3001` | Port for the credential injection proxy |
 | `CREDENTIAL_PROXY_HOST` | — | Bind address for proxy (empty = auto-detect) |
-| `DEUS_AUTH_PROVIDER` | (auto-detect) | Force a specific auth provider for the credential proxy: `anthropic` (more providers planned) |
+| `DEUS_AUTH_PROVIDER` | (auto-detect) | Force a specific auth provider for the credential proxy: `anthropic` or `openai` |
 
 ## Ollama / Local Models
 
@@ -82,7 +88,6 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `DEUS_EVAL_CONCURRENT` | — | Override eval pre-warm concurrency |
 | `EVOLUTION_AUTO_OPTIMIZE_THRESHOLD` | `50` | Auto-optimize after this many new scored interactions (0 = disabled) |
 | `EVOLUTION_PRINCIPLES_COOLDOWN_HOURS` | `24` | Cooldown between principle extractions in hours |
-| `DEUS_DB` | `~/.deus/memory.db` | Path to the memory indexer SQLite database (session embeddings, atoms) |
 | `DEUS_EVOLUTION_DB` | `~/.deus/evolution.db` | Path to the evolution SQLite database (interactions, reflections, scores) |
 | `EVOLUTION_SKIP_GROUPS` | — | Comma-separated group folders to exclude from evolution tracking (e.g. automated agents) |
 
@@ -110,12 +115,27 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DEUS_VAULT_PATH` | — | Vault directory path for session logs and memory |
+| `DEUS_DB` | `~/.deus/memory.db` | Memory indexer SQLite database override |
+| `DEUS_MEMORY_TREE` | `0` | Enable memory-tree hooks/context loading when set to `1` |
+| `DEUS_MEMORY_TREE_DB` | `~/.deus/memory_tree.db` | Memory-tree SQLite database override |
+| `DEUS_AUTO_MEMORY_DIR` | — | Optional external auto-memory directory indexed under `auto-memory/` |
+| `DEUS_TREE_LOG` | `~/.deus/memory_tree_queries.jsonl` | Memory-tree query telemetry log |
+| `DEUS_TREE_AUDIT` | `~/.deus/memory_tree_audit.jsonl` | Memory-tree audit log |
+| `DEUS_TREE_LOW` | `0.55` | Initial low-confidence threshold for memory-tree retrieval |
+| `DEUS_TREE_ABSTAIN` | `0.30` | Initial abstention threshold for memory-tree retrieval |
+| `DEUS_TREE_GAP` | `0.04` | Score-gap threshold for memory-tree abstention |
 
 ## Sessions
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SESSION_IDLE_RESET_HOURS` | `8` | Reset a group's session after N idle hours (0 = never reset). Per-channel override via `/settings session_idle_hours=N`. |
+
+Group/task backend overrides:
+
+- Registered groups can set `containerConfig.agentBackend` to pin a group to `claude` or `openai`.
+- Scheduled tasks can set `agent_backend` to override the group/default backend for that task only.
+- Resolution order is: task override, group override, `DEUS_AGENT_BACKEND`, then `claude`.
 
 ## Safety
 

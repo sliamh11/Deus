@@ -5,7 +5,9 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { AgentBackendName, defaultSessionRef } from './agent-backends/types.js';
 import {
+  BackendSessionRef,
   NewMessage,
   ProjectConfig,
   RegisteredGroup,
@@ -49,7 +51,9 @@ function createSchema(database: Database.Database): void {
       last_run TEXT,
       last_result TEXT,
       status TEXT DEFAULT 'active',
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      agent_backend TEXT,
+      context_mode TEXT DEFAULT 'isolated'
     );
     CREATE INDEX IF NOT EXISTS idx_next_run ON scheduled_tasks(next_run);
     CREATE INDEX IF NOT EXISTS idx_status ON scheduled_tasks(status);
@@ -71,8 +75,15 @@ function createSchema(database: Database.Database): void {
       value TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
-      group_folder TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_folder TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      backend TEXT DEFAULT 'claude',
+      resume_cursor TEXT,
+      metadata_json TEXT,
+      last_used_at TEXT,
+      orphaned_at TEXT,
+      orphan_reason TEXT
     );
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
@@ -138,12 +149,13 @@ function createSchema(database: Database.Database): void {
     /* column already exists */
   }
 
-  // Add last_used_at to sessions for idle-reset tracking (migration for existing DBs)
   try {
-    database.exec(`ALTER TABLE sessions ADD COLUMN last_used_at TEXT`);
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN agent_backend TEXT`);
   } catch {
     /* column already exists */
   }
+
+  ensureAuditableBackendSessions(database);
 
   // Create projects table if it doesn't exist (migration for existing DBs)
   database.exec(`
@@ -177,6 +189,99 @@ function createSchema(database: Database.Database): void {
   } catch {
     /* columns already exist */
   }
+}
+
+function ensureAuditableBackendSessions(database: Database.Database): void {
+  const columns = database
+    .prepare(`PRAGMA table_info(sessions)`)
+    .all() as Array<{ name: string; pk: number }>;
+  const columnNames = new Set(columns.map((col) => col.name));
+  const hasAuditableSchema =
+    columnNames.has('id') &&
+    columnNames.has('backend') &&
+    columnNames.has('resume_cursor') &&
+    columnNames.has('metadata_json') &&
+    columnNames.has('last_used_at') &&
+    columnNames.has('orphaned_at') &&
+    columnNames.has('orphan_reason');
+
+  if (hasAuditableSchema) {
+    database.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_active_backend
+        ON sessions(group_folder, backend)
+        WHERE orphaned_at IS NULL;
+    `);
+    return;
+  }
+
+  let legacyTable = 'sessions_legacy_backend_migration';
+  const legacyExists = database
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`)
+    .get(legacyTable);
+  if (legacyExists) {
+    legacyTable = `sessions_legacy_backend_migration_${Date.now()}`;
+  }
+
+  const backendExpr = columnNames.has('backend')
+    ? `COALESCE(backend, 'claude')`
+    : `'claude'`;
+  const resumeCursorExpr = columnNames.has('resume_cursor')
+    ? 'resume_cursor'
+    : 'NULL';
+  const metadataExpr = columnNames.has('metadata_json')
+    ? 'metadata_json'
+    : 'NULL';
+  const lastUsedExpr = columnNames.has('last_used_at')
+    ? 'last_used_at'
+    : 'NULL';
+  const orphanedAtExpr = columnNames.has('orphaned_at')
+    ? 'orphaned_at'
+    : 'NULL';
+  const orphanReasonExpr = columnNames.has('orphan_reason')
+    ? 'orphan_reason'
+    : 'NULL';
+
+  database.exec(`ALTER TABLE sessions RENAME TO ${legacyTable};`);
+  database.exec(`
+    CREATE TABLE sessions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      group_folder TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      backend TEXT DEFAULT 'claude',
+      resume_cursor TEXT,
+      metadata_json TEXT,
+      last_used_at TEXT,
+      orphaned_at TEXT,
+      orphan_reason TEXT
+    );
+  `);
+  database.exec(`
+    INSERT INTO sessions (
+      group_folder,
+      session_id,
+      backend,
+      resume_cursor,
+      metadata_json,
+      last_used_at,
+      orphaned_at,
+      orphan_reason
+    )
+    SELECT
+      group_folder,
+      session_id,
+      ${backendExpr},
+      ${resumeCursorExpr},
+      ${metadataExpr},
+      ${lastUsedExpr},
+      ${orphanedAtExpr},
+      ${orphanReasonExpr}
+    FROM ${legacyTable};
+  `);
+  database.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_active_backend
+      ON sessions(group_folder, backend)
+      WHERE orphaned_at IS NULL;
+  `);
 }
 
 export function initDatabase(): void {
@@ -406,8 +511,8 @@ export function createTask(
 ): void {
   db.prepare(
     `
-    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO scheduled_tasks (id, group_folder, chat_jid, prompt, schedule_type, schedule_value, context_mode, next_run, status, created_at, agent_backend)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `,
   ).run(
     task.id,
@@ -420,6 +525,7 @@ export function createTask(
     task.next_run,
     task.status,
     task.created_at,
+    task.agent_backend ?? null,
   );
 }
 
@@ -448,7 +554,12 @@ export function updateTask(
   updates: Partial<
     Pick<
       ScheduledTask,
-      'prompt' | 'schedule_type' | 'schedule_value' | 'next_run' | 'status'
+      | 'prompt'
+      | 'schedule_type'
+      | 'schedule_value'
+      | 'next_run'
+      | 'status'
+      | 'agent_backend'
     >
   >,
 ): void {
@@ -474,6 +585,10 @@ export function updateTask(
   if (updates.status !== undefined) {
     fields.push('status = ?');
     values.push(updates.status);
+  }
+  if (updates.agent_backend !== undefined) {
+    fields.push('agent_backend = ?');
+    values.push(updates.agent_backend);
   }
 
   if (fields.length === 0) return;
@@ -551,37 +666,222 @@ export function setRouterState(key: string, value: string): void {
 
 // --- Session accessors ---
 
-export function getSession(groupFolder: string): string | undefined {
-  const row = db
-    .prepare('SELECT session_id FROM sessions WHERE group_folder = ?')
-    .get(groupFolder) as { session_id: string } | undefined;
-  return row?.session_id;
+function rowToSessionRef(row: {
+  session_id: string;
+  backend: string | null;
+  resume_cursor: string | null;
+  metadata_json: string | null;
+}): BackendSessionRef {
+  return {
+    backend: row.backend === 'openai' ? 'openai' : 'claude',
+    session_id: row.session_id,
+    resume_cursor: row.resume_cursor ?? undefined,
+    metadata_json: row.metadata_json ?? undefined,
+  };
 }
 
-export function setSession(groupFolder: string, sessionId: string): void {
+export function getSession(
+  groupFolder: string,
+  backend?: AgentBackendName,
+): BackendSessionRef | undefined {
+  const row = (
+    backend
+      ? db
+          .prepare(
+            `SELECT session_id, backend, resume_cursor, metadata_json
+           FROM sessions
+           WHERE group_folder = ? AND backend = ? AND orphaned_at IS NULL`,
+          )
+          .get(groupFolder, backend)
+      : db
+          .prepare(
+            `SELECT session_id, backend, resume_cursor, metadata_json
+           FROM sessions
+           WHERE group_folder = ? AND orphaned_at IS NULL
+           ORDER BY last_used_at DESC
+           LIMIT 1`,
+          )
+          .get(groupFolder)
+  ) as
+    | {
+        session_id: string;
+        backend: string | null;
+        resume_cursor: string | null;
+        metadata_json: string | null;
+      }
+    | undefined;
+  if (!row) return undefined;
+  return rowToSessionRef(row);
+}
+
+export function setSession(
+  groupFolder: string,
+  session: string | BackendSessionRef,
+): void {
+  const ref =
+    typeof session === 'string'
+      ? defaultSessionRef(session, 'claude')
+      : session;
+  const now = new Date().toISOString();
+  const resumeCursor = ref.resume_cursor ?? null;
+  const metadataJson = ref.metadata_json ?? null;
+
+  db.transaction(() => {
+    const active = db
+      .prepare(
+        `SELECT id, session_id, resume_cursor, metadata_json
+         FROM sessions
+         WHERE group_folder = ? AND backend = ? AND orphaned_at IS NULL
+         ORDER BY last_used_at DESC
+         LIMIT 1`,
+      )
+      .get(groupFolder, ref.backend) as
+      | {
+          id: number;
+          session_id: string;
+          resume_cursor: string | null;
+          metadata_json: string | null;
+        }
+      | undefined;
+
+    if (
+      active &&
+      active.session_id === ref.session_id &&
+      active.resume_cursor === resumeCursor &&
+      active.metadata_json === metadataJson
+    ) {
+      db.prepare(`UPDATE sessions SET last_used_at = ? WHERE id = ?`).run(
+        now,
+        active.id,
+      );
+      return;
+    }
+
+    if (active) {
+      db.prepare(
+        `UPDATE sessions
+         SET orphaned_at = ?, orphan_reason = ?
+         WHERE id = ?`,
+      ).run(now, 'superseded', active.id);
+    }
+
+    db.prepare(
+      `INSERT INTO sessions (
+        group_folder,
+        session_id,
+        backend,
+        resume_cursor,
+        metadata_json,
+        last_used_at,
+        orphaned_at,
+        orphan_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    ).run(
+      groupFolder,
+      ref.session_id,
+      ref.backend,
+      resumeCursor,
+      metadataJson,
+      now,
+    );
+  })();
+}
+
+export function clearSession(
+  groupFolder: string,
+  backend?: AgentBackendName,
+): void {
+  const now = new Date().toISOString();
+  if (backend) {
+    db.prepare(
+      `UPDATE sessions
+       SET orphaned_at = ?, orphan_reason = ?
+       WHERE group_folder = ? AND backend = ? AND orphaned_at IS NULL`,
+    ).run(now, 'cleared', groupFolder, backend);
+    return;
+  }
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id, last_used_at) VALUES (?, ?, ?)',
-  ).run(groupFolder, sessionId, new Date().toISOString());
+    `UPDATE sessions
+     SET orphaned_at = ?, orphan_reason = ?
+     WHERE group_folder = ? AND orphaned_at IS NULL`,
+  ).run(now, 'cleared', groupFolder);
 }
 
-export function clearSession(groupFolder: string): void {
-  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
-}
-
-export function getSessionLastUsedAt(groupFolder: string): string | undefined {
-  const row = db
-    .prepare('SELECT last_used_at FROM sessions WHERE group_folder = ?')
-    .get(groupFolder) as { last_used_at: string | null } | undefined;
+export function getSessionLastUsedAt(
+  groupFolder: string,
+  backend?: AgentBackendName,
+): string | undefined {
+  const row = (
+    backend
+      ? db
+          .prepare(
+            `SELECT last_used_at
+           FROM sessions
+           WHERE group_folder = ? AND backend = ? AND orphaned_at IS NULL`,
+          )
+          .get(groupFolder, backend)
+      : db
+          .prepare(
+            `SELECT last_used_at
+           FROM sessions
+           WHERE group_folder = ? AND orphaned_at IS NULL
+           ORDER BY last_used_at DESC
+           LIMIT 1`,
+          )
+          .get(groupFolder)
+  ) as { last_used_at: string | null } | undefined;
   return row?.last_used_at ?? undefined;
 }
 
-export function getAllSessions(): Record<string, string> {
+export function getAllSessions(): Record<string, BackendSessionRef> {
   const rows = db
-    .prepare('SELECT group_folder, session_id FROM sessions')
-    .all() as Array<{ group_folder: string; session_id: string }>;
-  const result: Record<string, string> = {};
+    .prepare(
+      `SELECT group_folder, session_id, backend, resume_cursor, metadata_json
+       FROM sessions
+       WHERE orphaned_at IS NULL
+       ORDER BY group_folder, last_used_at DESC`,
+    )
+    .all() as Array<{
+    group_folder: string;
+    session_id: string;
+    backend: string | null;
+    resume_cursor: string | null;
+    metadata_json: string | null;
+  }>;
+  const result: Record<string, BackendSessionRef> = {};
   for (const row of rows) {
-    result[row.group_folder] = row.session_id;
+    if (!result[row.group_folder]) {
+      result[row.group_folder] = rowToSessionRef(row);
+    }
+  }
+  return result;
+}
+
+export function getAllBackendSessions(): Record<
+  string,
+  Partial<Record<AgentBackendName, BackendSessionRef>>
+> {
+  const rows = db
+    .prepare(
+      `SELECT group_folder, session_id, backend, resume_cursor, metadata_json
+       FROM sessions
+       WHERE orphaned_at IS NULL`,
+    )
+    .all() as Array<{
+    group_folder: string;
+    session_id: string;
+    backend: string | null;
+    resume_cursor: string | null;
+    metadata_json: string | null;
+  }>;
+  const result: Record<
+    string,
+    Partial<Record<AgentBackendName, BackendSessionRef>>
+  > = {};
+  for (const row of rows) {
+    const ref = rowToSessionRef(row);
+    result[row.group_folder] ??= {};
+    result[row.group_folder][ref.backend] = ref;
   }
   return result;
 }
