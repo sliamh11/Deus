@@ -53,7 +53,8 @@ _write_env_key() {
   local env_file="$SCRIPT_DIR/.env"
   [ ! -f "$env_file" ] && return
   if grep -q "^$1=" "$env_file" 2>/dev/null; then
-    sed -i '' "s|^$1=.*|$1=$2|" "$env_file"
+    local tmp="$env_file.tmp.$$"
+    sed "s|^$1=.*|$1=$2|" "$env_file" > "$tmp" && mv "$tmp" "$env_file"
   fi
 }
 
