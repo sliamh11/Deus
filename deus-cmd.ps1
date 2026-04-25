@@ -466,7 +466,7 @@ $gitContext
 
 # -- Commands -----------------------------------------------------------------
 
-if ($Command.ToLower() -in @("codex", "openai", "claude")) {
+if ($Command.ToLower() -in @("codex", "claude")) {
     if ($Command.ToLower() -eq "claude") {
         $env:DEUS_CLI_AGENT = "claude"
         $env:DEUS_AGENT_BACKEND = "claude"
@@ -507,18 +507,20 @@ switch ($Command.ToLower()) {
     "backend" {
         $currentBackend = Read-ConfigKey "agent_backend"
         if (-not $currentBackend) { $currentBackend = if ($env:DEUS_AGENT_BACKEND) { $env:DEUS_AGENT_BACKEND } else { "claude" } }
+        $displayMap = @{ "openai" = "codex" }
+        $currentDisplay = if ($displayMap.ContainsKey($currentBackend)) { $displayMap[$currentBackend] } else { $currentBackend }
         $currentModel = Read-ConfigKey "agent_backend_model"
 
         $sub = if ($args.Count -gt 0) { $args[0] } else { "show" }
         switch ($sub.ToLower()) {
             "show" {
-                Write-Host "Backend: $currentBackend"
+                Write-Host "Backend: $currentDisplay"
                 if ($currentModel) { Write-Host "Model:   $currentModel" }
                 if ($env:DEUS_AGENT_BACKEND) { Write-Host "(env override: DEUS_AGENT_BACKEND=$($env:DEUS_AGENT_BACKEND))" }
             }
             "list" {
-                foreach ($b in @("claude", "openai", "ollama")) {
-                    if ($b -eq $currentBackend) {
+                foreach ($b in @("claude", "codex", "ollama")) {
+                    if ($b -eq $currentDisplay) {
                         Write-Host "* $b (active)"
                     } else {
                         Write-Host "  $b"
@@ -527,24 +529,26 @@ switch ($Command.ToLower()) {
             }
             "set" {
                 if ($args.Count -lt 2) {
-                    Write-Host "Usage: deus backend set <claude|openai|ollama>"
+                    Write-Host "Usage: deus backend set <claude|codex|ollama>"
                     exit 1
                 }
-                $newBackend = $args[1].ToLower()
-                if ($newBackend -notin @("claude", "openai", "ollama")) {
+                $input = $args[1].ToLower()
+                if ($input -notin @("claude", "codex", "ollama")) {
                     Write-Host "Unknown backend: $($args[1])"
-                    Write-Host "Available: claude, openai, ollama"
+                    Write-Host "Available: claude, codex, ollama"
                     exit 1
                 }
-                Write-ConfigKey "agent_backend" $newBackend
-                Write-EnvKey "DEUS_AGENT_BACKEND" $newBackend
-                Write-Host "Default backend set to: $newBackend"
+                $internalMap = @{ "codex" = "openai" }
+                $internalVal = if ($internalMap.ContainsKey($input)) { $internalMap[$input] } else { $input }
+                Write-ConfigKey "agent_backend" $internalVal
+                Write-EnvKey "DEUS_AGENT_BACKEND" $internalVal
+                Write-Host "Default backend set to: $input"
                 Write-Host "Takes effect on next 'deus' launch. Background service uses .env."
             }
             "model" {
                 if ($args.Count -lt 2) {
                     if ($currentModel) {
-                        Write-Host "Current model: $currentModel (backend: $currentBackend)"
+                        Write-Host "Current model: $currentModel (backend: $currentDisplay)"
                     } else {
                         Write-Host "No model override set (using backend default)"
                     }
@@ -556,14 +560,14 @@ switch ($Command.ToLower()) {
                     Write-EnvKey "DEUS_OPENAI_MODEL" $newModel
                     Write-EnvKey "DEUS_CODEX_MODEL" $newModel
                 }
-                Write-Host "Model set to: $newModel (backend: $currentBackend)"
+                Write-Host "Model set to: $newModel (backend: $currentDisplay)"
                 Write-Host "Takes effect on next 'deus' launch."
             }
             default {
                 Write-Host "Usage: deus backend [show|set|model|list]"
                 Write-Host ""
                 Write-Host "  deus backend           Show current backend and model"
-                Write-Host "  deus backend set <be>  Set default backend (claude|openai|ollama)"
+                Write-Host "  deus backend set <be>  Set default backend (claude|codex|ollama)"
                 Write-Host "  deus backend model <m> Set model for current backend (e.g. gpt-4o)"
                 Write-Host "  deus backend list      List available backends"
             }
@@ -616,10 +620,10 @@ switch ($Command.ToLower()) {
     }
 
     default {
-        Write-Host "Usage: deus [claude|codex|openai] [home|auth|status|backend|logs|listen]"
+        Write-Host "Usage: deus [claude|codex] [home|auth|status|backend|logs|listen]"
         Write-Host ""
         Write-Host "  deus            Launch in current directory (external project mode if not ~\deus)"
-        Write-Host "  deus codex      Launch the same Deus context with Codex/OpenAI for this session"
+        Write-Host "  deus codex      Launch with Codex (OpenAI) for this session"
         Write-Host "  deus home       Launch in home mode (~\deus) regardless of current directory"
         Write-Host "  deus auth       Rebuild dist/ and restart background service"
         Write-Host "  deus status     Show service status (NSSM or Servy)"

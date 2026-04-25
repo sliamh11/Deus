@@ -19,7 +19,7 @@ SCRIPT_DIR="$(_resolve_script_dir)"
 # Prefix selection changes both the foreground CLI and runtime backend for this
 # invocation. Plain `deus` still defaults to Claude unless env/config says
 # otherwise.
-if [ "$1" = "codex" ] || [ "$1" = "openai" ] || [ "$1" = "claude" ]; then
+if [ "$1" = "codex" ] || [ "$1" = "claude" ]; then
   if [ "$1" = "claude" ]; then
     export DEUS_CLI_AGENT="claude"
     export DEUS_AGENT_BACKEND="claude"
@@ -56,6 +56,20 @@ _write_env_key() {
     local tmp="$env_file.tmp.$$"
     sed "s|^$1=.*|$1=$2|" "$env_file" > "$tmp" && mv "$tmp" "$env_file"
   fi
+}
+
+_backend_to_display() {
+  case "$1" in
+    openai) echo "codex" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+_display_to_backend() {
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    codex) echo "openai" ;;
+    *) echo "$1" ;;
+  esac
 }
 
 _normalize_cli_agent() {
@@ -826,11 +840,12 @@ case "$1" in
     shift
     CURRENT_BACKEND="$(_read_config_key agent_backend)"
     [ -z "$CURRENT_BACKEND" ] && CURRENT_BACKEND="${DEUS_AGENT_BACKEND:-claude}"
+    CURRENT_DISPLAY="$(_backend_to_display "$CURRENT_BACKEND")"
     CURRENT_MODEL="$(_read_config_key agent_backend_model)"
 
     case "${1:-show}" in
       show)
-        echo "Backend: $CURRENT_BACKEND"
+        echo "Backend: $CURRENT_DISPLAY"
         if [ -n "$CURRENT_MODEL" ]; then
           echo "Model:   $CURRENT_MODEL"
         fi
@@ -839,8 +854,8 @@ case "$1" in
         fi
         ;;
       list)
-        for b in claude openai ollama; do
-          if [ "$b" = "$CURRENT_BACKEND" ]; then
+        for b in claude codex ollama; do
+          if [ "$b" = "$CURRENT_DISPLAY" ]; then
             echo "* $b (active)"
           else
             echo "  $b"
@@ -849,27 +864,28 @@ case "$1" in
         ;;
       set)
         if [ -z "$2" ]; then
-          echo "Usage: deus backend set <claude|openai|ollama>"
+          echo "Usage: deus backend set <claude|codex|ollama>"
           exit 1
         fi
-        NEW_BACKEND="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
-        case "$NEW_BACKEND" in
-          claude|openai|ollama) ;;
+        INPUT="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+        case "$INPUT" in
+          claude|codex|ollama) ;;
           *)
             echo "Unknown backend: $2"
-            echo "Available: claude, openai, ollama"
+            echo "Available: claude, codex, ollama"
             exit 1
             ;;
         esac
+        NEW_BACKEND="$(_display_to_backend "$INPUT")"
         _write_config_key "agent_backend" "$NEW_BACKEND"
         _write_env_key "DEUS_AGENT_BACKEND" "$NEW_BACKEND"
-        echo "Default backend set to: $NEW_BACKEND"
+        echo "Default backend set to: $INPUT"
         echo "Takes effect on next 'deus' launch. Background service uses .env."
         ;;
       model)
         if [ -z "$2" ]; then
           if [ -n "$CURRENT_MODEL" ]; then
-            echo "Current model: $CURRENT_MODEL (backend: $CURRENT_BACKEND)"
+            echo "Current model: $CURRENT_MODEL (backend: $CURRENT_DISPLAY)"
           else
             echo "No model override set (using backend default)"
           fi
@@ -882,14 +898,14 @@ case "$1" in
             _write_env_key "DEUS_CODEX_MODEL" "$2"
             ;;
         esac
-        echo "Model set to: $2 (backend: $CURRENT_BACKEND)"
+        echo "Model set to: $2 (backend: $CURRENT_DISPLAY)"
         echo "Takes effect on next 'deus' launch."
         ;;
       *)
         echo "Usage: deus backend [show|set|model|list]"
         echo ""
         echo "  deus backend           Show current backend and model"
-        echo "  deus backend set <be>  Set default backend (claude|openai|ollama)"
+        echo "  deus backend set <be>  Set default backend (claude|codex|ollama)"
         echo "  deus backend model <m> Set model for current backend (e.g. gpt-4o)"
         echo "  deus backend list      List available backends"
         ;;
@@ -1298,10 +1314,10 @@ $STARTUP_INSTRUCTION" "Catch me up."
     esac
     ;;
   *)
-    echo "Usage: deus [claude|codex|openai] [home|auth|web|backend|listen|logs]"
+    echo "Usage: deus [claude|codex] [home|auth|web|backend|listen|logs]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
-    echo "  deus codex      Launch the same Deus context with Codex/OpenAI for this session"
+    echo "  deus codex      Launch with Codex (OpenAI) for this session"
     echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
     echo "  deus auth       Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"

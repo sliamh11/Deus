@@ -79,10 +79,9 @@ Key gaps as of this writing:
 ## CLI Usage
 
 ```bash
-deus              # Uses default backend (DEUS_AGENT_BACKEND or claude)
+deus              # Uses default backend (claude unless configured otherwise)
 deus claude       # Force Claude for this session
-deus openai       # Force OpenAI for this session
-deus codex        # Force Codex/OpenAI for this session
+deus codex        # Force Codex (OpenAI) for this session
 ```
 
 ## Backend Management
@@ -93,7 +92,7 @@ Manage the default backend and model from the command line:
 deus backend              # Show current backend and model
 deus backend show         # Same as above
 deus backend list         # List available backends with active marker
-deus backend set openai   # Set default backend
+deus backend set codex    # Set default backend
 deus backend model gpt-4o # Set model for current backend
 ```
 
@@ -103,7 +102,7 @@ Changes persist to `~/.config/deus/config.json` (user preferences) and `.env` (s
 
 The backend is resolved in this order (first non-empty wins):
 
-1. **Per-session prefix** -- `deus openai` / `deus claude` (env vars for this process)
+1. **Per-session prefix** -- `deus codex` / `deus claude` (env vars for this process)
 2. **Environment variable** -- `DEUS_AGENT_BACKEND` in `.env` or shell
 3. **User config** -- `agent_backend` in `~/.config/deus/config.json` (set via `deus backend set`)
 4. **Default** -- `claude`
