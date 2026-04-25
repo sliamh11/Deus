@@ -3,7 +3,7 @@ governs:
   - src/platform.ts
   - src/cross-platform.test.ts
   - src/config.ts
-last_verified: "2026-04-09"
+last_verified: "2026-04-25"
 test_tasks:
   - "Add a new HOME directory lookup in src/ that must go through src/platform.ts"
   - "Add a shell command helper under src/ that works on macOS, Linux, and Windows"

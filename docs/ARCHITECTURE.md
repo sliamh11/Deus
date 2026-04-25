@@ -29,7 +29,7 @@ graph TB
 
     subgraph Containers["Container per Group · Linux VM"]
         AR[Agent Runner]
-        SDK[Claude Agent SDK]
+        RT[Backend Adapter<br/>Claude SDK or OpenAI/Codex]
         MCP_D[MCP: deus]
         MCP_G[MCP: gcal]
         BR[Agent Browser]
@@ -54,12 +54,12 @@ graph TB
     DB -->|poll| MO
     MO -->|serialize| GQ
     GQ -->|spawn| AR
-    AR --> SDK
-    SDK -->|API calls| CP
-    CP -->|inject creds| API[Anthropic API]
-    SDK --> MCP_D
-    SDK --> MCP_G
-    SDK --> BR
+    AR --> RT
+    RT -->|API calls| CP
+    CP -->|inject creds| API[Provider APIs]
+    RT --> MCP_D
+    RT --> MCP_G
+    RT --> BR
     MCP_D -->|IPC files| IPC
     IPC -->|route| CR
     TS -->|scheduled tasks| GQ
@@ -104,9 +104,9 @@ sequenceDiagram
     GQ->>CR: spawn container (if slot free)
     CR->>CR: buildVolumeMounts()
     CR->>AG: docker run + stdin JSON
-    AG->>CP: API calls (ANTHROPIC_BASE_URL)
+    AG->>CP: API calls (provider proxy route)
     CP->>CP: Inject real credentials
-    AG->>AG: Claude Agent SDK query()
+    AG->>AG: Selected backend adapter turn
     AG->>CR: stdout markers (OUTPUT_START/END)
     CR->>CH: sendMessage()
     CH->>U: Deliver response
@@ -117,7 +117,7 @@ Key details:
 - **Channels are MCP servers** -- each runs as a child process, communicating via JSON-RPC over stdio.
 - **Message loop polls SQLite**, not the channels directly. This decouples channel connectivity from message processing.
 - **Group queue** enforces one container per group. Follow-up messages pipe to the active container via IPC files; they don't spawn a new one.
-- **Containers never see credentials** -- `ANTHROPIC_BASE_URL` points to the credential proxy, which injects real tokens at request time.
+- **Containers never see credentials** -- backend adapters use provider-specific proxy routes (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, etc.), and the host injects real tokens at request time.
 
 ---
 
