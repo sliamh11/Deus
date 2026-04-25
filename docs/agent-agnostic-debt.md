@@ -23,7 +23,7 @@ Rules:
 | `AAG-006` | Qodo discovery parity | `get-qodo-rules` now checks env vars and common config paths, but the actual Claude-side Qodo discovery mechanism on Liam's machine is still unverified from this runtime. | Claude may load Qodo rules successfully while Codex still cannot reproduce the same lookup until the real host-side source is identified and normalized. | Reproduce a successful Qodo rules load on both Claude and Codex, capture the exact source path/env chain used, and document one canonical discovery order that both runtimes follow. |
 
 | `AAG-007` | User-facing backend setup | No `/add-openai` skill exists. Users must manually edit `.env` to configure a non-Claude backend. | Non-technical users cannot switch backends. No validation, no guided setup, no parity warnings during setup. | `/add-openai` skill that interactively asks for API key, writes `.env`, validates the connection, and warns about parity gaps. |
-| `AAG-008` | CLI backend management | `deus` / `deus home` CLI does not manage backend env vars. Users must know to edit `.env` manually. | Backend switching is invisible in the CLI experience. No `deus backend` subcommand. | `deus` CLI detects current backend, shows it at startup, and offers `deus backend set openai` or similar. |
+| ~~`AAG-008`~~ | ~~CLI backend management~~ | Resolved | -- | `deus backend [show\|set\|model\|list]` implemented in both `deus-cmd.sh` and `deus-cmd.ps1`. |
 | `AAG-009` | `runTurn()` dispatch | Orchestrator and scheduler use the registry for name resolution but still call `runContainerAgent()` directly, bypassing `backend.runTurn()`. | No functional impact today (all backends are container-based), but blocks non-container backends. | Orchestrator and scheduler call `backend.runTurn()` instead of `runContainerAgent()`. |
 
 ## Recently Closed
@@ -31,3 +31,4 @@ Rules:
 | ID | Closed by | Resolution |
 |---|---|---|
 | `AAG-C001` | `feat/agent-backend-abstraction` worktree | `AGENTS.md` became the canonical onboarding source, `CLAUDE.md` was reduced to a compatibility mirror, and runtime-loaded `AGENT_DEUS_101.md` onboarding was removed from the always-load context path. |
+| `AAG-C002` | `feat/agent-backend-abstraction` worktree | `deus backend [show\|set\|model\|list]` CLI command added to both `deus-cmd.sh` and `deus-cmd.ps1`. Persists to both `~/.config/deus/config.json` and `.env`. |

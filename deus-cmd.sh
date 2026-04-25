@@ -30,11 +30,43 @@ if [ "$1" = "codex" ] || [ "$1" = "openai" ] || [ "$1" = "claude" ]; then
   shift
 fi
 
+_read_config_key() {
+  python3 -c "
+import json; from pathlib import Path
+p = Path('~/.config/deus/config.json').expanduser()
+d = json.loads(p.read_text()) if p.exists() else {}
+print(d.get('$1', ''))" 2>/dev/null
+}
+
+_write_config_key() {
+  python3 -c "
+import json, sys; from pathlib import Path
+p = Path('~/.config/deus/config.json').expanduser()
+p.parent.mkdir(parents=True, exist_ok=True)
+d = json.loads(p.read_text()) if p.exists() else {}
+d[sys.argv[1]] = sys.argv[2]
+p.write_text(json.dumps(d, indent=2))
+" "$1" "$2"
+}
+
+_write_env_key() {
+  local env_file="$SCRIPT_DIR/.env"
+  [ ! -f "$env_file" ] && return
+  if grep -q "^$1=" "$env_file" 2>/dev/null; then
+    sed -i '' "s|^$1=.*|$1=$2|" "$env_file"
+  fi
+}
+
 _normalize_cli_agent() {
-  local agent="${DEUS_CLI_AGENT:-${DEUS_AGENT_BACKEND:-claude}}"
+  local agent="${DEUS_CLI_AGENT:-${DEUS_AGENT_BACKEND:-}}"
+  if [ -z "$agent" ]; then
+    agent="$(_read_config_key agent_backend)"
+  fi
+  agent="${agent:-claude}"
   agent="$(printf '%s' "$agent" | tr '[:upper:]' '[:lower:]')"
   case "$agent" in
     openai|codex) echo "codex" ;;
+    ollama) echo "ollama" ;;
     *) echo "claude" ;;
   esac
 }
@@ -789,6 +821,79 @@ case "$1" in
     launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     echo "Deus built and restarted (CLI symlink refreshed)."
     ;;
+  backend)
+    shift
+    CURRENT_BACKEND="$(_read_config_key agent_backend)"
+    [ -z "$CURRENT_BACKEND" ] && CURRENT_BACKEND="${DEUS_AGENT_BACKEND:-claude}"
+    CURRENT_MODEL="$(_read_config_key agent_backend_model)"
+
+    case "${1:-show}" in
+      show)
+        echo "Backend: $CURRENT_BACKEND"
+        if [ -n "$CURRENT_MODEL" ]; then
+          echo "Model:   $CURRENT_MODEL"
+        fi
+        if [ -n "$DEUS_AGENT_BACKEND" ]; then
+          echo "(env override: DEUS_AGENT_BACKEND=$DEUS_AGENT_BACKEND)"
+        fi
+        ;;
+      list)
+        for b in claude openai ollama; do
+          if [ "$b" = "$CURRENT_BACKEND" ]; then
+            echo "* $b (active)"
+          else
+            echo "  $b"
+          fi
+        done
+        ;;
+      set)
+        if [ -z "$2" ]; then
+          echo "Usage: deus backend set <claude|openai|ollama>"
+          exit 1
+        fi
+        NEW_BACKEND="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+        case "$NEW_BACKEND" in
+          claude|openai|ollama) ;;
+          *)
+            echo "Unknown backend: $2"
+            echo "Available: claude, openai, ollama"
+            exit 1
+            ;;
+        esac
+        _write_config_key "agent_backend" "$NEW_BACKEND"
+        _write_env_key "DEUS_AGENT_BACKEND" "$NEW_BACKEND"
+        echo "Default backend set to: $NEW_BACKEND"
+        echo "Takes effect on next 'deus' launch. Background service uses .env."
+        ;;
+      model)
+        if [ -z "$2" ]; then
+          if [ -n "$CURRENT_MODEL" ]; then
+            echo "Current model: $CURRENT_MODEL (backend: $CURRENT_BACKEND)"
+          else
+            echo "No model override set (using backend default)"
+          fi
+          exit 0
+        fi
+        _write_config_key "agent_backend_model" "$2"
+        case "$CURRENT_BACKEND" in
+          openai)
+            _write_env_key "DEUS_OPENAI_MODEL" "$2"
+            _write_env_key "DEUS_CODEX_MODEL" "$2"
+            ;;
+        esac
+        echo "Model set to: $2 (backend: $CURRENT_BACKEND)"
+        echo "Takes effect on next 'deus' launch."
+        ;;
+      *)
+        echo "Usage: deus backend [show|set|model|list]"
+        echo ""
+        echo "  deus backend           Show current backend and model"
+        echo "  deus backend set <be>  Set default backend (claude|openai|ollama)"
+        echo "  deus backend model <m> Set model for current backend (e.g. gpt-4o)"
+        echo "  deus backend list      List available backends"
+        ;;
+    esac
+    ;;
   home|web|"")
     # `deus web` launches with --chrome for Claude-in-Chrome browser integration.
     # Otherwise identical to bare `deus` / `deus home`.
@@ -820,7 +925,7 @@ case "$1" in
 
       local prompt="$1"
       local codex_args=()
-      local codex_model="${DEUS_CODEX_MODEL:-$DEUS_OPENAI_MODEL}"
+      local codex_model="${DEUS_CODEX_MODEL:-${DEUS_OPENAI_MODEL:-$(_read_config_key agent_backend_model)}}"
       [ -n "$codex_model" ] && codex_args+=("--model" "$codex_model")
       [ "$CHROME_FLAG" = "--chrome" ] && codex_args+=("--search")
 
@@ -835,6 +940,11 @@ case "$1" in
     }
 
     launch_agent() {
+      if [ "$CLI_AGENT" = "ollama" ]; then
+        echo "Error: Ollama backend is not yet available as a CLI agent."
+        echo "Use 'deus backend set claude' or 'deus backend set openai' instead."
+        return 1
+      fi
       if [ "$CLI_AGENT" != "codex" ]; then
         launch_claude "$@"
         return $?
@@ -1187,15 +1297,16 @@ $STARTUP_INSTRUCTION" "Catch me up."
     esac
     ;;
   *)
-    echo "Usage: deus [claude|codex|openai] [home|auth|web|listen|logs]"
+    echo "Usage: deus [claude|codex|openai] [home|auth|web|backend|listen|logs]"
     echo ""
-    echo "  deus        Launch in current directory (external project mode if not ~/deus)"
-    echo "  deus codex  Launch the same Deus context with Codex/OpenAI for this session"
-    echo "  deus home   Launch in home mode (~/deus) regardless of current directory"
-    echo "  deus auth   Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
+    echo "  deus            Launch in current directory (external project mode if not ~/deus)"
+    echo "  deus codex      Launch the same Deus context with Codex/OpenAI for this session"
+    echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
+    echo "  deus auth       Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
-    echo "  deus web    Same as 'deus' but launches claude with --chrome (Claude-in-Chrome integration)"
-    echo "  deus listen Record from mic, transcribe, and copy to clipboard"
-    echo "  deus logs   Review system health logs (rotate|review|summary|pinned)"
+    echo "  deus web        Same as 'deus' but launches claude with --chrome (Claude-in-Chrome integration)"
+    echo "  deus backend    Manage default AI backend and model (show|set|model|list)"
+    echo "  deus listen     Record from mic, transcribe, and copy to clipboard"
+    echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
     ;;
 esac

@@ -85,6 +85,31 @@ deus openai       # Force OpenAI for this session
 deus codex        # Force Codex/OpenAI for this session
 ```
 
+## Backend Management
+
+Manage the default backend and model from the command line:
+
+```bash
+deus backend              # Show current backend and model
+deus backend show         # Same as above
+deus backend list         # List available backends with active marker
+deus backend set openai   # Set default backend
+deus backend model gpt-4o # Set model for current backend
+```
+
+Changes persist to `~/.config/deus/config.json` (user preferences) and `.env` (service runtime). They take effect on the next `deus` launch.
+
+### Precedence
+
+The backend is resolved in this order (first non-empty wins):
+
+1. **Per-session prefix** -- `deus openai` / `deus claude` (env vars for this process)
+2. **Environment variable** -- `DEUS_AGENT_BACKEND` in `.env` or shell
+3. **User config** -- `agent_backend` in `~/.config/deus/config.json` (set via `deus backend set`)
+4. **Default** -- `claude`
+
+`deus backend set` writes to both config.json and `.env` so both the CLI and background service pick up the change.
+
 ## Environment Variables
 
 | Variable | Default | Description |

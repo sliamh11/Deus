@@ -9,6 +9,7 @@
       deus home         Launch Claude Code in home mode (~\deus)
       deus auth         Rebuild dist/ and restart the background service
       deus status       Show service status
+      deus backend      Manage default AI backend and model (show|set|model|list)
       deus logs         Review system health logs (rotate|review|summary|pinned)
 
     The Deus background service runs under NSSM or Servy.
@@ -42,11 +43,51 @@ function Invoke-Claude {
     }
 }
 
+function Read-ConfigKey {
+    param([string]$Key)
+    $configPath = "$env:USERPROFILE\.config\deus\config.json"
+    if (-not (Test-Path $configPath)) { return "" }
+    try {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json
+        $val = $cfg.$Key
+        if ($val) { return $val } else { return "" }
+    } catch { return "" }
+}
+
+function Write-ConfigKey {
+    param([string]$Key, [string]$Value)
+    $configPath = "$env:USERPROFILE\.config\deus\config.json"
+    $configDir = Split-Path -Parent $configPath
+    if (-not (Test-Path $configDir)) { New-Item -ItemType Directory -Path $configDir -Force | Out-Null }
+    $cfg = @{}
+    if (Test-Path $configPath) {
+        try { $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable } catch { $cfg = @{} }
+    }
+    $cfg[$Key] = $Value
+    $cfg | ConvertTo-Json -Depth 10 | Set-Content $configPath
+}
+
+function Write-EnvKey {
+    param([string]$Key, [string]$Value)
+    $envFile = Join-Path $DeusHome ".env"
+    if (-not (Test-Path $envFile)) { return }
+    $lines = Get-Content $envFile
+    $found = $false
+    $newLines = $lines | ForEach-Object {
+        if ($_ -match "^$Key=") { $found = $true; "$Key=$Value" } else { $_ }
+    }
+    if ($found) { $newLines | Set-Content $envFile }
+}
+
 function Get-DeusCliAgent {
-    $agent = if ($env:DEUS_CLI_AGENT) { $env:DEUS_CLI_AGENT } elseif ($env:DEUS_AGENT_BACKEND) { $env:DEUS_AGENT_BACKEND } else { "claude" }
+    $agent = if ($env:DEUS_CLI_AGENT) { $env:DEUS_CLI_AGENT }
+             elseif ($env:DEUS_AGENT_BACKEND) { $env:DEUS_AGENT_BACKEND }
+             else { Read-ConfigKey "agent_backend" }
+    if (-not $agent) { $agent = "claude" }
     switch ($agent.ToLower()) {
         "openai" { return "codex" }
         "codex"  { return "codex" }
+        "ollama" { return "ollama" }
         default  { return "claude" }
     }
 }
@@ -75,7 +116,7 @@ function Invoke-Codex {
     }
 
     $codexArgs = @()
-    $codexModel = if ($env:DEUS_CODEX_MODEL) { $env:DEUS_CODEX_MODEL } else { $env:DEUS_OPENAI_MODEL }
+    $codexModel = if ($env:DEUS_CODEX_MODEL) { $env:DEUS_CODEX_MODEL } elseif ($env:DEUS_OPENAI_MODEL) { $env:DEUS_OPENAI_MODEL } else { Read-ConfigKey "agent_backend_model" }
     if ($codexModel) {
         $codexArgs += @("--model", $codexModel)
     }
@@ -93,10 +134,14 @@ function Invoke-Codex {
 
 function Invoke-Agent {
     param([string[]]$ExtraArgs)
-    if ((Get-DeusCliAgent) -eq "codex") {
-        Invoke-Codex $ExtraArgs
-    } else {
-        Invoke-Claude $ExtraArgs
+    $cliAgent = Get-DeusCliAgent
+    switch ($cliAgent) {
+        "ollama" {
+            Write-Error "Ollama backend is not yet available as a CLI agent. Use 'deus backend set claude' or 'deus backend set openai' instead."
+            return
+        }
+        "codex" { Invoke-Codex $ExtraArgs }
+        default { Invoke-Claude $ExtraArgs }
     }
 }
 
@@ -459,6 +504,72 @@ switch ($Command.ToLower()) {
         Write-Host "Deus built and restarted."
     }
 
+    "backend" {
+        $currentBackend = Read-ConfigKey "agent_backend"
+        if (-not $currentBackend) { $currentBackend = if ($env:DEUS_AGENT_BACKEND) { $env:DEUS_AGENT_BACKEND } else { "claude" } }
+        $currentModel = Read-ConfigKey "agent_backend_model"
+
+        $sub = if ($args.Count -gt 0) { $args[0] } else { "show" }
+        switch ($sub.ToLower()) {
+            "show" {
+                Write-Host "Backend: $currentBackend"
+                if ($currentModel) { Write-Host "Model:   $currentModel" }
+                if ($env:DEUS_AGENT_BACKEND) { Write-Host "(env override: DEUS_AGENT_BACKEND=$($env:DEUS_AGENT_BACKEND))" }
+            }
+            "list" {
+                foreach ($b in @("claude", "openai", "ollama")) {
+                    if ($b -eq $currentBackend) {
+                        Write-Host "* $b (active)"
+                    } else {
+                        Write-Host "  $b"
+                    }
+                }
+            }
+            "set" {
+                if ($args.Count -lt 2) {
+                    Write-Host "Usage: deus backend set <claude|openai|ollama>"
+                    exit 1
+                }
+                $newBackend = $args[1].ToLower()
+                if ($newBackend -notin @("claude", "openai", "ollama")) {
+                    Write-Host "Unknown backend: $($args[1])"
+                    Write-Host "Available: claude, openai, ollama"
+                    exit 1
+                }
+                Write-ConfigKey "agent_backend" $newBackend
+                Write-EnvKey "DEUS_AGENT_BACKEND" $newBackend
+                Write-Host "Default backend set to: $newBackend"
+                Write-Host "Takes effect on next 'deus' launch. Background service uses .env."
+            }
+            "model" {
+                if ($args.Count -lt 2) {
+                    if ($currentModel) {
+                        Write-Host "Current model: $currentModel (backend: $currentBackend)"
+                    } else {
+                        Write-Host "No model override set (using backend default)"
+                    }
+                    return
+                }
+                $newModel = $args[1]
+                Write-ConfigKey "agent_backend_model" $newModel
+                if ($currentBackend -eq "openai") {
+                    Write-EnvKey "DEUS_OPENAI_MODEL" $newModel
+                    Write-EnvKey "DEUS_CODEX_MODEL" $newModel
+                }
+                Write-Host "Model set to: $newModel (backend: $currentBackend)"
+                Write-Host "Takes effect on next 'deus' launch."
+            }
+            default {
+                Write-Host "Usage: deus backend [show|set|model|list]"
+                Write-Host ""
+                Write-Host "  deus backend           Show current backend and model"
+                Write-Host "  deus backend set <be>  Set default backend (claude|openai|ollama)"
+                Write-Host "  deus backend model <m> Set model for current backend (e.g. gpt-4o)"
+                Write-Host "  deus backend list      List available backends"
+            }
+        }
+    }
+
     "status" {
         Get-DeusServiceStatus
     }
@@ -505,14 +616,15 @@ switch ($Command.ToLower()) {
     }
 
     default {
-        Write-Host "Usage: deus [claude|codex|openai] [home|auth|status|logs|listen]"
+        Write-Host "Usage: deus [claude|codex|openai] [home|auth|status|backend|logs|listen]"
         Write-Host ""
-        Write-Host "  deus        Launch in current directory (external project mode if not ~\deus)"
-        Write-Host "  deus codex  Launch the same Deus context with Codex/OpenAI for this session"
-        Write-Host "  deus home   Launch in home mode (~\deus) regardless of current directory"
-        Write-Host "  deus auth   Rebuild dist/ and restart background service"
-        Write-Host "  deus status Show service status (NSSM or Servy)"
-        Write-Host "  deus logs   Review system health logs (rotate|review|summary|pinned)"
-        Write-Host "  deus listen Record from mic, transcribe, and copy to clipboard"
+        Write-Host "  deus            Launch in current directory (external project mode if not ~\deus)"
+        Write-Host "  deus codex      Launch the same Deus context with Codex/OpenAI for this session"
+        Write-Host "  deus home       Launch in home mode (~\deus) regardless of current directory"
+        Write-Host "  deus auth       Rebuild dist/ and restart background service"
+        Write-Host "  deus status     Show service status (NSSM or Servy)"
+        Write-Host "  deus backend    Manage default AI backend and model (show|set|model|list)"
+        Write-Host "  deus logs       Review system health logs (rotate|review|summary|pinned)"
+        Write-Host "  deus listen     Record from mic, transcribe, and copy to clipboard"
     }
 }
