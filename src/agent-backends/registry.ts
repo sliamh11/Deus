@@ -33,9 +33,6 @@ export class BackendRegistry {
   }
 }
 
-let globalRegistry: BackendRegistry | undefined;
-
 export function initBackendRegistry(): BackendRegistry {
-  globalRegistry = new BackendRegistry();
-  return globalRegistry;
+  return new BackendRegistry();
 }

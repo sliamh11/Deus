@@ -57,11 +57,12 @@ Wait for the user to provide their key.
 Append or update `OPENAI_API_KEY` in `.env`:
 
 ```bash
-# If the line exists (from .env.example), update it:
-grep -q '^OPENAI_API_KEY=' .env && sed -i '' 's/^OPENAI_API_KEY=.*/OPENAI_API_KEY=<their-key>/' .env
-
-# If the line doesn't exist, append it:
-grep -q '^OPENAI_API_KEY=' .env || echo 'OPENAI_API_KEY=<their-key>' >> .env
+# Update or append OPENAI_API_KEY:
+if grep -q '^OPENAI_API_KEY=' .env; then
+  tmpf=$(mktemp) && sed 's/^OPENAI_API_KEY=.*/OPENAI_API_KEY=<their-key>/' .env > "$tmpf" && mv "$tmpf" .env
+else
+  echo 'OPENAI_API_KEY=<their-key>' >> .env
+fi
 ```
 
 ### Sync to container environment
@@ -148,7 +149,12 @@ If the user wants a different model for CLI sessions than the service backend:
 
 ```bash
 # Set CLI-specific model (overrides DEUS_OPENAI_MODEL for deus codex only)
-grep -q '^DEUS_CODEX_MODEL=' .env && sed -i '' 's/^DEUS_CODEX_MODEL=.*/DEUS_CODEX_MODEL=<model>/' .env || echo 'DEUS_CODEX_MODEL=<model>' >> .env
+# Update or append DEUS_CODEX_MODEL:
+if grep -q '^DEUS_CODEX_MODEL=' .env; then
+  tmpf=$(mktemp) && sed 's/^DEUS_CODEX_MODEL=.*/DEUS_CODEX_MODEL=<model>/' .env > "$tmpf" && mv "$tmpf" .env
+else
+  echo 'DEUS_CODEX_MODEL=<model>' >> .env
+fi
 ```
 
 Sync: `mkdir -p data/env && cp .env data/env/env`

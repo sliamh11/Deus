@@ -833,7 +833,7 @@ case "$1" in
     LINK_DIR="$HOME/.local/bin"
     mkdir -p "$LINK_DIR"
     ln -sf "$SCRIPT_DIR/deus-cmd.sh" "$LINK_DIR/deus"
-    launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
+    [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     echo "Deus built and restarted (CLI symlink refreshed)."
     ;;
   backend)
@@ -907,11 +907,10 @@ case "$1" in
           echo "Error: eval/ directory not found at $EVAL_DIR"
           exit 1
         fi
-        echo "Running backend parity benchmark (claude vs codex)..."
+        echo "Running backend parity benchmark (claude vs openai)..."
         echo "This requires both ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN and OPENAI_API_KEY."
         echo ""
         DEUS_PARITY_TEST=1 python3 -m pytest "$EVAL_DIR" \
-          -k "parity" \
           --json-report --json-report-file="$EVAL_DIR/.report.json" \
           -v 2>&1
         PYTEST_EXIT=$?
@@ -927,7 +926,7 @@ case "$1" in
         echo "  deus backend set <be>  Set default backend (claude|codex|ollama)"
         echo "  deus backend model <m> Set model for current backend (e.g. gpt-4o)"
         echo "  deus backend list      List available backends"
-        echo "  deus backend bench     Run parity benchmark (claude vs codex)"
+        echo "  deus backend bench     Run parity benchmark (claude vs openai)"
         ;;
     esac
     ;;
@@ -945,7 +944,7 @@ case "$1" in
     # ~/.claude/.credentials.json directly and auto-refreshes on /login.
     # Exporting a frozen token causes 401s after token rotation because
     # the CLI prioritizes the env var over the credentials file.
-    launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
+    [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     # Launch claude with bypass mode; fall back to normal mode if user declines
     launch_claude() {
       claude $CHROME_FLAG --dangerously-skip-permissions "$@"
