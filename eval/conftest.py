@@ -38,6 +38,10 @@ EVAL_CONCURRENT: int = int(_concurrent_env) if _concurrent_env else max(1, min(o
 # files are being run so the cache is always fully populated.
 _ALL_DATASETS = ["core_qa", "tool_use", "safety"]
 
+# When DEUS_PARITY_TEST=1, tests run against both backends.
+PARITY_MODE = os.environ.get("DEUS_PARITY_TEST", "") == "1"
+EVAL_BACKENDS: list[str] = ["claude", "openai"] if PARITY_MODE else ["claude"]
+
 
 def load_thresholds() -> dict:
     if THRESHOLDS_FILE.exists():
@@ -84,23 +88,23 @@ def agent():
     Session-scoped agent fixture with thread-safe response cache.
 
     Returns a callable with the same signature as invoke_agent, but caches
-    responses by prompt so multiple metrics on the same case reuse one container
-    invocation instead of spawning a new one each time.
+    responses by (prompt, backend) so multiple metrics on the same case reuse
+    one container invocation instead of spawning a new one each time.
 
     Thread-safe: safe to call from the parallel pre-warm fixture below.
     """
-    _cache: dict[str, AgentResponse] = {}
+    _cache: dict[tuple[str, str], AgentResponse] = {}
     _lock = threading.Lock()
 
     def _cached_invoke(prompt: str, **kwargs) -> AgentResponse:
-        # Fast path: already cached (no lock needed for reads after population).
-        if prompt in _cache:
-            return _cache[prompt]
+        backend = kwargs.get("backend", "claude")
+        cache_key = (prompt, backend)
+        if cache_key in _cache:
+            return _cache[cache_key]
         with _lock:
-            # Double-check under lock in case another thread just populated it.
-            if prompt not in _cache:
-                _cache[prompt] = invoke_agent(prompt, **kwargs)
-        return _cache[prompt]
+            if cache_key not in _cache:
+                _cache[cache_key] = invoke_agent(prompt, **kwargs)
+        return _cache[cache_key]
 
     return _cached_invoke
 
@@ -140,8 +144,14 @@ def warm_agent_cache(agent, request) -> None:
     if not all_prompts:
         return
 
+    # In parity mode, warm each prompt for every backend.
+    warm_tasks: list[tuple[str, str]] = [
+        (p, b) for p in all_prompts for b in EVAL_BACKENDS
+    ]
+
     print(
-        f"\n[warmup] Pre-warming {len(all_prompts)} unique prompts "
+        f"\n[warmup] Pre-warming {len(warm_tasks)} tasks "
+        f"({len(all_prompts)} prompts × {len(EVAL_BACKENDS)} backends) "
         f"from {active_datasets} "
         f"({EVAL_CONCURRENT} concurrent, {os.cpu_count()} logical CPUs)..."
     )
@@ -150,16 +160,18 @@ def warm_agent_cache(agent, request) -> None:
     failed = 0
 
     with ThreadPoolExecutor(max_workers=EVAL_CONCURRENT) as pool:
-        futures = {pool.submit(agent, p): p for p in all_prompts}
+        futures = {
+            pool.submit(agent, p, backend=b): (p, b) for p, b in warm_tasks
+        }
         for future in as_completed(futures):
-            prompt = futures[future]
+            prompt, backend = futures[future]
             try:
                 result = future.result()
                 completed += 1
                 status = "ok" if result.status == "success" else f"err:{result.error[:40]}"
-                print(f"[warmup] {completed}/{len(all_prompts)} {status}")
+                print(f"[warmup] {completed}/{len(warm_tasks)} [{backend}] {status}")
             except Exception as exc:
                 failed += 1
-                print(f"[warmup] FAILED: {exc}")
+                print(f"[warmup] FAILED [{backend}]: {exc}")
 
     print(f"[warmup] Done — {completed} ok, {failed} failed.\n")
