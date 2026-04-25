@@ -1478,7 +1478,10 @@ def reindex_external(
         existing = db.execute(
             "SELECT content_hash FROM nodes WHERE id = ?", (node_id,)
         ).fetchone()
-        need_embed = existing is None or existing[0] != ch
+        has_embedding = sqlite_vec is not None and db.execute(
+            "SELECT 1 FROM embeddings WHERE rowid = ?", (_rowid_for(node_id),)
+        ).fetchone() is not None
+        need_embed = existing is None or existing[0] != ch or not has_embedding
 
         vec = None
         if need_embed and not skip_embed:

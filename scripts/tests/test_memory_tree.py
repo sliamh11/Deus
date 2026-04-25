@@ -630,6 +630,29 @@ class TestReindexExternal:
             counts2 = mt.reindex_external(tmp_db, ext_dir)
         assert counts2["id_written"] == 0
 
+    @pytest.mark.skipif(mt.sqlite_vec is None, reason="sqlite_vec not available")
+    def test_reembeds_when_embedding_row_missing(self, tmp_db, ext_dir):
+        """Nodes with a matching content_hash but no embedding row must be re-embedded."""
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external(tmp_db, ext_dir)
+
+        # Manually delete all embedding rows to simulate a failed embed run.
+        node_ids = [
+            r[0] for r in tmp_db.execute(
+                "SELECT id FROM nodes WHERE orphaned_at IS NULL"
+            ).fetchall()
+        ]
+        for nid in node_ids:
+            rowid = mt._rowid_for(nid)
+            tmp_db.execute("DELETE FROM embeddings WHERE rowid = ?", (rowid,))
+        tmp_db.commit()
+
+        # Second run: content_hash unchanged, but embedding row is gone.
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM) as mock_embed:
+            counts = mt.reindex_external(tmp_db, ext_dir)
+
+        assert counts["embedded"] > 0, "Expected re-embedding when embedding rows were deleted"
+
     def test_orphans_deleted_files(self, tmp_db, ext_dir):
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
             mt.reindex_external(tmp_db, ext_dir)
