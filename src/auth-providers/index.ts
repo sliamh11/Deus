@@ -15,9 +15,11 @@ export {
   AnthropicAuthProvider,
   _resetCredentialsCacheForTest,
 } from './anthropic.js';
+export { OpenAIAuthProvider } from './openai.js';
 
 import { AuthProviderRegistry } from './types.js';
 import { AnthropicAuthProvider } from './anthropic.js';
+import { OpenAIAuthProvider } from './openai.js';
 
 /**
  * Ensure the default Anthropic provider is registered.
@@ -25,6 +27,10 @@ import { AnthropicAuthProvider } from './anthropic.js';
  */
 export function ensureDefaultProviders(): void {
   const registry = AuthProviderRegistry.default();
-  if (registry.listProviders().includes('anthropic')) return;
-  registry.register(new AnthropicAuthProvider());
+  if (!registry.listProviders().includes('anthropic')) {
+    registry.register(new AnthropicAuthProvider());
+  }
+  if (!registry.listProviders().includes('openai')) {
+    registry.register(new OpenAIAuthProvider());
+  }
 }

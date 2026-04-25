@@ -20,7 +20,7 @@ Choose the right tool for what you care about.
 | **Self-improvement** | Judge → reflexion → DSPy prompt optimization | No | No | No | No |
 | **Eval / CI layer** | DeepEval test suite (QA, tool use, safety) | No | No | No | No |
 | **Credential isolation** | Proxy injects keys at runtime; containers never see real credentials | Keys in environment | Policy-controlled | Keys in environment | N/A (cloud) |
-| **LLM support** | Claude only | Any (OpenAI, Anthropic, Ollama, local) | Any (via OpenClaw) | Any | Claude only |
+| **LLM support** | Claude default; OpenAI/Codex opt-in | Any (OpenAI, Anthropic, Ollama, local) | Any (via OpenClaw) | Any | Claude only |
 | **Codebase size** | ~9,500 lines TypeScript | ~430,000 lines | Wrapper over OpenClaw | Single Rust binary | N/A |
 | **Community** | New project | 250K+ GitHub stars, 5,700+ skills | NVIDIA-backed, alpha | 18K GitHub stars | N/A |
 | **License** | MIT | MIT | Open source | Open source | Proprietary |
@@ -138,7 +138,7 @@ No other framework in this comparison ships with a built-in eval suite for the a
 
 ### How Deus compares to vanilla Claude Code
 
-Deus uses the exact same Claude Agent SDK and the same `claude_code` system prompt preset as vanilla Claude Code. The difference is in what Deus adds — and what it trims.
+On the default Claude path, Deus uses the same Claude Agent SDK and `claude_code` system prompt preset as vanilla Claude Code. The backend-neutral runtime keeps the surrounding Deus behavior stable while other adapters catch up to that baseline.
 
 #### Tool filtering (Deus *saves* tokens here)
 

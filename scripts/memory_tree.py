@@ -1076,7 +1076,7 @@ def retrieve(
         others_avg = sum(cosine_sorted[1:k + 1]) / min(len(cosine_sorted) - 1, k)
         gap = best - others_avg
         gap_threshold = DEFAULT_SCORE_GAP_THRESHOLD
-        if gap < gap_threshold and best < low_threshold:
+        if gap < gap_threshold and best < abstain_threshold + gap_threshold:
             fell_back = True
             trace.append(f"abstain:gap={gap:.3f}<{gap_threshold}")
             top = []
@@ -1478,7 +1478,10 @@ def reindex_external(
         existing = db.execute(
             "SELECT content_hash FROM nodes WHERE id = ?", (node_id,)
         ).fetchone()
-        need_embed = existing is None or existing[0] != ch
+        has_embedding = sqlite_vec is not None and db.execute(
+            "SELECT 1 FROM embeddings WHERE rowid = ?", (_rowid_for(node_id),)
+        ).fetchone() is not None
+        need_embed = existing is None or existing[0] != ch or not has_embedding
 
         vec = None
         if need_embed and not skip_embed:

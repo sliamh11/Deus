@@ -1,12 +1,19 @@
 import path from 'path';
 
+import type { AgentBackendName } from './agent-backends/types.js';
 import { readEnvFile } from './env.js';
 import { homeDir } from './platform.js';
 
 // Read config values from .env (falls back to process.env).
 // Secrets (API keys, tokens) are NOT read here — they are loaded only
 // by the credential proxy (credential-proxy.ts), never exposed to containers.
-const envConfig = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
+const envConfig = readEnvFile([
+  'ASSISTANT_NAME',
+  'ASSISTANT_HAS_OWN_NUMBER',
+  'DEUS_AGENT_BACKEND',
+  'DEUS_CONTEXT_FILE_MAX_CHARS',
+  'DEUS_OPENAI_MODEL',
+]);
 
 export const ASSISTANT_NAME =
   process.env.ASSISTANT_NAME || envConfig.ASSISTANT_NAME || 'Deus';
@@ -79,3 +86,23 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+const rawAgentBackend = (
+  process.env.DEUS_AGENT_BACKEND ||
+  envConfig.DEUS_AGENT_BACKEND ||
+  'claude'
+).toLowerCase();
+export const DEFAULT_AGENT_BACKEND: AgentBackendName =
+  rawAgentBackend === 'openai'
+    ? 'openai'
+    : rawAgentBackend === 'ollama'
+      ? 'ollama'
+      : 'claude';
+
+export const DEUS_OPENAI_MODEL =
+  process.env.DEUS_OPENAI_MODEL || envConfig.DEUS_OPENAI_MODEL || '';
+
+export const DEUS_CONTEXT_FILE_MAX_CHARS =
+  process.env.DEUS_CONTEXT_FILE_MAX_CHARS ||
+  envConfig.DEUS_CONTEXT_FILE_MAX_CHARS ||
+  '';

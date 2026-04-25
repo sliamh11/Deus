@@ -2,13 +2,18 @@ import { describe, it, expect, beforeEach } from 'vitest';
 
 import {
   _initTestDatabase,
+  clearSession,
   createTask,
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
   getMessagesSince,
   getNewMessages,
+  getAllSessions,
+  getAllBackendSessions,
   getTaskById,
+  getSession,
+  setSession,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -480,5 +485,127 @@ describe('registered group isControlGroup', () => {
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
     expect(group.isControlGroup).toBeUndefined();
+  });
+});
+
+describe('scheduled task backend overrides', () => {
+  it('persists agent_backend on create and update', () => {
+    createTask({
+      id: 'task-backend',
+      group_folder: 'main',
+      chat_jid: 'group@g.us',
+      prompt: 'run with openai',
+      schedule_type: 'once',
+      schedule_value: '2024-06-01T00:00:00.000Z',
+      context_mode: 'isolated',
+      next_run: null,
+      status: 'active',
+      created_at: '2024-01-01T00:00:00.000Z',
+      agent_backend: 'openai',
+    });
+
+    expect(getTaskById('task-backend')?.agent_backend).toBe('openai');
+
+    updateTask('task-backend', { agent_backend: 'claude' });
+    expect(getTaskById('task-backend')?.agent_backend).toBe('claude');
+  });
+});
+
+describe('backend-aware sessions', () => {
+  it('round-trips backend session refs', () => {
+    setSession('group-folder', {
+      backend: 'openai',
+      session_id: 'resp_123',
+      resume_cursor: 'cursor_1',
+      metadata_json: '{"model":"gpt-4o"}',
+    });
+
+    expect(getSession('group-folder')).toEqual({
+      backend: 'openai',
+      session_id: 'resp_123',
+      resume_cursor: 'cursor_1',
+      metadata_json: '{"model":"gpt-4o"}',
+    });
+  });
+
+  it('wraps legacy session strings as Claude refs', () => {
+    setSession('legacy-folder', 'claude-session-1');
+
+    expect(getSession('legacy-folder')).toEqual({
+      backend: 'claude',
+      session_id: 'claude-session-1',
+    });
+    expect(getAllSessions()).toEqual({
+      'legacy-folder': {
+        backend: 'claude',
+        session_id: 'claude-session-1',
+      },
+    });
+  });
+
+  it('keeps separate sessions for each backend in the same group', () => {
+    setSession('shared-folder', {
+      backend: 'claude',
+      session_id: 'claude-session',
+    });
+    setSession('shared-folder', {
+      backend: 'openai',
+      session_id: 'resp_456',
+    });
+
+    expect(getSession('shared-folder', 'claude')?.session_id).toBe(
+      'claude-session',
+    );
+    expect(getSession('shared-folder', 'openai')?.session_id).toBe('resp_456');
+    expect(getAllBackendSessions()).toEqual({
+      'shared-folder': {
+        claude: {
+          backend: 'claude',
+          session_id: 'claude-session',
+        },
+        openai: {
+          backend: 'openai',
+          session_id: 'resp_456',
+        },
+      },
+    });
+  });
+
+  it('clears only the requested backend session', () => {
+    setSession('shared-folder', {
+      backend: 'claude',
+      session_id: 'claude-session',
+    });
+    setSession('shared-folder', {
+      backend: 'openai',
+      session_id: 'resp_456',
+    });
+
+    clearSession('shared-folder', 'openai');
+
+    expect(getSession('shared-folder', 'openai')).toBeUndefined();
+    expect(getSession('shared-folder', 'claude')?.session_id).toBe(
+      'claude-session',
+    );
+  });
+
+  it('replaces the active session for one backend without touching the other', () => {
+    setSession('shared-folder', {
+      backend: 'claude',
+      session_id: 'claude-session',
+    });
+    setSession('shared-folder', {
+      backend: 'openai',
+      session_id: 'resp_old',
+    });
+    setSession('shared-folder', {
+      backend: 'openai',
+      session_id: 'resp_new',
+    });
+
+    expect(getSession('shared-folder', 'openai')?.session_id).toBe('resp_new');
+    expect(getSession('shared-folder', 'claude')?.session_id).toBe(
+      'claude-session',
+    );
   });
 });

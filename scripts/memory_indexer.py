@@ -48,7 +48,7 @@ from evolution.providers.embeddings import warmup_embedding_provider
 # ── Config ────────────────────────────────────────────────────────────────────
 
 CONFIG_PATH = Path("~/.config/deus/config.json").expanduser()
-DB_PATH = Path("~/.deus/memory.db").expanduser()
+DB_PATH = Path(os.environ.get("DEUS_DB", "~/.deus/memory.db")).expanduser()
 LAST_RESUME_LEARNINGS = Path("~/.deus/last_resume_learnings.txt").expanduser()
 HEALTH_LOG_PATH = Path("~/.deus/memory_health.jsonl").expanduser()
 

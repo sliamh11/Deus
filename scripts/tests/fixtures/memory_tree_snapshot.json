@@ -1,0 +1,13 @@
+{
+  "created": "2026-04-25",
+  "min_retrieval_recall": 0.90,
+  "last_measured": {
+    "retrieval_recall": 0.960,
+    "retrieval_queries": 75,
+    "abstain_accuracy": 0.467,
+    "abstain_queries": 15,
+    "embedding_provider": "ollama",
+    "embedding_model": "embeddinggemma"
+  },
+  "notes": "Baseline after score-gap fix + benchmark recalibration. 5 remaining misses are dilution cases (auto-memory nodes genuinely more relevant)."
+}

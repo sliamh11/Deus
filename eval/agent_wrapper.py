@@ -73,19 +73,24 @@ def invoke_agent(
     is_main: bool = True,
     assistant_name: str = "Andy",
     timeout: int | None = None,
+    backend: str = "claude",
 ) -> AgentResponse:
     """
     Invoke the Deus agent in a Docker container and return the parsed response.
     """
     timeout = timeout or CONTAINER_TIMEOUT
 
-    # Mirror container-runner.ts auth logic: prefer OAuth token, fall back to API key.
-    oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not oauth_token and not api_key:
-        raise RuntimeError(
-            "Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN for eval runs"
-        )
+    if backend == "openai":
+        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        if not openai_key:
+            raise RuntimeError("Set OPENAI_API_KEY for OpenAI backend eval runs")
+    else:
+        oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not oauth_token and not api_key:
+            raise RuntimeError(
+                "Set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN for eval runs"
+            )
 
     container_input: dict = {
         "prompt": prompt,
@@ -94,6 +99,8 @@ def invoke_agent(
         "isMain": is_main,
         "assistantName": assistant_name,
     }
+    if backend == "openai":
+        container_input["backend"] = "openai"
     if session_id:
         container_input["sessionId"] = session_id
 
@@ -110,15 +117,26 @@ def invoke_agent(
 
     docker_args = ["docker", "run", "-i", "--rm", "--name", container_name, "-e", "TZ=UTC"]
 
-    # Route API calls through the credential proxy (same as production)
-    docker_args += [
-        "-e", f"ANTHROPIC_BASE_URL=http://{HOST_GATEWAY}:{CREDENTIAL_PROXY_PORT}",
-    ]
-    if oauth_token:
-        # OAuth mode: send placeholder so proxy can inject the real token
-        docker_args += ["-e", "CLAUDE_CODE_OAUTH_TOKEN=placeholder"]
+    if backend == "openai":
+        # Route through credential proxy — never pass real keys to containers
+        docker_args += [
+            "-e", f"OPENAI_BASE_URL=http://{HOST_GATEWAY}:{CREDENTIAL_PROXY_PORT}/openai",
+            "-e", "OPENAI_API_KEY=placeholder",
+        ]
+        openai_model = os.environ.get("DEUS_OPENAI_MODEL", "")
+        if openai_model:
+            docker_args += ["-e", f"DEUS_OPENAI_MODEL={openai_model}"]
     else:
-        docker_args += ["-e", "ANTHROPIC_API_KEY=placeholder"]
+        # Route API calls through the credential proxy (same as production)
+        docker_args += [
+            "-e", f"ANTHROPIC_BASE_URL=http://{HOST_GATEWAY}:{CREDENTIAL_PROXY_PORT}",
+        ]
+        oauth_token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
+        if oauth_token:
+            # OAuth mode: send placeholder so proxy can inject the real token
+            docker_args += ["-e", "CLAUDE_CODE_OAUTH_TOKEN=placeholder"]
+        else:
+            docker_args += ["-e", "ANTHROPIC_API_KEY=placeholder"]
 
     # Allow container to reach host.docker.internal (macOS Docker Desktop handles this)
     docker_args += ["--add-host", f"host.docker.internal:host-gateway"]
