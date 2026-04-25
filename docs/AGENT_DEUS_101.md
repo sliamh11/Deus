@@ -1,28 +1,26 @@
 # Agent Deus 101
 
-This is the mandatory onboarding class for every agent interface that works on
-Deus: Claude Code, Codex/OpenAI, future coding CLIs, scheduled-task agents, and
-subagents. The goal is simple: switching the interface must not change the
-Deus experience around the model.
+This is the extended architecture and entrypoint map for agents that already
+read [AGENTS.md](../AGENTS.md).
 
-## First Five Minutes
+Use this file when you need depth: subsystem entrypoints, memory surfaces,
+runtime boundaries, and verification hints. It is no longer the canonical
+first-read onboarding file.
 
-Read these files in order before making non-trivial changes:
+## When To Read This
 
-1. `AGENTS.md` - backend-neutral root instructions.
-2. `CLAUDE.md` - legacy Claude Code compatibility instructions.
-3. `AI_AGENT_GUIDELINES.md` - user-facing parity contract.
-4. `.mex/ROUTER.md` - maps work type to the required pattern file.
-5. `docs/decisions/INDEX.md` - ADR index; load topic ADRs before touching a
-   subsystem.
+Read [AGENTS.md](../AGENTS.md) first.
 
-Then load the selected pattern file from `.mex/ROUTER.md`. For memory,
-startup, backend runtime, session, or scheduler work, also read:
+Then use this file when you need one of these:
 
-- `docs/decisions/backend-neutral-agent-runtime.md`
-- `docs/decisions/memory-tree.md`
-- `docs/decisions/startup-gate.md`
-- `docs/decisions/no-db-deletion.md`
+- a deeper map of where runtime, memory, scheduler, or DB behavior lives,
+- a list of concrete architectural entrypoints,
+- a more detailed verification menu,
+- a way to avoid rediscovering the same surfaces from scratch.
+
+For parity/UX rules, use [AI_AGENT_GUIDELINES.md](../AI_AGENT_GUIDELINES.md).
+For remaining open-ended backend/onboarding work, use
+[agent-agnostic-debt.md](agent-agnostic-debt.md).
 
 ## Identity And UX Contract
 
@@ -46,7 +44,7 @@ Use these entry points instead of rediscovering the memory system from scratch:
 | Layer | Entry point | Purpose |
 |---|---|---|
 | Vault config | `~/.config/deus/config.json` | Host config; `vault_path` points to the live vault. Read-only unless explicitly asked to write. |
-| Vault startup files | `CLAUDE.md`, `AGENTS.md`, `STATE.md`, `MEMORY_TREE.md` | Always-load or route-to-recall surfaces. `CLAUDE.md` stays for compatibility. |
+| Vault startup files | `AGENTS.md`, `CLAUDE.md`, `AI_AGENT_GUIDELINES.md`, `STATE.md`, `MEMORY_TREE.md` | Canonical onboarding plus compatibility, parity, and recall surfaces. |
 | CLI memory load | `deus-cmd.sh`, `deus-cmd.ps1` | Global `deus` command context assembly, external-project mode, restricted memory handling. |
 | Container context registry | `container/agent-runner/src/context-registry.ts` | Provider-neutral context surfaces for container agents. |
 | Runtime context | `src/container-runner.ts`, `src/message-orchestrator.ts` | Host-side prompt, snapshot, backend, image, and session wiring. |

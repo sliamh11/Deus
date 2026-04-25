@@ -138,7 +138,7 @@ No other framework in this comparison ships with a built-in eval suite for the a
 
 ### How Deus compares to vanilla Claude Code
 
-Deus uses the exact same Claude Agent SDK and the same `claude_code` system prompt preset as vanilla Claude Code. The difference is in what Deus adds — and what it trims.
+On the default Claude path, Deus uses the same Claude Agent SDK and `claude_code` system prompt preset as vanilla Claude Code. The backend-neutral runtime keeps the surrounding Deus behavior stable while other adapters catch up to that baseline.
 
 #### Tool filtering (Deus *saves* tokens here)
 

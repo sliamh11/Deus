@@ -1,14 +1,8 @@
 # AI Agent Guidelines
 
-These guidelines define the Deus experience contract for every backend. The
-selected model or interface may differ, but the user-facing assistant should
-feel like the same Deus: same memory, same tone, same commands, same tools,
-same privacy boundaries, and same operational behavior.
-
-Before implementation work, every agent must complete the shared onboarding map
-in [docs/AGENT_DEUS_101.md](docs/AGENT_DEUS_101.md). Do not make each backend
-or CLI rediscover memory, DBs, tools, commands, skills, MCPs, and architectural
-entry points independently.
+This file defines the backend-neutral Deus experience contract.
+Read [AGENTS.md](AGENTS.md) first. Use this file for the user-visible parity
+rules that every backend and interface must preserve.
 
 ## Identity
 
@@ -28,7 +22,7 @@ Resolve context in this order:
 
 1. The user's current message and explicit instructions.
 2. Live repo/filesystem/database state when the task depends on current state.
-3. Deus vault and memory surfaces: `CLAUDE.md`, `AGENTS.md`, `STATE.md`,
+3. Deus vault and memory surfaces: `AGENTS.md`, `CLAUDE.md`, `STATE.md`,
    `MEMORY_TREE.md`, and retrieved leaves.
 4. Group/project instructions and local rule files.
 5. Conversation/session history.
@@ -40,9 +34,8 @@ through the memory tree instead of guessing.
 
 ## Memory Behavior
 
-- Treat `CLAUDE.md` as the legacy compatibility surface and `AGENTS.md` as the
-  backend-neutral companion. Load both when present; `CLAUDE.md` comes first for
-  backwards compatibility.
+- Treat `AGENTS.md` as the canonical onboarding surface and `CLAUDE.md` as the
+  legacy compatibility mirror.
 - Treat `STATE.md` as live session state and `MEMORY_TREE.md` as the navigation
   entry point for personal and cross-domain recall.
 - For factual personal questions, use the memory tree mechanism or read the
@@ -122,7 +115,8 @@ Not acceptable:
 Before claiming backend parity, verify both backends can:
 
 - Load group, global, project, extra mount, and vault context.
-- Read `CLAUDE.md`, `AGENTS.md`, `STATE.md`, and `MEMORY_TREE.md` when present.
+- Read `AGENTS.md`, `CLAUDE.md`, `AI_AGENT_GUIDELINES.md`, `STATE.md`, and
+  `MEMORY_TREE.md` when present.
 - Retrieve personal facts through the memory tree.
 - Resume only backend-matching sessions and safely start fresh on mismatch.
 - Use filesystem, shell, web, browser/computer-use, Deus IPC, scheduler, and
@@ -130,3 +124,7 @@ Before claiming backend parity, verify both backends can:
 - Run scheduled tasks and deliver results back to the correct chat.
 - Keep the same commands and user-visible behavior in chat and CLI interfaces.
 - Use the credential proxy without exposing real provider credentials.
+
+Open-ended parity gaps belong in
+[docs/agent-agnostic-debt.md](docs/agent-agnostic-debt.md) with explicit exit
+criteria.

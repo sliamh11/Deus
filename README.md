@@ -149,7 +149,7 @@ Commands require admin access (sent from the owner account, or from any sender i
 
 | Command | What it does |
 |---|---|
-| `deus` | Launch Claude Code in the current directory (external project mode if not `~/deus`) |
+| `deus` | Launch Deus in the current directory using the configured CLI/backend (external project mode if not `~/deus`) |
 | `deus codex` | Launch the same Deus context with Codex/OpenAI and `DEUS_AGENT_BACKEND=openai` for this session |
 | `deus claude` | Force Claude Code and `DEUS_AGENT_BACKEND=claude` for this session |
 | `DEUS_AGENT_BACKEND=openai deus` | Make the global launcher use Codex/OpenAI by default |
