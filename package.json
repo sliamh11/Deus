@@ -55,7 +55,7 @@
     "@vitest/coverage-v8": "^4.1.4",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "dotenv-cli": "^11.0.0",
-    "eslint": "^10.2.0",
+    "eslint": "^10.2.1",
     "eslint-config-prettier": "^10.1.8",
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0",
