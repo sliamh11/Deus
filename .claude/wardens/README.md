@@ -12,21 +12,21 @@ Specialized review agents that guard the codebase. Validator wardens check corre
 
 ## Directory
 
+Source of truth (Claude Code):
 ```
-~/deus/.claude/agents/
-  plan-reviewer.md          ← agent definition (read by Claude Code)
-  code-reviewer.md          ← agent definition
-  threat-modeler.md         ← agent definition
-  architecture-snapshot.md   ← agent definition
-  session-retrospective.md  ← agent definition
-~/deus/.claude/wardens/
-  README.md                 ← this file
-  plan-review-rules.md      ← rules loaded by plan-reviewer
-  code-review-rules.md      ← rules loaded by code-reviewer
-  threat-modeling-rules.md  ← rules loaded by threat-modeler
-  architecture-schema.md    ← output schema for architecture-snapshot
-  retrospective-schema.md   ← output schema for session-retrospective
+~/deus/.claude/agents/       ← agent definitions
+~/deus/.claude/wardens/      ← rules and schema files (this directory)
 ```
+
+Codex projection (auto-generated, do not edit):
+```
+~/deus/.agents/agents/       ← mirrored agent definitions
+~/deus/.agents/wardens/      ← mirrored rules and schema files
+```
+
+Run `python3 scripts/sync_agent_skills.py` after editing any file in
+`.claude/agents/` or `.claude/wardens/` to update the Codex projection.
+CI checks for drift via `--check`.
 
 ## How the plan-review gate works
 
