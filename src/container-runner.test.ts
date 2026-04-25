@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  beforeEach,
+  vi,
+  afterEach,
+} from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import path from 'path';
@@ -1266,5 +1274,173 @@ describe.skipIf(onWindows)('OpenAI backend container env', () => {
     expect(args).toContain('DEUS_CONTEXT_FILE_MAX_CHARS=12345');
     expect(args.join(' ')).not.toContain('ANTHROPIC_BASE_URL=');
     expect(args.join(' ')).not.toContain('ANTHROPIC_API_KEY=');
+  });
+});
+
+describe.skipIf(onWindows)('Backend parity — system-level equivalence', () => {
+  let claudeArgs: string[];
+  let openaiArgs: string[];
+
+  beforeAll(async () => {
+    fakeProc = createFakeProcess();
+
+    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+    fsMocked.existsSync.mockReset();
+    fsMocked.existsSync.mockReturnValue(false);
+    fsMocked.mkdirSync.mockReset();
+    fsMocked.writeFileSync.mockReset();
+    fsMocked.readdirSync.mockReset();
+    fsMocked.readdirSync.mockReturnValue([]);
+    fsMocked.statSync.mockReset();
+    fsMocked.statSync.mockReturnValue({
+      isDirectory: () => false,
+    } as ReturnType<typeof fsMod.statSync>);
+
+    vi.mocked(getProjectById).mockReturnValue(undefined);
+    vi.mocked(childProcess.spawn).mockReturnValue(
+      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+    );
+    const { detectAuthMode } = await import('./credential-proxy.js');
+    vi.mocked(detectAuthMode).mockReturnValue('api-key');
+
+    const group: RegisteredGroup = {
+      name: 'Main',
+      folder: 'main-group',
+      trigger: '@Deus',
+      added_at: new Date().toISOString(),
+      isControlGroup: true,
+    };
+
+    // Capture Claude backend args
+    setImmediate(() => fakeProc.emit('close', 0));
+    await runContainerAgent(
+      group,
+      {
+        prompt: 'parity-test',
+        groupFolder: group.folder,
+        chatJid: 'x@g.us',
+        isControlGroup: true,
+      },
+      () => {},
+    );
+    const spawnMock = vi.mocked(childProcess.spawn);
+    claudeArgs = spawnMock.mock.calls[
+      spawnMock.mock.calls.length - 1
+    ][1] as string[];
+
+    // Capture OpenAI backend args
+    fakeProc = createFakeProcess();
+    vi.mocked(childProcess.spawn).mockReturnValue(
+      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+    );
+    setImmediate(() => fakeProc.emit('close', 0));
+    await runContainerAgent(
+      group,
+      {
+        prompt: 'parity-test',
+        backend: 'openai',
+        groupFolder: group.folder,
+        chatJid: 'x@g.us',
+        isControlGroup: true,
+      },
+      () => {},
+    );
+    openaiArgs = spawnMock.mock.calls[
+      spawnMock.mock.calls.length - 1
+    ][1] as string[];
+  });
+
+  // Helper: extract env vars from Docker args (items after -e flags)
+  function extractEnvVars(args: string[]): Map<string, string> {
+    const envs = new Map<string, string>();
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-e' && i + 1 < args.length) {
+        const [key, ...rest] = args[i + 1].split('=');
+        envs.set(key, rest.join('='));
+      }
+    }
+    return envs;
+  }
+
+  // Helper: extract volume mounts from Docker args
+  function extractMounts(args: string[]): string[] {
+    const mounts: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-v' && i + 1 < args.length) {
+        // Normalize host path prefix to make comparison stable
+        mounts.push(args[i + 1].replace(/.*:/, 'HOST:'));
+      }
+      if (args[i] === '--mount' && i + 1 < args.length) {
+        mounts.push(args[i + 1].replace(/source=[^,]*/g, 'source=HOST'));
+      }
+    }
+    return mounts;
+  }
+
+  it('uses the same container image', () => {
+    const claudeImage = claudeArgs[claudeArgs.length - 1];
+    const openaiImage = openaiArgs[openaiArgs.length - 1];
+    expect(claudeImage).toBe(openaiImage);
+    expect(claudeImage).toBe('deus-agent:latest');
+  });
+
+  it('uses the same volume mount paths', () => {
+    const claudeMounts = extractMounts(claudeArgs);
+    const openaiMounts = extractMounts(openaiArgs);
+    expect(claudeMounts).toEqual(openaiMounts);
+  });
+
+  it('shares all non-auth env vars', () => {
+    const claudeEnv = extractEnvVars(claudeArgs);
+    const openaiEnv = extractEnvVars(openaiArgs);
+
+    const authKeys = new Set([
+      'ANTHROPIC_BASE_URL',
+      'ANTHROPIC_API_KEY',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+      'OPENAI_BASE_URL',
+      'OPENAI_API_KEY',
+      'DEUS_OPENAI_MODEL',
+    ]);
+
+    // All non-auth env vars must be identical
+    const claudeNonAuth = new Map(
+      [...claudeEnv].filter(([k]) => !authKeys.has(k)),
+    );
+    const openaiNonAuth = new Map(
+      [...openaiEnv].filter(([k]) => !authKeys.has(k)),
+    );
+    expect(claudeNonAuth).toEqual(openaiNonAuth);
+  });
+
+  it('only differs in auth-related env vars', () => {
+    const claudeEnv = extractEnvVars(claudeArgs);
+    const openaiEnv = extractEnvVars(openaiArgs);
+
+    // Claude path has Anthropic auth
+    expect(claudeEnv.has('ANTHROPIC_BASE_URL')).toBe(true);
+    expect(claudeEnv.has('ANTHROPIC_API_KEY')).toBe(true);
+    expect(claudeEnv.has('OPENAI_API_KEY')).toBe(false);
+
+    // OpenAI path has OpenAI auth
+    expect(openaiEnv.has('OPENAI_BASE_URL')).toBe(true);
+    expect(openaiEnv.has('OPENAI_API_KEY')).toBe(true);
+    expect(openaiEnv.has('ANTHROPIC_API_KEY')).toBe(false);
+  });
+
+  it('both use placeholder credentials (never real keys)', () => {
+    const claudeEnv = extractEnvVars(claudeArgs);
+    const openaiEnv = extractEnvVars(openaiArgs);
+
+    expect(claudeEnv.get('ANTHROPIC_API_KEY')).toBe('placeholder');
+    expect(openaiEnv.get('OPENAI_API_KEY')).toBe('placeholder');
+  });
+
+  it('both route through credential proxy', () => {
+    const claudeEnv = extractEnvVars(claudeArgs);
+    const openaiEnv = extractEnvVars(openaiArgs);
+
+    expect(claudeEnv.get('ANTHROPIC_BASE_URL')).toContain(':3001');
+    expect(openaiEnv.get('OPENAI_BASE_URL')).toContain(':3001');
   });
 });

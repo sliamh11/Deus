@@ -901,13 +901,33 @@ case "$1" in
         echo "Model set to: $2 (backend: $CURRENT_DISPLAY)"
         echo "Takes effect on next 'deus' launch."
         ;;
+      bench)
+        EVAL_DIR="$(cd "$(dirname "$0")" && pwd)/eval"
+        if [ ! -d "$EVAL_DIR" ]; then
+          echo "Error: eval/ directory not found at $EVAL_DIR"
+          exit 1
+        fi
+        echo "Running backend parity benchmark (claude vs codex)..."
+        echo "This requires both ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN and OPENAI_API_KEY."
+        echo ""
+        DEUS_PARITY_TEST=1 python3 -m pytest "$EVAL_DIR" \
+          -k "parity" \
+          --json-report --json-report-file="$EVAL_DIR/.report.json" \
+          -v 2>&1
+        PYTEST_EXIT=$?
+        if [ -f "$EVAL_DIR/.report.json" ]; then
+          python3 "$EVAL_DIR/parity_report.py" --report "$EVAL_DIR/.report.json"
+        fi
+        exit $PYTEST_EXIT
+        ;;
       *)
-        echo "Usage: deus backend [show|set|model|list]"
+        echo "Usage: deus backend [show|set|model|list|bench]"
         echo ""
         echo "  deus backend           Show current backend and model"
         echo "  deus backend set <be>  Set default backend (claude|codex|ollama)"
         echo "  deus backend model <m> Set model for current backend (e.g. gpt-4o)"
         echo "  deus backend list      List available backends"
+        echo "  deus backend bench     Run parity benchmark (claude vs codex)"
         ;;
     esac
     ;;

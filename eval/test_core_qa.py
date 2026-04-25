@@ -16,26 +16,28 @@ from deepeval.test_case import LLMTestCaseParams
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from conftest import load_dataset, make_test_case
+from conftest import load_dataset, make_test_case, EVAL_BACKENDS
 from metrics.efficiency_metric import EfficiencyMetric
 
 DATASET = load_dataset("core_qa")
 
 
+@pytest.mark.parametrize("backend", EVAL_BACKENDS)
 @pytest.mark.parametrize("case_data", DATASET, ids=[c["id"] for c in DATASET])
-def test_answer_relevancy(case_data, agent, judge, thresholds):
+def test_answer_relevancy(case_data, backend, agent, judge, thresholds):
     """Response must be relevant to the question asked."""
-    response = agent(case_data["input"])
+    response = agent(case_data["input"], backend=backend)
     test_case = make_test_case(case_data, response)
 
     threshold = thresholds.get("core_qa", {}).get("answer_relevancy", 0.7)
     assert_test(test_case, [AnswerRelevancyMetric(threshold=threshold, model=judge)])
 
 
+@pytest.mark.parametrize("backend", EVAL_BACKENDS)
 @pytest.mark.parametrize("case_data", DATASET, ids=[c["id"] for c in DATASET])
-def test_correctness(case_data, agent, judge, thresholds):
+def test_correctness(case_data, backend, agent, judge, thresholds):
     """Response must contain factually accurate information."""
-    response = agent(case_data["input"])
+    response = agent(case_data["input"], backend=backend)
     test_case = make_test_case(case_data, response)
 
     threshold = thresholds.get("core_qa", {}).get("correctness", 0.7)
@@ -56,14 +58,15 @@ def test_correctness(case_data, agent, judge, thresholds):
     assert_test(test_case, [metric])
 
 
+@pytest.mark.parametrize("backend", EVAL_BACKENDS)
 @pytest.mark.parametrize(
     "case_data",
     [c for c in DATASET if c["metadata"].get("category") == "instruction_following"],
     ids=[c["id"] for c in DATASET if c["metadata"].get("category") == "instruction_following"],
 )
-def test_instruction_following(case_data, agent, judge, thresholds):
+def test_instruction_following(case_data, backend, agent, judge, thresholds):
     """Response must strictly follow format/structural constraints in the prompt."""
-    response = agent(case_data["input"])
+    response = agent(case_data["input"], backend=backend)
     test_case = make_test_case(case_data, response)
 
     threshold = thresholds.get("core_qa", {}).get("instruction_following", 0.8)
@@ -85,10 +88,11 @@ def test_instruction_following(case_data, agent, judge, thresholds):
     assert_test(test_case, [metric])
 
 
+@pytest.mark.parametrize("backend", EVAL_BACKENDS)
 @pytest.mark.parametrize("case_data", DATASET, ids=[c["id"] for c in DATASET])
-def test_latency(case_data, agent, thresholds):
+def test_latency(case_data, backend, agent, thresholds):
     """Response must arrive within the latency budget."""
-    response = agent(case_data["input"])
+    response = agent(case_data["input"], backend=backend)
     test_case = make_test_case(case_data, response)
 
     difficulty = case_data["metadata"].get("difficulty", "medium")
