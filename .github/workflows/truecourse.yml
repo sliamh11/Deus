@@ -88,7 +88,7 @@ jobs:
           git stash push --include-untracked -m "truecourse-config" || true
           git checkout origin/main
           git stash pop || true
-          npx truecourse analyze
+          npx truecourse analyze --no-llm
           # baseline now lives in .truecourse/analyses/ + LATEST.json points at it
 
       - name: Switch back to PR head + run diff
@@ -104,7 +104,7 @@ jobs:
           git stash push --include-untracked -m "truecourse-baseline" || true
           git checkout "$PR_HEAD"
           git stash pop || true
-          npx truecourse analyze --diff | tee /tmp/diff-summary.txt
+          npx truecourse analyze --no-llm --diff | tee /tmp/diff-summary.txt
 
       - name: Show new + resolved violations
         if: always()
