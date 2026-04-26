@@ -27,6 +27,11 @@ import {
   refreshOAuthToken,
   writeCredentialsFile,
 } from './auth-providers/anthropic.js';
+import {
+  readCodexAuthFile,
+  refreshCodexToken,
+  writeCodexAuthFile,
+} from './auth-providers/openai.js';
 import { DATA_DIR, STORE_DIR } from './config.js';
 import { homeDir, IS_MACOS } from './platform.js';
 
@@ -342,6 +347,192 @@ export async function runRefresh(opts: {
   }
 }
 
+// ── Codex OAuth refresh ───────────────────────────────────────────────────
+
+function getCodexLockPath(): string {
+  return path.join(homeDir, '.deus', 'codex-refresh.lock');
+}
+
+function decodeJwtPayload(
+  token: string,
+): { exp?: number; client_id?: string; [key: string]: unknown } | undefined {
+  try {
+    const parts = token.split('.');
+    if (parts.length < 2) return undefined;
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = Buffer.from(b64, 'base64').toString('utf-8');
+    return JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function runCodexRefresh(opts: {
+  dryRun: boolean;
+  now?: () => number;
+}): Promise<RefreshResult> {
+  const now = opts.now ?? Date.now;
+
+  const authFile = readCodexAuthFile();
+  if (!authFile?.tokens?.access_token) {
+    const result: RefreshResult = {
+      action: 'noop',
+      reason: 'no-codex-credentials',
+    };
+    logLine({ action: result.action, reason: result.reason });
+    return result;
+  }
+
+  const payload = decodeJwtPayload(authFile.tokens.access_token);
+  const expiresAt = payload?.exp ? payload.exp * 1000 : Infinity;
+  const untilExpiry = expiresAt - now();
+
+  if (untilExpiry > REFRESH_GATE_MS) {
+    const result: RefreshResult = {
+      action: 'noop',
+      reason: 'codex-not-expiring',
+      expiresIn: Math.floor(untilExpiry / 1000),
+    };
+    logLine({
+      action: result.action,
+      reason: result.reason,
+      expiresIn: result.expiresIn,
+    });
+    return result;
+  }
+
+  if (!authFile.tokens.refresh_token) {
+    const result: RefreshResult = {
+      action: 'failed',
+      reason: 'codex-no-refresh-token',
+    };
+    logLine({ action: result.action, reason: result.reason });
+    await notifyFailure(result.reason!);
+    return result;
+  }
+
+  const clientId = payload?.client_id;
+  if (!clientId) {
+    const result: RefreshResult = {
+      action: 'failed',
+      reason: 'codex-no-client-id-in-jwt',
+    };
+    logLine({ action: result.action, reason: result.reason });
+    await notifyFailure(result.reason!);
+    return result;
+  }
+
+  if (opts.dryRun) {
+    const result: RefreshResult = {
+      action: 'dry-run',
+      expiresIn: Math.floor(untilExpiry / 1000),
+    };
+    logLine({
+      action: result.action,
+      expiresIn: result.expiresIn,
+      note: 'would-refresh-codex',
+    });
+    return result;
+  }
+
+  const lock = acquireCodexLock();
+  if (!lock) {
+    const result: RefreshResult = {
+      action: 'skip',
+      reason: 'codex-another-refresh-in-flight',
+    };
+    logLine({ action: result.action, reason: result.reason });
+    return result;
+  }
+
+  try {
+    // Re-read after lock acquisition
+    const freshAuthFile = readCodexAuthFile();
+    if (freshAuthFile?.tokens?.access_token) {
+      const freshPayload = decodeJwtPayload(freshAuthFile.tokens.access_token);
+      const freshExpiry = freshPayload?.exp
+        ? freshPayload.exp * 1000
+        : Infinity;
+      if (freshExpiry - now() > REFRESH_GATE_MS) {
+        const result: RefreshResult = {
+          action: 'noop',
+          reason: 'codex-refreshed-by-other',
+          expiresIn: Math.floor((freshExpiry - now()) / 1000),
+        };
+        logLine({
+          action: result.action,
+          reason: result.reason,
+          expiresIn: result.expiresIn,
+        });
+        return result;
+      }
+    }
+
+    const tokenResult = await refreshCodexToken(
+      authFile.tokens.refresh_token,
+      clientId,
+    );
+    if (!tokenResult) {
+      const result: RefreshResult = {
+        action: 'failed',
+        reason: 'codex-refresh-endpoint-rejected',
+      };
+      logLine({ action: result.action, reason: result.reason });
+      await notifyFailure(result.reason!);
+      return result;
+    }
+
+    writeCodexAuthFile(freshAuthFile ?? authFile, {
+      access_token: tokenResult.access_token,
+      refresh_token: tokenResult.refresh_token ?? authFile.tokens.refresh_token,
+    });
+
+    const newPayload = decodeJwtPayload(tokenResult.access_token);
+    const newExpiry = newPayload?.exp ? newPayload.exp * 1000 : Infinity;
+    const expiresIn =
+      newExpiry === Infinity
+        ? undefined
+        : Math.floor((newExpiry - now()) / 1000);
+    logLine({ action: 'codex-refresh', expiresIn });
+    return { action: 'refreshed', expiresIn };
+  } finally {
+    releaseLock(lock);
+  }
+}
+
+function acquireCodexLock(): LockHandle | null {
+  const lockPath = getCodexLockPath();
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      fs.writeSync(fd, String(process.pid));
+      return { fd, path: lockPath };
+    } catch (err: unknown) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EEXIST') throw err;
+    }
+
+    let mtime: number;
+    try {
+      mtime = fs.statSync(lockPath).mtimeMs;
+    } catch {
+      continue;
+    }
+    const age = Date.now() - mtime;
+    if (age < STALE_LOCK_MS) {
+      return null;
+    }
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // Another process may have cleaned up
+    }
+  }
+  return null;
+}
+
 // ── Entrypoint ─────────────────────────────────────────────────────────────
 
 /**
@@ -360,9 +551,15 @@ function isMain(): boolean {
 
 async function main(): Promise<void> {
   const dryRun = process.argv.includes('--dry-run');
+  let anyFailed = false;
   try {
-    const result = await runRefresh({ dryRun });
-    process.exit(result.action === 'failed' ? 1 : 0);
+    const anthropicResult = await runRefresh({ dryRun });
+    if (anthropicResult.action === 'failed') anyFailed = true;
+
+    const codexResult = await runCodexRefresh({ dryRun });
+    if (codexResult.action === 'failed') anyFailed = true;
+
+    process.exit(anyFailed ? 1 : 0);
   } catch (err) {
     logLine({ action: 'crashed', err: String(err) });
     try {

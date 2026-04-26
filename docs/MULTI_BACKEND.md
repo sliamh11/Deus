@@ -7,15 +7,20 @@ Deus is backend-neutral: the same assistant experience runs on different LLMs. C
 ### Use OpenAI instead of Claude
 
 ```bash
-# 1. Add your OpenAI API key to .env
+# Option A: API key
 echo 'OPENAI_API_KEY=sk-...' >> .env
 
-# 2. Set OpenAI as the default backend
+# Option B: Codex OAuth (no API key needed)
+codex login
+
+# Then set OpenAI as the default backend
 echo 'DEUS_AGENT_BACKEND=openai' >> .env
 
-# 3. Restart Deus
+# Restart Deus
 deus auth
 ```
+
+If both an API key and Codex OAuth are present, the API key takes priority.
 
 ### Use OpenAI for one group only
 
@@ -115,7 +120,7 @@ The backend is resolved in this order (first non-empty wins):
 |----------|---------|-------------|
 | `DEUS_AGENT_BACKEND` | `claude` | Global default: `claude` or `openai` |
 | `DEUS_OPENAI_MODEL` | `gpt-4o` | Model for the OpenAI backend |
-| `OPENAI_API_KEY` | -- | Required when using the OpenAI backend |
+| `OPENAI_API_KEY` | -- | Required unless Codex OAuth is available (`~/.codex/auth.json` from `codex login`) |
 | `DEUS_CODEX_MODEL` | `DEUS_OPENAI_MODEL` | Optional model override for `deus codex` |
 
 ## Supported Backend Boundary

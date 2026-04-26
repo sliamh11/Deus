@@ -107,6 +107,22 @@ describe('hasApiCredentials', () => {
     expect(hasApiCredentials()).toBe(true);
   });
 
+  it('returns true when OpenAI backend has Codex auth.json with valid token', () => {
+    mockReadEnvFile.mockReturnValue({ DEUS_AGENT_BACKEND: 'openai' });
+    mockReadFileSync.mockReturnValue(
+      JSON.stringify({ tokens: { access_token: 'eyJhbGciOiJSUzI1NiJ9.test' } }),
+    );
+    expect(hasApiCredentials()).toBe(true);
+  });
+
+  it('returns false when OpenAI backend has no API key and no auth.json', () => {
+    mockReadEnvFile.mockReturnValue({ DEUS_AGENT_BACKEND: 'openai' });
+    mockReadFileSync.mockImplementation(() => {
+      throw new Error('ENOENT');
+    });
+    expect(hasApiCredentials()).toBe(false);
+  });
+
   it('returns false when no credentials are configured', () => {
     expect(hasApiCredentials()).toBe(false);
   });
