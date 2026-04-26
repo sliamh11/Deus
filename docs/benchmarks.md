@@ -101,38 +101,6 @@ No other framework in this comparison ships with a built-in eval suite for the a
 
 ---
 
-## When to Choose What
-
-### Choose Deus if you want:
-- An assistant that **remembers** — semantic memory that recalls conversations from weeks ago
-- An assistant that **improves** — automated scoring, reflection, and prompt optimization
-- **Security by default** — container isolation without configuration
-- A **lean, auditable codebase** — ~37K lines across TypeScript and Python
-- To run **Claude as your core agent** with deep SDK integration
-
-### Choose OpenClaw if you want:
-- **Maximum channel support** — 10+ platforms including Signal, iMessage, Teams
-- **Any LLM provider** — switch between OpenAI, Anthropic, Ollama, local models
-- A **massive community** — 250K stars, 5,700+ ready-made skills
-- **Battle-tested at scale** — largest open-source project in this space
-
-### Choose NemoClaw if you want:
-- **Enterprise compliance** — NVIDIA-backed, policy-controlled sandboxing
-- **Kernel-level security** — Landlock + seccomp syscall filtering
-- The OpenClaw ecosystem with **enterprise guardrails**
-
-### Choose Hermes Agent if you want:
-- **Self-improving skills** — the agent auto-creates reusable skills from experience and refines them on reuse
-- **Maximum channel breadth** — 15+ platforms including Signal, Matrix, DingTalk, Home Assistant
-- **Wide LLM support** — 10+ providers, model-agnostic by design
-- A **massive community** — ~110K GitHub stars, community skill hub at agentskills.io
-
-### Choose Plain Claude if you want:
-- **No infrastructure** — just open claude.ai and talk
-- **Zero setup cost** — no self-hosting, no containers, no configuration
-
----
-
 ## Token Efficiency
 
 > Deus adds ~920 tokens at session start compared to vanilla Claude Code. That buys persistent identity, semantic memory, and a self-improvement loop. The self-improvement loop itself adds zero tokens — it runs asynchronously.
