@@ -116,6 +116,7 @@ Telegram, Slack, Discord, or Gmail.
 | Skill | When to Use |
 |---|---|
 | `/setup` | First-time installation, authentication, service configuration |
+| `/add-llama-cpp` | Install and verify a local `llama.cpp` server for optional Deus local-generation experiments |
 | `/customize` | Adding channels, integrations, changing behavior |
 | `/debug` | Container issues, logs, troubleshooting |
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
