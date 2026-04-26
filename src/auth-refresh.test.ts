@@ -22,7 +22,10 @@ vi.mock('./logger.js', () => ({
 let tmpDir: string;
 let credsPath: string;
 let lockPath: string;
+let codexAuthPath: string;
+let codexLockPath: string;
 const refreshMock = vi.fn();
+const codexRefreshMock = vi.fn();
 
 vi.mock('./auth-providers/anthropic.js', () => ({
   get CREDENTIALS_PATH() {
@@ -63,6 +66,42 @@ vi.mock('./auth-providers/anthropic.js', () => ({
   refreshOAuthToken: (...args: unknown[]) => refreshMock(...args),
 }));
 
+vi.mock('./auth-providers/openai.js', () => ({
+  get CODEX_AUTH_PATH() {
+    return codexAuthPath;
+  },
+  readCodexAuthFile: () => {
+    try {
+      const raw = fs.readFileSync(codexAuthPath, 'utf-8');
+      return JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  },
+  writeCodexAuthFile: (
+    authFile: Record<string, unknown>,
+    updatedTokens: { access_token: string; refresh_token?: string },
+  ) => {
+    const tokens =
+      (authFile as { tokens?: Record<string, unknown> }).tokens ?? {};
+    const updated = {
+      ...authFile,
+      tokens: {
+        ...tokens,
+        access_token: updatedTokens.access_token,
+        ...(updatedTokens.refresh_token
+          ? { refresh_token: updatedTokens.refresh_token }
+          : {}),
+      },
+      last_refresh: new Date().toISOString(),
+    };
+    const tmp = `${codexAuthPath}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(updated));
+    fs.renameSync(tmp, codexAuthPath);
+  },
+  refreshCodexToken: (...args: unknown[]) => codexRefreshMock(...args),
+}));
+
 // Point homeDir / DATA_DIR / STORE_DIR at the tmp tree so lock + IPC drops
 // land inside the test fixture.
 vi.mock('./platform.js', () => ({
@@ -84,7 +123,7 @@ vi.mock('./config.js', () => ({
 }));
 
 // Now import the subject under test after the mocks are in place.
-import { runRefresh } from './auth-refresh.js';
+import { runRefresh, runCodexRefresh } from './auth-refresh.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -119,7 +158,10 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'deus-auth-refresh-'));
   credsPath = path.join(tmpDir, '.claude', '.credentials.json');
   lockPath = path.join(tmpDir, '.claude', '.credentials.refresh.lock');
+  codexAuthPath = path.join(tmpDir, '.codex', 'auth.json');
+  codexLockPath = path.join(tmpDir, '.deus', 'codex-refresh.lock');
   refreshMock.mockReset();
+  codexRefreshMock.mockReset();
 });
 
 afterEach(() => {
@@ -352,5 +394,118 @@ describe('auth-refresh CLI', () => {
     expect(res.action).toBe('noop');
     expect(res.reason).toBe('not-expiring');
     expect(refreshMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── Codex refresh tests ──────────────────────────────────────────────────
+
+function fakeJwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString(
+    'base64url',
+  );
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${header}.${body}.fake-sig`;
+}
+
+function writeCodexAuth(opts: {
+  exp: number;
+  clientId?: string;
+  refreshToken?: string;
+}): void {
+  fs.mkdirSync(path.dirname(codexAuthPath), { recursive: true });
+  const token = fakeJwt({
+    exp: opts.exp,
+    client_id: opts.clientId ?? 'app_test123',
+    iss: 'https://auth.openai.com',
+  });
+  fs.writeFileSync(
+    codexAuthPath,
+    JSON.stringify({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: null,
+      tokens: {
+        access_token: token,
+        refresh_token: opts.refreshToken ?? 'rt_test',
+        account_id: 'test-account',
+      },
+      last_refresh: new Date().toISOString(),
+    }),
+  );
+}
+
+function readCodexAuth(): Record<string, unknown> {
+  return JSON.parse(fs.readFileSync(codexAuthPath, 'utf-8'));
+}
+
+describe('codex-refresh CLI', () => {
+  it('no-op when codex auth.json does not exist', async () => {
+    const res = await runCodexRefresh({ dryRun: false, now: () => 1_000_000 });
+    expect(res.action).toBe('noop');
+    expect(res.reason).toBe('no-codex-credentials');
+    expect(codexRefreshMock).not.toHaveBeenCalled();
+  });
+
+  it('no-op when token has > 45 min until expiry', async () => {
+    const now = 1_000_000;
+    const expSec = Math.floor((now + 50 * 60 * 1000) / 1000);
+    writeCodexAuth({ exp: expSec });
+
+    const res = await runCodexRefresh({ dryRun: false, now: () => now });
+
+    expect(res.action).toBe('noop');
+    expect(res.reason).toBe('codex-not-expiring');
+    expect(codexRefreshMock).not.toHaveBeenCalled();
+  });
+
+  it('refreshes when token expires in < 45 min', async () => {
+    const now = 1_000_000;
+    const expSec = Math.floor((now + 10 * 60 * 1000) / 1000);
+    writeCodexAuth({ exp: expSec });
+
+    const newExp = Math.floor((now + 8 * 60 * 60 * 1000) / 1000);
+    const newToken = fakeJwt({
+      exp: newExp,
+      client_id: 'app_test123',
+    });
+    codexRefreshMock.mockResolvedValue({
+      access_token: newToken,
+      refresh_token: 'rt_new',
+    });
+
+    const res = await runCodexRefresh({ dryRun: false, now: () => now });
+
+    expect(res.action).toBe('refreshed');
+    expect(codexRefreshMock).toHaveBeenCalledWith('rt_test', 'app_test123');
+    const saved = readCodexAuth() as {
+      tokens: { access_token: string; refresh_token: string };
+      auth_mode: string;
+    };
+    expect(saved.tokens.access_token).toBe(newToken);
+    expect(saved.tokens.refresh_token).toBe('rt_new');
+    expect(saved.auth_mode).toBe('chatgpt');
+    expect(fs.existsSync(codexLockPath)).toBe(false);
+  });
+
+  it('dry-run: logs intent without refreshing', async () => {
+    const now = 1_000_000;
+    const expSec = Math.floor((now + 5 * 60 * 1000) / 1000);
+    writeCodexAuth({ exp: expSec });
+
+    const res = await runCodexRefresh({ dryRun: true, now: () => now });
+
+    expect(res.action).toBe('dry-run');
+    expect(codexRefreshMock).not.toHaveBeenCalled();
+  });
+
+  it('fails when refresh endpoint rejects', async () => {
+    const now = 1_000_000;
+    const expSec = Math.floor((now + 5 * 60 * 1000) / 1000);
+    writeCodexAuth({ exp: expSec });
+    codexRefreshMock.mockResolvedValue(undefined);
+
+    const res = await runCodexRefresh({ dryRun: false, now: () => now });
+
+    expect(res.action).toBe('failed');
+    expect(res.reason).toBe('codex-refresh-endpoint-rejected');
   });
 });

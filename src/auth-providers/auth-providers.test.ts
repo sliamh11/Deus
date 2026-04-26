@@ -55,7 +55,7 @@ import {
   AnthropicAuthProvider,
   _resetCredentialsCacheForTest,
 } from './anthropic.js';
-import { OpenAIAuthProvider } from './openai.js';
+import { OpenAIAuthProvider, _resetCodexCacheForTest } from './openai.js';
 
 const mockReadFileSync = readFileSync as ReturnType<typeof vi.fn>;
 const mockWriteFileSync = writeFileSync as ReturnType<typeof vi.fn>;
@@ -193,24 +193,66 @@ describe('AuthProviderRegistry', () => {
   });
 });
 
+// Helper: build a fake JWT with the given payload (no signature verification needed)
+function fakeJwt(payload: Record<string, unknown>): string {
+  const header = Buffer.from(JSON.stringify({ alg: 'RS256' })).toString(
+    'base64url',
+  );
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${header}.${body}.fake-sig`;
+}
+
+function codexAuthJson(overrides?: {
+  accessToken?: string;
+  refreshToken?: string;
+  exp?: number;
+  clientId?: string;
+}): string {
+  const exp = overrides?.exp ?? Math.floor(Date.now() / 1000) + 7200;
+  const token =
+    overrides?.accessToken ??
+    fakeJwt({
+      exp,
+      client_id: overrides?.clientId ?? 'app_test123',
+      iss: 'https://auth.openai.com',
+    });
+  return JSON.stringify({
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: null,
+    tokens: {
+      access_token: token,
+      refresh_token: overrides?.refreshToken ?? 'rt_test',
+      account_id: 'test-account',
+    },
+    last_refresh: new Date().toISOString(),
+  });
+}
+
 describe('OpenAIAuthProvider', () => {
   beforeEach(() => {
+    _resetCodexCacheForTest();
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+    mockReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
   });
 
   afterEach(() => {
     for (const key of Object.keys(mockEnv)) delete mockEnv[key];
+    mockReadFileSync.mockReset();
+    _resetCodexCacheForTest();
   });
 
-  it('is available when OPENAI_API_KEY is configured', () => {
+  it('api-key mode: is available when OPENAI_API_KEY is configured', () => {
     Object.assign(mockEnv, { OPENAI_API_KEY: 'sk-openai-test' });
     const provider = new OpenAIAuthProvider();
 
     expect(provider.isAvailable()).toBe(true);
+    expect(provider.getAuthMode()).toBe('api-key');
     expect(provider.getUpstreamUrl()).toBe('https://api.openai.com');
   });
 
-  it('injects bearer auth and strips x-api-key', () => {
+  it('api-key mode: injects bearer auth and strips x-api-key', () => {
     Object.assign(mockEnv, {
       OPENAI_API_KEY: 'sk-openai-real',
       OPENAI_BASE_URL: 'https://proxy.example.com',
@@ -226,6 +268,63 @@ describe('OpenAIAuthProvider', () => {
     expect(provider.getUpstreamUrl()).toBe('https://proxy.example.com');
     expect(headers.authorization).toBe('Bearer sk-openai-real');
     expect(headers['x-api-key']).toBeUndefined();
+  });
+
+  it('api-key takes priority over OAuth when both present', () => {
+    Object.assign(mockEnv, { OPENAI_API_KEY: 'sk-priority' });
+    mockReadFileSync.mockImplementation((p: unknown) => {
+      if (String(p).includes('.codex')) return codexAuthJson();
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    const provider = new OpenAIAuthProvider();
+
+    expect(provider.getAuthMode()).toBe('api-key');
+    const headers: Record<string, string | string[] | undefined> = {
+      authorization: 'Bearer placeholder',
+    };
+    provider.injectAuth(headers);
+    expect(headers.authorization).toBe('Bearer sk-priority');
+  });
+
+  it('oauth mode: isAvailable returns true with valid auth.json', () => {
+    mockReadFileSync.mockImplementation((p: unknown) => {
+      if (String(p).includes('.codex')) return codexAuthJson();
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    const provider = new OpenAIAuthProvider();
+
+    expect(provider.getAuthMode()).toBe('oauth');
+    expect(provider.isAvailable()).toBe(true);
+  });
+
+  it('oauth mode: injectAuth injects access_token as Bearer', () => {
+    const token = fakeJwt({
+      exp: Math.floor(Date.now() / 1000) + 7200,
+      client_id: 'app_test',
+    });
+    mockReadFileSync.mockImplementation((p: unknown) => {
+      if (String(p).includes('.codex'))
+        return codexAuthJson({ accessToken: token });
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    });
+    const provider = new OpenAIAuthProvider();
+
+    const headers: Record<string, string | string[] | undefined> = {
+      authorization: 'Bearer placeholder',
+    };
+    provider.injectAuth(headers);
+    expect(headers.authorization).toBe(`Bearer ${token}`);
+  });
+
+  it('isAvailable returns false when neither API key nor auth.json exists', () => {
+    const provider = new OpenAIAuthProvider();
+    expect(provider.isAvailable()).toBe(false);
+  });
+
+  it('name and priority', () => {
+    const provider = new OpenAIAuthProvider();
+    expect(provider.name).toBe('openai');
+    expect(provider.priority).toBe(20);
   });
 });
 

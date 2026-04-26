@@ -13,6 +13,7 @@ import path from 'path';
 
 import { HOME_DIR, CONFIG_DIR, STORE_DIR } from './config.js';
 import { readEnvFile } from './env.js';
+import { CODEX_AUTH_PATH } from './auth-providers/openai.js';
 
 const DEUS_CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const MEMORY_DB_PATH = path.join(HOME_DIR, '.deus', 'memory.db');
@@ -35,6 +36,17 @@ function hasClaudeCredentialsFile(): boolean {
   }
 }
 
+/** Check if ~/.codex/auth.json has a valid OAuth access token. */
+function hasCodexAuthFile(): boolean {
+  try {
+    const raw = fs.readFileSync(CODEX_AUTH_PATH, 'utf-8');
+    const parsed = JSON.parse(raw) as { tokens?: { access_token?: string } };
+    return !!parsed?.tokens?.access_token;
+  } catch {
+    return false;
+  }
+}
+
 /** Check if credentials for the selected default agent backend are configured. */
 export function hasApiCredentials(): boolean {
   const env = readEnvFile([
@@ -50,7 +62,8 @@ export function hasApiCredentials(): boolean {
     'claude'
   ).toLowerCase();
   if (backend === 'openai') {
-    return !!(env.OPENAI_API_KEY || process.env.OPENAI_API_KEY);
+    if (env.OPENAI_API_KEY || process.env.OPENAI_API_KEY) return true;
+    return hasCodexAuthFile();
   }
 
   return !!(

@@ -1,7 +1,7 @@
 ---
 governs:
   - docs/
-last_verified: "2026-04-26" # llama-cpp optional integration ADR
+last_verified: "2026-04-26" # codex-oauth
 test_tasks:
   - "Add a new ADR to docs/decisions/ explaining an architectural change"
   - "Update ARCHITECTURE.md after a major refactor"
