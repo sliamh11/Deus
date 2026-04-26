@@ -70,6 +70,12 @@ Inside the Claude Code prompt:
 
 `/setup` includes a **Personality Kickstarter** at the end: choose from curated behavioral bundles (universal defaults, developer workflow, student/learner mode), pick individual behaviors à la carte, and optionally seed the self-improvement loop with battle-tested reflections so it isn't starting cold.
 
+Optional host-side runtime skills:
+
+```
+/add-llama-cpp          # Install llama.cpp and verify a local llama-server endpoint
+```
+
 > **Switching from another AI?** Give Deus a head start. Paste this prompt into your current AI (ChatGPT, Gemini, etc.) and send the output to Deus in your first conversation:
 >
 > ```
@@ -231,8 +237,8 @@ Yes. `DEUS_AGENT_BACKEND` selects the default container agent backend (`claude` 
 **Where is my data?**
 All local. Memory in SQLite, session logs in a local vault directory, no cloud sync.
 
-**How do I add a new channel?**
-Use the skill system: `/add-whatsapp`, `/add-telegram`, `/add-slack`, `/add-discord`, `/add-gmail`. Each channel is a standalone MCP package under `packages/` — you can also build your own by implementing the `ChannelProvider` interface from `@deus-ai/channel-core`.
+**How do I add a new channel or host integration?**
+Use the skill system: `/add-whatsapp`, `/add-telegram`, `/add-slack`, `/add-discord`, `/add-gmail`, `/add-llama-cpp`. Channel skills add messaging surfaces; `/add-llama-cpp` installs an optional local generation server without changing the default Ollama-backed memory/judge path. Channels are standalone MCP packages under `packages/`; host integrations stay as host skills.
 
 **How do I customize behavior?**
 Send `/settings` in any connected chat to view and edit per-channel settings (idle reset, timeout, trigger requirement). For deeper changes — personas, trigger words, response style — tell Claude Code directly or run `/customize`.

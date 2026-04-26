@@ -89,8 +89,10 @@ Provider-native tools are optional accelerators only. They must preserve the
 same user-visible command names, permissions, output semantics, and security
 boundaries.
 
-Host skills live under `.agents/skills/`. They are for host coding sessions,
-not commands to suggest inside WhatsApp, Telegram, Slack, Discord, or Gmail.
+Repo-owned host skills live under `.claude/skills/`. Some agent runtimes may
+consume a generated `.agents/skills/` compatibility tree. Host skills are for
+host coding sessions, not commands to suggest inside WhatsApp, Telegram, Slack,
+Discord, or Gmail.
 
 ## Commands To Preserve
 
@@ -111,8 +113,8 @@ Chat/channel commands must not depend on backend:
 - `/settings requires_trigger=true|false`
 - `/compact`
 
-Host/session skills include `/setup`, `/customize`, `/debug`,
-`/qodo-pr-resolver`, and `/get-qodo-rules`.
+Host/session skills include `/setup`, `/add-llama-cpp`, `/customize`,
+`/debug`, `/qodo-pr-resolver`, and `/get-qodo-rules`.
 
 ## Warden Gates
 
