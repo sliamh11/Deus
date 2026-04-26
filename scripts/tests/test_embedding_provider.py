@@ -96,6 +96,16 @@ class TestDefaults:
 class TestOllamaEmbeddingProvider:
     """Test OllamaEmbeddingProvider vector handling."""
 
+    @staticmethod
+    def _mock_http_response(body: bytes):
+        """Create a mock HTTPConnection whose getresponse() returns body."""
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.read.return_value = body
+        mock_conn = MagicMock()
+        mock_conn.getresponse.return_value = mock_resp
+        return mock_conn
+
     def test_truncates_long_vectors(self):
         from evolution.providers.embeddings import OllamaEmbeddingProvider
         from evolution.config import EMBED_DIM
@@ -104,13 +114,8 @@ class TestOllamaEmbeddingProvider:
         fake_response = json.dumps({"embeddings": [long_vec]}).encode()
 
         provider = OllamaEmbeddingProvider(model="test")
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = fake_response
-            mock_resp.__enter__ = lambda s: s
-            mock_resp.__exit__ = MagicMock(return_value=False)
-            mock_open.return_value = mock_resp
-
+        mock_conn = self._mock_http_response(fake_response)
+        with patch.object(provider, "_get_conn", return_value=mock_conn):
             result = provider.embed("test")
             assert len(result) == EMBED_DIM
 
@@ -122,13 +127,8 @@ class TestOllamaEmbeddingProvider:
         fake_response = json.dumps({"embeddings": [short_vec]}).encode()
 
         provider = OllamaEmbeddingProvider(model="test")
-        with patch("urllib.request.urlopen") as mock_open:
-            mock_resp = MagicMock()
-            mock_resp.read.return_value = fake_response
-            mock_resp.__enter__ = lambda s: s
-            mock_resp.__exit__ = MagicMock(return_value=False)
-            mock_open.return_value = mock_resp
-
+        mock_conn = self._mock_http_response(fake_response)
+        with patch.object(provider, "_get_conn", return_value=mock_conn):
             result = provider.embed("test")
             assert len(result) == EMBED_DIM
             assert result[:10] == [1.0] * 10

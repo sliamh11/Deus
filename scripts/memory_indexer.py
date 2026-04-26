@@ -592,6 +592,28 @@ def cmd_add(path_str: str, extract: bool = True):
     db.commit()
     print(f"Indexed {indexed} chunk(s) from {path.name}")
 
+    if extract:
+        try:
+            cmd_extract(str(path))
+        except SystemExit:
+            pass
+        except Exception as exc:
+            print(f"  WARN: atom extraction failed for {path.name}: {exc}", file=sys.stderr)
+
+    try:
+        stale_count = 0
+        articles = db.execute(
+            "SELECT ea.entity_id, ea.source_hash FROM entity_articles ea"
+        ).fetchall()
+        for entity_id, old_hash in articles:
+            new_hash = _compute_entity_source_hash(db, entity_id)
+            if new_hash != old_hash:
+                stale_count += 1
+        if stale_count > 0:
+            print(f"  [stale] {stale_count} entity article(s) need recompile (run --compile)")
+    except (sqlite3.OperationalError, Exception):
+        pass
+
 
 def cmd_add_dir(dir_str: str, extract: bool = True):
     """Batch-index every .md file under a directory.
