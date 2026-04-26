@@ -157,11 +157,11 @@ The self-improvement loop, eval suite, container isolation, and credential proxy
 
 ---
 
-## What We Don't Claim
+## Scope
 
-- We don't claim to be better than OpenClaw at channel breadth or ecosystem size. OpenClaw has 250K stars for good reason.
-- We don't claim model flexibility parity. Deus supports Claude (default) and OpenAI/Codex (opt-in), but not arbitrary providers. Hermes Agent and OpenClaw support 10+ providers out of the box.
-- Quantitative latency/throughput comparisons are not included because they depend heavily on hardware, network, and API tier — not the framework itself.
+- Deus focuses on depth: memory, self-improvement, and security — not channel breadth or ecosystem size.
+- Deus supports Claude (default) and OpenAI/Codex (opt-in). Arbitrary provider support is not a goal.
+- Quantitative latency/throughput comparisons are not included because they depend on hardware, network, and API tier — not the framework.
 
 ---
 
