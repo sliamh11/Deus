@@ -836,6 +836,64 @@ case "$1" in
     [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     echo "Deus built and restarted (CLI symlink refreshed)."
     ;;
+  gcal)
+    case "${2:-status}" in
+      auth)
+        echo "Google Calendar OAuth2 re-authorization..."
+        node "$SCRIPT_DIR/scripts/setup-gcal-auth.mjs"
+        if [ $? -eq 0 ]; then
+          echo ""
+          echo "Restarting Deus to pick up new tokens..."
+          [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
+          echo "Done."
+        fi
+        ;;
+      ping)
+        # Lightweight keep-alive: refreshes the access token by listing 1 event.
+        # Run via launchd daily to prevent the 7-day refresh_token expiry.
+        node -e "
+          const { google } = require('googleapis');
+          const fs = require('fs');
+          const credsPath = '$SCRIPT_DIR/integrations/gcal/credentials.json';
+          const tokensPath = '$SCRIPT_DIR/integrations/gcal/tokens.json';
+          if (!fs.existsSync(tokensPath)) { console.log('No gcal tokens — skipping ping'); process.exit(0); }
+          const creds = JSON.parse(fs.readFileSync(credsPath));
+          const tokens = JSON.parse(fs.readFileSync(tokensPath));
+          const { client_id, client_secret, redirect_uris } = creds.installed || creds.web;
+          const auth = new google.auth.OAuth2(client_id, client_secret, redirect_uris[0]);
+          auth.setCredentials(tokens);
+          auth.on('tokens', (t) => {
+            Object.assign(tokens, t);
+            fs.writeFileSync(tokensPath, JSON.stringify(tokens, null, 2));
+          });
+          google.calendar({ version: 'v3', auth }).calendarList.get({ calendarId: 'primary' })
+            .then(r => console.log('gcal ping OK:', r.data.summary))
+            .catch(e => { console.error('gcal ping FAILED:', e.message); process.exit(1); });
+        " 2>&1
+        ;;
+      status)
+        TOKENS_PATH="$SCRIPT_DIR/integrations/gcal/tokens.json"
+        if [ -f "$TOKENS_PATH" ]; then
+          AGE_DAYS=$(( ( $(date +%s) - $(stat -f %m "$TOKENS_PATH") ) / 86400 ))
+          echo "Google Calendar tokens: $TOKENS_PATH (${AGE_DAYS}d old)"
+          echo "Refresh token expires after ~7 days of no use."
+          echo ""
+          echo "  deus gcal auth   Re-authorize (browser flow)"
+          echo "  deus gcal ping   Keep-alive (refreshes token)"
+        else
+          echo "No Google Calendar tokens found."
+          echo "Run: deus gcal auth"
+        fi
+        ;;
+      *)
+        echo "Usage: deus gcal [status|auth|ping]"
+        echo ""
+        echo "  deus gcal          Show token status"
+        echo "  deus gcal auth     Re-authorize via browser"
+        echo "  deus gcal ping     Keep-alive ping (prevents token expiry)"
+        ;;
+    esac
+    ;;
   backend)
     shift
     CURRENT_BACKEND="$(_read_config_key agent_backend)"
@@ -1333,7 +1391,7 @@ $STARTUP_INSTRUCTION" "Catch me up."
     esac
     ;;
   *)
-    echo "Usage: deus [claude|codex] [home|auth|web|backend|listen|logs]"
+    echo "Usage: deus [claude|codex] [home|auth|web|backend|gcal|listen|logs]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -1342,6 +1400,7 @@ $STARTUP_INSTRUCTION" "Catch me up."
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
     echo "  deus web        Same as 'deus' but launches claude with --chrome (Claude-in-Chrome integration)"
     echo "  deus backend    Manage default AI backend and model (show|set|model|list)"
+    echo "  deus gcal       Google Calendar token management (status|auth|ping)"
     echo "  deus listen     Record from mic, transcribe, and copy to clipboard"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
     ;;

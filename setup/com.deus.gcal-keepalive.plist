@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.deus.gcal-keepalive</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/liam10play/.local/bin/deus</string>
+        <string>gcal</string>
+        <string>ping</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>86400</integer>
+    <key>WorkingDirectory</key>
+    <string>/Users/liam10play/deus</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/liam10play</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/liam10play/.local/bin</string>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/liam10play/deus/logs/gcal-keepalive.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/liam10play/deus/logs/gcal-keepalive.log</string>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>

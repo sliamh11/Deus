@@ -110,6 +110,7 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus home` | Launch in home mode regardless of current directory |
 | `deus codex` | Use OpenAI/Codex backend for this session |
 | `deus auth` | Rebuild and restart background services |
+| `deus gcal` | Google Calendar token management (`status`, `auth`, `ping`) |
 | `deus listen` | Record from mic, transcribe locally, copy to clipboard |
 
 ---
@@ -140,6 +141,7 @@ Deus goes deep on memory, learning, and security. See [docs/benchmarks.md](docs/
 | Benchmarks & token costs | [Benchmarks](docs/benchmarks.md) |
 | Environment variables | [Environment](docs/ENVIRONMENT.md) |
 | Using different AI backends | [Multi-backend](docs/MULTI_BACKEND.md) |
+| Backend quality benchmark | [Claude vs Codex parity report](docs/research/backend-quality-benchmark-2026-04-26.md) |
 | Development setup | [Development](docs/DEVELOPMENT.md) |
 | Contributing | [Contributing](CONTRIBUTING.md) |
 | Known limitations | [Limitations](docs/KNOWN_LIMITATIONS.md) |

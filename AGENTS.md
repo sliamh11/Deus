@@ -122,6 +122,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/add-codex` | Add OpenAI/Codex as a backend |
 | `/add-compact` | Add the backend-neutral `/compact` session command |
 | `/add-discord` | Add Discord as a channel |
+| `/add-gcal` | Add Google Calendar integration (list, create, update events) |
 | `/add-gmail` | Add Gmail as a tool or channel |
 | `/add-image-vision` | Add image attachment vision to Deus agents |
 | `/add-listen-hotkey` | Add a global hotkey for `deus listen` |
