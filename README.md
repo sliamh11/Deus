@@ -117,16 +117,17 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 
 ## Comparison
 
-|  | **Deus** | **[OpenClaw](https://github.com/openclaw/openclaw)** | **[NemoClaw](https://github.com/NVIDIA/NemoClaw)** | **[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)** | **Plain Claude** |
+|  | **Deus** | **[OpenClaw](https://github.com/openclaw/openclaw)** | **[NemoClaw](https://github.com/NVIDIA/NemoClaw)** | **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** | **Plain Claude** |
 |---|---|---|---|---|---|
-| **Memory** | Semantic search + tiered recall | Markdown files | Via OpenClaw | Basic persistence | Conversation only |
-| **Learning** | Scores itself, improves over time | No | No | No | No |
-| **Channels** | 5 (WhatsApp, Telegram, Slack, Discord, Gmail) | 10+ | Via OpenClaw | 20+ | None |
-| **Isolation** | Container per conversation | Opt-in Docker | Landlock + seccomp | Rust sandbox | None |
-| **LLM support** | Claude default, OpenAI opt-in | Any provider | Any (via OpenClaw) | Any | Claude only |
+| **Memory** | Semantic search + tiered recall | Markdown files | Via OpenClaw | SQLite/FTS5 + preference profiling | Conversation only |
+| **Learning** | Judge + reflexion + DSPy optimization | No | No | Auto-creates & refines skills | No |
+| **Channels** | 5 (WhatsApp, Telegram, Slack, Discord, Gmail) | 10+ | Via OpenClaw | 15+ (WhatsApp, Telegram, Signal, Matrix...) | None |
+| **Isolation** | Container per conversation | Opt-in Docker | Landlock + seccomp | Per-session | None |
+| **LLM support** | Claude default, OpenAI opt-in | Any provider | Any (via OpenClaw) | Any (10+ providers) | Claude only |
 | **Setup** | ~5 min | ~15 min | ~20 min | ~10 min | N/A |
+| **Repo size** | ~13 MB | ~592 MB | ~22 MB | ~147 MB | N/A |
 
-Deus goes deep on memory, learning, and security. See [docs/benchmarks.md](docs/benchmarks.md) for detailed numbers.
+Deus goes deep on memory, learning, and security. Hermes goes wide on channels and LLM flexibility. See [docs/benchmarks.md](docs/benchmarks.md) for detailed numbers.
 
 ---
 
