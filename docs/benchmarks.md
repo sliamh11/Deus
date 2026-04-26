@@ -1,10 +1,10 @@
 # Benchmark Comparison
 
-How Deus compares to other open-source AI assistant frameworks. Last updated: March 2026.
+How Deus compares to other open-source AI assistant frameworks. Last updated: April 2026.
 
 ## Philosophy
 
-Different tools solve different problems. **OpenClaw** optimizes for breadth: 10+ channels, 5,700+ community skills, any LLM provider. **Deus** optimizes for depth: semantic memory that actually recalls last week's conversation, a self-improvement loop that tunes its own prompts, and per-conversation container isolation that's on by default — not opt-in.
+Different tools solve different problems. **OpenClaw** optimizes for breadth: 10+ channels, 5,700+ community skills, any LLM provider. **Hermes Agent** optimizes for autonomy: self-creating skills, 15+ channels, and the widest LLM provider list. **Deus** optimizes for depth: semantic memory that actually recalls last week's conversation, a judge-based self-improvement loop that tunes its own prompts, and per-conversation container isolation that's on by default — not opt-in.
 
 Choose the right tool for what you care about.
 
@@ -12,19 +12,19 @@ Choose the right tool for what you care about.
 
 ## Feature Comparison
 
-|  | **Deus** | **[OpenClaw](https://github.com/openclaw/openclaw)** | **[NemoClaw](https://github.com/NVIDIA/NemoClaw)** | **[ZeroClaw](https://github.com/zeroclaw-labs/zeroclaw)** | **Plain Claude** |
+|  | **Deus** | **[OpenClaw](https://github.com/openclaw/openclaw)** | **[NemoClaw](https://github.com/NVIDIA/NemoClaw)** | **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** | **Plain Claude** |
 |---|---|---|---|---|---|
-| **Messaging channels** | 4 (WhatsApp, Telegram, Slack, Discord) | 10+ (WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Teams, IRC...) | Via OpenClaw | 20+ | None |
-| **Agent isolation** | Linux container per conversation (default) | Opt-in Docker sandbox | Landlock + seccomp + namespaces | Rust process sandbox | None |
-| **Memory** | Semantic vector DB (sqlite-vec) + tiered retrieval (warm + cold) | Markdown files on disk | Via OpenClaw | Built-in persistence | Conversation window only |
-| **Self-improvement** | Judge → reflexion → DSPy prompt optimization | No | No | No | No |
+| **Messaging channels** | 5 (WhatsApp, Telegram, Slack, Discord, Gmail) | 10+ (WhatsApp, Telegram, Slack, Discord, Signal, iMessage, Teams, IRC...) | Via OpenClaw | 15+ (WhatsApp, Telegram, Signal, Matrix...) | None |
+| **Agent isolation** | Linux container per conversation (default) | Opt-in Docker sandbox | Landlock + seccomp + namespaces | Per-session | None |
+| **Memory** | Semantic vector DB (sqlite-vec) + tiered retrieval (warm + cold) | Markdown files on disk | Via OpenClaw | SQLite/FTS5 + preference profiling | Conversation window only |
+| **Self-improvement** | Judge → reflexion → DSPy prompt optimization | No | No | Auto-creates & refines skills | No |
 | **Eval / CI layer** | DeepEval test suite (QA, tool use, safety) | No | No | No | No |
 | **Credential isolation** | Proxy injects keys at runtime; containers never see real credentials | Keys in environment | Policy-controlled | Keys in environment | N/A (cloud) |
-| **LLM support** | Claude default; OpenAI/Codex opt-in | Any (OpenAI, Anthropic, Ollama, local) | Any (via OpenClaw) | Any | Claude only |
-| **Codebase size** | ~9,500 lines TypeScript | ~430,000 lines | Wrapper over OpenClaw | Single Rust binary | N/A |
-| **Community** | New project | 250K+ GitHub stars, 5,700+ skills | NVIDIA-backed, alpha | 18K GitHub stars | N/A |
-| **License** | MIT | MIT | Open source | Open source | Proprietary |
-| **Self-hosted** | Yes (macOS, Linux) | Yes (any OS) | Yes (NVIDIA GPU preferred) | Yes (any OS) | No (cloud only) |
+| **LLM support** | Claude default; OpenAI/Codex opt-in | Any (OpenAI, Anthropic, Ollama, local) | Any (via OpenClaw) | Any (10+ providers) | Claude only |
+| **Codebase size** | ~37K lines (TypeScript + Python) | ~430,000 lines | Wrapper over OpenClaw | ~147 MB repo | N/A |
+| **Community** | New project | 250K+ GitHub stars, 5,700+ skills | NVIDIA-backed, alpha | ~110K GitHub stars | N/A |
+| **License** | MIT | MIT | Open source | MIT | Proprietary |
+| **Self-hosted** | Yes (macOS, Linux, Windows) | Yes (any OS) | Yes (NVIDIA GPU preferred) | Yes (Linux, macOS, WSL2) | No (cloud only) |
 
 ---
 
@@ -49,7 +49,7 @@ OpenClaw runs agents in the host process by default and offers Docker as an opt-
 | **Deus** | SQLite + sqlite-vec (768-dim vectors) | Semantic search with recency boost (7d: -0.3, 30d: -0.15 L2 adjustment) | Yes — tiered: recent sessions free, older sessions via embedding search |
 | **OpenClaw** | Markdown files on disk | Keyword / filename | Session-based persistence, no semantic search |
 | **NemoClaw** | Via OpenClaw | Via OpenClaw | Via OpenClaw |
-| **ZeroClaw** | Built-in persistence | Unknown | Basic persistence |
+| **Hermes Agent** | SQLite + FTS5 | Full-text search + preference profiling | Yes — 3-layer: session context, FTS5, automated user profiling |
 | **Plain Claude** | Context window | None | No (each conversation is isolated) |
 
 Deus uses a two-tier retrieval strategy:
@@ -60,7 +60,7 @@ This means asking "what did we discuss about the auth migration?" will find the 
 
 ### Self-Improvement Loop
 
-Unique to Deus. No other framework in this comparison has an automated self-improvement pipeline.
+Hermes Agent auto-creates skills from experience, but its self-assessment "almost always thinks it did well" — there's no external judge. Deus uses an external judge to score responses honestly, then feeds low scores into a structured improvement pipeline:
 
 ```
 Production interaction
@@ -107,7 +107,7 @@ No other framework in this comparison ships with a built-in eval suite for the a
 - An assistant that **remembers** — semantic memory that recalls conversations from weeks ago
 - An assistant that **improves** — automated scoring, reflection, and prompt optimization
 - **Security by default** — container isolation without configuration
-- A **small, understandable codebase** — 9.5K lines you can read in an afternoon
+- A **lean, auditable codebase** — ~37K lines across TypeScript and Python
 - To run **Claude as your core agent** with deep SDK integration
 
 ### Choose OpenClaw if you want:
@@ -121,10 +121,11 @@ No other framework in this comparison ships with a built-in eval suite for the a
 - **Kernel-level security** — Landlock + seccomp syscall filtering
 - The OpenClaw ecosystem with **enterprise guardrails**
 
-### Choose ZeroClaw if you want:
-- **Maximum performance** — 4MB RAM, <10ms boot, Rust-native
-- **Maximum channel breadth** — 20+ platforms
-- **Minimal resource footprint** — runs on embedded hardware
+### Choose Hermes Agent if you want:
+- **Self-improving skills** — the agent auto-creates reusable skills from experience and refines them on reuse
+- **Maximum channel breadth** — 15+ platforms including Signal, Matrix, DingTalk, Home Assistant
+- **Wide LLM support** — 10+ providers, model-agnostic by design
+- A **massive community** — ~110K GitHub stars, community skill hub at agentskills.io
 
 ### Choose Plain Claude if you want:
 - **No infrastructure** — just open claude.ai and talk
@@ -191,11 +192,11 @@ The self-improvement loop, eval suite, container isolation, and credential proxy
 ## What We Don't Claim
 
 - We don't claim to be better than OpenClaw at channel breadth or ecosystem size. OpenClaw has 250K stars for good reason.
-- We don't claim model flexibility. Deus requires Claude. This is a deliberate trade-off for deep SDK integration (session management, MCP tools, agent orchestration).
+- We don't claim model flexibility parity. Deus supports Claude (default) and OpenAI/Codex (opt-in), but not arbitrary providers. Hermes Agent and OpenClaw support 10+ providers out of the box.
 - Quantitative latency/throughput comparisons are not included because they depend heavily on hardware, network, and API tier — not the framework itself.
 
 ---
 
 ## Contributing
 
-Found an error in this comparison? [Open an issue](https://github.com/YOUR_USERNAME/deus/issues) or submit a PR. We want this to be accurate, not favorable.
+Found an error in this comparison? [Open an issue](../../issues) or submit a PR. We want this to be accurate, not favorable.
