@@ -35,6 +35,7 @@ export type RuntimeEvent =
   | { type: 'output_text'; text: string }
   | { type: 'tool_call'; name: string; arguments: Record<string, unknown> }
   | { type: 'session'; sessionRef: BackendSessionRef }
+  | { type: 'turn_complete' }
   | { type: 'error'; error: string };
 
 export type RuntimeEventSink = (event: RuntimeEvent) => void | Promise<void>;

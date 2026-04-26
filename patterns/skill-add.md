@@ -1,7 +1,7 @@
 ---
 governs:
   - .claude/skills
-last_verified: "2026-04-25"
+last_verified: "2026-04-26" # close-agnostic-debt
 test_tasks:
   - "Create a new skill under .claude/skills/ that fetches recent Gmail threads"
   - "Add a new skill SKILL.md that documents log rotation steps"

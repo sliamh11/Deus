@@ -3,7 +3,7 @@ governs:
   - src/
   - setup/
   - packages/
-last_verified: "2026-04-26" # proxy-shared-secret-auth
+last_verified: "2026-04-26" # close-agnostic-debt
 test_tasks:
   - "Deploy a hotfix to a running service and restart it after rebuilding dist/"
   - "Rebuild the WhatsApp MCP package and pick up the change live"

@@ -1,4 +1,3 @@
-import { ChildProcess } from 'child_process';
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
@@ -6,14 +5,12 @@ import { fireAndForget } from './async/index.js';
 import {
   defaultSessionRef,
   type BackendSessionRef,
+  type RunContext,
+  type RuntimeEventSink,
 } from './agent-backends/types.js';
 import type { BackendRegistry } from './agent-backends/registry.js';
-import { ASSISTANT_NAME, SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
-import {
-  ContainerOutput,
-  runContainerAgent,
-  writeTasksSnapshot,
-} from './container-runner.js';
+import { SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
+import { writeTasksSnapshot } from './container-runner.js';
 import {
   getAllTasks,
   getDueTasks,
@@ -78,12 +75,6 @@ export interface SchedulerDependencies {
   setSession?: (groupFolder: string, sessionRef: BackendSessionRef) => void;
   registry: BackendRegistry;
   queue: GroupQueue;
-  onProcess: (
-    groupJid: string,
-    proc: ChildProcess,
-    containerName: string,
-    groupFolder: string,
-  ) => void;
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
 
@@ -191,61 +182,50 @@ async function runTask(
     }, TASK_CLOSE_DELAY_MS);
   };
 
+  const runContext: RunContext = {
+    prompt: task.prompt,
+    groupFolder: task.group_folder,
+    chatJid: task.chat_jid,
+    isControlGroup,
+    isScheduledTask: true,
+  };
+
+  const currentSessionRef = sessionRef ?? defaultSessionRef('', backend);
+
+  const eventSink: RuntimeEventSink = async (event) => {
+    if (event.type === 'session') {
+      deps.setSession?.(task.group_folder, event.sessionRef);
+    }
+    if (event.type === 'output_text') {
+      result = event.text;
+      await deps.sendMessage(task.chat_jid, event.text);
+      scheduleClose();
+    }
+    if (event.type === 'turn_complete') {
+      deps.queue.notifyIdle(task.chat_jid);
+      scheduleClose();
+    }
+    if (event.type === 'error') {
+      error = event.error;
+    }
+  };
+
   try {
-    const output = await runContainerAgent(
-      group,
-      {
-        prompt: task.prompt,
-        backend,
-        sessionId: sessionRef?.session_id,
-        sessionRef,
-        groupFolder: task.group_folder,
-        chatJid: task.chat_jid,
-        isControlGroup,
-        isScheduledTask: true,
-        assistantName: ASSISTANT_NAME,
-      },
-      (proc, containerName) =>
-        deps.onProcess(task.chat_jid, proc, containerName, task.group_folder),
-      async (streamedOutput: ContainerOutput) => {
-        if (streamedOutput.newSessionId && streamedOutput.status !== 'error') {
-          const nextSessionRef =
-            streamedOutput.newSessionRef ??
-            defaultSessionRef(streamedOutput.newSessionId, backend);
-          deps.setSession?.(task.group_folder, nextSessionRef);
-        }
-        if (streamedOutput.result) {
-          result = streamedOutput.result;
-          // Forward result to user (sendMessage handles formatting)
-          await deps.sendMessage(task.chat_jid, streamedOutput.result);
-          scheduleClose();
-        }
-        if (streamedOutput.status === 'success') {
-          deps.queue.notifyIdle(task.chat_jid);
-          scheduleClose(); // Close promptly even when result is null (e.g. IPC-only tasks)
-        }
-        if (streamedOutput.status === 'error') {
-          error = streamedOutput.error || 'Unknown error';
-        }
-      },
+    const runResult = await resolvedBackend.runTurn(
+      runContext,
+      currentSessionRef,
+      eventSink,
     );
 
     if (closeTimer) clearTimeout(closeTimer);
 
-    if (output.status === 'error') {
-      error = output.error || 'Unknown error';
-    } else if (output.result) {
-      // Result was already forwarded to the user via the streaming callback above
-      result = output.result;
+    if (runResult.status === 'error') {
+      error = runResult.error || 'Unknown error';
+    } else if (runResult.result) {
+      result = runResult.result;
     }
-    if (
-      (output.newSessionRef || output.newSessionId) &&
-      output.status !== 'error'
-    ) {
-      const nextSessionRef =
-        output.newSessionRef ??
-        defaultSessionRef(output.newSessionId!, backend);
-      deps.setSession?.(task.group_folder, nextSessionRef);
+    if (runResult.sessionRef) {
+      deps.setSession?.(task.group_folder, runResult.sessionRef);
     }
 
     logger.info(

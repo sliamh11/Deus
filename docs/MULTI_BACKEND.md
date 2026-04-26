@@ -118,6 +118,12 @@ The backend is resolved in this order (first non-empty wins):
 | `OPENAI_API_KEY` | -- | Required when using the OpenAI backend |
 | `DEUS_CODEX_MODEL` | `DEUS_OPENAI_MODEL` | Optional model override for `deus codex` |
 
+## Supported Backend Boundary
+
+Claude and OpenAI/Codex are the two implemented agent backends. The `ollama` entry in the `AgentBackendName` type union is a forward reservation with no runtime implementation — Ollama is used for eval judging and embeddings, not as a container agent backend.
+
+The architecture supports adding new backends, but the current product scope is deliberately limited to two adapters. This boundary is a conscious scope decision, not a technical limitation.
+
 ## Adding a New Backend (for contributors)
 
 1. Create a factory function in `src/agent-backends/` (see `claude-backend.ts` as template)

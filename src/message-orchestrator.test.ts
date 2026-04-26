@@ -10,6 +10,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type {
+  BackendSessionRef,
+  RunContext,
+  RunResult,
+  RuntimeEventSink,
+} from './agent-backends/types.js';
+
 // ── Module mocks (hoisted) ───────────────────────────────────────────────────
 
 vi.mock('./config.js', () => ({
@@ -40,27 +47,6 @@ vi.mock('./db.js', () => ({
 }));
 
 vi.mock('./container-runner.js', () => ({
-  runContainerAgent: vi.fn(
-    async (
-      _g: unknown,
-      _i: unknown,
-      _op: unknown,
-      onOutput: ((...args: unknown[]) => Promise<void>) | undefined,
-    ) => {
-      if (onOutput) {
-        await onOutput({
-          status: 'success',
-          result: 'Agent response',
-          newSessionId: 'sess-1',
-        });
-      }
-      return {
-        status: 'success',
-        result: 'Agent response',
-        newSessionId: 'sess-1',
-      };
-    },
-  ),
   writeTasksSnapshot: vi.fn(),
   writeGroupsSnapshot: vi.fn(),
 }));
@@ -139,8 +125,6 @@ vi.mock('fs', async () => {
 
 import { createMessageOrchestrator } from './message-orchestrator.js';
 import { getMessagesSince, getNewMessages } from './db.js';
-import { runContainerAgent } from './container-runner.js';
-import type { ContainerOutput } from './container-runner.js';
 import { findChannel } from './router.js';
 import {
   handleSessionCommand,
@@ -151,10 +135,32 @@ import { BackendRegistry } from './agent-backends/registry.js';
 
 const mockGetMessagesSince = vi.mocked(getMessagesSince);
 const mockGetNewMessages = vi.mocked(getNewMessages);
-const mockRunContainerAgent = vi.mocked(runContainerAgent);
 const mockFindChannel = vi.mocked(findChannel);
 const mockHandleSessionCommand = vi.mocked(handleSessionCommand);
 const mockExtractSessionCommand = vi.mocked(extractSessionCommand);
+
+type RunTurnFn = (
+  ctx: RunContext,
+  session: BackendSessionRef,
+  sink: RuntimeEventSink,
+) => Promise<RunResult>;
+
+/** Default runTurn: emits output + session + turn_complete, returns success. */
+const defaultRunTurn: RunTurnFn = async (_ctx, _session, sink) => {
+  await sink({ type: 'output_text', text: 'Agent response' });
+  await sink({
+    type: 'session',
+    sessionRef: { backend: 'claude', session_id: 'sess-1' },
+  });
+  await sink({ type: 'turn_complete' });
+  return {
+    status: 'success',
+    result: 'Agent response',
+    sessionRef: { backend: 'claude', session_id: 'sess-1' },
+  };
+};
+
+let activeRunTurn: RunTurnFn = defaultRunTurn;
 
 function makeRegistry(): BackendRegistry {
   const registry = new BackendRegistry();
@@ -170,7 +176,7 @@ function makeRegistry(): BackendRegistry {
       tool_streaming: true,
     }),
     startOrResume: async () => ({ backend: 'claude' as const, session_id: '' }),
-    runTurn: async () => ({ status: 'success' as const, result: null }),
+    runTurn: (...args) => activeRunTurn(...args),
     close: async () => {},
   });
   return registry;
@@ -230,6 +236,7 @@ function makeState(group: RegisteredGroup, initialCursor = '') {
     save: vi.fn(),
     getSession: vi.fn(() => undefined as string | undefined),
     setSession: vi.fn(),
+    clearSession: vi.fn(),
     get lastTimestamp() {
       return '';
     },
@@ -263,32 +270,12 @@ function makeChannel() {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  activeRunTurn = defaultRunTurn;
   // Restore default behaviours after reset
   mockGetMessagesSince.mockReturnValue([]);
   mockGetNewMessages.mockReturnValue({ messages: [], newTimestamp: '' });
   mockHandleSessionCommand.mockResolvedValue({ handled: false });
   mockExtractSessionCommand.mockReturnValue(null);
-  mockRunContainerAgent.mockImplementation(
-    async (
-      _g: unknown,
-      _i: unknown,
-      _op: unknown,
-      onOutput: ((output: ContainerOutput) => Promise<void>) | undefined,
-    ) => {
-      if (onOutput) {
-        await onOutput({
-          status: 'success',
-          result: 'Agent response',
-          newSessionId: 'sess-1',
-        });
-      }
-      return {
-        status: 'success',
-        result: 'Agent response',
-        newSessionId: 'sess-1',
-      };
-    },
-  );
 });
 
 afterEach(() => {
@@ -329,7 +316,6 @@ describe('processGroupMessages', () => {
 
     const result = await orchestrator.processGroupMessages('group@g.us');
     expect(result).toBe(true);
-    expect(mockRunContainerAgent).not.toHaveBeenCalled();
   });
 
   it('advances cursor then rolls back on agent error with no output sent', async () => {
@@ -337,8 +323,8 @@ describe('processGroupMessages', () => {
     const channel = makeChannel();
     mockFindChannel.mockReturnValue(channel as any);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
-    // Agent errors, never calls onOutput
-    mockRunContainerAgent.mockResolvedValue({
+
+    activeRunTurn = async () => ({
       status: 'error',
       result: null,
       error: 'Container crashed',
@@ -372,17 +358,11 @@ describe('processGroupMessages', () => {
     const channel = makeChannel();
     mockFindChannel.mockReturnValue(channel as any);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
-    // Agent sends output first, then errors
-    mockRunContainerAgent.mockImplementation(async (_g, _i, _op, onOutput) => {
-      if (onOutput) {
-        await onOutput({
-          status: 'success',
-          result: 'Partial response',
-          newSessionId: undefined,
-        });
-      }
+
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'Partial response' });
       return { status: 'error', result: null, error: 'crashed after output' };
-    });
+    };
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
@@ -423,7 +403,6 @@ describe('processGroupMessages', () => {
 
     const result = await orchestrator.processGroupMessages('group@g.us');
     expect(result).toBe(true);
-    expect(mockRunContainerAgent).not.toHaveBeenCalled();
   });
 
   it('processes non-main group when trigger message is present', async () => {
@@ -434,6 +413,13 @@ describe('processGroupMessages', () => {
       makeMsg({ content: '@Deus please help' }),
     ]);
 
+    let runTurnCalled = false;
+    activeRunTurn = async (_ctx, _session, sink) => {
+      runTurnCalled = true;
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: null };
+    };
+
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
       state: state as any,
@@ -443,7 +429,7 @@ describe('processGroupMessages', () => {
 
     const result = await orchestrator.processGroupMessages('group@g.us');
     expect(result).toBe(true);
-    expect(mockRunContainerAgent).toHaveBeenCalled();
+    expect(runTurnCalled).toBe(true);
   });
 
   it('main group processes messages without trigger check', async () => {
@@ -454,6 +440,13 @@ describe('processGroupMessages', () => {
       makeMsg({ content: 'no trigger here, just a regular message' }),
     ]);
 
+    let runTurnCalled = false;
+    activeRunTurn = async (_ctx, _session, sink) => {
+      runTurnCalled = true;
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: null };
+    };
+
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
       state: state as any,
@@ -463,7 +456,7 @@ describe('processGroupMessages', () => {
 
     const result = await orchestrator.processGroupMessages('group@g.us');
     expect(result).toBe(true);
-    expect(mockRunContainerAgent).toHaveBeenCalled();
+    expect(runTurnCalled).toBe(true);
   });
 
   it('returns session command result without running agent when handled', async () => {
@@ -478,6 +471,12 @@ describe('processGroupMessages', () => {
       success: true,
     });
 
+    let runTurnCalled = false;
+    activeRunTurn = async () => {
+      runTurnCalled = true;
+      return { status: 'success', result: null };
+    };
+
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
       state: state as any,
@@ -487,7 +486,7 @@ describe('processGroupMessages', () => {
 
     const result = await orchestrator.processGroupMessages('group@g.us');
     expect(result).toBe(true);
-    expect(mockRunContainerAgent).not.toHaveBeenCalled();
+    expect(runTurnCalled).toBe(false);
   });
 
   it('sends agent output to the channel', async () => {
@@ -495,19 +494,12 @@ describe('processGroupMessages', () => {
     const channel = makeChannel();
     mockFindChannel.mockReturnValue(channel as any);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
-    mockRunContainerAgent.mockImplementation(async (_g, _i, _op, onOutput) => {
-      if (onOutput)
-        await onOutput({
-          status: 'success',
-          result: 'Hello user!',
-          newSessionId: undefined,
-        });
-      return {
-        status: 'success',
-        result: 'Hello user!',
-        newSessionId: undefined,
-      };
-    });
+
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'Hello user!' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'Hello user!' };
+    };
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
@@ -528,16 +520,15 @@ describe('processGroupMessages', () => {
     const channel = makeChannel();
     mockFindChannel.mockReturnValue(channel as any);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
-    mockRunContainerAgent.mockImplementation(async (_g, _i, _op, onOutput) => {
-      if (onOutput) {
-        await onOutput({
-          status: 'success',
-          result: '<internal>thinking...</internal>Visible reply',
-          newSessionId: undefined,
-        });
-      }
-      return { status: 'success', result: null, newSessionId: undefined };
-    });
+
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({
+        type: 'output_text',
+        text: '<internal>thinking...</internal>Visible reply',
+      });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: null };
+    };
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),

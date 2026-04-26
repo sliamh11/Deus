@@ -6,12 +6,37 @@ import {
   computeNextRun,
   startSchedulerLoop,
 } from './task-scheduler.js';
-import type { BackendSessionRef } from './agent-backends/types.js';
+import type {
+  BackendSessionRef,
+  RunContext,
+  RuntimeEventSink,
+} from './agent-backends/types.js';
 import type { SchedulerDependencies } from './task-scheduler.js';
 import { BackendRegistry } from './agent-backends/registry.js';
+import type { RunResult } from './agent-backends/types.js';
 
-function makeStubRegistry(): BackendRegistry {
+type RunTurnFn = (
+  ctx: RunContext,
+  session: BackendSessionRef,
+  sink: RuntimeEventSink,
+) => Promise<RunResult>;
+
+function makeStubRegistry(runTurnOverride?: RunTurnFn): BackendRegistry {
   const registry = new BackendRegistry();
+  const defaultRunTurn: RunTurnFn = async (_ctx, _session, sink) => {
+    await sink({ type: 'output_text', text: 'Agent response' });
+    await sink({
+      type: 'session',
+      sessionRef: { backend: 'claude', session_id: 'sess-1' },
+    });
+    await sink({ type: 'turn_complete' });
+    return {
+      status: 'success',
+      result: 'Agent response',
+      sessionRef: { backend: 'claude', session_id: 'sess-1' },
+    };
+  };
+  const runTurn = runTurnOverride ?? defaultRunTurn;
   const stub = (name: 'claude' | 'openai') => ({
     name: () => name,
     capabilities: () => ({
@@ -24,7 +49,7 @@ function makeStubRegistry(): BackendRegistry {
       tool_streaming: name === 'claude',
     }),
     startOrResume: async () => ({ backend: name, session_id: '' }),
-    runTurn: async () => ({ status: 'success' as const, result: null }),
+    runTurn,
     close: async () => {},
   });
   registry.register(stub('claude'));
@@ -32,11 +57,7 @@ function makeStubRegistry(): BackendRegistry {
   return registry;
 }
 
-// Module-level mocks (hoisted by Vitest). These are safe for existing tests:
-// - The invalid-folder test throws before fs.mkdirSync is reached
-// - The existing test returns {} for registeredGroups so runContainerAgent is never called
 vi.mock('./container-runner.js', () => ({
-  runContainerAgent: vi.fn(),
   writeTasksSnapshot: vi.fn(),
 }));
 
@@ -87,7 +108,6 @@ describe('task scheduler', () => {
       getSessions: () => ({}),
       registry: makeStubRegistry(),
       queue: { enqueueTask } as any,
-      onProcess: () => {},
       sendMessage: async () => {},
     });
 
@@ -177,20 +197,10 @@ describe('task scheduler', () => {
 // startSchedulerLoop — execution path tests
 // ---------------------------------------------------------------------------
 describe('startSchedulerLoop execution path', () => {
-  // Lazily import the mocked module so we get the vi.fn() references
-  let mockRunContainerAgent: ReturnType<typeof vi.fn>;
-  let mockWriteTasksSnapshot: ReturnType<typeof vi.fn>;
-
-  beforeEach(async () => {
+  beforeEach(() => {
     _initTestDatabase();
     _resetSchedulerLoopForTests();
     vi.useFakeTimers();
-
-    const containerRunner = await import('./container-runner.js');
-    mockRunContainerAgent = vi.mocked(containerRunner.runContainerAgent);
-    mockWriteTasksSnapshot = vi.mocked(containerRunner.writeTasksSnapshot);
-    mockRunContainerAgent.mockReset();
-    mockWriteTasksSnapshot.mockReset();
   });
 
   afterEach(() => {
@@ -228,6 +238,7 @@ describe('startSchedulerLoop execution path', () => {
       sendMessage: ReturnType<typeof vi.fn>;
       notifyIdle: ReturnType<typeof vi.fn>;
       closeStdin: ReturnType<typeof vi.fn>;
+      runTurn: RunTurnFn;
     }> = {},
   ): SchedulerDependencies {
     const enqueueTask =
@@ -253,9 +264,8 @@ describe('startSchedulerLoop execution path', () => {
       getSessions: () => overrides.sessions ?? {},
       getSession: overrides.getSession,
       setSession: overrides.setSession,
-      registry: makeStubRegistry(),
+      registry: makeStubRegistry(overrides.runTurn),
       queue: { enqueueTask, notifyIdle, closeStdin } as any,
-      onProcess: () => {},
       sendMessage: sendMessage as unknown as (
         jid: string,
         text: string,
@@ -307,22 +317,14 @@ describe('startSchedulerLoop execution path', () => {
   it('delivers streamed result to the user via sendMessage', async () => {
     createTask(makeTask({ id: 'task-stream' }));
 
-    mockRunContainerAgent.mockImplementation(
-      async (
-        _group: unknown,
-        _input: unknown,
-        _onProcess: unknown,
-        onOutput: (
-          o: import('./container-runner.js').ContainerOutput,
-        ) => Promise<void>,
-      ) => {
-        await onOutput({ status: 'success', result: 'streamed answer' });
-        return { status: 'success', result: 'streamed answer' };
-      },
-    );
+    const runTurn: RunTurnFn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'streamed answer' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'streamed answer' };
+    };
 
     const sendMessage = vi.fn(async () => {});
-    startSchedulerLoop(makeDeps({ sendMessage }));
+    startSchedulerLoop(makeDeps({ sendMessage, runTurn }));
     await vi.advanceTimersByTimeAsync(10);
 
     expect(sendMessage).toHaveBeenCalledWith('test@g.us', 'streamed answer');
@@ -332,36 +334,29 @@ describe('startSchedulerLoop execution path', () => {
   it('calls queue.notifyIdle on successful task run', async () => {
     createTask(makeTask({ id: 'task-idle' }));
 
-    mockRunContainerAgent.mockImplementation(
-      async (
-        _group: unknown,
-        _input: unknown,
-        _onProcess: unknown,
-        onOutput: (
-          o: import('./container-runner.js').ContainerOutput,
-        ) => Promise<void>,
-      ) => {
-        await onOutput({ status: 'success', result: null });
-        return { status: 'success', result: null };
-      },
-    );
+    const runTurn: RunTurnFn = async (_ctx, _session, sink) => {
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: null };
+    };
 
     const notifyIdle = vi.fn();
-    startSchedulerLoop(makeDeps({ notifyIdle }));
+    startSchedulerLoop(makeDeps({ notifyIdle, runTurn }));
     await vi.advanceTimersByTimeAsync(10);
 
     expect(notifyIdle).toHaveBeenCalledWith('test@g.us');
   });
 
-  // 5. runContainerAgent failure → logged with logTaskRun, task not re-enqueued
-  it('logs an error run when runContainerAgent throws', async () => {
+  // 5. backend.runTurn() failure → logged with logTaskRun
+  it('logs an error run when backend.runTurn throws', async () => {
     createTask(makeTask({ id: 'task-fail' }));
 
-    mockRunContainerAgent.mockRejectedValue(new Error('container exploded'));
+    const runTurn: RunTurnFn = async () => {
+      throw new Error('container exploded');
+    };
 
     const logTaskRunSpy = vi.spyOn(await import('./db.js'), 'logTaskRun');
 
-    startSchedulerLoop(makeDeps());
+    startSchedulerLoop(makeDeps({ runTurn }));
     await vi.advanceTimersByTimeAsync(10);
 
     expect(logTaskRunSpy).toHaveBeenCalledWith(
@@ -377,17 +372,18 @@ describe('startSchedulerLoop execution path', () => {
   it('calls updateTaskAfterRun with nextRun and result summary after run', async () => {
     createTask(makeTask({ id: 'task-update' }));
 
-    mockRunContainerAgent.mockResolvedValue({
-      status: 'success',
-      result: 'task output',
-    });
+    const runTurn: RunTurnFn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'task output' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'task output' };
+    };
 
     const updateTaskAfterRunSpy = vi.spyOn(
       await import('./db.js'),
       'updateTaskAfterRun',
     );
 
-    startSchedulerLoop(makeDeps());
+    startSchedulerLoop(makeDeps({ runTurn }));
     await vi.advanceTimersByTimeAsync(10);
 
     expect(updateTaskAfterRunSpy).toHaveBeenCalledWith(
@@ -424,47 +420,41 @@ describe('startSchedulerLoop execution path', () => {
     expect(enqueueTask).not.toHaveBeenCalled();
   });
 
-  // 9a. context_mode: 'isolated' — sessionId is undefined
-  it('passes undefined sessionId for isolated context tasks', async () => {
+  // 9a. context_mode: 'isolated' — session_id is empty string (no prior session)
+  it('passes empty session for isolated context tasks', async () => {
     createTask(makeTask({ id: 'task-isolated', context_mode: 'isolated' }));
 
-    mockRunContainerAgent.mockResolvedValue({
-      status: 'success',
-      result: null,
-    });
+    const capturedCtx: RunContext[] = [];
+    const capturedSession: BackendSessionRef[] = [];
+    const runTurn: RunTurnFn = async (ctx, session, sink) => {
+      capturedCtx.push(ctx);
+      capturedSession.push(session);
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: null };
+    };
 
-    startSchedulerLoop(makeDeps());
+    startSchedulerLoop(makeDeps({ runTurn }));
     await vi.advanceTimersByTimeAsync(10);
 
-    const [, input] = mockRunContainerAgent.mock.calls[0] as [
-      unknown,
-      import('./container-runner.js').ContainerInput,
-      unknown,
-      unknown,
-    ];
-    expect(input.sessionId).toBeUndefined();
+    expect(capturedSession[0].session_id).toBe('');
   });
 
-  // 9b. context_mode: 'group' — sessionId from sessions map
-  it('passes group sessionId for group context tasks', async () => {
+  // 9b. context_mode: 'group' — session from sessions map
+  it('passes group session for group context tasks', async () => {
     createTask(makeTask({ id: 'task-group', context_mode: 'group' }));
 
-    mockRunContainerAgent.mockResolvedValue({
-      status: 'success',
-      result: null,
-    });
+    const capturedSession: BackendSessionRef[] = [];
+    const runTurn: RunTurnFn = async (_ctx, session, sink) => {
+      capturedSession.push(session);
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: null };
+    };
 
     const sessions = { testgroup: 'session-abc-123' };
-    startSchedulerLoop(makeDeps({ sessions }));
+    startSchedulerLoop(makeDeps({ sessions, runTurn }));
     await vi.advanceTimersByTimeAsync(10);
 
-    const [, input] = mockRunContainerAgent.mock.calls[0] as [
-      unknown,
-      import('./container-runner.js').ContainerInput,
-      unknown,
-      unknown,
-    ];
-    expect(input.sessionId).toBe('session-abc-123');
+    expect(capturedSession[0].session_id).toBe('session-abc-123');
   });
 
   it('uses backend-specific group sessions for scheduled task overrides', async () => {
@@ -476,10 +466,12 @@ describe('startSchedulerLoop execution path', () => {
       }),
     );
 
-    mockRunContainerAgent.mockResolvedValue({
-      status: 'success',
-      result: null,
-    });
+    const capturedSession: BackendSessionRef[] = [];
+    const runTurn: RunTurnFn = async (_ctx, session, sink) => {
+      capturedSession.push(session);
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: null };
+    };
 
     const getSession: NonNullable<SchedulerDependencies['getSession']> = vi.fn(
       (): BackendSessionRef => ({
@@ -494,34 +486,32 @@ describe('startSchedulerLoop execution path', () => {
       } satisfies BackendSessionRef,
     };
 
-    startSchedulerLoop(makeDeps({ sessions, getSession }));
+    startSchedulerLoop(makeDeps({ sessions, getSession, runTurn }));
     await vi.advanceTimersByTimeAsync(10);
 
-    const [, input] = mockRunContainerAgent.mock.calls[0] as [
-      unknown,
-      import('./container-runner.js').ContainerInput,
-      unknown,
-      unknown,
-    ];
     expect(getSession).toHaveBeenCalledWith('testgroup', 'openai');
-    expect(input.backend).toBe('openai');
-    expect(input.sessionId).toBe('resp-session-123');
+    expect(capturedSession[0].backend).toBe('openai');
+    expect(capturedSession[0].session_id).toBe('resp-session-123');
   });
 
   it('stores new backend session refs produced by scheduled tasks', async () => {
     createTask(makeTask({ id: 'task-save-session', context_mode: 'group' }));
 
-    mockRunContainerAgent.mockResolvedValue({
-      status: 'success',
-      result: null,
-      newSessionRef: {
-        backend: 'claude',
-        session_id: 'claude-session-next',
-      },
-    });
+    const runTurn: RunTurnFn = async (_ctx, _session, sink) => {
+      await sink({
+        type: 'session',
+        sessionRef: { backend: 'claude', session_id: 'claude-session-next' },
+      });
+      await sink({ type: 'turn_complete' });
+      return {
+        status: 'success',
+        result: null,
+        sessionRef: { backend: 'claude', session_id: 'claude-session-next' },
+      };
+    };
 
     const setSession = vi.fn();
-    startSchedulerLoop(makeDeps({ setSession }));
+    startSchedulerLoop(makeDeps({ setSession, runTurn }));
     await vi.advanceTimersByTimeAsync(10);
 
     expect(setSession).toHaveBeenCalledWith('testgroup', {

@@ -73,6 +73,9 @@ export class ContainerBackend implements AgentBackend {
       if (output.status === 'error' && output.error) {
         await eventSink({ type: 'error', error: output.error });
       }
+      if (output.status === 'success') {
+        await eventSink({ type: 'turn_complete' });
+      }
     };
 
     const hasSession = sessionRef.session_id !== '';

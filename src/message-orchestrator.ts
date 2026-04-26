@@ -16,11 +16,14 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { defaultSessionRef } from './agent-backends/types.js';
+import {
+  defaultSessionRef,
+  type RunContext,
+  type RuntimeEventSink,
+} from './agent-backends/types.js';
 import type { BackendRegistry } from './agent-backends/registry.js';
 import {
-  ContainerOutput,
-  runContainerAgent,
+  type ContainerOutput,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -117,52 +120,53 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
       new Set(Object.keys(state.registeredGroups)),
     );
 
-    const wrappedOnOutput = onOutput
-      ? async (output: ContainerOutput) => {
-          if (output.newSessionId && output.status !== 'error') {
-            const nextSession =
-              output.newSessionRef ??
-              defaultSessionRef(output.newSessionId, backend);
-            state.setSession(group.folder, nextSession);
-            setSession(group.folder, nextSession);
-          }
-          await onOutput(output);
+    const runContext: RunContext = {
+      prompt,
+      groupFolder: group.folder,
+      chatJid,
+      isControlGroup,
+      ...(imageAttachments.length > 0 && { imageInputs: imageAttachments }),
+    };
+
+    const currentSessionRef = sessionRef ?? defaultSessionRef('', backend);
+
+    const eventSink: RuntimeEventSink = async (event) => {
+      if (event.type === 'session') {
+        state.setSession(group.folder, event.sessionRef);
+        setSession(group.folder, event.sessionRef);
+      }
+      if (onOutput) {
+        if (event.type === 'output_text') {
+          await onOutput({ status: 'success', result: event.text });
         }
-      : undefined;
+        if (event.type === 'turn_complete') {
+          await onOutput({ status: 'success', result: null });
+        }
+        if (event.type === 'error') {
+          await onOutput({
+            status: 'error',
+            result: null,
+            error: event.error,
+          });
+        }
+      }
+    };
 
     try {
-      const output = await runContainerAgent(
-        group,
-        {
-          prompt,
-          backend,
-          sessionId: sessionRef?.session_id,
-          sessionRef,
-          groupFolder: group.folder,
-          chatJid,
-          isControlGroup,
-          assistantName: ASSISTANT_NAME,
-          ...(imageAttachments.length > 0 && { imageAttachments }),
-        },
-        (proc, containerName) =>
-          queue.registerProcess(chatJid, proc, containerName, group.folder),
-        wrappedOnOutput,
+      const runResult = await resolvedBackend.runTurn(
+        runContext,
+        currentSessionRef,
+        eventSink,
       );
 
-      if (
-        (output.newSessionRef || output.newSessionId) &&
-        output.status !== 'error'
-      ) {
-        const nextSession =
-          output.newSessionRef ??
-          defaultSessionRef(output.newSessionId!, backend);
-        state.setSession(group.folder, nextSession);
-        setSession(group.folder, nextSession);
+      if (runResult.sessionRef) {
+        state.setSession(group.folder, runResult.sessionRef);
+        setSession(group.folder, runResult.sessionRef);
       }
 
-      if (output.status === 'error') {
+      if (runResult.status === 'error') {
         logger.error(
-          { group: group.name, error: output.error },
+          { group: group.name, error: runResult.error },
           'Container agent error',
         );
         return 'error';

@@ -70,6 +70,14 @@ At minimum, run TypeScript checks plus targeted backend/session/auth/container t
 
 Rollback is a single revert while `claude` remains the default. Existing legacy session rows still read as Claude sessions; rows created with `backend='openai'` are ignored when Claude is selected because sessions are backend-scoped.
 
+## OpenAI Adapter Scope Decision
+
+**Date:** 2026-04-26
+
+The OpenAI backend uses the Responses API (`POST /v1/responses`) rather than the OpenAI Agents SDK. This gives Deus full control over the tool-call loop, session compaction, and MCP bridging without depending on OpenAI's orchestration opinions.
+
+Handoffs, tracing, and other Agents SDK features are deferred as optional accelerators, not blockers. If adopted later, they would sit behind the existing `BackendCapabilities` flags (`handoffs: false` for OpenAI today).
+
 ## Implementation Notes
 
 - OpenAI/Codex tool calls route through `container/agent-runner/src/tool-broker.ts` for filesystem, shell, web, browser, Deus IPC, scheduling, and group registration.
