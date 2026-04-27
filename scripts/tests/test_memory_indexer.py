@@ -406,6 +406,27 @@ def test_cmd_learnings_surfaces_new_insights(mi, fresh_vault, capsys, tmp_path, 
     assert "Playwright" in output
 
 
+def test_cmd_learnings_groups_by_category(mi, fresh_vault, capsys, tmp_path, monkeypatch):
+    """cmd_learnings groups output by category with subheadings."""
+    monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")
+    from datetime import date, timedelta
+    today = date.today()
+    _create_atom(fresh_vault, "constraint-rule.md", "Always use feature branches",
+                 category="constraint", corroborations=2, confidence=0.80,
+                 created_at=str(today - timedelta(days=5)),
+                 updated_at=str(today - timedelta(days=1)))
+    _create_atom(fresh_vault, "fact-new.md", "Deus uses Apple Container",
+                 category="fact", corroborations=1, confidence=0.50,
+                 created_at=str(today - timedelta(days=2)),
+                 updated_at=str(today - timedelta(days=2)))
+
+    mi.cmd_learnings(since_days=7, max_items=5)
+    output = capsys.readouterr().out
+    assert "### Active Constraints" in output
+    assert "### Known Facts" in output
+    assert output.index("Active Constraints") < output.index("Known Facts")
+
+
 def test_cmd_learnings_delta_tracking(mi, fresh_vault, capsys, tmp_path, monkeypatch):
     """Second run skips atoms already shown in first run."""
     monkeypatch.setattr(mi, "LAST_RESUME_LEARNINGS", tmp_path / "last_learnings.txt")

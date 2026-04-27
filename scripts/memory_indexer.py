@@ -970,10 +970,24 @@ def cmd_learnings(since_days: int = 7, max_items: int = 3):
     selected = candidates[:max_items]
 
     lines = ["## What's Emerging"]
+    by_cat: dict[str, list[dict]] = {}
     for item in selected:
-        prefix = "Pattern confirmed" if item["is_strengthened"] else "New insight"
-        suffix = f" (seen across {item['corroborations']} sessions)" if item["corroborations"] >= 2 else ""
-        lines.append(f"- {prefix}: {item['body']}{suffix}")
+        by_cat.setdefault(item["category"], []).append(item)
+    for cat_key, (header, _framing) in CATEGORY_SECTIONS.items():
+        bucket = by_cat.pop(cat_key, None)
+        if not bucket:
+            continue
+        lines.append(f"### {header}")
+        for item in bucket:
+            prefix = "Pattern confirmed" if item["is_strengthened"] else "New insight"
+            suffix = f" (seen across {item['corroborations']} sessions)" if item["corroborations"] >= 2 else ""
+            lines.append(f"- {prefix}: {item['body']}{suffix}")
+    for cat_key, bucket in by_cat.items():
+        lines.append(f"### {cat_key.title()}")
+        for item in bucket:
+            prefix = "Pattern confirmed" if item["is_strengthened"] else "New insight"
+            suffix = f" (seen across {item['corroborations']} sessions)" if item["corroborations"] >= 2 else ""
+            lines.append(f"- {prefix}: {item['body']}{suffix}")
 
     print("\n".join(lines))
 
