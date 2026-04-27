@@ -20,7 +20,7 @@ The code bug could have been caught at PR time. The stale labels could have been
 
 ### 1. CI label validation (`--bench-labels`) in `--all`
 
-Every expected_path in the benchmark JSONL is checked against vault and auto-memory files on disk. Runs in CI as part of `drift_check.py --all`. No Ollama or embeddings needed -- pure filesystem check.
+Every expected_path in the benchmark JSONL is checked against vault and auto-memory files on disk. Runs in CI as part of `drift_check.py --all`. No Ollama or embeddings needed — pure filesystem check.
 
 **Why:** The dominant failure mode (7 of 12 misses) was stale labels. This is the cheapest possible check that catches the most common drift. Wired into `--all` so every PR gets it.
 

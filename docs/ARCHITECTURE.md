@@ -77,7 +77,7 @@ graph TB
     MT --> VEC
 ```
 
-Deus is a single Node.js process on the host. No microservices. Each conversation group runs in its own container with an isolated filesystem. The host never exposes API keys to containers -- all API calls route through a credential proxy.
+Deus is a single Node.js process on the host. No microservices. Each conversation group runs in its own container with an isolated filesystem. The host never exposes API keys to containers — all API calls route through a credential proxy.
 
 ---
 
@@ -114,10 +114,10 @@ sequenceDiagram
 ```
 
 Key details:
-- **Channels are MCP servers** -- each runs as a child process, communicating via JSON-RPC over stdio.
+- **Channels are MCP servers** — each runs as a child process, communicating via JSON-RPC over stdio.
 - **Message loop polls SQLite**, not the channels directly. This decouples channel connectivity from message processing.
 - **Group queue** enforces one container per group. Follow-up messages pipe to the active container via IPC files; they don't spawn a new one.
-- **Containers never see credentials** -- backend adapters use provider-specific proxy routes (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, etc.), and the host injects real tokens at request time.
+- **Containers never see credentials** — backend adapters use provider-specific proxy routes (`ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, etc.), and the host injects real tokens at request time.
 
 ---
 
@@ -165,7 +165,7 @@ graph LR
 All channels follow the **registry pattern**:
 1. Each factory module calls `registerChannel()` at import time (side-effect import from `src/channels/index.ts`).
 2. At startup, `src/index.ts` iterates registered factories, passes shared callbacks, and connects channels that return non-null.
-3. Factories return `null` when credentials are missing -- unconfigured channels are silently skipped.
+3. Factories return `null` when credentials are missing — unconfigured channels are silently skipped.
 4. Each channel server is a standalone `@deus-ai/*-mcp` package built on `@deus-ai/channel-core`, which registers common tools (`send_message`, `send_typing`, `sync_groups`, etc.).
 
 ---
@@ -233,7 +233,7 @@ graph TB
 
 ## Memory System
 
-Three layers handle memory at different cost points. `autoMemoryEnabled` is `false` in project settings -- no flat index is loaded per turn. The `memory-retrieval.sh` hook wraps `memory_tree.py query` and runs on every `UserPromptSubmit`.
+Three layers handle memory at different cost points. `autoMemoryEnabled` is `false` in project settings — no flat index is loaded per turn. The `memory-retrieval.sh` hook wraps `memory_tree.py query` and runs on every `UserPromptSubmit`.
 
 ```mermaid
 graph TB
@@ -282,9 +282,9 @@ graph TB
 
 | Layer | What | Token cost | Scales? |
 |-------|------|-----------|---------|
-| **Rules** | `.claude/rules/` -- guardrails, behavioral constraints | ~675T fixed | Bounded by curation |
-| **Hook** | `memory-retrieval.sh` wrapping `memory_tree.py query` -- semantic retrieval per prompt | 0-1000T on match (~63% of turns = 0T, measured over 357 prompts from hook telemetry) | Embedding-based, O(1) lookup |
-| **Vault** | CLAUDE.md, STATE.md -- project identity and state (always loaded because they define who Deus is; compressed automatically when they grow) | ~3,400T at session start | Auto-compressed |
+| **Rules** | `.claude/rules/` — guardrails, behavioral constraints | ~675T fixed | Bounded by curation |
+| **Hook** | `memory-retrieval.sh` wrapping `memory_tree.py query` — semantic retrieval per prompt | 0-1000T on match (~63% of turns = 0T, measured over 357 prompts from hook telemetry) | Embedding-based, O(1) lookup |
+| **Vault** | CLAUDE.md, STATE.md — project identity and state (always loaded because they define who Deus is; compressed automatically when they grow) | ~3,400T at session start | Auto-compressed |
 
 ### Tiered retrieval
 
@@ -299,11 +299,11 @@ graph TB
 
 On top of flat semantic search, memory notes form a tree rooted at `MEMORY_TREE.md`. Each note declares a parent and optional `see_also` cross-links. Retrieval walks from the root down the most relevant branches, then hops sideways via `see_also` to catch facts under a different topic than the query suggests.
 
-- **Cold-start recall** -- finds the right note on the first turn.
-- **Cross-branch discovery** -- surfaces facts the flat embedding wouldn't rank highly.
-- **Auto-discovery** -- new vault files are registered by a PostToolUse hook.
-- **Self-healing** -- `memory_tree.py check --auto-fix` repairs orphans and missing parents.
-- **Abstention** -- returns `abstained:true` instead of guessing, falling back to the persona index.
+- **Cold-start recall** — finds the right note on the first turn.
+- **Cross-branch discovery** — surfaces facts the flat embedding wouldn't rank highly.
+- **Auto-discovery** — new vault files are registered by a PostToolUse hook.
+- **Self-healing** — `memory_tree.py check --auto-fix` repairs orphans and missing parents.
+- **Abstention** — returns `abstained:true` instead of guessing, falling back to the persona index.
 
 Gated by `DEUS_MEMORY_TREE=1`. Embeddings use local `embeddinggemma` via Ollama.
 
@@ -311,11 +311,11 @@ Gated by `DEUS_MEMORY_TREE=1`. Embeddings use local `embeddinggemma` via Ollama.
 
 Inspired by [Karpathy's LLM Knowledge Bases](https://x.com/karpathy/status/2039805659525644595), enhanced with ideas from [Zep/Graphiti](https://github.com/getzep/graphiti) (temporal knowledge graphs) and [Synapse](https://arxiv.org/html/2601.02744v2) (spreading activation):
 
-1. **Raw storage** -- session logs in vault, embeddings in sqlite-vec, FTS5 full-text index
-2. **Atomic facts** -- extracted with confidence scoring, temporal versioning, domain tagging, contradiction detection
-3. **Semantic graph** -- entity-relationship extraction with bi-temporal validity
-4. **Compiled knowledge** -- auto-generated indexes, periodic compression (weekly/monthly digests)
-5. **Knowledge interface** -- intent-classified retrieval, spreading activation for cross-domain synthesis
+1. **Raw storage** — session logs in vault, embeddings in sqlite-vec, FTS5 full-text index
+2. **Atomic facts** — extracted with confidence scoring, temporal versioning, domain tagging, contradiction detection
+3. **Semantic graph** — entity-relationship extraction with bi-temporal validity
+4. **Compiled knowledge** — auto-generated indexes, periodic compression (weekly/monthly digests)
+5. **Knowledge interface** — intent-classified retrieval, spreading activation for cross-domain synthesis
 
 ### Retrieval benchmarks
 
@@ -375,14 +375,14 @@ graph TB
 
 ### Data flow
 
-1. **Interaction logging** -- every agent response is logged with prompt, response, latency, tools used, group, session ID, domain tags, and user signal.
-2. **Domain detection** (`src/domain-presets.ts`) -- keyword-based tagging (engineering, marketing, study, etc.) at zero API cost.
-3. **User signal detection** (`src/user-signal.ts`) -- short follow-ups like "perfect" or "wrong" are explicit feedback.
-4. **Judge scoring** -- a judge LLM scores each interaction on quality (0.0-1.0).
-5. **Reflexion** -- scores below 0.6 trigger corrective reflexion; scores above 0.85 extract positive patterns. New reflections are deduplicated via L2 distance.
-6. **Principles extraction** -- auto-triggered after enough new data. Extracts 3-5 actionable per-domain principles.
-7. **DSPy optimization** -- once 20+ scored samples accumulate, DSPy tunes the system prompt per domain. Positive-signal interactions get 2x weight.
-8. **`times_helpful` tracking** -- each time a reflection is retrieved and used, its counter increments, surfacing the most useful reflections.
+1. **Interaction logging** — every agent response is logged with prompt, response, latency, tools used, group, session ID, domain tags, and user signal.
+2. **Domain detection** (`src/domain-presets.ts`) — keyword-based tagging (engineering, marketing, study, etc.) at zero API cost.
+3. **User signal detection** (`src/user-signal.ts`) — short follow-ups like "perfect" or "wrong" are explicit feedback.
+4. **Judge scoring** — a judge LLM scores each interaction on quality (0.0-1.0).
+5. **Reflexion** — scores below 0.6 trigger corrective reflexion; scores above 0.85 extract positive patterns. New reflections are deduplicated via L2 distance.
+6. **Principles extraction** — auto-triggered after enough new data. Extracts 3-5 actionable per-domain principles.
+7. **DSPy optimization** — once 20+ scored samples accumulate, DSPy tunes the system prompt per domain. Positive-signal interactions get 2x weight.
+8. **`times_helpful` tracking** — each time a reflection is retrieved and used, its counter increments, surfacing the most useful reflections.
 
 ### Provider/registry pattern
 
@@ -430,13 +430,13 @@ graph TB
     IPC_AUTH -->|authorize| HOST
 ```
 
-- **Container isolation** -- every agent runs in a Linux container. Non-root `node` user. `.env` shadowed with `/dev/null`.
-- **Credential proxy** -- containers route API calls through `localhost:3001`. The proxy injects real credentials so containers never see them. On Linux, binds to `docker0` bridge IP (not `0.0.0.0`).
-- **Mount security** -- additional mounts validated against an allowlist at `~/.config/deus/mount-allowlist.json` (outside project root, inaccessible to containers). Blocked patterns: `.ssh`, `.gnupg`, `.aws`, `.env`, credentials, private keys.
-- **IPC authorization** -- main group can send to any registered group. Non-main groups restricted to their own chat JID.
-- **Per-channel privacy** -- each channel can be configured with its own memory privacy allowlist via `/settings memory_privacy=public,internal,private`. Sensitive data is excluded by default.
-- **Sender allowlist** -- per-group sender filtering with allow/drop modes.
-- **Message size limits** -- inbound truncated at `MAX_MESSAGE_LENGTH` (default 50,000 chars).
+- **Container isolation** — every agent runs in a Linux container. Non-root `node` user. `.env` shadowed with `/dev/null`.
+- **Credential proxy** — containers route API calls through `localhost:3001`. The proxy injects real credentials so containers never see them. On Linux, binds to `docker0` bridge IP (not `0.0.0.0`).
+- **Mount security** — additional mounts validated against an allowlist at `~/.config/deus/mount-allowlist.json` (outside project root, inaccessible to containers). Blocked patterns: `.ssh`, `.gnupg`, `.aws`, `.env`, credentials, private keys.
+- **IPC authorization** — main group can send to any registered group. Non-main groups restricted to their own chat JID.
+- **Per-channel privacy** — each channel can be configured with its own memory privacy allowlist via `/settings memory_privacy=public,internal,private`. Sensitive data is excluded by default.
+- **Sender allowlist** — per-group sender filtering with allow/drop modes.
+- **Message size limits** — inbound truncated at `MAX_MESSAGE_LENGTH` (default 50,000 chars).
 
 ---
 

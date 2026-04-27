@@ -37,7 +37,7 @@ Each model at its optimal threshold configuration (abstain + gap + low):
 
 **embeddinggemma:** In-domain 0.34-0.66, OOD 0.25-0.39. Clean separation at 0.30 threshold. Gap between worst hit and best OOD: ~0.05.
 
-**nomic-embed-text:** In-domain 0.50-0.78, OOD 0.50-0.64. Heavy overlap -- "How to train a neural network" (OOD) scores 0.636, higher than several in-domain hits. No threshold can separate them without sacrificing 4/6 OOD queries.
+**nomic-embed-text:** In-domain 0.50-0.78, OOD 0.50-0.64. Heavy overlap — "How to train a neural network" (OOD) scores 0.636, higher than several in-domain hits. No threshold can separate them without sacrificing 4/6 OOD queries.
 
 **gemini-embedding-2:** In-domain 0.54-0.73, OOD 0.45-0.53. Clean separation at 0.54. Perfect recall + perfect OOD, but requires API call per query (~1500 RPD free tier).
 
@@ -54,5 +54,5 @@ Each model at its optimal threshold configuration (abstain + gap + low):
 - `OLLAMA_EMBED_MODEL` defaults to `embeddinggemma` in `evolution/providers/embeddings.py`
 - `EMBEDDING_PROVIDER` defaults to `ollama` in `~/.claude/settings.json`
 - Threshold defaults in `memory_tree.py` are calibrated per provider (Ollama vs Gemini)
-- The 3 remaining recall misses (phone/submissions, career goal, current courses) are at the embedding quality ceiling -- they require better OOD-separable embeddings or a fundamentally different retrieval approach
+- The 3 remaining recall misses (phone/submissions, career goal, current courses) are at the embedding quality ceiling — they require better OOD-separable embeddings or a fundamentally different retrieval approach
 - nomic-embed-text remains installed locally for future re-evaluation if its OOD behavior improves in newer versions

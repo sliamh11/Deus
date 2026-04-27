@@ -46,9 +46,9 @@ Remove `DEUS_AGENT_BACKEND` from `.env` (or set it to `claude`) and restart.
 
 When Deus decides which backend to use for a message or task:
 
-1. **Task override** -- if a scheduled task has `agent_backend` set, use that
-2. **Group override** -- if the group has `containerConfig.agentBackend` set, use that
-3. **Global default** -- `DEUS_AGENT_BACKEND` env var (default: `claude`)
+1. **Task override** — if a scheduled task has `agent_backend` set, use that
+2. **Group override** — if the group has `containerConfig.agentBackend` set, use that
+3. **Global default** — `DEUS_AGENT_BACKEND` env var (default: `claude`)
 
 ## What Stays the Same
 
@@ -107,10 +107,10 @@ Changes persist to `~/.config/deus/config.json` (user preferences) and `.env` (s
 
 The backend is resolved in this order (first non-empty wins):
 
-1. **Per-session prefix** -- `deus codex` / `deus claude` (env vars for this process)
-2. **Environment variable** -- `DEUS_AGENT_BACKEND` in `.env` or shell
-3. **User config** -- `agent_backend` in `~/.config/deus/config.json` (set via `deus backend set`)
-4. **Default** -- `claude`
+1. **Per-session prefix** — `deus codex` / `deus claude` (env vars for this process)
+2. **Environment variable** — `DEUS_AGENT_BACKEND` in `.env` or shell
+3. **User config** — `agent_backend` in `~/.config/deus/config.json` (set via `deus backend set`)
+4. **Default** — `claude`
 
 `deus backend set` writes to both config.json and `.env` so both the CLI and background service pick up the change.
 
