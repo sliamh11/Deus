@@ -114,18 +114,25 @@ No other framework in this comparison ships with built-in behavioral testing for
 
 ## Token Efficiency
 
-Deus adds ~920 tokens at session start compared to vanilla Claude Code. Most features - isolation, self-improvement, testing - run in the background at zero token cost. The only per-turn cost is memory recall: 0-500 tokens when past conversations match the current query (most turns hit zero).
+Deus uses a three-layer memory architecture that keeps per-turn overhead near zero:
+
+1. **Rules** (~675 tokens, always loaded) - guardrails and behavioral rules via `.claude/rules/`
+2. **Hook retrieval** (0-1000 tokens, on match only) - semantic search retrieves relevant memories per prompt. ~63% of turns cost zero (measured over 357 prompts from hook telemetry).
+3. **Background** (0 tokens) - isolation, self-improvement, testing all run off the critical path
+
+`autoMemoryEnabled` is set to `false` in project settings. Memory files stay on disk and are retrieved on demand by the hook using local Ollama embeddings. No flat index is loaded per turn.
 
 | Feature | What it does | Token cost |
 |---------|-------------|-----------|
-| Identity | Knows your name, tone, formatting preferences per channel | +960 at session start |
-| Memory recall | Retrieves relevant past conversations | 0-500 per turn, on match only |
+| Rules | Guardrails and behavioral constraints | ~675 always loaded |
+| Memory recall | Retrieves relevant past context via semantic search | 0-1000 per turn, on match only |
+| Identity | Knows your name, tone, preferences per channel | Part of vault files at session start |
 | Self-improvement | Scores responses, generates lessons, rewrites prompts | **0** - runs in the background |
 | Container isolation | Separate environment per conversation | **0** - runs on the host |
 | Testing | Accuracy, tool use, and safety validation | **0** - runs in CI only |
 | Skills | `/compress`, `/resume`, and other commands | **0** - loaded on demand |
 
-For detailed token accounting (tool filtering, context injection breakdowns), see [Architecture - Token Budget](ARCHITECTURE.md).
+For detailed token accounting, see [Architecture - Memory System](ARCHITECTURE.md#memory-system).
 
 ---
 

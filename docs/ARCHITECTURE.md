@@ -233,54 +233,67 @@ graph TB
 
 ## Memory System
 
+Three layers handle memory at different cost points. `autoMemoryEnabled` is `false` in project settings -- no flat index is loaded per turn. The `memory-retrieval.sh` hook wraps `memory_tree.py query` and runs on every `UserPromptSubmit`.
+
 ```mermaid
 graph TB
-    subgraph Input
-        SESS[Session Logs · Markdown]
-        STOP[Stop Hook · auto-checkpoint]
-        COMP["/compress · save + index"]
+    subgraph "Always Loaded (~675T)"
+        RULES[".claude/rules/<br/>Guardrails + behavioral rules"]
+    end
+
+    subgraph "On-Demand (0-1000T, hook)"
+        HOOK["memory-retrieval.sh<br/>calls memory_tree.py query"]
     end
 
     subgraph Storage
         SQLVEC[(sqlite-vec<br/>embeddings + FTS5)]
         VAULT[Vault Directory]
         ATOMS[Atomic Facts]
+        MEMFILES["Memory files on disk<br/>MEMORY.md index for reference"]
     end
 
-    subgraph Retrieval
-        WARM["Warm Tier<br/>Last N sessions · free"]
-        COLD["Cold Tier<br/>Semantic search + recency boost"]
-        TREE["Memory Tree<br/>Hierarchical walk + see_also hops"]
+    subgraph "Session Start"
+        WARM["Warm Tier<br/>Last N sessions"]
+        COLD["Cold Tier<br/>Semantic + recency"]
     end
 
     subgraph Models
-        GEMMA[embeddinggemma via Ollama]
+        OLLAMA[embeddinggemma via Ollama]
+        GEMINI[Gemini embedding API]
     end
 
-    SESS --> VAULT
-    STOP -->|no LLM calls| VAULT
-    COMP --> VAULT
+    HOOK -->|per prompt| SQLVEC
+    MEMFILES -.->|indexed into| SQLVEC
+    OLLAMA -->|768d vectors for tree| SQLVEC
+    GEMINI -->|768d vectors for indexer| SQLVEC
+
     VAULT -->|memory_indexer.py --add| SQLVEC
     VAULT -->|--extract| ATOMS
     ATOMS --> SQLVEC
-    GEMMA -->|768d vectors| SQLVEC
 
     SQLVEC --> WARM
     SQLVEC --> COLD
-    SQLVEC --> TREE
 
     RES["/resume"] -->|--recent N| WARM
     RES -->|--query + --recency-boost| COLD
-    TREE -->|query via memory_tree.py| SQLVEC
 ```
+
+### Enforcement layers
+
+| Layer | What | Token cost | Scales? |
+|-------|------|-----------|---------|
+| **Rules** | `.claude/rules/` -- guardrails, behavioral constraints | ~675T fixed | Bounded by curation |
+| **Hook** | `memory-retrieval.sh` wrapping `memory_tree.py query` -- semantic retrieval per prompt | 0-1000T on match (~63% of turns = 0T, measured over 357 prompts from hook telemetry) | Embedding-based, O(1) lookup |
+| **Vault** | CLAUDE.md, STATE.md -- project identity and state (always loaded because they define who Deus is; compressed automatically when they grow) | ~3,400T at session start | Auto-compressed |
 
 ### Tiered retrieval
 
 | Tier | Mechanism | Cost | When |
 |------|-----------|------|------|
 | **Warm** | Last N sessions by date (`--recent N`) | Free | Every `/resume` |
-| **Cold** | Semantic search with recency re-ranking | One Gemini embedding call | Every `/resume` |
-| **Tree** | Hierarchical walk from `MEMORY_TREE.md` root + `see_also` hops | Local Ollama embedding | Cold-start, cross-branch queries |
+| **Cold** | Semantic search with recency re-ranking (`memory_indexer.py`) | One Gemini embedding call | Every `/resume` |
+| **Tree** | Hierarchical walk from `MEMORY_TREE.md` root + `see_also` hops (`memory_tree.py`) | Local Ollama embedding | Cold-start, cross-branch queries |
+| **Hook** | `memory_tree.py query` via `UserPromptSubmit` hook | Local Ollama embedding | Every prompt (abstains if no match) |
 
 ### Memory tree
 

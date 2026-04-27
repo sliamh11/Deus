@@ -97,6 +97,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 - **Memory tree**: Hierarchical retrieval from `MEMORY_TREE.md` root with `see_also` cross-links; handles cold-start recall and cross-branch discovery
 - **Atomic facts**: Session logs decomposed into discrete facts with entity-relationship graphs and contradiction detection
 - **3-tier retrieval**: Warm (recent sessions by date, free), Cold (semantic search, one embedding call), Tree (hierarchical walk, local Ollama embeddings)
+- **Enforcement layers**: Rules in `.claude/rules/` (always loaded, ~675 tokens); context memories retrieved on-demand by a `UserPromptSubmit` hook using local embeddings (0 cost on 63% of turns); `autoMemoryEnabled` is `false` so no flat index is loaded per turn
 
 ### Session Management
 - Each group maintains a conversation session (via Claude Agent SDK)
