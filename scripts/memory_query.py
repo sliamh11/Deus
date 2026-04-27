@@ -1,24 +1,11 @@
 #!/usr/bin/env python3
 """memory_query.py — reusable memory retrieval for all Deus interfaces.
 
-Wraps memory_tree.retrieve() with file-reading, context formatting, and
-unified logging. Designed as the shared foundation for MCP server (Phase 2),
-HTTP bridge (Phase 3), container hooks (Phase 4/5), and Aider wrapper (Phase 6).
-
-Platform: Linux/macOS only (depends on sqlite_vec C extension + Ollama).
-Fails fast on Windows with a clear error rather than an opaque import failure.
+Platform: Linux/macOS only (sqlite_vec + Ollama). Fails fast on Windows.
 
 Log schema: appends to ~/.deus/memory_retrieval_log.jsonl with a `source` field.
-Existing host-hook entries (pre-Phase 1) lack this field; per-interface analytics
-cover only entries written by this module until the hook is updated separately.
-
-Usage:
-    # As a module
-    from memory_query import recall
-    result = recall("what is Liam's timezone?", source="mcp")
-
-    # As CLI
-    python3 scripts/memory_query.py "query text" --source bridge -k 3
+Existing host-hook entries lack this field; per-interface analytics cover only
+entries written by this module until the hook is updated separately.
 """
 from __future__ import annotations
 
@@ -47,15 +34,11 @@ LOG_FILE = Path(os.environ.get(
 
 AUTO_MEM_DIR = Path(os.environ.get(
     mt.EXTERNAL_DIR_ENV,
-    os.environ.get(
-        "DEUS_AUTO_MEMORY_DIR",
-        "~/.claude/projects/-Users-liam10play-deus/memory",
-    ),
+    "~/.deus/auto-memory",
 )).expanduser()
 
 
 def _read_node_file(path: str) -> str | None:
-    """Resolve a tree node path to file content, mirroring the host hook logic."""
     if path.startswith(mt.EXTERNAL_NAMESPACE):
         filename = path[len(mt.EXTERNAL_NAMESPACE):]
         full = AUTO_MEM_DIR / filename
@@ -69,7 +52,6 @@ def _read_node_file(path: str) -> str | None:
 
 
 def _format_context(results: list[dict], fell_back: bool) -> str:
-    """Build the context string matching the host hook output format."""
     if fell_back or not results:
         return ""
     lines = ["=== Auto-retrieved memory (may not be relevant to your task) ==="]
@@ -87,7 +69,6 @@ def _log_retrieval(
     result: dict,
     source: str,
 ) -> None:
-    """Append to the unified retrieval log (same file as host hook)."""
     prompt_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
     entry = {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
