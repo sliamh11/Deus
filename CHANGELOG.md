@@ -4,6 +4,43 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.10.0](https://github.com/sliamh11/Deus/compare/v1.9.0...v1.10.0) (2026-04-27)
+
+
+### Features
+
+* **auth:** add Codex OAuth support for OpenAI backend ([#258](https://github.com/sliamh11/Deus/issues/258)) ([b87f043](https://github.com/sliamh11/Deus/commit/b87f043126387a2a8d2d981abf76680978ad03b0))
+* backend-neutral agent runtime with registry and multi-backend docs ([#246](https://github.com/sliamh11/Deus/issues/246)) ([1d0ede7](https://github.com/sliamh11/Deus/commit/1d0ede76c28bfe8e606a30404e8c30f60245d0fb))
+* **backends:** wire runTurn() dispatch and close AAG debt register ([#256](https://github.com/sliamh11/Deus/issues/256)) ([6527d37](https://github.com/sliamh11/Deus/commit/6527d3758746949561f474325f03bd62e389c830))
+* **channels:** add image vision across all MCP channels ([#261](https://github.com/sliamh11/Deus/issues/261)) ([8bbbc4f](https://github.com/sliamh11/Deus/commit/8bbbc4fa5889742e81947321312a33689513cb5b))
+* **eval:** backend parity testing across Claude and OpenAI/Codex ([#253](https://github.com/sliamh11/Deus/issues/253)) ([b3764fb](https://github.com/sliamh11/Deus/commit/b3764fbc345863cbb394fbc62c1d6a994c33fac6))
+* **gcal:** add /add-gcal skill, CLI commands, and token keep-alive ([6153f88](https://github.com/sliamh11/Deus/commit/6153f88c138c187cc06edbca64e5bf1fd6c493e1))
+* make wardens backend-neutral via agent sync script ([edf651b](https://github.com/sliamh11/Deus/commit/edf651bd360b455d389a68141fd89b3eeeb195e3))
+* **memory-tree:** add FTS5 hybrid retrieval with BM25 + RRF fusion ([#245](https://github.com/sliamh11/Deus/issues/245)) ([87a8f60](https://github.com/sliamh11/Deus/commit/87a8f60db28fe2de72e0234b5bdc8fe35b03496a))
+* **memory-tree:** add reindex-external for auto-memory population ([#244](https://github.com/sliamh11/Deus/issues/244)) ([5616b5a](https://github.com/sliamh11/Deus/commit/5616b5a8eb8c3f4605967696fe06886b592a8d80))
+* **memory:** category-aware atom injection ([#264](https://github.com/sliamh11/Deus/issues/264)) ([d921b40](https://github.com/sliamh11/Deus/commit/d921b4076e87e72c6780a093125b6546b8147d79))
+* **memory:** scalable 3-layer memory architecture (Lighthouse Phase 6) ([#262](https://github.com/sliamh11/Deus/issues/262)) ([93aa9a7](https://github.com/sliamh11/Deus/commit/93aa9a7bcc0015b9b8a73cef485db9633da0a17d))
+* **security:** add shared-secret auth to credential proxy ([#254](https://github.com/sliamh11/Deus/issues/254)) ([cf1bd18](https://github.com/sliamh11/Deus/commit/cf1bd184d4ac7f9eaaf19b1f0485ea2957e4cd8b))
+* **skills:** add /add-codex interactive skill for guided backend setup ([#252](https://github.com/sliamh11/Deus/issues/252)) ([a2d876c](https://github.com/sliamh11/Deus/commit/a2d876c8f085321b2cb6445f1c5c74badd1a3e9a))
+* **skills:** add optional llama.cpp skill ([941735c](https://github.com/sliamh11/Deus/commit/941735cc7b314c2b56c0ddba9d2643d02d8f73e6))
+* **wardens:** add session-retrospective warden ([d6effa1](https://github.com/sliamh11/Deus/commit/d6effa15d9a8962b72f1b4548784c5aef94680d2))
+* **wardens:** add threat-modeler and architecture-snapshot wardens ([aeaf85a](https://github.com/sliamh11/Deus/commit/aeaf85a2090b507f286c7af441ad1702e684509c))
+
+
+### Bug Fixes
+
+* **build:** include MCP packages in npm run build ([5192b1b](https://github.com/sliamh11/Deus/commit/5192b1b49ca3b667315243dc43d2007bccfd1423))
+* **ci:** add docs/ pattern to resolve drift check coverage gap ([a1a3621](https://github.com/sliamh11/Deus/commit/a1a36210512b43f69c0e027656bf8c836430f404))
+* **container:** exclude test files from agent-runner build ([1a0a984](https://github.com/sliamh11/Deus/commit/1a0a984d37b8258aad5688b3372314f4d264c97f))
+* **docs:** escape parentheses in Channel System Mermaid diagram ([6293911](https://github.com/sliamh11/Deus/commit/62939112dffd6fce7324756cbc4269732e61935a))
+* **docs:** replace double dashes with single dashes in README ([3c6eb0c](https://github.com/sliamh11/Deus/commit/3c6eb0c26a1aa55c0fc81c7cae8afafd8d058aba))
+* **memory-tree:** check embedding existence in reindex_external ([#249](https://github.com/sliamh11/Deus/issues/249)) ([c14d668](https://github.com/sliamh11/Deus/commit/c14d66846c76dd903fad0f507379c7db5eb30977))
+* **memory-tree:** fix recall regression + recalibrate benchmark ([#248](https://github.com/sliamh11/Deus/issues/248)) ([4cf6da9](https://github.com/sliamh11/Deus/commit/4cf6da92178cf4770c3da9ece3cab2b7c761a256))
+* startup instruction skips catch-up when user provides explicit directive ([40b8761](https://github.com/sliamh11/Deus/commit/40b8761364ebc9e045d9c082af2c0d26ca1cc6bc))
+* **tests:** resolve 4 pre-existing script test failures ([#255](https://github.com/sliamh11/Deus/issues/255)) ([030fc5b](https://github.com/sliamh11/Deus/commit/030fc5b52b0f2590ad97757d0fa0ba3278ad5453))
+* warden audit — false-green bench, portable sed, cross-platform guards ([4312497](https://github.com/sliamh11/Deus/commit/43124978fed3ad8fcbf8c9c8d2b399c4b3d955e8))
+* **wardens:** add Mermaid entity rule and document agent discovery ([5c1682d](https://github.com/sliamh11/Deus/commit/5c1682dff30b91fd607ec20291ef72efe7f638c1))
+
 ## [1.9.0](https://github.com/sliamh11/Deus/compare/v1.8.0...v1.9.0) (2026-04-20)
 
 
