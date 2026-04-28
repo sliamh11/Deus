@@ -9,6 +9,7 @@ Usage:
     python evolution/cli.py reflect <interaction_id>
     python evolution/cli.py dismiss_review_finding <json>
     python evolution/cli.py optimize [--module qa|tool_selection|summarization|all]
+    python evolution/cli.py optimize-params [--trials 200] [--provider ollama|gemini|auto]
     python evolution/cli.py serve
 """
 import argparse
@@ -509,6 +510,14 @@ def main() -> None:
     p_dismiss = sub.add_parser("dismiss_review_finding", help="Create reflection from dismissed code review finding")
     p_dismiss.add_argument("json_str", help='JSON: {"finding": "...", "category": "...", "reason": "...", ...}')
 
+    # optimize-params
+    p_optparams = sub.add_parser("optimize-params", help="Optimize memory retrieval thresholds")
+    p_optparams.add_argument("--trials", type=int, default=200, help="Number of random trials (default: 200)")
+    p_optparams.add_argument("--provider", choices=["ollama", "gemini", "auto"], default="auto",
+                             help="Embedding provider (default: auto-detect)")
+    p_optparams.add_argument("--db", help="Path to memory_tree.db (default: ~/.deus/memory_tree.db)")
+    p_optparams.add_argument("--force", action="store_true", help="Save artifact even if score regressed")
+
     # serve
     sub.add_parser("serve", help="Start MCP stdio server")
 
@@ -556,6 +565,15 @@ def main() -> None:
         cmd_archive_reflections(days=args.days, dry_run=args.dry_run)
     elif args.cmd == "dismiss_review_finding":
         cmd_dismiss_review_finding(args.json_str)
+    elif args.cmd == "optimize-params":
+        from .optimizer.param_optimizer import optimize_and_save
+        provider = args.provider if args.provider != "auto" else None
+        aid = optimize_and_save(
+            db_path=args.db, trials=args.trials, provider=provider,
+            force=args.force,
+        )
+        if not aid:
+            sys.exit(1)
     elif args.cmd == "serve":
         cmd_serve()
     elif args.cmd == "backfill":
