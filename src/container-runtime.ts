@@ -2,7 +2,7 @@
  * Container runtime abstraction for Deus.
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
-import { execFileSync, execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 import { logger } from './logger.js';
 import { detectProxyBindHost, hostGatewayArgs } from './platform.js';
@@ -17,8 +17,19 @@ export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
  * Address the credential proxy binds to.
  * Delegates to platform.ts for OS-aware detection.
  */
-export const PROXY_BIND_HOST =
-  process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
+const rawProxyHost = process.env.CREDENTIAL_PROXY_HOST;
+if (
+  rawProxyHost &&
+  ['0.0.0.0', '::'].includes(rawProxyHost) &&
+  process.env.CREDENTIAL_PROXY_HOST_UNSAFE !== '1'
+) {
+  throw new Error(
+    `CREDENTIAL_PROXY_HOST=${rawProxyHost} exposes the credential proxy to the network. ` +
+      'Any host on your LAN could use your API credentials. ' +
+      'If this is intentional, set CREDENTIAL_PROXY_HOST_UNSAFE=1.',
+  );
+}
+export const PROXY_BIND_HOST = rawProxyHost || detectProxyBindHost();
 
 // Re-export hostGatewayArgs so existing importers don't break.
 export { hostGatewayArgs };
@@ -42,7 +53,7 @@ export function stopContainerSync(name: string): void {
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
   try {
-    execSync(`${CONTAINER_RUNTIME_BIN} info`, {
+    execFileSync(CONTAINER_RUNTIME_BIN, ['info'], {
       stdio: 'pipe',
       timeout: 10000,
     });
@@ -62,10 +73,9 @@ export function ensureContainerRuntimeRunning(): void {
 /** Kill orphaned Deus containers from previous runs. */
 export function cleanupOrphans(): void {
   try {
-    // No shell quoting around the Go template: single quotes don't work on
-    // Windows cmd.exe and are unnecessary here since there are no spaces.
-    const output = execSync(
-      `${CONTAINER_RUNTIME_BIN} ps --filter name=deus- --format {{.Names}}`,
+    const output = execFileSync(
+      CONTAINER_RUNTIME_BIN,
+      ['ps', '--filter', 'name=deus-', '--format', '{{.Names}}'],
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
     const orphans = output.trim().split('\n').filter(Boolean);

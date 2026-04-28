@@ -26,6 +26,10 @@ import {
 } from './config.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+
+function redactContainerArgs(args: string[]): string {
+  return args.join(' ').replaceAll(DEUS_PROXY_TOKEN, '[REDACTED]');
+}
 import {
   CONTAINER_HOST_GATEWAY,
   CONTAINER_RUNTIME_BIN,
@@ -213,7 +217,7 @@ export async function runContainerAgent(
         (m) =>
           `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
       ),
-      containerArgs: containerArgs.join(' '),
+      containerArgs: redactContainerArgs(containerArgs),
     },
     'Container mount configuration',
   );
@@ -460,7 +464,7 @@ export async function runContainerAgent(
         }
         logLines.push(
           `=== Container Args ===`,
-          containerArgs.join(' '),
+          redactContainerArgs(containerArgs),
           ``,
           `=== Mounts ===`,
           mounts

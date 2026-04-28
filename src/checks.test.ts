@@ -31,12 +31,12 @@ vi.mock('child_process', async () => {
     await vi.importActual<typeof import('child_process')>('child_process');
   return {
     ...actual,
-    execSync: vi.fn(() => '0\n'),
+    execFileSync: vi.fn(() => Buffer.from('0\n')),
   };
 });
 
 import fs from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { readEnvFile } from './env.js';
 import {
   hasApiCredentials,
@@ -52,13 +52,13 @@ import {
 const mockReadEnvFile = vi.mocked(readEnvFile);
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
-const mockExecSync = vi.mocked(execSync);
+const mockExecFileSync = vi.mocked(execFileSync);
 
 beforeEach(() => {
   vi.resetAllMocks();
   mockExistsSync.mockReturnValue(false);
   mockReadFileSync.mockReturnValue('{}');
-  mockExecSync.mockReturnValue(Buffer.from('0\n'));
+  mockExecFileSync.mockReturnValue(Buffer.from('0\n'));
   mockReadEnvFile.mockReturnValue({});
   // Clear process.env of credential vars
   delete process.env.ANTHROPIC_API_KEY;
@@ -210,40 +210,47 @@ describe('hasMemoryVault', () => {
 
 describe('hasPythonDeps', () => {
   it('returns ok=true when all deps are present', () => {
-    mockExecSync.mockReturnValue(Buffer.from(''));
+    mockExecFileSync.mockReturnValue(Buffer.from(''));
     const result = hasPythonDeps();
     expect(result.ok).toBe(true);
     expect(result.missing).toHaveLength(0);
   });
 
   it('returns ok=false with python3 missing when both python3 and python are absent', () => {
-    mockExecSync.mockImplementation((cmd: string) => {
-      // Both python3 and python unavailable (Windows without Python in PATH)
-      if (String(cmd).includes('--version')) {
-        throw new Error('not found');
-      }
-      return Buffer.from('');
-    });
+    mockExecFileSync.mockImplementation(
+      (cmd: string, args?: readonly string[]) => {
+        if (args && args.includes('--version')) {
+          throw new Error('not found');
+        }
+        return Buffer.from('');
+      },
+    );
     const result = hasPythonDeps();
     expect(result.ok).toBe(false);
     expect(result.missing).toContain('python3');
   });
 
   it('returns ok=false with sqlite-vec missing', () => {
-    mockExecSync.mockImplementation((cmd: string) => {
-      if (String(cmd).includes('sqlite_vec')) throw new Error('not found');
-      return Buffer.from('');
-    });
+    mockExecFileSync.mockImplementation(
+      (cmd: string, args?: readonly string[]) => {
+        if (args && args.some((a: string) => a.includes('sqlite_vec')))
+          throw new Error('not found');
+        return Buffer.from('');
+      },
+    );
     const result = hasPythonDeps();
     expect(result.ok).toBe(false);
     expect(result.missing).toContain('sqlite-vec');
   });
 
   it('returns ok=false with google-genai missing', () => {
-    mockExecSync.mockImplementation((cmd: string) => {
-      if (String(cmd).includes('google')) throw new Error('not found');
-      return Buffer.from('');
-    });
+    mockExecFileSync.mockImplementation(
+      (cmd: string, args?: readonly string[]) => {
+        if (args && args.some((a: string) => a.includes('google')))
+          throw new Error('not found');
+        return Buffer.from('');
+      },
+    );
     const result = hasPythonDeps();
     expect(result.ok).toBe(false);
     expect(result.missing).toContain('google-genai');
@@ -300,7 +307,7 @@ describe('countRegisteredGroups', () => {
 
   it('returns 0 when node subprocess fails', () => {
     mockExistsSync.mockReturnValue(true);
-    mockExecSync.mockImplementation(() => {
+    mockExecFileSync.mockImplementation(() => {
       throw new Error('better-sqlite3 not found');
     });
     expect(countRegisteredGroups()).toBe(0);
@@ -309,7 +316,7 @@ describe('countRegisteredGroups', () => {
   it('parses count from node subprocess output', () => {
     mockExistsSync.mockReturnValue(true);
     // The source spawns node -e with better-sqlite3 and prints the count
-    mockExecSync.mockReturnValue('3\n' as unknown as string);
+    mockExecFileSync.mockReturnValue('3\n' as unknown as string);
     expect(countRegisteredGroups()).toBe(3);
   });
 });

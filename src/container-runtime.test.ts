@@ -55,22 +55,22 @@ describe('stopContainerSync', () => {
 
 describe('ensureContainerRuntimeRunning', () => {
   it('does nothing when runtime is already running', () => {
-    mockExecSync.mockReturnValueOnce('');
+    mockExecFileSync.mockReturnValueOnce('');
 
     ensureContainerRuntimeRunning();
 
-    expect(mockExecSync).toHaveBeenCalledTimes(1);
-    expect(mockExecSync).toHaveBeenCalledWith(`${CONTAINER_RUNTIME_BIN} info`, {
-      stdio: 'pipe',
-      timeout: 10000,
-    });
+    expect(mockExecFileSync).toHaveBeenCalledWith(
+      CONTAINER_RUNTIME_BIN,
+      ['info'],
+      { stdio: 'pipe', timeout: 10000 },
+    );
     expect(logger.debug).toHaveBeenCalledWith(
       'Container runtime already running',
     );
   });
 
   it('throws when docker info fails', () => {
-    mockExecSync.mockImplementationOnce(() => {
+    mockExecFileSync.mockImplementationOnce(() => {
       throw new Error('Cannot connect to the Docker daemon');
     });
 
@@ -86,24 +86,26 @@ describe('ensureContainerRuntimeRunning', () => {
 describe('cleanupOrphans', () => {
   it('stops orphaned deus containers', () => {
     // docker ps returns container names, one per line
-    mockExecSync.mockReturnValueOnce('deus-group1-111\ndeus-group2-222\n');
-    // stop calls succeed
-    mockExecSync.mockReturnValue('');
+    mockExecFileSync.mockReturnValueOnce('deus-group1-111\ndeus-group2-222\n');
 
     cleanupOrphans();
 
-    // ps call via execSync
-    expect(mockExecSync).toHaveBeenCalledTimes(1);
-    // 2 stop calls via execFileSync
-    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    // ps call + 2 stop calls, all via execFileSync
+    expect(mockExecFileSync).toHaveBeenCalledTimes(3);
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       1,
+      CONTAINER_RUNTIME_BIN,
+      ['ps', '--filter', 'name=deus-', '--format', '{{.Names}}'],
+      { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
+    );
+    expect(mockExecFileSync).toHaveBeenNthCalledWith(
+      2,
       CONTAINER_RUNTIME_BIN,
       ['stop', '-t', '1', 'deus-group1-111'],
       { stdio: 'pipe', timeout: 15000 },
     );
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
-      2,
+      3,
       CONTAINER_RUNTIME_BIN,
       ['stop', '-t', '1', 'deus-group2-222'],
       { stdio: 'pipe', timeout: 15000 },
@@ -115,16 +117,16 @@ describe('cleanupOrphans', () => {
   });
 
   it('does nothing when no orphans exist', () => {
-    mockExecSync.mockReturnValueOnce('');
+    mockExecFileSync.mockReturnValueOnce('');
 
     cleanupOrphans();
 
-    expect(mockExecSync).toHaveBeenCalledTimes(1);
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     expect(logger.info).not.toHaveBeenCalled();
   });
 
   it('warns and continues when ps fails', () => {
-    mockExecSync.mockImplementationOnce(() => {
+    mockExecFileSync.mockImplementationOnce(() => {
       throw new Error('docker not available');
     });
 
@@ -137,7 +139,8 @@ describe('cleanupOrphans', () => {
   });
 
   it('continues stopping remaining containers when one stop fails', () => {
-    mockExecSync.mockReturnValueOnce('deus-a-1\ndeus-b-2\n');
+    // ps call returns two orphans
+    mockExecFileSync.mockReturnValueOnce('deus-a-1\ndeus-b-2\n');
     // First stop fails
     mockExecFileSync.mockImplementationOnce(() => {
       throw new Error('already stopped');
@@ -147,8 +150,7 @@ describe('cleanupOrphans', () => {
 
     cleanupOrphans(); // should not throw
 
-    expect(mockExecSync).toHaveBeenCalledTimes(1);
-    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    expect(mockExecFileSync).toHaveBeenCalledTimes(3);
     expect(logger.info).toHaveBeenCalledWith(
       { count: 2, names: ['deus-a-1', 'deus-b-2'] },
       'Stopped orphaned containers',

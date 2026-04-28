@@ -7,7 +7,7 @@
  * All functions are synchronous, side-effect-free, and return structured results.
  */
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -121,7 +121,7 @@ export function hasMemoryVault(): { ok: boolean; path: string | null } {
 export function resolvePython(): string | null {
   for (const cmd of ['python3', 'python']) {
     try {
-      execSync(`${cmd} --version`, { stdio: 'pipe', timeout: 5000 });
+      execFileSync(cmd, ['--version'], { stdio: 'pipe', timeout: 5000 });
       return cmd;
     } catch {
       // try next
@@ -141,7 +141,7 @@ export function hasPythonDeps(): { ok: boolean; missing: string[] } {
 
   // Check sqlite-vec
   try {
-    execSync(`${python} -c "import sqlite_vec"`, {
+    execFileSync(python, ['-c', 'import sqlite_vec'], {
       stdio: 'pipe',
       timeout: 5000,
     });
@@ -151,7 +151,7 @@ export function hasPythonDeps(): { ok: boolean; missing: string[] } {
 
   // Check google-genai
   try {
-    execSync(`${python} -c "from google import genai"`, {
+    execFileSync(python, ['-c', 'from google import genai'], {
       stdio: 'pipe',
       timeout: 5000,
     });
@@ -196,7 +196,7 @@ export function hasContainerImage(): boolean {
   const runtime = process.env.CONTAINER_RUNTIME || 'docker';
   const bin = runtime === 'container' ? 'container' : 'docker';
   try {
-    execSync(`${bin} image inspect deus-agent`, {
+    execFileSync(bin, ['image', 'inspect', 'deus-agent'], {
       stdio: 'pipe',
       timeout: 5000,
     });
@@ -216,7 +216,7 @@ export function countRegisteredGroups(): number {
     // available on Windows. This spawns a short-lived node process that loads
     // better-sqlite3 (already an npm dependency) and prints the count.
     const script = `const D=require('better-sqlite3');const db=new D(${JSON.stringify(dbPath)},{readonly:true});try{const r=db.prepare('SELECT COUNT(*) as cnt FROM registered_groups').get();console.log(r?r.cnt:0)}finally{db.close()}`;
-    const result = execSync(`node -e "${script.replace(/"/g, '\\"')}"`, {
+    const result = execFileSync('node', ['-e', script], {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 5000,
