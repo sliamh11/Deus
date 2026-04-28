@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 import { loadRegisteredContextFiles } from './context-registry.js';
+import { fetchMemoryContext } from './memory-retrieval-hook.js';
 import {
   createOpenAIMcpToolBridge,
   executeBrokerTool,
@@ -522,7 +523,16 @@ export async function runOpenAIConversation(ctx: OpenAIContext): Promise<void> {
   while (true) {
     if (shouldClose()) break;
 
-    const turn = await runSingleTurn(prompt, containerInput, sessionId, log);
+    const memoryContext = await fetchMemoryContext(prompt, 'container-openai');
+    const enrichedPrompt = memoryContext
+      ? `${memoryContext}\n\n${prompt}`
+      : prompt;
+    const turn = await runSingleTurn(
+      enrichedPrompt,
+      containerInput,
+      sessionId,
+      log,
+    );
     sessionId = turn.responseId;
     writeOutput({
       status: 'success',

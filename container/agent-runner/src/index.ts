@@ -27,6 +27,7 @@ import { fileURLToPath } from 'url';
 
 import { bootstrap } from './bootstrap.js';
 import { loadRegisteredContextFiles } from './context-registry.js';
+import { createMemoryRetrievalHook } from './memory-retrieval-hook.js';
 import { runOpenAIConversation } from './openai-backend.js';
 
 type AgentBackendName = 'claude' | 'openai';
@@ -769,6 +770,9 @@ async function runQuery(
           : {}),
       },
       hooks: {
+        UserPromptSubmit: [
+          { hooks: [createMemoryRetrievalHook() as unknown as HookCallback] },
+        ],
         PreCompact: [
           { hooks: [createPreCompactHook(containerInput.assistantName)] },
         ],
