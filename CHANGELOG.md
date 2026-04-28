@@ -4,6 +4,14 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.12.0](https://github.com/sliamh11/Deus/compare/v1.11.0...v1.12.0) (2026-04-28)
+
+
+### Features
+
+* **cli:** support chrome_default config flag ([#282](https://github.com/sliamh11/Deus/issues/282)) ([2f797ed](https://github.com/sliamh11/Deus/commit/2f797ed38d742951d8cf53b56b60b50ea5cc86e8))
+* **evolution:** add parameter optimizer for memory retrieval ([#281](https://github.com/sliamh11/Deus/issues/281)) ([a55593c](https://github.com/sliamh11/Deus/commit/a55593cb468126dc08c4ff4cfd899fbed5feb18d))
+
 ## [1.11.0](https://github.com/sliamh11/Deus/compare/v1.10.0...v1.11.0) (2026-04-28)
 
 

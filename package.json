@@ -1,6 +1,6 @@
 {
   "name": "deus",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "description": "Personal AI that remembers your conversations and gets better over time.",
   "type": "module",
   "main": "dist/index.js",
