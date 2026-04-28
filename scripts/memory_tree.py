@@ -91,6 +91,30 @@ DEFAULT_SCORE_GAP_THRESHOLD = float(os.environ.get("DEUS_TREE_GAP", str(_DEFAULT
 DEFAULT_USE_FTS = os.environ.get("DEUS_TREE_FTS", "1") == "1"
 DEFAULT_RRF_K = int(os.environ.get("DEUS_TREE_RRF_K", "60"))
 
+# Optimized params: load from evolution artifact if DEUS_TREE_PARAMS=1.
+if os.environ.get("DEUS_TREE_PARAMS") == "1":
+    _project_root = str(Path(__file__).resolve().parent.parent)
+    _added_to_path = _project_root not in sys.path
+    try:
+        if _added_to_path:
+            sys.path.insert(0, _project_root)
+        from evolution.optimizer.artifacts import get_active as _get_active_artifact
+        _provider_tag = "gemini" if _IS_GEMINI else "ollama"
+        _artifact = _get_active_artifact(f"memory_retrieval_{_provider_tag}")
+        if _artifact:
+            import json as _json
+            _learned = _json.loads(_artifact["content"])
+            DEFAULT_LOW_THRESHOLD = float(_learned.get("low_threshold", DEFAULT_LOW_THRESHOLD))
+            DEFAULT_ABSTAIN_THRESHOLD = float(_learned.get("abstain_threshold", DEFAULT_ABSTAIN_THRESHOLD))
+            DEFAULT_SCORE_GAP_THRESHOLD = float(_learned.get("gap_threshold", DEFAULT_SCORE_GAP_THRESHOLD))
+            DEFAULT_TOP_K = int(_learned.get("top_k", DEFAULT_TOP_K))
+            DEFAULT_RRF_K = int(_learned.get("rrf_k", DEFAULT_RRF_K))
+    except Exception:
+        pass  # Fall back to env/hardcoded defaults
+    finally:
+        if _added_to_path and _project_root in sys.path:
+            sys.path.remove(_project_root)
+
 _LOG_PATH = Path(os.environ.get(
     "DEUS_TREE_LOG", "~/.deus/memory_tree_queries.jsonl"
 )).expanduser()
@@ -959,6 +983,7 @@ def retrieve(
     use_abstain: bool = True,
     use_fts: bool = DEFAULT_USE_FTS,
     rrf_k: int = DEFAULT_RRF_K,
+    gap_threshold: float = DEFAULT_SCORE_GAP_THRESHOLD,
 ) -> dict[str, Any]:
     """4-phase retrieval: flat cosine → FTS5 BM25 → graph expansion → abstain.
 
@@ -1075,7 +1100,6 @@ def retrieve(
     elif use_abstain and len(cosine_sorted) >= 2:
         others_avg = sum(cosine_sorted[1:k + 1]) / min(len(cosine_sorted) - 1, k)
         gap = best - others_avg
-        gap_threshold = DEFAULT_SCORE_GAP_THRESHOLD
         if gap < gap_threshold and best < abstain_threshold + gap_threshold:
             fell_back = True
             trace.append(f"abstain:gap={gap:.3f}<{gap_threshold}")
@@ -1765,6 +1789,8 @@ def benchmark(
     k: int = 5,
     low_threshold: float = DEFAULT_LOW_THRESHOLD,
     abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
+    gap_threshold: float = DEFAULT_SCORE_GAP_THRESHOLD,
+    rrf_k: int = DEFAULT_RRF_K,
     use_see_also: bool = True,
     use_abstain: bool = True,
     use_fts: bool = DEFAULT_USE_FTS,
@@ -1807,6 +1833,8 @@ def benchmark(
             db, q, k=k,
             low_threshold=low_threshold,
             abstain_threshold=abstain_threshold,
+            gap_threshold=gap_threshold,
+            rrf_k=rrf_k,
             use_see_also=use_see_also,
             use_abstain=use_abstain,
             use_fts=use_fts,
@@ -1861,6 +1889,8 @@ def benchmark(
             "k": k,
             "low_threshold": low_threshold,
             "abstain_threshold": abstain_threshold,
+            "gap_threshold": gap_threshold,
+            "rrf_k": rrf_k,
             "use_see_also": use_see_also,
             "use_abstain": use_abstain,
             "use_fts": use_fts,
