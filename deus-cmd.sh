@@ -992,7 +992,9 @@ case "$1" in
     # `deus web` launches with --chrome for Claude-in-Chrome browser integration.
     # Otherwise identical to bare `deus` / `deus home`.
     CHROME_FLAG=""
-    [ "$1" = "web" ] && CHROME_FLAG="--chrome"
+    if [ "$1" = "web" ] || [ "$(_read_config_key chrome_default)" = "true" ]; then
+      CHROME_FLAG="--chrome"
+    fi
     TOKEN=$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["claudeAiOauth"]["accessToken"])' "$HOME/.claude/.credentials.json" 2>/dev/null)
     if [ -z "$TOKEN" ]; then
       echo "Error: could not read token from ~/.claude/.credentials.json"
