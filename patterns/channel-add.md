@@ -2,7 +2,7 @@
 governs:
   - src/channels
   - packages/
-last_verified: "2026-04-20"  # re-reviewed for process.exit ban (PR #7/10) — packages/mcp-telegram/src/telegram.ts:399 process.exit kept (intentional MCP-server suicide on irrecoverable polling failure) with eslint-disable + rationale; new lint rule covers all packages/*/src/**/*.ts
+last_verified: "2026-04-28" # drift-sweep
 test_tasks:
   - "Add a Discord channel with OAuth login"
   - "Add capabilities: logging to a new MCP channel server so notifications are delivered"
