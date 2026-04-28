@@ -18,6 +18,8 @@
 import { createServer, Server } from 'http';
 import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
+import { execFile } from 'child_process';
+import path from 'path';
 import { DEUS_PROXY_TOKEN, DEUS_PROXY_AUTH_ENABLED } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
@@ -38,6 +40,62 @@ export interface ProxyConfig {
 /** @internal exposed for testing only */
 export function _resetCredentialsCacheForTest(): void {
   _resetAnthropicCache();
+}
+
+/* ── Memory bridge constants ───────────────────────────────────────── */
+
+const PYTHON_BIN = process.env.DEUS_PYTHON ?? 'python3';
+const MEMORY_QUERY_SCRIPT = path.join(
+  process.cwd(),
+  'scripts',
+  'memory_query.py',
+);
+const MEMORY_QUERY_TIMEOUT_MS = 4_000;
+
+/* ── Rate limiter (in-process, per-source) ─────────────────────────── */
+
+const RATE_LIMIT_MAX = 5;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+
+interface RateBucket {
+  timestamps: number[];
+}
+
+const rateBuckets = new Map<string, RateBucket>();
+
+/** Prune expired entries periodically to prevent unbounded growth. */
+const rateLimitCleanupInterval = setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateBuckets) {
+    bucket.timestamps = bucket.timestamps.filter(
+      (t) => now - t < RATE_LIMIT_WINDOW_MS,
+    );
+    if (bucket.timestamps.length === 0) rateBuckets.delete(key);
+  }
+}, RATE_LIMIT_WINDOW_MS);
+
+// Prevent the cleanup timer from keeping Node alive after tests/shutdown
+rateLimitCleanupInterval.unref();
+
+/** @internal exposed for testing only */
+export function _resetRateLimiterForTest(): void {
+  rateBuckets.clear();
+}
+
+function isRateLimited(sourceKey: string): boolean {
+  const now = Date.now();
+  let bucket = rateBuckets.get(sourceKey);
+  if (!bucket) {
+    bucket = { timestamps: [] };
+    rateBuckets.set(sourceKey, bucket);
+  }
+  // Prune expired timestamps for this source
+  bucket.timestamps = bucket.timestamps.filter(
+    (t) => now - t < RATE_LIMIT_WINDOW_MS,
+  );
+  if (bucket.timestamps.length >= RATE_LIMIT_MAX) return true;
+  bucket.timestamps.push(now);
+  return false;
 }
 
 /**
@@ -111,6 +169,96 @@ export function startCredentialProxy(
         // Strip the proxy auth header before forwarding upstream
         delete req.headers['x-deus-proxy-token'];
 
+        /* ── Memory bridge route: POST /memory/query ───────────── */
+        if (req.method === 'POST' && req.url === '/memory/query') {
+          const sourceKey =
+            (req.headers['x-deus-source'] as string) ||
+            req.socket.remoteAddress ||
+            'unknown';
+
+          if (isRateLimited(sourceKey)) {
+            res.writeHead(429, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
+            return;
+          }
+
+          let parsed: { query?: unknown; k?: unknown; source?: unknown };
+          try {
+            parsed = JSON.parse(body.toString('utf-8'));
+          } catch {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+            return;
+          }
+
+          if (typeof parsed.query !== 'string' || parsed.query.length === 0) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({ error: 'Missing or empty "query" field' }),
+            );
+            return;
+          }
+
+          const queryArg = parsed.query;
+          const kArg = typeof parsed.k === 'number' ? String(parsed.k) : '3';
+          const sourceArg =
+            typeof parsed.source === 'string' ? parsed.source : 'bridge';
+
+          const args = [
+            MEMORY_QUERY_SCRIPT,
+            queryArg,
+            '--json',
+            '--source',
+            sourceArg,
+            '-k',
+            kArg,
+          ];
+
+          execFile(
+            PYTHON_BIN,
+            args,
+            { timeout: MEMORY_QUERY_TIMEOUT_MS },
+            (err, stdout, _stderr) => {
+              const errAny = err as NodeJS.ErrnoException & {
+                killed?: boolean;
+                signal?: string;
+              };
+              if (
+                errAny &&
+                (errAny.killed ||
+                  errAny.signal === 'SIGTERM' ||
+                  errAny.code === 'ETIMEDOUT')
+              ) {
+                logger.warn('Memory query timed out');
+                res.writeHead(504, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Memory query timed out' }));
+                return;
+              }
+              if (err) {
+                logger.error({ err }, 'Memory query failed');
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: 'Memory query failed' }));
+                return;
+              }
+
+              try {
+                const result = JSON.parse(stdout);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify(result));
+              } catch {
+                logger.error({ stdout }, 'Memory query returned invalid JSON');
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(
+                  JSON.stringify({
+                    error: 'Memory query returned invalid output',
+                  }),
+                );
+              }
+            },
+          );
+          return;
+        }
+
         // Resolve which provider handles this request
         let provider: AuthProvider;
         let upstreamPath: string;
@@ -177,6 +325,10 @@ export function startCredentialProxy(
         upstream.write(body);
         upstream.end();
       });
+    });
+
+    server.on('close', () => {
+      clearInterval(rateLimitCleanupInterval);
     });
 
     let retries = 0;
