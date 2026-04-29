@@ -1,21 +1,17 @@
 # Retrospective Schema -- Wardens/session-retrospective
 
 > Output schema and configuration for the session-retrospective generator warden.
-> Edit vault_path once after install. All other fields are optional overrides.
+> vault_path is resolved at runtime. All fields below are optional overrides.
 
-## vault_path
+## vault_path (runtime-resolved)
 
 The root of the Deus vault. Session logs are expected at `<vault_path>/Session-Logs/`.
 Retrospectives are saved to `<vault_path>/Retrospectives/`.
 
-```
-vault_path: ~/Desktop/אישי/Brain Dump/Second Brain/Deus
-```
-
-Override chain (highest priority first):
-1. Invocation-arg `SESSION_LOG_ROOT=<path>` in the prompt
+vault_path is resolved at runtime, NOT hardcoded here. Resolution chain (highest priority first):
+1. Invocation-arg `SESSION_LOG_ROOT=<path>` in the prompt (used by /compress auto-trigger)
 2. `$SESSION_LOG_ROOT` environment variable
-3. This field
+3. `~/.config/deus/config.json` → `vault_path` key (or `DEUS_VAULT_PATH` env var)
 4. `$REPO_ROOT/Session-Logs/` if it exists
 5. Fail loud
 

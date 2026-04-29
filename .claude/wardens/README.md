@@ -5,10 +5,10 @@ Specialized review agents that guard the codebase. Validator wardens check corre
 | Warden | Type | Model | Rules/Schema file | Invocation |
 |--------|------|-------|-------------------|------------|
 | **plan-reviewer** | Validator | Opus | `plan-review-rules.md` | Gated by PreToolUse hook (auto-required for Edit/Write in `~/deus/`) |
-| **code-reviewer** | Validator | Sonnet | `code-review-rules.md` | Manual: `Agent(subagent_type="code-reviewer", prompt="review my changes")` |
+| **code-reviewer** | Validator | Sonnet | `code-review-rules.md` | Gated by PreToolUse hook (auto-required for `git commit` in `~/deus/`) |
 | **threat-modeler** | Validator | Opus | `threat-modeling-rules.md` | Manual: invoke when plan touches auth, credentials, external APIs, or trust boundaries |
 | **architecture-snapshot** | Generator | Sonnet | `architecture-schema.md` | Manual: `Agent(subagent_type="architecture-snapshot", prompt="snapshot the architecture")` |
-| **session-retrospective** | Generator | Opus | `retrospective-schema.md` | Manual: `Agent(subagent_type="session-retrospective", prompt="retrospective for last 20 sessions")` |
+| **session-retrospective** | Generator | Opus | `retrospective-schema.md` | Manual (also auto-triggered by /compress when opt-in gate passes): `Agent(subagent_type="session-retrospective", prompt="retrospective for last 20 sessions")` |
 
 ## Directory
 
@@ -53,9 +53,13 @@ Then on `VERDICT: SHIP`:
 touch ~/deus/.claude/.plan-reviewed
 ```
 
-**code-reviewer (manual, post-implementation):**
+**code-reviewer (required via gate):**
 ```
 Agent(subagent_type="code-reviewer", prompt="review my changes for <task>")
+```
+Then on `VERDICT: SHIP`:
+```
+touch ~/deus/.claude/.code-reviewed
 ```
 The agent runs `git diff` + `git diff --cached` and reviews both.
 
@@ -76,6 +80,28 @@ Rules files are the single source of truth — agents read them at invocation. A
 Keep rules concise. Total file size matters — every rule adds context cost per invocation. If the file exceeds ~300 lines, split by category and index from the main file.
 
 > **Note on `Cite:` fields:** Rules may cite filenames like `feedback_public_repo_generic` or `project_error_discipline_plan.md` — these refer to the maintainer's auto-memory system (Claude Code's per-project memory). Rules themselves are self-contained; citations are for traceability only and safe to ignore if you don't have the same memory setup.
+
+## How the code-review gate works
+
+Before any `git commit` in `~/deus/`, the hook `~/.claude/hooks/code-review-gate.sh` checks for the marker `~/deus/.claude/.code-reviewed`. If missing, the commit is blocked with instructions to invoke `code-reviewer`.
+
+**Marker lifecycle (event-based, no timer):**
+
+- **Invalidated** by:
+  - `SessionStart` hook (`~/.claude/hooks/plan-mode-session-init.sh`) — every new conversation starts clean.
+  - PostToolUse `Edit|Write|MultiEdit` on deus source files (`~/.claude/hooks/code-review-invalidator.sh`) — any edit after review makes the diff stale.
+- **Refreshed** ONLY by:
+  - `code-reviewer` returning `VERDICT: SHIP` → author runs `touch ~/deus/.claude/.code-reviewed`.
+  - Trivial-commit bypass (typos, deps, config-only): same `touch` command, with the judgment call stated aloud in the response so it's visible.
+
+**code-reviewer (required via gate):**
+```
+Agent(subagent_type="code-reviewer", prompt="review my changes for <task>")
+```
+Then on `VERDICT: SHIP`:
+```
+touch ~/deus/.claude/.code-reviewed
+```
 
 ## What's NOT a Warden
 

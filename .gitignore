@@ -4,8 +4,10 @@ node_modules/
 # Build output
 dist/
 
-# Plan-review gate marker (user-local; refreshed by plan-reviewer agent)
+# Warden gate markers (user-local; refreshed by warden agents)
 .claude/.plan-reviewed
+.claude/.code-reviewed
+.claude/.threat-modeled
 
 # Local data & auth
 store/

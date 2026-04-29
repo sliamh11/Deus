@@ -39,9 +39,7 @@ export interface IpcDeps {
 let ipcWatcherRunning = false;
 
 function parseAgentBackend(value: unknown): AgentBackendName | undefined {
-  return value === 'claude' || value === 'openai' || value === 'ollama'
-    ? value
-    : undefined;
+  return value === 'claude' || value === 'openai' ? value : undefined;
 }
 
 export function startIpcWatcher(deps: IpcDeps): void {

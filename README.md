@@ -48,7 +48,7 @@ A personal AI that lives in your messaging apps, remembers your conversations, a
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/) (handles WSL 2 on Windows automatically)
 - Node.js 20+, Python 3.11+
 - A [Gemini API key](https://aistudio.google.com/apikey) (free tier is enough)
-- [Ollama](https://ollama.ai/download) for local AI models (memory and scoring) - `/setup` pulls the right models automatically based on your hardware
+- [Ollama](https://ollama.ai/download) for local embeddings and scoring (not an agent backend) - `/setup` pulls the right models automatically based on your hardware
 
 ### Install
 
