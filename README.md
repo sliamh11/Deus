@@ -120,6 +120,15 @@ recall as an MCP tool through the repo launcher:
 codex mcp add deus-memory -- /path/to/deus/scripts/deus-memory-mcp
 ```
 
+To mirror the repo's Warden gates in direct Codex CLI sessions, install the
+local Codex hooks:
+
+```bash
+python3 scripts/codex_warden_hooks.py install --dry-run
+python3 scripts/codex_warden_hooks.py install
+python3 scripts/codex_warden_hooks.py check
+```
+
 ---
 
 ## Comparison

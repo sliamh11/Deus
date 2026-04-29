@@ -103,6 +103,53 @@ Then on `VERDICT: SHIP`:
 touch ~/deus/.claude/.code-reviewed
 ```
 
+## Codex hook parity
+
+Codex sessions use the same Warden rule files and marker files, but hook
+configuration is installed separately because Codex reads `~/.codex/hooks.json`
+and `~/.codex/config.toml`.
+
+Install locally:
+
+```bash
+python3 scripts/codex_warden_hooks.py install --dry-run
+python3 scripts/codex_warden_hooks.py install
+python3 scripts/codex_warden_hooks.py check
+```
+
+Uninstall this repo's managed Codex hooks only:
+
+```bash
+python3 scripts/codex_warden_hooks.py uninstall
+```
+
+The installer preserves unrelated Codex hooks, writes backups before replacing
+files, and enables:
+
+```toml
+[features]
+codex_hooks = true
+```
+
+Use `--python <command>` when the default hook interpreter is wrong for the
+machine. Defaults are `python3` on macOS/Linux and `py -3` on Windows.
+
+Codex behavior copied from Claude Code:
+
+| Behavior | Claude Code hook | Codex hook |
+|---|---|---|
+| Reset review markers on new session | `SessionStart` | `SessionStart` |
+| Block source edits before plan-reviewer `SHIP` | `PreToolUse Write\|Edit\|MultiEdit` | `PreToolUse apply_patch` with `Edit\|Write` aliases |
+| Block `git commit` before code-reviewer `SHIP` | `PreToolUse Bash` | `PreToolUse Bash` |
+| Invalidate code-review marker after edits | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse apply_patch` with `Edit\|Write` aliases |
+| Warn on security-sensitive edits without threat-modeler marker | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse apply_patch` with `Edit\|Write` aliases |
+| Warn on personal absolute paths in tracked files | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse apply_patch` with `Edit\|Write` aliases |
+
+Known Codex gaps are tracked in `docs/agent-agnostic-debt.md`. Most important:
+Codex does not expose an exact `ExitPlanMode`/built-in `Plan` invalidation
+equivalent, and hook interception is still a guardrail rather than a complete
+security boundary for every possible shell or non-MCP tool path.
+
 ## Worktree agent exclusion
 
 Edits inside `~/deus/.claude/worktrees/` are **excluded** from the code-review invalidator only — worktree edits shouldn't clear the main thread's reviewed marker. The plan-review gate still applies to worktree agents (the marker persists across agent spawning since only `subagent_type=Plan` invalidates it).

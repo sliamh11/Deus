@@ -1,7 +1,7 @@
 ---
 governs:
   - docs/
-last_verified: "2026-04-29" # memory-mcp-launcher
+last_verified: "2026-04-29" # codex-warden-hooks
 test_tasks:
   - "Add a new ADR to docs/decisions/ explaining an architectural change"
   - "Update ARCHITECTURE.md after a major refactor"

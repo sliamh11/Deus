@@ -91,6 +91,7 @@ Use these instead of rediscovering the system:
 | Claude path | `container/agent-runner/src/index.ts` | Compatibility baseline path |
 | Mount/security boundary | `src/container-mounter.ts` | Project/group/vault visibility and isolation |
 | Memory retrieval | `scripts/memory_tree.py`, `scripts/memory_indexer.py` | Personal recall and semantic lookup |
+| Codex Warden hooks | `scripts/codex_warden_hooks.py` | Installs and runs Codex hook equivalents for Warden gates |
 
 More detailed maps live in [docs/AGENT_DEUS_101.md](docs/AGENT_DEUS_101.md).
 

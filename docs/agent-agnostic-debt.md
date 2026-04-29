@@ -13,7 +13,9 @@ Rules:
 
 ## Active Debt
 
-No active debt items.
+| ID | Surface | Why still open | User-visible risk | Exit criteria |
+|---|---|---|---|---|
+| `AAG-010` | Codex Warden hook parity | Codex hooks mirror the main Claude Code Warden gates, but Codex currently does not expose exact `ExitPlanMode`/built-in `Plan` subagent invalidation semantics and its `PreToolUse`/`PostToolUse` interception is documented as incomplete for some shell and non-MCP paths. | A Codex session can still need manual marker invalidation after a new plan, and unusual edit paths may bypass the local hook guardrail until review/CI catches them. | Codex exposes hook events or tool coverage equivalent to Claude Code for plan-mode/subagent transitions and all write-capable tool paths, and `scripts/codex_warden_hooks.py check` verifies those hooks end-to-end. |
 
 ## Recently Closed
 

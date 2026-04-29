@@ -102,6 +102,29 @@ The launcher selects `.venv/bin/python` when it has the `mcp` package installed,
 then falls back to another Python with `mcp` available. If dependencies are
 missing, it prints the venv setup commands before exiting.
 
+### Codex CLI Warden hooks
+
+Direct Codex CLI sessions can use the same local Warden gates as Claude Code:
+
+```bash
+python3 scripts/codex_warden_hooks.py install --dry-run
+python3 scripts/codex_warden_hooks.py install
+python3 scripts/codex_warden_hooks.py check
+```
+
+The installer writes user-local Codex config only: `~/.codex/hooks.json` and
+`~/.codex/config.toml`. It merges with unrelated hooks, writes backups before
+replacement, and enables `[features].codex_hooks = true`. Pass
+`--python <command>` if the default hook interpreter is not right for the
+machine. To remove only this repo's managed hooks:
+
+```bash
+python3 scripts/codex_warden_hooks.py uninstall
+```
+
+Known Codex hook parity gaps are tracked in
+[agent-agnostic-debt.md](agent-agnostic-debt.md).
+
 ## Backend Management
 
 Manage the default backend and model from the command line:
