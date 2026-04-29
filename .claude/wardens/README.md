@@ -141,9 +141,20 @@ Codex behavior copied from Claude Code:
 | Reset review markers on new session | `SessionStart` | `SessionStart` |
 | Block source edits before plan-reviewer `SHIP` | `PreToolUse Write\|Edit\|MultiEdit` | `PreToolUse apply_patch` with `Edit\|Write` aliases |
 | Block `git commit` before code-reviewer `SHIP` | `PreToolUse Bash` | `PreToolUse Bash` |
+| Block `gh pr merge --admin` without fresh approval | Claude permission prompt | `PreToolUse Bash` |
 | Invalidate code-review marker after edits | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse apply_patch` with `Edit\|Write` aliases |
 | Warn on security-sensitive edits without threat-modeler marker | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse apply_patch` with `Edit\|Write` aliases |
 | Warn on personal absolute paths in tracked files | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse apply_patch` with `Edit\|Write` aliases |
+
+Admin PR merge rule:
+
+- Normal merge approval does not imply approval to bypass branch policy.
+- `gh pr merge --admin` always needs fresh explicit user approval for the exact
+  command.
+- When blocked, the Codex hook prints an `approve-admin-merge` command. Run it
+  only after the user explicitly approves that exact admin merge command.
+- The approval marker is command-hash scoped, consumed on use, and cleared on
+  session start.
 
 Known Codex gaps are tracked in `docs/agent-agnostic-debt.md`. Most important:
 Codex does not expose an exact `ExitPlanMode`/built-in `Plan` invalidation
