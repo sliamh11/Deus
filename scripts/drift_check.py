@@ -1363,7 +1363,6 @@ def check_index_completeness(project_root: Path) -> int:
 
 def check_coverage(project_root: Path) -> int:
     """Report docs/ files that are not referenced by any pattern (informational)."""
-    index = project_root / "patterns" / "INDEX.md"
     patterns_dir = project_root / "patterns"
     docs_dir = project_root / "docs"
 
@@ -1371,8 +1370,22 @@ def check_coverage(project_root: Path) -> int:
         print("No docs/ directory found.")
         return 0
 
-    # Collect docs references from INDEX.md and all pattern files
     covered: set[str] = set()
+
+    # 1. Honor governs: frontmatter — a directory entry covers all .md beneath it
+    for pattern_file in patterns_dir.glob("*.md"):
+        if pattern_file.name == "INDEX.md":
+            continue
+        for g in parse_governs(pattern_file):
+            governed_path = project_root / g
+            if governed_path.is_dir():
+                for md in governed_path.rglob("*.md"):
+                    covered.add(str(md.relative_to(project_root)))
+            elif governed_path.exists() and g.endswith(".md"):
+                covered.add(g)
+
+    # 2. Explicit docs/ path mentions in pattern text (existing behavior)
+    index = patterns_dir / "INDEX.md"
     sources = [index] + list(patterns_dir.glob("*.md")) if index.exists() else list(patterns_dir.glob("*.md"))
     for src in sources:
         try:
@@ -1382,7 +1395,6 @@ def check_coverage(project_root: Path) -> int:
         for match in re.finditer(r"docs/[\w./-]+\.md", text):
             covered.add(match.group(0))
 
-    # Scan docs/ for all .md files (excluding decisions/ sub-docs individually — they're referenced via INDEX.md)
     uncovered: list[str] = []
     for doc_file in sorted(docs_dir.rglob("*.md")):
         rel = str(doc_file.relative_to(project_root))
