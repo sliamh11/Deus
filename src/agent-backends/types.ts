@@ -1,6 +1,6 @@
 import type { ToolBroker } from '../tool-broker/types.js';
 
-export type AgentBackendName = 'claude' | 'openai' | 'ollama';
+export type AgentBackendName = 'claude' | 'openai';
 
 export interface BackendCapabilities {
   shell: boolean;

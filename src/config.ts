@@ -94,11 +94,7 @@ const rawAgentBackend = (
   'claude'
 ).toLowerCase();
 export const DEFAULT_AGENT_BACKEND: AgentBackendName =
-  rawAgentBackend === 'openai'
-    ? 'openai'
-    : rawAgentBackend === 'ollama'
-      ? 'ollama'
-      : 'claude';
+  rawAgentBackend === 'openai' ? 'openai' : 'claude';
 
 export const DEUS_OPENAI_MODEL =
   process.env.DEUS_OPENAI_MODEL || envConfig.DEUS_OPENAI_MODEL || '';
