@@ -38,6 +38,7 @@ Before any Edit/Write/MultiEdit in `~/deus/`, the hook `~/.claude/hooks/plan-rev
   - `SessionStart` hook (`~/.claude/hooks/plan-mode-session-init.sh`) — every new conversation starts clean.
   - PreToolUse `ExitPlanMode` — submitting a new plan via `/plan` or Shift-Tab plan mode.
   - PreToolUse `Agent`/`Task` with `subagent_type=Plan` — invoking the built-in `Plan` subagent.
+- **Excluded:** Edits inside `.claude/worktrees/` — worktree agents run under main-thread plan approval.
 - **Refreshed** ONLY by:
   - `plan-reviewer` returning `VERDICT: SHIP` → author runs `touch ~/deus/.claude/.plan-reviewed`.
   - Trivial-change bypass (typos, comments, single-line renames): same `touch` command, with the judgment call stated aloud in the response so it's visible.
@@ -90,6 +91,7 @@ Before any `git commit` in `~/deus/`, the hook `~/.claude/hooks/code-review-gate
 - **Invalidated** by:
   - `SessionStart` hook (`~/.claude/hooks/plan-mode-session-init.sh`) — every new conversation starts clean.
   - PostToolUse `Edit|Write|MultiEdit` on deus source files (`~/.claude/hooks/code-review-invalidator.sh`) — any edit after review makes the diff stale.
+- **Excluded:** Edits inside `.claude/worktrees/` — worktree agents don't invalidate the main-thread review.
 - **Refreshed** ONLY by:
   - `code-reviewer` returning `VERDICT: SHIP` → author runs `touch ~/deus/.claude/.code-reviewed`.
   - Trivial-commit bypass (typos, deps, config-only): same `touch` command, with the judgment call stated aloud in the response so it's visible.
@@ -102,6 +104,20 @@ Then on `VERDICT: SHIP`:
 ```
 touch ~/deus/.claude/.code-reviewed
 ```
+
+## Worktree agent exclusion
+
+Edits inside `~/deus/.claude/worktrees/` are **excluded** from both the plan-review gate and the code-review invalidator. Worktree agents run under main-thread supervision — the plan was already reviewed before spawning the agent.
+
+## Path-leak detector
+
+A PostToolUse hook (`~/.claude/hooks/path-leak-detector.sh`) warns immediately when an edit introduces personal data into a tracked repo file. Patterns checked:
+
+- Absolute home paths (`/Users/<username>/`)
+- Vault paths (`Brain Dump/Second Brain`)
+- Government IDs, personal email addresses
+
+This is a **warning**, not a blocker — the edit goes through, but the warning gives you a chance to fix it before commit. Supplements the `no-hardcoded-personal` rule in `code-review-rules.md`.
 
 ## What's NOT a Warden
 
