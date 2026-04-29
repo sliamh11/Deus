@@ -38,7 +38,6 @@ Before any Edit/Write/MultiEdit in `~/deus/`, the hook `~/.claude/hooks/plan-rev
   - `SessionStart` hook (`~/.claude/hooks/plan-mode-session-init.sh`) — every new conversation starts clean.
   - PreToolUse `ExitPlanMode` — submitting a new plan via `/plan` or Shift-Tab plan mode.
   - PreToolUse `Agent`/`Task` with `subagent_type=Plan` — invoking the built-in `Plan` subagent.
-- **Excluded:** Edits inside `.claude/worktrees/` — worktree agents run under main-thread plan approval.
 - **Refreshed** ONLY by:
   - `plan-reviewer` returning `VERDICT: SHIP` → author runs `touch ~/deus/.claude/.plan-reviewed`.
   - Trivial-change bypass (typos, comments, single-line renames): same `touch` command, with the judgment call stated aloud in the response so it's visible.
@@ -90,8 +89,7 @@ Before any `git commit` in `~/deus/`, the hook `~/.claude/hooks/code-review-gate
 
 - **Invalidated** by:
   - `SessionStart` hook (`~/.claude/hooks/plan-mode-session-init.sh`) — every new conversation starts clean.
-  - PostToolUse `Edit|Write|MultiEdit` on deus source files (`~/.claude/hooks/code-review-invalidator.sh`) — any edit after review makes the diff stale.
-- **Excluded:** Edits inside `.claude/worktrees/` — worktree agents don't invalidate the main-thread review.
+  - PostToolUse `Edit|Write|MultiEdit` on deus source files (`~/.claude/hooks/code-review-invalidator.sh`) — any edit after review makes the diff stale. Worktree edits (`.claude/worktrees/`) are excluded since they don't affect the main-thread diff.
 - **Refreshed** ONLY by:
   - `code-reviewer` returning `VERDICT: SHIP` → author runs `touch ~/deus/.claude/.code-reviewed`.
   - Trivial-commit bypass (typos, deps, config-only): same `touch` command, with the judgment call stated aloud in the response so it's visible.
@@ -107,7 +105,7 @@ touch ~/deus/.claude/.code-reviewed
 
 ## Worktree agent exclusion
 
-Edits inside `~/deus/.claude/worktrees/` are **excluded** from both the plan-review gate and the code-review invalidator. Worktree agents run under main-thread supervision — the plan was already reviewed before spawning the agent.
+Edits inside `~/deus/.claude/worktrees/` are **excluded** from the code-review invalidator only — worktree edits shouldn't clear the main thread's reviewed marker. The plan-review gate still applies to worktree agents (the marker persists across agent spawning since only `subagent_type=Plan` invalidates it).
 
 ## Path-leak detector
 
