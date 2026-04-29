@@ -89,7 +89,7 @@ Before any `git commit` in `~/deus/`, the hook `~/.claude/hooks/code-review-gate
 
 - **Invalidated** by:
   - `SessionStart` hook (`~/.claude/hooks/plan-mode-session-init.sh`) — every new conversation starts clean.
-  - PostToolUse `Edit|Write|MultiEdit` on deus source files (`~/.claude/hooks/code-review-invalidator.sh`) — any edit after review makes the diff stale.
+  - PostToolUse `Edit|Write|MultiEdit` on deus source files (`~/.claude/hooks/code-review-invalidator.sh`) — any edit after review makes the diff stale. Worktree edits (`.claude/worktrees/`) are excluded since they don't affect the main-thread diff.
 - **Refreshed** ONLY by:
   - `code-reviewer` returning `VERDICT: SHIP` → author runs `touch ~/deus/.claude/.code-reviewed`.
   - Trivial-commit bypass (typos, deps, config-only): same `touch` command, with the judgment call stated aloud in the response so it's visible.
@@ -149,6 +149,20 @@ Known Codex gaps are tracked in `docs/agent-agnostic-debt.md`. Most important:
 Codex does not expose an exact `ExitPlanMode`/built-in `Plan` invalidation
 equivalent, and hook interception is still a guardrail rather than a complete
 security boundary for every possible shell or non-MCP tool path.
+
+## Worktree agent exclusion
+
+Edits inside `~/deus/.claude/worktrees/` are **excluded** from the code-review invalidator only — worktree edits shouldn't clear the main thread's reviewed marker. The plan-review gate still applies to worktree agents (the marker persists across agent spawning since only `subagent_type=Plan` invalidates it).
+
+## Path-leak detector
+
+A PostToolUse hook (`~/.claude/hooks/path-leak-detector.sh`) warns immediately when an edit introduces personal data into a tracked repo file. Patterns checked:
+
+- Absolute home paths (`/Users/<username>/`)
+- Vault paths (`Brain Dump/Second Brain`)
+- Government IDs, personal email addresses
+
+This is a **warning**, not a blocker — the edit goes through, but the warning gives you a chance to fix it before commit. Supplements the `no-hardcoded-personal` rule in `code-review-rules.md`.
 
 ## What's NOT a Warden
 
