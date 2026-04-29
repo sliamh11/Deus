@@ -113,6 +113,13 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus gcal` | Google Calendar token management (`status`, `auth`, `ping`) |
 | `deus listen` | Record from mic, transcribe locally, copy to clipboard |
 
+For direct Codex CLI sessions outside the `deus` launcher, register Deus memory
+recall as an MCP tool through the repo launcher:
+
+```bash
+codex mcp add deus-memory -- /path/to/deus/scripts/deus-memory-mcp
+```
+
 ---
 
 ## Comparison

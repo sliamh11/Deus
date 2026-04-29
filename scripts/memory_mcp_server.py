@@ -8,14 +8,17 @@ retrieval quality as the host hook — closing the cross-interface parity gap.
 Platform: Linux/macOS only (depends on sqlite_vec C extension + Ollama).
 
 Usage:
-    python3 scripts/memory_mcp_server.py   # stdio
+    scripts/deus-memory-mcp   # stdio; selects a Python env with mcp installed
+
+Register with Codex:
+    codex mcp add deus-memory -- /path/to/deus/scripts/deus-memory-mcp
 
 Register in ~/.claude/settings.json:
     {
       "mcpServers": {
         "deus-memory": {
-          "command": "python3",
-          "args": ["/path/to/deus/scripts/memory_mcp_server.py"],
+          "command": "/path/to/deus/scripts/deus-memory-mcp",
+          "args": [],
           "env": {}
         }
       }

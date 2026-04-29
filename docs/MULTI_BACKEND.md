@@ -89,6 +89,19 @@ deus claude       # Force Claude for this session
 deus codex        # Force Codex (OpenAI) for this session
 ```
 
+### Codex CLI memory MCP
+
+To give direct Codex CLI sessions the same Deus memory recall tool, register
+the repo launcher instead of calling `python3` directly:
+
+```bash
+codex mcp add deus-memory -- /path/to/deus/scripts/deus-memory-mcp
+```
+
+The launcher selects `.venv/bin/python` when it has the `mcp` package installed,
+then falls back to another Python with `mcp` available. If dependencies are
+missing, it prints the venv setup commands before exiting.
+
 ## Backend Management
 
 Manage the default backend and model from the command line:

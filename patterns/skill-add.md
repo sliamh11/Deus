@@ -1,7 +1,7 @@
 ---
 governs:
   - .claude/skills
-last_verified: "2026-04-29" # drift-sweep
+last_verified: "2026-04-29" # memory-mcp-launcher
 test_tasks:
   - "Create a new skill under .claude/skills/ that fetches recent Gmail threads"
   - "Add a new skill SKILL.md that documents log rotation steps"
@@ -15,6 +15,12 @@ test_tasks:
 - `SKILL.md` — required
 - `agent.ts` — if the skill adds container-side MCP tools
 
+This pattern governs PRs whose primary change is adding, removing, renaming, or
+substantively changing a skill. A source/script PR may still include a docs-only
+edit to an existing `SKILL.md` when the skill instructions must document the
+changed source behavior. Treat that as a companion documentation edit, not a
+skill PR.
+
 ## What must never be committed in a skill PR
 
 | File | Reason |
@@ -23,7 +29,7 @@ test_tasks:
 | `scripts/` | Subprocess scripts |
 | `node_modules/`, `package-lock.json` | Local dependencies |
 
-**CI rejects skill PRs that also touch `src/`.** This is enforced automatically — do not attempt to bundle skill + source changes in one PR.
+**CI rejects skill PRs that also touch `src/`.** This is enforced automatically — do not attempt to bundle skill + source changes in one PR. If the primary change is source/scripts and the skill file only documents how to use that changed behavior, follow the source pattern for implementation and keep the skill edit documentation-only.
 
 ## Core source changes
 

@@ -1,0 +1,60 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+REPO_ROOT=$(dirname -- "$SCRIPT_DIR")
+
+python_has_mcp() {
+  "$1" -c 'import mcp' >/dev/null 2>&1
+}
+
+choose_python() {
+  if [ -n "${DEUS_MEMORY_MCP_PYTHON:-}" ]; then
+    printf '%s\n' "$DEUS_MEMORY_MCP_PYTHON"
+    return 0
+  fi
+
+  if [ -x "$REPO_ROOT/.venv/bin/python" ] && python_has_mcp "$REPO_ROOT/.venv/bin/python"; then
+    printf '%s\n' "$REPO_ROOT/.venv/bin/python"
+    return 0
+  fi
+
+  if command -v python3 >/dev/null 2>&1 && python_has_mcp "$(command -v python3)"; then
+    command -v python3
+    return 0
+  fi
+
+  if command -v python >/dev/null 2>&1 && python_has_mcp "$(command -v python)"; then
+    command -v python
+    return 0
+  fi
+
+  return 1
+}
+
+PYTHON=$(choose_python) || {
+  cat >&2 <<EOF
+ERROR: deus-memory MCP requires a Python environment with the "mcp" package.
+
+From the Deus repo, run:
+  python3 -m venv .venv
+  .venv/bin/pip install -r evolution/requirements.txt
+
+Then register this launcher with your MCP client:
+  $SCRIPT_DIR/deus-memory-mcp
+
+Override interpreter selection with DEUS_MEMORY_MCP_PYTHON=/path/to/python.
+EOF
+  exit 1
+}
+
+if ! python_has_mcp "$PYTHON"; then
+  cat >&2 <<EOF
+ERROR: DEUS_MEMORY_MCP_PYTHON does not provide the "mcp" package: $PYTHON
+
+Install dependencies into that environment or unset DEUS_MEMORY_MCP_PYTHON.
+EOF
+  exit 1
+fi
+
+exec "$PYTHON" "$SCRIPT_DIR/memory_mcp_server.py" "$@"

@@ -1,7 +1,7 @@
 ---
 governs:
   - docs/
-last_verified: "2026-04-27" # benchmark refresh (Recall@1 94%, MRR 0.96)
+last_verified: "2026-04-29" # memory-mcp-launcher
 test_tasks:
   - "Add a new ADR to docs/decisions/ explaining an architectural change"
   - "Update ARCHITECTURE.md after a major refactor"

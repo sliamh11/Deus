@@ -169,6 +169,18 @@ This should launch an interactive Codex session. Exit with Ctrl+C.
 
 > **Recovery:** If `deus codex` says "codex CLI not found", the binary isn't in PATH. Check `which codex` or reinstall.
 
+### Register Deus memory MCP
+
+For direct Codex CLI sessions outside the `deus` launcher, register the memory
+MCP through the repo launcher. Do not point Codex at `python3` directly; the
+launcher selects a Python environment that has the `mcp` package installed and
+prints setup commands if dependencies are missing.
+
+```bash
+codex mcp add deus-memory -- "$(pwd)/scripts/deus-memory-mcp"
+codex mcp get deus-memory
+```
+
 ## Phase 5: Verify
 
 ### Restart the service
