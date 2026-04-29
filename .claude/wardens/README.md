@@ -8,7 +8,7 @@ Specialized review agents that guard the codebase. Validator wardens check corre
 | **code-reviewer** | Validator | Sonnet | `code-review-rules.md` | Manual: `Agent(subagent_type="code-reviewer", prompt="review my changes")` |
 | **threat-modeler** | Validator | Opus | `threat-modeling-rules.md` | Manual: invoke when plan touches auth, credentials, external APIs, or trust boundaries |
 | **architecture-snapshot** | Generator | Sonnet | `architecture-schema.md` | Manual: `Agent(subagent_type="architecture-snapshot", prompt="snapshot the architecture")` |
-| **session-retrospective** | Generator | Opus | `retrospective-schema.md` | Manual: `Agent(subagent_type="session-retrospective", prompt="retrospective for last 20 sessions")` |
+| **session-retrospective** | Generator | Opus | `retrospective-schema.md` | Manual (also auto-triggered by /compress when opt-in gate passes): `Agent(subagent_type="session-retrospective", prompt="retrospective for last 20 sessions")` |
 
 ## Directory
 

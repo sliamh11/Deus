@@ -144,4 +144,33 @@ After saving the session log:
 6. **Pre-warm semantic cache** (always, background):
    Run: `python3 ~/deus/scripts/memory_indexer.py --query "recent work ongoing tasks" --top 2 --recency-boost > ~/.deus/resume_semantic_cache.txt 2>/dev/null &`
 
-Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, and atom extraction result.
+7. **Trigger session retrospective** (home mode only, background, opt-in):
+   Skip this step entirely unless ALL of the following are true:
+   a. Current mode is **home mode** (~/deus)
+   b. `"$VAULT/Retrospectives"` directory exists (opt-in gate — if absent, never trigger)
+   c. No retrospective file for today exists: `! test -f "$VAULT/Retrospectives/$(date +%Y-%m-%d)-retrospective.md"`
+   d. The number of session log files newer than the most recent retrospective exceeds the threshold
+
+   To check condition (d):
+   ```bash
+   LATEST_RETRO=$(ls -t "$VAULT/Retrospectives"/*.md 2>/dev/null | head -1)
+   if [ -n "$LATEST_RETRO" ]; then
+     NEW_COUNT=$(find "$VAULT/Session-Logs" -name "*.md" -newer "$LATEST_RETRO" | wc -l | tr -d ' ')
+   else
+     NEW_COUNT=$(find "$VAULT/Session-Logs" -name "*.md" | wc -l | tr -d ' ')
+   fi
+   ```
+
+   Read `session_window` from `~/deus/.claude/wardens/retrospective-schema.md` (default: 20).
+   If `NEW_COUNT >= session_window`, dispatch the retrospective agent in the background:
+
+   ```bash
+   command -v claude >/dev/null 2>&1 && \
+     claude -p "Use the session-retrospective subagent. SESSION_LOG_ROOT=\"$VAULT\"" \
+     > /dev/null 2>&1 &
+   ```
+
+   If `claude` CLI is not available (e.g. Codex backend), skip silently.
+   If any check fails, skip silently — the retrospective can always be triggered manually.
+
+Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, and whether a session retrospective was triggered (home mode only — report "retrospective triggered (background)" or "retrospective skipped: <reason>").
