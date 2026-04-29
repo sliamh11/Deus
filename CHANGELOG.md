@@ -4,6 +4,23 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.13.0](https://github.com/sliamh11/Deus/compare/v1.12.0...v1.13.0) (2026-04-29)
+
+
+### Features
+
+* **codex:** add Warden hook installer ([eafd56b](https://github.com/sliamh11/Deus/commit/eafd56b79ef5e23e638ad89e843a1f9a755526d1))
+* **drift:** add --bump flag to auto-fix drifted patterns ([#295](https://github.com/sliamh11/Deus/issues/295)) ([4a85fdc](https://github.com/sliamh11/Deus/commit/4a85fdc38101c615f732731113b697d1dd69ca97))
+* **wardens:** wire session-retrospective auto-trigger into /compress ([#286](https://github.com/sliamh11/Deus/issues/286)) ([9a04ec6](https://github.com/sliamh11/Deus/commit/9a04ec600e5f0eaf0c2e1d7d0babf8abef967583))
+
+
+### Bug Fixes
+
+* **drift:** honor governs: frontmatter in coverage check ([#290](https://github.com/sliamh11/Deus/issues/290)) ([f70ffc7](https://github.com/sliamh11/Deus/commit/f70ffc75420e638c5925591c44def5bbc44e5843))
+* **memory:** add deus-memory MCP launcher ([4d9027c](https://github.com/sliamh11/Deus/commit/4d9027c9505ec6b46c6802453316d9c917bbef6a))
+* **memory:** make STATE.md on-demand and fix compress fuzzy matching ([#296](https://github.com/sliamh11/Deus/issues/296)) ([327530f](https://github.com/sliamh11/Deus/commit/327530f3d141c0134607a4b6f3fe7cf28791da61))
+* **wardens:** revert worktree exclusion from plan-review gate ([#293](https://github.com/sliamh11/Deus/issues/293)) ([9225751](https://github.com/sliamh11/Deus/commit/92257517acb4b43cf0ffb4ca819d7fc56eb3b439))
+
 ## [1.12.0](https://github.com/sliamh11/Deus/compare/v1.11.0...v1.12.0) (2026-04-28)
 
 
