@@ -1,7 +1,7 @@
 ---
 governs:
   - docs/
-last_verified: "2026-04-30" # codex-admin-merge-gate
+last_verified: "2026-04-30" # codex-full-hook-parity
 test_tasks:
   - "Add a new ADR to docs/decisions/ explaining an architectural change"
   - "Update ARCHITECTURE.md after a major refactor"

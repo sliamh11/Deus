@@ -116,7 +116,16 @@ The installer writes user-local Codex config only: `~/.codex/hooks.json` and
 `~/.codex/config.toml`. It merges with unrelated hooks, writes backups before
 replacement, and enables `[features].codex_hooks = true`. Pass
 `--python <command>` if the default hook interpreter is not right for the
-machine. To remove only this repo's managed hooks:
+machine. Pass `--script-path <path>` when installing hooks from a stable copy
+of `scripts/codex_warden_hooks.py` while managing a different repo root; the
+installed commands and generated approval commands use that script path.
+
+`python3 scripts/codex_warden_hooks.py check` prints every managed behavior,
+its event/matcher, whether it is installed, the script path, and the feature
+flag state. Set `DEUS_CODEX_HOOK_DEBUG=1` to write non-blocking hook diagnostics
+to `~/.deus/codex_warden_hooks.log`.
+
+To remove only this repo's managed hooks:
 
 ```bash
 python3 scripts/codex_warden_hooks.py uninstall
@@ -128,6 +137,16 @@ Known Codex hook parity gaps are tracked in
 The hooks also block `gh pr merge --admin` unless the exact command has fresh
 explicit approval. A normal "merge after CI" approval does not approve bypassing
 branch policy.
+
+Codex mirrors the current Claude Code hooks as closely as Codex hook events
+allow: session marker reset, stop checkpoint forwarding, plan-review and
+code-review gates, plan-mode invalidation, memory-tree re-embedding,
+threat-model and path-leak warnings, catch-up freshness injection, memory
+retrieval, and an opt-in public-safe orchestrator preflight. Remaining gaps are
+tracked in [agent-agnostic-debt.md](agent-agnostic-debt.md): plan-mode
+invalidation is approximate, Stop checkpointing needs live Codex transcript
+verification, and the private Claude orchestrator preflight is default-off in
+public Codex hooks.
 
 ## Backend Management
 

@@ -117,6 +117,11 @@ python3 scripts/codex_warden_hooks.py install
 python3 scripts/codex_warden_hooks.py check
 ```
 
+Use `--script-path <path>` when installing from a stable checkout while
+managing a different repo root. The installed hook command and generated
+approval commands use that script path, while markers still live under
+`--repo-root`.
+
 Uninstall this repo's managed Codex hooks only:
 
 ```bash
@@ -133,18 +138,26 @@ codex_hooks = true
 
 Use `--python <command>` when the default hook interpreter is wrong for the
 machine. Defaults are `python3` on macOS/Linux and `py -3` on Windows.
+Set `DEUS_CODEX_HOOK_DEBUG=1` to write silent hook diagnostics to
+`~/.deus/codex_warden_hooks.log`.
 
 Codex behavior copied from Claude Code:
 
-| Behavior | Claude Code hook | Codex hook |
-|---|---|---|
-| Reset review markers on new session | `SessionStart` | `SessionStart` |
-| Block source edits before plan-reviewer `SHIP` | `PreToolUse Write\|Edit\|MultiEdit` | `PreToolUse apply_patch` with `Edit\|Write` aliases |
-| Block `git commit` before code-reviewer `SHIP` | `PreToolUse Bash` | `PreToolUse Bash` |
-| Block `gh pr merge --admin` without fresh approval | Claude permission prompt | `PreToolUse Bash` |
-| Invalidate code-review marker after edits | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse apply_patch` with `Edit\|Write` aliases |
-| Warn on security-sensitive edits without threat-modeler marker | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse apply_patch` with `Edit\|Write` aliases |
-| Warn on personal absolute paths in tracked files | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse apply_patch` with `Edit\|Write` aliases |
+| Behavior | Claude Code hook | Codex hook | Parity |
+|---|---|---|---|
+| Reset review markers on new session | `SessionStart` | `SessionStart` | Exact |
+| Save stop checkpoint | `Stop` | `Stop` forwarding to `scripts/stop_hook.py` | Best-effort until live Codex transcript shape is verified |
+| Block source edits before plan-reviewer `SHIP` | `PreToolUse Write\|Edit\|MultiEdit` | `PreToolUse Edit\|Write\|MultiEdit\|apply_patch` | Exact for emitted tool names |
+| Invalidate plan-review marker after plan changes | `PreToolUse ExitPlanMode\|Task\|Agent` | Same matcher plus `spawn_agent`; `/plan` via `UserPromptSubmit` | Approximate Codex plan-mode semantics |
+| Block `git commit` before code-reviewer `SHIP` | `PreToolUse Bash` | `PreToolUse Bash` | Exact for intercepted Bash commands |
+| Block `gh pr merge --admin` without fresh approval | Claude permission prompt / user confirmation | `PreToolUse Bash` | Codex-specific hardening |
+| Re-embed touched memory-tree files | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse Edit\|Write\|MultiEdit\|apply_patch` forwarding to `scripts/memory_tree_hook.py` | Exact for emitted edit tool names |
+| Invalidate code-review marker after edits | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse Edit\|Write\|MultiEdit\|apply_patch` | Exact for emitted edit tool names |
+| Warn on security-sensitive edits without threat-modeler marker | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse Edit\|Write\|MultiEdit\|apply_patch` | Exact for emitted edit tool names |
+| Warn on personal absolute paths in tracked files | `PostToolUse Write\|Edit\|MultiEdit` | `PostToolUse Edit\|Write\|MultiEdit\|apply_patch` | Exact for emitted edit tool names |
+| Inject catch-up freshness context | `UserPromptSubmit` | `UserPromptSubmit` | Public-safe equivalent; vault path must come from env/config |
+| Ensure local orchestrator before `/resume` | `UserPromptSubmit` private local hook | `UserPromptSubmit` opt-in via `DEUS_CODEX_ORCHESTRATOR_PREFLIGHT=1` | Private-safe opt-in equivalent |
+| Auto-retrieve memory context | `UserPromptSubmit` | `UserPromptSubmit` | Public-safe equivalent; abstains silently on missing vault/tree |
 
 Admin PR merge rule:
 
@@ -157,9 +170,10 @@ Admin PR merge rule:
   session start.
 
 Known Codex gaps are tracked in `docs/agent-agnostic-debt.md`. Most important:
-Codex does not expose an exact `ExitPlanMode`/built-in `Plan` invalidation
-equivalent, and hook interception is still a guardrail rather than a complete
-security boundary for every possible shell or non-MCP tool path.
+Codex plan-mode semantics are approximated across the events Codex exposes,
+Stop checkpointing still needs live transcript verification, and hook
+interception is a guardrail rather than a complete security boundary for every
+possible shell or non-MCP tool path.
 
 ## Worktree agent exclusion
 
