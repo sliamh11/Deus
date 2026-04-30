@@ -8,15 +8,15 @@
   <img src="https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg" alt="Platform">
 </p>
 
-A personal AI that lives in your messaging apps, remembers your conversations, and learns from every interaction. Ask it something you talked about weeks ago - it remembers. Give it feedback - it actually changes. Everything runs on your computer. Your data stays yours.
+A personal AI that understands you - not just recalls things you've said. It learns what you care about, how you think, and what you'll actually find useful. The longer you use it, the more it feels like it gets you. Everything runs on your computer. Your data stays yours.
 
 ---
 
 ## What it does
 
-1. **Remembers everything** - Ask about something from three weeks ago. It recalls the details, even if you don't remember what you called it. (95% recall on the [LongMemEval](https://arxiv.org/abs/2410.10813) benchmark.)
+1. **Understands you** - It doesn't just store memories - it breaks conversations into facts, indexes by meaning, and builds a model of what you care about. Ask about something from three weeks ago and it recalls the details, even if you don't remember what you called it. (95% recall on the [LongMemEval](https://arxiv.org/abs/2410.10813) benchmark.)
 
-2. **Learns from every interaction** - Scores its own responses, figures out what worked and what didn't, and gets better over time. The longer you use it, the sharper it gets.
+2. **Adapts to how you think** - Scores its own responses, generates self-critiques, and rewrites its system prompt based on what worked. Tone, judgment, the kind of suggestions it surfaces - all of it improves at the personality level.
 
 3. **Picks up where you left off** - Context carries over between sessions. Start a project Monday, come back Thursday, and it knows where you left off.
 
@@ -135,15 +135,15 @@ python3 scripts/codex_warden_hooks.py check
 
 |  | **Deus** | **[OpenClaw](https://github.com/openclaw/openclaw)** | **[NemoClaw](https://github.com/NVIDIA/NemoClaw)** | **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** | **Plain Claude** |
 |---|---|---|---|---|---|
-| **Memory** | Remembers past conversations and learns preferences | Markdown files | Via OpenClaw | Full-text search + preference profiling | Conversation only |
-| **Learning** | Scores itself, fixes mistakes, improves over time | No | No | Auto-creates & refines skills | No |
+| **Memory** | Understands you - indexes facts by meaning, recalls in context | Markdown files | Via OpenClaw | Full-text search + preference profiling | Conversation only |
+| **Learning** | Adapts at the personality level - tone, judgment, suggestions | No | No | Auto-creates & refines skills | No |
 | **Channels** | 5 (WhatsApp, Telegram, Slack, Discord, Gmail) | 10+ | Via OpenClaw | 15+ (WhatsApp, Telegram, Signal, Matrix...) | None |
 | **Isolation** | Container per conversation | Opt-in Docker | Landlock + seccomp | Per-session | None |
 | **LLM support** | Claude default, OpenAI opt-in | Any provider | Any (via OpenClaw) | Any (10+ providers) | Claude only |
 | **Setup** | ~5 min | ~15 min | ~20 min | ~10 min | N/A |
 | **Repo size** | ~13 MB | ~592 MB | ~22 MB | ~147 MB | N/A |
 
-Deus goes deep on memory, learning, and security. Hermes goes wide on channels and LLM flexibility. See [docs/benchmarks.md](docs/benchmarks.md) for detailed numbers.
+Deus goes deep on understanding you and adapting over time. Hermes goes wide on channels and LLM flexibility. See [docs/benchmarks.md](docs/benchmarks.md) for detailed numbers.
 
 ---
 
