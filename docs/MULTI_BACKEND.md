@@ -125,6 +125,10 @@ python3 scripts/codex_warden_hooks.py uninstall
 Known Codex hook parity gaps are tracked in
 [agent-agnostic-debt.md](agent-agnostic-debt.md).
 
+The hooks also block `gh pr merge --admin` unless the exact command has fresh
+explicit approval. A normal "merge after CI" approval does not approve bypassing
+branch policy.
+
 ## Backend Management
 
 Manage the default backend and model from the command line:

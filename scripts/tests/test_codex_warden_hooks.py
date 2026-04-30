@@ -108,6 +108,163 @@ def test_code_review_gate_blocks_git_commit_without_marker(tmp_path, capsys):
     assert "code-reviewer" in reason
 
 
+def test_admin_merge_gate_blocks_without_exact_approval(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_admin_merge_gate(
+        bash_event(repo, "gh pr merge 294 --squash --admin"),
+        repo,
+    )
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "fresh explicit approval" in reason
+    assert "approve-admin-merge" in reason
+
+
+def test_admin_merge_gate_blocks_with_gh_global_repo_flag(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_admin_merge_gate(
+        bash_event(repo, "gh --repo owner/repo pr merge 294 --squash --admin"),
+        repo,
+    )
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "fresh explicit approval" in reason
+
+
+def test_admin_merge_gate_blocks_with_gh_short_repo_flag(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_admin_merge_gate(
+        bash_event(repo, "gh -R owner/repo pr merge 294 --squash --admin"),
+        repo,
+    )
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_admin_merge_gate_blocks_equals_form_admin_flag(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_admin_merge_gate(
+        bash_event(repo, "gh pr merge 294 --squash --admin=true"),
+        repo,
+    )
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_admin_merge_gate_blocks_absolute_gh_path(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_admin_merge_gate(
+        bash_event(repo, "/opt/homebrew/bin/gh pr merge 294 --squash --admin=true"),
+        repo,
+    )
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_admin_merge_gate_blocks_windows_gh_exe_path(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_admin_merge_gate(
+        bash_event(
+            repo,
+            r'"C:\Program Files\GitHub CLI\gh.exe" pr merge 294 --admin',
+        ),
+        repo,
+    )
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_admin_merge_detection_handles_windows_shell_tokenization(monkeypatch):
+    hooks = load_hooks()
+    monkeypatch.setattr(hooks.os, "name", "nt")
+
+    assert hooks._is_admin_merge_command(
+        r'"C:\Program Files\GitHub CLI\gh.exe" pr merge 294 --admin'
+    )
+
+
+def test_admin_merge_gate_allows_exact_approved_command_and_consumes_marker(
+    tmp_path, capsys
+):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    command = "gh pr merge 294 --squash --admin"
+
+    assert hooks.approve_admin_merge(command, repo) == 0
+    assert (repo / ".claude" / ".admin-merge-approved").exists()
+    rc = hooks.run_admin_merge_gate(bash_event(repo, command), repo)
+
+    assert rc == 0
+    assert (repo / ".claude" / ".admin-merge-approved").exists() is False
+    output = capsys.readouterr().out
+    assert "Approved one admin merge command" in output
+    assert "permissionDecision" not in output
+
+
+def test_admin_merge_gate_rejects_stale_marker_for_different_command(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    assert hooks.approve_admin_merge("gh pr merge 294 --squash --admin", repo) == 0
+    rc = hooks.run_admin_merge_gate(
+        bash_event(repo, "gh pr merge 295 --squash --admin"),
+        repo,
+    )
+
+    assert rc == 0
+    assert (repo / ".claude" / ".admin-merge-approved").exists() is False
+    output = capsys.readouterr().out
+    assert "permissionDecision" in output
+
+
+def test_admin_merge_gate_ignores_normal_merge_without_admin(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_admin_merge_gate(
+        bash_event(repo, "gh pr merge 294 --squash"),
+        repo,
+    )
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_session_init_clears_admin_merge_marker(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    marker = repo / ".claude" / ".admin-merge-approved"
+    marker.write_text("{}", encoding="utf-8")
+
+    assert hooks.run_session_init(repo) == 0
+
+    assert not marker.exists()
+
+
 def test_code_review_invalidator_clears_marker_after_edit(tmp_path):
     hooks = load_hooks()
     repo = git_repo(tmp_path)

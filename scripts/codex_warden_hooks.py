@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -13,7 +14,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 
@@ -42,6 +43,13 @@ HOOK_SPECS: tuple[HookSpec, ...] = (
         "Checking Deus plan review",
     ),
     HookSpec("PreToolUse", "Bash", "code-review-gate", 5, "Checking Deus code review"),
+    HookSpec(
+        "PreToolUse",
+        "Bash",
+        "admin-merge-gate",
+        5,
+        "Checking admin merge approval",
+    ),
     HookSpec(
         "PostToolUse",
         "Edit|Write|apply_patch",
@@ -230,8 +238,90 @@ def _marker(repo_root: Path, name: str) -> Path:
     return repo_root / ".claude" / name
 
 
+def _command_hash(command: str) -> str:
+    return hashlib.sha256(command.encode("utf-8")).hexdigest()
+
+
+def _shell_tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        return command.split()
+
+
+def _gh_command_index_after_global_flags(tokens: list[str], gh_index: int) -> int:
+    index = gh_index + 1
+    flags_with_values = {
+        "--config-dir",
+        "--hostname",
+        "--repo",
+        "-R",
+    }
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return index + 1
+        if not token.startswith("-"):
+            return index
+        if token in flags_with_values and index + 1 < len(tokens):
+            index += 2
+        else:
+            index += 1
+    return index
+
+
+def _is_gh_executable(token: str) -> bool:
+    token = token.strip("\"'")
+    names = {Path(token).name.lower(), PureWindowsPath(token).name.lower()}
+    return bool(names & {"gh", "gh.exe"})
+
+
+def _is_admin_merge_command(command: str) -> bool:
+    tokens = _shell_tokens(command)
+    if not any(token == "--admin" or token.startswith("--admin=") for token in tokens):
+        return False
+
+    for index, token in enumerate(tokens):
+        if not _is_gh_executable(token):
+            continue
+        command_index = _gh_command_index_after_global_flags(tokens, index)
+        if tokens[command_index : command_index + 2] == ["pr", "merge"]:
+            return True
+    return False
+
+
+def _admin_merge_marker(repo_root: Path) -> Path:
+    return _marker(repo_root, ".admin-merge-approved")
+
+
+def approve_admin_merge(command: str, repo_root: Path) -> int:
+    marker = _admin_merge_marker(repo_root)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps(
+            {
+                "command_hash": _command_hash(command),
+                "command": command,
+                "created_at": dt.datetime.now(dt.UTC).isoformat(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    print(f"Approved one admin merge command for {repo_root}")
+    return 0
+
+
 def run_session_init(repo_root: Path) -> int:
-    for name in (".plan-reviewed", ".code-reviewed", ".threat-modeled"):
+    for name in (
+        ".plan-reviewed",
+        ".code-reviewed",
+        ".threat-modeled",
+        ".admin-merge-approved",
+    ):
         _marker(repo_root, name).unlink(missing_ok=True)
     return 0
 
@@ -271,6 +361,46 @@ def run_code_review_gate(event: dict[str, Any], repo_root: Path) -> int:
         "Before committing Deus changes, run the code-reviewer Warden and wait "
         "for VERDICT: SHIP. Then run:\n\n"
         f"  touch {shlex.quote(str(_marker(repo_root, '.code-reviewed')))}"
+    )
+    _block_pre_tool(reason)
+    return 0
+
+
+def run_admin_merge_gate(event: dict[str, Any], repo_root: Path) -> int:
+    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+    if _worktree_for_cwd(cwd, repo_root) is None:
+        return 0
+
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else ""
+    if not isinstance(command, str) or not _is_admin_merge_command(command):
+        return 0
+
+    marker = _admin_merge_marker(repo_root)
+    command_hash = _command_hash(command)
+    if marker.exists():
+        try:
+            approved = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            approved = {}
+        marker.unlink(missing_ok=True)
+        if approved.get("command_hash") == command_hash:
+            return 0
+
+    approval = (
+        f"{_default_python_command()} "
+        f"{_quote_args([str(repo_root / 'scripts' / 'codex_warden_hooks.py'), 'approve-admin-merge', '--repo-root', str(repo_root), '--command', command])}"
+    )
+    reason = (
+        "[admin-merge-gate] BLOCKED: `gh pr merge --admin` bypasses branch "
+        "policy and needs fresh explicit approval.\n\n"
+        "Prior approval to merge after green CI is not approval to bypass branch "
+        "protection. Ask the user for explicit approval to use `--admin` on this "
+        "exact command, then run:\n\n"
+        f"  {approval}\n\n"
+        "Retry the same admin merge command after approval. The approval marker "
+        "is command-scoped and consumed on use.\n\n"
+        f"Command hash: {command_hash}"
     )
     _block_pre_tool(reason)
     return 0
@@ -340,6 +470,7 @@ RUNNERS = {
     "session-init": lambda event, repo: run_session_init(repo),
     "plan-review-gate": run_plan_review_gate,
     "code-review-gate": run_code_review_gate,
+    "admin-merge-gate": run_admin_merge_gate,
     "code-review-invalidator": run_code_review_invalidator,
     "threat-model-gate": run_threat_model_gate,
     "path-leak-detector": run_path_leak_detector,
@@ -687,11 +818,15 @@ def run(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(dest="action", required=True)
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("behavior", choices=sorted(RUNNERS))
     run_parser.add_argument("--repo-root", default=Path(__file__).resolve().parents[1])
+
+    approve_parser = subparsers.add_parser("approve-admin-merge")
+    approve_parser.add_argument("--repo-root", default=Path(__file__).resolve().parents[1])
+    approve_parser.add_argument("--command", dest="admin_command", required=True)
 
     for name in ("install", "check", "uninstall"):
         sub = subparsers.add_parser(name)
@@ -704,18 +839,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.command in {"install", "check", "uninstall"}:
+    if args.action in {"install", "check", "uninstall"}:
         _finalize_paths(args)
 
-    if args.command == "run":
+    if args.action == "run":
         return run(args)
-    if args.command == "install":
+    if args.action == "approve-admin-merge":
+        return approve_admin_merge(
+            args.admin_command, Path(args.repo_root).resolve(strict=False)
+        )
+    if args.action == "install":
         return install(args)
-    if args.command == "check":
+    if args.action == "check":
         return check(args)
-    if args.command == "uninstall":
+    if args.action == "uninstall":
         return uninstall(args)
-    raise AssertionError(args.command)
+    raise AssertionError(args.action)
 
 
 if __name__ == "__main__":
