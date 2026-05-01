@@ -1,7 +1,7 @@
 {
   "plan-reviewer": {
     "enabled": true,
-    "tools": ["Edit", "Write", "MultiEdit"],
+    "tools": ["Edit", "Write", "MultiEdit", "apply_patch"],
     "custom_instructions": null
   },
   "code-reviewer": {
@@ -11,7 +11,7 @@
   },
   "threat-modeler": {
     "enabled": true,
-    "tools": ["Edit", "Write", "MultiEdit"],
+    "tools": ["Edit", "Write", "MultiEdit", "apply_patch"],
     "custom_instructions": null
   },
   "architecture-snapshot": {
