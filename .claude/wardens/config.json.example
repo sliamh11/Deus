@@ -1,0 +1,30 @@
+{
+  "plan-reviewer": {
+    "enabled": true,
+    "tools": ["Edit", "Write", "MultiEdit"],
+    "custom_instructions": null
+  },
+  "code-reviewer": {
+    "enabled": true,
+    "tools": ["Bash"],
+    "custom_instructions": null
+  },
+  "threat-modeler": {
+    "enabled": true,
+    "tools": ["Edit", "Write", "MultiEdit"],
+    "custom_instructions": null
+  },
+  "architecture-snapshot": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "session-retrospective": {
+    "enabled": true,
+    "auto_threshold": 20,
+    "custom_instructions": null
+  },
+  "data-quality": {
+    "enabled": true,
+    "custom_instructions": null
+  }
+}
