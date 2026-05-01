@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import curses
 import json
 import os
 import shutil
@@ -220,6 +221,107 @@ def cmd_customize(config: dict[str, Any], name: str) -> None:
     subprocess.run(["claude", "-p", prompt], check=False)
 
 
+WARDEN_TYPES: dict[str, str] = {
+    "plan-reviewer": "Validator (blocking)",
+    "code-reviewer": "Validator (blocking)",
+    "threat-modeler": "Validator (warning)",
+    "architecture-snapshot": "Generator",
+    "session-retrospective": "Generator",
+    "data-quality": "Validator (manual)",
+}
+
+
+def _tui(stdscr: curses.window) -> None:
+    curses.curs_set(0)
+    curses.use_default_colors()
+    curses.init_pair(1, curses.COLOR_GREEN, -1)
+    curses.init_pair(2, curses.COLOR_RED, -1)
+    curses.init_pair(3, curses.COLOR_YELLOW, -1)
+    curses.init_pair(4, curses.COLOR_CYAN, -1)
+
+    config = _load_config()
+    names = list(config.keys())
+    cursor = 0
+
+    while True:
+        stdscr.clear()
+        h, w = stdscr.getmaxyx()
+
+        title = " Wardens "
+        stdscr.addstr(0, 0, title, curses.A_BOLD | curses.A_REVERSE)
+        stdscr.addstr(0, len(title), " " * max(0, w - len(title)), curses.A_REVERSE)
+
+        row = 2
+        for i, name in enumerate(names):
+            warden = config[name]
+            enabled = warden.get("enabled", True)
+            selected = i == cursor
+
+            if enabled:
+                indicator = " ● "
+                color = curses.color_pair(1)
+            else:
+                indicator = " ○ "
+                color = curses.color_pair(2)
+
+            attr = curses.A_REVERSE if selected else 0
+            line = f"{indicator}{name:<26}"
+            desc = WARDEN_DESCRIPTIONS.get(name, "")
+            full = f"{line}{desc}"
+            if len(full) > w:
+                full = full[: w - 1]
+
+            stdscr.addstr(row, 0, full[:3], color | attr)
+            stdscr.addstr(row, 3, full[3:], attr)
+            row += 1
+
+        row += 1
+        if row < h - 4:
+            sel_name = names[cursor]
+            sel = config[sel_name]
+            stdscr.addstr(row, 0, "─" * min(60, w - 1), curses.A_DIM)
+            row += 1
+            wtype = WARDEN_TYPES.get(sel_name, "")
+            stdscr.addstr(row, 2, f"Type: ", curses.A_DIM)
+            stdscr.addstr(row, 8, wtype, curses.color_pair(4))
+            row += 1
+            stdscr.addstr(row, 2, f"Triggers: ", curses.A_DIM)
+            stdscr.addstr(row, 12, _triggers_label(sel, sel_name))
+            row += 1
+            ci = sel.get("custom_instructions")
+            if ci:
+                label = ci if len(ci) <= w - 20 else ci[: w - 23] + "..."
+                stdscr.addstr(row, 2, f"Instructions: ", curses.A_DIM)
+                stdscr.addstr(row, 16, label)
+                row += 1
+
+        footer_row = h - 1
+        footer = " ↑↓ navigate  ⎵ toggle  q quit "
+        try:
+            stdscr.addstr(footer_row, 0, " " * (w - 1), curses.A_REVERSE)
+            stdscr.addstr(footer_row, 0, footer[: w - 1], curses.A_REVERSE)
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+        key = stdscr.getch()
+
+        if key in (ord("q"), ord("Q"), 27):
+            break
+        elif key == curses.KEY_UP and cursor > 0:
+            cursor -= 1
+        elif key == curses.KEY_DOWN and cursor < len(names) - 1:
+            cursor += 1
+        elif key in (ord(" "), ord("\n"), curses.KEY_ENTER, 10, 13):
+            name = names[cursor]
+            config[name]["enabled"] = not config[name].get("enabled", True)
+            _save_config(config)
+
+
+def cmd_interactive() -> None:
+    curses.wrapper(_tui)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Manage Deus warden quality gates",
@@ -247,7 +349,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     config = _load_config()
 
-    if args.command is None or args.command == "show":
+    if args.command is None and sys.stdin.isatty() and sys.stdout.isatty():
+        cmd_interactive()
+        return 0
+    elif args.command is None or args.command == "show":
         cmd_show(config)
     elif args.command == "enable":
         cmd_enable(config, args.name)
