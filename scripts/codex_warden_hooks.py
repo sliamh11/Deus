@@ -426,6 +426,16 @@ def run_plan_mode_invalidator(event: dict[str, Any], repo_root: Path) -> int:
 
 
 def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
+    config = _wardens_config(repo_root)
+    if not _warden_enabled(config, "plan-reviewer"):
+        return 0
+    tool_name = str(event.get("tool_name") or "")
+    if tool_name and not _warden_has_tool(
+        config, "plan-reviewer", tool_name,
+        ["Edit", "Write", "MultiEdit", "apply_patch"],
+    ):
+        return 0
+
     _, paths = _managed_paths(event, repo_root)
     if not paths or _marker(repo_root, ".plan-reviewed").exists():
         return 0
@@ -444,6 +454,10 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
 
 
 def run_code_review_gate(event: dict[str, Any], repo_root: Path) -> int:
+    config = _wardens_config(repo_root)
+    if not _warden_enabled(config, "code-reviewer"):
+        return 0
+
     cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
     if _worktree_for_cwd(cwd, repo_root) is None:
         return 0
@@ -553,6 +567,10 @@ def run_code_review_invalidator(event: dict[str, Any], repo_root: Path) -> int:
 
 
 def run_threat_model_gate(event: dict[str, Any], repo_root: Path) -> int:
+    config = _wardens_config(repo_root)
+    if not _warden_enabled(config, "threat-modeler"):
+        return 0
+
     _, paths = _managed_paths(event, repo_root)
     if not paths or _marker(repo_root, ".threat-modeled").exists():
         return 0
@@ -625,6 +643,36 @@ def _deus_config() -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _wardens_config(repo_root: Path) -> dict[str, Any]:
+    path = repo_root / ".claude" / "wardens" / "config.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _warden_enabled(config: dict[str, Any], name: str) -> bool:
+    warden = config.get(name)
+    if not isinstance(warden, dict):
+        return True
+    return warden.get("enabled", True) is not False
+
+
+def _warden_has_tool(
+    config: dict[str, Any], name: str, tool: str, default_tools: list[str],
+) -> bool:
+    warden = config.get(name)
+    if not isinstance(warden, dict):
+        return tool in default_tools
+    tools = warden.get("tools", default_tools)
+    if not isinstance(tools, list):
+        return tool in default_tools
+    return tool in tools
 
 
 def _vault_root() -> Path | None:
