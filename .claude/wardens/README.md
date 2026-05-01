@@ -197,17 +197,17 @@ This is a **warning**, not a blocker — the edit goes through, but the warning 
 
 Wardens are specifically the rule-enforcing reviewers and generators in this directory.
 
-## `/wardens` settings skill
+## Wardens CLI
 
-The `/wardens` skill lets users view, toggle, and configure all wardens from the CLI.
+`scripts/wardens.py` lets users view, toggle, and configure all wardens from the terminal.
 
 ```
-/wardens                    — show all wardens with status and triggers
-/wardens enable <name>      — enable a warden
-/wardens disable <name>     — disable a warden
-/wardens triggers <name>    — view/edit trigger configuration
-/wardens instructions <name> — view/set custom instructions
-/wardens reset <name>       — reset a warden to defaults
+python3 scripts/wardens.py                    — show all wardens with status and triggers
+python3 scripts/wardens.py enable <name>      — enable a warden
+python3 scripts/wardens.py disable <name>     — disable a warden
+python3 scripts/wardens.py triggers <name>    — view/edit trigger configuration
+python3 scripts/wardens.py reset <name>       — reset a warden to defaults
+python3 scripts/wardens.py customize <name>   — launch Claude to set custom instructions
 ```
 
 Configuration is stored in `config.json` (gitignored, per-user). Defaults come from `config.json.example` (tracked). If `config.json` doesn't exist, all wardens run with default settings.
