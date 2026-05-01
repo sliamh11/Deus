@@ -152,6 +152,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/setup` | Run first-time installation and configuration |
 | `/update-skills` | Update installed skill branches from upstream |
 | `/use-local-whisper` | Switch voice transcription to local whisper.cpp |
+| `/wardens` | View, toggle, and configure warden quality gates |
 | `/x-integration` | Set up or use X/Twitter integration |
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |

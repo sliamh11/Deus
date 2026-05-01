@@ -197,6 +197,26 @@ This is a **warning**, not a blocker — the edit goes through, but the warning 
 
 Wardens are specifically the rule-enforcing reviewers and generators in this directory.
 
+## `/wardens` settings skill
+
+The `/wardens` skill lets users view, toggle, and configure all wardens from the CLI.
+
+```
+/wardens                    — show all wardens with status and triggers
+/wardens enable <name>      — enable a warden
+/wardens disable <name>     — disable a warden
+/wardens triggers <name>    — view/edit trigger configuration
+/wardens instructions <name> — view/set custom instructions
+/wardens reset <name>       — reset a warden to defaults
+```
+
+Configuration is stored in `config.json` (gitignored, per-user). Defaults come from `config.json.example` (tracked). If `config.json` doesn't exist, all wardens run with default settings.
+
+Hooks read `config.json` at runtime:
+- If a warden is disabled, its gate hook exits 0 (no block/warning)
+- If a tool is removed from a warden's triggers, the hook skips it
+- If custom instructions are set, they're included when the warden agent is invoked
+
 ## Agent discovery
 
 Claude Code discovers `.claude/agents/*.md` files at **session start**. Agents added mid-session won't appear in the `subagent_type` registry until the next session. To invoke a newly created agent in the current session, use a general-purpose agent with a prompt that reads the agent definition:
