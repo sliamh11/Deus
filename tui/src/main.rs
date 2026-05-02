@@ -9,7 +9,7 @@ mod widgets;
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, EnableBracketedPaste, DisableBracketedPaste, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
 use ratatui::prelude::*;
@@ -24,7 +24,7 @@ fn main() -> io::Result<()> {
 
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste,
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )?;
     let backend = CrosstermBackend::new(stdout);
@@ -38,7 +38,8 @@ fn main() -> io::Result<()> {
 
         if event::poll(Duration::from_millis(50))? {
             let ev = event::read()?;
-            if let Event::Paste(text) = &ev {
+            match ev {
+            Event::Paste(ref text) => {
                 if app.tab == Tab::Chat {
                     for c in text.chars() {
                         if c == '\n' || c == '\r' {
@@ -48,11 +49,22 @@ fn main() -> io::Result<()> {
                         }
                     }
                 }
-                continue;
             }
-            if let Event::Key(key) = ev {
+            Event::Mouse(mouse) => {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => app.scroll_up(3),
+                    MouseEventKind::ScrollDown => app.scroll_down(3),
+                    _ => {}
+                }
+            }
+            Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
+                }
+
+                // Any non-Esc key clears the pending Esc
+                if key.code != KeyCode::Esc {
+                    app.esc_pending = None;
                 }
 
                 // Global Ctrl shortcuts
@@ -102,8 +114,13 @@ fn main() -> io::Result<()> {
                                 app.dismiss_suggestions();
                             } else if matches!(app.chat_state, crate::app::ChatState::Streaming) {
                                 app.cancel_response();
+                            } else if let Some(first) = app.esc_pending {
+                                if first.elapsed().as_millis() < 500 {
+                                    break;
+                                }
+                                app.esc_pending = Some(std::time::Instant::now());
                             } else {
-                                break;
+                                app.esc_pending = Some(std::time::Instant::now());
                             }
                         }
                         KeyCode::Tab => {
@@ -140,13 +157,7 @@ fn main() -> io::Result<()> {
                         KeyCode::Right => app.input_right(),
                         KeyCode::Home => app.input_home(),
                         KeyCode::End => app.input_end(),
-                        KeyCode::Char(c) => {
-                            if c == '\\' && app.input.ends_with('\\') {
-                                // backslash-enter: remove the trailing \ and insert newline
-                            } else {
-                                app.input_char(c);
-                            }
-                        }
+                        KeyCode::Char(c) => app.input_char(c),
                         _ => {}
                     }
                 } else {
@@ -160,11 +171,13 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
+            _ => {}
+            }
         }
     }
 
     terminal::disable_raw_mode()?;
-    execute!(io::stdout(), PopKeyboardEnhancementFlags, LeaveAlternateScreen, DisableBracketedPaste)?;
+    execute!(io::stdout(), PopKeyboardEnhancementFlags, DisableMouseCapture, LeaveAlternateScreen, DisableBracketedPaste)?;
     Ok(())
 }
 

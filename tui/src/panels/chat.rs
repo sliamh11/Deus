@@ -169,15 +169,14 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
                 match block {
                     MessageBlock::Thinking(text) => {
                         if app.show_tools {
-                            for (i, tline) in text.lines().take(3).enumerate() {
+                            for (i, tline) in text.lines().take(5).enumerate() {
                                 let prefix = if i == 0 { " ⟡ " } else { "   " };
-                                let preview: String = tline.chars().take(100).collect();
                                 lines.push(Line::from(vec![
                                     Span::styled(prefix, theme::muted()),
-                                    Span::styled(preview, theme::thinking()),
+                                    Span::styled(tline.to_string(), theme::thinking()),
                                 ]));
                             }
-                            if text.lines().count() > 3 {
+                            if text.lines().count() > 5 {
                                 lines.push(Line::from(Span::styled(
                                     "   ⋯ (Ctrl+O to hide)",
                                     theme::muted(),
