@@ -5,7 +5,7 @@ pub struct ClaudeBackend;
 
 static MODELS: &[ModelDef] = &[
     ModelDef { id: "opus-4-7", display: "Opus 4.7", context: "200K" },
-    ModelDef { id: "opus", display: "Opus 4.6 (1M)", context: "1M" },
+    ModelDef { id: "opus", display: "Opus 4.6", context: "1M" },
     ModelDef { id: "opus-200k", display: "Opus 4.6", context: "200K" },
     ModelDef { id: "sonnet", display: "Sonnet 4.6", context: "200K" },
     ModelDef { id: "haiku", display: "Haiku 4.5", context: "200K" },
