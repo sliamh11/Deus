@@ -71,6 +71,10 @@ Single Node.js host process. No microservices.
 - OpenAI/Codex is the first opt-in backend on the same runtime contract.
 - Sessions are backend-scoped. Never resume across backend mismatch.
 - Real credentials never enter containers; adapters use the credential proxy.
+- Provider integrations follow the **Backend strategy trait** pattern: each
+  provider is a single file implementing `Backend` (command construction,
+  stream parsing, model list). Adding a provider = 1 file + 2 lines in
+  `backend/mod.rs`. Do not inline provider-specific logic in app-level code.
 - Vault auto-loading is config-driven: `vault_autoload` in
   `~/.config/deus/config.json` lists which vault files load at startup
   (default: `["CLAUDE.md"]`). All other vault files are on-demand. Do not
@@ -78,6 +82,8 @@ Single Node.js host process. No microservices.
 
 For backend runtime work, read
 [docs/decisions/backend-neutral-agent-runtime.md](docs/decisions/backend-neutral-agent-runtime.md).
+For the provider strategy pattern, read
+[docs/decisions/backend-strategy-trait.md](docs/decisions/backend-strategy-trait.md).
 For vault auto-loading, read
 [docs/decisions/vault-autoload.md](docs/decisions/vault-autoload.md).
 
@@ -95,6 +101,7 @@ Use these instead of rediscovering the system:
 | Container context | `container/agent-runner/src/context-registry.ts` | Runtime-loaded onboarding and memory surfaces |
 | OpenAI adapter | `container/agent-runner/src/openai-backend.ts` | OpenAI/Codex backend implementation |
 | Claude path | `container/agent-runner/src/index.ts` | Compatibility baseline path |
+| TUI backends | `tui/src/backend/` | Strategy trait — one file per provider (Claude, Codex, etc.) |
 | Mount/security boundary | `src/container-mounter.ts` | Project/group/vault visibility and isolation |
 | Memory retrieval | `scripts/memory_tree.py`, `scripts/memory_indexer.py` | Personal recall and semantic lookup |
 | Codex Warden hooks | `scripts/codex_warden_hooks.py` | Installs and runs Codex hook equivalents for Warden gates |
