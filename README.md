@@ -112,6 +112,7 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus auth` | Rebuild and restart background services |
 | `deus gcal` | Google Calendar token management (`status`, `auth`, `ping`) |
 | `deus listen` | Record from mic, transcribe locally, copy to clipboard |
+| `deus tui` | Full-screen terminal UI for chat, wardens, services, and channels |
 
 For direct Codex CLI sessions outside the `deus` launcher, register Deus memory
 recall as an MCP tool through the repo launcher:

@@ -1409,7 +1409,12 @@ $STARTUP_INSTRUCTION" "Catch me up."
     ;;
   tui)
     shift
-    exec node "$SCRIPT_DIR/packages/tui/dist/index.js" "$@"
+    local tui_bin="$SCRIPT_DIR/tui/target/release/deus-tui"
+    if [[ ! -x "$tui_bin" ]]; then
+      echo "TUI binary not found. Building..."
+      (cd "$SCRIPT_DIR/tui" && cargo build --release) || { echo "Build failed. Install Rust: https://rustup.rs"; exit 1; }
+    fi
+    exec "$tui_bin" "$@"
     ;;
   *)
     echo "Usage: deus [claude|codex] [home|auth|web|backend|gcal|listen|logs|tui]"

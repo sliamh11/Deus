@@ -1098,10 +1098,12 @@ def check_all(project_root: Path, base_ref: str | None = None) -> int:
     bm_rc = check_bootstrap_mirror(project_root)
     print("\n=== bench labels ===")
     bench_rc = check_bench_labels(project_root)
+    print("\n=== backend strategy ===")
+    bs_rc = check_backend_strategy(project_root)
     print("\n=== coverage (informational) ===")
     cov_rc = check_coverage(project_root)
 
-    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, bm_rc, bench_rc, cov_rc)
+    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, bm_rc, bench_rc, bs_rc, cov_rc)
     print()
     if worst == 0:
         print("ALL CHECKS PASSED")
@@ -1380,6 +1382,55 @@ def check_index_completeness(project_root: Path) -> int:
     for i in issues:
         print(i)
     print("\nFIX: add the orphaned leaf to its index, or delete the dangling reference.")
+    return 1
+
+
+def check_backend_strategy(project_root: Path) -> int:
+    """Enforce the Backend strategy trait convention (ADR: backend-strategy-trait.md).
+
+    Scans app-level TUI code (everything outside tui/src/backend/) for patterns
+    that indicate provider-specific logic leaked out of the trait:
+    - Direct CLI binary references: Command::new("claude"), Command::new("codex")
+    - Provider-specific JSONL field parsing: "item.completed", "turn.completed"
+    - Hardcoded model registries that duplicate what backends declare
+
+    The backend/ directory itself is exempt — that's where these belong.
+    """
+    tui_src = project_root / "tui" / "src"
+    if not tui_src.exists():
+        print("tui/src/ not found (skipped)")
+        return 0
+
+    backend_dir = tui_src / "backend"
+    leak_patterns = [
+        ('Command::new("claude")', "CLI invocation belongs in backend/claude.rs"),
+        ('Command::new("codex")', "CLI invocation belongs in backend/codex.rs"),
+        ('Command::new("ollama")', "CLI invocation belongs in backend/ollama.rs"),
+        ('"item.completed"', "Codex JSONL parsing belongs in backend/codex.rs"),
+        ('"turn.completed"', "Codex JSONL parsing belongs in backend/codex.rs"),
+        ('"turn.failed"', "Codex JSONL parsing belongs in backend/codex.rs"),
+        ('"stream-json"', "Claude output format belongs in backend/claude.rs"),
+    ]
+
+    issues: list[str] = []
+    for rs_file in tui_src.rglob("*.rs"):
+        if backend_dir in rs_file.parents or rs_file.parent == backend_dir:
+            continue
+        content = rs_file.read_text()
+        rel = rs_file.relative_to(project_root)
+        for pattern, reason in leak_patterns:
+            if pattern in content:
+                issues.append(f"  {rel}: contains {pattern} — {reason}")
+
+    if not issues:
+        print("Backend strategy: no provider-specific leaks in app-level TUI code.")
+        return 0
+
+    print(f"Backend strategy VIOLATION — provider logic outside backend/ ({len(issues)} issue(s)):")
+    for issue in issues:
+        print(issue)
+    print("\nFIX: move provider-specific logic into the Backend trait implementation.")
+    print("ADR: docs/decisions/backend-strategy-trait.md")
     return 1
 
 
@@ -1687,6 +1738,12 @@ if __name__ == "__main__":
         help="Run memory_tree benchmark and compare against stored snapshot (needs Ollama)",
     )
     parser.add_argument(
+        "--backend-strategy",
+        action="store_true",
+        dest="backend_strategy",
+        help="Check that provider-specific logic stays inside tui/src/backend/ (ADR: backend-strategy-trait.md)",
+    )
+    parser.add_argument(
         "--base",
         metavar="REF",
         help="Only check governed files changed since REF (e.g. origin/main). "
@@ -1700,7 +1757,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.bench_labels:
+    if args.backend_strategy:
+        sys.exit(check_backend_strategy(PROJECT_ROOT))
+    elif args.bench_labels:
         sys.exit(check_bench_labels(PROJECT_ROOT))
     elif args.bench_snapshot:
         sys.exit(check_bench_snapshot(PROJECT_ROOT))

@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-04-28" # param-optimizer
+last_verified: "2026-05-02" # auto-bump
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"
@@ -38,7 +38,9 @@ Scope required (e.g. `evolution`, `container`, `skills`, `startup-gate`).
 
 ## ADR gate
 
-**Before modifying `eval/`, `evolution/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, or `scripts/memory_indexer.py`**: read `docs/decisions/INDEX.md` first. Past decisions have non-obvious permanent constraints. Skipping the index has caused regressions.
+**Before modifying `eval/`, `evolution/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, `tui/src/backend/`, or `scripts/memory_indexer.py`**: read `docs/decisions/INDEX.md` first. Past decisions have non-obvious permanent constraints. Skipping the index has caused regressions.
+
+**Provider integrations follow the Backend strategy trait** (ADR: `backend-strategy-trait.md`). Each provider is a single file implementing `Backend`. Do not inline provider-specific CLI commands, JSONL parsing, or model lists in app-level code — implement the trait instead.
 
 ## Startup-gate checks
 
