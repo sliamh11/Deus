@@ -9,7 +9,7 @@ mod widgets;
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, EnableMouseCapture, DisableMouseCapture};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
 use ratatui::prelude::*;
@@ -24,7 +24,7 @@ fn main() -> io::Result<()> {
 
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -35,36 +35,56 @@ fn main() -> io::Result<()> {
         terminal.draw(|frame| ui::render(frame, &app))?;
 
         if event::poll(Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
+            match event::read()? {
+            Event::Mouse(mouse) => {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => app.scroll_up(3),
+                    MouseEventKind::ScrollDown => app.scroll_down(3),
+                    _ => {}
+                }
+            }
+            Event::Key(key) => {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
-                if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-                    if matches!(app.chat_state, crate::app::ChatState::Streaming) {
-                        app.cancel_response();
-                    } else {
-                        break;
+
+                // Global Ctrl shortcuts
+                if key.modifiers.contains(KeyModifiers::CONTROL) {
+                    match key.code {
+                        KeyCode::Char('c') => {
+                            if matches!(app.chat_state, crate::app::ChatState::Streaming) {
+                                app.cancel_response();
+                            } else {
+                                break;
+                            }
+                            continue;
+                        }
+                        KeyCode::Char('d') => break,
+                        _ => {}
                     }
-                    continue;
                 }
 
                 if app.tab == Tab::Chat {
-                    // Ctrl shortcuts
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
                         match key.code {
-                            KeyCode::Char('l') => { app.chat_messages.clear(); }
+                            KeyCode::Char('l') => { app.chat_messages.clear(); app.scroll_to_bottom(); }
                             KeyCode::Char('u') => app.input_clear_line(),
                             KeyCode::Char('a') => app.input_home(),
                             KeyCode::Char('e') => app.input_end(),
                             KeyCode::Char('w') => app.input_delete_word(),
+                            KeyCode::Char('k') => app.input_kill_to_end(),
+                            KeyCode::Char('y') => app.input_yank(),
+                            KeyCode::Char('o') => app.toggle_tools(),
+                            KeyCode::Char('j') => app.input_newline(),
                             _ => {}
                         }
                         continue;
                     }
-                    // Alt shortcuts (Option key on macOS)
                     if key.modifiers.contains(KeyModifiers::ALT) {
                         match key.code {
                             KeyCode::Backspace => app.input_delete_word(),
+                            KeyCode::Char('b') => app.input_word_left(),
+                            KeyCode::Char('f') => app.input_word_right(),
                             _ => {}
                         }
                         continue;
@@ -85,23 +105,41 @@ fn main() -> io::Result<()> {
                             }
                         }
                         KeyCode::Enter => {
-                            app.send_message();
+                            if app.is_multiline() {
+                                app.input_newline();
+                            } else {
+                                app.send_message();
+                            }
                         }
                         KeyCode::Up => {
                             if app.has_suggestions() { app.prev_suggestion(); }
+                            else if app.is_multiline() && app.input_cursor_line() > 0 {
+                                app.input_line_up();
+                            }
                             else { app.history_prev(); }
                         }
                         KeyCode::Down => {
                             if app.has_suggestions() { app.next_suggestion(); }
+                            else if app.is_multiline() && app.input_cursor_line() < app.input_line_count() - 1 {
+                                app.input_line_down();
+                            }
                             else { app.history_next(); }
                         }
+                        KeyCode::PageUp => app.scroll_up(10),
+                        KeyCode::PageDown => app.scroll_down(10),
                         KeyCode::Backspace => app.input_backspace(),
                         KeyCode::Delete => app.input_delete(),
                         KeyCode::Left => app.input_left(),
                         KeyCode::Right => app.input_right(),
                         KeyCode::Home => app.input_home(),
                         KeyCode::End => app.input_end(),
-                        KeyCode::Char(c) => app.input_char(c),
+                        KeyCode::Char(c) => {
+                            if c == '\\' && app.input.ends_with('\\') {
+                                // backslash-enter: remove the trailing \ and insert newline
+                            } else {
+                                app.input_char(c);
+                            }
+                        }
                         _ => {}
                     }
                 } else {
@@ -115,11 +153,13 @@ fn main() -> io::Result<()> {
                     }
                 }
             }
+            _ => {}
+            }
         }
     }
 
     terminal::disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
     Ok(())
 }
 

@@ -1,10 +1,12 @@
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read as _};
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use crate::config;
+
+
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -91,6 +93,7 @@ pub struct App {
     pub input_cursor: usize,
     pub input_history: Vec<String>,
     pub history_index: Option<usize>,
+    pub kill_ring: String,
     pub suggestions: Vec<usize>,
     pub arg_suggestions: Vec<String>,
     pub suggestion_cursor: usize,
@@ -98,10 +101,17 @@ pub struct App {
     pub chat_state: ChatState,
     pub stream_rx: Option<mpsc::Receiver<StreamChunk>>,
     pub model: String,
-    pub session_id: String,
     pub token_count: u32,
     pub cost_usd: f64,
     pub session_start: Instant,
+    pub turn_start: Option<Instant>,
+    pub last_turn_duration: Option<Duration>,
+    pub last_thinking_summary: Option<String>,
+    pub show_tools: bool,
+    pub scroll_offset: u16,
+    pub scroll_pinned: bool,
+    pub queued_messages: Vec<String>,
+    pub git_branch: String,
     pub wardens: Vec<config::wardens::WardenEntry>,
     pub services: Vec<config::healthcheck::ServiceEntry>,
     pub channels: Vec<config::channels::ChannelEntry>,
@@ -175,7 +185,30 @@ fn parse_stream_line(line: &str) -> Option<StreamChunk> {
     }
 }
 
+fn detect_git_branch() -> String {
+    Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_or_default()
+}
+
+pub const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 impl App {
+    pub fn spinner_frame(&self) -> &'static str {
+        let elapsed = self.turn_start.map(|t| t.elapsed().as_millis()).unwrap_or(0);
+        let idx = (elapsed / 80) as usize % SPINNER_FRAMES.len();
+        SPINNER_FRAMES[idx]
+    }
+
     pub fn new() -> Self {
         let mut app = Self {
             tab: Tab::Chat,
@@ -184,6 +217,7 @@ impl App {
             input_cursor: 0,
             input_history: Vec::new(),
             history_index: None,
+            kill_ring: String::new(),
             suggestions: Vec::new(),
             arg_suggestions: Vec::new(),
             suggestion_cursor: 0,
@@ -191,10 +225,17 @@ impl App {
             chat_state: ChatState::Idle,
             stream_rx: None,
             model: "sonnet".to_string(),
-            session_id: format!("deus-tui-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()),
             token_count: 0,
             cost_usd: 0.0,
             session_start: Instant::now(),
+            turn_start: None,
+            last_turn_duration: None,
+            last_thinking_summary: None,
+            show_tools: false,
+            scroll_offset: 0,
+            scroll_pinned: true,
+            queued_messages: Vec::new(),
+            git_branch: detect_git_branch(),
             wardens: Vec::new(),
             services: Vec::new(),
             channels: Vec::new(),
@@ -237,10 +278,7 @@ impl App {
             return;
         }
 
-        // Save to input history
-        if !msg.starts_with('/') || msg.starts_with("/compress") || msg.starts_with("/checkpoint") {
-            self.input_history.push(msg.clone());
-        }
+        self.input_history.push(msg.clone());
         self.history_index = None;
 
         // Handle commands
@@ -253,28 +291,51 @@ impl App {
             return;
         }
 
+        if matches!(self.chat_state, ChatState::Streaming) {
+            self.queued_messages.push(msg);
+            self.chat_messages.push(ChatMessage::simple("system", "(queued)"));
+            self.input.clear();
+            self.input_cursor = 0;
+            self.suggestions.clear();
+            self.scroll_to_bottom();
+            return;
+        }
+
+        self.dispatch_message(msg);
+    }
+
+    fn dispatch_message(&mut self, msg: String) {
         self.chat_messages.push(ChatMessage::simple("user", &msg));
-        self.input.clear();
-        self.input_cursor = 0;
-        self.suggestions.clear();
         self.chat_state = ChatState::Streaming;
-        self.suggestions.clear();
+        self.turn_start = Some(Instant::now());
+        self.last_thinking_summary = None;
+        self.scroll_to_bottom();
 
         let (tx, rx) = mpsc::channel();
         self.stream_rx = Some(rx);
         let model = self.model.clone();
-        let session_id = self.session_id.clone();
 
         thread::spawn(move || {
             let child = Command::new("claude")
                 .args(["-p", "--output-format", "stream-json", "--verbose",
-                       "--session-id", &session_id, "--model", &model, &msg])
+                       "--model", &model, &msg])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn();
 
             match child {
                 Ok(mut process) => {
+                    let stderr_handle = process.stderr.take().map(|stderr| {
+                        let tx2 = tx.clone();
+                        thread::spawn(move || {
+                            let mut buf = String::new();
+                            let mut reader = BufReader::new(stderr);
+                            let _ = reader.read_to_string(&mut buf);
+                            if !buf.trim().is_empty() {
+                                let _ = tx2.send(StreamChunk::Error(buf.trim().to_string()));
+                            }
+                        })
+                    });
                     if let Some(stdout) = process.stdout.take() {
                         let reader = BufReader::new(stdout);
                         for line in reader.lines() {
@@ -289,6 +350,7 @@ impl App {
                         }
                     }
                     let _ = process.wait();
+                    if let Some(h) = stderr_handle { let _ = h.join(); }
                     let _ = tx.send(StreamChunk::Done);
                 }
                 Err(e) => {
@@ -368,6 +430,10 @@ impl App {
                         }
                     }
                     StreamChunk::Thinking(text) => {
+                        let summary: String = text.chars().take(100).collect();
+                        self.last_thinking_summary = Some(
+                            if summary.len() < text.len() { format!("{}...", summary) } else { summary }
+                        );
                         if let Some(last) = self.chat_messages.last_mut() {
                             if last.role == "assistant" {
                                 last.blocks.push(MessageBlock::Thinking(text));
@@ -394,6 +460,12 @@ impl App {
                     StreamChunk::Done => {
                         self.chat_state = ChatState::Idle;
                         self.stream_rx = None;
+                        self.last_turn_duration = self.turn_start.map(|t| t.elapsed());
+                        self.turn_start = None;
+                        if !self.queued_messages.is_empty() {
+                            let next = self.queued_messages.remove(0);
+                            self.dispatch_message(next);
+                        }
                         return;
                     }
                     StreamChunk::Error(e) => {
@@ -634,6 +706,111 @@ impl App {
         if secs < 60 { format!("{}s", secs) }
         else if secs < 3600 { format!("{}m", secs / 60) }
         else { format!("{}h{}m", secs / 3600, (secs % 3600) / 60) }
+    }
+
+    pub fn toggle_tools(&mut self) {
+        self.show_tools = !self.show_tools;
+    }
+
+    pub fn scroll_up(&mut self, amount: u16) {
+        self.scroll_offset = self.scroll_offset.saturating_add(amount);
+        self.scroll_pinned = false;
+    }
+
+    pub fn scroll_down(&mut self, amount: u16) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(amount);
+        if self.scroll_offset == 0 {
+            self.scroll_pinned = true;
+        }
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
+        self.scroll_pinned = true;
+    }
+
+    pub fn input_kill_to_end(&mut self) {
+        self.kill_ring = self.input[self.input_cursor..].to_string();
+        self.input.truncate(self.input_cursor);
+        self.update_suggestions();
+    }
+
+    pub fn input_yank(&mut self) {
+        if !self.kill_ring.is_empty() {
+            self.input.insert_str(self.input_cursor, &self.kill_ring);
+            self.input_cursor += self.kill_ring.len();
+            self.update_suggestions();
+        }
+    }
+
+    pub fn input_word_left(&mut self) {
+        if self.input_cursor == 0 { return; }
+        let before = &self.input[..self.input_cursor];
+        let trimmed = before.trim_end();
+        let pos = trimmed.rfind(|c: char| c == ' ' || c == '\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        self.input_cursor = pos;
+    }
+
+    pub fn input_word_right(&mut self) {
+        if self.input_cursor >= self.input.len() { return; }
+        let after = &self.input[self.input_cursor..];
+        let skip_word = after.find(|c: char| c == ' ' || c == '\n').unwrap_or(after.len());
+        let skip_space = after[skip_word..].find(|c: char| c != ' ' && c != '\n').unwrap_or(after.len() - skip_word);
+        self.input_cursor += skip_word + skip_space;
+    }
+
+    pub fn input_newline(&mut self) {
+        self.input.insert(self.input_cursor, '\n');
+        self.input_cursor += 1;
+    }
+
+    pub fn is_multiline(&self) -> bool {
+        self.input.contains('\n')
+    }
+
+    pub fn input_cursor_line(&self) -> usize {
+        self.input[..self.input_cursor].matches('\n').count()
+    }
+
+    pub fn input_line_count(&self) -> usize {
+        self.input.matches('\n').count() + 1
+    }
+
+    pub fn input_line_up(&mut self) {
+        let before = &self.input[..self.input_cursor];
+        if let Some(nl) = before.rfind('\n') {
+            let col = self.input_cursor - nl - 1;
+            let prev_start = before[..nl].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let prev_len = nl - prev_start;
+            self.input_cursor = prev_start + col.min(prev_len);
+        }
+    }
+
+    pub fn input_line_down(&mut self) {
+        let after = &self.input[self.input_cursor..];
+        if let Some(nl) = after.find('\n') {
+            let line_start = self.input[..self.input_cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let col = self.input_cursor - line_start;
+            let next_start = self.input_cursor + nl + 1;
+            let next_end = self.input[next_start..].find('\n').map(|i| next_start + i).unwrap_or(self.input.len());
+            let next_len = next_end - next_start;
+            self.input_cursor = next_start + col.min(next_len);
+        }
+    }
+
+    pub fn turn_duration_display(&self) -> Option<String> {
+        let dur = if matches!(self.chat_state, ChatState::Streaming) {
+            self.turn_start.map(|t| t.elapsed())
+        } else {
+            self.last_turn_duration
+        };
+        dur.map(|d| {
+            let secs = d.as_secs();
+            if secs < 60 { format!("{}s", secs) }
+            else { format!("{}m{}s", secs / 60, secs % 60) }
+        })
     }
 
     fn item_count(&self) -> usize {

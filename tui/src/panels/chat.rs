@@ -6,9 +6,14 @@ use crate::bidi;
 use crate::theme;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
+    let input_height = if app.is_multiline() {
+        (app.input_line_count() as u16 + 2).min(10)
+    } else {
+        3
+    };
     let layout = Layout::vertical([
         Constraint::Min(0),
-        Constraint::Length(3),
+        Constraint::Length(input_height),
     ])
     .split(area);
 
@@ -163,21 +168,25 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
             for block in &msg.blocks {
                 match block {
                     MessageBlock::Thinking(text) => {
-                        let preview: String = text.chars().take(80).collect();
-                        lines.push(Line::from(vec![
-                            Span::styled(" ⟡ ", theme::muted()),
-                            Span::styled(
-                                if preview.len() < text.len() { format!("{}...", preview) } else { preview },
-                                theme::thinking(),
-                            ),
-                        ]));
+                        if app.show_tools {
+                            let preview: String = text.chars().take(120).collect();
+                            lines.push(Line::from(vec![
+                                Span::styled(" ⟡ ", theme::muted()),
+                                Span::styled(
+                                    if preview.len() < text.len() { format!("{}...", preview) } else { preview },
+                                    theme::thinking(),
+                                ),
+                            ]));
+                        }
                     }
                     MessageBlock::ToolUse { tool, detail } => {
-                        lines.push(Line::from(vec![
-                            Span::styled(" ▸ ", Style::default().fg(theme::FLAME)),
-                            Span::styled(tool.clone(), theme::tool_name()),
-                            Span::styled(format!(" {}", detail), theme::tool_detail()),
-                        ]));
+                        if app.show_tools {
+                            lines.push(Line::from(vec![
+                                Span::styled(" ▸ ", Style::default().fg(theme::FLAME)),
+                                Span::styled(tool.clone(), theme::tool_name()),
+                                Span::styled(format!(" {}", detail), theme::tool_detail()),
+                            ]));
+                        }
                     }
                     MessageBlock::Text(text) => {
                         let mut in_code = false;
@@ -210,19 +219,25 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     if matches!(app.chat_state, crate::app::ChatState::Streaming) {
-        if !app.chat_messages.last().is_some_and(|m| m.role == "assistant" && !m.content.is_empty()) {
-            lines.push(Line::from(Span::styled(
-                "◆ thinking...",
-                theme::thinking(),
-            )));
+        let has_text = app.chat_messages.last().is_some_and(|m| m.role == "assistant" && !m.content.is_empty());
+        if !has_text {
+            let spinner = app.spinner_frame();
+            let thinking_text = app.last_thinking_summary.as_deref().unwrap_or("thinking...");
+            let preview: String = thinking_text.chars().take(60).collect();
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {} ", spinner), theme::warn()),
+                Span::styled(preview, theme::thinking()),
+            ]));
         }
     }
 
     let visible = area.height;
-    let scroll = if lines.len() as u16 > visible {
-        lines.len() as u16 - visible
+    let total = lines.len() as u16;
+    let max_scroll = total.saturating_sub(visible);
+    let scroll = if app.scroll_pinned {
+        max_scroll
     } else {
-        0
+        max_scroll.saturating_sub(app.scroll_offset)
     };
 
     let messages = Paragraph::new(lines)
@@ -260,19 +275,6 @@ fn ghost_text(app: &App) -> String {
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let ghost = ghost_text(app);
 
-    let mut spans = vec![
-        Span::styled(" › ", theme::accent_bold()),
-    ];
-
-    if app.input.is_empty() && matches!(app.chat_state, crate::app::ChatState::Idle) {
-        spans.push(Span::styled("Type a message or / for commands...", theme::muted()));
-    } else {
-        spans.push(Span::raw(&app.input));
-        if !ghost.is_empty() {
-            spans.push(Span::styled(ghost, theme::muted()));
-        }
-    }
-
     let cwd = std::env::current_dir()
         .map(|p| {
             let home = dirs::home_dir().unwrap_or_default();
@@ -285,19 +287,54 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         .unwrap_or_default();
     let title = format!(" {} ", cwd);
 
-    let input = Paragraph::new(Line::from(spans))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(title)
-            .title_style(theme::dim())
-            .border_style(theme::accent()),
-    );
-    frame.render_widget(input, area);
+    if app.is_multiline() {
+        let mut text_lines: Vec<Line> = Vec::new();
+        for (i, line) in app.input.split('\n').enumerate() {
+            let prefix = if i == 0 { " › " } else { " … " };
+            text_lines.push(Line::from(vec![
+                Span::styled(prefix, theme::accent_bold()),
+                Span::raw(line.to_string()),
+            ]));
+        }
+        let input = Paragraph::new(text_lines)
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .title_style(theme::dim())
+                .border_style(theme::accent()));
+        frame.render_widget(input, area);
 
-    let cursor_x = area.x + 4 + app.input[..app.input_cursor].chars().count() as u16;
-    let cursor_y = area.y + 1;
-    frame.set_cursor_position((cursor_x, cursor_y));
+        let before_cursor = &app.input[..app.input_cursor];
+        let cursor_line = before_cursor.matches('\n').count();
+        let line_start = before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let col = app.input[line_start..app.input_cursor].chars().count();
+        let cursor_x = area.x + 4 + col as u16;
+        let cursor_y = area.y + 1 + cursor_line as u16;
+        frame.set_cursor_position((cursor_x, cursor_y));
+    } else {
+        let mut spans = vec![
+            Span::styled(" › ", theme::accent_bold()),
+        ];
+        if app.input.is_empty() && matches!(app.chat_state, crate::app::ChatState::Idle) {
+            spans.push(Span::styled("Type a message or / for commands...", theme::muted()));
+        } else {
+            spans.push(Span::raw(&app.input));
+            if !ghost.is_empty() {
+                spans.push(Span::styled(ghost, theme::muted()));
+            }
+        }
+        let input = Paragraph::new(Line::from(spans))
+            .block(Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .title_style(theme::dim())
+                .border_style(theme::accent()));
+        frame.render_widget(input, area);
+
+        let cursor_x = area.x + 4 + app.input[..app.input_cursor].chars().count() as u16;
+        let cursor_y = area.y + 1;
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 fn render_suggestions(frame: &mut Frame, app: &App, input_area: Rect) {
