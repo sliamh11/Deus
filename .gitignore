@@ -53,6 +53,9 @@ config.local.json    # local config overrides that may contain secrets
 # Personal/one-time scripts
 scripts/rename-repo.sh
 
+# Rust build artifacts
+tui/target/
+
 # Python virtual env
 .venv/
 __pycache__/

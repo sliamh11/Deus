@@ -1,0 +1,648 @@
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use crate::config;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Chat,
+    Wardens,
+    Services,
+    Channels,
+    Config,
+    Status,
+}
+
+impl Tab {
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Chat => "Chat",
+            Tab::Wardens => "Wardens",
+            Tab::Services => "Services",
+            Tab::Channels => "Channels",
+            Tab::Config => "Config",
+            Tab::Status => "Status",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub enum MessageBlock {
+    Text(String),
+    Thinking(String),
+    ToolUse { tool: String, detail: String },
+}
+
+#[derive(Clone)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+    pub blocks: Vec<MessageBlock>,
+}
+
+impl ChatMessage {
+    pub fn simple(role: &str, content: &str) -> Self {
+        Self {
+            role: role.to_string(),
+            content: content.to_string(),
+            blocks: vec![MessageBlock::Text(content.to_string())],
+        }
+    }
+}
+
+pub enum ChatState {
+    Idle,
+    Streaming,
+}
+
+pub struct CommandDef {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub args: &'static [&'static str],
+}
+
+pub const MODELS: &[&str] = &["sonnet", "opus", "haiku"];
+
+pub const COMMANDS: &[CommandDef] = &[
+    CommandDef { name: "/wardens", description: "Toggle warden quality gates", args: &["enable", "disable", "reset", "triggers", "instructions"] },
+    CommandDef { name: "/services", description: "View service health status", args: &["refresh"] },
+    CommandDef { name: "/channels", description: "View channel connections", args: &["whatsapp", "telegram", "discord", "slack", "gmail", "x"] },
+    CommandDef { name: "/config", description: "View Deus configuration", args: &["backend", "vault", "chrome"] },
+    CommandDef { name: "/status", description: "Full system dashboard", args: &["refresh"] },
+    CommandDef { name: "/model", description: "Switch model", args: &["sonnet", "opus", "haiku"] },
+    CommandDef { name: "/compress", description: "Save session to vault", args: &[] },
+    CommandDef { name: "/checkpoint", description: "Save mid-session checkpoint", args: &[] },
+    CommandDef { name: "/compact", description: "Compact context window", args: &[] },
+    CommandDef { name: "/resume", description: "Load recent work context", args: &[] },
+    CommandDef { name: "/history", description: "Browse past sessions", args: &["today", "yesterday", "week"] },
+    CommandDef { name: "/init", description: "Initialize project CLAUDE.md", args: &[] },
+    CommandDef { name: "/help", description: "Show available commands", args: &[] },
+    CommandDef { name: "/clear", description: "Clear chat history", args: &[] },
+    CommandDef { name: "/quit", description: "Exit Deus", args: &[] },
+];
+
+pub struct App {
+    pub tab: Tab,
+    pub cursor: usize,
+    pub input: String,
+    pub input_cursor: usize,
+    pub input_history: Vec<String>,
+    pub history_index: Option<usize>,
+    pub suggestions: Vec<usize>,
+    pub arg_suggestions: Vec<String>,
+    pub suggestion_cursor: usize,
+    pub chat_messages: Vec<ChatMessage>,
+    pub chat_state: ChatState,
+    pub stream_rx: Option<mpsc::Receiver<StreamChunk>>,
+    pub model: String,
+    pub session_id: String,
+    pub token_count: u32,
+    pub cost_usd: f64,
+    pub session_start: Instant,
+    pub wardens: Vec<config::wardens::WardenEntry>,
+    pub services: Vec<config::healthcheck::ServiceEntry>,
+    pub channels: Vec<config::channels::ChannelEntry>,
+    pub deus_config: Vec<(String, String)>,
+}
+
+pub enum StreamChunk {
+    Text(String),
+    Thinking(String),
+    ToolUse { tool: String, status: String },
+    ToolResult { tool: String },
+    CostUpdate { cost_usd: f64, input_tokens: u64, output_tokens: u64 },
+    Done,
+    Error(String),
+}
+
+fn parse_stream_line(line: &str) -> Option<StreamChunk> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let event_type = v.get("type")?.as_str()?;
+
+    match event_type {
+        "assistant" => {
+            let content = v.get("message")?.get("content")?.as_array()?;
+            for block in content {
+                let block_type = block.get("type")?.as_str()?;
+                match block_type {
+                    "text" => {
+                        let text = block.get("text")?.as_str()?;
+                        return Some(StreamChunk::Text(text.to_string()));
+                    }
+                    "thinking" => {
+                        let text = block.get("thinking")?.as_str()?;
+                        return Some(StreamChunk::Thinking(text.to_string()));
+                    }
+                    "tool_use" => {
+                        let name = block.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                        let input = block.get("input").map(|i| {
+                            if let Some(cmd) = i.get("command").and_then(|c| c.as_str()) {
+                                cmd.chars().take(60).collect::<String>()
+                            } else if let Some(path) = i.get("file_path").and_then(|p| p.as_str()) {
+                                path.to_string()
+                            } else {
+                                String::new()
+                            }
+                        }).unwrap_or_default();
+                        return Some(StreamChunk::ToolUse { tool: name.to_string(), status: input });
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        "user" => {
+            let content = v.get("message")?.get("content")?.as_array()?;
+            for block in content {
+                if block.get("type")?.as_str()? == "tool_result" {
+                    let tool_use_id = block.get("tool_use_id").and_then(|t| t.as_str()).unwrap_or("");
+                    return Some(StreamChunk::ToolResult { tool: tool_use_id.to_string() });
+                }
+            }
+            None
+        }
+        "result" => {
+            let cost = v.get("total_cost_usd").and_then(|c| c.as_f64()).unwrap_or(0.0);
+            let usage = v.get("usage");
+            let input = usage.and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64()).unwrap_or(0);
+            let output = usage.and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64()).unwrap_or(0);
+            Some(StreamChunk::CostUpdate { cost_usd: cost, input_tokens: input, output_tokens: output })
+        }
+        _ => None,
+    }
+}
+
+impl App {
+    pub fn new() -> Self {
+        let mut app = Self {
+            tab: Tab::Chat,
+            cursor: 0,
+            input: String::new(),
+            input_cursor: 0,
+            input_history: Vec::new(),
+            history_index: None,
+            suggestions: Vec::new(),
+            arg_suggestions: Vec::new(),
+            suggestion_cursor: 0,
+            chat_messages: vec![ChatMessage::simple("system", "Welcome to Deus. Type a message or / for commands.")],
+            chat_state: ChatState::Idle,
+            stream_rx: None,
+            model: "sonnet".to_string(),
+            session_id: format!("deus-tui-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis()),
+            token_count: 0,
+            cost_usd: 0.0,
+            session_start: Instant::now(),
+            wardens: Vec::new(),
+            services: Vec::new(),
+            channels: Vec::new(),
+            deus_config: Vec::new(),
+        };
+        app.refresh();
+        app
+    }
+
+    pub fn refresh(&mut self) {
+        self.wardens = config::wardens::load();
+        self.services = config::healthcheck::load();
+        self.channels = config::channels::load();
+        self.deus_config = config::deus::load();
+    }
+
+    pub fn next_item(&mut self) {
+        let max = self.item_count();
+        if max > 0 && self.cursor < max - 1 {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn prev_item(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    pub fn toggle_item(&mut self) {
+        if self.tab == Tab::Wardens && self.cursor < self.wardens.len() {
+            self.wardens[self.cursor].enabled = !self.wardens[self.cursor].enabled;
+            config::wardens::save(&self.wardens);
+        }
+    }
+
+    pub fn send_message(&mut self) {
+        let msg = self.input.trim().to_string();
+        if msg.is_empty() {
+            return;
+        }
+
+        // Save to input history
+        if !msg.starts_with('/') || msg.starts_with("/compress") || msg.starts_with("/checkpoint") {
+            self.input_history.push(msg.clone());
+        }
+        self.history_index = None;
+
+        // Handle commands
+        let handled = self.handle_command(&msg);
+        if handled {
+            self.input.clear();
+            self.input_cursor = 0;
+            self.suggestions.clear();
+            self.arg_suggestions.clear();
+            return;
+        }
+
+        self.chat_messages.push(ChatMessage::simple("user", &msg));
+        self.input.clear();
+        self.input_cursor = 0;
+        self.suggestions.clear();
+        self.chat_state = ChatState::Streaming;
+        self.suggestions.clear();
+
+        let (tx, rx) = mpsc::channel();
+        self.stream_rx = Some(rx);
+        let model = self.model.clone();
+        let session_id = self.session_id.clone();
+
+        thread::spawn(move || {
+            let child = Command::new("claude")
+                .args(["-p", "--output-format", "stream-json", "--verbose",
+                       "--session-id", &session_id, "--model", &model, &msg])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn();
+
+            match child {
+                Ok(mut process) => {
+                    if let Some(stdout) = process.stdout.take() {
+                        let reader = BufReader::new(stdout);
+                        for line in reader.lines() {
+                            match line {
+                                Ok(text) => {
+                                    if let Some(chunk) = parse_stream_line(&text) {
+                                        let _ = tx.send(chunk);
+                                    }
+                                }
+                                Err(e) => { let _ = tx.send(StreamChunk::Error(e.to_string())); break; }
+                            }
+                        }
+                    }
+                    let _ = process.wait();
+                    let _ = tx.send(StreamChunk::Done);
+                }
+                Err(e) => {
+                    let _ = tx.send(StreamChunk::Error(format!("Failed to run claude: {}", e)));
+                    let _ = tx.send(StreamChunk::Done);
+                }
+            }
+        });
+
+        self.chat_messages.push(ChatMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            blocks: Vec::new(),
+        });
+    }
+
+    fn handle_command(&mut self, msg: &str) -> bool {
+        let parts: Vec<&str> = msg.splitn(2, ' ').collect();
+        let cmd = parts[0];
+        let arg = parts.get(1).unwrap_or(&"").trim();
+
+        match cmd {
+            "/wardens" if arg.is_empty() => { self.tab = Tab::Wardens; self.cursor = 0; true }
+            "/wardens" => {
+                // /wardens enable|disable|reset <name> → pass to python CLI
+                false
+            }
+            "/services" => { self.tab = Tab::Services; self.cursor = 0; true }
+            "/channels" => { self.tab = Tab::Channels; self.cursor = 0; true }
+            "/config" => { self.tab = Tab::Config; self.cursor = 0; true }
+            "/status" => { self.tab = Tab::Status; self.cursor = 0; true }
+            "/clear" => { self.chat_messages.clear(); true }
+            "/quit" => { std::process::exit(0); }
+            "/model" => {
+                if arg.is_empty() {
+                    self.chat_messages.push(ChatMessage::simple("system", &format!("Current model: {}. Available: {}", self.model, MODELS.join(", "))));
+                } else if MODELS.contains(&arg) {
+                    self.model = arg.to_string();
+                    self.chat_messages.push(ChatMessage::simple("system", &format!("Switched to {}", self.model)));
+                } else {
+                    self.chat_messages.push(ChatMessage::simple("system", &format!("Unknown model: {}. Available: {}", arg, MODELS.join(", "))));
+                }
+                true
+            }
+            "/help" => {
+                let help: String = COMMANDS.iter()
+                    .map(|c| format!("  {:16} {}", c.name, c.description))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.chat_messages.push(ChatMessage::simple("system", &format!("Available commands:\n\n{}\n\nKeyboard shortcuts:\n  Ctrl+L  Clear screen\n  Ctrl+U  Clear input\n  Ctrl+A  Start of line\n  Ctrl+E  End of line\n  ↑/↓     Input history (when no suggestions)", help)));
+                true
+            }
+            "/history" => {
+                self.chat_messages.push(ChatMessage::simple("system", "Session history browsing coming in Phase 2."));
+                true
+            }
+            "/init" | "/compress" | "/checkpoint" | "/compact" | "/resume" => {
+                false // Pass through to claude
+            }
+            _ => false,
+        }
+    }
+
+    pub fn poll_response(&mut self) {
+        if let Some(rx) = &self.stream_rx {
+            while let Ok(chunk) = rx.try_recv() {
+                match chunk {
+                    StreamChunk::Text(text) => {
+                        if let Some(last) = self.chat_messages.last_mut() {
+                            if last.role == "assistant" {
+                                if !last.content.is_empty() {
+                                    last.content.push('\n');
+                                }
+                                last.content.push_str(&text);
+                                last.blocks.push(MessageBlock::Text(text));
+                            }
+                        }
+                    }
+                    StreamChunk::Thinking(text) => {
+                        if let Some(last) = self.chat_messages.last_mut() {
+                            if last.role == "assistant" {
+                                last.blocks.push(MessageBlock::Thinking(text));
+                            }
+                        }
+                    }
+                    StreamChunk::ToolUse { tool, status } => {
+                        if let Some(last) = self.chat_messages.last_mut() {
+                            if last.role == "assistant" {
+                                let line = format!("[{}] {}", tool, status);
+                                if !last.content.is_empty() {
+                                    last.content.push('\n');
+                                }
+                                last.content.push_str(&line);
+                                last.blocks.push(MessageBlock::ToolUse { tool, detail: status });
+                            }
+                        }
+                    }
+                    StreamChunk::ToolResult { .. } => {}
+                    StreamChunk::CostUpdate { cost_usd, input_tokens, output_tokens } => {
+                        self.cost_usd = cost_usd;
+                        self.token_count = (input_tokens + output_tokens) as u32;
+                    }
+                    StreamChunk::Done => {
+                        self.chat_state = ChatState::Idle;
+                        self.stream_rx = None;
+                        return;
+                    }
+                    StreamChunk::Error(e) => {
+                        if let Some(last) = self.chat_messages.last_mut() {
+                            if last.role == "assistant" {
+                                last.content.push_str(&format!("\n[Error: {}]", e));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn update_suggestions(&mut self) {
+        self.arg_suggestions.clear();
+
+        if !self.input.starts_with('/') {
+            self.suggestions.clear();
+            self.suggestion_cursor = 0;
+            return;
+        }
+
+        // Check if we're completing an argument (input has a space after the command)
+        if let Some(space_idx) = self.input.find(' ') {
+            let cmd_part = &self.input[..space_idx];
+            let arg_part = &self.input[space_idx + 1..];
+
+            if let Some(cmd) = COMMANDS.iter().find(|c| c.name == cmd_part) {
+                if !cmd.args.is_empty() {
+                    self.arg_suggestions = cmd.args
+                        .iter()
+                        .filter(|a| a.starts_with(arg_part))
+                        .map(|a| a.to_string())
+                        .collect();
+                    if self.suggestion_cursor >= self.arg_suggestions.len() {
+                        self.suggestion_cursor = 0;
+                    }
+                }
+            }
+            self.suggestions.clear();
+            return;
+        }
+
+        // Command completion
+        let prefix = &self.input;
+        self.suggestions = COMMANDS
+            .iter()
+            .enumerate()
+            .filter(|(_, cmd)| cmd.name.starts_with(prefix))
+            .map(|(i, _)| i)
+            .collect();
+        if self.suggestion_cursor >= self.suggestions.len() {
+            self.suggestion_cursor = 0;
+        }
+    }
+
+    pub fn has_suggestions(&self) -> bool {
+        (!self.suggestions.is_empty() || !self.arg_suggestions.is_empty()) && self.input.starts_with('/')
+    }
+
+    pub fn dismiss_suggestions(&mut self) {
+        self.suggestions.clear();
+        self.arg_suggestions.clear();
+        self.suggestion_cursor = 0;
+    }
+
+    pub fn cancel_response(&mut self) {
+        self.chat_state = ChatState::Idle;
+        self.stream_rx = None;
+        if let Some(last) = self.chat_messages.last_mut() {
+            if last.role == "assistant" && last.content.is_empty() {
+                self.chat_messages.pop();
+            } else if last.role == "assistant" {
+                last.content.push_str("\n[cancelled]");
+            }
+        }
+    }
+
+    pub fn accept_suggestion(&mut self) {
+        if !self.arg_suggestions.is_empty() {
+            if let Some(arg) = self.arg_suggestions.get(self.suggestion_cursor) {
+                let space_idx = self.input.find(' ').unwrap_or(self.input.len());
+                self.input = format!("{} {}", &self.input[..space_idx], arg);
+                self.input_cursor = self.input.len();
+                self.arg_suggestions.clear();
+                self.suggestions.clear();
+            }
+            return;
+        }
+        if let Some(&cmd_idx) = self.suggestions.get(self.suggestion_cursor) {
+            let cmd = &COMMANDS[cmd_idx];
+            self.input = cmd.name.to_string();
+            if !cmd.args.is_empty() {
+                self.input.push(' ');
+            }
+            self.input_cursor = self.input.len();
+            self.suggestions.clear();
+            self.update_suggestions();
+        }
+    }
+
+    pub fn next_suggestion(&mut self) {
+        let total = self.suggestion_count();
+        if total > 0 {
+            self.suggestion_cursor = (self.suggestion_cursor + 1) % total;
+        }
+    }
+
+    pub fn prev_suggestion(&mut self) {
+        let total = self.suggestion_count();
+        if total > 0 {
+            self.suggestion_cursor = (self.suggestion_cursor + total - 1) % total;
+        }
+    }
+
+    fn suggestion_count(&self) -> usize {
+        if !self.arg_suggestions.is_empty() {
+            self.arg_suggestions.len()
+        } else {
+            self.suggestions.len()
+        }
+    }
+
+    pub fn input_char(&mut self, c: char) {
+        self.input.insert(self.input_cursor, c);
+        self.input_cursor += c.len_utf8();
+        self.update_suggestions();
+        self.history_index = None;
+    }
+
+    pub fn input_backspace(&mut self) {
+        if self.input_cursor > 0 {
+            let prev = self.input[..self.input_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.input.drain(prev..self.input_cursor);
+            self.input_cursor = prev;
+            self.update_suggestions();
+        }
+    }
+
+    pub fn input_delete_word(&mut self) {
+        if self.input_cursor == 0 {
+            return;
+        }
+        let before = &self.input[..self.input_cursor];
+        let end = before.trim_end().len();
+        let word_start = before[..end].rfind(' ')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        self.input.drain(word_start..self.input_cursor);
+        self.input_cursor = word_start;
+        self.update_suggestions();
+    }
+
+    pub fn input_delete(&mut self) {
+        if self.input_cursor < self.input.len() {
+            let next = self.input[self.input_cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| self.input_cursor + i)
+                .unwrap_or(self.input.len());
+            self.input.drain(self.input_cursor..next);
+            self.update_suggestions();
+        }
+    }
+
+    pub fn input_left(&mut self) {
+        if self.input_cursor > 0 {
+            self.input_cursor = self.input[..self.input_cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        }
+    }
+
+    pub fn input_right(&mut self) {
+        if self.input_cursor < self.input.len() {
+            self.input_cursor = self.input[self.input_cursor..]
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| self.input_cursor + i)
+                .unwrap_or(self.input.len());
+        }
+    }
+
+    pub fn input_home(&mut self) {
+        self.input_cursor = 0;
+    }
+
+    pub fn input_end(&mut self) {
+        self.input_cursor = self.input.len();
+    }
+
+    pub fn input_clear_line(&mut self) {
+        self.input.clear();
+        self.input_cursor = 0;
+        self.update_suggestions();
+    }
+
+    pub fn history_prev(&mut self) {
+        if self.input_history.is_empty() {
+            return;
+        }
+        let idx = match self.history_index {
+            None => self.input_history.len() - 1,
+            Some(i) if i > 0 => i - 1,
+            Some(_) => return,
+        };
+        self.history_index = Some(idx);
+        self.input = self.input_history[idx].clone();
+        self.input_cursor = self.input.len();
+        self.update_suggestions();
+    }
+
+    pub fn history_next(&mut self) {
+        match self.history_index {
+            None => return,
+            Some(i) if i < self.input_history.len() - 1 => {
+                self.history_index = Some(i + 1);
+                self.input = self.input_history[i + 1].clone();
+            }
+            _ => {
+                self.history_index = None;
+                self.input.clear();
+            }
+        }
+        self.input_cursor = self.input.len();
+        self.update_suggestions();
+    }
+
+    pub fn session_duration(&self) -> String {
+        let secs = self.session_start.elapsed().as_secs();
+        if secs < 60 { format!("{}s", secs) }
+        else if secs < 3600 { format!("{}m", secs / 60) }
+        else { format!("{}h{}m", secs / 3600, (secs % 3600) / 60) }
+    }
+
+    fn item_count(&self) -> usize {
+        match self.tab {
+            Tab::Chat | Tab::Status => 0,
+            Tab::Wardens => self.wardens.len(),
+            Tab::Services => self.services.len(),
+            Tab::Channels => self.channels.len(),
+            Tab::Config => self.deus_config.len(),
+        }
+    }
+}
