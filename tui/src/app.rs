@@ -66,15 +66,44 @@ pub struct CommandDef {
     pub args: &'static [&'static str],
 }
 
-pub const MODELS: &[&str] = &["sonnet", "opus", "haiku"];
+pub struct ModelDef {
+    pub id: &'static str,
+    pub display: &'static str,
+    pub backend: &'static str,
+    pub context: &'static str,
+}
 
-pub fn model_display(name: &str) -> &'static str {
-    match name {
-        "sonnet" => "Sonnet 4.6",
-        "opus" => "Opus 4.6",
-        "haiku" => "Haiku 4.5",
-        _ => "unknown",
-    }
+pub const MODEL_REGISTRY: &[ModelDef] = &[
+    ModelDef { id: "sonnet", display: "Sonnet 4.6", backend: "claude", context: "1M" },
+    ModelDef { id: "opus", display: "Opus 4.6", backend: "claude", context: "1M" },
+    ModelDef { id: "haiku", display: "Haiku 4.5", backend: "claude", context: "200K" },
+    ModelDef { id: "o3", display: "o3", backend: "codex", context: "200K" },
+    ModelDef { id: "o4-mini", display: "o4-mini", backend: "codex", context: "200K" },
+    ModelDef { id: "codex-mini", display: "Codex Mini", backend: "codex", context: "200K" },
+];
+
+pub fn model_display(id: &str) -> String {
+    MODEL_REGISTRY.iter()
+        .find(|m| m.id == id)
+        .map(|m| m.display.to_string())
+        .unwrap_or_else(|| id.to_string())
+}
+
+pub fn model_backend(id: &str) -> &'static str {
+    MODEL_REGISTRY.iter()
+        .find(|m| m.id == id)
+        .map(|m| m.backend)
+        .unwrap_or("claude")
+}
+
+pub fn model_ids() -> Vec<&'static str> {
+    MODEL_REGISTRY.iter().map(|m| m.id).collect()
+}
+
+pub fn model_arg_labels() -> Vec<String> {
+    MODEL_REGISTRY.iter()
+        .map(|m| format!("{} ({}, {})", m.id, m.display, m.context))
+        .collect()
 }
 
 pub const COMMANDS: &[CommandDef] = &[
@@ -83,7 +112,7 @@ pub const COMMANDS: &[CommandDef] = &[
     CommandDef { name: "/channels", description: "Channel status", args: &[] },
     CommandDef { name: "/config", description: "Configuration", args: &["backend", "vault"] },
     CommandDef { name: "/status", description: "System dashboard", args: &["refresh"] },
-    CommandDef { name: "/model", description: "Switch model", args: &["sonnet (4.6, 1M)", "opus (4.6, 1M)", "haiku (4.5, 200K)"] },
+    CommandDef { name: "/model", description: "Switch model", args: &[] },
     CommandDef { name: "/compress", description: "Save to vault", args: &[] },
     CommandDef { name: "/checkpoint", description: "Mid-session save", args: &[] },
     CommandDef { name: "/compact", description: "Compact context", args: &[] },
@@ -192,6 +221,21 @@ fn parse_stream_line(line: &str) -> Option<StreamChunk> {
             let input = usage.and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64()).unwrap_or(0);
             let output = usage.and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64()).unwrap_or(0);
             Some(StreamChunk::CostUpdate { cost_usd: cost, input_tokens: input, output_tokens: output })
+        }
+        // Codex JSONL events
+        "item.completed" => {
+            let text = v.get("item")?.get("text")?.as_str()?;
+            Some(StreamChunk::Text(text.to_string()))
+        }
+        "turn.completed" => {
+            let usage = v.get("usage");
+            let input = usage.and_then(|u| u.get("input_tokens")).and_then(|t| t.as_u64()).unwrap_or(0);
+            let output = usage.and_then(|u| u.get("output_tokens")).and_then(|t| t.as_u64()).unwrap_or(0);
+            Some(StreamChunk::CostUpdate { cost_usd: 0.0, input_tokens: input, output_tokens: output })
+        }
+        "turn.failed" => {
+            let msg = v.get("error").and_then(|e| e.get("message")).and_then(|m| m.as_str()).unwrap_or("unknown error");
+            Some(StreamChunk::Error(msg.to_string()))
         }
         _ => None,
     }
@@ -333,21 +377,37 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.stream_rx = Some(rx);
         let model = self.model.clone();
+        let backend = model_backend(&self.model).to_string();
         let is_continuation = self.turn_count > 0;
         self.turn_count += 1;
 
         thread::spawn(move || {
-            let mut args = vec!["-p", "--output-format", "stream-json", "--verbose",
-                       "--model", &model];
-            if is_continuation {
-                args.push("--continue");
-            }
-            args.push(&msg);
-            let child = Command::new("claude")
-                .args(&args)
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn();
+            let child = match backend.as_str() {
+                "codex" => {
+                    let mut args = vec!["exec".to_string(), "--json".to_string(),
+                        "-m".to_string(), model.clone()];
+                    args.push(msg.clone());
+                    Command::new("codex")
+                        .args(&args)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                }
+                _ => {
+                    let mut args = vec!["-p", "--output-format", "stream-json", "--verbose",
+                        "--model", &model];
+                    if is_continuation {
+                        args.push("--continue");
+                    }
+                    args.push(&msg);
+                    Command::new("claude")
+                        .args(&args)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                }
+            };
 
             match child {
                 Ok(mut process) => {
@@ -411,15 +471,32 @@ impl App {
             "/clear" => { self.chat_messages.clear(); true }
             "/quit" => { std::process::exit(0); }
             "/model" => {
+                let ids = model_ids();
                 if arg.is_empty() {
-                    let available: Vec<&str> = MODELS.iter().map(|m| model_display(m)).collect();
-                    self.chat_messages.push(ChatMessage::simple("system", &format!("Current model: {}. Available: {}", model_display(&self.model), available.join(", "))));
-                } else if MODELS.contains(&arg) {
+                    let list: Vec<String> = MODEL_REGISTRY.iter()
+                        .map(|m| format!("{} ({})", m.display, m.context))
+                        .collect();
+                    self.chat_messages.push(ChatMessage::simple("system", &format!(
+                        "Current: {} [{}]\nAvailable: {}",
+                        model_display(&self.model), model_backend(&self.model), list.join(", ")
+                    )));
+                } else if ids.contains(&arg) {
+                    let prev_backend = model_backend(&self.model);
                     self.model = arg.to_string();
-                    self.chat_messages.push(ChatMessage::simple("system", &format!("Switched to {}", model_display(&self.model))));
+                    let new_backend = model_backend(&self.model);
+                    if prev_backend != new_backend {
+                        self.turn_count = 0;
+                    }
+                    self.chat_messages.push(ChatMessage::simple("system", &format!(
+                        "Switched to {} [{}]", model_display(&self.model), new_backend
+                    )));
                 } else {
-                    let available: Vec<&str> = MODELS.iter().map(|m| model_display(m)).collect();
-                    self.chat_messages.push(ChatMessage::simple("system", &format!("Unknown model: {}. Available: {}", arg, available.join(", "))));
+                    let list: Vec<String> = MODEL_REGISTRY.iter()
+                        .map(|m| format!("{} ({})", m.id, m.display))
+                        .collect();
+                    self.chat_messages.push(ChatMessage::simple("system", &format!(
+                        "Unknown model: {}. Available: {}", arg, list.join(", ")
+                    )));
                 }
                 true
             }
@@ -523,15 +600,20 @@ impl App {
             let arg_part = &self.input[space_idx + 1..];
 
             if let Some(cmd) = COMMANDS.iter().find(|c| c.name == cmd_part) {
-                if !cmd.args.is_empty() {
+                if cmd.name == "/model" {
+                    self.arg_suggestions = model_arg_labels()
+                        .into_iter()
+                        .filter(|a| a.starts_with(arg_part))
+                        .collect();
+                } else if !cmd.args.is_empty() {
                     self.arg_suggestions = cmd.args
                         .iter()
                         .filter(|a| a.starts_with(arg_part))
                         .map(|a| a.to_string())
                         .collect();
-                    if self.suggestion_cursor >= self.arg_suggestions.len() {
-                        self.suggestion_cursor = 0;
-                    }
+                }
+                if self.suggestion_cursor >= self.arg_suggestions.len() {
+                    self.suggestion_cursor = 0;
                 }
             }
             self.suggestions.clear();
