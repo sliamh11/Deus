@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use std::fs;
-use std::path::Path;
 use std::process::Command;
 use std::time::SystemTime;
+use crate::platform;
 
 #[derive(Clone)]
 pub struct ServiceEntry {
@@ -25,7 +25,7 @@ struct HealthcheckFile {
 }
 
 fn check_launchctl(label: &str) -> &'static str {
-    if cfg!(not(target_os = "macos")) {
+    if !platform::is_macos() {
         return "unsupported";
     }
     let uid = unsafe { libc::getuid() };
@@ -43,13 +43,7 @@ fn check_launchctl(label: &str) -> &'static str {
 }
 
 fn check_heartbeat(path: &str, max_staleness: u64) -> &'static str {
-    let expanded = if path.starts_with('~') {
-        dirs::home_dir()
-            .map(|h| h.join(&path[2..]))
-            .unwrap_or_else(|| Path::new(path).to_path_buf())
-    } else {
-        Path::new(path).to_path_buf()
-    };
+    let expanded = platform::expand_tilde(path);
 
     let meta = match fs::metadata(&expanded) {
         Ok(m) => m,
@@ -66,9 +60,7 @@ fn check_heartbeat(path: &str, max_staleness: u64) -> &'static str {
 }
 
 pub fn load() -> Vec<ServiceEntry> {
-    let config_dir = dirs::home_dir()
-        .map(|h| h.join(".config").join("deus").join("healthcheck.json"))
-        .unwrap_or_default();
+    let config_dir = platform::config_dir().join("healthcheck.json");
 
     let content = match fs::read_to_string(&config_dir) {
         Ok(c) => c,

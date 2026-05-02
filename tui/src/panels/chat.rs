@@ -1,8 +1,9 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
-use crate::app::{App, MessageBlock, COMMANDS};
+use crate::app::{App, MessageBlock, SubagentStatus, COMMANDS};
 use crate::bidi;
+use crate::platform;
 use crate::theme;
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
@@ -155,6 +156,87 @@ fn render_welcome(lines: &mut Vec<Line<'static>>) {
     lines.push(Line::from(""));
 }
 
+fn render_subagent_block(
+    lines: &mut Vec<Line<'static>>,
+    app: &App,
+    subagent_type: &str,
+    description: &str,
+    status: &SubagentStatus,
+    output_preview: Option<&str>,
+    is_warden: bool,
+) {
+    let (icon, icon_style, name_style) = match (is_warden, status) {
+        (true, SubagentStatus::Running) => {
+            let spinner = app.spinner_frame();
+            (format!(" ⛨{} ", spinner), theme::warden_name(), theme::warden_name())
+        }
+        (true, SubagentStatus::Completed) => {
+            (" ⛨✓ ".to_string(), theme::verdict_ship(), theme::warden_name())
+        }
+        (false, SubagentStatus::Running) => {
+            let spinner = app.spinner_frame();
+            (format!(" ◈{} ", spinner), theme::agent_name(), theme::agent_name())
+        }
+        (false, SubagentStatus::Completed) => {
+            (" ◈✓ ".to_string(), Style::default().fg(theme::GOOD), theme::agent_name())
+        }
+    };
+
+    let label = if is_warden { "Warden" } else { "Agent" };
+    lines.push(Line::from(vec![
+        Span::styled(icon, icon_style),
+        Span::styled(format!("{} ({})", label, subagent_type), name_style),
+        Span::styled(format!("  {}", description), theme::agent_detail()),
+    ]));
+
+    if *status == SubagentStatus::Completed && app.show_tools {
+        if let Some(preview) = output_preview {
+            let max_lines = if is_warden { 10 } else { 5 };
+            let total_lines = preview.lines().count();
+            for (i, line) in preview.lines().take(max_lines).enumerate() {
+                let text = if is_warden {
+                    highlight_verdict(line)
+                } else {
+                    Line::from(vec![
+                        Span::styled("   │ ", theme::muted()),
+                        Span::raw(line.to_string()),
+                    ])
+                };
+                lines.push(text);
+                if i == max_lines - 1 && total_lines > max_lines {
+                    lines.push(Line::from(Span::styled("   │ ⋯", theme::muted())));
+                }
+            }
+        }
+    }
+}
+
+fn highlight_verdict(line: &str) -> Line<'static> {
+    let trimmed = line.trim();
+    if trimmed.contains("SHIP") {
+        return Line::from(vec![
+            Span::styled("   │ ", theme::muted()),
+            Span::styled(line.to_string(), theme::verdict_ship()),
+        ]);
+    }
+    if trimmed.contains("REVISE") {
+        return Line::from(vec![
+            Span::styled("   │ ", theme::muted()),
+            Span::styled(line.to_string(), theme::verdict_revise()),
+        ]);
+    }
+    if trimmed.contains("HOLD") {
+        return Line::from(vec![
+            Span::styled("   │ ", theme::muted()),
+            Span::styled(line.to_string(), theme::verdict_hold()),
+        ]);
+    }
+    Line::from(vec![
+        Span::styled("   │ ", theme::muted()),
+        Span::raw(line.to_string()),
+    ])
+}
+
 fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
 
@@ -195,12 +277,15 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
             for block in &msg.blocks {
                 match block {
                     MessageBlock::Thinking(_) => {}
-                    MessageBlock::ToolUse { tool, detail } => {
+                    MessageBlock::ToolUse { tool, detail, .. } => {
                         lines.push(Line::from(vec![
                             Span::styled(" ▸ ", Style::default().fg(theme::FLAME)),
                             Span::styled(tool.clone(), theme::tool_name()),
                             Span::styled(format!(" {}", detail), theme::tool_detail()),
                         ]));
+                    }
+                    MessageBlock::SubagentBlock { subagent_type, description, status, output_preview, is_warden, .. } => {
+                        render_subagent_block(&mut lines, app, subagent_type, description, status, output_preview.as_deref(), *is_warden);
                     }
                     MessageBlock::Text(text) => {
                         let mut in_code = false;
@@ -295,16 +380,7 @@ fn ghost_text(app: &App) -> String {
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let ghost = ghost_text(app);
 
-    let cwd = std::env::current_dir()
-        .map(|p| {
-            let home = dirs::home_dir().unwrap_or_default();
-            if let Ok(rel) = p.strip_prefix(&home) {
-                format!("~/{}", rel.display())
-            } else {
-                p.display().to_string()
-            }
-        })
-        .unwrap_or_default();
+    let cwd = platform::display_path(&platform::current_dir());
     let title = format!(" {} ", cwd);
 
     if app.is_multiline() {

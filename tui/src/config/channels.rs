@@ -1,6 +1,7 @@
 use std::fs;
 
 use super::repo_root;
+use crate::platform;
 
 #[derive(Clone)]
 pub struct ChannelEntry {
@@ -9,7 +10,7 @@ pub struct ChannelEntry {
 }
 
 fn env_has(key: &str) -> bool {
-    if std::env::var(key).is_ok() {
+    if platform::env_var(key).is_some() {
         return true;
     }
     let env_path = repo_root().join(".env");

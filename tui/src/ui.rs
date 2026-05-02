@@ -56,6 +56,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         theme::accent(),
     ));
 
+    if app.mode != "home" {
+        left.push(Span::styled("│ ", theme::muted()));
+        left.push(Span::styled("EXT ", theme::warn()));
+    }
+
     if !app.git_branch.is_empty() {
         left.push(Span::styled("│ ", theme::muted()));
         left.push(Span::styled(format!(" {}", app.git_branch), theme::dim()));

@@ -100,3 +100,30 @@ pub fn diff_del() -> Style {
 pub fn diff_hunk() -> Style {
     Style::default().fg(OCEAN)
 }
+
+pub const AGENT: Color = Color::Rgb(0x9B, 0x59, 0xB6);
+pub const SHIELD: Color = Color::Rgb(0xD4, 0xAA, 0x00);
+
+pub fn agent_name() -> Style {
+    Style::default().fg(AGENT).add_modifier(Modifier::BOLD)
+}
+
+pub fn agent_detail() -> Style {
+    Style::default().fg(TEXT_DIM).add_modifier(Modifier::ITALIC)
+}
+
+pub fn warden_name() -> Style {
+    Style::default().fg(SHIELD).add_modifier(Modifier::BOLD)
+}
+
+pub fn verdict_ship() -> Style {
+    Style::default().fg(GOOD).add_modifier(Modifier::BOLD)
+}
+
+pub fn verdict_revise() -> Style {
+    Style::default().fg(WARN).add_modifier(Modifier::BOLD)
+}
+
+pub fn verdict_hold() -> Style {
+    Style::default().fg(BAD).add_modifier(Modifier::BOLD)
+}

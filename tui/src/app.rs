@@ -1,12 +1,13 @@
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read as _};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config;
-
-
+use crate::platform;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -31,11 +32,25 @@ impl Tab {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SubagentStatus {
+    Running,
+    Completed,
+}
+
 #[derive(Clone)]
 pub enum MessageBlock {
     Text(String),
     Thinking(String),
-    ToolUse { tool: String, detail: String },
+    ToolUse { id: String, tool: String, detail: String },
+    SubagentBlock {
+        id: String,
+        subagent_type: String,
+        description: String,
+        status: SubagentStatus,
+        output_preview: Option<String>,
+        is_warden: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -125,6 +140,10 @@ pub struct App {
     pub services: Vec<config::healthcheck::ServiceEntry>,
     pub channels: Vec<config::channels::ChannelEntry>,
     pub deus_config: Vec<(String, String)>,
+    pub system_context_file: Option<PathBuf>,
+    pub bypass_permissions: bool,
+    pub mode: String,
+    pub active_subagent_ids: HashSet<String>,
 }
 
 // StreamChunk and parsing delegated to backend trait — see backend/mod.rs
@@ -154,6 +173,12 @@ impl App {
     }
 
     pub fn new() -> Self {
+        let ctx_file = platform::env_var("DEUS_TUI_CONTEXT_FILE").map(PathBuf::from);
+        let bypass = platform::env_flag("DEUS_TUI_BYPASS");
+        let mode = platform::env_var("DEUS_TUI_MODE").unwrap_or_else(|| "home".to_string());
+        let backend = platform::env_var("DEUS_TUI_BACKEND").unwrap_or_else(|| "claude".to_string());
+        let default_model = if backend == "codex" { "gpt-5.4" } else { "sonnet" };
+
         let mut app = Self {
             tab: Tab::Chat,
             cursor: 0,
@@ -170,7 +195,7 @@ impl App {
             chat_state: ChatState::Idle,
             stream_rx: None,
             turn_count: 0,
-            model: "sonnet".to_string(),
+            model: default_model.to_string(),
             effort: "high".to_string(),
             token_count: 0,
             cost_usd: 0.0,
@@ -188,8 +213,19 @@ impl App {
             services: Vec::new(),
             channels: Vec::new(),
             deus_config: Vec::new(),
+            system_context_file: ctx_file,
+            bypass_permissions: bypass,
+            mode,
+            active_subagent_ids: HashSet::new(),
         };
         app.refresh();
+
+        if let Some(prompt) = platform::env_var("DEUS_TUI_INITIAL_PROMPT") {
+            if !prompt.is_empty() {
+                app.dispatch_message(prompt);
+            }
+        }
+
         app
     }
 
@@ -270,6 +306,8 @@ impl App {
             message: msg,
             effort: self.effort.clone(),
             is_continuation: self.turn_count > 0,
+            system_context_file: if self.turn_count == 0 { self.system_context_file.clone() } else { None },
+            bypass_permissions: self.bypass_permissions,
         };
         self.turn_count += 1;
         let be = backend::backend_for(&config.model);
@@ -295,7 +333,7 @@ impl App {
                         for line in reader.lines() {
                             match line {
                                 Ok(text) => {
-                                    if let Some(chunk) = be.parse_line(&text) {
+                                    for chunk in be.parse_line(&text) {
                                         let _ = tx.send(chunk);
                                     }
                                 }
@@ -422,6 +460,10 @@ impl App {
         }
     }
 
+    fn is_warden_name(&self, name: &str) -> bool {
+        self.wardens.iter().any(|w| w.name == name)
+    }
+
     pub fn poll_response(&mut self) {
         if let Some(rx) = &self.stream_rx {
             while let Ok(chunk) = rx.try_recv() {
@@ -448,7 +490,7 @@ impl App {
                             }
                         }
                     }
-                    ChunkKind::ToolUse { tool, detail } => {
+                    ChunkKind::ToolUse { id, tool, detail } => {
                         if let Some(last) = self.chat_messages.last_mut() {
                             if last.role == "assistant" {
                                 let line = format!("[{}] {}", tool, detail);
@@ -456,11 +498,41 @@ impl App {
                                     last.content.push('\n');
                                 }
                                 last.content.push_str(&line);
-                                last.blocks.push(MessageBlock::ToolUse { tool, detail });
+                                last.blocks.push(MessageBlock::ToolUse { id, tool, detail });
                             }
                         }
                     }
-                    ChunkKind::ToolResult => {}
+                    ChunkKind::SubagentStart { id, subagent_type, description } => {
+                        let is_warden = self.is_warden_name(&subagent_type);
+                        self.active_subagent_ids.insert(id.clone());
+                        if let Some(last) = self.chat_messages.last_mut() {
+                            if last.role == "assistant" {
+                                last.blocks.push(MessageBlock::SubagentBlock {
+                                    id,
+                                    subagent_type,
+                                    description,
+                                    status: SubagentStatus::Running,
+                                    output_preview: None,
+                                    is_warden,
+                                });
+                            }
+                        }
+                    }
+                    ChunkKind::ToolResult { id, content_preview } => {
+                        if self.active_subagent_ids.remove(&id) {
+                            if let Some(last) = self.chat_messages.last_mut() {
+                                for block in &mut last.blocks {
+                                    if let MessageBlock::SubagentBlock { id: bid, status, output_preview: preview, .. } = block {
+                                        if *bid == id {
+                                            *status = SubagentStatus::Completed;
+                                            *preview = Some(content_preview.clone());
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     ChunkKind::CostUpdate { cost_usd, input_tokens, output_tokens } => {
                         self.cost_usd = cost_usd;
                         self.token_count = (input_tokens + output_tokens) as u32;
@@ -470,6 +542,7 @@ impl App {
                         self.stream_rx = None;
                         self.last_turn_duration = self.turn_start.map(|t| t.elapsed());
                         self.turn_start = None;
+                        self.active_subagent_ids.clear();
                         if !self.queued_messages.is_empty() {
                             let next = self.queued_messages.remove(0);
                             self.dispatch_message(next);

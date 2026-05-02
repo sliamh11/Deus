@@ -992,9 +992,36 @@ case "$1" in
     # `deus web` launches with --chrome for Claude-in-Chrome browser integration.
     # Otherwise identical to bare `deus` / `deus home`.
     CHROME_FLAG=""
+    TUI_DEFAULT="false"
     if [ "$1" = "web" ] || [ "$(_read_config_key chrome_default)" = "true" ]; then
       CHROME_FLAG="--chrome"
     fi
+    if [ "$1" != "web" ] && [ "$(_read_config_key tui_default)" = "true" ]; then
+      TUI_DEFAULT="true"
+    fi
+
+    _launch_tui_with_context() {
+      local ctx_content="$1"
+      local initial_prompt="$2"
+      local mode="$3"
+      local tui_bin="$SCRIPT_DIR/tui/target/release/deus-tui"
+      if [ ! -x "$tui_bin" ]; then
+        printf "  Building TUI...\r"
+        (cd "$SCRIPT_DIR/tui" && cargo build --release) || { echo "TUI build failed."; exit 1; }
+      fi
+      local ctx_file=""
+      if [ -n "$ctx_content" ]; then
+        ctx_file=$(mktemp "${TMPDIR:-/tmp}/deus-tui-ctx.XXXXXX")
+        chmod 0600 "$ctx_file"
+        printf '%s' "$ctx_content" > "$ctx_file"
+        export DEUS_TUI_CONTEXT_FILE="$ctx_file"
+      fi
+      [ -n "$initial_prompt" ] && export DEUS_TUI_INITIAL_PROMPT="$initial_prompt"
+      export DEUS_TUI_BYPASS="${PREFS_BYPASS:-true}"
+      export DEUS_TUI_MODE="$mode"
+      export DEUS_TUI_BACKEND="$CLI_AGENT"
+      exec "$tui_bin"
+    }
     TOKEN=$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["claudeAiOauth"]["accessToken"])' "$HOME/.claude/.credentials.json" 2>/dev/null)
     if [ -z "$TOKEN" ]; then
       echo "Error: could not read token from ~/.claude/.credentials.json"
@@ -1322,15 +1349,20 @@ $STARTUP_GREETING"
         export $EXTRA_ENV
       fi
 
+      FULL_PROMPT=""
       if [ -n "$CONTEXT" ]; then
-        launch_agent --append-system-prompt "$(printf '%s' "$CONTEXT")
+        FULL_PROMPT="$(printf '%s' "$CONTEXT")
 
 $STARTUP_INSTRUCTION"
-        exit $?
       else
-        launch_agent --append-system-prompt "$STARTUP_INSTRUCTION"
-        exit $?
+        FULL_PROMPT="$STARTUP_INSTRUCTION"
       fi
+
+      if [ "$TUI_DEFAULT" = "true" ]; then
+        cd "$CURRENT_DIR" && _launch_tui_with_context "$FULL_PROMPT" "" "external"
+      fi
+      launch_agent --append-system-prompt "$FULL_PROMPT"
+      exit $?
     fi
 
     # ─── HOME MODE ───
@@ -1345,13 +1377,6 @@ $STARTUP_INSTRUCTION"
     # Running from ~/deus — full startup with optional catch-me-up greeting.
     if [ "$PREFS_CATCH_ME_UP" = "false" ]; then
       STARTUP_INSTRUCTION="STARTUP INSTRUCTION: Context from the memory vault has been pre-loaded above. Wait for the user's instructions."
-      if [ -n "$CONTEXT" ]; then
-        cd "$HOME/deus" && launch_agent --append-system-prompt "$(printf '%s' "$CONTEXT")
-
-$STARTUP_INSTRUCTION"
-      else
-        cd "$HOME/deus" && launch_agent
-      fi
     else
       STARTUP_INSTRUCTION="STARTUP INSTRUCTION: Context from the memory vault has been pre-loaded above, BUT it is a snapshot taken at deus launch and does not refresh across /clear or same-session work.
 
@@ -1371,14 +1396,29 @@ Then catch the user up using exactly this format:
 • Pending: [bullet list of pending tasks, max 3 items]
 
 Then stop and wait for the user."
+    fi
 
-      if [ -n "$CONTEXT" ]; then
-        cd "$HOME/deus" && launch_agent --append-system-prompt "$(printf '%s' "$CONTEXT")
+    FULL_PROMPT=""
+    INITIAL_MSG=""
+    if [ -n "$CONTEXT" ]; then
+      FULL_PROMPT="$(printf '%s' "$CONTEXT")
 
-$STARTUP_INSTRUCTION" "Catch me up."
-      else
-        cd "$HOME/deus" && launch_agent
-      fi
+$STARTUP_INSTRUCTION"
+    fi
+    if [ "$PREFS_CATCH_ME_UP" = "true" ]; then
+      INITIAL_MSG="Catch me up."
+    fi
+
+    if [ "$TUI_DEFAULT" = "true" ]; then
+      cd "$HOME/deus" && _launch_tui_with_context "$FULL_PROMPT" "$INITIAL_MSG" "home"
+    fi
+
+    if [ -n "$FULL_PROMPT" ] && [ -n "$INITIAL_MSG" ]; then
+      cd "$HOME/deus" && launch_agent --append-system-prompt "$FULL_PROMPT" "$INITIAL_MSG"
+    elif [ -n "$FULL_PROMPT" ]; then
+      cd "$HOME/deus" && launch_agent --append-system-prompt "$FULL_PROMPT"
+    else
+      cd "$HOME/deus" && launch_agent
     fi
     ;;
   listen)
@@ -1429,6 +1469,6 @@ $STARTUP_INSTRUCTION" "Catch me up."
     echo "  deus gcal       Google Calendar token management (status|auth|ping)"
     echo "  deus listen     Record from mic, transcribe, and copy to clipboard"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
-    echo "  deus tui        Interactive terminal UI for managing wardens, services, and channels"
+    echo "  deus tui        Interactive terminal UI (set tui_default=true in config to use by default)"
     ;;
 esac

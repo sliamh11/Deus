@@ -3,6 +3,7 @@ mod backend;
 mod bidi;
 mod config;
 mod panels;
+mod platform;
 mod theme;
 mod ui;
 mod widgets;
@@ -181,6 +182,11 @@ fn main() -> io::Result<()> {
 
     terminal::disable_raw_mode()?;
     execute!(io::stdout(), PopKeyboardEnhancementFlags, LeaveAlternateScreen, DisableBracketedPaste)?;
+
+    if let Some(ctx_file) = platform::env_var("DEUS_TUI_CONTEXT_FILE") {
+        let _ = std::fs::remove_file(ctx_file);
+    }
+
     Ok(())
 }
 

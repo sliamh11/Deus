@@ -1100,10 +1100,12 @@ def check_all(project_root: Path, base_ref: str | None = None) -> int:
     bench_rc = check_bench_labels(project_root)
     print("\n=== backend strategy ===")
     bs_rc = check_backend_strategy(project_root)
+    print("\n=== platform parity ===")
+    pp_rc = check_platform_parity(project_root)
     print("\n=== coverage (informational) ===")
     cov_rc = check_coverage(project_root)
 
-    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, bm_rc, bench_rc, bs_rc, cov_rc)
+    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, bm_rc, bench_rc, bs_rc, pp_rc, cov_rc)
     print()
     if worst == 0:
         print("ALL CHECKS PASSED")
@@ -1434,6 +1436,74 @@ def check_backend_strategy(project_root: Path) -> int:
     return 1
 
 
+def check_platform_parity(project_root: Path) -> int:
+    """Verify src/platform.ts and tui/src/platform.rs expose aligned capabilities.
+
+    Extracts exported function/const names from each file and checks that
+    the Rust module covers every capability category in the TypeScript module.
+    Naming conventions differ (camelCase vs snake_case) so we compare normalized
+    category stems rather than exact names.
+    """
+    import re
+
+    ts_file = project_root / "src" / "platform.ts"
+    rs_file = project_root / "tui" / "src" / "platform.rs"
+
+    if not ts_file.exists():
+        print(f"  {ts_file.relative_to(project_root)} not found (skipped)")
+        return 0
+    if not rs_file.exists():
+        print(f"  {rs_file.relative_to(project_root)} not found (skipped)")
+        return 0
+
+    def ts_exports(content: str) -> set[str]:
+        names: set[str] = set()
+        for m in re.finditer(r'export\s+(?:const|function)\s+(\w+)', content):
+            names.add(m.group(1))
+        return names
+
+    def rs_exports(content: str) -> set[str]:
+        names: set[str] = set()
+        for m in re.finditer(r'pub\s+(?:fn|const)\s+(\w+)', content):
+            names.add(m.group(1))
+        return names
+
+    def normalize(name: str) -> str:
+        """camelCase/PascalCase/SCREAMING_SNAKE → lowercase words."""
+        s = re.sub(r'([a-z])([A-Z])', r'\1_\2', name)
+        return s.lower().replace('_', '')
+
+    # Category buckets that must be present in both
+    REQUIRED_CATEGORIES = {
+        "homedir": "Home directory accessor",
+        "ismacos": "macOS platform detection",
+        "iswindows": "Windows platform detection",
+        "islinux": "Linux platform detection",
+    }
+
+    ts_content = ts_file.read_text()
+    rs_content = rs_file.read_text()
+
+    ts_names = {normalize(n) for n in ts_exports(ts_content)}
+    rs_names = {normalize(n) for n in rs_exports(rs_content)}
+
+    missing_in_rust: list[str] = []
+    for cat, desc in REQUIRED_CATEGORIES.items():
+        if cat in ts_names and cat not in rs_names:
+            missing_in_rust.append(f"  Missing in Rust: {cat} ({desc})")
+
+    if missing_in_rust:
+        print(f"Platform parity VIOLATION — {len(missing_in_rust)} gap(s):")
+        for m in missing_in_rust:
+            print(m)
+        print(f"\nFIX: add missing capabilities to tui/src/platform.rs")
+        return 1
+
+    print(f"Platform parity: TS has {len(ts_exports(ts_content))} exports, "
+          f"RS has {len(rs_exports(rs_content))} exports — required categories aligned.")
+    return 0
+
+
 def check_coverage(project_root: Path) -> int:
     """Report docs/ files that are not referenced by any pattern (informational)."""
     patterns_dir = project_root / "patterns"
@@ -1744,6 +1814,12 @@ if __name__ == "__main__":
         help="Check that provider-specific logic stays inside tui/src/backend/ (ADR: backend-strategy-trait.md)",
     )
     parser.add_argument(
+        "--platform-parity",
+        action="store_true",
+        dest="platform_parity",
+        help="Verify src/platform.ts and tui/src/platform.rs expose aligned capabilities",
+    )
+    parser.add_argument(
         "--base",
         metavar="REF",
         help="Only check governed files changed since REF (e.g. origin/main). "
@@ -1757,7 +1833,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    if args.backend_strategy:
+    if args.platform_parity:
+        sys.exit(check_platform_parity(PROJECT_ROOT))
+    elif args.backend_strategy:
         sys.exit(check_backend_strategy(PROJECT_ROOT))
     elif args.bench_labels:
         sys.exit(check_bench_labels(PROJECT_ROOT))
