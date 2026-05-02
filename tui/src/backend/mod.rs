@@ -124,11 +124,23 @@ pub fn models_for_backend(backend: &str) -> Vec<String> {
             return b
                 .models()
                 .iter()
-                .map(|m| format!("{} — {} ({})", m.id, m.display, m.context))
+                .map(|m| format!("{} ({})", m.display, m.context))
                 .collect();
         }
     }
     Vec::new()
+}
+
+pub fn model_id_from_suggestion(suggestion: &str) -> Option<String> {
+    for b in all_backends() {
+        for m in b.models() {
+            let label = format!("{} ({})", m.display, m.context);
+            if label == suggestion {
+                return Some(m.id.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub fn backend_labels() -> Vec<String> {
