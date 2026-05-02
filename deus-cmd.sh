@@ -1187,14 +1187,27 @@ Additional instructions from the user: $PREFS_PERSONA"
 	      printf "  Restricted memory: skipping vault recall...\r"
 	    else
 	      printf "  Reading vault...\r"
-	      CLAUDE_MD=$(cat "$VAULT/CLAUDE.md" 2>/dev/null)
-	      AGENTS_MD=$(cat "$VAULT/AGENTS.md" 2>/dev/null)
-	      STUDY_MD=$(cat "$VAULT/STUDY.md" 2>/dev/null)
-	      INFRA_MD=$(cat "$VAULT/INFRA.md" 2>/dev/null)
-	      [ -n "$CLAUDE_MD" ] && CONTEXT="=== VAULT: CLAUDE.md ===\n$CLAUDE_MD"
-	      [ -n "$AGENTS_MD" ] && CONTEXT="$CONTEXT\n\n=== VAULT: AGENTS.md ===\n$AGENTS_MD"
-	      [ -n "$STUDY_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: STUDY.md ===\n$STUDY_MD"
-	      [ -n "$INFRA_MD" ]  && CONTEXT="$CONTEXT\n\n=== VAULT: INFRA.md ===\n$INFRA_MD"
+	      # vault_autoload in config.json controls which files load at startup.
+	      # Default: ["CLAUDE.md"] — all others are on-demand via /resume or hooks.
+	      # See docs/decisions/vault-autoload.md for rationale.
+	      VAULT_AUTOLOAD=$(python3 -c "
+import json; from pathlib import Path
+c = json.loads(Path('~/.config/deus/config.json').expanduser().read_text())
+for f in c.get('vault_autoload', ['CLAUDE.md']):
+    print(f)
+" 2>/dev/null || echo "CLAUDE.md")
+
+	      while IFS= read -r VFILE; do
+	        [ -z "$VFILE" ] && continue
+	        VCONTENT=$(cat "$VAULT/$VFILE" 2>/dev/null)
+	        if [ -n "$VCONTENT" ]; then
+	          if [ -z "$CONTEXT" ]; then
+	            CONTEXT="=== VAULT: $VFILE ===\n$VCONTENT"
+	          else
+	            CONTEXT="$CONTEXT\n\n=== VAULT: $VFILE ===\n$VCONTENT"
+	          fi
+	        fi
+	      done <<< "$VAULT_AUTOLOAD"
 
 	      # Memory tree (Phase 4, gated by DEUS_MEMORY_TREE=1 during dogfood).
 	      if [ "${DEUS_MEMORY_TREE:-0}" = "1" ]; then
@@ -1394,8 +1407,12 @@ $STARTUP_INSTRUCTION" "Catch me up."
         ;;
     esac
     ;;
+  tui)
+    shift
+    exec node "$SCRIPT_DIR/packages/tui/dist/index.js" "$@"
+    ;;
   *)
-    echo "Usage: deus [claude|codex] [home|auth|web|backend|gcal|listen|logs]"
+    echo "Usage: deus [claude|codex] [home|auth|web|backend|gcal|listen|logs|tui]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -1407,5 +1424,6 @@ $STARTUP_INSTRUCTION" "Catch me up."
     echo "  deus gcal       Google Calendar token management (status|auth|ping)"
     echo "  deus listen     Record from mic, transcribe, and copy to clipboard"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
+    echo "  deus tui        Interactive terminal UI for managing wardens, services, and channels"
     ;;
 esac

@@ -71,9 +71,15 @@ Single Node.js host process. No microservices.
 - OpenAI/Codex is the first opt-in backend on the same runtime contract.
 - Sessions are backend-scoped. Never resume across backend mismatch.
 - Real credentials never enter containers; adapters use the credential proxy.
+- Vault auto-loading is config-driven: `vault_autoload` in
+  `~/.config/deus/config.json` lists which vault files load at startup
+  (default: `["CLAUDE.md"]`). All other vault files are on-demand. Do not
+  hardcode vault file lists in the launcher.
 
 For backend runtime work, read
 [docs/decisions/backend-neutral-agent-runtime.md](docs/decisions/backend-neutral-agent-runtime.md).
+For vault auto-loading, read
+[docs/decisions/vault-autoload.md](docs/decisions/vault-autoload.md).
 
 ## Core Entrypoints
 

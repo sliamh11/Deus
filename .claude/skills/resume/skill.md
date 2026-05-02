@@ -18,20 +18,22 @@ Load context from the vault before starting work.
 
 First, resolve the vault path by reading `~/.config/deus/config.json` and using the `vault_path` value. If the env var `DEUS_VAULT_PATH` is set, use that instead. All paths below use `$VAULT` to mean this resolved path.
 
-1. Always read core memory:
-   $VAULT/CLAUDE.md
-
-2. Based on likely task context, also read:
+1. Core + contextual vault files (CLAUDE.md, STUDY.md, INFRA.md):
+   Check if the current context already contains `=== VAULT: CLAUDE.md ===` (injected
+   by the deus launcher at session start). If it does, these files are already loaded —
+   skip reading them. If the vault blocks are absent (e.g., running outside the deus
+   launcher, or after /clear), read them:
+   - $VAULT/CLAUDE.md (always)
    - Study session → $VAULT/STUDY.md
    - Tools / infra session → $VAULT/INFRA.md
    - If unclear → read both (they're small, ~10 lines each)
 
-3. Check for a mid-session checkpoint from today:
+2. Check for a mid-session checkpoint from today:
    Run: ls -t "$VAULT/Checkpoints/"$(date +%Y-%m-%d)-*.md 2>/dev/null | head -1
    (A shell glob — not `find | xargs`. `find | xargs` breaks when the vault path contains spaces/unicode, because xargs word-splits the filenames and ls silently fails on the broken partials.)
    If a file is found → read it fully. Note "resuming mid-session checkpoint" in the summary.
 
-4a. Load warm tier — gap-aware (no API cost):
+3a. Load warm tier — gap-aware (no API cost):
 
     First, determine the gap since the last session:
     Run: python3 scripts/memory_indexer.py --recent 1 2>/dev/null
@@ -58,13 +60,13 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
     (Must use `-print0 | xargs -0` — plain `find | xargs` word-splits on whitespace and silently drops paths with spaces/unicode.)
     Then read frontmatter only (lines between the two --- markers) of those files.
 
-4b. Load learnings — what's new since last /resume (no API cost):
+3b. Load learnings — what's new since last /resume (no API cost):
     Run: python3 scripts/memory_indexer.py --learnings --since 7 --top 3
     If output is non-empty, include it as a "What's Emerging" section after recent sessions.
     If no output (nothing new), skip silently — silence signals stability.
 
-4c. Load cold tier — semantically relevant older sessions:
-    Extract the `topics:` array from the most recent session log's frontmatter (available in the --recent 1 output from step 4a). Join topics with spaces as the query.
+3c. Load cold tier — semantically relevant older sessions:
+    Extract the `topics:` array from the most recent session log's frontmatter (available in the --recent 1 output from step 3a). Join topics with spaces as the query.
     Example: topics: [evolution, memory, indexer] → query: "evolution memory indexer"
     If currently in a git repo, prepend the current branch: run `git branch --show-current 2>/dev/null` and prepend if non-empty.
     Example: "fix/silent-failures evolution memory indexer"
@@ -75,9 +77,9 @@ First, resolve the vault path by reading `~/.config/deus/config.json` and using 
     If the script fails or returns nothing, skip silently — warm tier already provides continuity.
     NOTE: Since warm tier now returns all sessions from 3 days, cold tier is purely for older context.
 
-5. If a search term was passed as argument, grep session logs for it and read frontmatters of matches.
+4. If a search term was passed as argument, grep session logs for it and read frontmatters of matches.
 
-6. Summarize in 2–3 lines: ongoing context, pending tasks, ready to continue.
+5. Summarize in 2–3 lines: ongoing context, pending tasks, ready to continue.
    The `previous:` field in CLAUDE.md is a rolling list of the last 3 sessions (format: `"YYYY-MM-DD: <tldr>"`). Read all 3 entries to understand recent context — not just the most recent one.
    If a checkpoint was loaded, prepend: "Resuming mid-session: [checkpoint next_action]"
 
