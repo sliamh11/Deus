@@ -1,7 +1,7 @@
 ---
 governs:
   - .claude/skills
-last_verified: "2026-05-01T12:30" # auto-bump
+last_verified: "2026-05-02" # auto-bump
 test_tasks:
   - "Create a new skill under .claude/skills/ that fetches recent Gmail threads"
   - "Add a new skill SKILL.md that documents log rotation steps"
