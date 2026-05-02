@@ -424,12 +424,16 @@ fn render_suggestions(frame: &mut Frame, app: &App, input_area: Rect) {
     }
 
     let popup_height = items.len() as u16 + 2;
-    let popup_width = 46;
+    let max_item_width = items.iter()
+        .map(|l| l.spans.iter().map(|s| s.content.chars().count()).sum::<usize>())
+        .max()
+        .unwrap_or(30) as u16 + 4;
+    let popup_width = max_item_width.max(30);
 
     let popup_area = Rect {
         x: input_area.x + 3,
         y: input_area.y.saturating_sub(popup_height),
-        width: popup_width.min(input_area.width - 4),
+        width: popup_width.min(input_area.width.saturating_sub(4)),
         height: popup_height,
     };
 

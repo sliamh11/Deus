@@ -78,21 +78,21 @@ pub fn model_display(name: &str) -> &'static str {
 }
 
 pub const COMMANDS: &[CommandDef] = &[
-    CommandDef { name: "/wardens", description: "Toggle warden quality gates", args: &["enable", "disable", "reset", "triggers", "instructions"] },
-    CommandDef { name: "/services", description: "View service health status", args: &["refresh"] },
-    CommandDef { name: "/channels", description: "View channel connections", args: &["whatsapp", "telegram", "discord", "slack", "gmail", "x"] },
-    CommandDef { name: "/config", description: "View Deus configuration", args: &["backend", "vault", "chrome"] },
-    CommandDef { name: "/status", description: "Full system dashboard", args: &["refresh"] },
-    CommandDef { name: "/model", description: "Switch model", args: &["sonnet", "opus", "haiku"] },
-    CommandDef { name: "/compress", description: "Save session to vault", args: &[] },
-    CommandDef { name: "/checkpoint", description: "Save mid-session checkpoint", args: &[] },
-    CommandDef { name: "/compact", description: "Compact context window", args: &[] },
-    CommandDef { name: "/resume", description: "Load recent work context", args: &[] },
-    CommandDef { name: "/history", description: "Browse past sessions", args: &["today", "yesterday", "week"] },
-    CommandDef { name: "/init", description: "Initialize project CLAUDE.md", args: &[] },
-    CommandDef { name: "/help", description: "Show available commands", args: &[] },
-    CommandDef { name: "/clear", description: "Clear chat history", args: &[] },
-    CommandDef { name: "/quit", description: "Exit Deus", args: &[] },
+    CommandDef { name: "/wardens", description: "Quality gates", args: &["enable", "disable", "reset"] },
+    CommandDef { name: "/services", description: "Service health", args: &["refresh"] },
+    CommandDef { name: "/channels", description: "Channel status", args: &[] },
+    CommandDef { name: "/config", description: "Configuration", args: &["backend", "vault"] },
+    CommandDef { name: "/status", description: "System dashboard", args: &["refresh"] },
+    CommandDef { name: "/model", description: "Switch model", args: &["sonnet (4.6, 1M)", "opus (4.6, 1M)", "haiku (4.5, 200K)"] },
+    CommandDef { name: "/compress", description: "Save to vault", args: &[] },
+    CommandDef { name: "/checkpoint", description: "Mid-session save", args: &[] },
+    CommandDef { name: "/compact", description: "Compact context", args: &[] },
+    CommandDef { name: "/resume", description: "Load recent work", args: &[] },
+    CommandDef { name: "/history", description: "Past sessions", args: &["today", "yesterday", "week"] },
+    CommandDef { name: "/init", description: "Init CLAUDE.md", args: &[] },
+    CommandDef { name: "/help", description: "Show commands", args: &[] },
+    CommandDef { name: "/clear", description: "Clear chat", args: &[] },
+    CommandDef { name: "/quit", description: "Exit", args: &[] },
 ];
 
 pub struct App {
@@ -577,7 +577,8 @@ impl App {
         if !self.arg_suggestions.is_empty() {
             if let Some(arg) = self.arg_suggestions.get(self.suggestion_cursor) {
                 let space_idx = self.input.find(' ').unwrap_or(self.input.len());
-                self.input = format!("{} {}", &self.input[..space_idx], arg);
+                let arg_value = arg.split_whitespace().next().unwrap_or(arg);
+                self.input = format!("{} {}", &self.input[..space_idx], arg_value);
                 self.input_cursor = self.input.len();
                 self.arg_suggestions.clear();
                 self.suggestions.clear();
