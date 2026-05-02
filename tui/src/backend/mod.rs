@@ -4,6 +4,8 @@ pub mod codex;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::config::permissions::PermissionsConfig;
+
 pub struct ModelDef {
     pub id: &'static str,
     pub display: &'static str,
@@ -36,8 +38,15 @@ pub enum ChunkKind {
         input_tokens: u64,
         output_tokens: u64,
     },
+    PermissionDenials(Vec<PermissionDenial>),
     Done,
     Error(String),
+}
+
+#[derive(Clone, Debug)]
+pub struct PermissionDenial {
+    pub tool_name: String,
+    pub tool_input_preview: String,
 }
 
 pub struct RunConfig {
@@ -46,7 +55,7 @@ pub struct RunConfig {
     pub effort: String,
     pub is_continuation: bool,
     pub system_context_file: Option<PathBuf>,
-    pub bypass_permissions: bool,
+    pub permissions: PermissionsConfig,
 }
 
 // Tool names that represent subagent/task spawning across providers.

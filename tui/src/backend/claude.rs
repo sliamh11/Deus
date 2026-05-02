@@ -1,4 +1,6 @@
-use super::{Backend, ChunkKind, ModelDef, RunConfig, SUBAGENT_TOOLS_CLAUDE, StreamChunk};
+use super::{
+    Backend, ChunkKind, ModelDef, PermissionDenial, RunConfig, SUBAGENT_TOOLS_CLAUDE, StreamChunk,
+};
 use std::process::{Command, Stdio};
 
 pub struct ClaudeBackend;
@@ -54,8 +56,21 @@ impl Backend for ClaudeBackend {
             "--effort",
             &config.effort,
         ]);
-        if config.bypass_permissions {
+        cmd.args(["--permission-mode", &config.permissions.mode]);
+        if config.permissions.is_bypass() {
             cmd.arg("--dangerously-skip-permissions");
+        }
+        if !config.permissions.allowed_tools.is_empty() {
+            cmd.arg("--allowedTools");
+            for tool in &config.permissions.allowed_tools {
+                cmd.arg(tool);
+            }
+        }
+        if !config.permissions.disallowed_tools.is_empty() {
+            cmd.arg("--disallowedTools");
+            for tool in &config.permissions.disallowed_tools {
+                cmd.arg(tool);
+            }
         }
         if config.is_continuation {
             cmd.arg("--continue");
@@ -218,13 +233,46 @@ impl Backend for ClaudeBackend {
                     .and_then(|u| u.get("output_tokens"))
                     .and_then(|t| t.as_u64())
                     .unwrap_or(0);
-                vec![StreamChunk {
+                let mut chunks = vec![StreamChunk {
                     kind: ChunkKind::CostUpdate {
                         cost_usd: cost,
                         input_tokens: input,
                         output_tokens: output,
                     },
-                }]
+                }];
+                if let Some(denials) = v.get("permission_denials").and_then(|d| d.as_array()) {
+                    let parsed: Vec<PermissionDenial> = denials
+                        .iter()
+                        .filter_map(|d| {
+                            let tool_name =
+                                d.get("tool_name").and_then(|n| n.as_str())?.to_string();
+                            let tool_input_preview = d
+                                .get("tool_input")
+                                .map(|i| {
+                                    if let Some(cmd) = i.get("command").and_then(|c| c.as_str()) {
+                                        cmd.chars().take(60).collect()
+                                    } else if let Some(path) =
+                                        i.get("file_path").and_then(|p| p.as_str())
+                                    {
+                                        path.to_string()
+                                    } else {
+                                        String::new()
+                                    }
+                                })
+                                .unwrap_or_default();
+                            Some(PermissionDenial {
+                                tool_name,
+                                tool_input_preview,
+                            })
+                        })
+                        .collect();
+                    if !parsed.is_empty() {
+                        chunks.push(StreamChunk {
+                            kind: ChunkKind::PermissionDenials(parsed),
+                        });
+                    }
+                }
+                chunks
             }
             _ => Vec::new(),
         }
@@ -331,5 +379,84 @@ mod tests {
     fn parse_invalid_json() {
         let chunks = parse("not json");
         assert!(chunks.is_empty());
+    }
+
+    #[test]
+    fn parse_permission_denials() {
+        let json = r#"{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":100,"output_tokens":50},"permission_denials":[{"tool_name":"Bash","tool_use_id":"t1","tool_input":{"command":"rm -rf /tmp/x"}},{"tool_name":"Edit","tool_use_id":"t2","tool_input":{"file_path":"/etc/hosts"}}]}"#;
+        let chunks = parse(json);
+        assert_eq!(chunks.len(), 2);
+        assert!(matches!(&chunks[0], ChunkKind::CostUpdate { .. }));
+        if let ChunkKind::PermissionDenials(denials) = &chunks[1] {
+            assert_eq!(denials.len(), 2);
+            assert_eq!(denials[0].tool_name, "Bash");
+            assert!(denials[0].tool_input_preview.contains("rm -rf"));
+            assert_eq!(denials[1].tool_name, "Edit");
+            assert_eq!(denials[1].tool_input_preview, "/etc/hosts");
+        } else {
+            panic!("expected PermissionDenials");
+        }
+    }
+
+    #[test]
+    fn parse_result_without_denials() {
+        let json = r#"{"type":"result","total_cost_usd":0.01,"usage":{"input_tokens":10,"output_tokens":5},"permission_denials":[]}"#;
+        let chunks = parse(json);
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(&chunks[0], ChunkKind::CostUpdate { .. }));
+    }
+
+    #[test]
+    fn build_command_sets_permission_flags() {
+        use crate::config::permissions::PermissionsConfig;
+        let config = RunConfig {
+            model: "sonnet".to_string(),
+            message: "test".to_string(),
+            effort: "high".to_string(),
+            is_continuation: false,
+            system_context_file: None,
+            permissions: PermissionsConfig {
+                mode: "acceptEdits".to_string(),
+                allowed_tools: vec!["Read".to_string(), "Bash(git *)".to_string()],
+                disallowed_tools: vec!["Write".to_string()],
+            },
+        };
+        let cmd = ClaudeBackend.build_command(&config);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&"--permission-mode".to_string()));
+        assert!(args.contains(&"acceptEdits".to_string()));
+        assert!(args.contains(&"--allowedTools".to_string()));
+        assert!(args.contains(&"Read".to_string()));
+        assert!(args.contains(&"Bash(git *)".to_string()));
+        assert!(args.contains(&"--disallowedTools".to_string()));
+        assert!(args.contains(&"Write".to_string()));
+        assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+    }
+
+    #[test]
+    fn build_command_bypass_adds_skip_flag() {
+        use crate::config::permissions::PermissionsConfig;
+        let config = RunConfig {
+            model: "sonnet".to_string(),
+            message: "test".to_string(),
+            effort: "high".to_string(),
+            is_continuation: false,
+            system_context_file: None,
+            permissions: PermissionsConfig {
+                mode: "bypassPermissions".to_string(),
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+            },
+        };
+        let cmd = ClaudeBackend.build_command(&config);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(args.contains(&"bypassPermissions".to_string()));
     }
 }

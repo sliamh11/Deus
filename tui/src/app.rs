@@ -7,6 +7,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config;
+use crate::config::permissions::PermissionsConfig;
 use crate::platform;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -166,6 +167,11 @@ pub const COMMANDS: &[CommandDef] = &[
         args: &[],
     },
     CommandDef {
+        name: "/permissions",
+        description: "Tool permissions",
+        args: &["mode", "allow", "deny", "remove", "reset"],
+    },
+    CommandDef {
         name: "/clear",
         description: "Clear chat",
         args: &[],
@@ -212,7 +218,7 @@ pub struct App {
     pub channels: Vec<config::channels::ChannelEntry>,
     pub deus_config: Vec<(String, String)>,
     pub system_context_file: Option<PathBuf>,
-    pub bypass_permissions: bool,
+    pub permissions: PermissionsConfig,
     pub mode: String,
     pub active_subagent_ids: HashSet<String>,
     pub chat_dirty: bool,
@@ -255,14 +261,19 @@ impl App {
 
     pub fn new() -> Self {
         let ctx_file = platform::env_var("DEUS_TUI_CONTEXT_FILE").map(PathBuf::from);
-        let bypass = platform::env_flag("DEUS_TUI_BYPASS");
         let mode = platform::env_var("DEUS_TUI_MODE").unwrap_or_else(|| "home".to_string());
         let backend = platform::env_var("DEUS_TUI_BACKEND").unwrap_or_else(|| "claude".to_string());
-        let default_model = if backend == "codex" {
+        let fallback_model = if backend == "codex" {
             "gpt-5.4"
         } else {
             "sonnet"
         };
+        let default_model =
+            config::deus::read_key("default_model").unwrap_or_else(|| fallback_model.to_string());
+        let mut permissions = PermissionsConfig::load();
+        if platform::env_flag("DEUS_TUI_BYPASS") {
+            permissions.mode = "bypassPermissions".to_string();
+        }
 
         let mut app = Self {
             tab: Tab::Chat,
@@ -283,7 +294,7 @@ impl App {
             chat_state: ChatState::Idle,
             stream_rx: None,
             turn_count: 0,
-            model: default_model.to_string(),
+            model: default_model,
             effort: "high".to_string(),
             token_count: 0,
             cost_usd: 0.0,
@@ -302,7 +313,7 @@ impl App {
             channels: Vec::new(),
             deus_config: Vec::new(),
             system_context_file: ctx_file,
-            bypass_permissions: bypass,
+            permissions,
             mode,
             active_subagent_ids: HashSet::new(),
             chat_dirty: true,
@@ -404,7 +415,7 @@ impl App {
             } else {
                 None
             },
-            bypass_permissions: self.bypass_permissions,
+            permissions: self.permissions.clone(),
         };
         self.turn_count += 1;
         let be = backend::backend_for(&config.model);
@@ -508,6 +519,13 @@ impl App {
             }
             "/clear" => {
                 self.chat_messages.clear();
+                self.turn_count = 0;
+                self.cost_usd = 0.0;
+                self.token_count = 0;
+                self.last_turn_duration = None;
+                self.last_thinking_summary = None;
+                self.active_subagent_ids.clear();
+                self.scroll_to_bottom();
                 true
             }
             "/quit" => {
@@ -560,6 +578,13 @@ impl App {
                             "⚠ Switched to {} [{}]. Backend changed from {} → {} — conversation history reset.",
                             model_display(&self.model), new_backend, prev_backend, new_backend
                         )));
+                        if !PermissionsConfig::supports_mode(new_backend, &self.permissions.mode) {
+                            let available = PermissionsConfig::available_modes(new_backend);
+                            self.chat_messages.push(ChatMessage::simple("system", &format!(
+                                "⚠ Permission mode '{}' is not supported by {}. Available: {}. Use /permissions mode <mode> to change.",
+                                self.permissions.mode, new_backend, available.join(", ")
+                            )));
+                        }
                     } else {
                         self.chat_messages.push(ChatMessage::simple(
                             "system",
@@ -625,10 +650,126 @@ impl App {
                 ));
                 true
             }
+            "/permissions" => {
+                self.handle_permissions_command(arg);
+                true
+            }
             "/init" | "/compress" | "/checkpoint" | "/compact" | "/resume" => {
                 false // Pass through to claude
             }
             _ => false,
+        }
+    }
+
+    fn handle_permissions_command(&mut self, arg: &str) {
+        let parts: Vec<&str> = arg.splitn(2, ' ').collect();
+        let sub = parts[0];
+        let value = parts.get(1).unwrap_or(&"").trim();
+
+        match sub {
+            "" => {
+                let backend = model_backend(&self.model);
+                let available = PermissionsConfig::available_modes(backend);
+                let allowed = if self.permissions.allowed_tools.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    self.permissions.allowed_tools.join(", ")
+                };
+                let disallowed = if self.permissions.disallowed_tools.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    self.permissions.disallowed_tools.join(", ")
+                };
+                self.chat_messages.push(ChatMessage::simple(
+                    "system",
+                    &format!(
+                        "Permission mode: {} [{}]\nAvailable modes: {}\n\nAllowed tools: {}\nDisallowed tools: {}\n\nUsage:\n  /permissions mode <mode>\n  /permissions allow <tool>\n  /permissions deny <tool>\n  /permissions remove <tool>\n  /permissions reset",
+                        self.permissions.mode,
+                        backend,
+                        available.join(", "),
+                        allowed,
+                        disallowed,
+                    ),
+                ));
+            }
+            "mode" if value.is_empty() => {
+                let backend = model_backend(&self.model);
+                let available = PermissionsConfig::available_modes(backend);
+                self.chat_messages.push(ChatMessage::simple(
+                    "system",
+                    &format!(
+                        "Current: {}. Available for {}: {}",
+                        self.permissions.mode,
+                        backend,
+                        available.join(", ")
+                    ),
+                ));
+            }
+            "mode" => {
+                let backend = model_backend(&self.model);
+                if !PermissionsConfig::supports_mode(backend, value) {
+                    let available = PermissionsConfig::available_modes(backend);
+                    self.chat_messages.push(ChatMessage::simple(
+                        "system",
+                        &format!(
+                            "Mode '{}' is not supported by {}. Available: {}",
+                            value,
+                            backend,
+                            available.join(", ")
+                        ),
+                    ));
+                } else if self.permissions.set_mode(value) {
+                    self.chat_messages.push(ChatMessage::simple(
+                        "system",
+                        &format!("Permission mode set to: {}", value),
+                    ));
+                } else {
+                    self.chat_messages.push(ChatMessage::simple(
+                        "system",
+                        &format!("Unknown mode: {}", value),
+                    ));
+                }
+            }
+            "allow" if !value.is_empty() => {
+                self.permissions.add_allowed(value);
+                self.chat_messages.push(ChatMessage::simple(
+                    "system",
+                    &format!("Allowed: {}", value),
+                ));
+            }
+            "deny" if !value.is_empty() => {
+                self.permissions.add_disallowed(value);
+                self.chat_messages.push(ChatMessage::simple(
+                    "system",
+                    &format!("Disallowed: {}", value),
+                ));
+            }
+            "remove" if !value.is_empty() => {
+                if self.permissions.remove(value) {
+                    self.chat_messages.push(ChatMessage::simple(
+                        "system",
+                        &format!("Removed: {}", value),
+                    ));
+                } else {
+                    self.chat_messages.push(ChatMessage::simple(
+                        "system",
+                        &format!("Not found: {}", value),
+                    ));
+                }
+            }
+            "reset" => {
+                self.permissions.reset();
+                self.chat_messages.push(ChatMessage::simple(
+                    "system",
+                    "Permissions reset to defaults.",
+                ));
+            }
+            _ => {
+                self.chat_messages.push(ChatMessage::simple(
+                    "system",
+                    "Usage: /permissions [mode|allow|deny|remove|reset] [value]",
+                ));
+            }
         }
     }
 
@@ -728,6 +869,25 @@ impl App {
                     } => {
                         self.cost_usd = cost_usd;
                         self.token_count = (input_tokens + output_tokens) as u32;
+                    }
+                    ChunkKind::PermissionDenials(denials) => {
+                        let denied_list: Vec<String> = denials
+                            .iter()
+                            .map(|d| {
+                                if d.tool_input_preview.is_empty() {
+                                    d.tool_name.clone()
+                                } else {
+                                    format!("{}({})", d.tool_name, d.tool_input_preview)
+                                }
+                            })
+                            .collect();
+                        self.chat_messages.push(ChatMessage::simple(
+                            "system",
+                            &format!(
+                                "Permission denied for: {}\nUse /permissions allow <tool> to approve.",
+                                denied_list.join(", ")
+                            ),
+                        ));
                     }
                     ChunkKind::Done => {
                         self.chat_state = ChatState::Idle;
@@ -1041,6 +1201,7 @@ impl App {
 
     pub fn toggle_tools(&mut self) {
         self.show_tools = !self.show_tools;
+        self.mark_chat_changed();
     }
 
     pub fn scroll_up(&mut self, amount: u16) {
@@ -1165,5 +1326,21 @@ impl App {
             Tab::Channels => self.channels.len(),
             Tab::Config => self.deus_config.len(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toggle_tools_invalidates_the_chat_cache() {
+        let mut app = App::new();
+        let before = app.chat_version;
+
+        app.toggle_tools();
+
+        assert!(app.show_tools);
+        assert_ne!(app.chat_version, before);
     }
 }

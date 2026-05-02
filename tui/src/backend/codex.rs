@@ -61,7 +61,7 @@ impl Backend for CodexBackend {
 
         let mut cmd = Command::new("codex");
         cmd.args(["exec", "--json", "-m", &config.model, "-c", &effort_cfg]);
-        if config.bypass_permissions {
+        if config.permissions.is_bypass() {
             cmd.arg("--dangerously-bypass-approvals-and-sandbox");
         }
         cmd.arg(&message);
@@ -82,18 +82,62 @@ impl Backend for CodexBackend {
         };
 
         match event_type {
-            "item.completed" => {
-                if let Some(text) = v
-                    .get("item")
-                    .and_then(|i| i.get("text"))
-                    .and_then(|t| t.as_str())
-                {
+            "item.completed" => v.get("item").map(parse_output_item).unwrap_or_default(),
+            "response.output_item.done" => v.get("item").map(parse_output_item).unwrap_or_default(),
+            "response.output_text.delta" => v
+                .get("delta")
+                .and_then(|d| d.as_str())
+                .map(|delta| {
+                    vec![StreamChunk {
+                        kind: ChunkKind::Text(delta.to_string()),
+                    }]
+                })
+                .unwrap_or_default(),
+            "response.output_text.done" => v
+                .get("text")
+                .and_then(|t| t.as_str())
+                .map(|text| {
                     vec![StreamChunk {
                         kind: ChunkKind::Text(text.to_string()),
                     }]
-                } else {
-                    Vec::new()
-                }
+                })
+                .unwrap_or_default(),
+            "response.reasoning_text.done" => v
+                .get("text")
+                .and_then(|t| t.as_str())
+                .map(|text| {
+                    vec![StreamChunk {
+                        kind: ChunkKind::Thinking(text.to_string()),
+                    }]
+                })
+                .unwrap_or_default(),
+            "response.reasoning_summary_text.delta" => v
+                .get("delta")
+                .and_then(|d| d.as_str())
+                .map(|delta| {
+                    vec![StreamChunk {
+                        kind: ChunkKind::Thinking(delta.to_string()),
+                    }]
+                })
+                .unwrap_or_default(),
+            "response.reasoning_summary_text.done" => v
+                .get("text")
+                .and_then(|t| t.as_str())
+                .map(|text| {
+                    vec![StreamChunk {
+                        kind: ChunkKind::Thinking(text.to_string()),
+                    }]
+                })
+                .unwrap_or_default(),
+            "response.function_call_arguments.done" => {
+                let id = v
+                    .get("call_id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                let args = v.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
+                handle_function_call(name, &id, args)
             }
             "function_call" => {
                 let id = v
@@ -103,38 +147,7 @@ impl Backend for CodexBackend {
                     .to_string();
                 let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
                 let args = v.get("arguments").and_then(|a| a.as_str()).unwrap_or("");
-                let detail: String = args.chars().take(80).collect();
-
-                if SUBAGENT_TOOLS_CODEX.contains(&name) {
-                    let parsed = serde_json::from_str::<serde_json::Value>(args).ok();
-                    let subagent_type = parsed
-                        .as_ref()
-                        .and_then(|a| a.get("type").and_then(|t| t.as_str()).map(String::from))
-                        .unwrap_or_else(|| name.to_string());
-                    let description = parsed
-                        .as_ref()
-                        .and_then(|a| {
-                            a.get("description")
-                                .and_then(|d| d.as_str())
-                                .map(String::from)
-                        })
-                        .unwrap_or_default();
-                    vec![StreamChunk {
-                        kind: ChunkKind::SubagentStart {
-                            id,
-                            subagent_type,
-                            description,
-                        },
-                    }]
-                } else {
-                    vec![StreamChunk {
-                        kind: ChunkKind::ToolUse {
-                            id,
-                            tool: name.to_string(),
-                            detail,
-                        },
-                    }]
-                }
+                handle_function_call(name, &id, args)
             }
             "function_call_output" => {
                 let id = v
@@ -184,6 +197,104 @@ impl Backend for CodexBackend {
     }
 }
 
+fn parse_output_item(item: &serde_json::Value) -> Vec<StreamChunk> {
+    let item_type = item.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+    match item_type {
+        "message" => {
+            let mut chunks = Vec::new();
+            if let Some(content) = item.get("content").and_then(|c| c.as_array()) {
+                for block in content {
+                    let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                    match block_type {
+                        "output_text" | "text" => {
+                            if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                chunks.push(StreamChunk {
+                                    kind: ChunkKind::Text(text.to_string()),
+                                });
+                            }
+                        }
+                        "reasoning" | "thinking" => {
+                            if let Some(text) = extract_reasoning_text(block) {
+                                chunks.push(StreamChunk {
+                                    kind: ChunkKind::Thinking(text),
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            } else if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                chunks.push(StreamChunk {
+                    kind: ChunkKind::Text(text.to_string()),
+                });
+            }
+            chunks
+        }
+        "reasoning" | "thinking" => extract_reasoning_text(item)
+            .map(|text| {
+                vec![StreamChunk {
+                    kind: ChunkKind::Thinking(text),
+                }]
+            })
+            .unwrap_or_default(),
+        _ => item
+            .get("text")
+            .and_then(|t| t.as_str())
+            .map(|text| {
+                vec![StreamChunk {
+                    kind: ChunkKind::Text(text.to_string()),
+                }]
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn extract_reasoning_text(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("thinking")
+        .and_then(|t| t.as_str())
+        .or_else(|| value.get("text").and_then(|t| t.as_str()))
+        .or_else(|| value.get("delta").and_then(|t| t.as_str()))
+        .or_else(|| value.get("summary").and_then(|t| t.as_str()))
+        .map(|s| s.to_string())
+}
+
+fn handle_function_call(name: &str, id: &str, args: &str) -> Vec<StreamChunk> {
+    let detail: String = args.chars().take(80).collect();
+
+    if SUBAGENT_TOOLS_CODEX.contains(&name) {
+        let parsed = serde_json::from_str::<serde_json::Value>(args).ok();
+        let subagent_type = parsed
+            .as_ref()
+            .and_then(|a| a.get("type").and_then(|t| t.as_str()).map(String::from))
+            .unwrap_or_else(|| name.to_string());
+        let description = parsed
+            .as_ref()
+            .and_then(|a| {
+                a.get("description")
+                    .and_then(|d| d.as_str())
+                    .map(String::from)
+            })
+            .unwrap_or_default();
+        vec![StreamChunk {
+            kind: ChunkKind::SubagentStart {
+                id: id.to_string(),
+                subagent_type,
+                description,
+            },
+        }]
+    } else {
+        vec![StreamChunk {
+            kind: ChunkKind::ToolUse {
+                id: id.to_string(),
+                tool: name.to_string(),
+                detail,
+            },
+        }]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +313,22 @@ mod tests {
         let chunks = parse(json);
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], ChunkKind::Text(t) if t == "hello world"));
+    }
+
+    #[test]
+    fn parse_reasoning_delta_event() {
+        let json = r#"{"type":"response.reasoning_summary_text.delta","delta":"thinking..." }"#;
+        let chunks = parse(json);
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(&chunks[0], ChunkKind::Thinking(t) if t == "thinking..."));
+    }
+
+    #[test]
+    fn parse_output_text_delta_event() {
+        let json = r#"{"type":"response.output_text.delta","delta":"hello"}"#;
+        let chunks = parse(json);
+        assert_eq!(chunks.len(), 1);
+        assert!(matches!(&chunks[0], ChunkKind::Text(t) if t == "hello"));
     }
 
     #[test]

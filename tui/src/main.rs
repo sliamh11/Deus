@@ -12,8 +12,9 @@ use std::io::{self, IsTerminal};
 use std::time::Duration;
 
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseEvent,
+    MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
@@ -33,6 +34,7 @@ fn main() -> io::Result<()> {
         stdout,
         EnterAlternateScreen,
         EnableBracketedPaste,
+        EnableMouseCapture,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )?;
     let backend = CrosstermBackend::new(stdout);
@@ -55,6 +57,11 @@ fn main() -> io::Result<()> {
                             app.input_char(c);
                         }
                     }
+                }
+                Event::Mouse(mouse)
+                    if app.tab == Tab::Chat && handle_chat_mouse_event(&mut app, mouse) =>
+                {
+                    continue;
                 }
                 Event::Key(key) => {
                     if key.kind != KeyEventKind::Press {
@@ -202,7 +209,8 @@ fn main() -> io::Result<()> {
         io::stdout(),
         PopKeyboardEnhancementFlags,
         LeaveAlternateScreen,
-        DisableBracketedPaste
+        DisableBracketedPaste,
+        DisableMouseCapture
     )?;
 
     if let Some(ctx_file) = platform::env_var("DEUS_TUI_CONTEXT_FILE") {
@@ -291,4 +299,45 @@ fn print_static() {
     println!("{}", line(""));
     println!("{}", bot);
     println!();
+}
+
+fn handle_chat_mouse_event(app: &mut App, mouse: MouseEvent) -> bool {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            app.scroll_up(3);
+            true
+        }
+        MouseEventKind::ScrollDown => {
+            app.scroll_down(3);
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mouse_wheel_scrolls_chat_instead_of_input_history() {
+        let mut app = App::new();
+        app.input_history = vec!["first".to_string(), "second".to_string()];
+        app.history_index = Some(1);
+
+        let handled = handle_chat_mouse_event(
+            &mut app,
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            },
+        );
+
+        assert!(handled);
+        assert_eq!(app.history_index, Some(1));
+        assert_eq!(app.scroll_offset, 3);
+        assert!(!app.scroll_pinned);
+    }
 }

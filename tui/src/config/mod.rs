@@ -1,6 +1,7 @@
 pub mod channels;
 pub mod deus;
 pub mod healthcheck;
+pub mod permissions;
 pub mod wardens;
 
 use crate::platform;

@@ -119,6 +119,7 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-bidi",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]

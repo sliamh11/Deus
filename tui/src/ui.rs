@@ -52,6 +52,25 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         theme::accent(),
     ));
 
+    if app.permissions.mode != "default" {
+        left.push(Span::styled("│ ", theme::muted()));
+        let perm_style = if app.permissions.is_bypass() {
+            theme::warn()
+        } else {
+            theme::dim()
+        };
+        left.push(Span::styled(
+            format!(" {}", app.permissions.mode),
+            perm_style,
+        ));
+        left.push(Span::raw(" "));
+    }
+
+    if let Some(hint) = chat_activity_hint(app) {
+        left.push(Span::styled("│ ", theme::muted()));
+        left.push(Span::styled(hint, theme::thinking()));
+    }
+
     if app.mode != "home" {
         left.push(Span::styled("│ ", theme::muted()));
         left.push(Span::styled("EXT ", theme::warn()));
@@ -113,6 +132,18 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
+fn chat_activity_hint(app: &App) -> Option<String> {
+    if matches!(app.chat_state, crate::app::ChatState::Streaming) {
+        Some(if app.show_tools {
+            "thinking... Ctrl+O hide".to_string()
+        } else {
+            "thinking... Ctrl+O show".to_string()
+        })
+    } else {
+        None
+    }
+}
+
 fn render_panel_header(frame: &mut Frame, app: &App, area: Rect) {
     let title = format!(" ◇ deus › {} ", app.tab.label());
     let block = Block::default()
@@ -129,4 +160,27 @@ fn render_panel_footer(frame: &mut Frame, app: &App, area: Rect) {
     };
     let footer = Paragraph::new(hints).style(theme::muted());
     frame.render_widget(footer, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, ChatState};
+
+    #[test]
+    fn chat_activity_hint_shows_while_streaming() {
+        let mut app = App::new();
+        app.chat_state = ChatState::Streaming;
+        app.show_tools = false;
+
+        let hint = chat_activity_hint(&app).expect("streaming hint");
+        assert!(hint.contains("thinking..."));
+        assert!(hint.contains("Ctrl+O show"));
+    }
+
+    #[test]
+    fn chat_activity_hint_is_hidden_when_idle() {
+        let app = App::new();
+        assert!(chat_activity_hint(&app).is_none());
+    }
 }

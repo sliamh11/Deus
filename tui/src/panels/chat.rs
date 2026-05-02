@@ -2,6 +2,7 @@ use std::cell::RefCell;
 
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, COMMANDS, MessageBlock, SubagentStatus};
 use crate::bidi;
@@ -13,11 +14,7 @@ thread_local! {
 }
 
 pub fn render(frame: &mut Frame, app: &App, area: Rect) {
-    let input_height = if app.is_multiline() {
-        (app.input_line_count() as u16 + 2).min(10)
-    } else {
-        3
-    };
+    let input_height = input_panel_height(app, area.width);
     let layout =
         Layout::vertical([Constraint::Min(0), Constraint::Length(input_height)]).split(area);
 
@@ -456,63 +453,139 @@ fn ghost_text(app: &App) -> String {
     String::new()
 }
 
-fn render_input(frame: &mut Frame, app: &App, area: Rect) {
+struct InputLine {
+    text: String,
+    line: Line<'static>,
+}
+
+fn build_input_lines(app: &App) -> (Vec<InputLine>, usize, String) {
     let ghost = ghost_text(app);
+    let cursor_line = app.input[..app.input_cursor].matches('\n').count();
+    let cursor_text = app.input[..app.input_cursor]
+        .rsplit('\n')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let segments: Vec<&str> = if app.input.is_empty() {
+        vec![""]
+    } else {
+        app.input.split('\n').collect()
+    };
+
+    let mut lines = Vec::new();
+    for (i, segment) in segments.iter().enumerate() {
+        let prefix = if i == 0 { " › " } else { " … " };
+        let mut text = String::from(prefix);
+        if app.input.is_empty() && i == 0 && matches!(app.chat_state, crate::app::ChatState::Idle) {
+            text.push_str("Type a message or / for commands...");
+            lines.push(InputLine {
+                text,
+                line: Line::from(vec![
+                    Span::styled(prefix, theme::accent_bold()),
+                    Span::styled("Type a message or / for commands...", theme::muted()),
+                ]),
+            });
+            continue;
+        }
+
+        text.push_str(segment);
+        let mut spans = vec![
+            Span::styled(prefix, theme::accent_bold()),
+            Span::raw(segment.to_string()),
+        ];
+        if i == 0 && !ghost.is_empty() {
+            text.push_str(&ghost);
+            spans.push(Span::styled(ghost.clone(), theme::dim()));
+        }
+        lines.push(InputLine {
+            text,
+            line: Line::from(spans),
+        });
+    }
+
+    (lines, cursor_line, cursor_text)
+}
+
+fn wrapped_position(text: &str, width: usize) -> (usize, usize) {
+    let width = width.max(1);
+    let mut row = 0usize;
+    let mut col = 0usize;
+
+    for ch in text.chars() {
+        if ch == '\n' {
+            row += 1;
+            col = 0;
+            continue;
+        }
+
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col > 0 && col + ch_width > width {
+            row += 1;
+            col = 0;
+        }
+        col += ch_width;
+    }
+
+    (row, col)
+}
+
+fn wrapped_row_count(text: &str, width: usize) -> usize {
+    wrapped_position(text, width).0 + 1
+}
+
+fn input_panel_height(app: &App, width: u16) -> u16 {
+    let content_width = width.saturating_sub(2).max(1) as usize;
+    let (lines, _, _) = build_input_lines(app);
+    let visual_rows: usize = lines
+        .iter()
+        .map(|line| wrapped_row_count(&line.text, content_width))
+        .sum();
+    (visual_rows as u16 + 2).min(10)
+}
+
+fn input_cursor_position(app: &App, area: Rect) -> (u16, u16) {
+    let content_width = area.width.saturating_sub(2).max(1) as usize;
+    let (lines, cursor_line, cursor_text) = build_input_lines(app);
+    let mut row_offset = 0usize;
+
+    for (idx, line) in lines.iter().enumerate() {
+        if idx < cursor_line {
+            row_offset += wrapped_row_count(&line.text, content_width);
+            continue;
+        }
+
+        if idx == cursor_line {
+            let prefix = if idx == 0 { " › " } else { " … " };
+            let cursor_display = format!("{}{}", prefix, cursor_text);
+            let (cursor_row, cursor_col) = wrapped_position(&cursor_display, content_width);
+            return (
+                area.x + 1 + cursor_col as u16,
+                area.y + 1 + (row_offset + cursor_row) as u16,
+            );
+        }
+    }
+
+    (area.x + 1, area.y + 1)
+}
+
+fn render_input(frame: &mut Frame, app: &App, area: Rect) {
+    let (lines, _, _) = build_input_lines(app);
 
     let cwd = platform::display_path(&platform::current_dir());
     let title = format!(" {} ", cwd);
 
-    if app.is_multiline() {
-        let mut text_lines: Vec<Line> = Vec::new();
-        for (i, line) in app.input.split('\n').enumerate() {
-            let prefix = if i == 0 { " › " } else { " … " };
-            text_lines.push(Line::from(vec![
-                Span::styled(prefix, theme::accent_bold()),
-                Span::raw(line.to_string()),
-            ]));
-        }
-        let input = Paragraph::new(text_lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .title_style(theme::dim())
-                .border_style(theme::accent()),
-        );
-        frame.render_widget(input, area);
+    let text_lines: Vec<Line> = lines.into_iter().map(|line| line.line).collect();
+    let input = Paragraph::new(text_lines).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(title)
+            .title_style(theme::dim())
+            .border_style(theme::accent()),
+    );
+    frame.render_widget(input, area);
 
-        let before_cursor = &app.input[..app.input_cursor];
-        let cursor_line = before_cursor.matches('\n').count();
-        let line_start = before_cursor.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let col = app.input[line_start..app.input_cursor].chars().count();
-        let cursor_x = area.x + 4 + col as u16;
-        let cursor_y = area.y + 1 + cursor_line as u16;
-        frame.set_cursor_position((cursor_x, cursor_y));
-    } else {
-        let mut spans = vec![Span::styled(" › ", theme::accent_bold())];
-        if app.input.is_empty() && matches!(app.chat_state, crate::app::ChatState::Idle) {
-            spans.push(Span::styled(
-                "Type a message or / for commands...",
-                theme::muted(),
-            ));
-        } else {
-            spans.push(Span::raw(&app.input));
-            if !ghost.is_empty() {
-                spans.push(Span::styled(ghost, theme::muted()));
-            }
-        }
-        let input = Paragraph::new(Line::from(spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .title_style(theme::dim())
-                .border_style(theme::accent()),
-        );
-        frame.render_widget(input, area);
-
-        let cursor_x = area.x + 4 + app.input[..app.input_cursor].chars().count() as u16;
-        let cursor_y = area.y + 1;
-        frame.set_cursor_position((cursor_x, cursor_y));
-    }
+    let (cursor_x, cursor_y) = input_cursor_position(app, area);
+    frame.set_cursor_position((cursor_x, cursor_y));
 }
 
 fn render_suggestions(frame: &mut Frame, app: &App, input_area: Rect) {
@@ -613,4 +686,41 @@ fn render_suggestions(frame: &mut Frame, app: &App, input_area: Rect) {
             .title(title),
     );
     frame.render_widget(popup, popup_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::{App, ChatState};
+
+    #[test]
+    fn long_input_expands_the_panel_height() {
+        let mut app = App::new();
+        app.chat_state = ChatState::Idle;
+        app.input = "abcdefghijklmnopqrstuvwxyz".to_string();
+        app.input_cursor = app.input.len();
+
+        assert!(input_panel_height(&app, 16) > 3);
+    }
+
+    #[test]
+    fn wrapped_input_moves_the_cursor_down_a_row() {
+        let mut app = App::new();
+        app.chat_state = ChatState::Idle;
+        app.input = "abcdefghijklmnopqrstuvwxyz".to_string();
+        app.input_cursor = app.input.len();
+
+        let (cursor_x, cursor_y) = input_cursor_position(
+            &app,
+            Rect {
+                x: 0,
+                y: 0,
+                width: 16,
+                height: 5,
+            },
+        );
+
+        assert_eq!(cursor_x, 2);
+        assert!(cursor_y > 1);
+    }
 }
