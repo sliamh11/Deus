@@ -233,7 +233,7 @@ impl App {
             turn_start: None,
             last_turn_duration: None,
             last_thinking_summary: None,
-            show_tools: true,
+            show_tools: false,
             scroll_offset: 0,
             scroll_pinned: true,
             queued_messages: Vec::new(),

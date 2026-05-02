@@ -9,7 +9,7 @@ mod widgets;
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, EnableBracketedPaste, DisableBracketedPaste};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, EnableBracketedPaste, DisableBracketedPaste, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
 use ratatui::prelude::*;
@@ -24,7 +24,9 @@ fn main() -> io::Result<()> {
 
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -110,7 +112,7 @@ fn main() -> io::Result<()> {
                             }
                         }
                         KeyCode::Enter => {
-                            if app.is_multiline() {
+                            if key.modifiers.contains(KeyModifiers::SHIFT) {
                                 app.input_newline();
                             } else {
                                 app.send_message();
@@ -162,7 +164,7 @@ fn main() -> io::Result<()> {
     }
 
     terminal::disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen, DisableBracketedPaste)?;
+    execute!(io::stdout(), PopKeyboardEnhancementFlags, LeaveAlternateScreen, DisableBracketedPaste)?;
     Ok(())
 }
 

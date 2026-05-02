@@ -186,13 +186,11 @@ fn render_messages(frame: &mut Frame, app: &App, area: Rect) {
                         }
                     }
                     MessageBlock::ToolUse { tool, detail } => {
-                        if app.show_tools {
-                            lines.push(Line::from(vec![
-                                Span::styled(" ▸ ", Style::default().fg(theme::FLAME)),
-                                Span::styled(tool.clone(), theme::tool_name()),
-                                Span::styled(format!(" {}", detail), theme::tool_detail()),
-                            ]));
-                        }
+                        lines.push(Line::from(vec![
+                            Span::styled(" ▸ ", Style::default().fg(theme::FLAME)),
+                            Span::styled(tool.clone(), theme::tool_name()),
+                            Span::styled(format!(" {}", detail), theme::tool_detail()),
+                        ]));
                     }
                     MessageBlock::Text(text) => {
                         let mut in_code = false;
