@@ -148,9 +148,11 @@ fn main() -> io::Result<()> {
                             KeyCode::Enter => {
                                 if key.modifiers.contains(KeyModifiers::SHIFT) {
                                     app.input_newline();
-                                } else if app.has_suggestions() {
+                                } else if app.has_suggestions() && !app.suggestion_is_exact_match()
+                                {
                                     app.accept_suggestion();
                                 } else {
+                                    app.dismiss_suggestions();
                                     app.send_message();
                                 }
                             }

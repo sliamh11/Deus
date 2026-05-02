@@ -943,8 +943,12 @@ impl App {
                         let mut all: Vec<String> = Vec::new();
                         for b in backend::all_backends() {
                             for m in b.models() {
-                                let label = format!("{} — {} ({})", m.id, m.display, m.context);
-                                if label.starts_with(arg_part) || m.id.starts_with(arg_part) {
+                                let label = format!("{} ({})", m.display, m.context);
+                                if m.id.starts_with(arg_part)
+                                    || m.display
+                                        .to_lowercase()
+                                        .starts_with(&arg_part.to_lowercase())
+                                {
                                     all.push(label);
                                 }
                             }
@@ -1003,12 +1007,36 @@ impl App {
         }
     }
 
+    pub fn suggestion_is_exact_match(&self) -> bool {
+        if !self.arg_suggestions.is_empty() {
+            if let Some(arg) = self.arg_suggestions.get(self.suggestion_cursor)
+                && let Some(space_idx) = self.input.find(' ')
+            {
+                let typed_arg = &self.input[space_idx + 1..];
+                let arg_value = arg.split_whitespace().next().unwrap_or(arg);
+                return typed_arg == arg_value;
+            }
+            return false;
+        }
+        if let Some(&cmd_idx) = self.suggestions.get(self.suggestion_cursor) {
+            let cmd = &COMMANDS[cmd_idx];
+            return self.input == cmd.name;
+        }
+        false
+    }
+
     pub fn accept_suggestion(&mut self) {
         if !self.arg_suggestions.is_empty() {
             if let Some(arg) = self.arg_suggestions.get(self.suggestion_cursor) {
                 let space_idx = self.input.find(' ').unwrap_or(self.input.len());
-                let arg_value = arg.split_whitespace().next().unwrap_or(arg);
-                self.input = format!("{} {}", &self.input[..space_idx], arg_value);
+                let cmd_part = &self.input[..space_idx];
+                let arg_value = if cmd_part == "/model" {
+                    backend::model_id_from_suggestion(arg)
+                        .unwrap_or_else(|| arg.split_whitespace().next().unwrap_or(arg).to_string())
+                } else {
+                    arg.split_whitespace().next().unwrap_or(arg).to_string()
+                };
+                self.input = format!("{} {}", cmd_part, arg_value);
                 self.input_cursor = self.input.len();
                 self.arg_suggestions.clear();
                 self.suggestions.clear();
