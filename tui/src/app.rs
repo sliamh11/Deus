@@ -1009,12 +1009,12 @@ impl App {
 
     pub fn suggestion_is_exact_match(&self) -> bool {
         if !self.arg_suggestions.is_empty() {
-            if let Some(arg) = self.arg_suggestions.get(self.suggestion_cursor) {
-                if let Some(space_idx) = self.input.find(' ') {
-                    let typed_arg = &self.input[space_idx + 1..];
-                    let arg_value = arg.split_whitespace().next().unwrap_or(arg);
-                    return typed_arg == arg_value;
-                }
+            if let Some(arg) = self.arg_suggestions.get(self.suggestion_cursor)
+                && let Some(space_idx) = self.input.find(' ')
+            {
+                let typed_arg = &self.input[space_idx + 1..];
+                let arg_value = arg.split_whitespace().next().unwrap_or(arg);
+                return typed_arg == arg_value;
             }
             return false;
         }
