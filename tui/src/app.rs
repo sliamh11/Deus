@@ -231,7 +231,7 @@ impl App {
             turn_start: None,
             last_turn_duration: None,
             last_thinking_summary: None,
-            show_tools: false,
+            show_tools: true,
             scroll_offset: 0,
             scroll_pinned: true,
             queued_messages: Vec::new(),
@@ -301,6 +301,10 @@ impl App {
             return;
         }
 
+        self.input.clear();
+        self.input_cursor = 0;
+        self.suggestions.clear();
+        self.arg_suggestions.clear();
         self.dispatch_message(msg);
     }
 
@@ -400,7 +404,7 @@ impl App {
                     .map(|c| format!("  {:16} {}", c.name, c.description))
                     .collect::<Vec<_>>()
                     .join("\n");
-                self.chat_messages.push(ChatMessage::simple("system", &format!("Available commands:\n\n{}\n\nKeyboard shortcuts:\n  Ctrl+L  Clear screen\n  Ctrl+U  Clear input\n  Ctrl+A  Start of line\n  Ctrl+E  End of line\n  ↑/↓     Input history (when no suggestions)", help)));
+                self.chat_messages.push(ChatMessage::simple("system", &format!("Available commands:\n\n{}\n\nKeyboard shortcuts:\n  Ctrl+L  Clear screen\n  Ctrl+U  Clear input line\n  Ctrl+K  Kill to end of line\n  Ctrl+Y  Yank (paste killed text)\n  Ctrl+A  Start of line\n  Ctrl+E  End of line\n  Ctrl+J  New line (multi-line input)\n  Ctrl+O  Toggle tool/thinking details\n  Ctrl+D  Exit\n  Alt+B   Word left\n  Alt+F   Word right\n  ↑/↓     Input history\n  PgUp/Dn Scroll chat\n  Mouse   Scroll chat (Shift+drag to select text)", help)));
                 true
             }
             "/history" => {
