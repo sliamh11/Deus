@@ -9,7 +9,7 @@ mod widgets;
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind, EnableBracketedPaste, DisableBracketedPaste, EnableMouseCapture, DisableMouseCapture, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, EnableBracketedPaste, DisableBracketedPaste, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::execute;
 use ratatui::prelude::*;
@@ -24,7 +24,7 @@ fn main() -> io::Result<()> {
 
     terminal::enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture,
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
     )?;
     let backend = CrosstermBackend::new(stdout);
@@ -48,13 +48,6 @@ fn main() -> io::Result<()> {
                             app.input_char(c);
                         }
                     }
-                }
-            }
-            Event::Mouse(mouse) => {
-                match mouse.kind {
-                    MouseEventKind::ScrollUp => app.scroll_up(3),
-                    MouseEventKind::ScrollDown => app.scroll_down(3),
-                    _ => {}
                 }
             }
             Event::Key(key) => {
@@ -138,10 +131,9 @@ fn main() -> io::Result<()> {
                         KeyCode::Enter => {
                             if key.modifiers.contains(KeyModifiers::SHIFT) {
                                 app.input_newline();
+                            } else if app.has_suggestions() {
+                                app.accept_suggestion();
                             } else {
-                                if app.has_suggestions() {
-                                    app.accept_suggestion();
-                                }
                                 app.send_message();
                             }
                         }
@@ -187,7 +179,7 @@ fn main() -> io::Result<()> {
     }
 
     terminal::disable_raw_mode()?;
-    execute!(io::stdout(), PopKeyboardEnhancementFlags, DisableMouseCapture, LeaveAlternateScreen, DisableBracketedPaste)?;
+    execute!(io::stdout(), PopKeyboardEnhancementFlags, LeaveAlternateScreen, DisableBracketedPaste)?;
     Ok(())
 }
 

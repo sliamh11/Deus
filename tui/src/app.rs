@@ -110,6 +110,7 @@ pub struct App {
     pub chat_messages: Vec<ChatMessage>,
     pub chat_state: ChatState,
     pub stream_rx: Option<mpsc::Receiver<StreamChunk>>,
+    pub turn_count: u32,
     pub model: String,
     pub token_count: u32,
     pub cost_usd: f64,
@@ -236,6 +237,7 @@ impl App {
             chat_messages: vec![ChatMessage::simple("system", "Welcome to Deus. Type a message or / for commands.")],
             chat_state: ChatState::Idle,
             stream_rx: None,
+            turn_count: 0,
             model: "sonnet".to_string(),
             token_count: 0,
             cost_usd: 0.0,
@@ -331,11 +333,18 @@ impl App {
         let (tx, rx) = mpsc::channel();
         self.stream_rx = Some(rx);
         let model = self.model.clone();
+        let is_continuation = self.turn_count > 0;
+        self.turn_count += 1;
 
         thread::spawn(move || {
+            let mut args = vec!["-p", "--output-format", "stream-json", "--verbose",
+                       "--model", &model];
+            if is_continuation {
+                args.push("--continue");
+            }
+            args.push(&msg);
             let child = Command::new("claude")
-                .args(["-p", "--output-format", "stream-json", "--verbose",
-                       "--model", &model, &msg])
+                .args(&args)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn();
