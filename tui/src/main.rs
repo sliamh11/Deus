@@ -19,7 +19,7 @@ use crossterm::event::{
     MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
-use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen, SetTitle};
 use ratatui::prelude::*;
 
 use app::{App, Tab};
@@ -51,6 +51,16 @@ fn main() -> io::Result<()> {
 
         app.poll_response();
         terminal.draw(|frame| ui::render(frame, &app))?;
+
+        let tab_icon = if matches!(app.active().chat_state, app::ChatState::Streaming) {
+            app.spinner_frame()
+        } else {
+            "⠿"
+        };
+        execute!(
+            terminal.backend_mut(),
+            SetTitle(format!("{} deus", tab_icon))
+        )?;
 
         if event::poll(Duration::from_millis(50))? {
             let ev = event::read()?;
