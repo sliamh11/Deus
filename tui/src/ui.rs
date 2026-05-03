@@ -1,7 +1,7 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-use crate::app::{App, Tab};
+use crate::app::{App, ChatState, SessionState, Tab};
 use crate::panels;
 use crate::theme;
 
@@ -34,6 +34,10 @@ pub fn render(frame: &mut Frame, app: &App) {
             }
             render_panel_footer(frame, app, layout[2]);
         }
+    }
+
+    if app.show_session_picker {
+        render_session_picker(frame, app, area);
     }
 }
 
@@ -70,6 +74,18 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
     if let Some(hint) = chat_activity_hint(app) {
         left.push(Span::styled("│ ", theme::muted()));
         left.push(Span::styled(hint, theme::thinking()));
+    }
+
+    let bg_count = app.background_session_count();
+    if bg_count > 0 {
+        left.push(Span::styled("│ ", theme::muted()));
+        let streaming = app.streaming_background_count();
+        let label = if streaming > 0 {
+            format!("{} bg ({} active) ", bg_count, streaming)
+        } else {
+            format!("{} bg ", bg_count)
+        };
+        left.push(Span::styled(label, theme::dim()));
     }
 
     if app.mode != "home" {
@@ -138,12 +154,19 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn chat_activity_hint(app: &App) -> Option<String> {
-    if matches!(app.active().chat_state, crate::app::ChatState::Streaming) {
-        Some(if app.show_tools {
-            "thinking... Ctrl+O hide".to_string()
+    let session = app.active();
+    if matches!(session.chat_state, crate::app::ChatState::Streaming) {
+        let tool_hint = if app.show_tools {
+            "thinking... Ctrl+O hide"
         } else {
-            "thinking... Ctrl+O show".to_string()
-        })
+            "thinking... Ctrl+O show"
+        };
+        let subagent_hint = if !session.active_subagent_ids.is_empty() {
+            " | Ctrl+B: parallel agent"
+        } else {
+            ""
+        };
+        Some(format!("{}{}", tool_hint, subagent_hint))
     } else {
         None
     }
@@ -156,6 +179,69 @@ fn render_panel_header(frame: &mut Frame, app: &App, area: Rect) {
         .title(title)
         .border_style(theme::accent());
     frame.render_widget(block, area);
+}
+
+fn render_session_picker(frame: &mut Frame, app: &App, area: Rect) {
+    let session_count = app.session_order.len();
+    let height = (session_count as u16 + 4).min(area.height.saturating_sub(4));
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, &id) in app.session_order.iter().enumerate() {
+        let session = match app.sessions.get(&id) {
+            Some(s) => s,
+            None => continue,
+        };
+        let is_selected = i == app.picker_cursor;
+        let is_active = id == app.active_session;
+        let marker = if is_active { ">" } else { " " };
+
+        let state_icon = match (&session.session_state, &session.chat_state) {
+            (SessionState::Completed, _) => Span::styled("✓", theme::good()),
+            (SessionState::Failed, _) => Span::styled("✗", theme::bad()),
+            (_, ChatState::Streaming) => Span::styled("●", theme::warn()),
+            _ => Span::styled("○", theme::dim()),
+        };
+
+        let label = Span::styled(
+            format!(
+                " {} {} ",
+                &session.label,
+                crate::app::model_display(&session.model)
+            ),
+            if is_selected {
+                Style::default().bg(theme::ACCENT).fg(Color::Black)
+            } else {
+                Style::default()
+            },
+        );
+
+        let cost = if session.cost_usd > 0.0 {
+            Span::styled(format!(" ${:.2}", session.cost_usd), theme::dim())
+        } else {
+            Span::raw("")
+        };
+
+        lines.push(Line::from(vec![
+            Span::raw(marker),
+            Span::raw(" "),
+            state_icon,
+            label,
+            cost,
+        ]));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Sessions — ↑↓ enter d:dismiss esc ")
+        .border_style(theme::accent());
+    let picker = Paragraph::new(lines).block(block);
+    frame.render_widget(picker, popup);
 }
 
 fn render_panel_footer(frame: &mut Frame, app: &App, area: Rect) {

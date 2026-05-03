@@ -1,5 +1,6 @@
 use super::{
-    Backend, ChunkKind, ModelDef, PermissionDenial, RunConfig, SUBAGENT_TOOLS_CLAUDE, StreamChunk,
+    Backend, ChunkKind, ModelDef, PermissionDenial, RunConfig, RunMode, SUBAGENT_TOOLS_CLAUDE,
+    StreamChunk,
 };
 use std::process::{Command, Stdio};
 
@@ -72,10 +73,27 @@ impl Backend for ClaudeBackend {
                 cmd.arg(tool);
             }
         }
-        if config.is_continuation {
-            cmd.arg("--continue");
+
+        match &config.run_mode {
+            RunMode::Resume { session_id } => {
+                cmd.args(["--resume", session_id]);
+            }
+            RunMode::Ephemeral => {
+                cmd.arg("--bare");
+                cmd.arg("--no-session-persistence");
+            }
+            RunMode::Normal { session_id } => {
+                if let Some(id) = session_id {
+                    cmd.args(["--session-id", id]);
+                }
+                if config.is_continuation {
+                    cmd.arg("--continue");
+                }
+            }
         }
-        if !config.is_continuation
+
+        if !matches!(config.run_mode, RunMode::Resume { .. })
+            && !config.is_continuation
             && let Some(ref ctx_file) = config.system_context_file
             && let Ok(ctx) = std::fs::read_to_string(ctx_file)
             && !ctx.is_empty()
@@ -298,6 +316,7 @@ fn extract_tool_result_preview(block: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::permissions::PermissionsConfig;
 
     fn parse(json: &str) -> Vec<ChunkKind> {
         ClaudeBackend
@@ -406,26 +425,45 @@ mod tests {
         assert!(matches!(&chunks[0], ChunkKind::CostUpdate { .. }));
     }
 
-    #[test]
-    fn build_command_sets_permission_flags() {
-        use crate::config::permissions::PermissionsConfig;
-        let config = RunConfig {
+    fn default_permissions() -> PermissionsConfig {
+        PermissionsConfig {
+            mode: "default".to_string(),
+            allowed_tools: vec![],
+            disallowed_tools: vec![],
+        }
+    }
+
+    fn base_config() -> RunConfig {
+        RunConfig {
             model: "sonnet".to_string(),
             message: "test".to_string(),
             effort: "high".to_string(),
             is_continuation: false,
             system_context_file: None,
+            permissions: default_permissions(),
+            run_mode: RunMode::default(),
+        }
+    }
+
+    fn args_of(config: &RunConfig) -> Vec<String> {
+        ClaudeBackend
+            .build_command(config)
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn build_command_sets_permission_flags() {
+        let config = RunConfig {
             permissions: PermissionsConfig {
                 mode: "acceptEdits".to_string(),
                 allowed_tools: vec!["Read".to_string(), "Bash(git *)".to_string()],
                 disallowed_tools: vec!["Write".to_string()],
             },
+            ..base_config()
         };
-        let cmd = ClaudeBackend.build_command(&config);
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().to_string())
-            .collect();
+        let args = args_of(&config);
         assert!(args.contains(&"--permission-mode".to_string()));
         assert!(args.contains(&"acceptEdits".to_string()));
         assert!(args.contains(&"--allowedTools".to_string()));
@@ -438,25 +476,90 @@ mod tests {
 
     #[test]
     fn build_command_bypass_adds_skip_flag() {
-        use crate::config::permissions::PermissionsConfig;
         let config = RunConfig {
-            model: "sonnet".to_string(),
-            message: "test".to_string(),
-            effort: "high".to_string(),
-            is_continuation: false,
-            system_context_file: None,
             permissions: PermissionsConfig {
                 mode: "bypassPermissions".to_string(),
                 allowed_tools: vec![],
                 disallowed_tools: vec![],
             },
+            ..base_config()
         };
-        let cmd = ClaudeBackend.build_command(&config);
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().to_string())
-            .collect();
+        let args = args_of(&config);
         assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
         assert!(args.contains(&"bypassPermissions".to_string()));
+    }
+
+    #[test]
+    fn build_command_normal_mode_no_session_flags() {
+        let args = args_of(&base_config());
+        assert!(!args.contains(&"--session-id".to_string()));
+        assert!(!args.contains(&"--resume".to_string()));
+        assert!(!args.contains(&"--bare".to_string()));
+        assert!(!args.contains(&"--no-session-persistence".to_string()));
+        assert!(!args.contains(&"--continue".to_string()));
+    }
+
+    #[test]
+    fn build_command_normal_with_session_id() {
+        let config = RunConfig {
+            run_mode: RunMode::Normal {
+                session_id: Some("abc-123".to_string()),
+            },
+            ..base_config()
+        };
+        let args = args_of(&config);
+        assert!(args.contains(&"--session-id".to_string()));
+        assert!(args.contains(&"abc-123".to_string()));
+    }
+
+    #[test]
+    fn build_command_resume_mode() {
+        let config = RunConfig {
+            run_mode: RunMode::Resume {
+                session_id: "sess-42".to_string(),
+            },
+            ..base_config()
+        };
+        let args = args_of(&config);
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(args.contains(&"sess-42".to_string()));
+        assert!(!args.contains(&"--continue".to_string()));
+    }
+
+    #[test]
+    fn build_command_resume_suppresses_continue() {
+        let config = RunConfig {
+            is_continuation: true,
+            run_mode: RunMode::Resume {
+                session_id: "sess-42".to_string(),
+            },
+            ..base_config()
+        };
+        let args = args_of(&config);
+        assert!(args.contains(&"--resume".to_string()));
+        assert!(!args.contains(&"--continue".to_string()));
+    }
+
+    #[test]
+    fn build_command_ephemeral_mode() {
+        let config = RunConfig {
+            run_mode: RunMode::Ephemeral,
+            ..base_config()
+        };
+        let args = args_of(&config);
+        assert!(args.contains(&"--bare".to_string()));
+        assert!(args.contains(&"--no-session-persistence".to_string()));
+        assert!(!args.contains(&"--continue".to_string()));
+        assert!(!args.contains(&"--session-id".to_string()));
+    }
+
+    #[test]
+    fn build_command_continuation_in_normal_mode() {
+        let config = RunConfig {
+            is_continuation: true,
+            ..base_config()
+        };
+        let args = args_of(&config);
+        assert!(args.contains(&"--continue".to_string()));
     }
 }

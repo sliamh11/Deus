@@ -9,7 +9,7 @@
  *   5. Memory database initialized
  *   6. Gemini API key (suggested, not required)
  */
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -291,6 +291,33 @@ export async function run(args: string[]): Promise<void> {
   // ── 4. Write config ──────────────────────────────────────────────────────
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
   config.vault_path = vaultPath;
+
+  if (!config.max_parallel_agents) {
+    try {
+      const hw = spawnSync(pythonCmd, ['-m', 'evolution.hardware'], {
+        encoding: 'utf-8',
+        cwd: process.cwd(),
+        env: process.env,
+      });
+      if (hw.status === 0 && hw.stdout) {
+        const report = JSON.parse(hw.stdout.trim());
+        const cores: number = report?.hardware?.cores ?? 0;
+        if (cores > 0) {
+          config.max_parallel_agents = Math.max(
+            2,
+            Math.min(8, Math.floor(cores / 2)),
+          );
+          logger.info(
+            { cores, max_parallel_agents: config.max_parallel_agents },
+            'Agent limit set from hardware',
+          );
+        }
+      }
+    } catch {
+      // Hardware detection is optional — no failure on exotic platforms
+    }
+  }
+
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
   logger.info({ configPath: CONFIG_PATH }, 'Config written');
 

@@ -51,5 +51,5 @@ No other files need changes — model registry, `/model` command, suggestions, d
 - Adding a provider is one file + two lines. No architectural changes needed.
 - Each provider owns its own JSONL contract — no shared parser to break.
 - The trait is `Send + Sync` so providers can be passed to background threads for stream processing.
-- Model selection, effort levels, and continuation semantics are per-provider (each `build_command` handles its own flags).
+- Model selection, effort levels, and continuation semantics are per-provider (each `build_command` handles its own flags). Note: background agent effort classification is centralized in `EffortPolicy` (see `parallel-agent-orchestration.md` §Dynamic Effort Classification). Backends continue to own flag encoding.
 - This convention applies repo-wide: any new provider integration (TUI, container runtime, or host process) should follow the same trait-based strategy pattern.

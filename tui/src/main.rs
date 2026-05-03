@@ -92,6 +92,18 @@ fn main() -> io::Result<()> {
                         }
                     }
 
+                    if app.show_session_picker {
+                        match key.code {
+                            KeyCode::Esc => app.show_session_picker = false,
+                            KeyCode::Up | KeyCode::Char('k') => app.picker_prev(),
+                            KeyCode::Down | KeyCode::Char('j') => app.picker_next(),
+                            KeyCode::Enter => app.picker_select(),
+                            KeyCode::Char('d') | KeyCode::Delete => app.dismiss_session(),
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     if app.tab == Tab::Chat {
                         if key.modifiers.contains(KeyModifiers::SUPER) {
                             match key.code {
@@ -115,6 +127,27 @@ fn main() -> io::Result<()> {
                                 KeyCode::Char('k') => app.input_kill_to_end(),
                                 KeyCode::Char('y') => app.input_yank(),
                                 KeyCode::Char('o') => app.toggle_tools(),
+                                KeyCode::Char('b')
+                                    if app.background_session_count() > 0
+                                        || app.active().last_subagent_hint.is_some() =>
+                                {
+                                    if app.background_session_count() > 0 {
+                                        app.show_session_picker = true;
+                                        app.picker_cursor = 0;
+                                    } else if let Some(ref hint) = app.active().last_subagent_hint {
+                                        app.input = format!("/agent {}", hint);
+                                        app.input_cursor = app.input.len();
+                                        app.update_suggestions();
+                                    }
+                                }
+                                // Ctrl+Shift+B: direct session picker (CSI u encodes as Char('B') with CONTROL|SHIFT)
+                                KeyCode::Char('B')
+                                    if key.modifiers.contains(KeyModifiers::SHIFT)
+                                        && app.background_session_count() > 0 =>
+                                {
+                                    app.show_session_picker = true;
+                                    app.picker_cursor = 0;
+                                }
                                 KeyCode::Char('j') => app.input_newline(),
                                 _ => {}
                             }

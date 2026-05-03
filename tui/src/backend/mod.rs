@@ -49,6 +49,30 @@ pub struct PermissionDenial {
     pub tool_input_preview: String,
 }
 
+/// How a backend session should be launched.
+///
+/// Enum makes illegal states unrepresentable: you can't accidentally set both
+/// `resume` and `ephemeral` at the same time. Each variant carries only the
+/// data relevant to that mode.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum RunMode {
+    /// Normal session — optionally pinned to a backend-scoped UUID.
+    /// `session_id` is None for the main session (backend picks its own).
+    Normal { session_id: Option<String> },
+    /// Resume an existing session by its backend-scoped ID.
+    Resume { session_id: String },
+    /// Lightweight sidechain — no persistence, minimal startup overhead.
+    /// Claude: --bare --no-session-persistence. Codex: --ephemeral.
+    Ephemeral,
+}
+
+impl Default for RunMode {
+    fn default() -> Self {
+        Self::Normal { session_id: None }
+    }
+}
+
 pub struct RunConfig {
     pub model: String,
     pub message: String,
@@ -56,6 +80,7 @@ pub struct RunConfig {
     pub is_continuation: bool,
     pub system_context_file: Option<PathBuf>,
     pub permissions: PermissionsConfig,
+    pub run_mode: RunMode,
 }
 
 // Tool names that represent subagent/task spawning across providers.
