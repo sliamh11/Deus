@@ -1881,6 +1881,20 @@ pub fn parse_agent_args(args: &str) -> AgentArgs {
 mod tests {
     use super::*;
 
+    fn complete_session(app: &mut App, id: SessionId) {
+        let session = app.sessions.get_mut(&id).unwrap();
+        session
+            .chat_messages
+            .push(ChatMessage::simple("assistant", "done"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        session.stream_rx = Some(rx);
+        tx.send(backend::StreamChunk {
+            kind: ChunkKind::Done,
+        })
+        .unwrap();
+        app.poll_response();
+    }
+
     #[test]
     fn toggle_tools_invalidates_the_chat_cache() {
         let mut app = App::new();
@@ -2188,6 +2202,9 @@ mod tests {
             .spawn_agent("find the config file".to_string(), None, None)
             .unwrap();
         assert_eq!(app.sessions.get(&id2).unwrap().effort, "low");
+
+        // Complete a session to free a slot on low-core CI runners
+        complete_session(&mut app, id);
 
         let id3 = app
             .spawn_agent("summarize this".to_string(), None, None)
