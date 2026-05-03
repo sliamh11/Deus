@@ -2,6 +2,7 @@
 
 **Date:** 2026-05-03
 **Status:** Implemented
+**Scope:** tui/src/app.rs, tui/src/backend/, tui/src/main.rs
 **Related:** [parallel-agent-orchestration.md](parallel-agent-orchestration.md), [backend-strategy-trait.md](backend-strategy-trait.md), [tui-permission-bridge.md](tui-permission-bridge.md)
 
 ## Overview

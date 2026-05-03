@@ -2,6 +2,7 @@
 
 **Date:** 2026-05-03
 **Status:** Implemented (Phase 1-3)
+**Scope:** tui/src/permission_bridge.rs, tui/hooks/, tui/src/backend/claude.rs
 **Related:** [parallel-agent-orchestration.md](parallel-agent-orchestration.md), [backend-strategy-trait.md](backend-strategy-trait.md)
 
 ## Problem
