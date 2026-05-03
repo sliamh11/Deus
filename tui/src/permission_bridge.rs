@@ -7,6 +7,7 @@ use crate::app::SessionId;
 const HOOK_SCRIPT: &str = include_str!("../hooks/permission-bridge.sh");
 pub const HOOK_TIMEOUT_SECS: u64 = 120;
 pub const ENV_PERMISSIONS_DIR: &str = "DEUS_TUI_PERMISSIONS_DIR";
+pub const ENV_ALLOWED_TOOLS: &str = "DEUS_TUI_ALLOWED_TOOLS";
 const TEMP_DIR_PREFIX: &str = "deus-tui-permissions-";
 const HOOK_FILENAME: &str = "permission-bridge.sh";
 const SETTINGS_FILENAME: &str = "settings.json";

@@ -1,7 +1,7 @@
 # TUI Permission Bridge
 
 **Date:** 2026-05-03
-**Status:** Implemented (Phase 1)
+**Status:** Implemented (Phase 1-3)
 **Related:** [parallel-agent-orchestration.md](parallel-agent-orchestration.md), [backend-strategy-trait.md](backend-strategy-trait.md)
 
 ## Problem
@@ -233,16 +233,21 @@ Instead of `--settings`, modify `~/.claude/settings.json` before each launch.
    background agents.
 
 4. **120s timeout with deny fallback** — If the user doesn't respond, the tool is denied.
-   Configurable via `DEUS_TUI_PERMS_TIMEOUT` env var.
+   Configurable via `DEUS_TUI_PERMISSIONS_TIMEOUT` env var.
 
-5. **Claude-only for v1** — Codex has no hook system. Codex sessions use the existing
-   `PermissionDenials` post-hoc reporting path.
+5. **Claude-only** — Codex has no hook system. Codex sessions use the existing
+   `PermissionDenials` post-hoc reporting path. No changes to `codex.rs`.
 
-6. **Orphan sweep on startup** — `PermsBridge::sweep_orphans()` removes temp dirs from
+6. **Orphan sweep on startup** — `PermissionBridge::sweep_orphans()` removes temp dirs from
    crashed TUI instances by checking if the owning PID is still alive.
+
+7. **Always-allow via env var** — `DEUS_TUI_ALLOWED_TOOLS` (comma-separated bare tool names)
+   is passed to the subprocess at spawn time. The hook checks this list before IPC — if the
+   tool is allowed, it returns `allow` immediately without writing request files. Updated
+   on each new turn because `dispatch_message_for` spawns a fresh subprocess.
 
 ## Scope
 
-- **Phase 1 (this PR):** IPC bridge, hook script, backend integration, keyboard shortcuts (Y/N/A)
-- **Phase 2 (future):** Full TUI overlay with tool details, input preview, session context
-- **Phase 3 (future):** "Always allow" persistence across sessions, pattern-specific rules
+- **Phase 1:** IPC bridge, hook script, backend integration, keyboard shortcuts (Y/N/A)
+- **Phase 2:** Full TUI overlay with tool details, input preview, session context
+- **Phase 3:** "Always allow" persistence — bare tool names, env var fast path, persisted via `tui-permissions.json`

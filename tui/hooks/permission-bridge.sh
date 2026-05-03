@@ -14,6 +14,14 @@ TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')
 TOOL_ID=$(printf '%s' "$INPUT" | jq -r '.tool_use_id // empty')
 [ -z "$TOOL_ID" ] && exit 0
 
+# Auto-approve if tool is in the allowed list (set by TUI at spawn time)
+if [ -n "$DEUS_TUI_ALLOWED_TOOLS" ] && echo ",$DEUS_TUI_ALLOWED_TOOLS," | grep -qF ",$TOOL_NAME,"; then
+    cat <<RESP
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"Tool in always-allowed list"}}
+RESP
+    exit 0
+fi
+
 # Sanitize TOOL_ID: only alphanumeric, underscore, hyphen allowed
 if ! printf '%s' "$TOOL_ID" | grep -qE '^[A-Za-z0-9_-]+$'; then
     exit 0

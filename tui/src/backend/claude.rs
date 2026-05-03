@@ -110,6 +110,12 @@ impl Backend for ClaudeBackend {
                 crate::permission_bridge::ENV_PERMISSIONS_DIR,
                 permissions_dir,
             );
+            if !config.permissions.allowed_tools.is_empty() {
+                cmd.env(
+                    crate::permission_bridge::ENV_ALLOWED_TOOLS,
+                    config.permissions.allowed_tools.join(","),
+                );
+            }
         }
 
         cmd.arg(&config.message);
@@ -614,5 +620,58 @@ mod tests {
     fn build_command_no_permissions_dir_no_settings() {
         let args = args_of(&base_config());
         assert!(!args.contains(&"--settings".to_string()));
+    }
+
+    #[test]
+    fn build_command_permissions_dir_passes_allowed_tools_env() {
+        use std::fs;
+        let dir = std::env::temp_dir().join("deus-test-allowed-tools");
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join("settings.json"), "{}");
+
+        let config = RunConfig {
+            permissions: PermissionsConfig {
+                mode: "default".to_string(),
+                allowed_tools: vec!["Bash".to_string(), "Read".to_string()],
+                disallowed_tools: vec![],
+            },
+            permissions_dir: Some(dir.clone()),
+            ..base_config()
+        };
+        let cmd = ClaudeBackend.build_command(&config);
+        let envs: Vec<_> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| {
+                if k == crate::permission_bridge::ENV_ALLOWED_TOOLS {
+                    v.map(|val| val.to_string_lossy().to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0], "Bash,Read");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_command_empty_allowed_tools_no_env() {
+        use std::fs;
+        let dir = std::env::temp_dir().join("deus-test-no-allowed");
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join("settings.json"), "{}");
+
+        let config = RunConfig {
+            permissions_dir: Some(dir.clone()),
+            ..base_config()
+        };
+        let cmd = ClaudeBackend.build_command(&config);
+        let has_allowed = cmd
+            .get_envs()
+            .any(|(k, _)| k == crate::permission_bridge::ENV_ALLOWED_TOOLS);
+        assert!(!has_allowed);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
