@@ -3,6 +3,7 @@ mod backend;
 mod bidi;
 mod config;
 mod panels;
+mod permission_bridge;
 mod platform;
 mod theme;
 mod ui;
@@ -43,6 +44,10 @@ fn main() -> io::Result<()> {
     let mut app = App::new();
 
     loop {
+        if app.should_quit {
+            break;
+        }
+
         app.poll_response();
         terminal.draw(|frame| ui::render(frame, &app))?;
 
@@ -102,6 +107,28 @@ fn main() -> io::Result<()> {
                             _ => {}
                         }
                         continue;
+                    }
+
+                    if app.tab == Tab::Chat && app.has_pending_permission() {
+                        match key.code {
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                app.approve_first_pending();
+                                continue;
+                            }
+                            KeyCode::Char('n') | KeyCode::Char('N') => {
+                                app.deny_first_pending();
+                                continue;
+                            }
+                            KeyCode::Char('a') | KeyCode::Char('A') => {
+                                app.always_allow_first_pending();
+                                continue;
+                            }
+                            KeyCode::Esc => {
+                                app.deny_first_pending();
+                                continue;
+                            }
+                            _ => {}
+                        }
                     }
 
                     if app.tab == Tab::Chat {
@@ -243,6 +270,8 @@ fn main() -> io::Result<()> {
             }
         }
     }
+
+    app.cleanup_permissions();
 
     terminal::disable_raw_mode()?;
     execute!(

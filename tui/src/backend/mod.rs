@@ -81,6 +81,7 @@ pub struct RunConfig {
     pub system_context_file: Option<PathBuf>,
     pub permissions: PermissionsConfig,
     pub run_mode: RunMode,
+    pub permissions_dir: Option<PathBuf>,
 }
 
 // Tool names that represent subagent/task spawning across providers.

@@ -36,7 +36,9 @@ pub fn render(frame: &mut Frame, app: &App) {
         }
     }
 
-    if app.show_session_picker {
+    if app.has_pending_permission() {
+        render_permission_prompt(frame, app, area);
+    } else if app.show_session_picker {
         render_session_picker(frame, app, area);
     }
 }
@@ -86,6 +88,17 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             format!("{} bg ", bg_count)
         };
         left.push(Span::styled(label, theme::dim()));
+    }
+
+    if app.has_pending_permission() {
+        left.push(Span::styled("│ ", theme::muted()));
+        let count = app.active().pending_permissions.len();
+        left.push(Span::styled(
+            format!("PERM({}) ", count),
+            Style::default()
+                .fg(theme::WARN)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
 
     if app.mode != "home" {
@@ -244,6 +257,76 @@ fn render_session_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(picker, popup);
 }
 
+fn render_permission_prompt(frame: &mut Frame, app: &App, area: Rect) {
+    let session = app.active();
+    let req = match session.pending_permissions.first() {
+        Some(r) => r,
+        None => return,
+    };
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Tool: ", theme::dim()),
+        Span::styled(&req.tool_name, theme::tool_name()),
+    ]));
+
+    if !req.tool_input_preview.is_empty() {
+        let preview: String = req.tool_input_preview.chars().take(50).collect();
+        let display = if preview.len() < req.tool_input_preview.len() {
+            format!("{}...", preview)
+        } else {
+            preview
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Input: ", theme::dim()),
+            Span::styled(display, theme::tool_detail()),
+        ]));
+    }
+
+    if session.id != crate::app::SessionId::MAIN {
+        lines.push(Line::from(vec![
+            Span::styled("  Session: ", theme::dim()),
+            Span::styled(&session.label, theme::agent_detail()),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Y", theme::accent_bold()),
+        Span::styled(" allow  ", theme::dim()),
+        Span::styled("N", theme::accent_bold()),
+        Span::styled(" deny  ", theme::dim()),
+        Span::styled("A", theme::accent_bold()),
+        Span::styled(" always  ", theme::dim()),
+        Span::styled("Esc", theme::accent_bold()),
+        Span::styled(" deny", theme::dim()),
+    ]));
+    lines.push(Line::from(""));
+
+    let height = lines.len() as u16 + 2;
+    let width = 56u16.min(area.width.saturating_sub(4));
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let popup = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, popup);
+
+    let pending_count = session.pending_permissions.len();
+    let title = if pending_count > 1 {
+        format!(" Permission Required ({} pending) ", pending_count)
+    } else {
+        " Permission Required ".to_string()
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(theme::warn());
+    let prompt = Paragraph::new(lines).block(block);
+    frame.render_widget(prompt, popup);
+}
+
 fn render_panel_footer(frame: &mut Frame, app: &App, area: Rect) {
     let hints = match app.tab {
         Tab::Wardens => " ↑↓ move │ space toggle │ r refresh │ esc back to chat",
@@ -273,5 +356,47 @@ mod tests {
     fn chat_activity_hint_is_hidden_when_idle() {
         let app = App::new();
         assert!(chat_activity_hint(&app).is_none());
+    }
+
+    #[test]
+    fn permission_overlay_renders_without_panic() {
+        use crate::permission_bridge::PermissionRequest;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new();
+        app.active_mut()
+            .pending_permissions
+            .push(PermissionRequest {
+                tool_use_id: "toolu_test".to_string(),
+                tool_name: "Bash".to_string(),
+                tool_input_preview: "rm -rf /tmp/test".to_string(),
+                session_id: crate::app::SessionId::MAIN,
+            });
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
+    }
+
+    #[test]
+    fn permission_overlay_shows_multi_count() {
+        use crate::permission_bridge::PermissionRequest;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new();
+        for i in 0..3 {
+            app.active_mut()
+                .pending_permissions
+                .push(PermissionRequest {
+                    tool_use_id: format!("t{}", i),
+                    tool_name: "Bash".to_string(),
+                    tool_input_preview: format!("cmd {}", i),
+                    session_id: crate::app::SessionId::MAIN,
+                });
+        }
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &app)).unwrap();
     }
 }

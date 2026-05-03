@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::config;
 use crate::config::permissions::PermissionsConfig;
+use crate::permission_bridge::{self, PermissionBridge};
 use crate::platform;
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -166,6 +167,7 @@ pub struct Session {
     pub chat_dirty: bool,
     pub chat_version: u64,
     pub run_mode: backend::RunMode,
+    pub pending_permissions: Vec<permission_bridge::PermissionRequest>,
 }
 
 impl Session {
@@ -197,6 +199,7 @@ impl Session {
             chat_dirty: true,
             chat_version: 0,
             run_mode: backend::RunMode::default(),
+            pending_permissions: Vec::new(),
         }
     }
 
@@ -373,6 +376,10 @@ pub struct App {
     pub esc_pending: Option<Instant>,
     pub queued_messages: Vec<String>,
     pub session_start: Instant,
+    pub should_quit: bool,
+
+    // Permission bridge (Claude-only, None for Codex/bypass)
+    pub permission_bridge: Option<PermissionBridge>,
 
     // Dashboard data
     pub git_branch: String,
@@ -442,10 +449,19 @@ impl App {
             permissions.mode = "bypassPermissions".to_string();
         }
 
+        let use_permission_bridge = backend != "codex" && !permissions.is_bypass();
+
         let main_id = SessionId::MAIN;
         let main_session = Session::new_main(default_model, "high".to_string(), permissions);
         let mut sessions = HashMap::new();
         sessions.insert(main_id, main_session);
+
+        let permission_bridge = if use_permission_bridge {
+            PermissionBridge::sweep_orphans();
+            Some(PermissionBridge::new())
+        } else {
+            None
+        };
 
         let mut app = Self {
             sessions,
@@ -469,6 +485,9 @@ impl App {
             esc_pending: None,
             queued_messages: Vec::new(),
             session_start: Instant::now(),
+            should_quit: false,
+
+            permission_bridge,
 
             git_branch: detect_git_branch(),
             wardens: Vec::new(),
@@ -571,6 +590,16 @@ impl App {
         session.scroll_offset = 0;
         session.scroll_pinned = true;
 
+        let permissions_dir = if backend::model_backend_name(&session.model) == "claude"
+            && !session.permissions.is_bypass()
+        {
+            self.permission_bridge
+                .as_ref()
+                .map(|pb| pb.create_session(session_id))
+        } else {
+            None
+        };
+
         let (tx, rx) = mpsc::channel();
         session.stream_rx = Some(rx);
         let config = RunConfig {
@@ -585,6 +614,7 @@ impl App {
             },
             permissions: session.permissions.clone(),
             run_mode: session.run_mode.clone(),
+            permissions_dir,
         };
         session.turn_count += 1;
         let be = backend::backend_for(&config.model);
@@ -766,6 +796,7 @@ impl App {
             chat_dirty: true,
             chat_version: 0,
             run_mode: backend::RunMode::Ephemeral,
+            pending_permissions: Vec::new(),
         };
 
         self.sessions.insert(id, session);
@@ -819,7 +850,8 @@ impl App {
                 true
             }
             "/quit" => {
-                std::process::exit(0);
+                self.should_quit = true;
+                true
             }
             "/model" => {
                 let ids = model_ids();
@@ -1139,6 +1171,23 @@ impl App {
     }
 
     fn poll_session(&mut self, session_id: SessionId) {
+        // Poll permission bridge for new requests
+        if let Some(ref pb) = self.permission_bridge {
+            let new_requests = pb.poll(session_id);
+            if let Some(session) = self.sessions.get_mut(&session_id) {
+                for req in new_requests {
+                    if !session
+                        .pending_permissions
+                        .iter()
+                        .any(|p| p.tool_use_id == req.tool_use_id)
+                    {
+                        session.pending_permissions.push(req);
+                        session.mark_chat_changed();
+                    }
+                }
+            }
+        }
+
         let session = match self.sessions.get(&session_id) {
             Some(s) => s,
             None => return,
@@ -1286,7 +1335,11 @@ impl App {
                     session.turn_start = None;
                     session.active_subagent_ids.clear();
                     session.last_subagent_hint = None;
+                    session.pending_permissions.clear();
                     session.mark_chat_changed();
+                    if let Some(ref pb) = self.permission_bridge {
+                        pb.cleanup_session(session_id);
+                    }
                     if session_id != SessionId::MAIN {
                         session.session_state = if session.had_error {
                             SessionState::Failed
@@ -1843,6 +1896,68 @@ impl App {
             Tab::Services => self.services.len(),
             Tab::Channels => self.channels.len(),
             Tab::Config => self.deus_config.len(),
+        }
+    }
+
+    pub fn has_pending_permission(&self) -> bool {
+        !self.active().pending_permissions.is_empty()
+    }
+
+    pub fn approve_first_pending(&mut self) {
+        let session_id = self.active_session;
+        if let Some(ref pb) = self.permission_bridge
+            && let Some(session) = self.sessions.get_mut(&session_id)
+            && let Some(req) = session.pending_permissions.first()
+        {
+            pb.respond(req, "allow", "User approved via TUI");
+            let tool = req.tool_name.clone();
+            let preview = req.tool_input_preview.clone();
+            session.pending_permissions.remove(0);
+            session.chat_messages.push(ChatMessage::simple(
+                "system",
+                &format!("Approved: {}({})", tool, preview),
+            ));
+            session.mark_chat_changed();
+        }
+    }
+
+    pub fn deny_first_pending(&mut self) {
+        let session_id = self.active_session;
+        if let Some(ref pb) = self.permission_bridge
+            && let Some(session) = self.sessions.get_mut(&session_id)
+            && let Some(req) = session.pending_permissions.first()
+        {
+            pb.respond(req, "deny", "User denied via TUI");
+            let tool = req.tool_name.clone();
+            session.pending_permissions.remove(0);
+            session
+                .chat_messages
+                .push(ChatMessage::simple("system", &format!("Denied: {}", tool)));
+            session.mark_chat_changed();
+        }
+    }
+
+    pub fn always_allow_first_pending(&mut self) {
+        let session_id = self.active_session;
+        if let Some(ref pb) = self.permission_bridge
+            && let Some(session) = self.sessions.get_mut(&session_id)
+            && let Some(req) = session.pending_permissions.first()
+        {
+            pb.respond(req, "allow", "User always-allowed via TUI");
+            let tool = req.tool_name.clone();
+            session.pending_permissions.remove(0);
+            session.permissions.add_allowed(&tool);
+            session.chat_messages.push(ChatMessage::simple(
+                "system",
+                &format!("Always allowed: {}", tool),
+            ));
+            session.mark_chat_changed();
+        }
+    }
+
+    pub fn cleanup_permissions(&self) {
+        if let Some(ref pb) = self.permission_bridge {
+            pb.cleanup();
         }
     }
 }

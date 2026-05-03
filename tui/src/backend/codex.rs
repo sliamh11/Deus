@@ -423,6 +423,7 @@ mod tests {
             system_context_file: None,
             permissions: default_permissions(),
             run_mode: RunMode::default(),
+            permissions_dir: None,
         }
     }
 
