@@ -14,6 +14,9 @@ use crate::platform;
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
+pub const TRANSCRIPT_CAP: usize = 200;
+pub const DEFAULT_AGENT_EFFORT: &str = "medium";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct SessionId(pub u64);
 
@@ -109,6 +112,12 @@ pub enum SessionState {
     Completed,
 }
 
+pub struct AgentArgs {
+    pub prompt: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
 pub struct Session {
     #[allow(dead_code)]
     pub id: SessionId,
@@ -127,6 +136,7 @@ pub struct Session {
     pub last_thinking_summary: Option<String>,
     pub permissions: PermissionsConfig,
     pub active_subagent_ids: HashSet<String>,
+    pub last_subagent_hint: Option<String>,
     pub scroll_offset: u16,
     pub scroll_pinned: bool,
     pub chat_dirty: bool,
@@ -156,12 +166,44 @@ impl Session {
             last_thinking_summary: None,
             permissions,
             active_subagent_ids: HashSet::new(),
+            last_subagent_hint: None,
             scroll_offset: 0,
             scroll_pinned: true,
             chat_dirty: true,
             chat_version: 0,
             run_mode: backend::RunMode::default(),
         }
+    }
+
+    pub fn trim_transcript(&mut self) -> usize {
+        if self.id == SessionId::MAIN {
+            return 0;
+        }
+        if matches!(self.chat_state, ChatState::Streaming) {
+            return 0;
+        }
+        let len = self.chat_messages.len();
+        if len <= TRANSCRIPT_CAP {
+            return 0;
+        }
+        let to_remove = len - TRANSCRIPT_CAP;
+        self.chat_messages.drain(..to_remove);
+        self.mark_chat_changed();
+        to_remove
+    }
+
+    pub fn completion_summary(&self) -> String {
+        for msg in self.chat_messages.iter().rev() {
+            if msg.role == "assistant" && !msg.content.is_empty() {
+                let first_line = msg.content.lines().next().unwrap_or("");
+                let preview: String = first_line.chars().take(120).collect();
+                if preview.len() < first_line.len() {
+                    return format!("{}...", preview);
+                }
+                return preview;
+            }
+        }
+        "(no output)".to_string()
     }
 
     pub fn mark_chat_changed(&mut self) {
@@ -263,7 +305,7 @@ pub const COMMANDS: &[CommandDef] = &[
     CommandDef {
         name: "/agent",
         description: "Spawn background agent",
-        args: &[],
+        args: &["--effort", "--model"],
     },
     CommandDef {
         name: "/sessions",
@@ -585,9 +627,10 @@ impl App {
         });
     }
 
-    pub fn spawn_agent(&mut self, prompt: String, model: Option<String>) -> SessionId {
+    pub fn spawn_agent(&mut self, prompt: String, model: Option<String>, effort: Option<String>) -> SessionId {
         let id = SessionId::next();
         let model = model.unwrap_or_else(|| self.active().model.clone());
+        let effort = effort.unwrap_or_else(|| DEFAULT_AGENT_EFFORT.to_string());
         let preview: String = prompt.chars().take(50).collect();
         let label = if preview.len() < prompt.len() {
             format!("{}...", preview)
@@ -604,7 +647,7 @@ impl App {
             stream_rx: None,
             turn_count: 0,
             model,
-            effort: "high".to_string(),
+            effort,
             token_count: 0,
             cost_usd: 0.0,
             turn_start: None,
@@ -612,6 +655,7 @@ impl App {
             last_thinking_summary: None,
             permissions: self.active().permissions.clone(),
             active_subagent_ids: HashSet::new(),
+            last_subagent_hint: None,
             scroll_offset: 0,
             scroll_pinned: true,
             chat_dirty: true,
@@ -807,18 +851,31 @@ impl App {
                 true
             }
             "/agent" if !arg.is_empty() => {
-                let preview: String = arg.chars().take(60).collect();
-                self.spawn_agent(arg.to_string(), None);
+                let args = parse_agent_args(arg);
+                if args.prompt.is_empty() {
+                    self.active_mut().chat_messages.push(ChatMessage::simple(
+                        "system",
+                        "Usage: /agent [--effort <level>] [--model <id>] <prompt>",
+                    ));
+                    return true;
+                }
+                let preview: String = args.prompt.chars().take(60).collect();
+                let effort_label = args
+                    .effort
+                    .as_deref()
+                    .unwrap_or(DEFAULT_AGENT_EFFORT)
+                    .to_string();
+                self.spawn_agent(args.prompt, args.model, args.effort);
                 self.active_mut().chat_messages.push(ChatMessage::simple(
                     "system",
-                    &format!("Agent spawned: {}", preview),
+                    &format!("Agent spawned (effort: {}): {}", effort_label, preview),
                 ));
                 true
             }
             "/agent" => {
                 self.active_mut()
                     .chat_messages
-                    .push(ChatMessage::simple("system", "Usage: /agent <prompt>"));
+                    .push(ChatMessage::simple("system", "Usage: /agent [--effort <level>] [--model <id>] <prompt>"));
                 true
             }
             "/sessions" => {
@@ -1039,6 +1096,9 @@ impl App {
                     let is_warden = self.is_warden_name(&subagent_type);
                     let session = self.sessions.get_mut(&session_id).unwrap();
                     session.active_subagent_ids.insert(id.clone());
+                    if !description.is_empty() {
+                        session.last_subagent_hint = Some(description.clone());
+                    }
                     if let Some(last) = session.chat_messages.last_mut()
                         && last.role == "assistant"
                     {
@@ -1115,9 +1175,20 @@ impl App {
                     session.last_turn_duration = session.turn_start.map(|t| t.elapsed());
                     session.turn_start = None;
                     session.active_subagent_ids.clear();
+                    session.last_subagent_hint = None;
                     session.mark_chat_changed();
                     if session_id != SessionId::MAIN {
                         session.session_state = SessionState::Completed;
+                        session.trim_transcript();
+                        let label = session.label.clone();
+                        let summary = session.completion_summary();
+                        if let Some(main) = self.sessions.get_mut(&SessionId::MAIN) {
+                            main.chat_messages.push(ChatMessage::simple(
+                                "system",
+                                &format!("[Agent completed: {}] {}", label, summary),
+                            ));
+                            main.mark_chat_changed();
+                        }
                     }
                     if session_id == self.active_session && !self.queued_messages.is_empty() {
                         let next = self.queued_messages.remove(0);
@@ -1644,6 +1715,36 @@ impl App {
     }
 }
 
+pub fn parse_agent_args(args: &str) -> AgentArgs {
+    let mut effort: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut prompt_parts: Vec<&str> = Vec::new();
+    let tokens: Vec<&str> = args.split_whitespace().collect();
+    let ids = model_ids();
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i] {
+            "--effort" if i + 1 < tokens.len() && EFFORT_LEVELS.contains(&tokens[i + 1]) => {
+                effort = Some(tokens[i + 1].to_string());
+                i += 2;
+            }
+            "--model" if i + 1 < tokens.len() && ids.contains(&tokens[i + 1]) => {
+                model = Some(tokens[i + 1].to_string());
+                i += 2;
+            }
+            _ => {
+                prompt_parts.extend_from_slice(&tokens[i..]);
+                break;
+            }
+        }
+    }
+    AgentArgs {
+        prompt: prompt_parts.join(" "),
+        model,
+        effort,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1665,7 +1766,7 @@ mod tests {
         assert_eq!(app.session_order.len(), 1);
         assert_eq!(app.background_session_count(), 0);
 
-        let id = app.spawn_agent("test task".to_string(), None);
+        let id = app.spawn_agent("test task".to_string(), None, None);
 
         assert_eq!(app.session_order.len(), 2);
         assert_eq!(app.background_session_count(), 1);
@@ -1681,7 +1782,7 @@ mod tests {
     fn spawn_agent_truncates_long_prompts() {
         let mut app = App::new();
         let long_prompt = "a".repeat(100);
-        let id = app.spawn_agent(long_prompt, None);
+        let id = app.spawn_agent(long_prompt, None, None);
 
         let session = app.sessions.get(&id).unwrap();
         assert!(session.label.len() <= 54);
@@ -1692,7 +1793,7 @@ mod tests {
     fn spawn_agent_inherits_model() {
         let mut app = App::new();
         let main_model = app.active().model.clone();
-        let id = app.spawn_agent("test".to_string(), None);
+        let id = app.spawn_agent("test".to_string(), None, None);
 
         assert_eq!(app.sessions.get(&id).unwrap().model, main_model);
     }
@@ -1700,7 +1801,7 @@ mod tests {
     #[test]
     fn spawn_agent_accepts_custom_model() {
         let mut app = App::new();
-        let id = app.spawn_agent("test".to_string(), Some("haiku".to_string()));
+        let id = app.spawn_agent("test".to_string(), Some("haiku".to_string()), None);
 
         assert_eq!(app.sessions.get(&id).unwrap().model, "haiku");
     }
@@ -1708,8 +1809,8 @@ mod tests {
     #[test]
     fn session_picker_navigation() {
         let mut app = App::new();
-        app.spawn_agent("task 1".to_string(), None);
-        app.spawn_agent("task 2".to_string(), None);
+        app.spawn_agent("task 1".to_string(), None, None);
+        app.spawn_agent("task 2".to_string(), None, None);
 
         app.show_session_picker = true;
         app.picker_cursor = 0;
@@ -1730,7 +1831,7 @@ mod tests {
     #[test]
     fn session_picker_select_switches_active() {
         let mut app = App::new();
-        let id = app.spawn_agent("task".to_string(), None);
+        let id = app.spawn_agent("task".to_string(), None, None);
 
         app.show_session_picker = true;
         app.picker_cursor = 1;
@@ -1743,7 +1844,7 @@ mod tests {
     #[test]
     fn dismiss_only_removes_completed_sessions() {
         let mut app = App::new();
-        let id = app.spawn_agent("task".to_string(), None);
+        let id = app.spawn_agent("task".to_string(), None, None);
         assert_eq!(app.session_order.len(), 2);
 
         app.picker_cursor = 1;
@@ -1759,7 +1860,7 @@ mod tests {
     #[test]
     fn cannot_dismiss_main_session() {
         let mut app = App::new();
-        app.spawn_agent("task".to_string(), None);
+        app.spawn_agent("task".to_string(), None, None);
 
         app.picker_cursor = 0;
         app.dismiss_session();
@@ -1769,7 +1870,7 @@ mod tests {
     #[test]
     fn switched_to_session_still_becomes_completed() {
         let mut app = App::new();
-        let id = app.spawn_agent("task".to_string(), None);
+        let id = app.spawn_agent("task".to_string(), None, None);
 
         app.switch_to_session(id);
         assert_eq!(app.active_session, id);
@@ -1806,7 +1907,7 @@ mod tests {
     #[test]
     fn sessions_command_shows_picker_when_agents_exist() {
         let mut app = App::new();
-        app.spawn_agent("task".to_string(), None);
+        app.spawn_agent("task".to_string(), None, None);
 
         let handled = app.handle_command("/sessions");
         assert!(handled);
@@ -1819,5 +1920,247 @@ mod tests {
         let handled = app.handle_command("/sessions");
         assert!(handled);
         assert!(!app.show_session_picker);
+    }
+
+    // --- 5a: Bounded transcripts ---
+
+    #[test]
+    fn trim_transcript_removes_old_messages() {
+        let mut app = App::new();
+        let id = app.spawn_agent("test".to_string(), None, None);
+        let session = app.sessions.get_mut(&id).unwrap();
+        session.chat_state = ChatState::Idle;
+        let pre_existing = session.chat_messages.len();
+        for i in 0..(TRANSCRIPT_CAP + 50) {
+            session
+                .chat_messages
+                .push(ChatMessage::simple("assistant", &format!("msg {}", i)));
+        }
+        let total = pre_existing + TRANSCRIPT_CAP + 50;
+        let expected_removed = total - TRANSCRIPT_CAP;
+        let removed = session.trim_transcript();
+        assert_eq!(removed, expected_removed);
+        assert_eq!(session.chat_messages.len(), TRANSCRIPT_CAP);
+    }
+
+    #[test]
+    fn trim_transcript_noop_for_main() {
+        let mut app = App::new();
+        let session = app.sessions.get_mut(&SessionId::MAIN).unwrap();
+        session.chat_state = ChatState::Idle;
+        for i in 0..(TRANSCRIPT_CAP + 50) {
+            session
+                .chat_messages
+                .push(ChatMessage::simple("assistant", &format!("msg {}", i)));
+        }
+        let removed = session.trim_transcript();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn trim_transcript_noop_while_streaming() {
+        let mut app = App::new();
+        let id = app.spawn_agent("test".to_string(), None, None);
+        let session = app.sessions.get_mut(&id).unwrap();
+        for _ in 0..(TRANSCRIPT_CAP + 50) {
+            session
+                .chat_messages
+                .push(ChatMessage::simple("assistant", "x"));
+        }
+        let removed = session.trim_transcript();
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn trim_transcript_bumps_version() {
+        let mut app = App::new();
+        let id = app.spawn_agent("test".to_string(), None, None);
+        let session = app.sessions.get_mut(&id).unwrap();
+        session.chat_state = ChatState::Idle;
+        for _ in 0..(TRANSCRIPT_CAP + 10) {
+            session
+                .chat_messages
+                .push(ChatMessage::simple("assistant", "x"));
+        }
+        let version_before = session.chat_version;
+        session.trim_transcript();
+        assert_ne!(session.chat_version, version_before);
+    }
+
+    // --- 5b: Dynamic effort + flag parsing ---
+
+    #[test]
+    fn parse_agent_args_plain_prompt() {
+        let args = parse_agent_args("do something useful");
+        assert_eq!(args.prompt, "do something useful");
+        assert_eq!(args.model, None);
+        assert_eq!(args.effort, None);
+    }
+
+    #[test]
+    fn parse_agent_args_with_effort() {
+        let args = parse_agent_args("--effort low find the bug");
+        assert_eq!(args.prompt, "find the bug");
+        assert_eq!(args.model, None);
+        assert_eq!(args.effort, Some("low".to_string()));
+    }
+
+    #[test]
+    fn parse_agent_args_with_model() {
+        let args = parse_agent_args("--model haiku summarize this");
+        assert_eq!(args.prompt, "summarize this");
+        assert_eq!(args.model, Some("haiku".to_string()));
+        assert_eq!(args.effort, None);
+    }
+
+    #[test]
+    fn parse_agent_args_with_both_flags() {
+        let args = parse_agent_args("--effort medium --model haiku do it");
+        assert_eq!(args.prompt, "do it");
+        assert_eq!(args.model, Some("haiku".to_string()));
+        assert_eq!(args.effort, Some("medium".to_string()));
+    }
+
+    #[test]
+    fn parse_agent_args_invalid_effort_becomes_prompt() {
+        let args = parse_agent_args("--effort bogus find files");
+        assert_eq!(args.prompt, "--effort bogus find files");
+        assert_eq!(args.effort, None);
+    }
+
+    #[test]
+    fn parse_agent_args_unknown_flag_becomes_prompt() {
+        let args = parse_agent_args("--something that is not a flag");
+        assert_eq!(args.prompt, "--something that is not a flag");
+    }
+
+    #[test]
+    fn parse_agent_args_empty_returns_empty_prompt() {
+        let args = parse_agent_args("");
+        assert_eq!(args.prompt, "");
+    }
+
+    #[test]
+    fn spawn_agent_uses_default_effort() {
+        let mut app = App::new();
+        let id = app.spawn_agent("test".to_string(), None, None);
+        assert_eq!(app.sessions.get(&id).unwrap().effort, DEFAULT_AGENT_EFFORT);
+    }
+
+    #[test]
+    fn spawn_agent_accepts_custom_effort() {
+        let mut app = App::new();
+        let id = app.spawn_agent("test".to_string(), None, Some("max".to_string()));
+        assert_eq!(app.sessions.get(&id).unwrap().effort, "max");
+    }
+
+    // --- 5c: Completion summaries ---
+
+    #[test]
+    fn completion_summary_extracts_last_assistant_message() {
+        let mut app = App::new();
+        let id = app.spawn_agent("test".to_string(), None, None);
+        let session = app.sessions.get_mut(&id).unwrap();
+        session.chat_messages.push(ChatMessage::simple(
+            "assistant",
+            "I found 3 bugs in the code.\nHere are the details...",
+        ));
+        let summary = session.completion_summary();
+        assert_eq!(summary, "I found 3 bugs in the code.");
+    }
+
+    #[test]
+    fn completion_summary_returns_no_output_when_empty() {
+        let mut app = App::new();
+        let id = app.spawn_agent("test".to_string(), None, None);
+        let session = app.sessions.get(&id).unwrap();
+        let summary = session.completion_summary();
+        assert_eq!(summary, "(no output)");
+    }
+
+    #[test]
+    fn completion_summary_truncates_long_lines() {
+        let mut app = App::new();
+        let id = app.spawn_agent("test".to_string(), None, None);
+        let session = app.sessions.get_mut(&id).unwrap();
+        session
+            .chat_messages
+            .push(ChatMessage::simple("assistant", &"x".repeat(200)));
+        let summary = session.completion_summary();
+        assert!(summary.len() <= 124);
+        assert!(summary.ends_with("..."));
+    }
+
+    #[test]
+    fn completion_injects_notification_into_main() {
+        let mut app = App::new();
+        let id = app.spawn_agent("find bugs".to_string(), None, None);
+
+        let session = app.sessions.get_mut(&id).unwrap();
+        session
+            .chat_messages
+            .push(ChatMessage::simple("assistant", "Found 2 issues"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(backend::StreamChunk {
+            kind: ChunkKind::Done,
+        })
+        .unwrap();
+        session.stream_rx = Some(rx);
+
+        app.poll_response();
+
+        let main = app.sessions.get(&SessionId::MAIN).unwrap();
+        let last_system = main
+            .chat_messages
+            .iter()
+            .rev()
+            .find(|m| m.role == "system" && m.content.contains("Agent completed"));
+        assert!(last_system.is_some());
+        assert!(last_system.unwrap().content.contains("Found 2 issues"));
+    }
+
+    // --- 5d: Hint-driven spawn ---
+
+    #[test]
+    fn subagent_start_sets_hint() {
+        let mut app = App::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.active_mut().stream_rx = Some(rx);
+        app.active_mut().chat_state = ChatState::Streaming;
+        app.active_mut().chat_messages.push(ChatMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            blocks: Vec::new(),
+        });
+        tx.send(backend::StreamChunk {
+            kind: ChunkKind::SubagentStart {
+                id: "a1".to_string(),
+                subagent_type: "Explore".to_string(),
+                description: "search for config files".to_string(),
+            },
+        })
+        .unwrap();
+        app.poll_response();
+
+        assert_eq!(
+            app.active().last_subagent_hint.as_deref(),
+            Some("search for config files")
+        );
+    }
+
+    #[test]
+    fn done_clears_subagent_hint() {
+        let mut app = App::new();
+        app.active_mut().last_subagent_hint = Some("test hint".to_string());
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.active_mut().stream_rx = Some(rx);
+        app.active_mut().chat_state = ChatState::Streaming;
+        tx.send(backend::StreamChunk {
+            kind: ChunkKind::Done,
+        })
+        .unwrap();
+        app.poll_response();
+
+        assert!(app.active().last_subagent_hint.is_none());
     }
 }

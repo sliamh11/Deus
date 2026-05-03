@@ -44,4 +44,12 @@ The `RunMode` enum abstracts this: each backend maps the enum variant to its own
 | 1 | Session extraction | Refactor `App` fields into `Session` struct, zero behavior change |
 | 2 | Backend session mgmt | `RunMode` enum (`Normal`/`Resume`/`Ephemeral`) in `RunConfig` + both backends |
 | 3+4 | Spawn + picker UI | `/agent` command, multi-session polling, Ctrl+B session picker, status bar indicator |
-| 5 | Deferred | Hint-driven spawn (process re-parenting), bounded transcripts, dynamic effort, completion summaries |
+| 5 | In Progress | Bounded transcripts, dynamic effort, completion summaries, hint-driven spawn (discoverability only — see §Phase 5 Scoping below) |
+
+### Phase 5 Scoping
+
+The original Phase 5 spec included "process re-parenting" for hint-driven spawn: when the AI spawns a subagent via the `Agent` tool, detach the in-flight `stream_rx` into a new background `Session`. This is architecturally infeasible — the subagent runs as a tool call *within* the parent CLI process, sharing the same stdout stream. There is no separate process to re-parent; splitting one `stream_rx` between two Sessions would require protocol-level changes to the backend CLIs.
+
+**Revised scope:** Phase 5d provides *discoverability* instead of re-parenting. When `SubagentStart` appears in the stream, the status bar shows a hint ("Ctrl+B: parallel agent"). Pressing Ctrl+B prefills the input with `/agent <description>`, letting the user spawn a new independent agent with the same task. This delivers the UX value (awareness + one-key spawn) without the architectural complexity.
+
+Full process re-parenting is deferred indefinitely — it would require backend CLI support for mid-stream session splitting, which neither Claude Code nor Codex CLI offers.

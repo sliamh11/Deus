@@ -154,12 +154,19 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn chat_activity_hint(app: &App) -> Option<String> {
-    if matches!(app.active().chat_state, crate::app::ChatState::Streaming) {
-        Some(if app.show_tools {
-            "thinking... Ctrl+O hide".to_string()
+    let session = app.active();
+    if matches!(session.chat_state, crate::app::ChatState::Streaming) {
+        let tool_hint = if app.show_tools {
+            "thinking... Ctrl+O hide"
         } else {
-            "thinking... Ctrl+O show".to_string()
-        })
+            "thinking... Ctrl+O show"
+        };
+        let subagent_hint = if !session.active_subagent_ids.is_empty() {
+            " | Ctrl+B: parallel agent"
+        } else {
+            ""
+        };
+        Some(format!("{}{}", tool_hint, subagent_hint))
     } else {
         None
     }

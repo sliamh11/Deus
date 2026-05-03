@@ -127,9 +127,18 @@ fn main() -> io::Result<()> {
                                 KeyCode::Char('k') => app.input_kill_to_end(),
                                 KeyCode::Char('y') => app.input_yank(),
                                 KeyCode::Char('o') => app.toggle_tools(),
-                                KeyCode::Char('b') if app.background_session_count() > 0 => {
-                                    app.show_session_picker = true;
-                                    app.picker_cursor = 0;
+                                KeyCode::Char('b')
+                                    if app.background_session_count() > 0
+                                        || app.active().last_subagent_hint.is_some() =>
+                                {
+                                    if app.background_session_count() > 0 {
+                                        app.show_session_picker = true;
+                                        app.picker_cursor = 0;
+                                    } else if let Some(ref hint) = app.active().last_subagent_hint {
+                                        app.input = format!("/agent {}", hint);
+                                        app.input_cursor = app.input.len();
+                                        app.update_suggestions();
+                                    }
                                 }
                                 KeyCode::Char('j') => app.input_newline(),
                                 _ => {}
