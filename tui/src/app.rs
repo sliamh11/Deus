@@ -168,6 +168,7 @@ pub struct Session {
     pub chat_version: u64,
     pub run_mode: backend::RunMode,
     pub pending_permissions: Vec<permission_bridge::PermissionRequest>,
+    pub compact_triggered: bool,
 }
 
 impl Session {
@@ -200,6 +201,7 @@ impl Session {
             chat_version: 0,
             run_mode: backend::RunMode::default(),
             pending_permissions: Vec::new(),
+            compact_triggered: false,
         }
     }
 
@@ -389,6 +391,8 @@ pub struct App {
     pub deus_config: Vec<(String, String)>,
     pub system_context_file: Option<PathBuf>,
     pub mode: String,
+
+    pub auto_compact_threshold: f64,
 }
 
 // StreamChunk and parsing delegated to backend trait — see backend/mod.rs
@@ -496,6 +500,14 @@ impl App {
             deus_config: Vec::new(),
             system_context_file: ctx_file,
             mode,
+
+            auto_compact_threshold: platform::env_var("DEUS_AUTO_COMPACT_THRESHOLD")
+                .and_then(|s| s.parse::<f64>().ok())
+                .or_else(|| {
+                    config::deus::read_key("auto_compact_threshold")
+                        .and_then(|s| s.parse::<f64>().ok())
+                })
+                .unwrap_or(0.75),
         };
         app.refresh();
 
@@ -566,6 +578,7 @@ impl App {
             return;
         }
 
+        self.active_mut().compact_triggered = false;
         self.input.clear();
         self.input_cursor = 0;
         self.suggestions.clear();
@@ -797,6 +810,7 @@ impl App {
             chat_version: 0,
             run_mode: backend::RunMode::Ephemeral,
             pending_permissions: Vec::new(),
+            compact_triggered: false,
         };
 
         self.sessions.insert(id, session);
@@ -1374,9 +1388,30 @@ impl App {
                             self.show_session_picker = false;
                         }
                     }
-                    if session_id == self.active_session && !self.queued_messages.is_empty() {
-                        let next = self.queued_messages.remove(0);
-                        self.dispatch_message(next);
+                    if session_id == self.active_session {
+                        if let Some(session) = self.sessions.get(&session_id)
+                            && !session.compact_triggered
+                        {
+                            let ctx = backend::model_context_tokens(&session.model);
+                            let tokens = session.token_count as u64;
+                            let threshold = self.auto_compact_threshold;
+                            if tokens > (threshold * ctx as f64) as u64 {
+                                let pct = (tokens as f64 / ctx as f64 * 100.0) as u32;
+                                let session = self.sessions.get_mut(&session_id).unwrap();
+                                session.compact_triggered = true;
+                                session.chat_messages.push(ChatMessage::simple(
+                                    "system",
+                                    &format!("Context at {}% -- auto-compacting", pct),
+                                ));
+                                session.mark_chat_changed();
+                                self.dispatch_message("/compact".to_string());
+                                return;
+                            }
+                        }
+                        if !self.queued_messages.is_empty() {
+                            let next = self.queued_messages.remove(0);
+                            self.dispatch_message(next);
+                        }
                     }
                     return;
                 }
@@ -2654,5 +2689,73 @@ mod tests {
 
         let after_gc = app.spawn_agent("now allowed".to_string(), None, None);
         assert!(after_gc.is_some());
+    }
+
+    #[test]
+    fn auto_compact_triggers_when_above_threshold() {
+        let mut app = App::new();
+        app.auto_compact_threshold = 0.75;
+        let session = app.active_mut();
+        session.model = "sonnet".to_string(); // 200K context
+        session.token_count = 160_000; // 80% > 75% threshold
+        session
+            .chat_messages
+            .push(ChatMessage::simple("assistant", "response"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        session.stream_rx = Some(rx);
+        tx.send(backend::StreamChunk {
+            kind: ChunkKind::CostUpdate {
+                cost_usd: 0.05,
+                input_tokens: 160_000,
+                output_tokens: 0,
+            },
+        })
+        .unwrap();
+        tx.send(backend::StreamChunk {
+            kind: ChunkKind::Done,
+        })
+        .unwrap();
+        app.poll_response();
+        app.poll_response();
+
+        let session = app.active();
+        assert!(session.compact_triggered);
+        let has_compact_msg = session
+            .chat_messages
+            .iter()
+            .any(|m| m.content.contains("auto-compacting"));
+        assert!(has_compact_msg);
+    }
+
+    #[test]
+    fn auto_compact_does_not_retrigger() {
+        let mut app = App::new();
+        app.auto_compact_threshold = 0.75;
+        let session = app.active_mut();
+        session.compact_triggered = true;
+        session.model = "sonnet".to_string();
+        session.token_count = 160_000;
+        session
+            .chat_messages
+            .push(ChatMessage::simple("assistant", "response"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        session.stream_rx = Some(rx);
+        tx.send(backend::StreamChunk {
+            kind: ChunkKind::Done,
+        })
+        .unwrap();
+        let before_count = app.active().chat_messages.len();
+        app.poll_response();
+        let after_count = app.active().chat_messages.len();
+        assert_eq!(before_count, after_count);
+    }
+
+    #[test]
+    fn send_message_resets_compact_flag() {
+        let mut app = App::new();
+        app.active_mut().compact_triggered = true;
+        app.input = "hello".to_string();
+        app.send_message();
+        assert!(!app.active().compact_triggered);
     }
 }

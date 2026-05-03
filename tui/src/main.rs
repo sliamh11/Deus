@@ -2,6 +2,7 @@ mod app;
 mod backend;
 mod bidi;
 mod config;
+mod logo;
 mod panels;
 mod permission_bridge;
 mod platform;

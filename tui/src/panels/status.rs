@@ -12,7 +12,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     for w in &app.wardens {
         let icon = if w.enabled { "●" } else { "○" };
-        let color = if w.enabled { theme::GOOD } else { theme::BAD };
+        let color = if w.enabled {
+            theme::good_color()
+        } else {
+            theme::bad_color()
+        };
         lines.push(Line::from(vec![
             Span::styled(format!("  {} ", icon), Style::default().fg(color)),
             Span::raw(format!("{:24} {}", w.name, w.warden_type)),
@@ -24,9 +28,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     for svc in &app.services {
         let (icon, color) = match svc.status.as_str() {
-            "running" => ("●", theme::GOOD),
-            "stale" => ("◐", theme::WARN),
-            _ => ("○", theme::BAD),
+            "running" => ("●", theme::good_color()),
+            "stale" => ("◐", theme::warn_color()),
+            _ => ("○", theme::bad_color()),
         };
         lines.push(Line::from(vec![
             Span::styled(format!("  {} ", icon), Style::default().fg(color)),
@@ -39,9 +43,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(""));
     for ch in &app.channels {
         let (icon, color) = if ch.configured {
-            ("●", theme::GOOD)
+            ("●", theme::good_color())
         } else {
-            ("○", theme::BAD)
+            ("○", theme::bad_color())
         };
         let status = if ch.configured {
             "connected"

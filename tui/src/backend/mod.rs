@@ -126,6 +126,31 @@ pub fn all_models() -> Vec<(&'static str, &'static ModelDef)> {
     out
 }
 
+pub fn parse_context_tokens(context: &str) -> u64 {
+    if let Some(n) = context
+        .strip_suffix('M')
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        n * 1_000_000
+    } else if let Some(n) = context
+        .strip_suffix('K')
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        n * 1_000
+    } else {
+        200_000
+    }
+}
+
+pub fn model_context_tokens(id: &str) -> u64 {
+    for b in all_backends() {
+        if let Some(m) = b.models().iter().find(|m| m.id == id) {
+            return parse_context_tokens(m.context);
+        }
+    }
+    200_000
+}
+
 pub fn model_display(id: &str) -> String {
     for b in all_backends() {
         if let Some(m) = b.models().iter().find(|m| m.id == id) {
@@ -184,4 +209,40 @@ pub fn model_ids() -> Vec<&'static str> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_context_1m() {
+        assert_eq!(parse_context_tokens("1M"), 1_000_000);
+    }
+
+    #[test]
+    fn parse_context_200k() {
+        assert_eq!(parse_context_tokens("200K"), 200_000);
+    }
+
+    #[test]
+    fn parse_context_500k() {
+        assert_eq!(parse_context_tokens("500K"), 500_000);
+    }
+
+    #[test]
+    fn parse_context_fallback() {
+        assert_eq!(parse_context_tokens("unknown"), 200_000);
+    }
+
+    #[test]
+    fn model_context_known_model() {
+        assert_eq!(model_context_tokens("opus"), 1_000_000);
+        assert_eq!(model_context_tokens("sonnet"), 200_000);
+    }
+
+    #[test]
+    fn model_context_unknown_model() {
+        assert_eq!(model_context_tokens("nonexistent"), 200_000);
+    }
 }

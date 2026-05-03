@@ -96,7 +96,7 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         left.push(Span::styled(
             format!("PERM({}) ", count),
             Style::default()
-                .fg(theme::WARN)
+                .fg(theme::warn_color())
                 .add_modifier(Modifier::BOLD),
         ));
     }
@@ -142,11 +142,11 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         (window_secs - elapsed_secs) * 100 / window_secs
     };
     let remaining_color = if remaining_pct > 50 {
-        theme::GOOD
+        theme::good_color()
     } else if remaining_pct > 20 {
-        theme::WARN
+        theme::warn_color()
     } else {
-        theme::BAD
+        theme::bad_color()
     };
     right.push(Span::styled(
         format!("{}%", remaining_pct),
@@ -228,7 +228,7 @@ fn render_session_picker(frame: &mut Frame, app: &App, area: Rect) {
                 crate::app::model_display(&session.model)
             ),
             if is_selected {
-                Style::default().bg(theme::ACCENT).fg(Color::Black)
+                Style::default().bg(theme::accent_color()).fg(Color::Black)
             } else {
                 Style::default()
             },

@@ -165,20 +165,9 @@ fn render_markdown_line(
 }
 
 fn render_welcome(lines: &mut Vec<Line<'static>>) {
-    lines.push(Line::from(""));
-    lines.push(Line::from(vec![
-        Span::raw("   "),
-        Span::styled("▄▀▀▄", Style::default().fg(theme::EMBER)),
-        Span::raw("  "),
-        Span::styled("D E U S", theme::accent_bold()),
-    ]));
-    lines.push(Line::from(vec![
-        Span::raw("   "),
-        Span::styled("▀▄▄▀", Style::default().fg(theme::EMBER)),
-    ]));
-    lines.push(Line::from(""));
+    lines.extend(crate::logo::logo_lines());
     lines.push(Line::from(Span::styled(
-        "  Type a message or / for commands.",
+        "      Type a message or / for commands.",
         theme::dim(),
     )));
     lines.push(Line::from(""));
@@ -217,7 +206,7 @@ fn render_subagent_block(
         }
         (false, SubagentStatus::Completed) => (
             " ◈✓ ".to_string(),
-            Style::default().fg(theme::GOOD),
+            Style::default().fg(theme::good_color()),
             theme::agent_name(),
         ),
     };

@@ -11,9 +11,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, svc)| {
             let (icon, color) = match svc.status.as_str() {
-                "running" => ("●", theme::GOOD),
-                "stale" => ("◐", theme::WARN),
-                _ => ("○", theme::BAD),
+                "running" => ("●", theme::good_color()),
+                "stale" => ("◐", theme::warn_color()),
+                _ => ("○", theme::bad_color()),
             };
             let cursor = if i == app.cursor { "▸ " } else { "  " };
             ListItem::new(Line::from(vec![

@@ -13,7 +13,11 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, w)| {
             let icon = if w.enabled { "●" } else { "○" };
-            let color = if w.enabled { theme::GOOD } else { theme::BAD };
+            let color = if w.enabled {
+                theme::good_color()
+            } else {
+                theme::bad_color()
+            };
             let cursor_str = if i == app.cursor { "▸ " } else { "  " };
             let style = if i == app.cursor {
                 theme::bold()

@@ -11,9 +11,9 @@ pub fn render(frame: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, ch)| {
             let (icon, color, status) = if ch.configured {
-                ("●", theme::GOOD, "connected")
+                ("●", theme::good_color(), "connected")
             } else {
-                ("○", theme::BAD, "not configured")
+                ("○", theme::bad_color(), "not configured")
             };
             let cursor = if i == app.cursor { "▸ " } else { "  " };
             ListItem::new(Line::from(vec![
