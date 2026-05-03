@@ -57,10 +57,7 @@ fn main() -> io::Result<()> {
         } else {
             "⠿"
         };
-        execute!(
-            terminal.backend_mut(),
-            SetTitle(format!("{} deus", tab_icon))
-        )?;
+        execute!(io::stdout(), SetTitle(format!("{} deus", tab_icon)))?;
 
         if event::poll(Duration::from_millis(50))? {
             let ev = event::read()?;
