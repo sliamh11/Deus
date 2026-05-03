@@ -1,4 +1,4 @@
-use super::{Backend, ChunkKind, ModelDef, RunConfig, SUBAGENT_TOOLS_CODEX, StreamChunk};
+use super::{Backend, ChunkKind, ModelDef, RunConfig, RunMode, SUBAGENT_TOOLS_CODEX, StreamChunk};
 use std::process::{Command, Stdio};
 
 pub struct CodexBackend;
@@ -60,11 +60,40 @@ impl Backend for CodexBackend {
         };
 
         let mut cmd = Command::new("codex");
-        cmd.args(["exec", "--json", "-m", &config.model, "-c", &effort_cfg]);
-        if config.permissions.is_bypass() {
-            cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+
+        match &config.run_mode {
+            RunMode::Resume { session_id } => {
+                cmd.args([
+                    "exec",
+                    "resume",
+                    "--json",
+                    "-m",
+                    &config.model,
+                    "-c",
+                    &effort_cfg,
+                ]);
+                if config.permissions.is_bypass() {
+                    cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+                }
+                cmd.args([session_id.as_str(), &message]);
+            }
+            RunMode::Ephemeral => {
+                cmd.args(["exec", "--json", "-m", &config.model, "-c", &effort_cfg]);
+                cmd.arg("--ephemeral");
+                if config.permissions.is_bypass() {
+                    cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+                }
+                cmd.arg(&message);
+            }
+            RunMode::Normal { .. } => {
+                cmd.args(["exec", "--json", "-m", &config.model, "-c", &effort_cfg]);
+                if config.permissions.is_bypass() {
+                    cmd.arg("--dangerously-bypass-approvals-and-sandbox");
+                }
+                cmd.arg(&message);
+            }
         }
-        cmd.arg(&message);
+
         cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
@@ -375,5 +404,100 @@ mod tests {
     #[test]
     fn parse_invalid_json() {
         assert!(parse("garbage").is_empty());
+    }
+
+    fn default_permissions() -> crate::config::permissions::PermissionsConfig {
+        crate::config::permissions::PermissionsConfig {
+            mode: "default".to_string(),
+            allowed_tools: vec![],
+            disallowed_tools: vec![],
+        }
+    }
+
+    fn base_config() -> RunConfig {
+        RunConfig {
+            model: "gpt-5.4".to_string(),
+            message: "test".to_string(),
+            effort: "high".to_string(),
+            is_continuation: false,
+            system_context_file: None,
+            permissions: default_permissions(),
+            run_mode: RunMode::default(),
+        }
+    }
+
+    fn args_of(config: &RunConfig) -> Vec<String> {
+        CodexBackend
+            .build_command(config)
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn build_command_normal_mode() {
+        let args = args_of(&base_config());
+        assert_eq!(args[0], "exec");
+        assert!(args.contains(&"--json".to_string()));
+        assert!(args.contains(&"test".to_string()));
+        assert!(!args.contains(&"resume".to_string()));
+        assert!(!args.contains(&"--ephemeral".to_string()));
+    }
+
+    #[test]
+    fn build_command_normal_ignores_session_id() {
+        let config = RunConfig {
+            run_mode: RunMode::Normal {
+                session_id: Some("abc-123".to_string()),
+            },
+            ..base_config()
+        };
+        let args = args_of(&config);
+        assert!(!args.contains(&"--session-id".to_string()));
+        assert!(!args.contains(&"abc-123".to_string()));
+    }
+
+    #[test]
+    fn build_command_resume_mode() {
+        let config = RunConfig {
+            run_mode: RunMode::Resume {
+                session_id: "sess-42".to_string(),
+            },
+            ..base_config()
+        };
+        let args = args_of(&config);
+        assert_eq!(args[0], "exec");
+        assert_eq!(args[1], "resume");
+        assert!(args.contains(&"sess-42".to_string()));
+        assert!(args.contains(&"test".to_string()));
+    }
+
+    #[test]
+    fn build_command_ephemeral_mode() {
+        let config = RunConfig {
+            run_mode: RunMode::Ephemeral,
+            ..base_config()
+        };
+        let args = args_of(&config);
+        assert!(args.contains(&"--ephemeral".to_string()));
+        assert!(!args.contains(&"resume".to_string()));
+    }
+
+    #[test]
+    fn build_command_bypass_in_resume() {
+        let config = RunConfig {
+            run_mode: RunMode::Resume {
+                session_id: "s1".to_string(),
+            },
+            permissions: crate::config::permissions::PermissionsConfig {
+                mode: "bypassPermissions".to_string(),
+                allowed_tools: vec![],
+                disallowed_tools: vec![],
+            },
+            ..base_config()
+        };
+        let args = args_of(&config);
+        assert!(args.contains(&"--dangerously-bypass-approvals-and-sandbox".to_string()));
+        assert!(args.contains(&"resume".to_string()));
     }
 }

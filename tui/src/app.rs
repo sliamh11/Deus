@@ -125,6 +125,7 @@ pub struct Session {
     pub scroll_pinned: bool,
     pub chat_dirty: bool,
     pub chat_version: u64,
+    pub run_mode: backend::RunMode,
 }
 
 impl Session {
@@ -151,6 +152,7 @@ impl Session {
             scroll_pinned: true,
             chat_dirty: true,
             chat_version: 0,
+            run_mode: backend::RunMode::default(),
         }
     }
 
@@ -487,6 +489,7 @@ impl App {
                 None
             },
             permissions: session.permissions.clone(),
+            run_mode: session.run_mode.clone(),
         };
         session.turn_count += 1;
         let be = backend::backend_for(&config.model);

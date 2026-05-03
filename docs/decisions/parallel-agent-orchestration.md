@@ -24,11 +24,24 @@ The TUI currently supports a single chat session. Users need to spawn background
 5. **Cross-platform kill** via `std::process::Child::kill()`, not `libc::kill`.
 6. **Token efficiency:** `--bare` + `--no-session-persistence` for sidechains, `--resume <id>` for multi-turn context management, bounded transcript buffers.
 
+### Cross-Backend Session Asymmetry
+
+Session management capabilities differ between backends:
+
+| Capability | Claude Code | Codex CLI |
+|-----------|-------------|-----------|
+| Pin session ID | `--session-id <uuid>` | Not available — sessions created implicitly |
+| Resume session | `--resume <id>` | `codex exec resume <id> <prompt>` (subcommand) |
+| Ephemeral mode | `--bare` + `--no-session-persistence` | `--ephemeral` |
+| Continuation | `--continue` | Not available in `exec` mode |
+
+The `RunMode` enum abstracts this: each backend maps the enum variant to its own CLI contract. Codex silently ignores `Normal { session_id: Some(_) }` since it has no equivalent flag — callers should not rely on session ID pinning for Codex backends.
+
 ### Implementation Phases
 
 | Phase | PR | Scope |
 |-------|----|-------|
 | 1 | Session extraction | Refactor `App` fields into `Session` struct, zero behavior change |
-| 2 | Backend session mgmt | `--session-id`, `--resume`, `--bare`, `--ephemeral` in RunConfig + backends |
+| 2 | Backend session mgmt | `RunMode` enum (`Normal`/`Resume`/`Ephemeral`) in `RunConfig` + both backends |
 | 3+4 | Spawn + picker UI | Background spawning, session picker, enter mode, commands |
 | 5 | Deferred | Bounded transcripts, dynamic effort, completion summaries, health monitoring (separate plan) |
