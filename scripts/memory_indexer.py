@@ -712,6 +712,31 @@ def cmd_add_dir(dir_str: str, extract: bool = True):
 COMPACT_SESSION_THRESHOLD = 12  # auto-enable compact mode above this many sessions
 
 
+_STOP_WORDS = frozenset(
+    "a an the and or but in on of to for with from by at is was were are be "
+    "been has had have do does did will would shall should can could may might "
+    "it its this that these those i we he she they my our his her their "
+    "not no nor so if then than up out about into over after before".split()
+)
+
+
+def _subject_from_tldr(tldr: str) -> str:
+    words = [w for w in re.split(r"[\s\-—:,./]+", tldr.lower()) if w and w not in _STOP_WORDS]
+    return words[0] if words else ""
+
+
+def _first_topic(fm: dict) -> str:
+    topics = fm.get("topics", "") or ""
+    if topics:
+        first = topics.split(",")[0].strip("[] ").lower()
+        if first:
+            return first
+    tldr = fm.get("tldr", "") or ""
+    if tldr:
+        return _subject_from_tldr(tldr)
+    return ""
+
+
 def cmd_recent(n: int = 3, days: bool = False, compact: bool = False):
     """Return recent session frontmatters. Pure filesystem — no API calls.
 
@@ -752,7 +777,18 @@ def cmd_recent(n: int = 3, days: bool = False, compact: bool = False):
         target_dates = set(seen_dates[:n])
         selected = [(d, p) for d, p in dated if d in target_dates]
     else:
-        selected = dated[:n]
+        # Dedup by primary topic so a burst on one subject doesn't bury unrelated contexts.
+        seen_topics: set[str] = set()
+        selected: list[tuple[str, Path]] = []
+        for date, path in dated:
+            content = path.read_text(encoding="utf-8")
+            fm = extract_frontmatter(content)
+            topic = _first_topic(fm)
+            if topic not in seen_topics:
+                seen_topics.add(topic)
+                selected.append((date, path))
+                if len(selected) >= n:
+                    break
 
     # Auto-enable compact when session count exceeds threshold
     if not compact and len(selected) >= COMPACT_SESSION_THRESHOLD:
@@ -3354,7 +3390,7 @@ def main():
     group.add_argument("--extract", metavar="PATH",
                        help="Extract atomic facts from a session log (uses Gemini Flash)")
     group.add_argument("--recent", type=int, metavar="N",
-                       help="Return last N session frontmatters by date (no API call)")
+                       help="Return last N topic-diverse sessions (deduped by primary topic, no API call)")
     group.add_argument("--recent-days", type=int, metavar="N",
                        help="Return ALL sessions from the last N calendar days (no API call)")
     group.add_argument("--learnings", action="store_true",

@@ -222,13 +222,15 @@ def test_soft_delete_entries_marks_orphaned(mi):
 # ── cmd_recent ───────────────────────────────────────────────────────────
 
 
-def _create_session(vault, date_folder: str, name: str, tldr: str, mtime_offset: float = 0):
+def _create_session(vault, date_folder: str, name: str, tldr: str,
+                    mtime_offset: float = 0, topics: str = ""):
     """Helper to create a session log file with controlled mtime."""
     day_dir = vault / "Session-Logs" / date_folder
     day_dir.mkdir(parents=True, exist_ok=True)
     p = day_dir / f"{name}.md"
+    topics_line = f"topics: [{topics}]\n" if topics else ""
     p.write_text(
-        f"---\ntype: session\ndate: {date_folder}\ntldr: {tldr}\n---\n## Summary\n"
+        f"---\ntype: session\ndate: {date_folder}\ntldr: {tldr}\n{topics_line}---\n## Summary\n"
     )
     # Set mtime: base + offset (higher offset = newer)
     import time
@@ -239,9 +241,12 @@ def _create_session(vault, date_folder: str, name: str, tldr: str, mtime_offset:
 
 def test_cmd_recent_mtime_tiebreaker(mi, fresh_vault, capsys):
     """Sessions on the same day should be ordered by mtime, newest first."""
-    _create_session(fresh_vault, "2024-06-15", "session-a", "first session", mtime_offset=100)
-    _create_session(fresh_vault, "2024-06-15", "session-b", "second session", mtime_offset=200)
-    _create_session(fresh_vault, "2024-06-15", "session-c", "third session", mtime_offset=300)
+    _create_session(fresh_vault, "2024-06-15", "session-a", "first session",
+                    mtime_offset=100, topics="alpha")
+    _create_session(fresh_vault, "2024-06-15", "session-b", "second session",
+                    mtime_offset=200, topics="bravo")
+    _create_session(fresh_vault, "2024-06-15", "session-c", "third session",
+                    mtime_offset=300, topics="charlie")
 
     mi.cmd_recent(2)
     output = capsys.readouterr().out
@@ -351,6 +356,104 @@ def test_cmd_recent_days_mtime_order_within_day(mi, fresh_vault, capsys):
     assert "late" in lines[0]
     assert "middle" in lines[1]
     assert "early" in lines[2]
+
+
+def test_cmd_recent_topic_diversity(mi, fresh_vault, capsys):
+    """--recent N deduplicates by primary topic so a burst on one topic
+    doesn't push unrelated contexts off the edge."""
+    # 6 TUI sessions + 1 interview prep, all on the same day
+    _create_session(fresh_vault, "2024-06-15", "tui-phase1", "phase 1",
+                    mtime_offset=100, topics="tui, parallel-agents")
+    _create_session(fresh_vault, "2024-06-15", "tui-phase2", "phase 2",
+                    mtime_offset=200, topics="tui, parallel-agents")
+    _create_session(fresh_vault, "2024-06-15", "tui-phase3", "phase 3",
+                    mtime_offset=300, topics="tui, session-lifecycle")
+    _create_session(fresh_vault, "2024-06-15", "tui-phase4", "phase 4",
+                    mtime_offset=400, topics="tui, permissions")
+    _create_session(fresh_vault, "2024-06-15", "tui-phase5", "phase 5",
+                    mtime_offset=500, topics="tui, effort-policy")
+    _create_session(fresh_vault, "2024-06-15", "tui-quick-wins", "quick wins",
+                    mtime_offset=600, topics="tui, theme, logo")
+    _create_session(fresh_vault, "2024-06-15", "interview-prep", "mock interview",
+                    mtime_offset=700, topics="interview-prep, career, salary")
+
+    mi.cmd_recent(3)
+    output = capsys.readouterr().out
+    lines = [l for l in output.strip().split("\n") if l.startswith("- [")]
+
+    # Both distinct topics must surface
+    assert any("interview" in l for l in lines)
+    assert any("tui" in l for l in lines)
+    # TUI cluster must NOT consume all 3 slots
+    tui_count = sum(1 for l in lines if "tui" in l)
+    assert tui_count <= 1
+
+
+def test_cmd_recent_topic_diversity_fewer_clusters_than_n(mi, fresh_vault, capsys):
+    """When fewer distinct topics exist than N, return what's there without padding."""
+    _create_session(fresh_vault, "2024-06-15", "tui-a", "a",
+                    mtime_offset=100, topics="tui, refactor")
+    _create_session(fresh_vault, "2024-06-15", "tui-b", "b",
+                    mtime_offset=200, topics="tui, layout")
+
+    mi.cmd_recent(5)
+    output = capsys.readouterr().out
+    lines = [l for l in output.strip().split("\n") if l.startswith("- [")]
+
+    # Only 1 distinct topic → only 1 session returned
+    assert len(lines) == 1
+
+
+def test_cmd_recent_topicless_different_subjects(mi, fresh_vault, capsys):
+    """Topicless sessions with distinct tldrs each get their own slot."""
+    _create_session(fresh_vault, "2024-06-15", "session-a", "Interview prep for Cyberpro",
+                    mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "session-b", "Debugging memory leak in TUI",
+                    mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-15", "session-c", "Study notes for linear algebra",
+                    mtime_offset=300)
+
+    mi.cmd_recent(3)
+    output = capsys.readouterr().out
+    lines = [l for l in output.strip().split("\n") if l.startswith("- [")]
+
+    assert len(lines) == 3
+
+
+def test_cmd_recent_topicless_same_subject_deduped(mi, fresh_vault, capsys):
+    """Topicless sessions about the same subject (similar tldr) are deduped."""
+    _create_session(fresh_vault, "2024-06-15", "tui-part1", "TUI layout phase one",
+                    mtime_offset=100)
+    _create_session(fresh_vault, "2024-06-15", "tui-part2", "TUI refactor of panels",
+                    mtime_offset=200)
+    _create_session(fresh_vault, "2024-06-15", "interview", "Mock interview for job",
+                    mtime_offset=300)
+
+    mi.cmd_recent(3)
+    output = capsys.readouterr().out
+    lines = [l for l in output.strip().split("\n") if l.startswith("- [")]
+
+    # "TUI layout" and "TUI refactor" both extract "tui" as subject → deduped
+    assert len(lines) == 2
+    assert any("interview" in l for l in lines)
+    assert any("tui" in l for l in lines)
+
+
+def test_cmd_recent_days_not_topic_deduped(mi, fresh_vault, capsys):
+    """--recent-days mode should NOT deduplicate by topic — it's exhaustive."""
+    _create_session(fresh_vault, "2024-06-15", "tui-a", "a",
+                    mtime_offset=100, topics="tui, refactor")
+    _create_session(fresh_vault, "2024-06-15", "tui-b", "b",
+                    mtime_offset=200, topics="tui, layout")
+    _create_session(fresh_vault, "2024-06-15", "tui-c", "c",
+                    mtime_offset=300, topics="tui, perf")
+
+    mi.cmd_recent(1, days=True)
+    output = capsys.readouterr().out
+    lines = [l for l in output.strip().split("\n") if l.startswith("- [")]
+
+    # All 3 returned — no dedup in days mode
+    assert len(lines) == 3
 
 
 # ── cmd_learnings ────────────────────────────────────────────────────────
