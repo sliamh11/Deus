@@ -29,6 +29,7 @@ import { bootstrap } from './bootstrap.js';
 import { loadRegisteredContextFiles } from './context-registry.js';
 import { createMemoryRetrievalHook } from './memory-retrieval-hook.js';
 import { runOpenAIConversation } from './openai-backend.js';
+import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 
 type AgentBackendName = 'claude' | 'openai';
 
@@ -360,6 +361,20 @@ function createToolSizeLogHook(): HookCallback {
     } catch (err) {
       log(
         `tool-size-log failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return {};
+  };
+}
+
+function createToolAuditHook(): HookCallback {
+  return async (input) => {
+    const hookInput = input as PostToolUseHookInput;
+    if (isAuditedTool(hookInput.tool_name)) {
+      writeAuditEntry(
+        hookInput.tool_name,
+        hookInput.tool_use_id,
+        (hookInput as unknown as Record<string, unknown>).tool_input,
       );
     }
     return {};
@@ -776,9 +791,14 @@ async function runQuery(
         PreCompact: [
           { hooks: [createPreCompactHook(containerInput.assistantName)] },
         ],
-        ...(process.env.DEUS_TOOL_SIZE_LOG !== '0'
-          ? { PostToolUse: [{ hooks: [createToolSizeLogHook()] }] }
-          : {}),
+        ...(() => {
+          const hooks: HookCallback[] = [];
+          if (process.env.DEUS_TOOL_SIZE_LOG !== '0')
+            hooks.push(createToolSizeLogHook());
+          if (process.env.DEUS_TOOL_AUDIT_LOG !== '0')
+            hooks.push(createToolAuditHook());
+          return hooks.length > 0 ? { PostToolUse: [{ hooks }] } : {};
+        })(),
       },
     },
   })) {

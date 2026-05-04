@@ -12,6 +12,11 @@ import {
   type StdioServerParameters,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { CronExpressionParser } from 'cron-parser';
+import {
+  isAuditedTool,
+  writeAuditEntry,
+  generateToolUseId,
+} from './tool-audit.js';
 
 export type AgentBackendName = 'claude' | 'openai';
 
@@ -619,6 +624,8 @@ export async function createOpenAIMcpToolBridge(
           name: binding.toolName,
           arguments: args,
         });
+        if (isAuditedTool(name))
+          writeAuditEntry(name, generateToolUseId(), args);
         return result as Record<string, unknown>;
       } catch (err) {
         return {
