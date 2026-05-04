@@ -2,6 +2,7 @@
 
 > Applied architecture-level before implementing security-sensitive features.
 > STRIDE categories: S=Spoofing, T=Tampering, R=Repudiation, I=Information Disclosure, D=Denial of Service, E=Elevation of Privilege.
+> Depth references: `threat-modeling-checklists.md` (read on every invocation for per-category checks).
 
 ## auth-surface-documented
 **Severity:** blocking
