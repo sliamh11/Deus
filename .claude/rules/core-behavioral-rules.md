@@ -28,3 +28,6 @@
 - Default subagent model is Sonnet. Escalate to Opus only with stated reason.
 - Default to cross-platform. Flag OS-specific code loudly in PRs.
 - Chat responses always in English. Hebrew only inside artifacts.
+
+## Memory & Context
+- Before implementing a feature, search memory (`memory_tree.py query "<topic>"`) for prior decisions and research. Cite the retrieved path.

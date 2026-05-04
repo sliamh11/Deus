@@ -261,7 +261,7 @@ def _fts_available(db: sqlite3.Connection) -> bool:
     return row is not None
 
 
-_FTS_STOP_WORDS = frozenset({
+FTS_STOP_WORDS = frozenset({
     "the", "is", "at", "which", "on", "in", "to", "for", "of", "an",
     "it", "be", "as", "do", "by", "or", "if", "up", "so", "no", "we",
     "my", "me", "am", "are", "was", "has", "had", "how", "its", "can",
@@ -280,7 +280,7 @@ def _fts_escape(query: str) -> str:
     """
     cleaned = re.sub(r'["()*\-/\\?!@#$%^&+=<>{}[\]|~`:;,.\']', " ", query)
     cleaned = re.sub(r"\b(AND|OR|NOT|NEAR)\b", " ", cleaned, flags=re.IGNORECASE)
-    tokens = [t for t in cleaned.split() if len(t) >= 2 and t.lower() not in _FTS_STOP_WORDS]
+    tokens = [t for t in cleaned.split() if len(t) >= 2 and t.lower() not in FTS_STOP_WORDS]
     if not tokens:
         return ""
     return " OR ".join(tokens)
@@ -984,6 +984,7 @@ def retrieve(
     use_fts: bool = DEFAULT_USE_FTS,
     rrf_k: int = DEFAULT_RRF_K,
     gap_threshold: float = DEFAULT_SCORE_GAP_THRESHOLD,
+    concepts: list[str] | None = None,
 ) -> dict[str, Any]:
     """4-phase retrieval: flat cosine → FTS5 BM25 → graph expansion → abstain.
 
@@ -1025,7 +1026,10 @@ def retrieve(
     fts_hits: list[tuple[str, int]] = []
     if use_fts and _fts_available(db):
         rowid_to_id = {_rowid_for(nid): nid for nid in node_lookup}
-        fts_hits = _fts_query(db, query, k=k, _rowid_to_id=rowid_to_id)
+        fts_text = f"{query} {' '.join(concepts)}" if concepts else query
+        fts_hits = _fts_query(db, fts_text, k=k, _rowid_to_id=rowid_to_id)
+        if concepts:
+            trace.append(f"concepts={len(concepts)}")
         if fts_hits:
             trace.append(f"fts_hits={len(fts_hits)}")
             vec_ranked = [(r[0], rank + 1) for rank, r in enumerate(scored[:k * 2])]
@@ -2096,6 +2100,10 @@ def main(argv: list[str] | None = None) -> int:
         help="[deprecated] No-op kept for backward compatibility — raw retrieve is now the default.",
     )
     p_query.add_argument("--no-fts", action="store_true", help="Disable FTS5 hybrid search")
+    p_query.add_argument(
+        "--concepts", type=str, default=None,
+        help="Comma-separated concept terms for FTS5 expansion (from session tracker)",
+    )
 
     p_reembed = sub.add_parser("reembed", help="Re-embed a single file")
     p_reembed.add_argument("path", help="Relative path from vault root")
@@ -2163,10 +2171,12 @@ def main(argv: list[str] | None = None) -> int:
                 low_threshold=args.low, abstain_threshold=args.abstain,
             )
         else:
+            concept_list = args.concepts.split(",") if args.concepts else None
             result = retrieve(
                 db, args.text, k=args.k,
                 low_threshold=args.low, abstain_threshold=args.abstain,
                 use_fts=not args.no_fts,
+                concepts=concept_list,
             )
         if args.json:
             print(json.dumps(result, indent=2))

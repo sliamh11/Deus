@@ -151,6 +151,13 @@ class TestFileReading:
     def test_missing_auto_memory_returns_none(self):
         assert mq._read_node_file("auto-memory/nonexistent.md") is None
 
+    def test_auto_memory_falls_back_to_vault(self, fake_vault):
+        am = fake_vault / "auto-memory"
+        am.mkdir()
+        (am / "fallback_test.md").write_text("vault fallback", encoding="utf-8")
+        content = mq._read_node_file("auto-memory/fallback_test.md")
+        assert content == "vault fallback"
+
 
 class TestContextFormatting:
     def test_empty_on_fell_back(self):
