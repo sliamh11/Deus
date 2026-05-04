@@ -1,5 +1,5 @@
 {"query": "what models does deus use", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "single"}
-{"query": "deus project state and configuration", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "STATE.md", "CLAUDE.md"], "tag": "single"}
+{"query": "deus project state and configuration", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "CLAUDE.md"], "tag": "single"}
 {"query": "what tools and integrations does deus have", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "single"}
 {"query": "google calendar and vault backup setup", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "single"}
 {"query": "how should I take notes during a lecture", "expected_path": "Lecture-Strategies.md", "expected_paths": ["Lecture-Strategies.md"], "tag": "single"}

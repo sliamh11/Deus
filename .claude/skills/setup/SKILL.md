@@ -13,7 +13,7 @@ Run setup steps automatically. Only pause when user action is required (channel 
 
 **CRITICAL:** Do NOT add git remotes (`git remote add`), fetch from external repos, or install npm packages from the public registry outside of step 0. All channel code and packages are local in the repo. If something seems missing, check `packages/` and `src/channels/` before looking externally.
 
-**Vault structure default:** The memory step seeds a slim vault (`CLAUDE.md` for stable identity + critical rules + index; `STATE.md` for churny previous/pending). Only these two files auto-load every turn — everything else loads on demand via `memory_tree`. To opt out and seed the legacy single-file `CLAUDE.md` instead, export `DEUS_VAULT_MONOLITHIC=1` before running the memory step. The choice is lossless either way: `/compress` falls back to `CLAUDE.md` when `STATE.md` is absent.
+**Vault structure default:** The memory step seeds `CLAUDE.md` (identity + critical rules + index + session state). Only `CLAUDE.md` auto-loads every turn — everything else loads on demand via `memory_tree`.
 
 ## 0. Git & Fork Setup
 

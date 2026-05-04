@@ -8,7 +8,7 @@
 
 ## ci-preservation-95
 **Severity:** blocking
-**Applies when:** Diff modifies vault `CLAUDE.md`, `STATE.md`, `INFRA.md`, `STUDY.md`, or `MEMORY.md`.
+**Applies when:** Diff modifies vault `CLAUDE.md`, `INFRA.md`, `STUDY.md`, or `MEMORY.md`.
 **Check:** Are any `critical:` keys dropped? Are any `**(CRITICAL)**` memory entries removed? Estimate critical-key retention — does it stay ≥95%?
 **Rule:** Never reduce CRITICAL preservation below 95%.
 **Cite:** `feedback_compression_rule`; vault CLAUDE.md `claude-md-gates` line
@@ -22,7 +22,7 @@
 
 ## ci-drift-check
 **Severity:** blocking
-**Applies when:** Diff modifies vault leaf files (STATE.md, INFRA.md, STUDY.md, Persona/*) or memory indexes.
+**Applies when:** Diff modifies vault leaf files (INFRA.md, STUDY.md, Persona/*) or memory indexes.
 **Check:** Was `memory_tree.py check` / `drift_check.py --indexes` run after the edit?
 **Rule:** Vault leaf changes require drift-check validation before commit.
 **Cite:** `feedback_memory_tree_check`

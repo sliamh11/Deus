@@ -22,7 +22,7 @@ Resolve context in this order:
 
 1. The user's current message and explicit instructions.
 2. Live repo/filesystem/database state when the task depends on current state.
-3. Deus vault and memory surfaces: `AGENTS.md`, `CLAUDE.md`, `STATE.md`,
+3. Deus vault and memory surfaces: `AGENTS.md`, `CLAUDE.md`,
    `MEMORY_TREE.md`, and retrieved leaves.
 4. Group/project instructions and local rule files.
 5. Conversation/session history.
@@ -36,8 +36,8 @@ through the memory tree instead of guessing.
 
 - Treat `AGENTS.md` as the canonical onboarding surface and `CLAUDE.md` as the
   legacy compatibility mirror.
-- Treat `STATE.md` as live session state and `MEMORY_TREE.md` as the navigation
-  entry point for personal and cross-domain recall.
+- Treat `MEMORY_TREE.md` as the navigation entry point for personal and
+  cross-domain recall.
 - For factual personal questions, use the memory tree mechanism or read the
   relevant vault leaf before answering.
 - Preserve the user's tone, preferences, household/personal facts, study plans,
@@ -115,7 +115,7 @@ Not acceptable:
 Before claiming backend parity, verify both backends can:
 
 - Load group, global, project, extra mount, and vault context.
-- Read `AGENTS.md`, `CLAUDE.md`, `AI_AGENT_GUIDELINES.md`, `STATE.md`, and
+- Read `AGENTS.md`, `CLAUDE.md`, `AI_AGENT_GUIDELINES.md`, and
   `MEMORY_TREE.md` when present.
 - Retrieve personal facts through the memory tree.
 - Resume only backend-matching sessions and safely start fresh on mismatch.

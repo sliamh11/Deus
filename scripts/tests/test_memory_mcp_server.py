@@ -32,7 +32,7 @@ mq = sys.modules["memory_query"]
 # ------------------------------------------------------------------
 FAKE_RECALL_RESULT = {
     "context": "=== Auto-retrieved memory ===\nsome content\n=== End ===",
-    "paths": ["CLAUDE.md", "STATE.md"],
+    "paths": ["CLAUDE.md", "INFRA.md"],
     "confidence": 0.72,
     "fell_back": False,
 }

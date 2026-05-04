@@ -51,7 +51,7 @@ Resolve conflicts in this order:
 
 1. The user's current message and explicit instructions.
 2. Live repo/filesystem/database state.
-3. Deus onboarding and memory surfaces: `AGENTS.md`, `CLAUDE.md`, `STATE.md`,
+3. Deus onboarding and memory surfaces: `AGENTS.md`, `CLAUDE.md`,
    `MEMORY_TREE.md`, plus retrieved leaves.
 4. Group/project instructions and local rule files.
 5. Conversation/session history.

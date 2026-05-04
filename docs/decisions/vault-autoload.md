@@ -40,7 +40,7 @@ defaults to `["CLAUDE.md"]`.
 
 - **Only CLAUDE.md should be in the default.** It contains identity, rules,
   and the index to everything else — it's the one file that's always relevant.
-- Other vault files (STATE.md, STUDY.md, INFRA.md, Persona/INDEX.md) are
+- Other vault files (STUDY.md, INFRA.md, Persona/INDEX.md) are
   **on-demand** — loaded by `/resume`, the memory-retrieval hook, or explicit
   Read when the session topic warrants it.
 - Users can add files to `vault_autoload` if they want them pre-loaded. This

@@ -4,5 +4,4 @@
 {"id": "universal-critical-wait-for-approval", "scope": "auto_load", "question": "Is the wait-for-approval rule present?", "expected_substrings": ["approval", "confirm", "ask before"], "must_match": "any"}
 {"id": "universal-critical-feature-branch", "scope": "auto_load", "question": "Is the feature-branch rule present?", "expected_substrings": ["branch"], "must_match": "any"}
 {"id": "universal-memory-priority", "scope": "auto_load", "question": "Is the memory priority block present?", "expected_substrings": ["memory_tree"], "must_match": "any"}
-{"id": "universal-state-reference", "scope": "auto_load", "question": "Does CLAUDE.md reference STATE.md?", "expected_substrings": ["STATE.md", "State.md"], "must_match": "any"}
 {"id": "universal-index-persona", "scope": "auto_load", "question": "Is the Persona index pointer present?", "expected_substrings": ["Persona"], "must_match": "any"}

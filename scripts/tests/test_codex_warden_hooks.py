@@ -411,7 +411,7 @@ def test_memory_tree_hook_forwards_event(monkeypatch, tmp_path):
     repo = git_repo(tmp_path)
     (repo / "scripts").mkdir()
     (repo / "scripts" / "memory_tree_hook.py").write_text("", encoding="utf-8")
-    (repo / "STATE.md").write_text("old\n", encoding="utf-8")
+    (repo / "INFRA.md").write_text("old\n", encoding="utf-8")
     calls = []
 
     def fake_forward(event, script):
@@ -420,9 +420,9 @@ def test_memory_tree_hook_forwards_event(monkeypatch, tmp_path):
 
     monkeypatch.setattr(hooks, "_run_forwarded_hook", fake_forward)
 
-    assert hooks.run_memory_tree_hook(apply_patch_event(repo, "STATE.md"), repo) == 0
+    assert hooks.run_memory_tree_hook(apply_patch_event(repo, "INFRA.md"), repo) == 0
     assert calls[0][1] == repo / "scripts" / "memory_tree_hook.py"
-    assert calls[0][0]["tool_input"]["file_path"] == str(repo / "STATE.md")
+    assert calls[0][0]["tool_input"]["file_path"] == str(repo / "INFRA.md")
 
 
 def test_catchup_freshness_is_silent_without_trigger(tmp_path, capsys):
@@ -443,7 +443,7 @@ def test_catchup_freshness_uses_configured_vault(monkeypatch, tmp_path, capsys):
     (vault / "Session-Logs" / today / "session.md").write_text("", encoding="utf-8")
     (vault / "Checkpoints").mkdir()
     (vault / "Checkpoints" / "checkpoint.md").write_text("", encoding="utf-8")
-    (vault / "STATE.md").write_text("pending:\n  - [ ] task\n", encoding="utf-8")
+    (vault / "CLAUDE.md").write_text("pending:\n  - [ ] task\n", encoding="utf-8")
     monkeypatch.setenv("DEUS_VAULT_PATH", str(vault))
 
     assert hooks.run_catchup_freshness(prompt_event(repo, "/resume"), repo) == 0

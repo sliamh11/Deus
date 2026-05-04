@@ -28,7 +28,7 @@ mt = sys.modules["memory_tree"]
 FAKE_RETRIEVE_HIT = {
     "results": [
         {"id": "n1", "path": "CLAUDE.md", "score": 0.72, "route": "flat"},
-        {"id": "n2", "path": "STATE.md", "score": 0.65, "route": "rrf"},
+        {"id": "n2", "path": "INFRA.md", "score": 0.65, "route": "rrf"},
     ],
     "confidence": 0.72,
     "fell_back": False,
@@ -48,7 +48,7 @@ def fake_vault(tmp_path):
     v = tmp_path / "vault"
     v.mkdir()
     (v / "CLAUDE.md").write_text("name: Liam", encoding="utf-8")
-    (v / "STATE.md").write_text("pending: []", encoding="utf-8")
+    (v / "INFRA.md").write_text("memory: vault", encoding="utf-8")
     return v
 
 
@@ -84,7 +84,7 @@ class TestRecall:
 
         assert not result["fell_back"]
         assert result["confidence"] == 0.72
-        assert result["paths"] == ["CLAUDE.md", "STATE.md"]
+        assert result["paths"] == ["CLAUDE.md", "INFRA.md"]
         assert "Auto-retrieved memory" in result["context"]
         assert "name: Liam" in result["context"]
 

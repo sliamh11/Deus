@@ -44,7 +44,7 @@ Use these entry points instead of rediscovering the memory system from scratch:
 | Layer | Entry point | Purpose |
 |---|---|---|
 | Vault config | `~/.config/deus/config.json` | Host config; `vault_path` points to the live vault. Read-only unless explicitly asked to write. |
-| Vault startup files | `AGENTS.md`, `CLAUDE.md`, `AI_AGENT_GUIDELINES.md`, `STATE.md`, `MEMORY_TREE.md` | Canonical onboarding plus compatibility, parity, and recall surfaces. |
+| Vault startup files | `AGENTS.md`, `CLAUDE.md`, `AI_AGENT_GUIDELINES.md`, `MEMORY_TREE.md` | Canonical onboarding plus compatibility, parity, and recall surfaces. |
 | CLI memory load | `deus-cmd.sh`, `deus-cmd.ps1` | Global `deus` command context assembly, external-project mode, restricted memory handling. |
 | Container context registry | `container/agent-runner/src/context-registry.ts` | Provider-neutral context surfaces for container agents. |
 | Runtime context | `src/container-runner.ts`, `src/message-orchestrator.ts` | Host-side prompt, snapshot, backend, image, and session wiring. |

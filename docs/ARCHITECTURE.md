@@ -284,7 +284,7 @@ graph TB
 |-------|------|-----------|---------|
 | **Rules** | `.claude/rules/` — guardrails, behavioral constraints | ~675T fixed | Bounded by curation |
 | **Hook** | `memory-retrieval.sh` wrapping `memory_tree.py query` — semantic retrieval per prompt | 0-1000T on match (~63% of turns = 0T, measured over 357 prompts from hook telemetry) | Embedding-based, O(1) lookup |
-| **Vault** | CLAUDE.md, STATE.md — project identity and state (always loaded because they define who Deus is; compressed automatically when they grow) | ~3,400T at session start | Auto-compressed |
+| **Vault** | CLAUDE.md — project identity, state, and rules (always loaded because it defines who Deus is; compressed automatically when it grows) | ~3,400T at session start | Auto-compressed |
 
 ### Tiered retrieval
 

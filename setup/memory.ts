@@ -187,25 +187,20 @@ export async function run(args: string[]): Promise<void> {
     fs.mkdirSync(path.join(vaultPath, subdir), { recursive: true });
   }
 
-  // Seed CLAUDE.md + STATE.md if missing. Structure: CLAUDE.md holds stable
-  // identity + critical rules + index pointers (auto-loaded every turn).
-  // STATE.md holds churny previous/pending (auto-loaded, written by /compress).
-  // Opt out: set DEUS_VAULT_MONOLITHIC=1 before setup to seed the legacy
-  // single-file CLAUDE.md instead (previous/pending live inside CLAUDE.md,
-  // no STATE.md). /compress transparently falls back to CLAUDE.md when
-  // STATE.md is absent, so switching later is lossless.
+  // Seed CLAUDE.md if missing. CLAUDE.md holds identity, critical rules,
+  // index pointers, and session state (previous/pending). Auto-loaded every
+  // turn; written by /compress.
   const today = new Date().toISOString().split('T')[0];
-  const monolithic = process.env.DEUS_VAULT_MONOLITHIC === '1';
 
   const claudeMdPath = path.join(vaultPath, 'CLAUDE.md');
   if (!fs.existsSync(claudeMdPath)) {
-    const slimBody = [
+    const body = [
       '---',
       'type: permanent-memory',
       'title: Deus User Profile',
       'description: >',
       '  Identity + critical rules + index of where everything else lives.',
-      '  Stable and small — state goes to STATE.md, leaves load on demand.',
+      '  Leaves load on demand via memory_tree.',
       `updated: ${today}`,
       'critical:',
       '  - identity',
@@ -227,8 +222,13 @@ export async function run(args: string[]): Promise<void> {
       '# User-specific rules',
       '# Add your own rules below in `key: value` format.',
       '',
+      'previous:',
+      '  # Last 3 session summaries, rewritten by /compress.',
+      '',
+      'pending:',
+      '  # Open tasks in `- [ ] ...` format, rewritten by /compress.',
+      '',
       '# Index (load on demand)',
-      'State:   STATE.md         (previous sessions + pending tasks, auto-loaded)',
       'Study:   STUDY.md         (load on demand for study sessions)',
       'Infra:   INFRA.md         (load on demand for tooling/infra work)',
       'Persona: Persona/INDEX.md (load on demand for user preferences / background)',
@@ -240,50 +240,7 @@ export async function run(args: string[]): Promise<void> {
       '',
     ].join('\n');
 
-    const monolithicBody = [
-      '---',
-      'type: permanent-memory',
-      `updated: ${today}`,
-      '---',
-      '',
-      '# Deus Memory',
-      '',
-      'This file is the root of your Deus memory vault.',
-      'Session logs, atoms, and checkpoints are stored alongside it.',
-      '',
-      'previous:',
-      '  # Last 3 session summaries, rewritten by /compress.',
-      '',
-      'pending:',
-      '  # Open tasks in `- [ ] ...` format, rewritten by /compress.',
-      '',
-    ].join('\n');
-
-    fs.writeFileSync(claudeMdPath, monolithic ? monolithicBody : slimBody);
-  }
-
-  const stateMdPath = path.join(vaultPath, 'STATE.md');
-  if (!monolithic && !fs.existsSync(stateMdPath)) {
-    fs.writeFileSync(
-      stateMdPath,
-      [
-        '---',
-        'type: permanent-memory',
-        'title: Session State',
-        'description: >',
-        '  Live snapshot of recent sessions and open tasks. Written by /compress,',
-        '  auto-loaded every turn alongside CLAUDE.md.',
-        `updated: ${today}`,
-        '---',
-        '',
-        'previous:',
-        '  # Last 3 session summaries, one per line. Rewritten by /compress.',
-        '',
-        'pending:',
-        '  # Open tasks in `- [ ] ...` format. Rewritten by /compress.',
-        '',
-      ].join('\n'),
-    );
+    fs.writeFileSync(claudeMdPath, body);
   }
 
   logger.info({ vaultPath }, 'Vault directory ready');

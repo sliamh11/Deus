@@ -61,7 +61,7 @@ At minimum, run TypeScript checks plus targeted backend/session/auth/container t
 | Sessions | Existing Claude session ids wrapped as backend refs | Responses id stored as an OpenAI backend ref |
 | Backend mismatch | Starts fresh instead of resuming wrong backend | Starts fresh instead of resuming wrong backend |
 | Credentials | Placeholder Anthropic credentials via proxy | Placeholder OpenAI credentials via `/openai` proxy route |
-| Context files | Native Claude loading plus registry-managed non-native surfaces | Registry-managed `CLAUDE.md`, `AGENTS.md`, `AI_AGENT_GUIDELINES.md`, `STATE.md`, and `MEMORY_TREE.md` surfaces |
+| Context files | Native Claude loading plus registry-managed non-native surfaces | Registry-managed `CLAUDE.md`, `AGENTS.md`, `AI_AGENT_GUIDELINES.md`, and `MEMORY_TREE.md` surfaces |
 | Tools | Existing Claude/MCP tool path | Container ToolBroker-backed function tools |
 | Scheduling | Existing IPC task tools | Same IPC task file contract with optional backend override |
 | Global CLI | `deus` / `deus claude` | `deus codex`, `deus openai`, or `DEUS_CLI_AGENT=codex deus` |

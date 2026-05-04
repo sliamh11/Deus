@@ -32,7 +32,6 @@ describe('context registry', () => {
     writeContextFile('vault/CLAUDE.md', 'vault claude');
     writeContextFile('vault/AGENTS.md', 'vault agents');
     writeContextFile('vault/AI_AGENT_GUIDELINES.md', 'vault guidelines');
-    writeContextFile('vault/STATE.md', 'vault state');
     writeContextFile('vault/MEMORY_TREE.md', 'vault tree');
 
     expect(
@@ -48,7 +47,6 @@ describe('context registry', () => {
       '=== VAULT: AGENTS.md ===\nvault agents',
       '=== VAULT: CLAUDE.md ===\nvault claude',
       '=== VAULT: AI_AGENT_GUIDELINES.md ===\nvault guidelines',
-      '=== VAULT: STATE.md ===\nvault state',
       '=== VAULT: MEMORY_TREE.md ===\nvault tree',
     ]);
   });
@@ -176,7 +174,6 @@ describe('context registry', () => {
     writeContextFile('project/AI_AGENT_GUIDELINES.md', 'project guidelines');
     writeContextFile('vault/AGENTS.md', 'vault agents');
     writeContextFile('vault/CLAUDE.md', 'vault claude');
-    writeContextFile('vault/STATE.md', 'vault state');
     writeContextFile('vault/MEMORY_TREE.md', 'vault tree');
     writeContextFile('extra/reference/CLAUDE.md', 'extra claude');
     writeContextFile('extra/reference/AGENTS.md', 'extra agents');

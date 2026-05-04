@@ -7,7 +7,7 @@ regress the agent's ability to reach critical facts.
 
 Probe scopes:
 - auto_load  — expected substring must appear in auto-loaded files only
-               (CLAUDE.md + STATE.md by default).
+               (CLAUDE.md by default).
 - retrieval  — expected substring must appear in memory_tree top-k results
                for the probe's retrieval_query.
 - either     — pass if the substring appears in auto-load OR retrieval results.
@@ -37,7 +37,7 @@ from ..types import CaseResult, RunResult
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent
 _MT_PATH = _SCRIPTS_DIR / "memory_tree.py"
 _DEFAULT_DATASET = _SCRIPTS_DIR / "bench" / "tests" / "fixtures" / "context_sufficiency_universal.jsonl"
-_DEFAULT_AUTO_LOAD = ["CLAUDE.md", "STATE.md"]
+_DEFAULT_AUTO_LOAD = ["CLAUDE.md"]
 _DEFAULT_RETRIEVAL_K = 3
 
 
@@ -161,7 +161,7 @@ def run_context_sufficiency(argv: list[str]) -> RunResult:
         "--auto-load",
         type=str,
         default=",".join(_DEFAULT_AUTO_LOAD),
-        help="Comma-separated vault filenames to treat as auto-loaded (default: CLAUDE.md,STATE.md)",
+        help="Comma-separated vault filenames to treat as auto-loaded (default: CLAUDE.md)",
     )
     p.add_argument(
         "--retrieval-k",

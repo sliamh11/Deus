@@ -713,7 +713,7 @@ def _pending_block(state_file: Path) -> str:
     try:
         lines = state_file.read_text(encoding="utf-8").splitlines()
     except OSError:
-        return f"[warn] STATE.md not found: {state_file}"
+        return f"[warn] CLAUDE.md not found: {state_file}"
     out: list[str] = []
     in_pending = False
     for line in lines:
@@ -758,11 +758,11 @@ def run_catchup_freshness(event: dict[str, Any], repo_root: Path) -> int:
     else:
         lines.append(f"[warn] indexer missing: {indexer}")
 
-    lines.extend(["", "--- STATE.md pending (live from disk) ---"])
+    lines.extend(["", "--- CLAUDE.md pending (live from disk) ---"])
     if vault is None:
-        lines.append("[warn] vault path unknown; cannot read STATE.md")
+        lines.append("[warn] vault path unknown; cannot read CLAUDE.md")
     else:
-        lines.append(_pending_block(vault / "STATE.md"))
+        lines.append(_pending_block(vault / "CLAUDE.md"))
         lines.append("IMPORTANT: Prefer this live pending block over stale startup snapshots.")
     lines.append("=== END FRESHNESS CHECK ===")
 
