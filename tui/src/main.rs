@@ -1,6 +1,7 @@
 mod app;
 mod backend;
 mod bidi;
+mod clipboard;
 mod config;
 mod logo;
 mod panels;
@@ -57,20 +58,22 @@ fn main() -> io::Result<()> {
         } else {
             "⠿"
         };
-        execute!(
-            terminal.backend_mut(),
-            SetTitle(format!("{} deus", tab_icon))
-        )?;
+        execute!(io::stdout(), SetTitle(format!("{} deus", tab_icon)))?;
 
         if event::poll(Duration::from_millis(50))? {
             let ev = event::read()?;
             match ev {
                 Event::Paste(ref text) if app.tab == Tab::Chat => {
-                    for c in text.chars() {
-                        if c == '\n' || c == '\r' {
-                            app.input_newline();
-                        } else {
-                            app.input_char(c);
+                    // Bracketed paste with empty payload = clipboard holds an image, not text
+                    if text.is_empty() {
+                        app.attach_clipboard_image();
+                    } else {
+                        for c in text.chars() {
+                            if c == '\n' || c == '\r' {
+                                app.input_newline();
+                            } else {
+                                app.input_char(c);
+                            }
                         }
                     }
                 }
@@ -186,6 +189,9 @@ fn main() -> io::Result<()> {
                                     app.show_session_picker = true;
                                     app.picker_cursor = 0;
                                 }
+                                KeyCode::Char('v') => {
+                                    app.attach_clipboard_image();
+                                }
                                 KeyCode::Char('j') => app.input_newline(),
                                 _ => {}
                             }
@@ -283,6 +289,7 @@ fn main() -> io::Result<()> {
     }
 
     app.cleanup_permissions();
+    clipboard::cleanup();
 
     terminal::disable_raw_mode()?;
     execute!(

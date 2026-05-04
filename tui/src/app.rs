@@ -393,6 +393,7 @@ pub struct App {
     pub mode: String,
 
     pub auto_compact_threshold: f64,
+    pub pending_attachments: Vec<crate::clipboard::Attachment>,
 }
 
 // StreamChunk and parsing delegated to backend trait — see backend/mod.rs
@@ -508,6 +509,7 @@ impl App {
                         .and_then(|s| s.parse::<f64>().ok())
                 })
                 .unwrap_or(0.75),
+            pending_attachments: Vec::new(),
         };
         app.refresh();
 
@@ -547,9 +549,36 @@ impl App {
         }
     }
 
+    pub fn attach_clipboard_image(&mut self) {
+        match crate::clipboard::probe_image() {
+            Some(img) => match crate::clipboard::save_image(&img) {
+                Ok(attachment) => {
+                    self.pending_attachments.push(attachment);
+                    let n = self.pending_attachments.len();
+                    self.input.push_str(&format!("[Image #{}]", n));
+                    self.input_cursor = self.input.len();
+                    self.mark_chat_changed();
+                }
+                Err(e) => {
+                    self.active_mut().chat_messages.push(ChatMessage::simple(
+                        "system",
+                        &format!("Image save failed: {}", e),
+                    ));
+                    self.mark_chat_changed();
+                }
+            },
+            None => {
+                self.active_mut()
+                    .chat_messages
+                    .push(ChatMessage::simple("system", "No image in clipboard"));
+                self.mark_chat_changed();
+            }
+        }
+    }
+
     pub fn send_message(&mut self) {
         let msg = self.input.trim().to_string();
-        if msg.is_empty() {
+        if msg.is_empty() && self.pending_attachments.is_empty() {
             return;
         }
 
@@ -566,8 +595,10 @@ impl App {
             return;
         }
 
+        let final_msg = self.build_message_with_attachments(&msg);
+
         if matches!(self.active().chat_state, ChatState::Streaming) {
-            self.queued_messages.push(msg);
+            self.queued_messages.push(final_msg);
             self.active_mut()
                 .chat_messages
                 .push(ChatMessage::simple("system", "(queued)"));
@@ -577,13 +608,31 @@ impl App {
             self.scroll_to_bottom();
             return;
         }
-
         self.active_mut().compact_triggered = false;
         self.input.clear();
         self.input_cursor = 0;
         self.suggestions.clear();
         self.arg_suggestions.clear();
-        self.dispatch_message(msg);
+        self.dispatch_message(final_msg);
+    }
+
+    fn build_message_with_attachments(&mut self, msg: &str) -> String {
+        if self.pending_attachments.is_empty() {
+            return msg.to_string();
+        }
+        let attachments = std::mem::take(&mut self.pending_attachments);
+        let mut result = msg.to_string();
+        for (i, att) in attachments.iter().enumerate() {
+            let marker = format!("[Image #{}]", i + 1);
+            let replacement = format!(
+                "[Image: {} ({}x{})]",
+                att.path.display(),
+                att.width,
+                att.height
+            );
+            result = result.replace(&marker, &replacement);
+        }
+        result
     }
 
     fn dispatch_message(&mut self, msg: String) {
@@ -2757,5 +2806,49 @@ mod tests {
         app.input = "hello".to_string();
         app.send_message();
         assert!(!app.active().compact_triggered);
+    }
+
+    #[test]
+    fn build_message_replaces_image_markers() {
+        let mut app = App::new();
+        app.pending_attachments.push(crate::clipboard::Attachment {
+            path: std::path::PathBuf::from("/tmp/clip-1.png"),
+            width: 800,
+            height: 600,
+        });
+        app.pending_attachments.push(crate::clipboard::Attachment {
+            path: std::path::PathBuf::from("/tmp/clip-2.png"),
+            width: 1024,
+            height: 768,
+        });
+        let result =
+            app.build_message_with_attachments("[Image #1] check this [Image #2] and this");
+        assert!(result.contains("/tmp/clip-1.png"));
+        assert!(result.contains("800x600"));
+        assert!(result.contains("/tmp/clip-2.png"));
+        assert!(result.contains("1024x768"));
+        assert!(!result.contains("[Image #1]"));
+        assert!(!result.contains("[Image #2]"));
+        assert!(app.pending_attachments.is_empty());
+    }
+
+    #[test]
+    fn build_message_no_attachments_passthrough() {
+        let mut app = App::new();
+        let result = app.build_message_with_attachments("hello world");
+        assert_eq!(result, "hello world");
+    }
+
+    #[test]
+    fn slash_command_does_not_consume_attachments() {
+        let mut app = App::new();
+        app.pending_attachments.push(crate::clipboard::Attachment {
+            path: std::path::PathBuf::from("/tmp/clip-1.png"),
+            width: 100,
+            height: 100,
+        });
+        app.input = "/help".to_string();
+        app.send_message();
+        assert!(!app.pending_attachments.is_empty());
     }
 }
