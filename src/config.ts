@@ -1,4 +1,3 @@
-import crypto from 'crypto';
 import path from 'path';
 
 import type { AgentBackendName } from './agent-backends/types.js';
@@ -104,8 +103,8 @@ export const DEUS_CONTEXT_FILE_MAX_CHARS =
   envConfig.DEUS_CONTEXT_FILE_MAX_CHARS ||
   '';
 
-// Shared secret for credential proxy authentication.
-// Generated once per process lifetime; injected into containers via env.
-// Set DEUS_PROXY_AUTH=0 to disable enforcement (rollout kill-switch).
-export const DEUS_PROXY_TOKEN = crypto.randomBytes(32).toString('hex');
-export const DEUS_PROXY_AUTH_ENABLED = process.env.DEUS_PROXY_AUTH !== '0';
+// Credential proxy authentication.
+// Per-group tokens generated in group-tokens.ts (process-lifetime).
+// Set DEUS_PROXY_AUTH=0 to disable enforcement (ignored in production).
+export const DEUS_PROXY_AUTH_ENABLED =
+  process.env.NODE_ENV === 'production' || process.env.DEUS_PROXY_AUTH !== '0';

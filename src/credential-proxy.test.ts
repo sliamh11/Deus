@@ -3,8 +3,12 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 
 vi.mock('./config.js', () => ({
-  DEUS_PROXY_TOKEN: 'test-proxy-token-abc123',
   DEUS_PROXY_AUTH_ENABLED: true,
+}));
+
+vi.mock('./group-tokens.js', () => ({
+  validateGroupToken: (token: string) =>
+    token === 'test-proxy-token-abc123' ? 'test-group' : null,
 }));
 
 const mockEnv: Record<string, string> = {};

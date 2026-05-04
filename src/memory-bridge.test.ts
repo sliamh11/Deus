@@ -5,8 +5,12 @@ import type { AddressInfo } from 'net';
 /* ── Mocks (must precede imports from the module under test) ───────── */
 
 vi.mock('./config.js', () => ({
-  DEUS_PROXY_TOKEN: 'test-proxy-token-abc123',
   DEUS_PROXY_AUTH_ENABLED: true,
+}));
+
+vi.mock('./group-tokens.js', () => ({
+  validateGroupToken: (token: string) =>
+    token === 'test-proxy-token-abc123' ? 'test-group' : null,
 }));
 
 vi.mock('./env.js', () => ({

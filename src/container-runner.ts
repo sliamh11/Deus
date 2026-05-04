@@ -20,15 +20,17 @@ import {
   CREDENTIAL_PROXY_PORT,
   DEUS_CONTEXT_FILE_MAX_CHARS,
   DEUS_OPENAI_MODEL,
-  DEUS_PROXY_TOKEN,
   IDLE_TIMEOUT,
   TIMEZONE,
 } from './config.js';
+import { getOrCreateGroupToken } from './group-tokens.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 
 function redactContainerArgs(args: string[]): string {
-  return args.join(' ').replaceAll(DEUS_PROXY_TOKEN, '[REDACTED]');
+  return args
+    .join(' ')
+    .replace(/DEUS_PROXY_TOKEN=[0-9a-f]+/g, 'DEUS_PROXY_TOKEN=[REDACTED]');
 }
 import {
   CONTAINER_HOST_GATEWAY,
@@ -83,7 +85,7 @@ function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
-  args.push('-e', `DEUS_PROXY_TOKEN=${DEUS_PROXY_TOKEN}`);
+  args.push('-e', `DEUS_PROXY_TOKEN=${getOrCreateGroupToken(group?.folder)}`);
   if (DEUS_CONTEXT_FILE_MAX_CHARS) {
     args.push(
       '-e',

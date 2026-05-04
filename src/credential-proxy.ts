@@ -20,7 +20,8 @@ import { request as httpsRequest } from 'https';
 import { request as httpRequest, RequestOptions } from 'http';
 import { execFile } from 'child_process';
 import path from 'path';
-import { DEUS_PROXY_TOKEN, DEUS_PROXY_AUTH_ENABLED } from './config.js';
+import { DEUS_PROXY_AUTH_ENABLED } from './config.js';
+import { validateGroupToken } from './group-tokens.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 import {
@@ -154,8 +155,9 @@ export function startCredentialProxy(
         const body = Buffer.concat(chunks);
 
         if (DEUS_PROXY_AUTH_ENABLED) {
-          const token = req.headers['x-deus-proxy-token'];
-          if (token !== DEUS_PROXY_TOKEN) {
+          const token = req.headers['x-deus-proxy-token'] as string | undefined;
+          const groupFolder = token ? validateGroupToken(token) : null;
+          if (!groupFolder) {
             logger.warn(
               { url: req.url, hasToken: !!token },
               'Credential proxy rejected unauthenticated request',
@@ -164,10 +166,15 @@ export function startCredentialProxy(
             res.end('Unauthorized');
             return;
           }
+          logger.debug(
+            { url: req.url, group: groupFolder },
+            'Proxy request authenticated',
+          );
         }
 
-        // Strip the proxy auth header before forwarding upstream
+        // Strip proxy-internal headers before forwarding upstream
         delete req.headers['x-deus-proxy-token'];
+        delete req.headers['x-deus-group'];
 
         /* ── Memory bridge route: POST /memory/query ───────────── */
         if (req.method === 'POST' && req.url === '/memory/query') {

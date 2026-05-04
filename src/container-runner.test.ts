@@ -32,13 +32,17 @@ vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/deus-test-data',
   DEUS_CONTEXT_FILE_MAX_CHARS: '12345',
   DEUS_OPENAI_MODEL: 'gpt-test-model',
-  DEUS_PROXY_TOKEN: 'test-proxy-token-for-containers',
   GROUPS_DIR: '/tmp/deus-test-groups',
   HOME_DIR: '/tmp/deus-test-home',
   IDLE_TIMEOUT: 1800000, // 30min
   TIMEZONE: 'America/Los_Angeles',
 }));
-const TEST_PROXY_TOKEN = 'test-proxy-token-for-containers';
+
+vi.mock('./group-tokens.js', () => ({
+  getOrCreateGroupToken: (folder?: string) =>
+    `token-for-${folder ?? '_anonymous'}`,
+}));
+const TEST_PROXY_TOKEN = 'token-for-main-group';
 
 // Mock logger
 vi.mock('./logger.js', () => ({
