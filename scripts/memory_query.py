@@ -39,11 +39,13 @@ AUTO_MEM_DIR = Path(os.environ.get(
 
 
 def _read_node_file(path: str) -> str | None:
+    vault = mt.resolve_vault_path()
     if path.startswith(mt.EXTERNAL_NAMESPACE):
         filename = path[len(mt.EXTERNAL_NAMESPACE):]
         full = AUTO_MEM_DIR / filename
+        if not full.is_file():
+            full = vault / path
     else:
-        vault = mt.resolve_vault_path()
         full = vault / path
     try:
         return full.read_text(encoding="utf-8", errors="replace") if full.is_file() else None
@@ -92,6 +94,7 @@ def recall(
     k: int = 3,
     abstain_threshold: float | None = None,
     source: str = "unknown",
+    concepts: list[str] | None = None,
 ) -> dict:
     """Retrieve memory context for a query.
 
@@ -107,7 +110,7 @@ def recall(
 
     db = mt.open_db()
     try:
-        raw = mt.retrieve(db, query, k=k, abstain_threshold=threshold)
+        raw = mt.retrieve(db, query, k=k, abstain_threshold=threshold, concepts=concepts)
     finally:
         db.close()
 

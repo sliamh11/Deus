@@ -1024,3 +1024,105 @@ class TestHybridRetrieve:
         assert len(h_paths) >= 2
         assert any("rrf" in r["route"] for r in result_hybrid["results"]), \
             "At least one result should be FTS-promoted"
+
+
+class TestConceptExpansion:
+    """Tests for concept-expanded FTS5 retrieval (Phase F)."""
+
+    def test_concepts_expand_fts_query(self, tmp_db, stub_embed):
+        mt.upsert_node(
+            tmp_db, node_id="c_001", path="auto-memory/simd_research.md",
+            title="SIMD Research", description="Generic unrelated description",
+            level=0, node_type="research",
+            embedding=stub_embed("Generic unrelated description"),
+            content_hash_val="h_c1",
+            body_text="SIMD data layout optimization for vector search speedup.",
+        )
+        mt.upsert_node(
+            tmp_db, node_id="c_002", path="auto-memory/cooking.md",
+            title="Cooking", description="Another unrelated description",
+            level=0, node_type="feedback",
+            embedding=stub_embed("Another unrelated description"),
+            content_hash_val="h_c2",
+            body_text="Recipes for pasta and pizza.",
+        )
+        tmp_db.commit()
+
+        result_no_concepts = mt.retrieve(
+            tmp_db, "what about the data layout", k=5,
+            use_abstain=False, use_fts=True, concepts=None,
+        )
+        result_with_concepts = mt.retrieve(
+            tmp_db, "what about the data layout", k=5,
+            use_abstain=False, use_fts=True, concepts=["SIMD", "vector", "optimization"],
+        )
+
+        with_paths = [r["path"] for r in result_with_concepts["results"]]
+        assert "auto-memory/simd_research.md" in with_paths[:2], \
+            f"Concepts should boost SIMD research, got {with_paths}"
+
+    def test_concepts_in_trace(self, tmp_db, stub_embed):
+        mt.upsert_node(
+            tmp_db, node_id="t_001", path="auto-memory/t.md",
+            title="Test", description="Test node",
+            level=0, node_type="feedback",
+            embedding=stub_embed("Test node"),
+            content_hash_val="h_t",
+        )
+        tmp_db.commit()
+        result = mt.retrieve(
+            tmp_db, "test", k=3,
+            use_abstain=False, use_fts=True,
+            concepts=["alpha", "beta"],
+        )
+        assert any("concepts=2" in t for t in result["trace"]), \
+            f"Trace should contain concepts count, got {result['trace']}"
+
+    def test_concepts_none_is_baseline(self, tmp_db, stub_embed):
+        mt.upsert_node(
+            tmp_db, node_id="b_001", path="auto-memory/base.md",
+            title="Base", description="Baseline test node",
+            level=0, node_type="feedback",
+            embedding=stub_embed("Baseline test node"),
+            content_hash_val="h_b",
+        )
+        tmp_db.commit()
+        r1 = mt.retrieve(
+            tmp_db, "baseline test", k=3,
+            use_abstain=False, use_fts=True, concepts=None,
+        )
+        r2 = mt.retrieve(
+            tmp_db, "baseline test", k=3,
+            use_abstain=False, use_fts=True,
+        )
+        assert r1["results"] == r2["results"]
+        assert r1["confidence"] == r2["confidence"]
+
+    def test_embed_text_receives_original_prompt_only(self, tmp_db, monkeypatch):
+        calls = []
+        original_embed = mt.embed_text
+
+        def spy(text):
+            calls.append(text)
+            return original_embed(text)
+
+        monkeypatch.setattr(mt, "embed_text", spy)
+
+        mt.upsert_node(
+            tmp_db, node_id="e_001", path="auto-memory/e.md",
+            title="Embed", description="Embed test",
+            level=0, node_type="feedback",
+            embedding=original_embed("Embed test"),
+            content_hash_val="h_e",
+        )
+        tmp_db.commit()
+
+        prompt = "original query only"
+        mt.retrieve(
+            tmp_db, prompt, k=3,
+            use_abstain=False, use_fts=True,
+            concepts=["extra", "concept", "terms"],
+        )
+        assert len(calls) == 1
+        assert calls[0] == prompt, \
+            f"embed_text should receive original prompt, got {calls[0]}"

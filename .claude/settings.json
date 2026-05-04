@@ -1,3 +1,16 @@
 {
-  "autoMemoryEnabled": false
+  "autoMemoryEnabled": false,
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/memory_retrieval_hook.py\"'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
 }
