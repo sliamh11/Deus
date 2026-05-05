@@ -48,6 +48,16 @@ Install **parry-guard** as the Layer 2 defense for host Claude Code sessions.
   not covered (they have separate permission semantics).
 - **Channel message content** — that is Layer 1's job.
 
+### Alternatives Considered
+
+- **Pattern-matching-only (no ML):** Rejected because sophisticated injection
+  attempts evade keyword lists.
+- **Per-call subprocess instead of daemon:** Rejected because model loading on
+  each call adds ~2s latency vs ~70ms with a warm daemon.
+- **Different ML model (lighter-weight):** parry-guard bundles DeBERTa which is
+  the community standard for injection detection; no compelling lighter
+  alternative exists.
+
 ### Installation
 
 parry-guard is distributed via PyPI (uvx) and crates.io (cargo). The canonical

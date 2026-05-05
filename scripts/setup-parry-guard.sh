@@ -63,12 +63,18 @@ fi
 # --- 4. Verify installation ------------------------------------------------
 
 info "Verifying parry-guard responds..."
-if uvx parry-guard --version &>/dev/null; then
-  info "parry-guard is operational: $(uvx parry-guard --version 2>/dev/null)"
+if [ "$INSTALL_METHOD" = "uvx" ]; then
+  VERIFY_CMD="uvx parry-guard --version"
+else
+  VERIFY_CMD="parry-guard --version"
+fi
+
+if $VERIFY_CMD &>/dev/null; then
+  info "parry-guard is operational: $($VERIFY_CMD 2>/dev/null)"
 else
   warn "parry-guard --version returned non-zero."
   echo "  The binary may need model downloads on first run."
-  echo "  Try running manually:  uvx parry-guard --version"
+  echo "  Try running manually:  $VERIFY_CMD"
   echo "  Check logs for HuggingFace download progress."
 fi
 

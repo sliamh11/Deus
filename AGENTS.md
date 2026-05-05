@@ -89,21 +89,7 @@ For vault auto-loading, read
 
 ## Security
 
-The runtime security model is documented in [docs/SECURITY.md](docs/SECURITY.md).
-Prompt injection defense uses a two-layer architecture:
-
-| Layer | Surface | Defense | Scope |
-|-------|---------|---------|-------|
-| 1 | Channel ingestion | Pre-ingestion pattern scanner (orchestrator) | Container agents — filters malicious messages before they reach isolated agents |
-| 2 | Host Claude Code | [parry-guard](docs/decisions/parry-guard-installation.md) | Operator sessions — ML inference + AST analysis on tool I/O via PreToolUse/PostToolUse hooks |
-
-Layer 1 protects container agents from untrusted channel input. Layer 2
-protects the operator's own Claude Code sessions from prompt injection in tool
-inputs and outputs. They are complementary and independent — neither replaces
-the other.
-
-Setup: `scripts/setup-parry-guard.sh`. ADR:
-[docs/decisions/parry-guard-installation.md](docs/decisions/parry-guard-installation.md).
+Deus uses a two-layer prompt injection defense. See [parry-guard ADR](docs/decisions/parry-guard-installation.md) for architecture details.
 
 ## Core Entrypoints
 
