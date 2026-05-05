@@ -3,6 +3,7 @@ import path from 'path';
 
 import type { AgentRuntimeId } from './agent-runtimes/types.js';
 import { readEnvFile } from './env.js';
+import type { InjectionScannerConfig } from './guardrails/injection-scanner.js';
 import { homeDir } from './platform.js';
 
 // Read config values from .env (falls back to process.env).
@@ -113,8 +114,6 @@ export const DEUS_PROXY_AUTH_ENABLED = process.env.DEUS_PROXY_AUTH !== '0';
 // ── Injection scanner guardrail ──────────────────────────────────────────────
 // Disabled by default. Enable via DEUS_INJECTION_SCANNER=1.
 // Ships with logOnly=true so operators gain confidence before blocking.
-import type { InjectionScannerConfig } from './guardrails/injection-scanner.js';
-
 export const INJECTION_SCANNER_CONFIG: InjectionScannerConfig = {
   enabled: process.env.DEUS_INJECTION_SCANNER === '1',
   threshold: parseFloat(process.env.DEUS_INJECTION_SCANNER_THRESHOLD || '0.7'),

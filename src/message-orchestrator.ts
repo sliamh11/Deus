@@ -17,7 +17,10 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
-import { scanForInjection } from './guardrails/injection-scanner.js';
+import {
+  scanForInjection,
+  type ScanResult,
+} from './guardrails/injection-scanner.js';
 import {
   defaultSession,
   type RunContext,
@@ -159,8 +162,14 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     // return 'success' (not 'error') so the cursor stays advanced and the
     // message is not retried — returning 'error' would cause an infinite
     // retry loop on the same blocked message.
-    const scanResult = scanForInjection(prompt, INJECTION_SCANNER_CONFIG);
-    if (scanResult.triggered) {
+    // Wrapped in try/catch: scanner errors must not crash the pipeline (fail-open).
+    let scanResult: ScanResult | undefined;
+    try {
+      scanResult = scanForInjection(prompt, INJECTION_SCANNER_CONFIG);
+    } catch (err) {
+      logger.error({ err }, 'Injection scanner error — failing open');
+    }
+    if (scanResult?.triggered) {
       if (scanResult.blocked) {
         logger.warn(
           {

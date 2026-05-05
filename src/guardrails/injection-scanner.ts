@@ -106,8 +106,8 @@ const STRONG_PATTERNS: ScoredPattern[] = [
     category: 'prompt-extraction',
   },
 
-  // English — jailbreak
-  { pattern: 'jailbreak', weight: 0.7, category: 'jailbreak' },
+  // English — jailbreak (medium: reduces false positives on academic mentions)
+  { pattern: 'jailbreak', weight: 0.4, category: 'jailbreak' },
   { pattern: 'dan mode', weight: 0.7, category: 'jailbreak' },
   { pattern: 'developer mode enabled', weight: 0.7, category: 'jailbreak' },
   { pattern: 'ignore safety guidelines', weight: 0.7, category: 'jailbreak' },
@@ -337,11 +337,11 @@ const WEAK_PATTERNS: ScoredPattern[] = [
   { pattern: 'developer mode', weight: 0.2, category: 'jailbreak' },
 ];
 
-const ALL_PATTERNS: ScoredPattern[] = [
+const ALL_PATTERNS: ReadonlyArray<ScoredPattern> = Object.freeze([
   ...STRONG_PATTERNS,
   ...MEDIUM_PATTERNS,
   ...WEAK_PATTERNS,
-];
+]);
 
 // ── Obfuscation normalization ────────────────────────────────────────────────
 
@@ -506,10 +506,26 @@ function decodeBase64Payloads(text: string): string {
  * Returns an array of strings to scan (original normalized + obfuscation variants).
  */
 function normalizeText(text: string): string[] {
-  const stripped = stripInvisibleChars(text);
+  let stripped = stripInvisibleChars(text);
+
+  // Collapse whitespace so multi-space evasion ("ignore  previous") is normalized
+  stripped = stripped.replace(/[\s]+/g, ' ').trim();
+
   const lower = stripped.toLowerCase();
 
   const variants: string[] = [lower];
+
+  // Delimiter-to-space variant: catches "ignore.previous.instructions"
+  const delimToSpace = lower.replace(/([a-z])[.\-_]([a-z])/gi, '$1 $2');
+  if (delimToSpace !== lower) {
+    variants.push(delimToSpace);
+  }
+
+  // Delimiter-removed variant: catches intra-word splits like "ig-nore prev-ious"
+  const delimRemoved = lower.replace(/([a-z])[.\-_]([a-z])/gi, '$1$2');
+  if (delimRemoved !== lower && delimRemoved !== delimToSpace) {
+    variants.push(delimRemoved);
+  }
 
   // Homoglyph-normalized
   const homoglyphNorm = normalizeHomoglyphs(lower);
@@ -572,17 +588,17 @@ export function scanForInjection(
 
   const variants = normalizeText(text);
 
-  // Build full pattern list including custom patterns (medium weight)
-  const patterns: ScoredPattern[] = [...ALL_PATTERNS];
-  if (cfg.customPatterns) {
-    for (const cp of cfg.customPatterns) {
-      patterns.push({
-        pattern: cp.toLowerCase(),
-        weight: 0.4,
-        category: 'custom',
-      });
-    }
-  }
+  // Use precompiled default patterns; only rebuild when custom patterns are present
+  const patterns: ReadonlyArray<ScoredPattern> = cfg.customPatterns?.length
+    ? [
+        ...ALL_PATTERNS,
+        ...cfg.customPatterns.map((cp) => ({
+          pattern: cp.toLowerCase(),
+          weight: 0.4 as const,
+          category: 'custom',
+        })),
+      ]
+    : ALL_PATTERNS;
 
   let totalScore = 0;
   const matchedPatterns: string[] = [];
