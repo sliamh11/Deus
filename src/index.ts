@@ -47,9 +47,9 @@ import { logReactionSignal } from './evolution-client.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { processImage } from './image.js';
 import { logger } from './logger.js';
-import { initBackendRegistry } from './agent-backends/registry.js';
-import { createClaudeBackend } from './agent-backends/claude-backend.js';
-import { createOpenAIBackend } from './agent-backends/openai-backend.js';
+import { initRuntimeRegistry } from './agent-runtimes/registry.js';
+import { createClaudeRuntime } from './agent-runtimes/claude-backend.js';
+import { createOpenAIRuntime } from './agent-runtimes/openai-backend.js';
 
 export { getAvailableGroups } from './router-state.js';
 
@@ -81,7 +81,7 @@ async function main(): Promise<void> {
   const queue = new GroupQueue();
 
   // Initialize backend registry — all container-based backends share the same deps
-  const registry = initBackendRegistry();
+  const registry = initRuntimeRegistry();
   const backendDeps = {
     resolveGroup: (groupFolder: string) =>
       Object.values(state.registeredGroups).find(
@@ -95,8 +95,8 @@ async function main(): Promise<void> {
       groupFolder: string,
     ) => queue.registerProcess(chatJid, proc, containerName, groupFolder),
   };
-  registry.register(createClaudeBackend(backendDeps));
-  registry.register(createOpenAIBackend(backendDeps));
+  registry.register(createClaudeRuntime(backendDeps));
+  registry.register(createOpenAIRuntime(backendDeps));
   logger.info({ backends: registry.list() }, 'Backend registry initialized');
 
   // Graceful shutdown handlers

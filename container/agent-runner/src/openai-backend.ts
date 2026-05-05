@@ -20,7 +20,7 @@ export {
   validateScheduleInput,
 } from './tool-broker.js';
 
-export interface BackendSessionRef {
+export interface RuntimeSession {
   backend: 'claude' | 'openai';
   session_id: string;
   resume_cursor?: string;
@@ -31,7 +31,7 @@ export interface ContainerInput {
   prompt: string;
   backend?: 'claude' | 'openai';
   sessionId?: string;
-  sessionRef?: BackendSessionRef;
+  sessionRef?: RuntimeSession;
   groupFolder: string;
   chatJid: string;
   isMain?: boolean;
@@ -45,7 +45,7 @@ export interface ContainerInput {
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
-  newSessionRef?: BackendSessionRef;
+  newSessionRef?: RuntimeSession;
   newSessionId?: string;
   error?: string;
 }

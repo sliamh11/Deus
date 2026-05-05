@@ -1,16 +1,16 @@
 import { describe, it, expect } from 'vitest';
 
-import { createOpenAIBackend } from './openai-backend.js';
-import type { ContainerBackendDeps } from './container-backend.js';
+import { createOpenAIRuntime } from './openai-backend.js';
+import type { ContainerRuntimeDeps } from './container-backend.js';
 
-const stubDeps: ContainerBackendDeps = {
+const stubDeps: ContainerRuntimeDeps = {
   resolveGroup: () => undefined,
   assistantName: 'Deus',
   registerProcess: () => {},
 };
 
 describe('OpenAIBackend', () => {
-  const backend = createOpenAIBackend(stubDeps);
+  const backend = createOpenAIRuntime(stubDeps);
 
   it('returns correct name', () => {
     expect(backend.name()).toBe('openai');

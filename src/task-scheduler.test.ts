@@ -7,22 +7,22 @@ import {
   startSchedulerLoop,
 } from './task-scheduler.js';
 import type {
-  BackendSessionRef,
+  RuntimeSession,
   RunContext,
   RuntimeEventSink,
-} from './agent-backends/types.js';
+} from './agent-runtimes/types.js';
 import type { SchedulerDependencies } from './task-scheduler.js';
-import { BackendRegistry } from './agent-backends/registry.js';
-import type { RunResult } from './agent-backends/types.js';
+import { RuntimeRegistry } from './agent-runtimes/registry.js';
+import type { RunResult } from './agent-runtimes/types.js';
 
 type RunTurnFn = (
   ctx: RunContext,
-  session: BackendSessionRef,
+  session: RuntimeSession,
   sink: RuntimeEventSink,
 ) => Promise<RunResult>;
 
-function makeStubRegistry(runTurnOverride?: RunTurnFn): BackendRegistry {
-  const registry = new BackendRegistry();
+function makeStubRegistry(runTurnOverride?: RunTurnFn): RuntimeRegistry {
+  const registry = new RuntimeRegistry();
   const defaultRunTurn: RunTurnFn = async (_ctx, _session, sink) => {
     await sink({ type: 'output_text', text: 'Agent response' });
     await sink({
@@ -231,7 +231,7 @@ describe('startSchedulerLoop execution path', () => {
   function makeDeps(
     overrides: Partial<{
       registeredGroups: Record<string, import('./types.js').RegisteredGroup>;
-      sessions: Record<string, string | BackendSessionRef>;
+      sessions: Record<string, string | RuntimeSession>;
       getSession: SchedulerDependencies['getSession'];
       setSession: SchedulerDependencies['setSession'];
       enqueueTask: ReturnType<typeof vi.fn>;
@@ -425,7 +425,7 @@ describe('startSchedulerLoop execution path', () => {
     createTask(makeTask({ id: 'task-isolated', context_mode: 'isolated' }));
 
     const capturedCtx: RunContext[] = [];
-    const capturedSession: BackendSessionRef[] = [];
+    const capturedSession: RuntimeSession[] = [];
     const runTurn: RunTurnFn = async (ctx, session, sink) => {
       capturedCtx.push(ctx);
       capturedSession.push(session);
@@ -443,7 +443,7 @@ describe('startSchedulerLoop execution path', () => {
   it('passes group session for group context tasks', async () => {
     createTask(makeTask({ id: 'task-group', context_mode: 'group' }));
 
-    const capturedSession: BackendSessionRef[] = [];
+    const capturedSession: RuntimeSession[] = [];
     const runTurn: RunTurnFn = async (_ctx, session, sink) => {
       capturedSession.push(session);
       await sink({ type: 'turn_complete' });
@@ -466,7 +466,7 @@ describe('startSchedulerLoop execution path', () => {
       }),
     );
 
-    const capturedSession: BackendSessionRef[] = [];
+    const capturedSession: RuntimeSession[] = [];
     const runTurn: RunTurnFn = async (_ctx, session, sink) => {
       capturedSession.push(session);
       await sink({ type: 'turn_complete' });
@@ -474,7 +474,7 @@ describe('startSchedulerLoop execution path', () => {
     };
 
     const getSession: NonNullable<SchedulerDependencies['getSession']> = vi.fn(
-      (): BackendSessionRef => ({
+      (): RuntimeSession => ({
         backend: 'openai',
         session_id: 'resp-session-123',
       }),
@@ -483,7 +483,7 @@ describe('startSchedulerLoop execution path', () => {
       testgroup: {
         backend: 'claude',
         session_id: 'claude-session-123',
-      } satisfies BackendSessionRef,
+      } satisfies RuntimeSession,
     };
 
     startSchedulerLoop(makeDeps({ sessions, getSession, runTurn }));

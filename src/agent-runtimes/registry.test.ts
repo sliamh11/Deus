@@ -1,21 +1,21 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 
-import { BackendRegistry } from './registry.js';
+import { RuntimeRegistry } from './registry.js';
 import type {
-  AgentBackend,
-  AgentBackendName,
-  BackendCapabilities,
-  BackendSessionRef,
+  AgentRuntime,
+  AgentRuntimeId,
+  RuntimeCapabilities,
+  RuntimeSession,
   RunContext,
   RunResult,
   RuntimeEventSink,
 } from './types.js';
 import type { RegisteredGroup } from '../types.js';
 
-function stubBackend(backendName: AgentBackendName): AgentBackend {
+function stubBackend(backendName: AgentRuntimeId): AgentRuntime {
   return {
     name: () => backendName,
-    capabilities: (): BackendCapabilities => ({
+    capabilities: (): RuntimeCapabilities => ({
       shell: true,
       filesystem: true,
       web: true,
@@ -30,7 +30,7 @@ function stubBackend(backendName: AgentBackendName): AgentBackend {
     }),
     runTurn: async (
       _ctx: RunContext,
-      _ref: BackendSessionRef,
+      _ref: RuntimeSession,
       _sink: RuntimeEventSink,
     ): Promise<RunResult> => ({
       status: 'success',
@@ -50,11 +50,11 @@ function stubGroup(overrides: Partial<RegisteredGroup> = {}): RegisteredGroup {
   };
 }
 
-describe('BackendRegistry', () => {
-  let registry: BackendRegistry;
+describe('RuntimeRegistry', () => {
+  let registry: RuntimeRegistry;
 
   beforeEach(() => {
-    registry = new BackendRegistry();
+    registry = new RuntimeRegistry();
   });
 
   it('registers and retrieves a backend', () => {
@@ -119,7 +119,7 @@ describe('BackendRegistry', () => {
       last_result: null,
       status: 'active' as const,
       created_at: new Date().toISOString(),
-      agent_backend: 'openai' as AgentBackendName,
+      agent_backend: 'openai' as AgentRuntimeId,
     };
 
     const backend = registry.resolve(group, task);

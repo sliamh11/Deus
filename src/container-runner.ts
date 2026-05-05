@@ -9,10 +9,10 @@ import fs from 'fs';
 import path from 'path';
 
 import {
-  AgentBackendName,
-  BackendSessionRef,
-  defaultSessionRef,
-} from './agent-backends/types.js';
+  AgentRuntimeId,
+  RuntimeSession,
+  defaultSession,
+} from './agent-runtimes/types.js';
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
@@ -53,9 +53,9 @@ const OUTPUT_END_MARKER = '---DEUS_OUTPUT_END---';
 
 export interface ContainerInput {
   prompt: string;
-  backend?: AgentBackendName;
+  backend?: AgentRuntimeId;
   sessionId?: string;
-  sessionRef?: BackendSessionRef;
+  sessionRef?: RuntimeSession;
   groupFolder: string;
   chatJid: string;
   isControlGroup: boolean;
@@ -68,7 +68,7 @@ export interface ContainerInput {
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
-  newSessionRef?: BackendSessionRef;
+  newSessionRef?: RuntimeSession;
   newSessionId?: string;
   error?: string;
 }
@@ -76,7 +76,7 @@ export interface ContainerOutput {
 function buildContainerArgs(
   mounts: ReturnType<typeof buildVolumeMounts>,
   containerName: string,
-  backend: AgentBackendName,
+  backend: AgentRuntimeId,
   group?: RegisteredGroup,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
@@ -253,7 +253,7 @@ export async function runContainerAgent(
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
     let newSessionId: string | undefined;
-    let newSessionRef: BackendSessionRef | undefined;
+    let newSessionRef: RuntimeSession | undefined;
     let outputChain = Promise.resolve();
 
     container.stdout.on('data', (data) => {
@@ -408,7 +408,7 @@ export async function runContainerAgent(
               newSessionRef:
                 newSessionRef ??
                 (newSessionId
-                  ? defaultSessionRef(newSessionId, input.backend || 'claude')
+                  ? defaultSession(newSessionId, input.backend || 'claude')
                   : undefined),
               newSessionId,
             });
@@ -547,7 +547,7 @@ export async function runContainerAgent(
             newSessionRef:
               newSessionRef ??
               (newSessionId
-                ? defaultSessionRef(newSessionId, input.backend || 'claude')
+                ? defaultSession(newSessionId, input.backend || 'claude')
                 : undefined),
             newSessionId,
           });

@@ -11,11 +11,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type {
-  BackendSessionRef,
+  RuntimeSession,
   RunContext,
   RunResult,
   RuntimeEventSink,
-} from './agent-backends/types.js';
+} from './agent-runtimes/types.js';
 
 // ── Module mocks (hoisted) ───────────────────────────────────────────────────
 
@@ -26,7 +26,7 @@ vi.mock('./config.js', () => ({
   TIMEZONE: 'UTC',
   TRIGGER_PATTERN: /^@deus\b/i,
   SESSION_IDLE_RESET_HOURS: 8,
-  DEFAULT_AGENT_BACKEND: 'claude',
+  DEFAULT_AGENT_RUNTIME: 'claude',
 }));
 
 vi.mock('./logger.js', () => ({
@@ -131,7 +131,7 @@ import {
   extractSessionCommand,
 } from './session-commands.js';
 import type { RegisteredGroup } from './types.js';
-import { BackendRegistry } from './agent-backends/registry.js';
+import { RuntimeRegistry } from './agent-runtimes/registry.js';
 
 const mockGetMessagesSince = vi.mocked(getMessagesSince);
 const mockGetNewMessages = vi.mocked(getNewMessages);
@@ -141,7 +141,7 @@ const mockExtractSessionCommand = vi.mocked(extractSessionCommand);
 
 type RunTurnFn = (
   ctx: RunContext,
-  session: BackendSessionRef,
+  session: RuntimeSession,
   sink: RuntimeEventSink,
 ) => Promise<RunResult>;
 
@@ -162,8 +162,8 @@ const defaultRunTurn: RunTurnFn = async (_ctx, _session, sink) => {
 
 let activeRunTurn: RunTurnFn = defaultRunTurn;
 
-function makeRegistry(): BackendRegistry {
-  const registry = new BackendRegistry();
+function makeRegistry(): RuntimeRegistry {
+  const registry = new RuntimeRegistry();
   registry.register({
     name: () => 'claude' as const,
     capabilities: () => ({

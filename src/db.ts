@@ -5,9 +5,9 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { AgentBackendName, defaultSessionRef } from './agent-backends/types.js';
+import { AgentRuntimeId, defaultSession } from './agent-runtimes/types.js';
 import {
-  BackendSessionRef,
+  RuntimeSession,
   NewMessage,
   ProjectConfig,
   RegisteredGroup,
@@ -671,7 +671,7 @@ function rowToSessionRef(row: {
   backend: string | null;
   resume_cursor: string | null;
   metadata_json: string | null;
-}): BackendSessionRef {
+}): RuntimeSession {
   return {
     backend: row.backend === 'openai' ? 'openai' : 'claude',
     session_id: row.session_id,
@@ -682,8 +682,8 @@ function rowToSessionRef(row: {
 
 export function getSession(
   groupFolder: string,
-  backend?: AgentBackendName,
-): BackendSessionRef | undefined {
+  backend?: AgentRuntimeId,
+): RuntimeSession | undefined {
   const row = (
     backend
       ? db
@@ -716,12 +716,10 @@ export function getSession(
 
 export function setSession(
   groupFolder: string,
-  session: string | BackendSessionRef,
+  session: string | RuntimeSession,
 ): void {
   const ref =
-    typeof session === 'string'
-      ? defaultSessionRef(session, 'claude')
-      : session;
+    typeof session === 'string' ? defaultSession(session, 'claude') : session;
   const now = new Date().toISOString();
   const resumeCursor = ref.resume_cursor ?? null;
   const metadataJson = ref.metadata_json ?? null;
@@ -789,7 +787,7 @@ export function setSession(
 
 export function clearSession(
   groupFolder: string,
-  backend?: AgentBackendName,
+  backend?: AgentRuntimeId,
 ): void {
   const now = new Date().toISOString();
   if (backend) {
@@ -809,7 +807,7 @@ export function clearSession(
 
 export function getSessionLastUsedAt(
   groupFolder: string,
-  backend?: AgentBackendName,
+  backend?: AgentRuntimeId,
 ): string | undefined {
   const row = (
     backend
@@ -833,7 +831,7 @@ export function getSessionLastUsedAt(
   return row?.last_used_at ?? undefined;
 }
 
-export function getAllSessions(): Record<string, BackendSessionRef> {
+export function getAllSessions(): Record<string, RuntimeSession> {
   const rows = db
     .prepare(
       `SELECT group_folder, session_id, backend, resume_cursor, metadata_json
@@ -848,7 +846,7 @@ export function getAllSessions(): Record<string, BackendSessionRef> {
     resume_cursor: string | null;
     metadata_json: string | null;
   }>;
-  const result: Record<string, BackendSessionRef> = {};
+  const result: Record<string, RuntimeSession> = {};
   for (const row of rows) {
     if (!result[row.group_folder]) {
       result[row.group_folder] = rowToSessionRef(row);
@@ -859,7 +857,7 @@ export function getAllSessions(): Record<string, BackendSessionRef> {
 
 export function getAllBackendSessions(): Record<
   string,
-  Partial<Record<AgentBackendName, BackendSessionRef>>
+  Partial<Record<AgentRuntimeId, RuntimeSession>>
 > {
   const rows = db
     .prepare(
@@ -876,7 +874,7 @@ export function getAllBackendSessions(): Record<
   }>;
   const result: Record<
     string,
-    Partial<Record<AgentBackendName, BackendSessionRef>>
+    Partial<Record<AgentRuntimeId, RuntimeSession>>
   > = {};
   for (const row of rows) {
     const ref = rowToSessionRef(row);

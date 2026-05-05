@@ -19,7 +19,7 @@ import {
   hasContainerImage,
   countRegisteredGroups,
 } from './checks.js';
-import { DEFAULT_AGENT_BACKEND } from './config.js';
+import { DEFAULT_AGENT_RUNTIME } from './config.js';
 import { logger } from './logger.js';
 import { containerBuildHint } from './platform.js';
 
@@ -139,8 +139,8 @@ registerStartupCheck({
   run: () => ({
     name: 'Agent backend',
     level: 'suggest',
-    ok: DEFAULT_AGENT_BACKEND === 'claude',
-    hint: `Using "${DEFAULT_AGENT_BACKEND}" backend. Parity with Claude is in progress — see docs/MULTI_BACKEND.md for known gaps.`,
+    ok: DEFAULT_AGENT_RUNTIME === 'claude',
+    hint: `Using "${DEFAULT_AGENT_RUNTIME}" backend. Parity with Claude is in progress — see docs/MULTI_BACKEND.md for known gaps.`,
   }),
 });
 

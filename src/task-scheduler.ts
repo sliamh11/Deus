@@ -3,12 +3,12 @@ import fs from 'fs';
 
 import { fireAndForget } from './async/index.js';
 import {
-  defaultSessionRef,
-  type BackendSessionRef,
+  defaultSession,
+  type RuntimeSession,
   type RunContext,
   type RuntimeEventSink,
-} from './agent-backends/types.js';
-import type { BackendRegistry } from './agent-backends/registry.js';
+} from './agent-runtimes/types.js';
+import type { RuntimeRegistry } from './agent-runtimes/registry.js';
 import { SCHEDULER_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { writeTasksSnapshot } from './container-runner.js';
 import {
@@ -67,13 +67,13 @@ export function computeNextRun(task: ScheduledTask): string | null {
 
 export interface SchedulerDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
-  getSessions: () => Record<string, BackendSessionRef | string>;
+  getSessions: () => Record<string, RuntimeSession | string>;
   getSession?: (
     groupFolder: string,
-    backend?: BackendSessionRef['backend'],
-  ) => BackendSessionRef | undefined;
-  setSession?: (groupFolder: string, sessionRef: BackendSessionRef) => void;
-  registry: BackendRegistry;
+    backend?: RuntimeSession['backend'],
+  ) => RuntimeSession | undefined;
+  setSession?: (groupFolder: string, sessionRef: RuntimeSession) => void;
+  registry: RuntimeRegistry;
   queue: GroupQueue;
   sendMessage: (jid: string, text: string) => Promise<void>;
 }
@@ -162,7 +162,7 @@ async function runTask(
     task.context_mode === 'group'
       ? (deps.getSession?.(task.group_folder, backend) ??
         (typeof rawSession === 'string'
-          ? defaultSessionRef(rawSession)
+          ? defaultSession(rawSession)
           : rawSession))
       : undefined;
   const sessionRef =
@@ -190,7 +190,7 @@ async function runTask(
     isScheduledTask: true,
   };
 
-  const currentSessionRef = sessionRef ?? defaultSessionRef('', backend);
+  const currentSessionRef = sessionRef ?? defaultSession('', backend);
 
   const eventSink: RuntimeEventSink = async (event) => {
     if (event.type === 'session') {

@@ -1,16 +1,16 @@
 import { describe, it, expect } from 'vitest';
 
-import { createClaudeBackend } from './claude-backend.js';
-import type { ContainerBackendDeps } from './container-backend.js';
+import { createClaudeRuntime } from './claude-backend.js';
+import type { ContainerRuntimeDeps } from './container-backend.js';
 
-const stubDeps: ContainerBackendDeps = {
+const stubDeps: ContainerRuntimeDeps = {
   resolveGroup: () => undefined,
   assistantName: 'Deus',
   registerProcess: () => {},
 };
 
 describe('ClaudeBackend', () => {
-  const backend = createClaudeBackend(stubDeps);
+  const backend = createClaudeRuntime(stubDeps);
 
   it('returns correct name', () => {
     expect(backend.name()).toBe('claude');

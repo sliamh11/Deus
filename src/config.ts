@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import path from 'path';
 
-import type { AgentBackendName } from './agent-backends/types.js';
+import type { AgentRuntimeId } from './agent-runtimes/types.js';
 import { readEnvFile } from './env.js';
 import { homeDir } from './platform.js';
 
@@ -93,7 +93,7 @@ const rawAgentBackend = (
   envConfig.DEUS_AGENT_BACKEND ||
   'claude'
 ).toLowerCase();
-export const DEFAULT_AGENT_BACKEND: AgentBackendName =
+export const DEFAULT_AGENT_RUNTIME: AgentRuntimeId =
   rawAgentBackend === 'openai' ? 'openai' : 'claude';
 
 export const DEUS_OPENAI_MODEL =
