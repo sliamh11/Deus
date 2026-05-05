@@ -151,6 +151,10 @@ function formatContextFile(label: string, filePath: string): string {
  * solutions/ directory. Returns formatted context blocks suitable for
  * inclusion in the agent's context window. Silently returns [] if the
  * directory is missing or empty.
+ *
+ * Container agent-runner builds separately from src/ — cannot import
+ * host-side modules. Reads solution markdown files directly from the
+ * vault mount rather than using src/solutions/store.ts.
  */
 function loadSolutionBlocks(root: string, limit = 3): string[] {
   const solDir = workspacePath(root, 'vault', 'solutions');

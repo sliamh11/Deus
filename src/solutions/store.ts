@@ -23,6 +23,25 @@ import { CONFIG_DIR, HOME_DIR } from '../config.js';
 export type ProblemType = 'bug' | 'knowledge' | 'pattern';
 export type Severity = 'low' | 'medium' | 'high';
 
+const VALID_PROBLEM_TYPES: ProblemType[] = ['bug', 'knowledge', 'pattern'];
+const VALID_SEVERITIES: Severity[] = ['low', 'medium', 'high'];
+
+function isValidProblemType(v: string | undefined): v is ProblemType {
+  return (
+    typeof v === 'string' && VALID_PROBLEM_TYPES.includes(v as ProblemType)
+  );
+}
+
+function isValidSeverity(v: string | undefined): v is Severity {
+  return typeof v === 'string' && VALID_SEVERITIES.includes(v as Severity);
+}
+
+/**
+ * A single solution atom. Field semantics depend on `problemType`:
+ * - bug: symptoms/deadEnds/solution/prevention map directly.
+ * - knowledge|pattern: `symptoms` holds context, `solution` holds guidance,
+ *   `prevention` holds when-to-apply. `deadEnds` is unused.
+ */
 export interface Solution {
   id: string;
   title: string;
@@ -120,13 +139,13 @@ function toBugBody(sol: Solution): string {
 function toKnowledgeBody(sol: Solution): string {
   return [
     '## Context',
-    sol.symptoms, // reuse symptoms field as context
+    sol.symptoms,
     '',
     '## Guidance',
-    sol.solution, // reuse solution field as guidance
+    sol.solution,
     '',
     '## When to Apply',
-    sol.prevention, // reuse prevention field as triggers
+    sol.prevention,
   ].join('\n');
 }
 
@@ -180,14 +199,17 @@ function parseSolution(content: string, filePath: string): Solution | null {
   const fm = parseFrontmatter(content);
   if (!fm || fm.type !== 'solution') return null;
 
-  const problemType = (fm.problem_type || 'bug') as ProblemType;
+  const problemType = isValidProblemType(fm.problem_type)
+    ? fm.problem_type
+    : 'bug';
+  const severity = isValidSeverity(fm.severity) ? fm.severity : 'medium';
   return {
     id: fm.id || path.basename(filePath, '.md'),
     title: (fm.title || '').replace(/^["']|["']$/g, '').replace(/\\"/g, '"'),
     tags: parseTags(fm.tags || '[]'),
     problemType,
     module: fm.module || undefined,
-    severity: (fm.severity || 'medium') as Severity,
+    severity,
     symptoms:
       problemType === 'knowledge'
         ? parseSection(content, 'Context')
