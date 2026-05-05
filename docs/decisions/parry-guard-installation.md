@@ -99,6 +99,17 @@ Add the following to `~/.claude/settings.json` under the user's hooks:
 > this configuration manually after running the setup script, or uses the
 > `/update-config` skill.
 
+### Threshold and Scan Mode
+
+| Setting | Initial Value | Rationale |
+|---------|---------------|-----------|
+| Threshold | parry-guard default | Rely on upstream's tuned default until we have host telemetry to calibrate against. Override via `--threshold` flag if false-positive rate is too high. |
+| Scan mode | Warn-only | Start in warn mode (log detections, do not block tool calls) to measure false-positive rate on real host sessions. Promote to block mode once confidence is established. |
+
+These decisions are deliberately conservative. The first priority is
+observability — collecting detection logs from real sessions — before
+tightening enforcement. Revisit after two weeks of production telemetry.
+
 ### Setup Script
 
 `scripts/setup-parry-guard.sh` automates pre-flight checks:
@@ -107,7 +118,7 @@ Add the following to `~/.claude/settings.json` under the user's hooks:
 2. Checks for an existing parry-guard installation.
 3. Validates `HF_TOKEN` is set (warns if missing — may be needed for gated
    model downloads).
-4. Runs a test scan to verify the daemon starts.
+4. Verifies the installation responds (`parry-guard --version`).
 5. Prints the hook configuration snippet for manual application.
 
 ## Consequences

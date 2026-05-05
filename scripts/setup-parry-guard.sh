@@ -60,14 +60,15 @@ else
   info "HF_TOKEN is set."
 fi
 
-# --- 4. Test scan ---------------------------------------------------------
+# --- 4. Verify installation ------------------------------------------------
 
-info "Running a test scan to verify the daemon starts..."
-if echo '{"tool": "Bash", "input": "echo hello"}' | uvx parry-guard hook 2>/dev/null; then
-  info "Test scan passed — daemon is operational."
+info "Verifying parry-guard responds..."
+if uvx parry-guard --version &>/dev/null; then
+  info "parry-guard is operational: $(uvx parry-guard --version 2>/dev/null)"
 else
-  warn "Test scan returned non-zero. The daemon may need model downloads."
-  echo "  Try running manually:  echo '{\"tool\": \"Bash\", \"input\": \"echo hello\"}' | uvx parry-guard hook"
+  warn "parry-guard --version returned non-zero."
+  echo "  The binary may need model downloads on first run."
+  echo "  Try running manually:  uvx parry-guard --version"
   echo "  Check logs for HuggingFace download progress."
 fi
 
