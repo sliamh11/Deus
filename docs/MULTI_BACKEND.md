@@ -184,15 +184,15 @@ The backend is resolved in this order (first non-empty wins):
 
 ## Supported Backend Boundary
 
-Claude and OpenAI/Codex are the two implemented agent backends. The `ollama` entry in the `AgentBackendName` type union is a forward reservation with no runtime implementation — Ollama is used for eval judging and embeddings, not as a container agent backend.
+Claude and OpenAI/Codex are the two implemented agent backends. The `ollama` entry in the `AgentRuntimeId` type union is a forward reservation with no runtime implementation — Ollama is used for eval judging and embeddings, not as a container agent backend.
 
 The architecture supports adding new backends, but the current product scope is deliberately limited to two adapters. This boundary is a conscious scope decision, not a technical limitation.
 
 ## Adding a New Backend (for contributors)
 
-1. Create a factory function in `src/agent-backends/` (see `claude-backend.ts` as template)
-2. Define capabilities in a `BackendCapabilities` constant
-3. Register it in `src/index.ts` via `registry.register(createYourBackend(deps))`
+1. Create a factory function in `src/agent-runtimes/` (see `claude-backend.ts` as template)
+2. Define capabilities in a `RuntimeCapabilities` constant
+3. Register it in `src/index.ts` via `registry.register(createYourRuntime(deps))`
 4. Add container-side dispatch in `container/agent-runner/src/index.ts`
-5. Add the backend name to `AgentBackendName` union in `src/agent-backends/types.ts`
-6. Update `parseAgentBackend()` in `src/ipc.ts` and `DEFAULT_AGENT_BACKEND` in `src/config.ts`
+5. Add the backend name to `AgentRuntimeId` union in `src/agent-runtimes/types.ts`
+6. Update `parseAgentBackend()` in `src/ipc.ts` and `DEFAULT_AGENT_RUNTIME` in `src/config.ts`

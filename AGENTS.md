@@ -95,7 +95,7 @@ Use these instead of rediscovering the system:
 |---|---|---|
 | Task routing | [`.mex/ROUTER.md`](.mex/ROUTER.md) | Maps task type to the required pattern file |
 | Host runtime | `src/message-orchestrator.ts`, `src/container-runner.ts` | Agent dispatch, sessions, streaming, container wiring |
-| Backend selection | `src/agent-backends/resolve.ts` | Task > group > env > Claude fallback |
+| Backend selection | `src/agent-runtimes/resolve.ts` | Task > group > env > Claude fallback |
 | Session storage | `src/db.ts`, `src/router-state.ts` | Backend-scoped session refs and resume state |
 | Scheduler | `src/task-scheduler.ts` | Same backend/session rules as interactive turns |
 | Container context | `container/agent-runner/src/context-registry.ts` | Runtime-loaded onboarding and memory surfaces |

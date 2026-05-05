@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-04-23
-**Scope:** `src/agent-backends/`, `container/agent-runner/`, `deus-cmd.sh`, `deus-cmd.ps1`, `AGENTS.md`, `AI_AGENT_GUIDELINES.md`
+**Scope:** `src/agent-runtimes/`, `container/agent-runner/`, `deus-cmd.sh`, `deus-cmd.ps1`, `AGENTS.md`, `AI_AGENT_GUIDELINES.md`
 
 ## Context
 
@@ -76,9 +76,9 @@ Rollback is a single revert while `claude` remains the default. Existing legacy 
 
 The OpenAI backend uses the Responses API (`POST /v1/responses`) rather than the OpenAI Agents SDK. This gives Deus full control over the tool-call loop, session compaction, and MCP bridging without depending on OpenAI's orchestration opinions.
 
-Handoffs, tracing, and other Agents SDK features are deferred as optional accelerators, not blockers. If adopted later, they would sit behind the existing `BackendCapabilities` flags (`handoffs: false` for OpenAI today).
+Handoffs, tracing, and other Agents SDK features are deferred as optional accelerators, not blockers. If adopted later, they would sit behind the existing `RuntimeCapabilities` flags (`handoffs: false` for OpenAI today).
 
 ## Implementation Notes
 
 - OpenAI/Codex tool calls route through `container/agent-runner/src/tool-broker.ts` for filesystem, shell, web, browser, Deus IPC, scheduling, and group registration.
-- OpenAI `/compact` stores a Deus-owned continuity summary in `BackendSessionRef.metadata_json` and starts the next turn from that summary instead of resuming a synthetic session id as an OpenAI response id.
+- OpenAI `/compact` stores a Deus-owned continuity summary in `RuntimeSession.metadata_json` and starts the next turn from that summary instead of resuming a synthetic session id as an OpenAI response id.

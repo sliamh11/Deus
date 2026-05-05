@@ -61,9 +61,9 @@ model guesses. If confidence is low, retrieve first or say what is missing.
 
 Backend neutrality starts at the host runtime:
 
-- `src/agent-backends/types.ts` defines `AgentBackend`, `BackendSessionRef`,
-  `BackendCapabilities`, and `RunContext`.
-- `src/agent-backends/resolve.ts` implements selection precedence: task
+- `src/agent-runtimes/types.ts` defines `AgentRuntime`, `RuntimeSession`,
+  `RuntimeCapabilities`, and `RunContext`.
+- `src/agent-runtimes/resolve.ts` implements selection precedence: task
   override, group override, global default, then Claude fallback.
 - `src/db.ts` stores backend-aware session refs and task backend overrides.
 - `src/router-state.ts` keeps in-memory backend-scoped session state.
