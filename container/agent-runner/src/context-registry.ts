@@ -146,6 +146,38 @@ function formatContextFile(label: string, filePath: string): string {
   return content ? `=== ${label} ===\n${content}` : '';
 }
 
+/**
+ * Load the N most recently modified solution atoms from the vault's
+ * solutions/ directory. Returns formatted context blocks suitable for
+ * inclusion in the agent's context window. Silently returns [] if the
+ * directory is missing or empty.
+ */
+function loadSolutionBlocks(root: string, limit = 3): string[] {
+  const solDir = workspacePath(root, 'vault', 'solutions');
+  if (!fs.existsSync(solDir)) return [];
+
+  let files: { name: string; mtime: number }[];
+  try {
+    files = fs
+      .readdirSync(solDir)
+      .filter((f) => f.endsWith('.md'))
+      .map((f) => {
+        const stat = fs.statSync(path.join(solDir, f));
+        return { name: f, mtime: stat.mtimeMs };
+      })
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, limit);
+  } catch {
+    return [];
+  }
+
+  return files.flatMap(({ name }) => {
+    const content = readOptionalFile(path.join(solDir, name));
+    if (!content) return [];
+    return [`=== SOLUTION: ${name} ===\n${content}`];
+  });
+}
+
 export function loadRegisteredContextFiles(options: {
   isControlGroup: boolean;
   hasProject: boolean;
@@ -154,7 +186,7 @@ export function loadRegisteredContextFiles(options: {
 }): string[] {
   const root = options.workspaceRoot || WORKSPACE_ROOT;
   const entries = [...baseContextEntries(root), ...extraContextEntries(root)];
-  return entries.flatMap((entry) => {
+  const blocks = entries.flatMap((entry) => {
     if (options.mode === 'claude-system-append' && !entry.claudeSystemAppend)
       return [];
     if (entry.skipForControlGroup && options.isControlGroup) return [];
@@ -162,4 +194,12 @@ export function loadRegisteredContextFiles(options: {
     const block = formatContextFile(entry.label, entry.path);
     return block ? [block] : [];
   });
+
+  // Append solution context in full-context mode only (not claude-system-append).
+  // Solutions are advisory — they inform but don't instruct like rules files.
+  if (options.mode !== 'claude-system-append') {
+    blocks.push(...loadSolutionBlocks(root));
+  }
+
+  return blocks;
 }

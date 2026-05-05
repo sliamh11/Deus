@@ -1447,6 +1447,11 @@ $STARTUP_INSTRUCTION"
         ;;
     esac
     ;;
+  solution)
+    # Solution atom management — structured lesson capture.
+    shift
+    exec node "$SCRIPT_DIR/dist/solutions/cli.js" "$@"
+    ;;
   tui)
     shift
     local tui_bin="$SCRIPT_DIR/tui/target/release/deus-tui"
@@ -1457,7 +1462,7 @@ $STARTUP_INSTRUCTION"
     exec "$tui_bin" "$@"
     ;;
   *)
-    echo "Usage: deus [claude|codex] [home|auth|web|backend|gcal|listen|logs|tui]"
+    echo "Usage: deus [claude|codex] [home|auth|web|backend|gcal|listen|logs|solution|tui]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -1469,6 +1474,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus gcal       Google Calendar token management (status|auth|ping)"
     echo "  deus listen     Record from mic, transcribe, and copy to clipboard"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
+    echo "  deus solution   Manage solution atoms (list|search|add)"
     echo "  deus tui        Interactive terminal UI (set tui_default=true in config to use by default)"
     ;;
 esac

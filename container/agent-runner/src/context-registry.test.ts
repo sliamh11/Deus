@@ -153,6 +153,46 @@ describe('context registry', () => {
     expect(claudeAppendContext).toEqual(allContext);
   });
 
+  it('includes solution atoms in full-context mode', () => {
+    writeContextFile(
+      'vault/solutions/fix-timeout-abc12345.md',
+      '---\nid: abc12345\ntype: solution\ntitle: "Fix timeout"\ntags: [docker]\nproblem_type: bug\nseverity: high\nupdated: 2026-05-01\n---\n\n## Symptoms\nTimeout after 30s\n\n## Solution\nIncrease IPC poll',
+    );
+
+    const all = loadRegisteredContextFiles({
+      isControlGroup: false,
+      hasProject: false,
+      workspaceRoot,
+    });
+    expect(
+      all.some((b) => b.includes('SOLUTION:') && b.includes('Fix timeout')),
+    ).toBe(true);
+  });
+
+  it('excludes solution atoms in claude-system-append mode', () => {
+    writeContextFile(
+      'vault/solutions/fix-timeout-abc12345.md',
+      '---\nid: abc12345\ntype: solution\ntitle: "Fix timeout"\n---\n\n## Symptoms\nTimeout',
+    );
+
+    const appendOnly = loadRegisteredContextFiles({
+      isControlGroup: false,
+      hasProject: false,
+      mode: 'claude-system-append',
+      workspaceRoot,
+    });
+    expect(appendOnly.some((b) => b.includes('SOLUTION:'))).toBe(false);
+  });
+
+  it('returns no solutions when vault/solutions/ is missing', () => {
+    const all = loadRegisteredContextFiles({
+      isControlGroup: false,
+      hasProject: false,
+      workspaceRoot,
+    });
+    expect(all.some((b) => b.includes('SOLUTION:'))).toBe(false);
+  });
+
   it('honors DEUS_CONTEXT_FILE_MAX_CHARS for registered context surfaces', () => {
     process.env.DEUS_CONTEXT_FILE_MAX_CHARS = '8';
     writeContextFile('group/CLAUDE.md', '1234567890');
