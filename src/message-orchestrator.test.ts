@@ -27,6 +27,20 @@ vi.mock('./config.js', () => ({
   TRIGGER_PATTERN: /^@deus\b/i,
   SESSION_IDLE_RESET_HOURS: 8,
   DEFAULT_AGENT_RUNTIME: 'claude',
+  INJECTION_SCANNER_CONFIG: {
+    enabled: false,
+    threshold: 0.7,
+    logOnly: true,
+  },
+}));
+
+vi.mock('./guardrails/injection-scanner.js', () => ({
+  scanForInjection: vi.fn(() => ({
+    blocked: false,
+    triggered: false,
+    score: 0,
+    matches: [],
+  })),
 }));
 
 vi.mock('./logger.js', () => ({
@@ -130,8 +144,11 @@ import {
   handleSessionCommand,
   extractSessionCommand,
 } from './session-commands.js';
+import { scanForInjection } from './guardrails/injection-scanner.js';
 import type { RegisteredGroup } from './types.js';
 import { RuntimeRegistry } from './agent-runtimes/registry.js';
+
+const mockScanForInjection = vi.mocked(scanForInjection);
 
 const mockGetMessagesSince = vi.mocked(getMessagesSince);
 const mockGetNewMessages = vi.mocked(getNewMessages);
@@ -276,6 +293,12 @@ beforeEach(() => {
   mockGetNewMessages.mockReturnValue({ messages: [], newTimestamp: '' });
   mockHandleSessionCommand.mockResolvedValue({ handled: false });
   mockExtractSessionCommand.mockReturnValue(null);
+  mockScanForInjection.mockReturnValue({
+    blocked: false,
+    triggered: false,
+    score: 0,
+    matches: [],
+  });
 });
 
 afterEach(() => {
@@ -542,6 +565,82 @@ describe('processGroupMessages', () => {
       'group@g.us',
       'Visible reply',
     );
+  });
+});
+
+// ── Injection scanner integration ────────────────────────────────────────────
+
+describe('injection scanner integration', () => {
+  it('blocks message and prevents runTurn when injection is detected', async () => {
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
+
+    mockScanForInjection.mockReturnValue({
+      blocked: true,
+      triggered: true,
+      score: 0.9,
+      reason: 'Injection detected',
+      matches: ['ignore previous instructions'],
+    });
+
+    let runTurnCalled = false;
+    activeRunTurn = async () => {
+      runTurnCalled = true;
+      return { status: 'success', result: null };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    // Scanner blocked the message — runTurn was NOT called
+    expect(runTurnCalled).toBe(false);
+    // Returns 'success' (true) so cursor stays advanced — no infinite retry
+    expect(result).toBe(true);
+    // No message was sent to user
+    expect(channel.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('lets message through in logOnly mode even when triggered', async () => {
+    const state = makeState(MAIN_GROUP);
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
+
+    mockScanForInjection.mockReturnValue({
+      blocked: false,
+      triggered: true,
+      score: 0.8,
+      reason: 'Injection detected (logOnly)',
+      matches: ['ignore previous instructions'],
+    });
+
+    let runTurnCalled = false;
+    activeRunTurn = async (_ctx, _session, sink) => {
+      runTurnCalled = true;
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: null };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    // logOnly: triggered but not blocked — runTurn IS called
+    expect(runTurnCalled).toBe(true);
+    expect(result).toBe(true);
   });
 });
 

@@ -109,3 +109,14 @@ export const DEUS_CONTEXT_FILE_MAX_CHARS =
 // Set DEUS_PROXY_AUTH=0 to disable enforcement (rollout kill-switch).
 export const DEUS_PROXY_TOKEN = crypto.randomBytes(32).toString('hex');
 export const DEUS_PROXY_AUTH_ENABLED = process.env.DEUS_PROXY_AUTH !== '0';
+
+// ── Injection scanner guardrail ──────────────────────────────────────────────
+// Disabled by default. Enable via DEUS_INJECTION_SCANNER=1.
+// Ships with logOnly=true so operators gain confidence before blocking.
+import type { InjectionScannerConfig } from './guardrails/injection-scanner.js';
+
+export const INJECTION_SCANNER_CONFIG: InjectionScannerConfig = {
+  enabled: process.env.DEUS_INJECTION_SCANNER === '1',
+  threshold: parseFloat(process.env.DEUS_INJECTION_SCANNER_THRESHOLD || '0.7'),
+  logOnly: process.env.DEUS_INJECTION_SCANNER_LOG_ONLY !== '0', // true unless explicitly set to 0
+};

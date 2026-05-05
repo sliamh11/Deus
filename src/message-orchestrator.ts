@@ -11,11 +11,13 @@
 import {
   ASSISTANT_NAME,
   IDLE_TIMEOUT,
+  INJECTION_SCANNER_CONFIG,
   POLL_INTERVAL,
   SESSION_IDLE_RESET_HOURS,
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
+import { scanForInjection } from './guardrails/injection-scanner.js';
 import {
   defaultSession,
   type RunContext,
@@ -151,6 +153,35 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         }
       }
     };
+
+    // ── Injection scanner guardrail ──────────────────────────────────────
+    // Scan the prompt BEFORE it reaches the container agent. If blocked,
+    // return 'success' (not 'error') so the cursor stays advanced and the
+    // message is not retried — returning 'error' would cause an infinite
+    // retry loop on the same blocked message.
+    const scanResult = scanForInjection(prompt, INJECTION_SCANNER_CONFIG);
+    if (scanResult.triggered) {
+      if (scanResult.blocked) {
+        logger.warn(
+          {
+            group: group.name,
+            score: scanResult.score,
+            matches: scanResult.matches,
+          },
+          'Injection attempt blocked — message will not reach the agent',
+        );
+        return 'success';
+      }
+      // logOnly mode: warn but let the message through
+      logger.warn(
+        {
+          group: group.name,
+          score: scanResult.score,
+          matches: scanResult.matches,
+        },
+        'Injection attempt detected (logOnly mode, message passing through)',
+      );
+    }
 
     try {
       const runResult = await resolvedBackend.runTurn(
