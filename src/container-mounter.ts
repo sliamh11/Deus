@@ -366,3 +366,28 @@ export function buildVolumeMounts(
 
   return mounts;
 }
+
+export function buildFanOutMounts(
+  group: RegisteredGroup,
+  taskId: string,
+): VolumeMount[] {
+  const groupDir = resolveGroupFolderPath(group.folder);
+  const sandboxDir = path.join(groupDir, '.multi-agent', taskId);
+
+  if (!fs.existsSync(sandboxDir)) {
+    fs.mkdirSync(sandboxDir, { recursive: true });
+  }
+
+  return [
+    {
+      hostPath: groupDir,
+      containerPath: '/workspace/group',
+      readonly: true,
+    },
+    {
+      hostPath: sandboxDir,
+      containerPath: '/workspace/sandbox',
+      readonly: false,
+    },
+  ];
+}

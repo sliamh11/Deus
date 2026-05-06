@@ -341,6 +341,8 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
       }, IDLE_TIMEOUT);
     };
 
+    // TODO: wire MultiAgentOrchestrator dispatch when task-detection is ready (DEUS_MULTI_AGENT gate)
+
     await channel.setTyping?.(chatJid, true);
     let hadError = false;
     let outputSentToUser = false;
