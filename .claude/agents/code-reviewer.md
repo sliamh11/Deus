@@ -53,3 +53,25 @@ Return a single markdown report. No preamble.
 - **Tight output.** Target ≤50 lines. A long review is a signal/noise red flag.
 - **Fail-closed on missing rules file.** If `~/deus/.claude/wardens/code-review-rules.md` doesn't exist, report "rules file missing — cannot review" and stop. Do not improvise rules.
 - **Diff is authoritative.** If memory or docs contradict what's in the diff, trust the diff — memory is a snapshot, code is live.
+
+## Dismissal feedback
+
+When the author dismisses a finding from this review, the parent agent logs it via
+`dismiss_warden_finding` (generalized command — the legacy `dismiss_review_finding`
+still works as an alias with `warden="code_review"` injected automatically):
+```bash
+python3 -c "
+import json, subprocess, sys
+payload = json.dumps({
+    'warden': 'code_review',
+    'finding': sys.argv[1],
+    'reason': sys.argv[2],
+    'file': sys.argv[3],
+    'line': int(sys.argv[4]) if sys.argv[4] != 'null' else None,
+    'group_folder': sys.argv[5] if sys.argv[5] != 'null' else None
+})
+subprocess.run([sys.executable, 'evolution/cli.py', 'dismiss_warden_finding', payload])
+" "<title>" "<reason>" "<path>" "<line or null>" "<group or null>"
+```
+
+This creates a reflection that will be retrieved in future reviews, reducing false positive recurrence.

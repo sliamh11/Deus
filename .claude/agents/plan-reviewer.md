@@ -49,3 +49,23 @@ Return a single markdown report. No preamble, no "I'll review...".
 - **Keep it tight.** A useful review is ≤40 lines. Padding is noise.
 - **Fail-closed on missing rules file.** If `~/deus/.claude/wardens/plan-review-rules.md` doesn't exist, report "rules file missing — cannot review" and stop. Do not improvise rules.
 - **Verify premises, not just rule compliance.** When the plan cites repo state as a problem (tracked files, unused deps, orphan files, cache drift, divergence between paths), run the verification commands yourself before approving. The `premise-verification` rule lists the minimum checks per premise type. A rule-compliant plan built on a false premise is REVISE, not SHIP.
+
+## Dismissal feedback
+
+When the author dismisses a finding from this review, the parent agent logs it via:
+```bash
+python3 -c "
+import json, subprocess, sys
+payload = json.dumps({
+    'warden': 'plan_review',
+    'finding': sys.argv[1],
+    'reason': sys.argv[2],
+    'file': sys.argv[3],
+    'line': int(sys.argv[4]) if sys.argv[4] != 'null' else None,
+    'group_folder': sys.argv[5] if sys.argv[5] != 'null' else None
+})
+subprocess.run([sys.executable, 'evolution/cli.py', 'dismiss_warden_finding', payload])
+" "<title>" "<reason>" "<path>" "<line or null>" "<group or null>"
+```
+
+This creates a reflection that will be retrieved in future reviews, reducing false positive recurrence.

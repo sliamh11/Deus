@@ -20,6 +20,7 @@ def get_reflections(
     group_folder: Optional[str] = None,
     tools_planned: Optional[list[str]] = None,
     top_k: int = MAX_REFLECTIONS_PER_QUERY,
+    category: Optional[str] = None,
 ) -> list[dict]:
     """
     Return top-k reflections most semantically relevant to the query.
@@ -27,6 +28,9 @@ def get_reflections(
     Group-scoped reflections are prioritised over cross-group ones.
     Helpful count applies a log-scaled tiebreaker bonus so frequently-useful
     reflections float up without overriding cosine similarity.
+
+    When *category* is provided, only reflections of that category are returned
+    (e.g. "code_review", "plan_review", "threat_modeling").
     """
     search_text = query
     if tools_planned:
@@ -38,6 +42,7 @@ def get_reflections(
 
     results = store.get_reflections_by_embedding(
         embedding=blob, top_k=top_k, group_folder=group_folder,
+        category=category,
     )
 
     # Re-rank: lower distance = better; subtract helpful bonus to keep unified ordering

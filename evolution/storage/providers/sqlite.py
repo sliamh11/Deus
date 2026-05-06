@@ -215,7 +215,7 @@ class SQLiteStorageProvider(StorageProvider):
                 timestamp           TEXT NOT NULL,
                 group_folder        TEXT,     -- NULL = applies cross-group
                 content             TEXT NOT NULL,
-                category            TEXT,     -- tool_use|reasoning|style|safety
+                category            TEXT,     -- warden (code_review|plan_review|threat_modeling) or generated (tool_use|reasoning|style|safety)
                 score_at_gen        REAL,
                 times_retrieved     INTEGER DEFAULT 0,
                 times_helpful       INTEGER DEFAULT 0
@@ -555,11 +555,21 @@ class SQLiteStorageProvider(StorageProvider):
         top_k: int,
         group_folder: Optional[str] = None,
         min_score: Optional[float] = None,
+        category: Optional[str] = None,
     ) -> list[dict]:
         db = self._connect()
         try:
+            # Build optional category filter
+            category_clause = ""
+            params: list = [embedding, top_k * 2, group_folder]
+            if category is not None:
+                category_clause = "AND r.category = ?"
+                params.append(category)
+
+            # safe: category_clause is either empty or a literal string
+            # fragment; user values are bound through params.
             rows = db.execute(
-                """
+                f"""
                 SELECT r.id, r.content, r.category, r.score_at_gen,
                        r.times_helpful, r.times_retrieved,
                        re.distance
@@ -568,9 +578,10 @@ class SQLiteStorageProvider(StorageProvider):
                 WHERE re.embedding MATCH ? AND k = ?
                   AND (r.group_folder = ? OR r.group_folder IS NULL)
                   AND r.archived_at IS NULL
+                  {category_clause}
                 ORDER BY re.distance, r.times_helpful DESC
                 """,
-                [embedding, top_k * 2, group_folder],
+                params,
             ).fetchall()
         except Exception:
             rows = []
