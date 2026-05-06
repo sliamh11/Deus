@@ -67,6 +67,7 @@ describe('Windows platform (mocked)', () => {
     commandExists('someprogram');
     expect(vi.mocked(execSync)).toHaveBeenCalledWith('where someprogram', {
       stdio: 'ignore',
+      timeout: 3000,
     });
   });
 

@@ -127,7 +127,7 @@ export function commandExists(name: string): boolean {
   try {
     const check =
       os.platform() === 'win32' ? `where ${name}` : `command -v ${name}`;
-    execSync(check, { stdio: 'ignore' });
+    execSync(check, { stdio: 'ignore', timeout: 3000 });
     return true;
   } catch {
     return false;
