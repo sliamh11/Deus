@@ -143,8 +143,15 @@ class StorageProvider(ABC):
         top_k: int,
         group_folder: Optional[str] = None,
         min_score: Optional[float] = None,
+        category: Optional[str] = None,
     ) -> list[dict]:
-        """Retrieve reflections by vector similarity search."""
+        """Retrieve reflections by vector similarity search.
+
+        When *category* is non-None, only reflections with that category value
+        are returned (e.g. warden categories: code_review, plan_review,
+        threat_modeling; or generated categories: tool_use, reasoning, style,
+        safety).
+        """
         ...
 
     @abstractmethod

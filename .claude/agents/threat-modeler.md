@@ -62,3 +62,23 @@ Return a single markdown report. No preamble.
 - **Don't invent controls.** Recommend controls that exist or are standard. Don't propose novel mitigations that add complexity.
 - **Fail-closed on missing rules file.** Report "rules file missing -- cannot review" and stop. Do not improvise rules.
 - **Tight output.** Threat matrix + gaps + controls. Not a textbook. Target 40 lines or fewer.
+
+## Dismissal feedback
+
+When the author dismisses a finding from this review, the parent agent logs it via:
+```bash
+python3 -c "
+import json, subprocess, sys
+payload = json.dumps({
+    'warden': 'threat_modeling',
+    'finding': sys.argv[1],
+    'reason': sys.argv[2],
+    'file': sys.argv[3],
+    'line': int(sys.argv[4]) if sys.argv[4] != 'null' else None,
+    'group_folder': sys.argv[5] if sys.argv[5] != 'null' else None
+})
+subprocess.run([sys.executable, 'evolution/cli.py', 'dismiss_warden_finding', payload])
+" "<title>" "<reason>" "<path>" "<line or null>" "<group or null>"
+```
+
+This creates a reflection that will be retrieved in future reviews, reducing false positive recurrence.
