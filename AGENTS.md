@@ -87,6 +87,10 @@ For the provider strategy pattern, read
 For vault auto-loading, read
 [docs/decisions/vault-autoload.md](docs/decisions/vault-autoload.md).
 
+## Security
+
+Deus uses a two-layer prompt injection defense. See [parry-guard ADR](docs/decisions/parry-guard-installation.md) for architecture details.
+
 ## Core Entrypoints
 
 Use these instead of rediscovering the system:
