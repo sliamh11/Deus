@@ -102,12 +102,12 @@ export function solutionsDir(): string | null {
 // ── Serialization helpers ──────────────────────────────────────────────────
 
 function toFrontmatter(sol: Solution): string {
-  const tagList = sol.tags.map((t) => `"${t}"`).join(', ');
+  const tagList = sol.tags.map((t) => `"${t.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(', ');
   const lines = [
     '---',
     `id: ${sol.id}`,
     'type: solution',
-    `title: "${sol.title.replace(/"/g, '\\"')}"`,
+    `title: "${sol.title.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`,
     `tags: [${tagList}]`,
     `problem_type: ${sol.problemType}`,
   ];
