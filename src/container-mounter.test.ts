@@ -77,7 +77,11 @@ vi.mock('fs', async () => {
 });
 
 import fs from 'fs';
-import { buildVolumeMounts, VolumeMount } from './container-mounter.js';
+import {
+  buildVolumeMounts,
+  buildFanOutMounts,
+  VolumeMount,
+} from './container-mounter.js';
 import { getProjectById } from './db.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
@@ -668,5 +672,60 @@ describe('buildVolumeMounts: agent-runner', () => {
     const appMount = findMount(mounts, '/app/src');
     expect(appMount).toBeDefined();
     expect(appMount!.readonly).toBe(true);
+  });
+});
+
+// ── Multi-agent fan-out mounts ────────────────────────────────────────
+
+describe('buildFanOutMounts', () => {
+  it('returns group dir as read-only and sandbox as writable', () => {
+    mockExistsSync.mockReturnValue(false);
+    const group = makeGroup();
+    const mounts = buildFanOutMounts(group, 'task-abc');
+
+    expect(mounts).toHaveLength(2);
+
+    const groupMount = findMount(mounts, '/workspace/group');
+    expect(groupMount).toBeDefined();
+    expect(groupMount!.readonly).toBe(true);
+    expect(groupMount!.hostPath).toBe(path.join(GROUPS_DIR, 'test-group'));
+
+    const sandboxMount = findMount(mounts, '/workspace/sandbox');
+    expect(sandboxMount).toBeDefined();
+    expect(sandboxMount!.readonly).toBe(false);
+    expect(sandboxMount!.hostPath).toContain('.multi-agent');
+    expect(sandboxMount!.hostPath).toContain('task-abc');
+  });
+
+  it('creates sandbox directory when it does not exist', () => {
+    mockExistsSync.mockReturnValue(false);
+    const group = makeGroup();
+    buildFanOutMounts(group, 'task-xyz');
+
+    expect(mockMkdirSync).toHaveBeenCalledWith(
+      expect.stringContaining('task-xyz'),
+      expect.objectContaining({ recursive: true }),
+    );
+  });
+
+  it('does not recreate sandbox directory when it already exists', () => {
+    mockExistsSync.mockReturnValue(true);
+    const group = makeGroup();
+    buildFanOutMounts(group, 'task-existing');
+
+    // mkdirSync should NOT have been called for the sandbox
+    const sandboxMkdirCalls = mockMkdirSync.mock.calls.filter((call) =>
+      String(call[0]).includes('task-existing'),
+    );
+    expect(sandboxMkdirCalls).toHaveLength(0);
+  });
+
+  it('uses hardcoded container paths', () => {
+    mockExistsSync.mockReturnValue(false);
+    const group = makeGroup({ folder: 'custom-group' });
+    const mounts = buildFanOutMounts(group, 'task-1');
+
+    expect(mounts[0].containerPath).toBe('/workspace/group');
+    expect(mounts[1].containerPath).toBe('/workspace/sandbox');
   });
 });
