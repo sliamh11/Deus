@@ -1,14 +1,14 @@
-import { DEFAULT_AGENT_BACKEND } from '../config.js';
+import { DEFAULT_AGENT_RUNTIME } from '../config.js';
 import type { RegisteredGroup, ScheduledTask } from '../types.js';
-import type { AgentBackendName } from './types.js';
+import type { AgentRuntimeId } from './types.js';
 
-export function resolveAgentBackend(
+export function resolveAgentRuntime(
   group: RegisteredGroup,
   task?: ScheduledTask,
-): AgentBackendName {
+): AgentRuntimeId {
   if (task?.agent_backend) return task.agent_backend;
   if (group.containerConfig?.agentBackend) {
     return group.containerConfig.agentBackend;
   }
-  return DEFAULT_AGENT_BACKEND;
+  return DEFAULT_AGENT_RUNTIME;
 }

@@ -17,11 +17,11 @@ import {
   TRIGGER_PATTERN,
 } from './config.js';
 import {
-  defaultSessionRef,
+  defaultSession,
   type RunContext,
   type RuntimeEventSink,
-} from './agent-backends/types.js';
-import type { BackendRegistry } from './agent-backends/registry.js';
+} from './agent-runtimes/types.js';
+import type { RuntimeRegistry } from './agent-runtimes/registry.js';
 import {
   type ContainerOutput,
   writeGroupsSnapshot,
@@ -53,7 +53,7 @@ import { Channel, NewMessage, RegisteredGroup } from './types.js';
 export interface OrchestratorDeps {
   state: RouterState;
   queue: GroupQueue;
-  registry: BackendRegistry;
+  registry: RuntimeRegistry;
   /** Mutable array — channels are pushed into it during startup before the
    *  orchestrator starts processing, so this reference stays valid. */
   channels: Channel[];
@@ -128,7 +128,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
       ...(imageAttachments.length > 0 && { imageInputs: imageAttachments }),
     };
 
-    const currentSessionRef = sessionRef ?? defaultSessionRef('', backend);
+    const currentSessionRef = sessionRef ?? defaultSession('', backend);
 
     const eventSink: RuntimeEventSink = async (event) => {
       if (event.type === 'session') {

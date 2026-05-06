@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { resolveAgentBackend } from './resolve.js';
+import { resolveAgentRuntime } from './resolve.js';
 import type { RegisteredGroup, ScheduledTask } from '../types.js';
 
 function makeGroup(overrides: Partial<RegisteredGroup> = {}): RegisteredGroup {
@@ -31,14 +31,14 @@ function makeTask(overrides: Partial<ScheduledTask> = {}): ScheduledTask {
   };
 }
 
-describe('resolveAgentBackend', () => {
+describe('resolveAgentRuntime', () => {
   it('prefers the scheduled task backend override', () => {
     const group = makeGroup({
       containerConfig: { agentBackend: 'claude' },
     });
     const task = makeTask({ agent_backend: 'openai' });
 
-    expect(resolveAgentBackend(group, task)).toBe('openai');
+    expect(resolveAgentRuntime(group, task)).toBe('openai');
   });
 
   it('falls back to the group backend override', () => {
@@ -46,10 +46,10 @@ describe('resolveAgentBackend', () => {
       containerConfig: { agentBackend: 'openai' },
     });
 
-    expect(resolveAgentBackend(group)).toBe('openai');
+    expect(resolveAgentRuntime(group)).toBe('openai');
   });
 
   it('falls back to the global default when no override exists', () => {
-    expect(resolveAgentBackend(makeGroup())).toBe('claude');
+    expect(resolveAgentRuntime(makeGroup())).toBe('claude');
   });
 });

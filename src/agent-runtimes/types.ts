@@ -1,8 +1,8 @@
 import type { ToolBroker } from '../tool-broker/types.js';
 
-export type AgentBackendName = 'claude' | 'openai';
+export type AgentRuntimeId = 'claude' | 'openai';
 
-export interface BackendCapabilities {
+export interface RuntimeCapabilities {
   shell: boolean;
   filesystem: boolean;
   web: boolean;
@@ -12,8 +12,8 @@ export interface BackendCapabilities {
   tool_streaming: boolean;
 }
 
-export interface BackendSessionRef {
-  backend: AgentBackendName;
+export interface RuntimeSession {
+  backend: AgentRuntimeId;
   session_id: string;
   resume_cursor?: string;
   metadata_json?: string;
@@ -34,7 +34,7 @@ export interface RunContext {
 export type RuntimeEvent =
   | { type: 'output_text'; text: string }
   | { type: 'tool_call'; name: string; arguments: Record<string, unknown> }
-  | { type: 'session'; sessionRef: BackendSessionRef }
+  | { type: 'session'; sessionRef: RuntimeSession }
   | { type: 'turn_complete' }
   | { type: 'error'; error: string };
 
@@ -43,26 +43,26 @@ export type RuntimeEventSink = (event: RuntimeEvent) => void | Promise<void>;
 export interface RunResult {
   status: 'success' | 'error';
   result: string | null;
-  sessionRef?: BackendSessionRef;
+  sessionRef?: RuntimeSession;
   error?: string;
 }
 
-export interface AgentBackend {
-  name(): AgentBackendName;
-  capabilities(): BackendCapabilities;
-  startOrResume(runContext: RunContext): Promise<BackendSessionRef>;
+export interface AgentRuntime {
+  name(): AgentRuntimeId;
+  capabilities(): RuntimeCapabilities;
+  startOrResume(runContext: RunContext): Promise<RuntimeSession>;
   runTurn(
     runContext: RunContext,
-    sessionRef: BackendSessionRef,
+    sessionRef: RuntimeSession,
     eventSink: RuntimeEventSink,
   ): Promise<RunResult>;
-  close(sessionRef: BackendSessionRef): Promise<void>;
+  close(sessionRef: RuntimeSession): Promise<void>;
 }
 
-export function defaultSessionRef(
+export function defaultSession(
   sessionId: string,
-  backend: AgentBackendName = 'claude',
-): BackendSessionRef {
+  backend: AgentRuntimeId = 'claude',
+): RuntimeSession {
   return {
     backend,
     session_id: sessionId,

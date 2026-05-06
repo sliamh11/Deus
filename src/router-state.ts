@@ -22,10 +22,7 @@ import {
   setRouterState,
 } from './db.js';
 import type { AvailableGroup } from './container-runner.js';
-import type {
-  AgentBackendName,
-  BackendSessionRef,
-} from './agent-backends/types.js';
+import type { AgentRuntimeId, RuntimeSession } from './agent-runtimes/types.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
@@ -34,7 +31,7 @@ export class RouterState {
   private _lastTimestamp = '';
   private _sessions: Record<
     string,
-    Partial<Record<AgentBackendName, BackendSessionRef>>
+    Partial<Record<AgentRuntimeId, RuntimeSession>>
   > = {};
   private _registeredGroups: Record<string, RegisteredGroup> = {};
   private _lastAgentTimestamp: Record<string, string> = {};
@@ -80,8 +77,8 @@ export class RouterState {
     this._lastAgentTimestamp[jid] = ts;
   }
 
-  get sessions(): Record<string, BackendSessionRef> {
-    const flat: Record<string, BackendSessionRef> = {};
+  get sessions(): Record<string, RuntimeSession> {
+    const flat: Record<string, RuntimeSession> = {};
     for (const [folder, refs] of Object.entries(this._sessions)) {
       const ref = refs.claude ?? refs.openai;
       if (ref) flat[folder] = ref;
@@ -91,19 +88,19 @@ export class RouterState {
 
   getSession(
     folder: string,
-    backend?: AgentBackendName,
-  ): BackendSessionRef | undefined {
+    backend?: AgentRuntimeId,
+  ): RuntimeSession | undefined {
     const refs = this._sessions[folder];
     if (!refs) return undefined;
     return backend ? refs[backend] : (refs.claude ?? refs.openai);
   }
 
-  setSession(folder: string, session: BackendSessionRef): void {
+  setSession(folder: string, session: RuntimeSession): void {
     this._sessions[folder] ??= {};
     this._sessions[folder][session.backend] = session;
   }
 
-  clearSession(folder: string, backend?: AgentBackendName): void {
+  clearSession(folder: string, backend?: AgentRuntimeId): void {
     if (!backend) {
       delete this._sessions[folder];
       return;

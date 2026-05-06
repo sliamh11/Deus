@@ -1,22 +1,22 @@
 import type { ChildProcess } from 'child_process';
 
 import type {
-  AgentBackend,
-  AgentBackendName,
-  BackendCapabilities,
-  BackendSessionRef,
+  AgentRuntime,
+  AgentRuntimeId,
+  RuntimeCapabilities,
+  RuntimeSession,
   RunContext,
   RunResult,
   RuntimeEventSink,
 } from './types.js';
-import { defaultSessionRef } from './types.js';
+import { defaultSession } from './types.js';
 import {
   type ContainerOutput,
   runContainerAgent,
 } from '../container-runner.js';
 import type { RegisteredGroup } from '../types.js';
 
-export interface ContainerBackendDeps {
+export interface ContainerRuntimeDeps {
   resolveGroup: (groupFolder: string) => RegisteredGroup | undefined;
   assistantName: string;
   registerProcess: (
@@ -27,28 +27,28 @@ export interface ContainerBackendDeps {
   ) => void;
 }
 
-export class ContainerBackend implements AgentBackend {
+export class ContainerRuntime implements AgentRuntime {
   constructor(
-    private backendName: AgentBackendName,
-    private caps: BackendCapabilities,
-    private deps: ContainerBackendDeps,
+    private backendName: AgentRuntimeId,
+    private caps: RuntimeCapabilities,
+    private deps: ContainerRuntimeDeps,
   ) {}
 
-  name(): AgentBackendName {
+  name(): AgentRuntimeId {
     return this.backendName;
   }
 
-  capabilities(): BackendCapabilities {
+  capabilities(): RuntimeCapabilities {
     return this.caps;
   }
 
-  async startOrResume(_runContext: RunContext): Promise<BackendSessionRef> {
-    return defaultSessionRef('', this.backendName);
+  async startOrResume(_runContext: RunContext): Promise<RuntimeSession> {
+    return defaultSession('', this.backendName);
   }
 
   async runTurn(
     runContext: RunContext,
-    sessionRef: BackendSessionRef,
+    sessionRef: RuntimeSession,
     eventSink: RuntimeEventSink,
   ): Promise<RunResult> {
     const group = this.deps.resolveGroup(runContext.groupFolder);
@@ -67,7 +67,7 @@ export class ContainerBackend implements AgentBackend {
       if (output.newSessionRef || output.newSessionId) {
         const ref =
           output.newSessionRef ??
-          defaultSessionRef(output.newSessionId!, this.backendName);
+          defaultSession(output.newSessionId!, this.backendName);
         await eventSink({ type: 'session', sessionRef: ref });
       }
       if (output.status === 'error' && output.error) {
@@ -111,13 +111,13 @@ export class ContainerBackend implements AgentBackend {
       sessionRef:
         output.newSessionRef ??
         (output.newSessionId
-          ? defaultSessionRef(output.newSessionId, this.backendName)
+          ? defaultSession(output.newSessionId, this.backendName)
           : undefined),
       error: output.error,
     };
   }
 
-  async close(_sessionRef: BackendSessionRef): Promise<void> {
+  async close(_sessionRef: RuntimeSession): Promise<void> {
     // Session cleanup handled by host via db.clearSession()
   }
 }

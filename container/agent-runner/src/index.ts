@@ -30,10 +30,10 @@ import { loadRegisteredContextFiles } from './context-registry.js';
 import { createMemoryRetrievalHook } from './memory-retrieval-hook.js';
 import { runOpenAIConversation } from './openai-backend.js';
 
-type AgentBackendName = 'claude' | 'openai';
+type AgentRuntimeId = 'claude' | 'openai';
 
-interface BackendSessionRef {
-  backend: AgentBackendName;
+interface RuntimeSession {
+  backend: AgentRuntimeId;
   session_id: string;
   resume_cursor?: string;
   metadata_json?: string;
@@ -41,9 +41,9 @@ interface BackendSessionRef {
 
 interface ContainerInput {
   prompt: string;
-  backend?: AgentBackendName;
+  backend?: AgentRuntimeId;
   sessionId?: string;
-  sessionRef?: BackendSessionRef;
+  sessionRef?: RuntimeSession;
   groupFolder: string;
   chatJid: string;
   isMain?: boolean;
@@ -67,7 +67,7 @@ type ContentBlock = ImageContentBlock | TextContentBlock;
 interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
-  newSessionRef?: BackendSessionRef;
+  newSessionRef?: RuntimeSession;
   newSessionId?: string;
   error?: string;
 }
@@ -203,10 +203,10 @@ function log(message: string): void {
   console.error(`[agent-runner] ${message}`);
 }
 
-function defaultSessionRef(
+function defaultSession(
   sessionId: string | undefined,
-  backend: AgentBackendName = 'claude',
-): BackendSessionRef | undefined {
+  backend: AgentRuntimeId = 'claude',
+): RuntimeSession | undefined {
   if (!sessionId) return undefined;
   return {
     backend,
@@ -823,7 +823,7 @@ async function runQuery(
       writeOutput({
         status: 'success',
         result: textResult || null,
-        newSessionRef: defaultSessionRef(newSessionId),
+        newSessionRef: defaultSession(newSessionId),
         newSessionId,
       });
     }
@@ -980,14 +980,14 @@ async function main(): Promise<void> {
               status: 'error',
               result: null,
               error: textResult || 'Session command failed.',
-              newSessionRef: defaultSessionRef(slashSessionId),
+              newSessionRef: defaultSession(slashSessionId),
               newSessionId: slashSessionId,
             });
           } else {
             writeOutput({
               status: 'success',
               result: textResult || 'Conversation compacted.',
-              newSessionRef: defaultSessionRef(slashSessionId),
+              newSessionRef: defaultSession(slashSessionId),
               newSessionId: slashSessionId,
             });
           }
@@ -1019,7 +1019,7 @@ async function main(): Promise<void> {
         result: compactBoundarySeen
           ? 'Conversation compacted.'
           : 'Compaction requested but compact_boundary was not observed.',
-        newSessionRef: defaultSessionRef(slashSessionId),
+        newSessionRef: defaultSession(slashSessionId),
         newSessionId: slashSessionId,
       });
     } else if (!hadError) {
@@ -1027,7 +1027,7 @@ async function main(): Promise<void> {
       writeOutput({
         status: 'success',
         result: null,
-        newSessionRef: defaultSessionRef(slashSessionId),
+        newSessionRef: defaultSession(slashSessionId),
         newSessionId: slashSessionId,
       });
     }
@@ -1070,7 +1070,7 @@ async function main(): Promise<void> {
       writeOutput({
         status: 'success',
         result: null,
-        newSessionRef: defaultSessionRef(sessionId),
+        newSessionRef: defaultSession(sessionId),
         newSessionId: sessionId,
       });
 
@@ -1092,7 +1092,7 @@ async function main(): Promise<void> {
     writeOutput({
       status: 'error',
       result: null,
-      newSessionRef: defaultSessionRef(sessionId),
+      newSessionRef: defaultSession(sessionId),
       newSessionId: sessionId,
       error: errorMessage,
     });

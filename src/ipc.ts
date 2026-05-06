@@ -19,7 +19,7 @@ import {
   getProjectById,
 } from './project-registry.js';
 import { RegisteredGroup } from './types.js';
-import type { AgentBackendName } from './agent-backends/types.js';
+import type { AgentRuntimeId } from './agent-runtimes/types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -38,7 +38,7 @@ export interface IpcDeps {
 
 let ipcWatcherRunning = false;
 
-function parseAgentBackend(value: unknown): AgentBackendName | undefined {
+function parseAgentBackend(value: unknown): AgentRuntimeId | undefined {
   return value === 'claude' || value === 'openai' ? value : undefined;
 }
 
@@ -177,7 +177,7 @@ export async function processTaskIpc(
     schedule_type?: string;
     schedule_value?: string;
     context_mode?: string;
-    agent_backend?: AgentBackendName;
+    agent_backend?: AgentRuntimeId;
     groupFolder?: string;
     chatJid?: string;
     targetJid?: string;

@@ -13,7 +13,7 @@ import {
 } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { CronExpressionParser } from 'cron-parser';
 
-export type AgentBackendName = 'claude' | 'openai';
+export type AgentRuntimeId = 'claude' | 'openai';
 
 export interface ToolBrokerContainerInput {
   groupFolder: string;
