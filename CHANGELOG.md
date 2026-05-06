@@ -4,6 +4,48 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.13.0](https://github.com/sliamh11/Deus/compare/v1.12.0...v1.13.0) (2026-05-06)
+
+
+### Features
+
+* **codex:** add Warden hook installer ([eafd56b](https://github.com/sliamh11/Deus/commit/eafd56b79ef5e23e638ad89e843a1f9a755526d1))
+* **codex:** mirror Claude hook parity ([6309cc4](https://github.com/sliamh11/Deus/commit/6309cc44424b66f7b33e7e817984da6db88fe866))
+* **codex:** wardens config, CLI, and interactive TUI ([#302](https://github.com/sliamh11/Deus/issues/302)) ([a7db6d0](https://github.com/sliamh11/Deus/commit/a7db6d01755e437e3c77d3e4f12ed77b64621700))
+* **drift:** add --bump flag to auto-fix drifted patterns ([#295](https://github.com/sliamh11/Deus/issues/295)) ([4a85fdc](https://github.com/sliamh11/Deus/commit/4a85fdc38101c615f732731113b697d1dd69ca97))
+* **guardrails:** add pre-ingestion injection scanner ([#337](https://github.com/sliamh11/Deus/issues/337)) ([d4c9e02](https://github.com/sliamh11/Deus/commit/d4c9e02b070a8c0bbda72c9ab7558199c4b95f8a))
+* **memory:** context-aware retrieval via session concepts ([#327](https://github.com/sliamh11/Deus/issues/327)) ([fbc1566](https://github.com/sliamh11/Deus/commit/fbc1566095e8d453e43f69b753f2180d43684ffe))
+* **multi-agent:** thin orchestrator with tiered parallel dispatch ([#340](https://github.com/sliamh11/Deus/issues/340)) ([512774f](https://github.com/sliamh11/Deus/commit/512774fd973d58a6d258f3781673dc72f28ad5d4))
+* **security:** add parry-guard setup for host Claude Code sessions ([#334](https://github.com/sliamh11/Deus/issues/334)) ([f438ef9](https://github.com/sliamh11/Deus/commit/f438ef9d22b05dbac31cb3e2d06e520799d78377))
+* **solutions:** add structured lesson capture with bug-track and knowledge-track schemas ([#336](https://github.com/sliamh11/Deus/issues/336)) ([5eded26](https://github.com/sliamh11/Deus/commit/5eded2627d459a39fd3574c04dde5590f52f9115))
+* **startup:** config-driven vault auto-loading + token efficiency ([#303](https://github.com/sliamh11/Deus/issues/303)) ([d8211fc](https://github.com/sliamh11/Deus/commit/d8211fc0ba3f3115d535dbf74ba3a938463698b1))
+* **tui:** add Tasks panel with scheduled task dashboard ([#328](https://github.com/sliamh11/Deus/issues/328)) ([0f3ab80](https://github.com/sliamh11/Deus/commit/0f3ab809366056a0798e7749f7ceb38240a12f61))
+* **tui:** clipboard image paste via Ctrl+V ([#321](https://github.com/sliamh11/Deus/issues/321)) ([a02dc1a](https://github.com/sliamh11/Deus/commit/a02dc1afa7e3f8ff8053993a70268af62a9b78b6))
+* **tui:** context parity, subprocess visualization, and platform layer ([#308](https://github.com/sliamh11/Deus/issues/308)) ([ddb5ca5](https://github.com/sliamh11/Deus/commit/ddb5ca52fd76f5cc10ed887bacac59d1f80fa962))
+* **tui:** dynamic terminal tab title with braille icons ([#319](https://github.com/sliamh11/Deus/issues/319)) ([77037b3](https://github.com/sliamh11/Deus/commit/77037b38e05e674d0bdb2ad777120b08da582839))
+* **tui:** parallel agent orchestration + permission bridge ([#316](https://github.com/sliamh11/Deus/issues/316)) ([e03d73c](https://github.com/sliamh11/Deus/commit/e03d73c25845f544a7774076f91ae780dfa116b1))
+* **tui:** permission management with mode selector, tool allowlists, and denial feedback ([#310](https://github.com/sliamh11/Deus/issues/310)) ([862df4d](https://github.com/sliamh11/Deus/commit/862df4d8d861f46bd51f524d0bc3469a1fb27715))
+* **tui:** ratatui terminal UI with multi-backend model system ([#304](https://github.com/sliamh11/Deus/issues/304)) ([916ea80](https://github.com/sliamh11/Deus/commit/916ea805bd56fe766a44443efaf26b7f3cb24874))
+* **tui:** session lifecycle, bounded transcripts, dynamic effort, spawn hints ([#315](https://github.com/sliamh11/Deus/issues/315)) ([c297f69](https://github.com/sliamh11/Deus/commit/c297f6901a9b1936b14556a65ac7fe37346ff4d7))
+* **tui:** theme system, braille logo, auto-compact ([#317](https://github.com/sliamh11/Deus/issues/317)) ([b5cbc08](https://github.com/sliamh11/Deus/commit/b5cbc08f03975b028a168ebe294df7172ab59cc1))
+* **wardens:** add /wardens settings skill and config ([#300](https://github.com/sliamh11/Deus/issues/300)) ([fcfcccd](https://github.com/sliamh11/Deus/commit/fcfcccdaa74675bacbec11f08e91d8c16d696915))
+* **wardens:** add STRIDE checklists to threat-modeler ([#324](https://github.com/sliamh11/Deus/issues/324)) ([d14e778](https://github.com/sliamh11/Deus/commit/d14e7780088006e62db5016714cbef9bfd673e80))
+* **wardens:** generalized warden learning loop ([#339](https://github.com/sliamh11/Deus/issues/339)) ([d889dd4](https://github.com/sliamh11/Deus/commit/d889dd4c7c79690867765b25ffbcc86c036e003a))
+* **wardens:** wire session-retrospective auto-trigger into /compress ([#286](https://github.com/sliamh11/Deus/issues/286)) ([9a04ec6](https://github.com/sliamh11/Deus/commit/9a04ec600e5f0eaf0c2e1d7d0babf8abef967583))
+
+
+### Bug Fixes
+
+* **codex:** require approval for admin PR merges ([ad9d03b](https://github.com/sliamh11/Deus/commit/ad9d03b2c19d12da3d67828254b2142aee58989a))
+* **drift:** honor governs: frontmatter in coverage check ([#290](https://github.com/sliamh11/Deus/issues/290)) ([f70ffc7](https://github.com/sliamh11/Deus/commit/f70ffc75420e638c5925591c44def5bbc44e5843))
+* **memory-indexer:** topic-diverse --recent selection ([#323](https://github.com/sliamh11/Deus/issues/323)) ([c7f5ae3](https://github.com/sliamh11/Deus/commit/c7f5ae320761be8552f01e9b2dee21052b2f03ae))
+* **memory:** add deus-memory MCP launcher ([4d9027c](https://github.com/sliamh11/Deus/commit/4d9027c9505ec6b46c6802453316d9c917bbef6a))
+* **memory:** make STATE.md on-demand and fix compress fuzzy matching ([#296](https://github.com/sliamh11/Deus/issues/296)) ([327530f](https://github.com/sliamh11/Deus/commit/327530f3d141c0134607a4b6f3fe7cf28791da61))
+* **setup:** add 3s timeout to commandExists execSync ([#338](https://github.com/sliamh11/Deus/issues/338)) ([bcc23b1](https://github.com/sliamh11/Deus/commit/bcc23b168065f3e88b63a0b81eecc6d2fa553715))
+* **tui:** enter sends exact-match commands, deduplicate model names ([#311](https://github.com/sliamh11/Deus/issues/311)) ([d5dfb71](https://github.com/sliamh11/Deus/commit/d5dfb711684e99443367a787d90ba95e0b2e3d2b))
+* **tui:** remove SetTitle — Ghostty shell integration overrides it ([#322](https://github.com/sliamh11/Deus/issues/322)) ([79823f5](https://github.com/sliamh11/Deus/commit/79823f50d5e6623c32674273e1e668b36763d298))
+* **wardens:** revert worktree exclusion from plan-review gate ([#293](https://github.com/sliamh11/Deus/issues/293)) ([9225751](https://github.com/sliamh11/Deus/commit/92257517acb4b43cf0ffb4ca819d7fc56eb3b439))
+
 ## [1.12.0](https://github.com/sliamh11/Deus/compare/v1.11.0...v1.12.0) (2026-04-28)
 
 
