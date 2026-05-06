@@ -2,7 +2,7 @@
 governs:
   - src/container-runner.ts
   - src/message-orchestrator.ts
-last_verified: "2026-05-06" # auto-bump
+last_verified: "2026-05-06" # auto-bump (injection-scanner)
 test_tasks:
   - "Messages from a Telegram group arrive but the agent never responds"
   - "A container exits with code 137 instead of returning a result"
