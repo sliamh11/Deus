@@ -483,9 +483,10 @@ fn build_input_lines(app: &App) -> (Vec<InputLine>, usize, String) {
         }
 
         text.push_str(segment);
+        let display_segment = bidi::visual_reorder(segment);
         let mut spans = vec![
             Span::styled(prefix, theme::accent_bold()),
-            Span::raw(segment.to_string()),
+            Span::raw(display_segment),
         ];
         if i == 0 && !ghost.is_empty() {
             text.push_str(&ghost);
@@ -664,11 +665,22 @@ fn render_suggestions(frame: &mut Frame, app: &App, input_area: Rect) {
         + 4;
     let popup_width = max_item_width.max(30);
 
-    let popup_area = Rect {
-        x: input_area.x + 3,
-        y: input_area.y.saturating_sub(popup_height),
-        width: popup_width.min(input_area.width.saturating_sub(4)),
-        height: popup_height,
+    let min_y = 0u16;
+    let y = input_area.y.saturating_sub(popup_height);
+    let popup_area = if y < min_y {
+        Rect {
+            x: input_area.x + 3,
+            y: input_area.bottom(),
+            width: popup_width.min(input_area.width.saturating_sub(4)),
+            height: popup_height.min(frame.area().height.saturating_sub(input_area.bottom())),
+        }
+    } else {
+        Rect {
+            x: input_area.x + 3,
+            y,
+            width: popup_width.min(input_area.width.saturating_sub(4)),
+            height: popup_height,
+        }
     };
 
     frame.render_widget(Clear, popup_area);

@@ -36,7 +36,23 @@ impl EffortPolicy {
         if words.iter().any(|w| LOW.contains(&w.as_str())) {
             return "low";
         }
-        "medium"
+        Self::configured_default()
+    }
+
+    fn configured_default() -> &'static str {
+        use std::sync::OnceLock;
+        static DEFAULT: OnceLock<&'static str> = OnceLock::new();
+        DEFAULT.get_or_init(|| {
+            if let Some(val) = config::deus::read_key("default_effort") {
+                EFFORT_LEVELS
+                    .iter()
+                    .find(|&&level| level == val)
+                    .copied()
+                    .unwrap_or("medium")
+            } else {
+                "medium"
+            }
+        })
     }
 }
 
@@ -150,6 +166,7 @@ pub struct Session {
     pub chat_messages: Vec<ChatMessage>,
     pub chat_state: ChatState,
     pub stream_rx: Option<mpsc::Receiver<backend::StreamChunk>>,
+    pub kill_tx: Option<mpsc::Sender<()>>,
     pub turn_count: u32,
     pub model: String,
     pub effort: String,
@@ -183,6 +200,7 @@ impl Session {
             )],
             chat_state: ChatState::Idle,
             stream_rx: None,
+            kill_tx: None,
             turn_count: 0,
             model,
             effort,
@@ -311,11 +329,6 @@ pub const COMMANDS: &[CommandDef] = &[
         name: "/resume",
         description: "Load recent work",
         args: &[],
-    },
-    CommandDef {
-        name: "/history",
-        description: "Past sessions",
-        args: &["today", "yesterday", "week"],
     },
     CommandDef {
         name: "/init",
@@ -512,6 +525,7 @@ impl App {
             pending_attachments: Vec::new(),
         };
         app.refresh();
+        app.load_history();
 
         if let Some(prompt) = platform::env_var("DEUS_TUI_INITIAL_PROMPT")
             && !prompt.is_empty()
@@ -520,6 +534,31 @@ impl App {
         }
 
         app
+    }
+
+    fn history_path() -> PathBuf {
+        platform::config_dir().join("tui-history.json")
+    }
+
+    fn load_history(&mut self) {
+        let path = Self::history_path();
+        if let Ok(data) = std::fs::read_to_string(&path)
+            && let Ok(items) = serde_json::from_str::<Vec<String>>(&data)
+        {
+            self.input_history = items;
+        }
+    }
+
+    pub fn save_history(&self) {
+        let path = Self::history_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let skip = self.input_history.len().saturating_sub(500);
+        let items: Vec<&String> = self.input_history.iter().skip(skip).collect();
+        if let Ok(json) = serde_json::to_string(&items) {
+            let _ = std::fs::write(&path, json);
+        }
     }
 
     pub fn refresh(&mut self) {
@@ -663,7 +702,9 @@ impl App {
         };
 
         let (tx, rx) = mpsc::channel();
+        let (kill_sender, kill_receiver) = mpsc::channel::<()>();
         session.stream_rx = Some(rx);
+        session.kill_tx = Some(kill_sender);
         let config = RunConfig {
             model: session.model.clone(),
             message: msg,
@@ -687,7 +728,7 @@ impl App {
 
             match child {
                 Ok(mut process) => {
-                    let (kill_rx, cancel_tx) = if is_background {
+                    let (timeout_kill_rx, cancel_tx) = if is_background {
                         let (kill_tx, kill_rx) = mpsc::channel::<()>();
                         let (cancel_tx, cancel_rx) = mpsc::channel::<()>();
                         let timeout_secs: u64 = platform::env_var("DEUS_AGENT_TIMEOUT_SECS")
@@ -722,6 +763,10 @@ impl App {
                     if let Some(stdout) = process.stdout.take() {
                         let reader = BufReader::new(stdout);
                         for line in reader.lines() {
+                            if kill_receiver.try_recv().is_ok() {
+                                let _ = process.kill();
+                                break;
+                            }
                             match line {
                                 Ok(text) => {
                                     for chunk in be.parse_line(&text) {
@@ -744,7 +789,9 @@ impl App {
                         let _ = tx.send(());
                     }
 
-                    let timed_out = kill_rx.as_ref().is_some_and(|rx| rx.try_recv().is_ok());
+                    let timed_out = timeout_kill_rx
+                        .as_ref()
+                        .is_some_and(|rx| rx.try_recv().is_ok());
                     if timed_out {
                         let _ = process.kill();
                     }
@@ -758,7 +805,10 @@ impl App {
                     {
                         let code = s.code().unwrap_or(-1);
                         let _ = tx.send(backend::StreamChunk {
-                            kind: ChunkKind::Error(format!("Process exited with code {}", code)),
+                            kind: ChunkKind::Error(humanize_error(&format!(
+                                "Process exited with code {}",
+                                code
+                            ))),
                         });
                     }
                     let _ = tx.send(backend::StreamChunk {
@@ -767,7 +817,10 @@ impl App {
                 }
                 Err(e) => {
                     let _ = tx.send(backend::StreamChunk {
-                        kind: ChunkKind::Error(format!("Failed to launch: {}", e)),
+                        kind: ChunkKind::Error(humanize_error(&format!(
+                            "Failed to launch: {}",
+                            e
+                        ))),
                     });
                     let _ = tx.send(backend::StreamChunk {
                         kind: ChunkKind::Done,
@@ -841,6 +894,7 @@ impl App {
             chat_messages: Vec::new(),
             chat_state: ChatState::Idle,
             stream_rx: None,
+            kill_tx: None,
             turn_count: 0,
             model,
             effort,
@@ -901,15 +955,7 @@ impl App {
                 true
             }
             "/clear" => {
-                let session = self.active_mut();
-                session.chat_messages.clear();
-                session.turn_count = 0;
-                session.cost_usd = 0.0;
-                session.token_count = 0;
-                session.last_turn_duration = None;
-                session.last_thinking_summary = None;
-                session.active_subagent_ids.clear();
-                self.scroll_to_bottom();
+                self.handle_clear();
                 true
             }
             "/quit" => {
@@ -1036,14 +1082,7 @@ impl App {
                     .map(|c| format!("  {:16} {}", c.name, c.description))
                     .collect::<Vec<_>>()
                     .join("\n");
-                self.active_mut().chat_messages.push(ChatMessage::simple("system", &format!("Available commands:\n\n{}\n\nKeyboard shortcuts:\n  Ctrl+B  Parallel agent / session picker\n  Ctrl+Shift+B  Session picker (direct)\n  Ctrl+L  Clear screen\n  Ctrl+U  Clear input line\n  Ctrl+K  Kill to end of line\n  Ctrl+Y  Yank (paste killed text)\n  Ctrl+A  Start of line\n  Ctrl+E  End of line\n  Ctrl+J  New line (multi-line input)\n  Ctrl+O  Toggle tool/thinking details\n  Ctrl+D  Exit\n  Alt+B   Word left\n  Alt+F   Word right\n  ↑/↓     Input history\n  PgUp/Dn Scroll chat\n  Mouse   Scroll chat (Shift+drag to select text)", help)));
-                true
-            }
-            "/history" => {
-                self.active_mut().chat_messages.push(ChatMessage::simple(
-                    "system",
-                    "Session history browsing coming in Phase 2.",
-                ));
+                self.active_mut().chat_messages.push(ChatMessage::simple("system", &format!("Available commands:\n\n{}\n\nKeyboard shortcuts:\n  Ctrl+G  Open $EDITOR for long prompts\n  Ctrl+B  Parallel agent / session picker\n  Ctrl+Shift+B  Session picker (direct)\n  Ctrl+L  Clear chat\n  Ctrl+C  Cancel streaming / exit\n  Ctrl+U  Clear input line\n  Ctrl+K  Kill to end of line\n  Ctrl+Y  Yank (paste killed text)\n  Ctrl+A  Start of line\n  Ctrl+E  End of line\n  Ctrl+J  New line (multi-line input)\n  Ctrl+O  Toggle tool/thinking details\n  Ctrl+V  Paste clipboard image\n  Ctrl+D  Exit\n  Alt+B   Word left\n  Alt+F   Word right\n  ↑/↓     Input history (persistent)\n  PgUp/Dn Scroll chat\n  Esc     Dismiss suggestions > deny permission > cancel stream > quit (2x, empty input)\n  Mouse   Scroll chat (Shift+drag to select text)", help)));
                 true
             }
             "/permissions" => {
@@ -1095,7 +1134,19 @@ impl App {
                 }
                 true
             }
-            "/init" | "/compress" | "/checkpoint" | "/compact" | "/resume" => false,
+            "/history" => true,
+            "/init" | "/compress" | "/checkpoint" | "/compact" | "/resume" => {
+                let backend = backend::model_backend_name(&self.active().model);
+                if backend == "codex" {
+                    self.active_mut().chat_messages.push(ChatMessage::simple(
+                        "system",
+                        &format!("{} requires the Claude backend. Not available on Codex.", cmd),
+                    ));
+                    self.mark_chat_changed();
+                    return true;
+                }
+                false
+            }
             _ => false,
         }
     }
@@ -1424,6 +1475,7 @@ impl App {
                             ));
                             main.mark_chat_changed();
                         }
+                        eprint!("\x07");
                         if self.active_session == session_id {
                             self.active_session = SessionId::MAIN;
                         }
@@ -1562,6 +1614,9 @@ impl App {
         let session = self.active_mut();
         session.chat_state = ChatState::Idle;
         session.stream_rx = None;
+        if let Some(kill_tx) = session.kill_tx.take() {
+            let _ = kill_tx.send(());
+        }
         if let Some(last) = session.chat_messages.last_mut() {
             if last.role == "assistant" && last.content.is_empty() {
                 session.chat_messages.pop();
@@ -2039,10 +2094,51 @@ impl App {
         }
     }
 
+    pub fn handle_clear(&mut self) {
+        let session = self.active_mut();
+        session.chat_messages.clear();
+        session.turn_count = 0;
+        session.cost_usd = 0.0;
+        session.token_count = 0;
+        session.last_turn_duration = None;
+        session.last_thinking_summary = None;
+        session.active_subagent_ids.clear();
+        self.scroll_to_bottom();
+    }
+
     pub fn cleanup_permissions(&self) {
         if let Some(ref pb) = self.permission_bridge {
             pb.cleanup();
         }
+    }
+}
+
+fn humanize_error(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    let (msg, include_raw) = if lower.contains("no such file or directory") {
+        ("Backend not found. Install with: npm i -g @anthropic-ai/claude-code", true)
+    } else if lower.contains("auth")
+        || lower.contains("token expired")
+        || lower.contains("unauthorized")
+    {
+        ("Authentication expired. Run: claude login", true)
+    } else if lower.contains("rate")
+        || lower.contains("429")
+        || lower.contains("too many requests")
+    {
+        ("Rate limited — wait a moment and retry.", true)
+    } else if lower.contains("econnrefused")
+        || lower.contains("timeout")
+        || lower.contains("timed out")
+    {
+        ("Network error — check your connection.", true)
+    } else {
+        return raw.to_string();
+    };
+    if include_raw {
+        format!("{}\n(details: {})", msg, raw)
+    } else {
+        msg.to_string()
     }
 }
 
@@ -2850,5 +2946,29 @@ mod tests {
         app.input = "/help".to_string();
         app.send_message();
         assert!(!app.pending_attachments.is_empty());
+    }
+
+    #[test]
+    fn humanize_error_recognizes_known_patterns() {
+        let result = humanize_error("Failed to launch: No such file or directory");
+        assert!(result.starts_with("Backend not found"));
+        assert!(result.contains("details:"));
+
+        let result = humanize_error("auth token expired");
+        assert!(result.starts_with("Authentication expired"));
+
+        let result = humanize_error("429 too many requests");
+        assert!(result.starts_with("Rate limited"));
+
+        let result = humanize_error("ECONNREFUSED");
+        assert!(result.starts_with("Network error"));
+
+        let result = humanize_error("some unknown error");
+        assert_eq!(result, "some unknown error");
+    }
+
+    #[test]
+    fn history_removed_from_commands() {
+        assert!(!COMMANDS.iter().any(|c| c.name == "/history"));
     }
 }
