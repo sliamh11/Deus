@@ -45,6 +45,41 @@ pub fn display_path(path: &std::path::Path) -> String {
     }
 }
 
+pub fn spawn_editor(content: &str) -> Result<String, String> {
+    let editor = env_var("VISUAL")
+        .or_else(|| env_var("EDITOR"))
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "windows") {
+                "notepad".to_string()
+            } else {
+                "vim".to_string()
+            }
+        });
+
+    let tmp_dir = std::env::temp_dir();
+    let tmp_path = tmp_dir.join(format!("deus-editor-{}.txt", std::process::id()));
+
+    std::fs::write(&tmp_path, content).map_err(|e| format!("Failed to write temp file: {}", e))?;
+
+    let status = std::process::Command::new(&editor)
+        .arg(&tmp_path)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .map_err(|e| format!("Failed to launch {}: {}", editor, e))?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("Editor exited with {}", status));
+    }
+
+    let result =
+        std::fs::read_to_string(&tmp_path).map_err(|e| format!("Failed to read back: {}", e))?;
+    let _ = std::fs::remove_file(&tmp_path);
+    Ok(result)
+}
+
 pub fn is_macos() -> bool {
     cfg!(target_os = "macos")
 }

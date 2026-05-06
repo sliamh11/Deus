@@ -124,6 +124,9 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
             theme::dim(),
         ));
         right.push(Span::styled("│ ", theme::muted()));
+    } else if crate::app::model_backend(&session.model) == "codex" {
+        right.push(Span::styled("cost: n/a ", theme::dim()));
+        right.push(Span::styled("│ ", theme::muted()));
     }
 
     if !app.queued_messages.is_empty() {
@@ -134,25 +137,27 @@ fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
         right.push(Span::styled("│ ", theme::muted()));
     }
 
-    let elapsed_secs = app.session_start.elapsed().as_secs();
-    let window_secs: u64 = 5 * 3600;
-    let remaining_pct = if elapsed_secs >= window_secs {
-        0
-    } else {
-        (window_secs - elapsed_secs) * 100 / window_secs
-    };
-    let remaining_color = if remaining_pct > 50 {
-        theme::good_color()
-    } else if remaining_pct > 20 {
-        theme::warn_color()
-    } else {
-        theme::bad_color()
-    };
-    right.push(Span::styled(
-        format!("{}%", remaining_pct),
-        Style::default().fg(remaining_color),
-    ));
-    right.push(Span::raw(" "));
+    {
+        let ctx_total = crate::backend::model_context_tokens(&session.model);
+        let ctx_used = session.token_count as u64;
+        let pct = (ctx_used * 100).checked_div(ctx_total).unwrap_or(0).min(100) as u16;
+        let filled = (pct as usize * 10 / 100).min(10);
+        let bar: String = format!(
+            "[{}{}] {}%",
+            "|".repeat(filled),
+            ".".repeat(10 - filled),
+            pct
+        );
+        let bar_color = if pct < 50 {
+            theme::good_color()
+        } else if pct < 75 {
+            theme::warn_color()
+        } else {
+            theme::bad_color()
+        };
+        right.push(Span::styled(bar, Style::default().fg(bar_color)));
+        right.push(Span::raw(" "));
+    }
 
     // Calculate padding
     let left_len: usize = left.iter().map(|s| s.content.chars().count()).sum();
@@ -259,6 +264,7 @@ fn render_session_picker(frame: &mut Frame, app: &App, area: Rect) {
 
 fn render_permission_prompt(frame: &mut Frame, app: &App, area: Rect) {
     let session = app.active();
+    let pending_count = session.pending_permissions.len();
     let req = match session.pending_permissions.first() {
         Some(r) => r,
         None => return,
@@ -291,6 +297,23 @@ fn render_permission_prompt(frame: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
+    if pending_count > 1 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("  Queue:", theme::dim())));
+        for (i, perm) in session.pending_permissions.iter().enumerate().skip(1) {
+            let preview: String = perm.tool_input_preview.chars().take(30).collect();
+            let label = if preview.len() < perm.tool_input_preview.len() {
+                format!("{}...", preview)
+            } else {
+                preview
+            };
+            lines.push(Line::from(Span::styled(
+                format!("  [{}] {}({})", i + 1, perm.tool_name, label),
+                theme::dim(),
+            )));
+        }
+    }
+
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled("  Y", theme::accent_bold()),
@@ -312,7 +335,6 @@ fn render_permission_prompt(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(Clear, popup);
 
-    let pending_count = session.pending_permissions.len();
     let title = if pending_count > 1 {
         format!(" Permission Required ({} pending) ", pending_count)
     } else {

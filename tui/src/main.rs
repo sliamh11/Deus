@@ -23,7 +23,7 @@ use crossterm::execute;
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::prelude::*;
 
-use app::{App, Tab};
+use app::{App, ChatMessage, Tab};
 
 fn main() -> io::Result<()> {
     if !io::stdout().is_terminal() {
@@ -130,10 +130,6 @@ fn main() -> io::Result<()> {
                                 app.always_allow_first_pending();
                                 continue;
                             }
-                            KeyCode::Esc => {
-                                app.deny_first_pending();
-                                continue;
-                            }
                             _ => {}
                         }
                     }
@@ -151,8 +147,7 @@ fn main() -> io::Result<()> {
                         if key.modifiers.contains(KeyModifiers::CONTROL) {
                             match key.code {
                                 KeyCode::Char('l') => {
-                                    app.active_mut().chat_messages.clear();
-                                    app.scroll_to_bottom();
+                                    app.handle_clear();
                                 }
                                 KeyCode::Char('u') => app.input_clear_line(),
                                 KeyCode::Char('a') => app.input_home(),
@@ -182,6 +177,40 @@ fn main() -> io::Result<()> {
                                     app.show_session_picker = true;
                                     app.picker_cursor = 0;
                                 }
+                                KeyCode::Char('g') => {
+                                    terminal::disable_raw_mode().ok();
+                                    execute!(
+                                        io::stdout(),
+                                        LeaveAlternateScreen,
+                                        DisableMouseCapture
+                                    )
+                                    .ok();
+
+                                    match platform::spawn_editor(&app.input) {
+                                        Ok(new_content) => {
+                                            app.input = new_content.trim_end().to_string();
+                                            app.input_cursor = app.input.len();
+                                        }
+                                        Err(e) => {
+                                            app.active_mut().chat_messages.push(
+                                                ChatMessage::simple(
+                                                    "system",
+                                                    &format!("Editor: {}", e),
+                                                ),
+                                            );
+                                        }
+                                    }
+
+                                    terminal::enable_raw_mode().ok();
+                                    execute!(
+                                        io::stdout(),
+                                        EnterAlternateScreen,
+                                        EnableMouseCapture,
+                                        EnableBracketedPaste
+                                    )
+                                    .ok();
+                                    terminal.clear().ok();
+                                }
                                 KeyCode::Char('v') => {
                                     app.attach_clipboard_image();
                                 }
@@ -203,18 +232,22 @@ fn main() -> io::Result<()> {
                             KeyCode::Esc => {
                                 if app.has_suggestions() {
                                     app.dismiss_suggestions();
+                                } else if app.has_pending_permission() {
+                                    app.deny_first_pending();
                                 } else if matches!(
                                     app.active().chat_state,
                                     crate::app::ChatState::Streaming
                                 ) {
                                     app.cancel_response();
-                                } else if let Some(first) = app.esc_pending {
-                                    if first.elapsed().as_millis() < 500 {
-                                        break;
+                                } else if app.input.is_empty() {
+                                    if let Some(first) = app.esc_pending {
+                                        if first.elapsed().as_millis() < 500 {
+                                            break;
+                                        }
+                                        app.esc_pending = Some(std::time::Instant::now());
+                                    } else {
+                                        app.esc_pending = Some(std::time::Instant::now());
                                     }
-                                    app.esc_pending = Some(std::time::Instant::now());
-                                } else {
-                                    app.esc_pending = Some(std::time::Instant::now());
                                 }
                             }
                             KeyCode::Tab if app.has_suggestions() => {
@@ -281,6 +314,7 @@ fn main() -> io::Result<()> {
         }
     }
 
+    app.save_history();
     app.cleanup_permissions();
     clipboard::cleanup();
 
