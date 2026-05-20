@@ -7,6 +7,9 @@ sqlite-vec==0.1.6          # Vector search in SQLite
 # Cross-encoder reranker for atom retrieval (two-stage: embeddinggemma recall + cross-encoder precision)
 sentence-transformers>=3.0.0
 
+# Isotonic calibration for judge bench (also a transitive dep of sentence-transformers)
+scikit-learn>=1.3.0
+
 # MCP server (optional — for external agent integration)
 mcp==1.23.0
 
