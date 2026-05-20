@@ -34,7 +34,8 @@ import { logger } from './logger.js';
 function redactContainerArgs(args: string[]): string {
   return args
     .join(' ')
-    .replace(/DEUS_PROXY_TOKEN=[0-9a-f]+/g, 'DEUS_PROXY_TOKEN=[REDACTED]');
+    .replace(/DEUS_PROXY_TOKEN=[0-9a-f]+/g, 'DEUS_PROXY_TOKEN=[REDACTED]')
+    .replace(/LINEAR_API_KEY=\S+/g, 'LINEAR_API_KEY=[REDACTED]');
 }
 import {
   CONTAINER_HOST_GATEWAY,
@@ -103,6 +104,17 @@ function buildContainerArgs(
       '-e',
       `DEUS_CONTEXT_FILE_MAX_CHARS=${DEUS_CONTEXT_FILE_MAX_CHARS}`,
     );
+  }
+
+  const linearKey = process.env.LINEAR_API_KEY || process.env.LINEAR_API_TOKEN;
+  if (linearKey) {
+    if (/^[A-Za-z0-9_-]+$/.test(linearKey)) {
+      args.push('-e', `LINEAR_API_KEY=${linearKey}`);
+    } else {
+      logger.warn(
+        'LINEAR_API_KEY contains invalid characters; Linear MCP disabled for this container',
+      );
+    }
   }
 
   // Inject per-channel memory privacy allowlist if configured

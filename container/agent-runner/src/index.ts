@@ -710,6 +710,11 @@ async function runQuery(
     log('Google Calendar MCP: enabled (credentials + package found)');
   }
 
+  const hasLinearMcp = !!process.env.LINEAR_API_KEY;
+  if (hasLinearMcp) {
+    log('Linear MCP: enabled (API key found)');
+  }
+
   // CLAUDE.md probe: log fingerprint before every query() call.
   // Compare across turns in the same session — if len= appears N times for
   // N turns, the SDK re-reads the file on every resumed call (lazy loading is worth it).
@@ -758,6 +763,7 @@ async function runQuery(
         'NotebookEdit',
         'mcp__deus__*',
         ...(hasGcalMcp ? ['mcp__gcal__*'] : []),
+        ...(hasLinearMcp ? ['mcp__linear__*'] : []),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -784,6 +790,19 @@ async function runQuery(
                 env: {
                   DEUS_PROJECT_ROOT: '/workspace/project',
                   LOG_LEVEL: process.env.LOG_LEVEL || 'info',
+                },
+              },
+            }
+          : {}),
+        ...(hasLinearMcp
+          ? {
+              linear: {
+                command: 'node',
+                args: [
+                  '/usr/local/lib/node_modules/@tacticlaunch/mcp-linear/dist/index.js',
+                ],
+                env: {
+                  LINEAR_API_KEY: process.env.LINEAR_API_KEY ?? '',
                 },
               },
             }
