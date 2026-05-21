@@ -61,6 +61,9 @@ export function hasApiCredentials(): boolean {
     env.DEUS_AGENT_BACKEND ||
     'claude'
   ).toLowerCase();
+  // llama-cpp runs as a local server with no host-side auth — no credential
+  // check needed. See docs/decisions/llama-cpp-optional-integration.md.
+  if (backend === 'llama-cpp') return true;
   if (backend === 'openai') {
     if (env.OPENAI_API_KEY || process.env.OPENAI_API_KEY) return true;
     return hasCodexAuthFile();

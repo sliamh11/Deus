@@ -5,7 +5,11 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
-import { AgentRuntimeId, defaultSession } from './agent-runtimes/types.js';
+import {
+  AgentRuntimeId,
+  defaultSession,
+  parseAgentBackend,
+} from './agent-runtimes/types.js';
 import {
   RuntimeSession,
   NewMessage,
@@ -681,8 +685,11 @@ function rowToSessionRef(row: {
   resume_cursor: string | null;
   metadata_json: string | null;
 }): RuntimeSession {
+  // Use exported parseAgentBackend as the canonical accepted-value gate.
+  // Falls back to 'claude' for null or unrecognized values (e.g., a typo or
+  // a stored backend ID from a future Deus version we don't yet recognize).
   return {
-    backend: row.backend === 'openai' ? 'openai' : 'claude',
+    backend: parseAgentBackend(row.backend) ?? 'claude',
     session_id: row.session_id,
     resume_cursor: row.resume_cursor ?? undefined,
     metadata_json: row.metadata_json ?? undefined,

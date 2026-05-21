@@ -67,6 +67,22 @@ touch ~/deus/.claude/.code-reviewed
 ```
 The agent runs `git diff` + `git diff --cached` and reviews both.
 
+### Invocation contracts (avoid known traps)
+
+**code-reviewer:** prompts SHOULD cite the absolute worktree path when invoked from a sub-worktree session. The agent will fall back to cwd if the prompt is silent, but the explicit path eliminates the "wrong diff" trap (surfaced in PR D round 2, 2026-05-17 session — the agent saw the parent repo's unrelated changes instead of the worktree's diff).
+
+Example:
+```
+Agent(subagent_type="code-reviewer", prompt="review my changes in /Users/.../.claude/worktrees/<name> for <task>")
+```
+
+**plan-reviewer:** the plan's Context section MUST include fresh live-run output for any quantified baseline the plan relies on (counts, byte sizes, file lists). Without it, `premise-verification` will REVISE. Recommended format:
+
+```
+**Verification baseline (run at <timestamp>):**
+- `python3 scripts/drift_check.py 2>&1 | grep -c "missing"` → `19`
+```
+
 ## Adding or editing rules
 
 Rules files are the single source of truth — agents read them at invocation. Add a new rule by appending a section to the relevant file. Agents pick it up immediately on next invocation; no agent-file edit needed.

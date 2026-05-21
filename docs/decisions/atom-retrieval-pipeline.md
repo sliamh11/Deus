@@ -66,7 +66,7 @@ Tested embeddinggemma, snowflake-arctic-embed2, nomic-embed-text, bge-m3, mxbai-
 | `DEUS_ATOM_ANGLE_MIN` | `1.1` | Max L2 distance for angle rescue |
 | `DEUS_ATOM_ANGLE_ALPHA` | `0.0` | Blending weight (0 = pure angle score) |
 | `DEUS_RERANKER` | `1` | Enable cross-encoder reranking |
-| `DEUS_RERANKER_MODEL` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoder model |
+| `DEUS_RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | Cross-encoder model (multilingual; see amendment 2026-05-17) |
 | `DEUS_RERANKER_CANDIDATES` | `20` | First-stage candidate pool size |
 | `DEUS_SIBLING_DISCOUNT` | `0.15` | Distance penalty for sibling atoms |
 | `DEUS_SIBLING_MAX` | `5` | Max sibling atoms to add |
@@ -88,3 +88,31 @@ This generates approach angles for all atoms (~45 min via Ollama). The cross-enc
 | Expanding cross-encoder candidate pool beyond 10 | No improvement | Plateau at 10 candidates; misses are first-stage recall failures |
 | snowflake-arctic-embed2 model swap | recall 0.933 (vs 1.000 embeddinggemma) | Worse on short personal knowledge descriptions |
 | mxbai-embed-large model swap | recall 0.967 (vs 1.000) | Lower discrimination despite higher MTEB score |
+
+## Amendment — 2026-05-17: Reranker swap to bge-reranker-v2-m3
+
+**Trigger**: Hebrew query support (PR #457 added 20 Hebrew regression queries to `atom_queries.jsonl`). Re-running the production-pipeline simulation revealed that the original English-only `ms-marco-MiniLM-L-6-v2` cross-encoder was the Hebrew bottleneck — not the embeddinggemma bi-encoder.
+
+**Measurement** (50 queries: 30 English + 20 Hebrew; 1684 atoms; bi-encoder top-20 → reranker → top-5):
+
+| Reranker | Pipeline recall@5 | Misses | Per-query latency (M3 Pro) |
+|---|---|---|---|
+| `ms-marco-MiniLM-L-6-v2` (original, 22M, English) | 92% (46/50) | 4 | 18 ms |
+| `mmarco-mMiniLMv2-L12-H384-v1` (107M, multilingual) | 96% (48/50) | 2 | 28 ms |
+| **`BAAI/bge-reranker-v2-m3`** (340M, multilingual) | **98% (49/50)** | 1 | 166 ms |
+
+The one remaining miss (`"איך לטפל ב-RTL במסמכים של פייתון"`) is a bi-encoder failure — target ranks at #42, outside the top-20 candidate window. No reranker can rescue it; either expand `DEUS_RERANKER_CANDIDATES` or address via query rewriting.
+
+**Latency stacking**: the reranker is only hit by `memory_indexer.py --query` (interactive CLI) and `--rebuild` (rare batch). The per-prompt UserPromptSubmit hook uses `memory_tree.py` which has no reranker stage, so the 148 ms latency increase has zero impact on per-turn chat UX. Rebuild adds ~4 min (1700 atoms × 150 ms) — acceptable for an operation that already takes ~20 min.
+
+**Why not stay with the smaller multilingual option (+4%)**: bge-reranker-v2-m3 also rescues an English query (`"warden portability philosophy"`) that the smaller multilingual reranker still missed — turns out the broader-trained model is just better in general, not only on Hebrew. Since latency doesn't gate UX, take the strict-best.
+
+**Updated baseline note for §2**: the "42x discrimination" finding from the original ADR was on the English-only reranker. The new reranker has not been re-measured for raw separation; pipeline recall is the primary measure.
+
+**No re-embed required**: only the cross-encoder model changes. Embeddings, schema, thresholds untouched.
+
+**Considered but not measured**: quantized variants of bge-reranker-v2-m3 (e.g., FlagEmbedding ONNX/INT8 paths, advertised ~60ms on M-series). Skipped because (a) latency is acceptable on the only surfaces that hit the reranker and (b) sticking to the HuggingFace `CrossEncoder` API keeps the swap a one-line config change. Worth revisiting if reranker latency ever stacks (e.g., if a future feature invokes it per chat turn).
+
+**Reverting**: set `DEUS_RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2` to restore original behavior.
+
+**Primary-source data**: `Second Brain/Deus/Research/shootout-hebrew-20q-2026-05-17.json`, `Research/shootout-1528distractors-2026-05-17.json`. Pipeline simulation script preserved in conversation transcript / session log.

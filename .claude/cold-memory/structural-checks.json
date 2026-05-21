@@ -1,0 +1,26 @@
+{
+  "checks": [
+    {
+      "id": "no-private-import",
+      "glob": "src/**/*.ts",
+      "exclude_glob": "src/private/**",
+      "pattern": "from.*['\"].*src/private",
+      "severity": "warn",
+      "message": "Public code must not import from src/private/. Move to src/private/ or remove the import."
+    },
+    {
+      "id": "container-no-host-paths",
+      "glob": "container/**",
+      "pattern": "/Users/|/home/[a-z]|~/\\.",
+      "severity": "warn",
+      "message": "Container code must not reference host-specific paths. Use env vars or config."
+    },
+    {
+      "id": "mcp-capabilities-logging",
+      "glob": "packages/mcp-*/src/**/*.ts",
+      "pattern": "new McpServer\\([^)]*\\)(?![\\s\\S]{0,300}capabilities)",
+      "severity": "warn",
+      "message": "McpServer must include capabilities: { logging: {} } or sendLoggingMessage() silently drops (see patterns/channel-add.md)."
+    }
+  ]
+}

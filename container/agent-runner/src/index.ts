@@ -29,9 +29,10 @@ import { bootstrap } from './bootstrap.js';
 import { loadRegisteredContextFiles } from './context-registry.js';
 import { createMemoryRetrievalHook } from './memory-retrieval-hook.js';
 import { runOpenAIConversation } from './openai-backend.js';
+import { runLlamaCppConversation } from './llama-cpp-backend.js';
+import { DoomLoopDetector, createDoomLoopHook } from './doom-loop-detector.js';
 import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
-
-type AgentRuntimeId = 'claude' | 'openai';
+import type { AgentRuntimeId } from './tool-broker.js';
 
 interface RuntimeSession {
   backend: AgentRuntimeId;
@@ -709,6 +710,11 @@ async function runQuery(
     log('Google Calendar MCP: enabled (credentials + package found)');
   }
 
+  const hasLinearMcp = !!process.env.LINEAR_API_KEY;
+  if (hasLinearMcp) {
+    log('Linear MCP: enabled (API key found)');
+  }
+
   // CLAUDE.md probe: log fingerprint before every query() call.
   // Compare across turns in the same session — if len= appears N times for
   // N turns, the SDK re-reads the file on every resumed call (lazy loading is worth it).
@@ -720,6 +726,8 @@ async function runQuery(
       `[claude-md-probe] turn=${sessionId ? 'resume' : 'new'} len=${_probeStat.size}B mtime=${_probeStat.mtimeMs}`,
     );
   }
+
+  const doomDetector = new DoomLoopDetector();
 
   for await (const message of query({
     prompt: stream,
@@ -755,6 +763,7 @@ async function runQuery(
         'NotebookEdit',
         'mcp__deus__*',
         ...(hasGcalMcp ? ['mcp__gcal__*'] : []),
+        ...(hasLinearMcp ? ['mcp__linear__*'] : []),
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -785,6 +794,19 @@ async function runQuery(
               },
             }
           : {}),
+        ...(hasLinearMcp
+          ? {
+              linear: {
+                command: 'node',
+                args: [
+                  '/usr/local/lib/node_modules/@tacticlaunch/mcp-linear/dist/index.js',
+                ],
+                env: {
+                  LINEAR_API_KEY: process.env.LINEAR_API_KEY ?? '',
+                },
+              },
+            }
+          : {}),
       },
       hooks: {
         UserPromptSubmit: [
@@ -793,13 +815,15 @@ async function runQuery(
         PreCompact: [
           { hooks: [createPreCompactHook(containerInput.assistantName)] },
         ],
+        PostToolUseFailure: [{ hooks: [createDoomLoopHook(doomDetector)] }],
         ...(() => {
           const hooks: HookCallback[] = [];
+          hooks.push(createDoomLoopHook(doomDetector));
           if (process.env.DEUS_TOOL_SIZE_LOG !== '0')
             hooks.push(createToolSizeLogHook());
           if (process.env.DEUS_TOOL_AUDIT_LOG !== '0')
             hooks.push(createToolAuditHook());
-          return hooks.length > 0 ? { PostToolUse: [{ hooks }] } : {};
+          return { PostToolUse: [{ hooks }] };
         })(),
       },
     },
@@ -912,6 +936,24 @@ async function main(): Promise<void> {
 
   if (backend === 'openai') {
     await runOpenAIConversation({
+      containerInput: {
+        ...containerInput,
+        backend,
+      },
+      log,
+      writeOutput,
+      drainIpcInput,
+      waitForIpcMessage,
+      shouldClose,
+    });
+    return;
+  }
+
+  if (backend === 'llama-cpp') {
+    // Dispatch to the chat/completions driver. llama-server speaks the
+    // OpenAI chat-completions wire protocol but NOT the Responses API, so
+    // we cannot reuse runOpenAIConversation (it calls /v1/responses).
+    await runLlamaCppConversation({
       containerInput: {
         ...containerInput,
         backend,

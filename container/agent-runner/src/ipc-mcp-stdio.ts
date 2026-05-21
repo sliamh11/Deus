@@ -11,6 +11,8 @@ import fs from 'fs';
 import path from 'path';
 import { CronExpressionParser } from 'cron-parser';
 
+import { VALID_BACKENDS } from './tool-broker.js';
+
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
@@ -119,7 +121,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
         '(Main group only) JID of the group to schedule the task for. Defaults to the current group.',
       ),
     agent_backend: z
-      .enum(['claude', 'openai'])
+      .enum(VALID_BACKENDS)
       .optional()
       .describe(
         'Optional backend override for this task. Omit to inherit the group/default backend.',
@@ -372,7 +374,7 @@ server.tool(
       .optional()
       .describe('New schedule value (see schedule_task for format)'),
     agent_backend: z
-      .enum(['claude', 'openai'])
+      .enum(VALID_BACKENDS)
       .optional()
       .describe(
         'Optional backend override for this task. Omit to leave unchanged.',
@@ -462,7 +464,7 @@ Use available_groups.json to find the JID for a group. The folder name must be c
       ),
     trigger: z.string().describe('Trigger word (e.g., "@Deus")'),
     agent_backend: z
-      .enum(['claude', 'openai'])
+      .enum(VALID_BACKENDS)
       .optional()
       .describe(
         'Optional default backend override for this group. Omit to use the global default backend.',
