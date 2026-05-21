@@ -7,6 +7,7 @@ Uses stdlib urllib for HTTP — no new dependencies required.
 import asyncio
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 from typing import Optional
@@ -131,13 +132,44 @@ def _build_eval_prompt(
     return "\n".join(parts)
 
 
+_JSON_BLOCK_RE = re.compile(r"\{[^{}]*\}")
+
+
 def _parse_result(raw: str) -> JudgeResult:
-    # Strip markdown fences if present
     text = raw.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+
+    data = None
     try:
-        data = json.loads(text)
+        candidate = json.loads(text)
+        if isinstance(candidate, dict):
+            data = candidate
+    except json.JSONDecodeError:
+        pass
+
+    if data is None:
+        match = _JSON_BLOCK_RE.search(text)
+        if match:
+            try:
+                candidate = json.loads(match.group(0))
+                if isinstance(candidate, dict):
+                    data = candidate
+            except json.JSONDecodeError:
+                pass
+
+    if data is None:
+        return JudgeResult(
+            score=0.5,
+            quality=0.5,
+            safety=1.0,
+            tool_use=1.0,
+            personalization=0.5,
+            rationale="Parse error — neutral score assigned",
+            raw_response=raw,
+        )
+
+    try:
         dims = {
             "quality": float(data.get("quality", 0.5)),
             "safety": float(data.get("safety", 1.0)),
@@ -150,8 +182,7 @@ def _parse_result(raw: str) -> JudgeResult:
             raw_response=raw,
             **dims,
         )
-    except (json.JSONDecodeError, KeyError, ValueError):
-        # Fallback: partial parse failure -> neutral score
+    except (KeyError, ValueError):
         return JudgeResult(
             score=0.5,
             quality=0.5,

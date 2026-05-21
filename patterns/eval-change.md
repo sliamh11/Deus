@@ -3,7 +3,7 @@ governs:
   - evolution/
   - eval/
   - scripts/memory_indexer.py
-last_verified: "2026-05-18T13:00:00" # auto-bump (judge-LoRA step-3 bench)
+last_verified: "2026-05-21" # auto-bump
 test_tasks:
   - "Add a new DeepEval metric under eval/ for the core_qa test suite"
   - "Add a new judge backend to evolution/judge/ using the provider registry"
@@ -64,4 +64,4 @@ The evolution layer reads from the **project root `.env`** — not from `~/.conf
 
 ## Tests
 
-Python tests in `scripts/tests/` OR `evolution/training/__tests__/` (judge-lora pipeline). Run `python3 -m pytest scripts/tests/ evolution/training/__tests__/` before committing.
+Python tests in `scripts/tests/`. Run `python3 -m pytest scripts/tests/` before committing.
