@@ -204,7 +204,7 @@ class TestBuiltInProviders:
         from evolution.judge.providers.gemini import GeminiProvider
         p = GeminiProvider()
         assert p.name == "gemini"
-        assert p.priority == 20
+        assert p.priority == 5
 
     def test_mock_provider_has_correct_name(self):
         from evolution.judge.providers.mock import MockProvider
