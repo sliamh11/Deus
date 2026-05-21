@@ -12,6 +12,7 @@
 **Check:** Does the plan hardcode personal values (usernames, emails, absolute personal paths, specific IDs, session tokens)?
 **Rule:** Public-repo code must be user-agnostic. Personal fixtures belong in `~/.claude/`, `~/.config/deus/`, or `src/private/`.
 **Cite:** `feedback_public_repo_generic`
+**Remediation:** Replace each hardcoded personal value in the plan with a placeholder, env var reference, or config-file lookup. Move any fixture files that contain personal data to `~/.claude/` or `src/private/` and gitignore them.
 
 ## commit-scoping
 **Severity:** blocking
@@ -19,6 +20,7 @@
 **Check:** Are the changes conceptually one concern, or multiple?
 **Rule:** Split into separate commits/PRs. Never bundle personal-tooling changes into public-repo PRs.
 **Cite:** `feedback_scope_commits_by_concern`
+**Remediation:** Split the plan into two separate branches: one for the public-repo changes and one for the personal-tooling changes. Implement and PR them independently.
 
 ## private-override
 **Severity:** warning
@@ -33,6 +35,7 @@
 **Check:** Does this plan skip ahead in the sequence, contradict a prior commitment, or touch files owned by an open PR in the sequence?
 **Rule:** Finish or explicitly re-plan the active sequence before branching into parallel work on the same surface.
 **Cite:** The relevant active `project_*.md`
+**Remediation:** Either complete the open steps in the active sequence first, or explicitly supersede the sequence by updating the relevant `project_*.md` memory with a new plan — then resubmit.
 
 ## no-db-deletion
 **Severity:** blocking
@@ -40,6 +43,7 @@
 **Check:** Does the plan propose a hard delete?
 **Rule:** Soft-delete only — set a deleted-at field, archive, or tombstone. Never hard-delete user data.
 **Cite:** `docs/decisions/no-db-deletion.md`
+**Remediation:** Replace the hard-delete operation with a soft-delete: add a `deleted_at` timestamp column (or equivalent archive table), set it instead of removing the row, and filter `WHERE deleted_at IS NULL` in queries.
 
 ## cross-platform-intent
 **Severity:** warning
@@ -54,6 +58,7 @@
 **Check:** Does the plan commit secrets to git (anywhere — `.env`, fixtures, tests)? Does it rely on env vars without `.env.example` documentation?
 **Rule:** No credentials in git ever. Use `.env` + `.env.example`; gitignore strictly. For rotation, use the credential-proxy pattern.
 **Cite:** vault CLAUDE.md `security:` line; `feedback_deploy_integrity`
+**Remediation:** Move any credential value to a `.env` file (gitignored), add a corresponding placeholder entry to `.env.example`, and reference it via `process.env.VAR_NAME` in code. Run `git check-ignore -v .env` to confirm it is ignored before committing.
 
 ## commit-preview-rule
 **Severity:** informational
@@ -68,6 +73,7 @@
 **Check:** Scan `docs/decisions/INDEX.md` for any ADR whose subject overlaps the plan. Also cross-check `docs/KNOWN_LIMITATIONS.md` (standing constraints) and `docs/EFFORT_AB_RESULTS.md` (A/B outcomes — "we already tried this"). If an overlapping ADR or result exists, does the plan align with it or contradict it?
 **Rule:** Don't re-litigate settled decisions. If the plan contradicts an existing ADR, either the plan needs revision, or the ADR needs an explicit superseding successor authored alongside the change — never silently diverge.
 **Cite:** `docs/decisions/INDEX.md` + the specific ADR(s); `docs/KNOWN_LIMITATIONS.md`; `docs/EFFORT_AB_RESULTS.md`
+**Remediation:** Either revise the plan to align with the existing ADR, or draft a superseding ADR alongside the change that explicitly records why the prior decision is being reversed. Add a link to both ADRs in the PR body.
 
 ## scope-creep
 **Severity:** warning
@@ -99,7 +105,9 @@
 - "unused dep" → `grep -r '<pkg>' src/ scripts/ container/ packages/` returns no imports.
 - "orphan file" → `grep -r '<filename>' .` returns no callers across `.ts`, `.sh`, `.json`, `.py`, launchd plists, `package.json` scripts.
 - "drift between two paths" → grep for code that writes to the derived path (`cpSync`, `shutil.copytree`, `fs.mkdirSync` + write). If a writer exists, the divergence is a cache, not a bug — plan must address why the cache is wrong, not treat it as rot.
+- "quantified baseline" / counts / byte sizes (e.g. "N violations", "X tests fail", "Y unused files") → re-run the same command the plan implicitly relies on (`drift_check.py`, `pytest -q`, `grep -c`, etc.) and confirm the numbers match within ±1. If they don't, REVISE with the live numbers — stale baselines block downstream design decisions.
 **Cite:** Slice A postmortem (2026-04-20 — the agent-runner-src cache was wrongly flagged as tracked drift); system-prompt "Trust but verify."
+**Remediation:** Run the verification command(s) listed above for each unverified premise and paste the output into the plan. If a premise turns out false, remove or correct that step before resubmitting.
 
 ## means-end-consistency
 **Severity:** blocking
@@ -113,6 +121,7 @@ Common traps:
 - "Delete file X" — but a new file references X's old path.
 **Rule:** The fix must not reproduce the problem it solves. For patterns/regexes over sensitive values, source them from a GitHub Actions secret, an external gitignored file, a hash-based match, or other indirection — never commit the values inline. Run the fix through the same check it creates: if the implementation would trigger its own gate, revise.
 **Cite:** Slice C round 3 postmortem (2026-04-20 — CI gate was going to hardcode the very personal IDs it was designed to block).
+**Remediation:** Move the problematic value out of the committed implementation — use a GitHub Actions secret reference, a gitignored config file, or a hash-based match. Then run the gate the plan creates against its own implementation; if it triggers, revise until it doesn't.
 
 ## design-pattern-selection
 **Severity:** blocking
@@ -120,6 +129,7 @@ Common traps:
 **Check:** Does the plan identify which design pattern(s) apply (Strategy, Observer, Mediator, Factory, etc.) and justify the choice? Does it specify data structures with Big-O rationale where relevant (e.g., HashMap for O(1) lookup vs Vec scan)?
 **Rule:** Every non-trivial plan must name the design pattern(s) it uses and why they fit. Data structure choices must be justified when algorithmic complexity matters. Generic, modular designs are the default — new features should plug in without modifying or risking existing logic. If no standard pattern applies, the plan must state why and describe the custom approach.
 **Cite:** vault CLAUDE.md `design: pattern-driven | modular-generic`
+**Remediation:** Add a "Design" section to the plan that names the pattern(s) used (e.g., "Strategy — each handler implements a common interface") and justifies data structure choices with Big-O rationale. If no standard pattern applies, write a one-sentence explanation of the custom approach.
 
 ## task-granularity
 **Severity:** warning
@@ -148,6 +158,7 @@ Common traps:
 **Check:** Does the plan include `deus sweep` benchmark output (recall, MRR, abstain_accuracy) showing the impact? Was the sweep run BEFORE the PR, not after merge?
 **Rule:** Retrieval pipeline changes must include sweep evidence in the PR description. Ship-then-disable cycles waste two PR reviews and risk leaving harmful defaults in production. The tool already exists — use it.
 **Cite:** RETRO-2026-05-11-01; atom-fallback PR #350→#351 reversal; entity-coverage same-session reversal
+**Remediation:** Run `deus sweep` against the modified retrieval code and paste the recall/MRR/abstain_accuracy output into the plan or PR description. Do not proceed until the sweep shows neutral or improved scores vs the baseline.
 
 ## api-surface-verification
 **Severity:** blocking
@@ -155,3 +166,4 @@ Common traps:
 **Check:** For each function the plan references, has the actual signature been read and verified? Do the parameter names, types, and return types match what the plan assumes?
 **Rule:** Plans must verify the API surface they depend on by reading the source. Wrong method signatures, dead parameters, and phantom APIs are the #1 cause of multi-round plan-reviewer cycles. Read the function, then write the plan — not the reverse.
 **Cite:** RETRO-2026-05-11-02; Phase 5-6 postmortem (6 rounds caused by RuntimeRegistry.resolve() wrong signature, GroupQueue dead parameter)
+**Remediation:** For each referenced function, open the source file and read the actual signature. Update the plan to match the real parameter names, types, and return types. Add a "Verified signatures" note citing the file and line number for each function.

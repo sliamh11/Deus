@@ -26,5 +26,17 @@
   "data-quality": {
     "enabled": true,
     "custom_instructions": null
+  },
+  "cold-memory-injector": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "structural-check": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "placement-guard": {
+    "enabled": true,
+    "custom_instructions": null
   }
 }

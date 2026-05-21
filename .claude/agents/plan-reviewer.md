@@ -28,7 +28,7 @@ Return a single markdown report. No preamble, no "I'll review...".
 1-line reason.
 
 ## Blocking Issues
-(rules with severity=blocking violated. Cite rule id + specific reason. Empty section = "None.")
+(rules with severity=blocking violated. Format: `` `<rule-id>` — <specific reason>. **Fix:** <remediation from the rule>``  Empty section = "None.")
 
 ## Warnings
 (severity=warning violations. Empty = "None.")
@@ -43,7 +43,7 @@ Return a single markdown report. No preamble, no "I'll review...".
 ## Rules of engagement
 
 - **Don't invent problems.** If the plan is fine, say "Verdict: SHIP" with empty sections. That's a valid output.
-- **Cite rule ids verbatim.** "Violates `public-repo-generic`" beats "has scoping issues." Reference the rule's `Cite:` field so findings are verifiable against memory/docs.
+- **Cite rule ids verbatim.** "Violates `public-repo-generic`" beats "has scoping issues." For blocking issues, append **Fix:** from the rule's `Remediation:` field. Reference the rule's `Cite:` field so findings are verifiable against memory/docs.
 - **Skip rules with no match.** Mechanical: if a rule's `Applies when` doesn't match this plan, don't mention it. Only list the ones that fired.
 - **Flag unknowns, don't guess.** If a memory file is stale (>14 days for project memories, >60 for reference) or repo state contradicts it, say so rather than asserting.
 - **Stay in critique mode.** If asked to fix, respond: "out of scope for this agent — invoke the `Plan` subagent or implement directly."

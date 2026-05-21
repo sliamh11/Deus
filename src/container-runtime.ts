@@ -4,6 +4,7 @@
  */
 import { execFileSync } from 'child_process';
 
+import { FatalError } from './errors/index.js';
 import { logger } from './logger.js';
 import { detectProxyBindHost, hostGatewayArgs } from './platform.js';
 
@@ -50,24 +51,68 @@ export function stopContainerSync(name: string): void {
   });
 }
 
-/** Ensure the container runtime is running, starting it if needed. */
+const DOCKER_MAX_RETRIES = 6;
+const DOCKER_BASE_RETRY_MS = 5_000;
+const DOCKER_MAX_RETRY_MS = 30_000;
+
+// Sync sleep via Atomics.wait — blocks the event loop without busy-looping.
+let sleepFn = (ms: number): void => {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+};
+
+/** Replace the sleep implementation (test-only). */
+export function _setSleepFnForTests(fn: (ms: number) => void): void {
+  sleepFn = fn;
+}
+
+/** Ensure the container runtime is running, retrying with exponential backoff. */
 export function ensureContainerRuntimeRunning(): void {
-  try {
-    execFileSync(CONTAINER_RUNTIME_BIN, ['info'], {
-      stdio: 'pipe',
-      timeout: 10000,
-    });
-    logger.debug('Container runtime already running');
-  } catch (err) {
-    logger.error({ err }, 'Failed to reach container runtime');
-    logger.error(
-      'FATAL: Container runtime failed to start. ' +
-        'Agents cannot run without a container runtime. ' +
-        'To fix: 1) Ensure Docker is installed and running, ' +
-        '2) Run: docker info, 3) Restart Deus',
-    );
-    throw new Error('Container runtime is required but failed to start');
+  let lastErr: unknown;
+
+  for (let attempt = 1; attempt <= DOCKER_MAX_RETRIES + 1; attempt++) {
+    try {
+      execFileSync(CONTAINER_RUNTIME_BIN, ['info'], {
+        stdio: 'pipe',
+        timeout: 10_000,
+      });
+      if (attempt > 1) {
+        logger.info(
+          { attempt },
+          'Container runtime became available after retries',
+        );
+      } else {
+        logger.debug('Container runtime already running');
+      }
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (attempt <= DOCKER_MAX_RETRIES) {
+        const delayMs = Math.min(
+          DOCKER_BASE_RETRY_MS * Math.pow(2, attempt - 1),
+          DOCKER_MAX_RETRY_MS,
+        );
+        logger.warn(
+          { attempt, maxRetries: DOCKER_MAX_RETRIES, delayMs },
+          'Container runtime not ready, retrying...',
+        );
+        sleepFn(delayMs);
+      }
+    }
   }
+
+  logger.error(
+    { err: lastErr, attempts: DOCKER_MAX_RETRIES + 1 },
+    'Container runtime failed to start after all retries',
+  );
+  logger.error(
+    'FATAL: Container runtime unreachable. ' +
+      'Agents cannot run without a container runtime. ' +
+      'To fix: 1) Ensure Docker is installed and running, ' +
+      '2) Run: docker info, 3) Restart Deus',
+  );
+  throw new FatalError('Container runtime is required but failed to start', {
+    cause: lastErr,
+  });
 }
 
 /** Kill orphaned Deus containers from previous runs. */

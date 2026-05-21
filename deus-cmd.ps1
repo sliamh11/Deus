@@ -85,10 +85,11 @@ function Get-DeusCliAgent {
              else { Read-ConfigKey "agent_backend" }
     if (-not $agent) { $agent = "claude" }
     switch ($agent.ToLower()) {
-        "openai" { return "codex" }
-        "codex"  { return "codex" }
-        "ollama" { return "ollama" }
-        default  { return "claude" }
+        "openai"    { return "codex" }
+        "codex"     { return "codex" }
+        "ollama"    { return "ollama" }
+        "llama-cpp" { return "llama-cpp" }
+        default     { return "claude" }
     }
 }
 
@@ -138,6 +139,10 @@ function Invoke-Agent {
     switch ($cliAgent) {
         "ollama" {
             Write-Error "Ollama backend is not yet available as a CLI agent. Use 'deus backend set claude' or 'deus backend set openai' instead."
+            return
+        }
+        "llama-cpp" {
+            Write-Error "llama-cpp backend is not yet available as a CLI agent. It works for channel messages and scheduled tasks once the host llama-server is running (see /add-llama-cpp). For an interactive session, run 'deus backend set claude' or 'deus backend set codex'."
             return
         }
         "codex" { Invoke-Codex $ExtraArgs }
@@ -519,7 +524,7 @@ switch ($Command.ToLower()) {
                 if ($env:DEUS_AGENT_BACKEND) { Write-Host "(env override: DEUS_AGENT_BACKEND=$($env:DEUS_AGENT_BACKEND))" }
             }
             "list" {
-                foreach ($b in @("claude", "codex", "ollama")) {
+                foreach ($b in @("claude", "codex", "ollama", "llama-cpp")) {
                     if ($b -eq $currentDisplay) {
                         Write-Host "* $b (active)"
                     } else {
@@ -529,13 +534,13 @@ switch ($Command.ToLower()) {
             }
             "set" {
                 if ($args.Count -lt 2) {
-                    Write-Host "Usage: deus backend set <claude|codex|ollama>"
+                    Write-Host "Usage: deus backend set <claude|codex|ollama|llama-cpp>"
                     exit 1
                 }
                 $input = $args[1].ToLower()
-                if ($input -notin @("claude", "codex", "ollama")) {
+                if ($input -notin @("claude", "codex", "ollama", "llama-cpp")) {
                     Write-Host "Unknown backend: $($args[1])"
-                    Write-Host "Available: claude, codex, ollama"
+                    Write-Host "Available: claude, codex, ollama, llama-cpp"
                     exit 1
                 }
                 $internalMap = @{ "codex" = "openai" }
@@ -567,7 +572,7 @@ switch ($Command.ToLower()) {
                 Write-Host "Usage: deus backend [show|set|model|list]"
                 Write-Host ""
                 Write-Host "  deus backend           Show current backend and model"
-                Write-Host "  deus backend set <be>  Set default backend (claude|codex|ollama)"
+                Write-Host "  deus backend set <be>  Set default backend (claude|codex|ollama|llama-cpp)"
                 Write-Host "  deus backend model <m> Set model for current backend (e.g. gpt-4o)"
                 Write-Host "  deus backend list      List available backends"
             }

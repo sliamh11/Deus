@@ -22,6 +22,7 @@ graph TB
         MO[Message Orchestrator]
         GQ[Group Queue]
         CP[Credential Proxy :3001]
+        TP[Tool Proxy :3003]
         TS[Task Scheduler]
         IPC[IPC Watcher]
         SG[Startup Gate]
@@ -29,7 +30,7 @@ graph TB
 
     subgraph Containers["Container per Group · Linux VM"]
         AR[Agent Runner]
-        RT[Backend Adapter<br/>Claude SDK or OpenAI/Codex]
+        RT[Backend Adapter<br/>Claude · OpenAI · llama.cpp]
         MCP_D[MCP: deus]
         MCP_G[MCP: gcal]
         BR[Agent Browser]
@@ -43,7 +44,7 @@ graph TB
     end
 
     subgraph Evolution["Evolution Loop"]
-        JUDGE[Judge · Ollama / Gemini]
+        JUDGE[Judge · Ollama / Gemini / llama.cpp]
         REFL[Reflexion Engine]
         DSPY[DSPy Optimizer]
         ILOG[Interaction Log]
@@ -56,7 +57,9 @@ graph TB
     GQ -->|spawn| AR
     AR --> RT
     RT -->|API calls| CP
+    RT -->|CLI calls| TP
     CP -->|inject creds| API[Provider APIs]
+    TP -->|exec| HCLI[Host CLI Binaries]
     RT --> MCP_D
     RT --> MCP_G
     RT --> BR
@@ -184,7 +187,7 @@ graph TB
         EP[entrypoint.sh · recompile TS]
         AR[Agent Runner index.ts]
         MS[MessageStream]
-        SDK[Claude Agent SDK query]
+        SDK[Backend Adapter<br/>Claude · OpenAI · llama.cpp]
         IPC_MCP[IPC MCP Server · deus tools]
         SKILLS[Container Skills]
     end
@@ -214,7 +217,7 @@ graph TB
 
 - **Image**: `node:22-slim` + Chromium + `agent-browser` + `claude-code` CLI.
 - **Entrypoint**: recompiles agent-runner TypeScript from `/app/src` to `/tmp/dist` at startup, allowing per-group customization without rebuilding the image.
-- **MessageStream**: push-based async iterable that feeds follow-up messages (from IPC polling) to the SDK without closing the session.
+- **MessageStream**: push-based async iterable that feeds follow-up messages (from IPC polling) to the backend adapter without closing the session.
 - **IPC MCP Server**: exposes `send_message`, `schedule_task`, `list_tasks`, and other tools to the agent. All IPC goes through files in `/workspace/ipc/`.
 - **Container skills**: compiled from `.claude/skills/*/agent.ts` at build time; loaded dynamically by `skill-mcp-registry.ts`.
 
@@ -391,8 +394,8 @@ All evolution backends follow the same pattern:
 
 | Layer | Interface | Providers | Override env var |
 |-------|-----------|-----------|-----------------|
-| **Judge** | `JudgeProvider` | Ollama (priority 10), Gemini (20), Claude (30), Mock (0) | `EVOLUTION_JUDGE_PROVIDER` |
-| **Generative** | `GenerativeProvider` | Gemini (10), Ollama (20), Mock (0) | `EVOLUTION_GEN_PROVIDER` |
+| **Judge** | `JudgeProvider` | Ollama (10), llama.cpp (15), Gemini (20), Claude (30), Mock (0) | `EVOLUTION_JUDGE_PROVIDER` |
+| **Generative** | `GenerativeProvider` | Gemini (10), Ollama (20), llama.cpp (25), Mock (0) | `EVOLUTION_GEN_PROVIDER` |
 | **Storage** | `StorageProvider` | SQLite (10) | `DEUS_STORAGE_PROVIDER` |
 
 Auto-detection: lowest-priority available provider wins. Adding a new backend: implement the interface in `providers/`, register in `providers/__init__.py`.
@@ -509,6 +512,13 @@ Core modules in `src/`:
 | `auth-providers/` | AuthProvider interface + Anthropic provider (API key + OAuth) |
 | `channels/` | Channel registry + MCP adapter factories |
 | `skills/` | Host-side skill IPC handler loader |
+| `agent-runtimes/` | Backend registry + `AgentRuntime` interface; concrete backends: claude, openai, llama-cpp; resolution precedence in `resolve.ts` |
+| `tool-proxy.ts` | HTTP proxy (:3003) executing allowlisted host CLIs for container agents; credentials injected at spawn time |
+| `tool-registry.ts` | Allowlist at `~/.deus/tool-registry.json`; guards which CLIs tool-proxy may execute |
+| `multi-agent/` | Multi-agent orchestration: topological task sort, parallel read fan-out, DONE/BLOCKED result contract |
+| `guardrails/injection-scanner.ts` | Prompt injection scanner (Enforcement Layer); fires in orchestrator before container turn |
+| `doc-gardener-seed.ts` | Seeds weekly doc-gardener cron task for the control group at startup |
+| `cache/gcal-sync.ts` | Google Calendar background sync daemon; no-op when credentials absent |
 
 ---
 

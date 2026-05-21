@@ -64,7 +64,7 @@ On top of that, Deus breaks conversations into individual facts - "we chose libr
 | **Hermes Agent** | Database with full-text search | Full-text search + preference profiling | Yes - session context, full-text search, user profiling |
 | **Plain Claude** | Conversation window | None | No |
 
-Atom retrieval uses a multi-stage pipeline: embedding search (Ollama embeddinggemma) retrieves initial candidates, approach angles bridge vocabulary mismatch (HyPE pattern), BM25 keyword search rescues literal matches, and a cross-encoder reranker (ms-marco-MiniLM-L-6-v2) re-scores the final pool for precision. All local, no API calls.
+Atom retrieval uses a multi-stage pipeline: embedding search (Ollama embeddinggemma) retrieves initial candidates, approach angles bridge vocabulary mismatch (HyPE pattern), BM25 keyword search rescues literal matches, and a multilingual cross-encoder reranker (BAAI/bge-reranker-v2-m3) re-scores the final pool for precision. All local, no API calls.
 
 Deus never deletes memory data - old facts are soft-deleted, never dropped ([why](decisions/no-db-deletion.md)). For the full technical architecture (vector dimensions, recency decay formulas, embedding models), see [Architecture - Memory](ARCHITECTURE.md#memory-system), the [memory tree ADR](decisions/memory-tree.md), and the [atom retrieval pipeline ADR](decisions/atom-retrieval-pipeline.md).
 

@@ -571,6 +571,25 @@ describe('backend-aware sessions', () => {
     });
   });
 
+  it('round-trips a llama-cpp session row without silent coercion', () => {
+    // Regression test for the binary-ternary trap fixed in src/db.ts:685.
+    // Prior to the parseAgentBackend gate, a stored backend='llama-cpp'
+    // row was silently read back as backend='claude', breaking resume.
+    setSession('llama-folder', {
+      backend: 'llama-cpp',
+      session_id: 'llama-cpp-abc',
+    });
+
+    const ref = getSession('llama-folder', 'llama-cpp');
+    expect(ref?.backend).toBe('llama-cpp');
+    expect(ref?.session_id).toBe('llama-cpp-abc');
+
+    expect(getAllBackendSessions()['llama-folder']?.['llama-cpp']).toEqual({
+      backend: 'llama-cpp',
+      session_id: 'llama-cpp-abc',
+    });
+  });
+
   it('clears only the requested backend session', () => {
     setSession('shared-folder', {
       backend: 'claude',

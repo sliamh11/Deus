@@ -1,7 +1,17 @@
 export { resizeAndEncode } from './image-util.js';
 export { MessageBuffer } from './message-buffer.js';
-export { mcpError, McpErrorCode, mcpResponse } from './response.js';
-export type { McpResponseOptions } from './response.js';
+export {
+  mcpError,
+  McpErrorCode,
+  mcpResponse,
+  withMcpError,
+} from './response.js';
+export type {
+  McpErrorResult,
+  McpResponseOptions,
+  McpTextContent,
+  McpToolResult,
+} from './response.js';
 export { registerCommonTools } from './server-base.js';
 export type {
   ChannelProvider,

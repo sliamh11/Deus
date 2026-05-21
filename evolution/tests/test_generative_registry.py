@@ -189,6 +189,18 @@ class TestBuiltInProviders:
         assert p.name == "ollama"
         assert p.priority == 20
 
+    def test_llama_cpp_provider_has_correct_name(self):
+        from evolution.generative.providers.llama_cpp import LlamaCppGenerativeProvider
+        p = LlamaCppGenerativeProvider()
+        assert p.name == "llama-cpp"
+        assert p.priority == 25  # less preferred than Ollama (20)
+
+    def test_llama_cpp_default_model_from_config(self):
+        from evolution.generative.providers.llama_cpp import LlamaCppGenerativeProvider
+        p = LlamaCppGenerativeProvider()
+        # LLAMA_CPP_MODEL defaults to '' (server-loaded model). Just verify it's a string.
+        assert isinstance(p.default_model, str)
+
     def test_mock_provider_has_correct_name(self):
         from evolution.generative.providers.mock import MockGenerativeProvider
         p = MockGenerativeProvider()

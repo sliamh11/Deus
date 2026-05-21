@@ -12,6 +12,7 @@
 **Check:** Are any `critical:` keys dropped? Are any `**(CRITICAL)**` memory entries removed? Estimate critical-key retention — does it stay ≥95%?
 **Rule:** Never reduce CRITICAL preservation below 95%.
 **Cite:** `feedback_compression_rule`; vault CLAUDE.md `claude-md-gates` line
+**Remediation:** Restore each dropped `critical:` key or `**(CRITICAL)**` entry to the vault file. Re-estimate the retention ratio — add them back until the count stays at or above 95% of the original.
 
 ## ci-coverage-90
 **Severity:** blocking
@@ -19,6 +20,7 @@
 **Check:** Do the canned keyword-coverage queries still hit at ≥90%? Paraphrase misses should be addressed via `kw=` overrides, not by lowering the floor.
 **Rule:** Maintain ≥90% behavioral coverage.
 **Cite:** `feedback_compression_rule`
+**Remediation:** Add `kw=` overrides for any behavioral rule whose keyword now misses, or restore the removed text that covered it. Do not lower the 90% floor — expand coverage instead.
 
 ## ci-drift-check
 **Severity:** blocking
@@ -26,6 +28,7 @@
 **Check:** Was `memory_tree.py check` / `drift_check.py --indexes` run after the edit?
 **Rule:** Vault leaf changes require drift-check validation before commit.
 **Cite:** `feedback_memory_tree_check`
+**Remediation:** Run `python3 memory_tree.py check` (or `python3 drift_check.py --indexes`) and paste the output. Fix any reported drift before committing.
 
 ## cross-platform-actual
 **Severity:** blocking
@@ -33,6 +36,7 @@
 **Check:** Are paths constructed via `src/platform.ts` helpers? Are OS-specific commands (e.g., `pngpaste`, `launchctl`, `osascript`, `sed -i ''`) gated by a platform check or replaced with portable alternatives? Does the diff use `~`/`$HOME` instead of `/Users/...`?
 **Rule:** Default to cross-platform; guard OS-specific code.
 **Cite:** `feedback_cross_platform_default`
+**Remediation:** Replace OS-specific commands with portable equivalents or wrap them in a `platform.ts` guard. Replace any hardcoded `/Users/<name>/...` paths with `os.homedir()` / `$HOME` equivalents.
 
 ## efficiency
 **Severity:** warning
@@ -61,6 +65,7 @@
 **Check:** Is there before/after data in the commit message, session log, or PR body? Was the bench run on a realistic workload (not a short-prompt probe for long-context code)?
 **Rule:** Never ship "improvements" without measurement. Predict the outcome before running the bench.
 **Cite:** `feedback_predict_before_testing`; `feedback_measure_on_real_workload`
+**Remediation:** Run the relevant benchmark on a realistic workload (e.g., `npm run bench` or `deus sweep`) and add the before/after numbers to the PR body or commit message before pushing.
 
 ## pros-cons
 **Severity:** warning
@@ -75,6 +80,7 @@
 **Check:** Conventional-commits format (`type(scope): description`)? Under 70 chars? Matches the CI title-gate expectations?
 **Rule:** Title must pass the CI title-gate on first push.
 **Cite:** `project_error_discipline_plan` (noted #214 was CI-blocked on title)
+**Remediation:** Rewrite the title to match `type(scope): description` (e.g., `fix(auth): handle expired token refresh`), trim it to under 70 characters, and re-push.
 
 ## no-hardcoded-personal
 **Severity:** blocking
@@ -82,6 +88,7 @@
 **Check:** Grep the diff for hardcoded personal values — macOS usernames (e.g. a literal like `<user>`), emails, government IDs, Hebrew names, absolute paths under `/Users/...`, personal project IDs.
 **Rule:** Public-repo code must be user-agnostic in reality, not just in intent.
 **Cite:** `feedback_public_repo_generic`
+**Remediation:** Replace each hardcoded personal value with a placeholder, environment variable, or config-driven lookup. Move personal fixtures to `~/.claude/`, `~/.config/deus/`, or `src/private/` (gitignored).
 
 ## container-reload-noted
 **Severity:** informational
@@ -145,6 +152,7 @@
 **Check:** Shell injection (user input interpolated into `exec`/`child_process.spawn` without sanitization), SQL injection (string concat into queries vs parameterized), path traversal (user input concatenated into file paths without basename/normalize), XSS (user input rendered without escaping), SSRF (user-controllable URLs fetched server-side without host allowlist).
 **Rule:** No classic OWASP vectors. Parameterize queries, escape output, normalize paths, allowlist hosts for user-controlled URLs.
 **Cite:** system-prompt "Be careful not to introduce security vulnerabilities" rule; `feedback_security_first`
+**Remediation:** For each flagged vector: use parameterized queries instead of string concatenation, pass arguments as arrays to `child_process.spawn` instead of shell strings, call `path.normalize` + `path.basename` on file path inputs, escape HTML output, or add a URL host allowlist — whichever applies to the specific finding.
 
 ## hook-schema-source-of-truth
 **Severity:** blocking
@@ -152,6 +160,7 @@
 **Check:** Does the commit message cite a source of truth (Claude Code binary string extraction, SDK source path, or official doc URL)?
 **Rule:** Hook schema changes require a verifiable source-of-truth citation in the commit message. Derivation-from-assumption is rejected.
 **Cite:** `feedback_hook_schema_source_of_truth`
+**Remediation:** Add a source-of-truth citation to the commit message — either the SDK source path you read, a string extracted from the Claude Code binary, or an official doc URL. Do not ship schema changes derived from assumption alone.
 
 ## hook-pr-smoke-test
 **Severity:** blocking
@@ -159,3 +168,4 @@
 **Check:** Does the PR body include evidence of a real-session smoke test (session log link, `claude logs <id>` output, or transcript excerpt)?
 **Rule:** Hook-touching PRs require documented real-session smoke test before marked done. Synthetic tests alone are insufficient.
 **Cite:** `feedback_hook_pr_smoke_test`
+**Remediation:** Run a real Claude Code session that exercises the modified hook, then paste the relevant `claude logs <session-id>` output (or a transcript excerpt) into the PR body before marking it ready.
