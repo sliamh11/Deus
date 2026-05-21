@@ -141,6 +141,8 @@ function setupLaunchd(
     // launchctl list failed
   }
 
+  ensureDockerAutoStart();
+
   emitStatus('SETUP_SERVICE', {
     SERVICE_TYPE: 'launchd',
     NODE_PATH: nodePath,
@@ -150,6 +152,39 @@ function setupLaunchd(
     STATUS: 'success',
     LOG: 'logs/setup.log',
   });
+}
+
+function ensureDockerAutoStart(): void {
+  const runtime = process.env.CONTAINER_RUNTIME || 'docker';
+  if (runtime !== 'docker') {
+    logger.info({ runtime }, 'Skipping Docker auto-start: non-docker runtime');
+    return;
+  }
+
+  const dockerAppPath = '/Applications/Docker.app';
+  if (!fs.existsSync(dockerAppPath)) {
+    logger.info('Docker.app not found at /Applications/Docker.app — skipping');
+    return;
+  }
+
+  try {
+    const existing = execSync(
+      'osascript -e \'tell application "System Events" to get the name of every login item\'',
+      { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 },
+    );
+    if (existing.toLowerCase().includes('docker')) {
+      logger.info('Docker already in login items');
+      return;
+    }
+
+    execSync(
+      `osascript -e 'tell application "System Events" to make login item at end with properties {path:"${dockerAppPath}", hidden:false}'`,
+      { stdio: 'ignore', timeout: 5000 },
+    );
+    logger.info('Added Docker Desktop to login items');
+  } catch (err) {
+    logger.warn({ err }, 'Could not configure Docker auto-start (non-fatal)');
+  }
 }
 
 function setupLogReviewLaunchd(projectRoot: string, homeDir: string): void {
@@ -461,6 +496,8 @@ WantedBy=${runningAsRoot ? 'multi-user.target' : 'default.target'}`;
     logger.error({ err }, 'systemctl start failed');
   }
 
+  ensureDockerSystemdEnabled(runningAsRoot);
+
   // Verify
   let serviceLoaded = false;
   try {
@@ -480,6 +517,36 @@ WantedBy=${runningAsRoot ? 'multi-user.target' : 'default.target'}`;
     STATUS: 'success',
     LOG: 'logs/setup.log',
   });
+}
+
+function ensureDockerSystemdEnabled(runningAsRoot: boolean): void {
+  const runtime = process.env.CONTAINER_RUNTIME || 'docker';
+  if (runtime !== 'docker') {
+    logger.info(
+      { runtime },
+      'Skipping Docker systemd enable: non-docker runtime',
+    );
+    return;
+  }
+
+  if (!runningAsRoot) {
+    logger.info(
+      'Not root — skipping docker.service enable (system service requires root)',
+    );
+    return;
+  }
+
+  try {
+    execSync('systemctl is-enabled docker', { stdio: 'pipe', timeout: 5000 });
+    logger.info('docker.service already enabled');
+  } catch {
+    try {
+      execSync('systemctl enable docker', { stdio: 'ignore', timeout: 10_000 });
+      logger.info('Enabled docker.service for auto-start');
+    } catch (err) {
+      logger.warn({ err }, 'Could not enable docker.service (non-fatal)');
+    }
+  }
 }
 
 function setupWindows(

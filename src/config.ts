@@ -1,6 +1,9 @@
 import path from 'path';
 
-import type { AgentRuntimeId } from './agent-runtimes/types.js';
+import {
+  parseAgentBackend,
+  type AgentRuntimeId,
+} from './agent-runtimes/types.js';
 import { readEnvFile } from './env.js';
 import type { InjectionScannerConfig } from './guardrails/injection-scanner.js';
 import { homeDir } from './platform.js';
@@ -14,6 +17,13 @@ const envConfig = readEnvFile([
   'DEUS_AGENT_BACKEND',
   'DEUS_CONTEXT_FILE_MAX_CHARS',
   'DEUS_OPENAI_MODEL',
+  'LLAMA_CPP_BASE_URL',
+  'LLAMA_CPP_PORT',
+  'LLAMA_CPP_MODEL',
+  'LLAMA_CPP_AGENT_MODEL',
+  'LLAMA_CPP_GEN_MODEL',
+  'LLAMA_CPP_JUDGE_MODEL',
+  'LLAMA_CPP_EMBED_MODEL',
 ]);
 
 export const ASSISTANT_NAME =
@@ -97,11 +107,45 @@ const rawAgentBackend = (
   envConfig.DEUS_AGENT_BACKEND ||
   'claude'
 ).toLowerCase();
+// Use `parseAgentBackend` from agent-runtimes/types.ts (host SoT) as the
+// canonical accepted-value gate. Avoids the circular `ipc.ts` import path
+// AND eliminates the prior silent-coercion ternary for new backend IDs.
 export const DEFAULT_AGENT_RUNTIME: AgentRuntimeId =
-  rawAgentBackend === 'openai' ? 'openai' : 'claude';
+  parseAgentBackend(rawAgentBackend) ?? 'claude';
 
 export const DEUS_OPENAI_MODEL =
   process.env.DEUS_OPENAI_MODEL || envConfig.DEUS_OPENAI_MODEL || '';
+
+// llama.cpp local-server endpoint configuration. Host-side values only —
+// the container receives translated values via OPENAI_BASE_URL-style env
+// var injection in container-runner.ts. See docs/MULTI_BACKEND.md.
+export const LLAMA_CPP_BASE_URL =
+  process.env.LLAMA_CPP_BASE_URL || envConfig.LLAMA_CPP_BASE_URL || '';
+export const LLAMA_CPP_PORT =
+  process.env.LLAMA_CPP_PORT || envConfig.LLAMA_CPP_PORT || '8080';
+export const LLAMA_CPP_MODEL =
+  process.env.LLAMA_CPP_MODEL || envConfig.LLAMA_CPP_MODEL || '';
+
+// Per-surface model overrides. Each falls back to LLAMA_CPP_MODEL (catch-all),
+// then to empty string (router-mode auto-pick from --models-dir).
+// Per Phase 3 (PR-after-#461): supports `llama-server --models-dir ... --models-max 4`
+// where each surface POSTs with its own "model" field and the server hot-loads.
+export const LLAMA_CPP_AGENT_MODEL =
+  process.env.LLAMA_CPP_AGENT_MODEL ||
+  envConfig.LLAMA_CPP_AGENT_MODEL ||
+  LLAMA_CPP_MODEL;
+export const LLAMA_CPP_GEN_MODEL =
+  process.env.LLAMA_CPP_GEN_MODEL ||
+  envConfig.LLAMA_CPP_GEN_MODEL ||
+  LLAMA_CPP_MODEL;
+export const LLAMA_CPP_JUDGE_MODEL =
+  process.env.LLAMA_CPP_JUDGE_MODEL ||
+  envConfig.LLAMA_CPP_JUDGE_MODEL ||
+  LLAMA_CPP_MODEL;
+export const LLAMA_CPP_EMBED_MODEL =
+  process.env.LLAMA_CPP_EMBED_MODEL ||
+  envConfig.LLAMA_CPP_EMBED_MODEL ||
+  LLAMA_CPP_MODEL;
 
 export const DEUS_CONTEXT_FILE_MAX_CHARS =
   process.env.DEUS_CONTEXT_FILE_MAX_CHARS ||

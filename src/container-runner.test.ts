@@ -35,6 +35,9 @@ vi.mock('./config.js', () => ({
   GROUPS_DIR: '/tmp/deus-test-groups',
   HOME_DIR: '/tmp/deus-test-home',
   IDLE_TIMEOUT: 1800000, // 30min
+  LLAMA_CPP_AGENT_MODEL: 'llama-test-model',
+  LLAMA_CPP_MODEL: 'llama-test-model',
+  LLAMA_CPP_PORT: '8765',
   TIMEZONE: 'America/Los_Angeles',
   TOOL_PROXY_PORT: 3003,
 }));
@@ -1223,6 +1226,75 @@ describe.skipIf(onWindows)('OAuth session-based auth', () => {
   });
 });
 
+describe.skipIf(onWindows)('llama-cpp backend container env', () => {
+  beforeEach(() => {
+    vi.useRealTimers();
+    fakeProc = createFakeProcess();
+
+    const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+    fsMocked.existsSync.mockReset();
+    fsMocked.existsSync.mockReturnValue(false);
+    fsMocked.mkdirSync.mockReset();
+    fsMocked.writeFileSync.mockReset();
+    fsMocked.readdirSync.mockReset();
+    fsMocked.readdirSync.mockReturnValue([]);
+    fsMocked.statSync.mockReset();
+    fsMocked.statSync.mockReturnValue({
+      isDirectory: () => false,
+    } as ReturnType<typeof fsMod.statSync>);
+
+    vi.mocked(getProjectById).mockReturnValue(undefined);
+    vi.mocked(childProcess.spawn).mockReturnValue(
+      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+    );
+  });
+
+  it('injects LLAMA_CPP env vars, bypasses credential proxy, no Anthropic/OpenAI env vars', async () => {
+    const group: RegisteredGroup = {
+      name: 'Main',
+      folder: 'main-group',
+      trigger: '@Deus',
+      added_at: new Date().toISOString(),
+      isControlGroup: true,
+    };
+
+    setImmediate(() => fakeProc.emit('close', 0));
+
+    await runContainerAgent(
+      group,
+      {
+        prompt: 'test',
+        backend: 'llama-cpp',
+        groupFolder: group.folder,
+        chatJid: 'x@g.us',
+        isControlGroup: true,
+      },
+      () => {},
+    );
+
+    const spawnMock = vi.mocked(childProcess.spawn);
+    const lastCall = spawnMock.mock.calls[spawnMock.mock.calls.length - 1];
+    const args = lastCall[1] as string[];
+    const joined = args.join(' ');
+
+    // llama-cpp talks to host gateway directly on its own port — NOT the
+    // credential proxy port. Crucial security invariant: this also asserts
+    // the credential proxy is NOT in the URL (no `:3001` substring).
+    expect(joined).toMatch(
+      /LLAMA_CPP_BASE_URL=http:\/\/host\.docker\.internal:\d+\/v1/,
+    );
+    expect(joined).not.toContain(
+      'LLAMA_CPP_BASE_URL=http://host.docker.internal:3001',
+    );
+    expect(args).toContain('LLAMA_CPP_API_KEY=placeholder');
+    // No OpenAI or Anthropic env vars leak into the llama-cpp container.
+    expect(joined).not.toContain('OPENAI_BASE_URL=');
+    expect(joined).not.toContain('OPENAI_API_KEY=');
+    expect(joined).not.toContain('ANTHROPIC_BASE_URL=');
+    expect(joined).not.toContain('ANTHROPIC_API_KEY=');
+  });
+});
+
 describe.skipIf(onWindows)('OpenAI backend container env', () => {
   beforeEach(() => {
     vi.useRealTimers();
@@ -1287,6 +1359,7 @@ describe.skipIf(onWindows)('OpenAI backend container env', () => {
 describe.skipIf(onWindows)('Backend parity — system-level equivalence', () => {
   let claudeArgs: string[];
   let openaiArgs: string[];
+  let llamaCppArgs: string[];
 
   beforeAll(async () => {
     fakeProc = createFakeProcess();
@@ -1353,6 +1426,27 @@ describe.skipIf(onWindows)('Backend parity — system-level equivalence', () => 
       () => {},
     );
     openaiArgs = spawnMock.mock.calls[
+      spawnMock.mock.calls.length - 1
+    ][1] as string[];
+
+    // Capture llama-cpp backend args (third tier: local opt-in, no proxy)
+    fakeProc = createFakeProcess();
+    vi.mocked(childProcess.spawn).mockReturnValue(
+      fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+    );
+    setImmediate(() => fakeProc.emit('close', 0));
+    await runContainerAgent(
+      group,
+      {
+        prompt: 'parity-test',
+        backend: 'llama-cpp',
+        groupFolder: group.folder,
+        chatJid: 'x@g.us',
+        isControlGroup: true,
+      },
+      () => {},
+    );
+    llamaCppArgs = spawnMock.mock.calls[
       spawnMock.mock.calls.length - 1
     ][1] as string[];
   });
@@ -1435,15 +1529,19 @@ describe.skipIf(onWindows)('Backend parity — system-level equivalence', () => 
     expect(openaiEnv.has('ANTHROPIC_API_KEY')).toBe(false);
   });
 
-  it('both use placeholder credentials (never real keys)', () => {
+  it('all backends use placeholder credentials (never real keys)', () => {
     const claudeEnv = extractEnvVars(claudeArgs);
     const openaiEnv = extractEnvVars(openaiArgs);
+    const llamaCppEnv = extractEnvVars(llamaCppArgs);
 
     expect(claudeEnv.get('ANTHROPIC_API_KEY')).toBe('placeholder');
     expect(openaiEnv.get('OPENAI_API_KEY')).toBe('placeholder');
+    expect(llamaCppEnv.get('LLAMA_CPP_API_KEY')).toBe('placeholder');
   });
 
-  it('both route through credential proxy', () => {
+  // Remote-backend tier: Claude and OpenAI MUST route through the credential
+  // proxy (the proxy injects real secrets that never live in the container).
+  it('remote backends route through credential proxy', () => {
     const claudeEnv = extractEnvVars(claudeArgs);
     const openaiEnv = extractEnvVars(openaiArgs);
 
@@ -1451,11 +1549,25 @@ describe.skipIf(onWindows)('Backend parity — system-level equivalence', () => 
     expect(openaiEnv.get('OPENAI_BASE_URL')).toContain(':3001');
   });
 
-  it('both receive DEUS_PROXY_TOKEN for proxy authentication', () => {
+  // Local-backend tier: llama-cpp MUST NOT route through the credential
+  // proxy. It talks to the host gateway directly because llama-server has
+  // no auth — the proxy is irrelevant. Asserting the absence here closes
+  // the loop with the remote-backend invariant above.
+  it('local backend (llama-cpp) bypasses credential proxy', () => {
+    const llamaCppEnv = extractEnvVars(llamaCppArgs);
+
+    const baseUrl = llamaCppEnv.get('LLAMA_CPP_BASE_URL') ?? '';
+    expect(baseUrl).not.toContain(':3001');
+    expect(baseUrl).toMatch(/host\.docker\.internal:\d+\/v1/);
+  });
+
+  it('all backends receive DEUS_PROXY_TOKEN for tool proxy authentication', () => {
     const claudeEnv = extractEnvVars(claudeArgs);
     const openaiEnv = extractEnvVars(openaiArgs);
+    const llamaCppEnv = extractEnvVars(llamaCppArgs);
 
     expect(claudeEnv.get('DEUS_PROXY_TOKEN')).toBe(TEST_PROXY_TOKEN);
     expect(openaiEnv.get('DEUS_PROXY_TOKEN')).toBe(TEST_PROXY_TOKEN);
+    expect(llamaCppEnv.get('DEUS_PROXY_TOKEN')).toBe(TEST_PROXY_TOKEN);
   });
 });

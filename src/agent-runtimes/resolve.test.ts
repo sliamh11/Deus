@@ -52,6 +52,23 @@ describe('resolveAgentRuntime', () => {
   it('falls back to the global default when no override exists', () => {
     expect(resolveAgentRuntime(makeGroup())).toBe('claude');
   });
+
+  it('resolves the llama-cpp task override', () => {
+    const group = makeGroup({
+      containerConfig: { agentBackend: 'claude' },
+    });
+    const task = makeTask({ agent_backend: 'llama-cpp' });
+
+    expect(resolveAgentRuntime(group, task)).toBe('llama-cpp');
+  });
+
+  it('resolves the llama-cpp group override', () => {
+    const group = makeGroup({
+      containerConfig: { agentBackend: 'llama-cpp' },
+    });
+
+    expect(resolveAgentRuntime(group)).toBe('llama-cpp');
+  });
 });
 
 describe('resolveAgentEffort', () => {

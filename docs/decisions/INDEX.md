@@ -33,3 +33,11 @@ One line per decision. Load the full file only when the topic is directly releva
 | [standards-pack-priority.md](standards-pack-priority.md) | standards_pack / priority / atoms | `priority: high\|med\|low` frontmatter on `kind: standard` atoms; sort by `(priority_rank, filename)`; CRITICAL stderr + `dropped_high` cache field on high-priority drop. `priority: high` requires `.claude/rules/core-behavioral-rules.md` citation. Inclusion is NOT unconditionally guaranteed — see ADR |
 | [printing-press-adoption.md](printing-press-adoption.md) | agent-native / CLI / MCP / token-efficiency | Typed exit codes + compact/select for Python CLIs and MCP servers; 4-phase roadmap: protocol → tool proxy → SQLite cache → codegen. Extends error-discipline.md taxonomy to subprocess callers |
 | [hook-dispatch-system.md](hook-dispatch-system.md) | hooks / dispatch / backends | Deus-owned hook contract with Bridge pattern; host-enforced Layer 1 + container-cooperative Layer 2; HookDispatchService on :3002 |
+| [judge-lora-specialization.md](judge-lora-specialization.md) | eval / judge / LoRA | Negative result on Gemma-3n-E4B Q4 (Adapter mean Pearson 0.368 vs Base 0.390) — do NOT adopt run `20260518T071842Z-1614baf-dirty`; keep base Q4 as local judge. **Future judge-quality work begins with cross-stack truth bench + replace-base / logit-mean / frozen-head alternatives BEFORE any retune; retune requires regression bar mean Pearson ≥ Base + 0.05** |
+
+## Related documentation
+
+| File | Purpose |
+|------|---------|
+| [../exec-plans/README.md](../exec-plans/README.md) | Execution plan convention — versioned artifacts capturing why/how decisions are made during multi-step implementations (EP-NNN scheme) |
+| [../QUALITY_GRADES.md](../QUALITY_GRADES.md) | Per-subsystem health grades — at-a-glance A/B/C/D ratings with last-audit dates and debt refs |

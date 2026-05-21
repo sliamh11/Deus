@@ -17,7 +17,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import pino from 'pino';
 import { z } from 'zod';
-import { registerCommonTools } from '@deus-ai/channel-core';
+import {
+  mcpError,
+  McpErrorCode,
+  mcpResponse,
+  registerCommonTools,
+} from '@deus-ai/channel-core';
 
 import { WhatsAppProvider } from './whatsapp.js';
 
@@ -40,25 +45,24 @@ registerCommonTools(server, provider);
 
 server.tool(
   'get_auth_status',
-  'Check whether WhatsApp credentials exist and the connection is authenticated',
-  {},
-  async () => {
+  'Check whether WhatsApp credentials exist and the connection is authenticated. Pass select="connected" + compact=true for a slimmer response.',
+  {
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
+  },
+  async (args) => {
     const hasAuth = provider.hasAuth();
     const connected = provider.isConnected();
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ has_credentials: hasAuth, connected }),
-        },
-      ],
-    };
+    return mcpResponse(
+      { has_credentials: hasAuth, connected },
+      { compact: args.compact, select: args.select },
+    );
   },
 );
 
 server.tool(
   'start_auth',
-  'Begin WhatsApp authentication. Returns QR code data or pairing code.',
+  'Begin WhatsApp authentication. Returns QR code data or pairing code. Pass select="status" + compact=true for a slimmer response.',
   {
     method: z.enum(['qr', 'pairing-code']).describe('Authentication method'),
     phone: z
@@ -67,20 +71,16 @@ server.tool(
       .describe(
         'Phone number (required for pairing-code method, e.g. 14155551234)',
       ),
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
   },
   async (args) => {
     if (args.method === 'pairing-code' && !args.phone) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: 'Phone number required for pairing-code method',
-            }),
-          },
-        ],
-        isError: true,
-      };
+      return mcpError(
+        McpErrorCode.USAGE,
+        'Phone number required for pairing-code method',
+        'whatsapp.start_auth',
+      );
     }
     // Auth is handled by the connect flow — this tool triggers it.
     // The provider writes QR data to disk; the client reads it.
@@ -92,33 +92,21 @@ server.tool(
           { err, source: 'whatsapp.start_auth.connect' },
           'provider connect failed during start_auth',
         );
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                error: 'connect failed during start_auth',
-                detail: err instanceof Error ? err.message : String(err),
-                source: 'whatsapp.start_auth.connect',
-              }),
-            },
-          ],
-          isError: true,
-        };
+        return mcpError(
+          McpErrorCode.API_ERROR,
+          err instanceof Error ? err.message : String(err),
+          'whatsapp.start_auth.connect',
+        );
       }
     }
     const status = provider.getStatus();
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            status: status.connected ? 'connected' : 'authenticating',
-            identity: status.identity,
-          }),
-        },
-      ],
-    };
+    return mcpResponse(
+      {
+        status: status.connected ? 'connected' : 'authenticating',
+        identity: status.identity,
+      },
+      { compact: args.compact, select: args.select },
+    );
   },
 );
 

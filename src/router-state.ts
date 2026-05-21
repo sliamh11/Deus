@@ -80,6 +80,10 @@ export class RouterState {
   get sessions(): Record<string, RuntimeSession> {
     const flat: Record<string, RuntimeSession> = {};
     for (const [folder, refs] of Object.entries(this._sessions)) {
+      // llama-cpp sessions require explicit backend selection — no implicit
+      // fallback to llama-cpp from a missing-backend query. Matches Deus
+      // opt-in semantics: a caller that doesn't specify a backend should
+      // never surprise-route to an opt-in local backend.
       const ref = refs.claude ?? refs.openai;
       if (ref) flat[folder] = ref;
     }
@@ -92,6 +96,9 @@ export class RouterState {
   ): RuntimeSession | undefined {
     const refs = this._sessions[folder];
     if (!refs) return undefined;
+    // See note in `sessions` getter — no implicit fallback to llama-cpp.
+    // Callers must pass `backend: 'llama-cpp'` explicitly to retrieve a
+    // llama-cpp session from the per-folder ref map.
     return backend ? refs[backend] : (refs.claude ?? refs.openai);
   }
 

@@ -88,6 +88,34 @@ def test_db_path_honors_deus_db_env(tmp_path, fresh_vault, monkeypatch):
     assert mod.DB_PATH == custom_db
 
 
+# ── Reranker configuration defaults ──────────────────────────────────────
+
+
+def test_reranker_default_is_bge_v2_m3(monkeypatch):
+    """Default RERANKER_MODEL when DEUS_RERANKER_MODEL is unset.
+
+    See docs/decisions/atom-retrieval-pipeline.md amendment (2026-05-17) for rationale.
+    """
+    monkeypatch.delenv("DEUS_RERANKER_MODEL", raising=False)
+    if "memory_indexer" in sys.modules:
+        del sys.modules["memory_indexer"]
+
+    mod = importlib.import_module("memory_indexer")
+
+    assert mod.RERANKER_MODEL == "BAAI/bge-reranker-v2-m3"
+
+
+def test_reranker_env_var_override(monkeypatch):
+    """User can revert to the legacy cross-encoder via DEUS_RERANKER_MODEL."""
+    monkeypatch.setenv("DEUS_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    if "memory_indexer" in sys.modules:
+        del sys.modules["memory_indexer"]
+
+    mod = importlib.import_module("memory_indexer")
+
+    assert mod.RERANKER_MODEL == "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+
 # ── extract_frontmatter ───────────────────────────────────────────────────
 
 

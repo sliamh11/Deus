@@ -128,7 +128,7 @@ After saving the session log:
            - **Compound items** (`A + B`): if a pending item has sub-tasks joined by ` + `, match each part independently. All parts matched → remove whole item. Some parts matched → rewrite to keep only unmatched parts. Example: pending `Refactor auth + update docs` with `[x] Refactor auth (done)` → rewrite to `update docs`.
            - **Dedup pass**: after removals, check each remaining `[ ]` item — if it is semantically covered by any `[x]` (same feature/identifier, different wording), remove it.
         3. Add any new `[ ]` items from the session log that don't already exist in the pending list and aren't already covered by a `[x]` from this session (avoid duplicates).
-        4. Cap at 10 items. If over 10, archive the oldest items to `$VAULT/CLAUDE-Archive.md`.
+        4. No hard item cap on `pending:`. Total file size is the governor: if `pending:` growth pushes CLAUDE.md over the 75-line check in step (d) below, the oldest non-critical items are archived per (d). Do NOT drop a live `[ ]` solely to hit a count limit — existing removal rules in steps 2-3 (completion matching, dedup) are the only mechanisms that should retire `[ ]` items.
         5. Write the merged list back to `pending:`.
 
    d. After writing, count total lines in CLAUDE.md. If > 75 lines: read the `critical:` list from the CLAUDE.md frontmatter — that is the authoritative set of protected keys. Identify the oldest non-critical content block (any line whose `key:` prefix is NOT in the `critical:` list) and move it to `$VAULT/CLAUDE-Archive.md` with a date header. Never archive lines whose key appears in `critical:`. If no `critical:` block exists in the frontmatter, fall back to refusing to archive and log a warning — missing schema is safer than guessing. When in doubt, prefer NOT archiving — a 5-line overshoot is fine; losing a load-bearing rule is not.
@@ -173,15 +173,13 @@ After saving the session log:
    ```
 
    Read `session_window` from `~/deus/.claude/wardens/retrospective-schema.md` (default: 20).
-   If `NEW_COUNT >= session_window`, dispatch the retrospective agent in the background:
+   If `NEW_COUNT >= session_window`, dispatch the retrospective via an in-session Agent subagent (background):
 
-   ```bash
-   command -v claude >/dev/null 2>&1 && \
-     claude -p "Use the session-retrospective subagent. SESSION_LOG_ROOT=\"$VAULT\"" \
-     > /dev/null 2>&1 &
-   ```
+   Use the Agent tool with `subagent_type: "session-retrospective"`, `run_in_background: true`, and prompt:
+   `"Run a session retrospective. SESSION_LOG_ROOT=$VAULT"` (substitute the resolved `$VAULT` variable).
 
-   If `claude` CLI is not available (e.g. Codex backend), skip silently.
+   This avoids `claude -p` which draws from the Agent SDK credit on subscription plans.
+   If the Agent tool is unavailable (e.g. non-Claude backend), skip silently.
    If any check fails, skip silently — the retrospective can always be triggered manually.
 
 Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, and whether a session retrospective was triggered (home mode only — report "retrospective triggered (background)" or "retrospective skipped: <reason>").

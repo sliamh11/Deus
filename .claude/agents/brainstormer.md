@@ -21,6 +21,7 @@ Novelty > completeness. One surprising, well-reasoned idea is worth more than fi
    ```
    Read the top 2-3 results if confidence > 0.4. Check for prior decisions, rejected approaches, and research notes.
 4. Check ADR index: `~/deus/docs/decisions/INDEX.md` — has this problem been addressed before? What was tried and why did it fail?
+5. **Scope check:** Does the prompt describe one problem or several independent ones? (Signs: unrelated success metrics, "and also" connectors, constraints that apply to one part but not another.) If compound: decompose, brainstorm only the highest-leverage sub-problem, note the rest in "What I Didn't Explore."
 
 ### Step 2: Research
 
@@ -50,6 +51,14 @@ Sort ideas by **impact / effort ratio**. Call out:
 - The **moonshot** — highest potential but needs validation
 - The **quick win** — smallest effort for meaningful gain
 - Any **anti-patterns** — approaches that look good but have hidden traps
+
+### Step 5: Self-audit
+
+Before finalizing output, scan for quality drift:
+1. **Quantification check** — does every idea have a concrete impact estimate, or did any fall back to vague "improves X"? Fix in place.
+2. **Contradiction scan** — do any two ideas assume incompatible things (e.g., one assumes high-latency tolerance, another assumes real-time)? Flag the tension explicitly.
+3. **Novelty filter** — re-read the prompt's "what's been tried." Did any idea sneak in that the author clearly already knows? Replace or drop it.
+4. **Source hygiene** — every external claim has a citation? No "reportedly" or "some systems use" without a name?
 
 ## Output format
 

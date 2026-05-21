@@ -99,13 +99,14 @@ Use these instead of rediscovering the system:
 |---|---|---|
 | Task routing | [`.mex/ROUTER.md`](.mex/ROUTER.md) | Maps task type to the required pattern file |
 | Host runtime | `src/message-orchestrator.ts`, `src/container-runner.ts` | Agent dispatch, sessions, streaming, container wiring |
-| Backend selection | `src/agent-runtimes/resolve.ts` | Task > group > env > Claude fallback |
+| Backend selection | `src/agent-runtimes/resolve.ts`, `src/agent-runtimes/registry.ts` | Task > group > env > Claude fallback; three registered runtimes: claude, openai, llama-cpp |
 | Session storage | `src/db.ts`, `src/router-state.ts` | Backend-scoped session refs and resume state |
 | Scheduler | `src/task-scheduler.ts` | Same backend/session rules as interactive turns |
 | Container context | `container/agent-runner/src/context-registry.ts` | Runtime-loaded onboarding and memory surfaces |
-| OpenAI adapter | `container/agent-runner/src/openai-backend.ts` | OpenAI/Codex backend implementation |
-| Claude path | `container/agent-runner/src/index.ts` | Compatibility baseline path |
+| OpenAI adapter | `container/agent-runner/src/openai-backend.ts` | OpenAI/Codex in-container backend implementation |
+| Claude path | `container/agent-runner/src/index.ts` | Compatibility baseline path (in-container) |
 | TUI backends | `tui/src/backend/` | Strategy trait — one file per provider (Claude, Codex, etc.) |
+| Tool proxy | `src/tool-proxy.ts`, `src/tool-registry.ts` | HTTP proxy (:3003) executing allowlisted host CLIs for containers; credentials never passed to containers |
 | Mount/security boundary | `src/container-mounter.ts` | Project/group/vault visibility and isolation |
 | Memory retrieval | `scripts/memory_tree.py`, `scripts/memory_indexer.py` | Personal recall and semantic lookup |
 | Codex Warden hooks | `scripts/codex_warden_hooks.py` | Installs and runs Codex hook equivalents for Warden gates (plan-reviewer, code-reviewer, verification-gate, threat-modeler) |

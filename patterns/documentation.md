@@ -1,7 +1,7 @@
 ---
 governs:
   - docs/
-last_verified: "2026-05-16"
+last_verified: "2026-05-19T13:00:00" # auto-bump (judge-lora-specialization ADR)
 test_tasks:
   - "Add a new ADR to docs/decisions/ explaining an architectural change"
   - "Update ARCHITECTURE.md after a major refactor"

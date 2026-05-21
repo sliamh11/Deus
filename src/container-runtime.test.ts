@@ -24,11 +24,14 @@ import {
   stopContainerSync,
   ensureContainerRuntimeRunning,
   cleanupOrphans,
+  _setSleepFnForTests,
 } from './container-runtime.js';
+import { FatalError } from './errors/index.js';
 import { logger } from './logger.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  _setSleepFnForTests(() => {});
 });
 
 // --- Pure functions ---
@@ -62,22 +65,72 @@ describe('ensureContainerRuntimeRunning', () => {
     expect(mockExecFileSync).toHaveBeenCalledWith(
       CONTAINER_RUNTIME_BIN,
       ['info'],
-      { stdio: 'pipe', timeout: 10000 },
+      { stdio: 'pipe', timeout: 10_000 },
     );
     expect(logger.debug).toHaveBeenCalledWith(
       'Container runtime already running',
     );
   });
 
-  it('throws when docker info fails', () => {
-    mockExecFileSync.mockImplementationOnce(() => {
-      throw new Error('Cannot connect to the Docker daemon');
+  it('throws FatalError after all retries exhausted', () => {
+    const dockerErr = new Error('Cannot connect to the Docker daemon');
+    mockExecFileSync.mockImplementation(() => {
+      throw dockerErr;
     });
 
-    expect(() => ensureContainerRuntimeRunning()).toThrow(
-      'Container runtime is required but failed to start',
-    );
+    expect(() => ensureContainerRuntimeRunning()).toThrow(FatalError);
+    // 1 initial + 6 retries = 7 total calls
+    expect(mockExecFileSync).toHaveBeenCalledTimes(7);
     expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('succeeds after retries when runtime becomes available', () => {
+    const dockerErr = new Error('Cannot connect to the Docker daemon');
+    mockExecFileSync
+      .mockImplementationOnce(() => {
+        throw dockerErr;
+      })
+      .mockImplementationOnce(() => {
+        throw dockerErr;
+      })
+      .mockImplementationOnce(() => {
+        throw dockerErr;
+      })
+      .mockReturnValueOnce('');
+
+    ensureContainerRuntimeRunning();
+
+    expect(mockExecFileSync).toHaveBeenCalledTimes(4);
+    expect(logger.info).toHaveBeenCalledWith(
+      { attempt: 4 },
+      'Container runtime became available after retries',
+    );
+  });
+
+  it('logs warning on each retry attempt', () => {
+    const dockerErr = new Error('Cannot connect to the Docker daemon');
+    mockExecFileSync
+      .mockImplementationOnce(() => {
+        throw dockerErr;
+      })
+      .mockImplementationOnce(() => {
+        throw dockerErr;
+      })
+      .mockReturnValueOnce('');
+
+    ensureContainerRuntimeRunning();
+
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenNthCalledWith(
+      1,
+      { attempt: 1, maxRetries: 6, delayMs: 5_000 },
+      'Container runtime not ready, retrying...',
+    );
+    expect(logger.warn).toHaveBeenNthCalledWith(
+      2,
+      { attempt: 2, maxRetries: 6, delayMs: 10_000 },
+      'Container runtime not ready, retrying...',
+    );
   });
 });
 

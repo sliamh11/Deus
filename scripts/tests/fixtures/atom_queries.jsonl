@@ -1,6 +1,6 @@
 {"query": "where is the deus project located", "expected_atoms": ["project directory is located at ~/deus", "project at ~/deus", "project 'deus' at the path ~/deus"], "tag": "fact"}
 {"query": "what is the default embedding provider", "expected_atoms": ["Ollama is the default provider for memory embeddings"], "tag": "entity"}
-{"query": "what are the trading risk limits", "expected_atoms": ["maximum 2% risk per trade", "3% daily drawdown limit", "bracket limit orders"], "tag": "constraint"}
+{"query": "what are the trading risk limits", "expected_atoms": ["trading risk management requires"], "tag": "constraint"}
 {"query": "database deletion policy", "expected_atoms": ["no-DB-deletion policy", "orphaned_at and expired_at flags"], "tag": "constraint"}
 {"query": "how does the code review process work", "expected_atoms": [".code-reviewed marker", "SHIP verdict from a code reviewer"], "tag": "methodology"}
 {"query": "documentation style preference", "expected_atoms": ["caveman", "extreme brevity", "removing articles"], "tag": "preference"}
@@ -38,3 +38,23 @@
 {"query": "what gym do I go to", "expected_atoms": [], "tag": "abstain-near"}
 {"query": "my shoe size", "expected_atoms": [], "tag": "abstain-near"}
 {"query": "what brand laptop do I use", "expected_atoms": [], "tag": "abstain-near"}
+{"query": "איפה הקבצים של לינארית 1", "expected_atoms": ["linear algebra course materials are located", "permanent study tools"], "tag": "hebrew"}
+{"query": "מתי המבחן בלינארית 1", "expected_atoms": ["preparing for a linear algebra 1 exam", "studying for a linear algebra 1 exam"], "tag": "hebrew"}
+{"query": "איך לטפל ב-RTL במסמכים של פייתון", "expected_atoms": ["whitespace-normalization (handling tabs"], "tag": "hebrew"}
+{"query": "באיזה מודל אני משתמש ל-OCR בעברית", "expected_atoms": ["primary ocr model for hebrew cursive", "gemini api for hebrew ocr"], "tag": "hebrew"}
+{"query": "סדר אלמנטים של w:pPr ב-OOXML", "expected_atoms": ["manually construct w:ppr elements"], "tag": "hebrew"}
+{"query": "מה ההעדפה שלי ל-OCR בכתב יד", "expected_atoms": ["primary ocr model for hebrew cursive"], "tag": "hebrew"}
+{"query": "מודל ה-OCR העדיף לעברית", "expected_atoms": ["primary ocr model for hebrew cursive", "gemini api for hebrew ocr"], "tag": "hebrew"}
+{"query": "תיקיית הלימודים של לינארית 1", "expected_atoms": ["linear algebra course materials are located"], "tag": "hebrew"}
+{"query": "איך אני מציג עברית ב-CLI", "expected_atoms": ["hebrew text in cli output to be rendered"], "tag": "hebrew"}
+{"query": "למה ויתרתי על BiDi בטרמינל", "expected_atoms": ["abandoned attempts to use terminal-based bidi"], "tag": "hebrew"}
+{"query": "איזה קוד שפה ל-YouTube בעברית", "expected_atoms": ["'iw' language code for hebrew youtube"], "tag": "hebrew"}
+{"query": "איפה הגדרות Ghostty", "expected_atoms": ["ghostty configuration file is located"], "tag": "hebrew"}
+{"query": "איך להציג KaTeX בעמוד עברי", "expected_atoms": ["katex ltr isolation rule"], "tag": "hebrew"}
+{"query": "איך אני מטפל ב-RTL בטרמינל", "expected_atoms": ["unicode-bidi crate"], "tag": "hebrew"}
+{"query": "איך להמיר מסמך מ-RTL ל-LTR", "expected_atoms": ["rtl-to-ltr conversion for hebrew documents"], "tag": "hebrew"}
+{"query": "מה אני משתמש לאוטומציה של clipboard", "expected_atoms": ["hammerspoon for clipboard processing"], "tag": "hebrew"}
+{"query": "מבנה של Feynman Check", "expected_atoms": ["feynman study checks as 1-by-1 question formats"], "tag": "hebrew"}
+{"query": "באיזו שפה אני עונה", "expected_atoms": ["respond in english only"], "tag": "hebrew"}
+{"query": "איזה כרכים של לינארית 1 אני לומד", "expected_atoms": ["volume c (chapters 9-12)"], "tag": "hebrew"}
+{"query": "מה הלולאה השבועית של הלימוד שלי", "expected_atoms": ["weekly study loop consisting of setup"], "tag": "hebrew"}

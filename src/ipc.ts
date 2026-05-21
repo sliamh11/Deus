@@ -19,7 +19,10 @@ import {
   getProjectById,
 } from './project-registry.js';
 import { RegisteredGroup } from './types.js';
-import type { AgentRuntimeId } from './agent-runtimes/types.js';
+import {
+  parseAgentBackend,
+  type AgentRuntimeId,
+} from './agent-runtimes/types.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -37,10 +40,6 @@ export interface IpcDeps {
 }
 
 let ipcWatcherRunning = false;
-
-function parseAgentBackend(value: unknown): AgentRuntimeId | undefined {
-  return value === 'claude' || value === 'openai' ? value : undefined;
-}
 
 export function startIpcWatcher(deps: IpcDeps): void {
   if (ipcWatcherRunning) {

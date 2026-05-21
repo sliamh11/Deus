@@ -16,6 +16,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { mcpResponse, withMcpError } from '@deus-ai/channel-core';
 import { z } from 'zod';
 
 import { XClient } from './x.js';
@@ -31,44 +32,51 @@ const x = new XClient();
 
 server.tool(
   'post_tweet',
-  'Post a new tweet',
-  { text: z.string().max(280, 'Tweet must be 280 characters or fewer') },
-  async (args) => {
-    const result = await x.postTweet(args.text);
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(result) }],
-    };
+  'Post a new tweet. Pass select="id,url" + compact=true to slim the returned TweetResult.',
+  {
+    text: z.string().max(280, 'Tweet must be 280 characters or fewer'),
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
   },
+  async (args) =>
+    withMcpError('x.post_tweet', () => x.postTweet(args.text), {
+      compact: args.compact,
+      select: args.select,
+    }),
 );
 
 server.tool(
   'reply_to_tweet',
-  'Reply to an existing tweet',
+  'Reply to an existing tweet. Pass select="id,url" + compact=true to slim the returned TweetResult.',
   {
     tweet_id: z.string(),
     text: z.string().max(280, 'Tweet must be 280 characters or fewer'),
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
   },
-  async (args) => {
-    const result = await x.replyToTweet(args.tweet_id, args.text);
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(result) }],
-    };
-  },
+  async (args) =>
+    withMcpError(
+      'x.reply_to_tweet',
+      () => x.replyToTweet(args.tweet_id, args.text),
+      { compact: args.compact, select: args.select },
+    ),
 );
 
 server.tool(
   'quote_tweet',
-  'Quote an existing tweet with added commentary',
+  'Quote an existing tweet with added commentary. Pass select="id,url" + compact=true to slim the returned TweetResult.',
   {
     tweet_id: z.string(),
     text: z.string().max(280, 'Tweet must be 280 characters or fewer'),
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
   },
-  async (args) => {
-    const result = await x.quoteTweet(args.tweet_id, args.text);
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(result) }],
-    };
-  },
+  async (args) =>
+    withMcpError(
+      'x.quote_tweet',
+      () => x.quoteTweet(args.tweet_id, args.text),
+      { compact: args.compact, select: args.select },
+    ),
 );
 
 // ── Engage ────────────────────────────────────────────────────────────
@@ -117,64 +125,79 @@ server.tool(
 
 server.tool(
   'get_timeline',
-  'Get recent tweets from your home timeline',
-  { count: z.number().int().min(1).max(100).optional().default(10) },
-  async (args) => {
-    const tweets = await x.getTimeline(args.count);
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(tweets) }],
-    };
+  'Get recent tweets from your home timeline. Pass select="id,url" + compact=true to cut payload on list ops.',
+  {
+    count: z.number().int().min(1).max(100).optional().default(10),
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
   },
+  async (args) =>
+    withMcpError('x.get_timeline', () => x.getTimeline(args.count), {
+      compact: args.compact,
+      select: args.select,
+    }),
 );
 
 server.tool(
   'search_tweets',
-  'Search recent tweets by keyword or query',
+  'Search recent tweets by keyword or query. Pass select="id,url" + compact=true to cut payload on list ops.',
   {
     query: z.string(),
     count: z.number().int().min(10).max(100).optional().default(10),
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
   },
-  async (args) => {
-    const tweets = await x.searchTweets(args.query, args.count);
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(tweets) }],
-    };
-  },
+  async (args) =>
+    withMcpError(
+      'x.search_tweets',
+      () => x.searchTweets(args.query, args.count),
+      { compact: args.compact, select: args.select },
+    ),
 );
 
 server.tool(
   'get_tweet',
-  'Get a single tweet by ID',
-  { tweet_id: z.string() },
-  async (args) => {
-    const tweet = await x.getTweet(args.tweet_id);
-    return {
-      content: [{ type: 'text' as const, text: JSON.stringify(tweet) }],
-    };
+  'Get a single tweet by ID. Pass select="id,url" + compact=true to slim the response.',
+  {
+    tweet_id: z.string(),
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
   },
+  async (args) =>
+    withMcpError('x.get_tweet', () => x.getTweet(args.tweet_id), {
+      compact: args.compact,
+      select: args.select,
+    }),
 );
 
-server.tool('get_my_profile', 'Get your own X profile info', {}, async () => {
-  const profile = await x.getMyProfile();
-  return {
-    content: [{ type: 'text' as const, text: JSON.stringify(profile) }],
-  };
-});
+server.tool(
+  'get_my_profile',
+  'Get your own X profile info. Pass select="id,username,name" + compact=true for a slimmer response.',
+  {
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
+  },
+  async (args) =>
+    withMcpError('x.get_my_profile', () => x.getMyProfile(), {
+      compact: args.compact,
+      select: args.select,
+    }),
+);
 
 server.tool(
   'get_status',
-  'Check whether X credentials are configured',
-  {},
-  async () => {
+  'Check whether X credentials are configured. Pass select="configured" + compact=true for a minimal response.',
+  {
+    compact: z.boolean().optional(),
+    select: z.string().optional(),
+  },
+  async (args) => {
+    // No try/catch needed — x.isConfigured() is pure (no API call).
     const configured = x.isConfigured();
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({ configured, channel: 'x' }),
-        },
-      ],
-    };
+    return mcpResponse(
+      { configured, channel: 'x' },
+      { compact: args.compact, select: args.select },
+    );
   },
 );
 

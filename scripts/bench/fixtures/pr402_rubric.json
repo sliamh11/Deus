@@ -1,0 +1,78 @@
+{
+  "pr_number": 402,
+  "pr_title": "fix(hooks): standards_pack.py resolver references non-existent mt.EXTERNAL_DIR",
+  "task_class": "code-review",
+  "authored_date": "2026-05-18",
+  "issues": [
+    {
+      "id": "bare_except_root_cause",
+      "title": "Bare except swallowed AttributeError",
+      "description": "The pre-fix code wrapped `Path(mt.EXTERNAL_DIR)` in `try: ... except Exception:` which silently swallowed the AttributeError when mt.EXTERNAL_DIR didn't exist. A good reviewer should diagnose this bare-except as the root cause that hid the broken reference for ~2 days.",
+      "category": "correctness",
+      "must_mention_one_of": ["bare except", "except Exception", "swallow", "broad exception", "AttributeError"]
+    },
+    {
+      "id": "worktree_path_divergence",
+      "title": "CLAUDE_PROJECT_DIR encoding produces non-existent path for worktrees",
+      "description": "The new resolver encodes CLAUDE_PROJECT_DIR by replacing '/' with '-'. When invoked from a git worktree (`.claude/worktrees/<sub>/`), the encoded path resolves to a different directory than the main repo's. The bench itself hit exactly this footgun in v1. Reviewer should flag worktree-vs-main behavior divergence.",
+      "category": "edge_case",
+      "must_mention_one_of": ["worktree", "encoded path", "git worktree", "subdirectory"]
+    },
+    {
+      "id": "env_var_no_sanitization",
+      "title": "DEUS_AUTO_MEMORY_DIR is user-controlled env, no sanitization",
+      "description": "The env-var override takes precedence in the fallback chain without validation. A user-set DEUS_AUTO_MEMORY_DIR pointing at e.g. /etc or a symlink chain would be accepted as-is. Low-severity (read-only file access, no exec), but the trust boundary should be acknowledged.",
+      "category": "security",
+      "must_mention_one_of": ["sanitization", "validation", "user-controlled", "trust boundary", "untrusted", "env"]
+    },
+    {
+      "id": "zero_standard_atoms_detection",
+      "title": "Fail-loud when dir exists but has 0 kind=standard atoms",
+      "description": "The PR adds stderr warnings for two distinct silent-fail modes: (a) resolved dir doesn't exist, and (b) dir exists but contains 0 atoms with kind=standard. The second case is the actual smoking gun for this PR — previously the bench loaded an empty pack with no diagnostic. Reviewer should call out the 2-case detection as a good catch.",
+      "category": "correctness",
+      "must_mention_one_of": ["zero atoms", "0 standard", "empty", "kind=standard", "fail-loud", "stderr warning"]
+    },
+    {
+      "id": "encoding_special_chars",
+      "title": "Replace('/', '-') doesn't handle other special characters",
+      "description": "The encoded path uses `replace('/', '-')` but doesn't address spaces, unicode (e.g. Hebrew home-dir paths common in this codebase), or other shell-significant chars. If CLAUDE_PROJECT_DIR contains a space or Hebrew characters, the encoded result may not match the expected ~/.claude/projects/<encoded>/ directory name.",
+      "category": "edge_case",
+      "must_mention_one_of": ["space", "unicode", "Hebrew", "special character", "non-ASCII", "encoding"]
+    },
+    {
+      "id": "fallback_ordering_rationale",
+      "title": "4-tier fallback ordering — explicit env > project-derived > legacy > default",
+      "description": "The order is: (1) DEUS_AUTO_MEMORY_DIR env, (2) CLAUDE_PROJECT_DIR-derived, (3) legacy literal path, (4) ~/.deus/auto-memory. Reviewer should confirm this priority makes sense — explicit user override should win, but should legacy literal really beat default? What if user has stale atoms at the legacy path that aren't intended for new sessions?",
+      "category": "correctness",
+      "must_mention_one_of": ["fallback order", "priority", "precedence", "legacy", "explicit override"]
+    },
+    {
+      "id": "startswith_dash_dead_branch",
+      "title": "if not encoded.startswith('-') branch is effectively dead",
+      "description": "After `encoded = project_dir.replace('/', '-')`, an absolute path always becomes a string starting with '-' (because absolute paths start with '/'). The subsequent `if not encoded.startswith('-'): encoded = '-' + encoded` branch is dead code in practice. Reviewer should question whether the defensive check is necessary or if there's an unexpected case it's guarding.",
+      "category": "correctness",
+      "must_mention_one_of": ["dead branch", "startswith", "absolute path", "dead code", "unreachable"]
+    },
+    {
+      "id": "stderr_emission_visibility",
+      "title": "Fail-loud stderr warning visibility in hook context",
+      "description": "The PR emits warnings to stderr. In SessionStart hook context (where standards_pack is invoked), stderr may be captured by the harness, suppressed, or interleaved with other hook output. A 2-day silent-fail prompted this fix; reviewer should ask whether stderr is the right channel (vs. exit code or structured logging).",
+      "category": "correctness",
+      "must_mention_one_of": ["stderr", "visibility", "hook context", "suppressed", "captured"]
+    },
+    {
+      "id": "symlink_handling",
+      "title": "Symlink edge case for candidate dir",
+      "description": "`candidate.is_dir()` returns False for broken symlinks and True for valid symlinks to directories. If a user has a symlink pointing to a deleted dir, the resolver correctly falls through. But if the symlink target is on a slow/unmounted network drive, is_dir() may block. Low-severity but a reviewer should at least note symlink semantics.",
+      "category": "edge_case",
+      "must_mention_one_of": ["symlink", "broken link", "network drive", "is_dir"]
+    },
+    {
+      "id": "check_then_use_race",
+      "title": "Check-then-use race between is_dir() and actual file ops",
+      "description": "The resolver does `if candidate.is_dir(): return candidate`. Between this check and the caller's actual file enumeration, the directory could be deleted (rare on Deus where the dir is durable, but theoretically possible). Reviewer can flag as a theoretical TOCTOU but accept the simple check as good-enough.",
+      "category": "edge_case",
+      "must_mention_one_of": ["TOCTOU", "race", "check-then-use", "race condition", "concurrent"]
+    }
+  ]
+}

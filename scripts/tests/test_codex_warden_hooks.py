@@ -222,6 +222,78 @@ def test_plan_review_gate_returns_zero_outside_worktree(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_plan_review_gate_returns_zero_for_outside_worktree_target(tmp_path, capsys):
+    """Regression: cwd-in-worktree + target-outside-worktree must not BLOCK (PR #430 over-fire)."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    outside_target = tmp_path / "outside" / "plan.md"
+    outside_target.parent.mkdir(parents=True)
+    outside_target.write_text("# plan\n", encoding="utf-8")
+    # cwd is inside the worktree (`repo`); target is outside it entirely.
+    # No `.plan-reviewed` marker — pre-fix this would BLOCK.
+
+    rc = hooks.run_plan_review_gate(
+        apply_patch_event(repo, str(outside_target)),
+        repo,
+    )
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_plan_review_gate_returns_zero_for_home_plans_target(tmp_path, capsys):
+    """Regression: editing `~/.claude/plans/<plan>.md` from worktree cwd must not BLOCK."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    fake_home = tmp_path / "fake_home"
+    plan_target = fake_home / ".claude" / "plans" / "plan-xyz.md"
+    plan_target.parent.mkdir(parents=True)
+    plan_target.write_text("# plan content\n", encoding="utf-8")
+
+    rc = hooks.run_plan_review_gate(
+        apply_patch_event(repo, str(plan_target)),
+        repo,
+    )
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_plan_review_gate_still_blocks_mixed_targets_with_in_worktree_path(
+    tmp_path, capsys,
+):
+    """PR #430 invariant: any in-worktree raw path keeps the gate firing, even when mixed with outside-worktree targets."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / ".gitignore").write_text("*.local.json\n", encoding="utf-8")
+    (repo / "src" / "app.local.json").write_text("{}\n", encoding="utf-8")
+    outside_target = tmp_path / "outside" / "x.md"
+    outside_target.parent.mkdir(parents=True)
+    outside_target.write_text("# x\n", encoding="utf-8")
+    # Build a multi-file apply_patch command — PATCH_FILE_RE extracts
+    # both via the `*** Update File:` regex (codex_warden_hooks.py:234).
+    multi_patch = (
+        "*** Begin Patch\n"
+        f"*** Update File: src/app.local.json\n"
+        "@@\n-{}\n+{\"k\": 1}\n"
+        f"*** Update File: {outside_target}\n"
+        "@@\n-# x\n+# y\n"
+        "*** End Patch\n"
+    )
+    event = tool_event(repo, "apply_patch", {"command": multi_patch})
+
+    rc = hooks.run_plan_review_gate(event, repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    specific = output["hookSpecificOutput"]
+    assert specific["hookEventName"] == "PreToolUse"
+    assert specific["permissionDecision"] == "deny"
+    reason = specific["permissionDecisionReason"]
+    assert "no plan-reviewer approval marker" in reason
+
+
 def test_code_review_gate_blocks_git_commit_without_marker(tmp_path, capsys):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
@@ -459,13 +531,8 @@ def test_code_review_invalidator_clears_marker_after_edit(tmp_path):
     assert not marker.exists()
 
 
-def test_code_review_invalidator_clears_marker_on_gitignored_edit(tmp_path):
-    """Regression mirror of the verification-invalidator gitignored case.
-
-    Both invalidators share the empty-paths fix shape — see
-    `test_verification_invalidator_clears_marker_on_gitignored_edit` for
-    the full rationale.
-    """
+def test_code_review_invalidator_preserves_marker_on_gitignored_edit(tmp_path):
+    """Gitignored edits return empty paths → marker must survive."""
     hooks = load_hooks()
     repo = git_repo(tmp_path)
     (repo / "src").mkdir()
@@ -479,15 +546,11 @@ def test_code_review_invalidator_clears_marker_on_gitignored_edit(tmp_path):
     )
 
     assert rc == 0
-    assert not marker.exists()
+    assert marker.exists()
 
 
-def test_code_review_invalidator_clears_marker_on_worktree_excluded_edit(tmp_path):
-    """Regression mirror — `.claude/worktrees/<sub>/...` edits now invalidate.
-
-    See verification-invalidator counterpart for the full rationale; this
-    is the same fix applied to `.code-reviewed`.
-    """
+def test_code_review_invalidator_preserves_marker_on_worktree_excluded_edit(tmp_path):
+    """Edits inside `.claude/worktrees/<sub>/...` are filtered → marker must survive."""
     hooks = load_hooks()
     repo = git_repo(tmp_path)
     (repo / ".claude" / "worktrees" / "foo" / "src").mkdir(parents=True)
@@ -502,7 +565,7 @@ def test_code_review_invalidator_clears_marker_on_worktree_excluded_edit(tmp_pat
     )
 
     assert rc == 0
-    assert not marker.exists()
+    assert marker.exists()
 
 
 def test_code_review_invalidator_does_not_clear_marker_outside_worktree(tmp_path):
@@ -1431,15 +1494,8 @@ def test_verification_invalidator_clears_marker_after_edit(tmp_path):
     assert not marker.exists()
 
 
-def test_verification_invalidator_clears_marker_on_gitignored_edit(tmp_path):
-    """Regression: gitignored Edit targets now invalidate `.verified`.
-
-    Pre-fix: `_managed_paths` returned `(worktree, [])` because `.gitignore`
-    filtered every event path, so `if paths:` short-circuited without
-    unlinking — leaving stale verification in place. Post-fix: the
-    worktree-presence check fires invalidation regardless of post-filter
-    path emptiness.
-    """
+def test_verification_invalidator_preserves_marker_on_gitignored_edit(tmp_path):
+    """Gitignored edits return empty paths → `.verified` must survive."""
     hooks = load_hooks()
     repo = git_repo(tmp_path)
     (repo / "src").mkdir()
@@ -1453,17 +1509,11 @@ def test_verification_invalidator_clears_marker_on_gitignored_edit(tmp_path):
     )
 
     assert rc == 0
-    assert not marker.exists()
+    assert marker.exists()
 
 
-def test_verification_invalidator_clears_marker_on_worktree_excluded_edit(tmp_path):
-    """Regression: edits inside `.claude/worktrees/<sub>/...` now invalidate.
-
-    The actual session-bug scenario — subagent-worktree source edits were
-    filtered by `_is_excluded`, so `_managed_paths` returned
-    `(worktree, [])` and the marker stayed stale. The fix pins this case
-    by checking worktree-presence instead of path-truthiness.
-    """
+def test_verification_invalidator_preserves_marker_on_worktree_excluded_edit(tmp_path):
+    """Edits inside `.claude/worktrees/<sub>/...` are filtered → `.verified` must survive."""
     hooks = load_hooks()
     repo = git_repo(tmp_path)
     (repo / ".claude" / "worktrees" / "foo" / "src").mkdir(parents=True)
@@ -1478,7 +1528,7 @@ def test_verification_invalidator_clears_marker_on_worktree_excluded_edit(tmp_pa
     )
 
     assert rc == 0
-    assert not marker.exists()
+    assert marker.exists()
 
 
 def test_verification_invalidator_does_not_clear_marker_outside_worktree(tmp_path):
@@ -2035,3 +2085,384 @@ def test_approve_admin_merge_succeeds_when_ci_green(monkeypatch, tmp_path, capsy
     assert (repo / ".claude" / ".admin-merge-approved").exists()
     out = capsys.readouterr().out
     assert "Approved" in out
+
+
+# --- Cold-memory injection tests ---
+
+
+def _pattern_file(repo: Path, name: str, governs: list[str], body: str = "") -> None:
+    patterns_dir = repo / "patterns"
+    patterns_dir.mkdir(exist_ok=True)
+    frontmatter = "---\ngoverns:\n" + "".join(f"  - {g}\n" for g in governs) + "---\n"
+    (patterns_dir / name).write_text(frontmatter + body, encoding="utf-8")
+
+
+def _reset_cold_memory_state():
+    hooks = load_hooks()
+    hooks._PATTERN_ROUTES_CACHE = None
+    hooks._INJECTED_DOCS.clear()
+
+
+def test_cold_memory_injector_injects_matching_pattern(tmp_path, capsys):
+    hooks = load_hooks()
+    _reset_cold_memory_state()
+    repo = git_repo(tmp_path)
+    _pattern_file(repo, "channel-add.md", ["src/channels"], "Channel conventions here.")
+    (repo / "src" / "channels").mkdir(parents=True)
+    target = repo / "src" / "channels" / "telegram.ts"
+    target.write_text("export {}", encoding="utf-8")
+
+    event = apply_patch_event(repo, "src/channels/telegram.ts")
+    rc = hooks.run_cold_memory_injector(event, repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert "channel-add" in output["systemMessage"]
+    assert "Channel conventions here." in output["systemMessage"]
+
+
+def test_cold_memory_injector_skips_unmatched_path(tmp_path, capsys):
+    hooks = load_hooks()
+    _reset_cold_memory_state()
+    repo = git_repo(tmp_path)
+    _pattern_file(repo, "channel-add.md", ["src/channels"], "Channel conventions.")
+    (repo / "scripts").mkdir()
+    target = repo / "scripts" / "build.py"
+    target.write_text("print('hi')", encoding="utf-8")
+
+    event = apply_patch_event(repo, "scripts/build.py")
+    rc = hooks.run_cold_memory_injector(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cold_memory_injector_respects_warden_disabled(tmp_path, capsys):
+    hooks = load_hooks()
+    _reset_cold_memory_state()
+    repo = git_repo(tmp_path)
+    _pattern_file(repo, "channel-add.md", ["src/channels"], "Channel conventions.")
+    (repo / "src" / "channels").mkdir(parents=True)
+    (repo / "src" / "channels" / "slack.ts").write_text("", encoding="utf-8")
+    wardens_dir = repo / ".claude" / "wardens"
+    wardens_dir.mkdir(parents=True, exist_ok=True)
+    (wardens_dir / "config.json").write_text(
+        json.dumps({"cold-memory-injector": {"enabled": False}}), encoding="utf-8"
+    )
+
+    event = apply_patch_event(repo, "src/channels/slack.ts")
+    rc = hooks.run_cold_memory_injector(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cold_memory_injector_most_specific_first(tmp_path, capsys):
+    hooks = load_hooks()
+    _reset_cold_memory_state()
+    repo = git_repo(tmp_path)
+    _pattern_file(repo, "general-code.md", ["src/"], "General rules.")
+    _pattern_file(repo, "channel-add.md", ["src/channels"], "Channel rules.")
+    (repo / "src" / "channels").mkdir(parents=True)
+    target = repo / "src" / "channels" / "discord.ts"
+    target.write_text("", encoding="utf-8")
+
+    event = apply_patch_event(repo, "src/channels/discord.ts")
+    rc = hooks.run_cold_memory_injector(event, repo)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    output = json.loads(out)
+    msg = output["systemMessage"]
+    channel_idx = msg.index("channel-add")
+    general_idx = msg.index("general-code")
+    assert channel_idx < general_idx
+
+
+def test_cold_memory_injector_caps_at_char_limit(tmp_path, capsys):
+    hooks = load_hooks()
+    _reset_cold_memory_state()
+    repo = git_repo(tmp_path)
+    large_body = "x" * 4000
+    _pattern_file(repo, "channel-add.md", ["src/channels"], large_body)
+    _pattern_file(repo, "general-code.md", ["src/"], "General rules.")
+    (repo / "src" / "channels").mkdir(parents=True)
+    target = repo / "src" / "channels" / "big.ts"
+    target.write_text("", encoding="utf-8")
+
+    event = apply_patch_event(repo, "src/channels/big.ts")
+    rc = hooks.run_cold_memory_injector(event, repo)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    output = json.loads(out)
+    assert "more pattern(s) matched but omitted" in output["systemMessage"]
+
+
+# --- Structural check tests ---
+
+
+def _structural_config(repo: Path, checks: list[dict]) -> None:
+    cold_dir = repo / ".claude" / "cold-memory"
+    cold_dir.mkdir(parents=True, exist_ok=True)
+    (cold_dir / "structural-checks.json").write_text(
+        json.dumps({"checks": checks}), encoding="utf-8"
+    )
+
+
+def test_structural_check_warns_on_pattern_match(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _structural_config(repo, [
+        {"id": "no-private-import", "glob": "src/**/*.ts", "pattern": "from.*src/private", "severity": "warn", "message": "No private imports"}
+    ])
+    (repo / "src").mkdir()
+    target = repo / "src" / "main.ts"
+    target.write_text("import { x } from '../src/private/foo'", encoding="utf-8")
+
+    event = apply_patch_event(repo, "src/main.ts")
+    rc = hooks.run_structural_check(event, repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert "no-private-import" in output["systemMessage"]
+
+
+def test_structural_check_silent_on_no_match(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _structural_config(repo, [
+        {"id": "no-private-import", "glob": "src/**/*.ts", "pattern": "from.*src/private", "severity": "warn", "message": "No private imports"}
+    ])
+    (repo / "src").mkdir()
+    target = repo / "src" / "clean.ts"
+    target.write_text("import { x } from './utils'", encoding="utf-8")
+
+    event = apply_patch_event(repo, "src/clean.ts")
+    rc = hooks.run_structural_check(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_structural_check_respects_exclude_glob(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _structural_config(repo, [
+        {"id": "no-private-import", "glob": "src/**/*.ts", "exclude_glob": "src/private/**", "pattern": "from.*src/private", "severity": "warn", "message": "No private imports"}
+    ])
+    (repo / "src" / "private").mkdir(parents=True)
+    target = repo / "src" / "private" / "internal.ts"
+    target.write_text("import { x } from '../src/private/shared'", encoding="utf-8")
+
+    event = apply_patch_event(repo, "src/private/internal.ts")
+    rc = hooks.run_structural_check(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_structural_check_skips_missing_config(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "file.ts").write_text("anything", encoding="utf-8")
+
+    event = apply_patch_event(repo, "src/file.ts")
+    rc = hooks.run_structural_check(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_structural_check_handles_bad_regex(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    monkeypatch.setenv("DEUS_CODEX_HOOK_DEBUG", "1")
+    _structural_config(repo, [
+        {"id": "bad-regex", "glob": "src/**", "pattern": "[invalid(", "severity": "warn", "message": "Bad"}
+    ])
+    (repo / "src").mkdir()
+    (repo / "src" / "file.ts").write_text("anything", encoding="utf-8")
+
+    event = apply_patch_event(repo, "src/file.ts")
+    rc = hooks.run_structural_check(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_structural_check_respects_warden_disabled(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _structural_config(repo, [
+        {"id": "test", "glob": "**", "pattern": ".", "severity": "warn", "message": "Always"}
+    ])
+    wardens_dir = repo / ".claude" / "wardens"
+    wardens_dir.mkdir(parents=True, exist_ok=True)
+    (wardens_dir / "config.json").write_text(
+        json.dumps({"structural-check": {"enabled": False}}), encoding="utf-8"
+    )
+    (repo / "src").mkdir()
+    (repo / "src" / "file.ts").write_text("anything", encoding="utf-8")
+
+    event = apply_patch_event(repo, "src/file.ts")
+    rc = hooks.run_structural_check(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+# --- Placement guard tests ---
+
+
+def _placement_config(repo: Path, rules: list[dict]) -> None:
+    cold_dir = repo / ".claude" / "cold-memory"
+    cold_dir.mkdir(parents=True, exist_ok=True)
+    (cold_dir / "placement-rules.json").write_text(
+        json.dumps({"rules": rules}), encoding="utf-8"
+    )
+
+
+def test_placement_guard_warns_new_file_wrong_location(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _placement_config(repo, [
+        {"id": "channel-in-packages", "path_pattern": "^src/mcp-.*\\.ts$", "message": "Channels in packages/"}
+    ])
+
+    event = {
+        "cwd": str(repo),
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(repo / "src" / "mcp-discord.ts")},
+    }
+    rc = hooks.run_placement_guard(event, repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert "channel-in-packages" in output["systemMessage"]
+    assert "Channels in packages/" in output["systemMessage"]
+
+
+def test_placement_guard_silent_for_existing_file(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    monkeypatch.setenv("DEUS_CODEX_HOOK_DEBUG", "1")
+    _placement_config(repo, [
+        {"id": "channel-in-packages", "path_pattern": "^src/mcp-.*\\.ts$", "message": "Channels in packages/"}
+    ])
+    (repo / "src").mkdir()
+    (repo / "src" / "mcp-discord.ts").write_text("", encoding="utf-8")
+
+    event = {
+        "cwd": str(repo),
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(repo / "src" / "mcp-discord.ts")},
+    }
+    rc = hooks.run_placement_guard(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_placement_guard_skips_missing_config(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    event = {
+        "cwd": str(repo),
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(repo / "src" / "mcp-foo.ts")},
+    }
+    rc = hooks.run_placement_guard(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_placement_guard_respects_warden_disabled(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    monkeypatch.setenv("DEUS_CODEX_HOOK_DEBUG", "1")
+    _placement_config(repo, [
+        {"id": "test", "path_pattern": ".*", "message": "Always"}
+    ])
+    wardens_dir = repo / ".claude" / "wardens"
+    wardens_dir.mkdir(parents=True, exist_ok=True)
+    (wardens_dir / "config.json").write_text(
+        json.dumps({"placement-guard": {"enabled": False}}), encoding="utf-8"
+    )
+
+    event = {
+        "cwd": str(repo),
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(repo / "new-file.ts")},
+    }
+    rc = hooks.run_placement_guard(event, repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+# --- Routing helper tests ---
+
+
+def test_load_pattern_routes_parses_governs_frontmatter(tmp_path):
+    hooks = load_hooks()
+    _reset_cold_memory_state()
+    repo = git_repo(tmp_path)
+    _pattern_file(repo, "test.md", ["src/channels", "packages/mcp-test"])
+
+    routes = hooks._load_pattern_routes(repo)
+
+    prefixes = [r[0] for r in routes]
+    assert "src/channels" in prefixes
+    assert "packages/mcp-test" in prefixes
+
+
+def test_load_pattern_routes_skips_empty_governs(tmp_path):
+    hooks = load_hooks()
+    _reset_cold_memory_state()
+    repo = git_repo(tmp_path)
+    patterns_dir = repo / "patterns"
+    patterns_dir.mkdir()
+    (patterns_dir / "empty.md").write_text("---\ngoverns: []\n---\nBody.\n", encoding="utf-8")
+
+    routes = hooks._load_pattern_routes(repo)
+
+    assert routes == []
+
+
+def test_load_pattern_routes_sorted_by_specificity(tmp_path):
+    hooks = load_hooks()
+    _reset_cold_memory_state()
+    repo = git_repo(tmp_path)
+    _pattern_file(repo, "general.md", ["src/"])
+    _pattern_file(repo, "specific.md", ["src/channels/telegram"])
+
+    routes = hooks._load_pattern_routes(repo)
+
+    assert routes[0][0] == "src/channels/telegram"
+    assert routes[1][0] == "src/"
+
+
+def test_match_pattern_docs_returns_most_specific_first(tmp_path):
+    hooks = load_hooks()
+    _reset_cold_memory_state()
+    repo = git_repo(tmp_path)
+    _pattern_file(repo, "general.md", ["src/"], "General.")
+    _pattern_file(repo, "channel.md", ["src/channels"], "Channel.")
+    (repo / "src" / "channels").mkdir(parents=True)
+    target = repo / "src" / "channels" / "test.ts"
+    target.write_text("", encoding="utf-8")
+
+    routes = hooks._load_pattern_routes(repo)
+    matched = hooks._match_pattern_docs([target], routes, repo)
+
+    assert len(matched) == 2
+    assert matched[0].stem == "channel"
+    assert matched[1].stem == "general"

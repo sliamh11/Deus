@@ -15,7 +15,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 
@@ -93,6 +93,27 @@ HOOK_SPECS: tuple[HookSpec, ...] = (
         "path-leak-detector",
         5,
         "Checking Deus path leaks",
+    ),
+    HookSpec(
+        "PostToolUse",
+        "Edit|Write|MultiEdit|apply_patch",
+        "cold-memory-injector",
+        5,
+        "Injecting Deus cold-memory context",
+    ),
+    HookSpec(
+        "PostToolUse",
+        "Edit|Write|MultiEdit|apply_patch",
+        "structural-check",
+        3,
+        "Running Deus structural checks",
+    ),
+    HookSpec(
+        "PreToolUse",
+        "Write|apply_patch",
+        "placement-guard",
+        3,
+        "Checking Deus file placement",
     ),
     HookSpec(
         "PostToolUse",
@@ -628,6 +649,7 @@ def _sync_atom_kinds_on_init(repo_root: Path) -> None:
 
 
 def run_session_init(repo_root: Path) -> int:
+    global _PATTERN_ROUTES_CACHE
     for name in (
         ".plan-reviewed",
         ".code-reviewed",
@@ -637,6 +659,8 @@ def run_session_init(repo_root: Path) -> int:
         ".migration-nudged",
     ):
         _marker(repo_root, name).unlink(missing_ok=True)
+    _PATTERN_ROUTES_CACHE = None
+    _INJECTED_DOCS.clear()
     _sync_atom_kinds_on_init(repo_root)
     return 0
 
@@ -683,12 +707,24 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     # `_managed_paths` returns `(None, [])` outside every worktree;
     # otherwise `(worktree, paths_after_filtering)`. Empty `paths` after
     # filtering must NOT bypass the gate (the pre-fix `not paths` short-
-    # circuit was the ExitPlanMode enforcement gap).
+    # circuit was the ExitPlanMode enforcement gap, PR #430).
     worktree, paths = _managed_paths(event, repo_root)
     if worktree is None:
         return 0
 
-    # BLOCK regardless of `paths` emptiness — filter hit ≠ outside-worktree.
+    # Disambiguate empty-paths: (a) all targets outside worktree → return 0;
+    # (b) in-worktree targets filtered by `_is_excluded`/`_git_ignored` → BLOCK.
+    if not paths:
+        cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+        any_in_worktree = any(
+            _is_relative_to(p, worktree)
+            for p in _event_paths(event, cwd)
+        )
+        if not any_in_worktree:
+            return 0
+
+    # BLOCK: in-worktree edit without marker. `paths` may still be empty
+    # here when all targets were filtered (PR #430 invariant preserved).
     if paths:
         target_list = "\n".join(f"  - {path}" for path in paths[:5])
     else:
@@ -811,12 +847,14 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
 
 
 def run_verification_invalidator(event: dict[str, Any], repo_root: Path) -> int:
-    # Invariant: any Edit/Write inside a managed worktree invalidates the
-    # marker. Gate on worktree presence — NOT on post-filter path
-    # emptiness — so filtered targets (gitignored, `.claude/worktrees/`,
-    # etc.) still clear stale verification.
-    worktree, _ = _managed_paths(event, repo_root)
+    # Fail-open on empty paths: filtered targets (gitignored,
+    # `.claude/worktrees/<sub>/`, etc.) don't change the main-thread diff,
+    # so the marker survives. The plan-review GATE fails closed on the
+    # same condition — that asymmetry is intentional.
+    worktree, paths = _managed_paths(event, repo_root)
     if worktree is None:
+        return 0
+    if not paths:
         return 0
     _marker(repo_root, ".verified").unlink(missing_ok=True)
     return 0
@@ -911,9 +949,11 @@ def run_memory_tree_hook(event: dict[str, Any], repo_root: Path) -> int:
 
 
 def run_code_review_invalidator(event: dict[str, Any], repo_root: Path) -> int:
-    # Same worktree-presence invariant as `run_verification_invalidator`.
-    worktree, _ = _managed_paths(event, repo_root)
+    # Same fail-open-on-empty-paths invariant as run_verification_invalidator.
+    worktree, paths = _managed_paths(event, repo_root)
     if worktree is None:
+        return 0
+    if not paths:
         return 0
     _marker(repo_root, ".code-reviewed").unlink(missing_ok=True)
     return 0
@@ -985,6 +1025,236 @@ def run_path_leak_detector(event: dict[str, Any], repo_root: Path) -> int:
             "[path-leak-detector] WARNING: tracked Deus file contains a personal "
             "absolute path. Replace it with config, $HOME, or a repo-relative path.\n\n"
             + "\n".join(leaks[:5])
+        )
+    return 0
+
+
+# --- Cold-memory injection helpers ---
+
+_GOVERNS_ITEM_RE = re.compile(r"^\s+-\s+(.+?)(?:\s*#.*)?$", re.MULTILINE)
+# 3800 leaves headroom within CONTEXT_LIMIT (6000) for header/footer + other systemMessages in same turn
+_COLD_MEMORY_CHAR_CAP = 3800
+_PATTERN_ROUTES_CACHE: list[tuple[str, Path]] | None = None
+_INJECTED_DOCS: set[Path] = set()
+
+
+def _load_pattern_routes(repo_root: Path) -> list[tuple[str, Path]]:
+    global _PATTERN_ROUTES_CACHE
+    if _PATTERN_ROUTES_CACHE is not None:
+        return _PATTERN_ROUTES_CACHE
+
+    patterns_dir = repo_root / "patterns"
+    if not patterns_dir.is_dir():
+        return []
+    routes: list[tuple[str, Path]] = []
+    for md_path in sorted(patterns_dir.glob("*.md")):
+        if md_path.name == "INDEX.md":
+            continue
+        try:
+            text = md_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        parts = text.split("---", 2)
+        if len(parts) < 3:
+            continue
+        frontmatter = parts[1]
+        items = _GOVERNS_ITEM_RE.findall(frontmatter)
+        for item in items:
+            item = item.strip().strip("\"'")
+            if item:
+                routes.append((item, md_path))
+    routes.sort(key=lambda r: len(r[0]), reverse=True)
+    _PATTERN_ROUTES_CACHE = routes
+    return routes
+
+
+def _match_pattern_docs(
+    paths: list[Path], routes: list[tuple[str, Path]], worktree: Path
+) -> list[Path]:
+    matched: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        try:
+            rel = path.relative_to(worktree).as_posix()
+        except ValueError:
+            continue
+        for prefix, doc_path in routes:
+            if doc_path in seen:
+                continue
+            if rel == prefix or rel.startswith(prefix.rstrip("/") + "/"):
+                matched.append(doc_path)
+                seen.add(doc_path)
+    return matched
+
+
+def run_cold_memory_injector(event: dict[str, Any], repo_root: Path) -> int:
+    config = _wardens_config(repo_root)
+    if not _warden_enabled(config, "cold-memory-injector"):
+        return 0
+
+    worktree, paths = _managed_paths(event, repo_root)
+    if worktree is None or not paths:
+        return 0
+
+    routes = _load_pattern_routes(repo_root)
+    if not routes:
+        return 0
+
+    matched_docs = _match_pattern_docs(paths, routes, worktree)
+    new_docs = [d for d in matched_docs if d not in _INJECTED_DOCS]
+    if not new_docs:
+        return 0
+
+    header = "=== Cold-memory injection (path-triggered conventions) ===\n"
+    footer = "\n=== End cold-memory injection ==="
+    budget = _COLD_MEMORY_CHAR_CAP
+    parts: list[str] = []
+    used = 0
+    omitted = 0
+
+    for doc_path in new_docs:
+        try:
+            content = doc_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        section = f"\n--- {doc_path.stem} ---\n{content}"
+        if used + len(section) > budget:
+            omitted += 1
+            continue
+        parts.append(section)
+        used += len(section)
+        _INJECTED_DOCS.add(doc_path)
+
+    if not parts:
+        return 0
+
+    text = header + "".join(parts)
+    if omitted:
+        text += f"\n[{omitted} more pattern(s) matched but omitted - cap: {_COLD_MEMORY_CHAR_CAP} chars]"
+    text += footer
+
+    _debug(f"[cold-memory-injector] injected {used} chars from {len(parts)} doc(s)")
+    _warn_post_tool(text)
+    return 0
+
+
+def _glob_match(rel_posix: str, pattern: str) -> bool:
+    p = PurePosixPath(rel_posix)
+    if hasattr(p, "full_match"):
+        return p.full_match(pattern)
+    return p.match(pattern)
+
+
+def run_structural_check(event: dict[str, Any], repo_root: Path) -> int:
+    config = _wardens_config(repo_root)
+    if not _warden_enabled(config, "structural-check"):
+        return 0
+
+    worktree, paths = _managed_paths(event, repo_root)
+    if worktree is None or not paths:
+        return 0
+
+    config_path = repo_root / ".claude" / "cold-memory" / "structural-checks.json"
+    if not config_path.exists():
+        return 0
+    try:
+        checks = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _debug(f"[structural-check] config parse error: {exc}")
+        return 0
+
+    check_list = checks.get("checks") if isinstance(checks, dict) else None
+    if not isinstance(check_list, list):
+        return 0
+
+    findings: list[str] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        try:
+            rel = path.relative_to(worktree).as_posix()
+        except ValueError:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for check in check_list:
+            if not isinstance(check, dict):
+                continue
+            glob_pat = check.get("glob", "")
+            exclude_glob = check.get("exclude_glob")
+            if not _glob_match(rel, glob_pat):
+                continue
+            if exclude_glob and _glob_match(rel, exclude_glob):
+                continue
+            pattern = check.get("pattern", "")
+            try:
+                if re.search(pattern, text):
+                    msg = check.get("message", "pattern violation")
+                    findings.append(f"  [{check.get('id', '?')}] {rel}: {msg}")
+            except re.error as exc:
+                _debug(f"[structural-check] bad regex in {check.get('id', '?')}: {exc}")
+
+    if findings:
+        _warn_post_tool(
+            "[structural-check] WARNING: pattern violations found:\n\n"
+            + "\n".join(findings[:10])
+            + ("\n  [...more findings omitted]" if len(findings) > 10 else "")
+        )
+    return 0
+
+
+def run_placement_guard(event: dict[str, Any], repo_root: Path) -> int:
+    config = _wardens_config(repo_root)
+    if not _warden_enabled(config, "placement-guard"):
+        return 0
+
+    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+    worktree = _worktree_for_cwd(cwd, repo_root)
+    if worktree is None:
+        return 0
+
+    raw_paths = _event_paths(event, cwd)
+    new_paths = [p for p in raw_paths if _is_relative_to(p, worktree) and not p.exists()]
+    if not new_paths:
+        return 0
+
+    config_path = repo_root / ".claude" / "cold-memory" / "placement-rules.json"
+    if not config_path.exists():
+        return 0
+    try:
+        rules_data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _debug(f"[placement-guard] config parse error: {exc}")
+        return 0
+
+    rule_list = rules_data.get("rules") if isinstance(rules_data, dict) else None
+    if not isinstance(rule_list, list):
+        return 0
+
+    warnings: list[str] = []
+    for path in new_paths:
+        try:
+            rel = path.relative_to(worktree).as_posix()
+        except ValueError:
+            continue
+        for rule in rule_list:
+            if not isinstance(rule, dict):
+                continue
+            pattern = rule.get("path_pattern", "")
+            try:
+                if re.search(pattern, rel):
+                    warnings.append(
+                        f"  [{rule.get('id', '?')}] {rel}: {rule.get('message', 'placement issue')}"
+                    )
+            except re.error as exc:
+                _debug(f"[placement-guard] bad regex in {rule.get('id', '?')}: {exc}")
+
+    if warnings:
+        _warn_post_tool(
+            "[placement-guard] NOTICE: new file may be in the wrong location:\n\n"
+            + "\n".join(warnings[:5])
         )
     return 0
 
@@ -1437,6 +1707,9 @@ RUNNERS = {
     "verification-invalidator": run_verification_invalidator,
     "threat-model-gate": run_threat_model_gate,
     "path-leak-detector": run_path_leak_detector,
+    "cold-memory-injector": run_cold_memory_injector,
+    "structural-check": run_structural_check,
+    "placement-guard": run_placement_guard,
     "catchup-freshness": run_catchup_freshness,
     "memory-retrieval": run_memory_retrieval,
     "migration-nudge": run_migration_nudge,
