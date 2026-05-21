@@ -82,6 +82,7 @@ _normalize_cli_agent() {
   case "$agent" in
     openai|codex) echo "codex" ;;
     ollama) echo "ollama" ;;
+    llama-cpp) echo "llama-cpp" ;;
     *) echo "claude" ;;
   esac
 }
@@ -912,7 +913,7 @@ case "$1" in
         fi
         ;;
       list)
-        for b in claude codex ollama; do
+        for b in claude codex ollama llama-cpp; do
           if [ "$b" = "$CURRENT_DISPLAY" ]; then
             echo "* $b (active)"
           else
@@ -922,15 +923,15 @@ case "$1" in
         ;;
       set)
         if [ -z "$2" ]; then
-          echo "Usage: deus backend set <claude|codex|ollama>"
+          echo "Usage: deus backend set <claude|codex|ollama|llama-cpp>"
           exit 1
         fi
         INPUT="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
         case "$INPUT" in
-          claude|codex|ollama) ;;
+          claude|codex|ollama|llama-cpp) ;;
           *)
             echo "Unknown backend: $2"
-            echo "Available: claude, codex, ollama"
+            echo "Available: claude, codex, ollama, llama-cpp"
             exit 1
             ;;
         esac
@@ -981,7 +982,7 @@ case "$1" in
         echo "Usage: deus backend [show|set|model|list|bench]"
         echo ""
         echo "  deus backend           Show current backend and model"
-        echo "  deus backend set <be>  Set default backend (claude|codex|ollama)"
+        echo "  deus backend set <be>  Set default backend (claude|codex|ollama|llama-cpp)"
         echo "  deus backend model <m> Set model for current backend (e.g. gpt-4o)"
         echo "  deus backend list      List available backends"
         echo "  deus backend bench     Run parity benchmark (claude vs openai)"
@@ -1076,6 +1077,13 @@ case "$1" in
       if [ "$CLI_AGENT" = "ollama" ]; then
         echo "Error: Ollama backend is not yet available as a CLI agent."
         echo "Use 'deus backend set claude' or 'deus backend set openai' instead."
+        return 1
+      fi
+      if [ "$CLI_AGENT" = "llama-cpp" ]; then
+        echo "Error: llama-cpp backend is not yet available as a CLI agent."
+        echo "It works for channel messages and scheduled tasks once the host"
+        echo "llama-server is running (see /add-llama-cpp). For an interactive"
+        echo "session, run 'deus backend set claude' or 'deus backend set codex'."
         return 1
       fi
       if [ "$CLI_AGENT" != "codex" ]; then
@@ -1285,6 +1293,10 @@ for f in c.get('vault_autoload', ['CLAUDE.md']):
 	    fi
 
     printf "✓ Ready.                        \n"
+
+    # Signal to vault_context_hook.py that vault was already injected via
+    # --append-system-prompt, preventing double-injection in the session.
+    export DEUS_VAULT_PRELOADED=1
 
     # ─── EXTERNAL PROJECT MODE ───
     # Same full Deus brain, different working directory and startup.

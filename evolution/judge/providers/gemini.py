@@ -6,7 +6,7 @@ from ..provider import JudgeProvider
 
 
 class GeminiProvider(JudgeProvider):
-    """Gemini API — fallback when Ollama is unavailable."""
+    """Gemini API — primary judge when available (highest accuracy)."""
 
     @property
     def name(self) -> str:
@@ -14,7 +14,7 @@ class GeminiProvider(JudgeProvider):
 
     @property
     def priority(self) -> int:
-        return 20
+        return 5
 
     @property
     def default_model(self) -> str:

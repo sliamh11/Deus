@@ -55,6 +55,16 @@
         ]
       },
       {
+        "matcher": "Write|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" placement-guard'",
+            "timeout": 3
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -97,6 +107,16 @@
           {
             "type": "command",
             "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" verification-invalidator'",
+            "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" cold-memory-injector'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" structural-check'",
             "timeout": 3
           }
         ]

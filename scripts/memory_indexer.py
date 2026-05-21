@@ -132,7 +132,7 @@ SIBLING_DISCOUNT = float(os.environ.get("DEUS_SIBLING_DISCOUNT", "0.15"))
 SIBLING_MAX = int(os.environ.get("DEUS_SIBLING_MAX", "5"))
 ENTITY_BOOST = float(os.environ.get("DEUS_ENTITY_BOOST", "0.1"))
 RERANKER_ENABLED = os.environ.get("DEUS_RERANKER", "1") == "1"
-RERANKER_MODEL = os.environ.get("DEUS_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+RERANKER_MODEL = os.environ.get("DEUS_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3")
 RERANKER_TOP_K = int(os.environ.get("DEUS_RERANKER_CANDIDATES", "20"))
 
 _cross_encoder = None

@@ -21,6 +21,9 @@ import {
   DEUS_CONTEXT_FILE_MAX_CHARS,
   DEUS_OPENAI_MODEL,
   IDLE_TIMEOUT,
+  LLAMA_CPP_AGENT_MODEL,
+  LLAMA_CPP_MODEL,
+  LLAMA_CPP_PORT,
   TIMEZONE,
   TOOL_PROXY_PORT,
 } from './config.js';
@@ -31,7 +34,8 @@ import { logger } from './logger.js';
 function redactContainerArgs(args: string[]): string {
   return args
     .join(' ')
-    .replace(/DEUS_PROXY_TOKEN=[0-9a-f]+/g, 'DEUS_PROXY_TOKEN=[REDACTED]');
+    .replace(/DEUS_PROXY_TOKEN=[0-9a-f]+/g, 'DEUS_PROXY_TOKEN=[REDACTED]')
+    .replace(/LINEAR_API_KEY=\S+/g, 'LINEAR_API_KEY=[REDACTED]');
 }
 import {
   CONTAINER_HOST_GATEWAY,
@@ -102,6 +106,17 @@ function buildContainerArgs(
     );
   }
 
+  const linearKey = process.env.LINEAR_API_KEY || process.env.LINEAR_API_TOKEN;
+  if (linearKey) {
+    if (/^[A-Za-z0-9_-]+$/.test(linearKey)) {
+      args.push('-e', `LINEAR_API_KEY=${linearKey}`);
+    } else {
+      logger.warn(
+        'LINEAR_API_KEY contains invalid characters; Linear MCP disabled for this container',
+      );
+    }
+  }
+
   // Inject per-channel memory privacy allowlist if configured
   if (group?.containerConfig?.memoryPrivacy?.length) {
     args.push(
@@ -118,6 +133,27 @@ function buildContainerArgs(
     args.push('-e', 'OPENAI_API_KEY=placeholder');
     if (DEUS_OPENAI_MODEL) {
       args.push('-e', `DEUS_OPENAI_MODEL=${DEUS_OPENAI_MODEL}`);
+    }
+  } else if (backend === 'llama-cpp') {
+    // llama-server runs on the host and has no auth — no credential-proxy
+    // hop needed. The container talks to the host gateway directly. We
+    // deliberately use LLAMA_CPP_* env names (NOT OPENAI_*) so config does
+    // not co-mingle if the user has both backends configured. The container
+    // driver reads LLAMA_CPP_BASE_URL etc. directly.
+    args.push(
+      '-e',
+      `LLAMA_CPP_BASE_URL=http://${CONTAINER_HOST_GATEWAY}:${LLAMA_CPP_PORT}/v1`,
+    );
+    args.push('-e', 'LLAMA_CPP_API_KEY=placeholder');
+    // Phase 3 (post-PR #461): inject both LLAMA_CPP_AGENT_MODEL (per-surface)
+    // and LLAMA_CPP_MODEL (catch-all). Approach A — the container backend
+    // reads LLAMA_CPP_AGENT_MODEL with fallback to LLAMA_CPP_MODEL, then to
+    // empty (router-mode auto-pick). Both injected for back-compat safety.
+    if (LLAMA_CPP_AGENT_MODEL) {
+      args.push('-e', `LLAMA_CPP_AGENT_MODEL=${LLAMA_CPP_AGENT_MODEL}`);
+    }
+    if (LLAMA_CPP_MODEL) {
+      args.push('-e', `LLAMA_CPP_MODEL=${LLAMA_CPP_MODEL}`);
     }
   } else {
     // Route API traffic through the credential proxy (containers never see real secrets)

@@ -97,7 +97,7 @@ export function registerCommonTools(
 
   server.tool(
     'get_status',
-    'Get connection status and channel info',
+    'Get connection status and channel info. Pass select="connected,channel" + compact=true for a slimmer response.',
     { compact: z.boolean().optional(), select: z.string().optional() },
     async (args) => {
       // If the provider is still connecting, wait briefly for it to be ready
@@ -117,7 +117,7 @@ export function registerCommonTools(
 
   server.tool(
     'list_chats',
-    'List known chats and groups',
+    'List known chats and groups. Pass select="id,name,is_group" + compact=true to cut payload on list ops.',
     { compact: z.boolean().optional(), select: z.string().optional() },
     async (args) => {
       const chats = provider.listChats ? await provider.listChats() : [];
@@ -127,7 +127,7 @@ export function registerCommonTools(
 
   server.tool(
     'sync_groups',
-    'Refresh group and chat metadata from the platform',
+    'Refresh group and chat metadata from the platform. Pass select="id,name,is_group" + compact=true to slim the returned groups list.',
     {
       force: z.boolean().optional(),
       compact: z.boolean().optional(),
@@ -152,7 +152,7 @@ export function registerCommonTools(
 
   server.tool(
     'get_new_messages',
-    'Poll for incoming messages since the last call. Use the returned cursor for subsequent calls.',
+    'Poll for incoming messages since the last call. Use the returned cursor for subsequent calls. Pass select="messages.sender,messages.content,messages.timestamp,cursor" + compact=true to cut polling-loop payload.',
     {
       since_cursor: z.string().optional(),
       compact: z.boolean().optional(),

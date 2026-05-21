@@ -188,11 +188,23 @@ class TestBuiltInProviders:
         assert p.name == "ollama"
         assert p.priority == 10
 
+    def test_llama_cpp_provider_has_correct_name(self):
+        from evolution.judge.providers.llama_cpp import LlamaCppProvider
+        p = LlamaCppProvider()
+        assert p.name == "llama-cpp"
+        assert p.priority == 15  # less preferred than Ollama (10), more than Gemini (20)
+
+    def test_llama_cpp_default_model_from_config(self):
+        from evolution.judge.providers.llama_cpp import LlamaCppProvider
+        p = LlamaCppProvider()
+        # LLAMA_CPP_MODEL defaults to '' (server-loaded model). Verify it's a string.
+        assert isinstance(p.default_model, str)
+
     def test_gemini_provider_has_correct_name(self):
         from evolution.judge.providers.gemini import GeminiProvider
         p = GeminiProvider()
         assert p.name == "gemini"
-        assert p.priority == 20
+        assert p.priority == 5
 
     def test_mock_provider_has_correct_name(self):
         from evolution.judge.providers.mock import MockProvider

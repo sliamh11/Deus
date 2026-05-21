@@ -42,6 +42,7 @@ import {
 } from './sender-allowlist.js';
 import { runStartupChecks, printStartupReport } from './startup-gate.js';
 import { startSchedulerLoop } from './task-scheduler.js';
+import { seedDocGardener } from './doc-gardener-seed.js';
 import { getAllTasks } from './db.js';
 import { writeGroupsSnapshot, writeTasksSnapshot } from './container-runner.js';
 import { Channel, NewMessage, NewReaction } from './types.js';
@@ -52,6 +53,7 @@ import { logger } from './logger.js';
 import { initRuntimeRegistry } from './agent-runtimes/registry.js';
 import { createClaudeRuntime } from './agent-runtimes/claude-backend.js';
 import { createOpenAIRuntime } from './agent-runtimes/openai-backend.js';
+import { createLlamaCppRuntime } from './agent-runtimes/llama-cpp-backend.js';
 import { startGcalSync, stopGcalSync } from './cache/gcal-sync.js';
 
 export { getAvailableGroups } from './router-state.js';
@@ -73,6 +75,13 @@ async function main(): Promise<void> {
   const state = new RouterState();
   state.load();
   restoreRemoteControl();
+
+  const controlGroup = Object.entries(state.registeredGroups).find(
+    ([, g]) => g.isControlGroup === true,
+  );
+  if (controlGroup) {
+    seedDocGardener(controlGroup[0], controlGroup[1].folder);
+  }
 
   // Start credential proxy (containers route API calls through this)
   const proxyServer = await startCredentialProxy(
@@ -109,6 +118,7 @@ async function main(): Promise<void> {
   };
   registry.register(createClaudeRuntime(backendDeps));
   registry.register(createOpenAIRuntime(backendDeps));
+  registry.register(createLlamaCppRuntime(backendDeps));
   logger.info({ backends: registry.list() }, 'Backend registry initialized');
 
   // Graceful shutdown handlers

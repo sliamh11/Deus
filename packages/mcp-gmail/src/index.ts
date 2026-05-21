@@ -44,7 +44,7 @@ registerCommonTools(server, provider);
 
 server.tool(
   'read_email',
-  'Read a full email by message ID',
+  'Read a full email by message ID. Pass select="from,subject,snippet,date" + compact=true when body is not needed.',
   {
     message_id: z.string(),
     compact: z.boolean().optional(),
@@ -80,7 +80,7 @@ server.tool(
 
 server.tool(
   'search_emails',
-  'Search emails by Gmail query string (e.g. "from:user@example.com subject:hello")',
+  'Search emails by Gmail query string (e.g. "from:user@example.com subject:hello"). Pass select="id,from,subject,snippet" + compact=true on search to cut payload.',
   {
     query: z.string(),
     max_results: z.number().optional(),
