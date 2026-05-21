@@ -55,6 +55,10 @@ import { createClaudeRuntime } from './agent-runtimes/claude-backend.js';
 import { createOpenAIRuntime } from './agent-runtimes/openai-backend.js';
 import { createLlamaCppRuntime } from './agent-runtimes/llama-cpp-backend.js';
 import { startGcalSync, stopGcalSync } from './cache/gcal-sync.js';
+import {
+  startLinearDispatcher,
+  stopLinearDispatcher,
+} from './linear-dispatcher.js';
 
 export { getAvailableGroups } from './router-state.js';
 
@@ -125,6 +129,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     stopGcalSync();
+    stopLinearDispatcher();
     proxyServer.close();
     toolProxyServer.close();
     await queue.shutdown(10000);
@@ -349,6 +354,14 @@ async function main(): Promise<void> {
       const text = formatOutbound(rawText);
       if (text) await channel.sendMessage(jid, text);
     },
+  });
+
+  // Start Linear dispatch daemon (no-op if LINEAR_API_KEY not configured)
+  startLinearDispatcher({
+    registeredGroups: () => state.registeredGroups,
+    registerGroup: (jid, group) => state.registerGroup(jid, group),
+    registry,
+    queue,
   });
 
   // Load skill IPC handlers before starting the IPC watcher

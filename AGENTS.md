@@ -109,6 +109,7 @@ Use these instead of rediscovering the system:
 | Tool proxy | `src/tool-proxy.ts`, `src/tool-registry.ts` | HTTP proxy (:3003) executing allowlisted host CLIs for containers; credentials never passed to containers |
 | Mount/security boundary | `src/container-mounter.ts` | Project/group/vault visibility and isolation |
 | Memory retrieval | `scripts/memory_tree.py`, `scripts/memory_indexer.py` | Personal recall and semantic lookup |
+| Linear dispatcher | `src/linear-dispatcher.ts` | Polls Linear for "Ready for Agent" issues, runs container agents with role prompts, posts results back |
 | Codex Warden hooks | `scripts/codex_warden_hooks.py` | Installs and runs Codex hook equivalents for Warden gates (plan-reviewer, code-reviewer, verification-gate, threat-modeler) |
 
 More detailed maps live in [docs/AGENT_DEUS_101.md](docs/AGENT_DEUS_101.md).

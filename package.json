@@ -40,6 +40,7 @@
     "truecourse:list-diff": "truecourse list --diff"
   },
   "dependencies": {
+    "@linear/sdk": "^84.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.9.0",
     "cron-parser": "^5.5.0",
