@@ -29,8 +29,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${PATTERN:-}" ]; then
-            if [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ]; then
-              echo "::warning::PERSONAL_ID_PATTERN unavailable in fork PR; skipping"
+            if [ "${{ github.event.pull_request.head.repo.fork }}" = "true" ] || [ "${{ github.actor }}" = "dependabot[bot]" ]; then
+              echo "::warning::PERSONAL_ID_PATTERN unavailable in fork/dependabot PR; skipping"
               exit 0
             fi
             echo "::error::PERSONAL_ID_PATTERN secret not set; required for non-fork PRs"

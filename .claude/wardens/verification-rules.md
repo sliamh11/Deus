@@ -12,6 +12,7 @@
 **Check:** Was the relevant verification command run in this turn (not a previous turn)?
 **Rule:** Every success claim requires fresh command output from the current turn. Prior runs are stale.
 **Cite:** Superpowers verification-before-completion; "If you haven't run the command in this message, you cannot claim it passes."
+**Remediation:** Run the relevant command now (`npm test`, `npm run build`, etc.) and paste its full stdout/stderr output. Do not claim success based on output from a previous turn.
 
 ## full-command
 **Severity:** blocking
@@ -19,6 +20,7 @@
 **Check:** Was the FULL command run (e.g., `cargo test` not `cargo test one_test`), and was the exit code checked?
 **Rule:** Partial verification proves nothing. Run the full suite. Check the exit code, not just the output text.
 **Cite:** Superpowers verification-before-completion
+**Remediation:** Re-run the full test suite without filters (e.g., `npm test` not `npm test -- --grep "foo"`) and confirm the exit code is 0. Paste the full output including the summary line.
 
 ## no-hedging
 **Severity:** blocking
@@ -26,6 +28,7 @@
 **Check:** Does the claim use "should", "probably", "seems to", "looks correct", or "I'm confident"?
 **Rule:** Hedging language = unverified claim. Replace with evidence or state "not yet verified."
 **Cite:** Superpowers verification-before-completion rationalization table
+**Remediation:** Remove the hedging phrase and replace it with the actual command output that proves the claim, or explicitly state "not yet verified — will run `<command>` next."
 
 ## agent-distrust
 **Severity:** warning

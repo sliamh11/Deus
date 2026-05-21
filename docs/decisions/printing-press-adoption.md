@@ -63,3 +63,46 @@ Use the printing-press as a scaffold generator for new MCP server integrations. 
 - Module-scope `sys.exit()` calls in `memory_indexer.py` (vault config, API key check) cannot become return values. They stay as `sys.exit(AUTH_ERROR)`.
 - `McpErrorCode` enum values are stable and match the Python exit codes. They are part of the protocol contract.
 - Per `evolution-db-split.md`: any future SQLite cache files get their own DB per service, never shared with memory.db or evolution.db.
+
+## Empirical findings (2026-05-16)
+
+Measured during the `--select` orchestrator-leverage PR (`feat/pp-select-orchestrator`). Two findings reshaped the rollout plan:
+
+### CLI text formats are already token-optimal for LLM context injection
+
+The hot paths `deus-cmd.sh` invokes on every container session are already minimal in their human-readable text form. Adding `--json [--select ...]` would *increase* payload bytes:
+
+| Path                                                                                    | Bytes |
+|-----------------------------------------------------------------------------------------|-------|
+| `memory_indexer --recent 3` (text)                                                      | 1517  |
+| `memory_indexer --recent 3 --compact` (text)                                            |  890  |
+| `memory_indexer --query "recent work" --top 2 --recency-boost` (text)                   |  728  |
+| `memory_indexer --query "recent work" --top 2 --recency-boost --json` (no select)       | 4210  |
+| `memory_indexer --query "recent work" --top 2 --recency-boost --json --select <fields>` |  944  |
+| `memory_tree query "recent work"` (text)                                                |  376  |
+| `memory_tree query "recent work" --json --compact --select results.path,results.score`  |  420  |
+
+Existing text formatters were hand-tuned for this use case. JSON adds structural overhead; even projected JSON loses to prose for compact-list shapes.
+
+### `--select` wins on the MCP wire format
+
+MCP responses MUST be JSON per protocol. Wide structured records (calendar events, email threads) carry many fields the caller does not need. Measured against synthetic-but-representative fixtures via `packages/mcp-channel-core/bench/pp-response-bench.ts`:
+
+| Fixture                  | raw   | compact only | select only | compact + select |
+|--------------------------|-------|--------------|-------------|------------------|
+| gcal single event        |   556 |          556 |         164 |              164 |
+| gcal list (10 events)    |  5602 |         5602 |        1152 |             1152 |
+| gmail single message     |  2883 |          686 |         287 |              287 |
+| gmail list (10 messages) | 28841 |         6871 |        2541 |             2541 |
+
+`--select` cuts MCP list payloads by 79–91% versus raw. `--compact` helps independently when records have long strings or nulls (gmail), but is a no-op for clean structured records (gcal). Once `select` has projected to a small field set on a clean record, `compact` is also redundant — the bench shows identical bytes for "select only" and "compact + select" on gcal.
+
+### Activation strategy
+
+1. **CLI paths (deus-cmd.sh, skills, commands)**: keep text format. Do not switch to `--json [--select]` — it regresses.
+2. **MCP tools**: teach the LLM caller via enriched tool-description strings ("Pass `select="..."` + `compact=true` ..."). The agent reads descriptions when deciding tool args; the savings compound across every list-style call.
+3. **Future programmatic callers** of CLI tools (e.g., scripts ingesting `memory_indexer --query --json`): use `--select` from day one. `cmd_recent` and `cmd_learnings` would need extension to accept `--select` + emit JSON — deferred until a programmatic caller exists.
+
+### Drift enforcement
+
+Both `check_agent_native_mcp` and `check_mcp_description_hints` in `scripts/drift_check.py` are blocking: any `server.tool()` registration that lacks `compact`/`select` schema params (without a recognized action-marker) — or that has the schema params but no `select`/`compact`/`payload` hint in its description — fails CI. Both gates started informational and were activated after PR #448 cleared the baseline across mcp-channel-core, mcp-gcal, mcp-gmail, mcp-x, and mcp-whatsapp. See `git log --follow scripts/drift_check.py` for the activation commit.

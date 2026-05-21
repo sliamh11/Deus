@@ -4,6 +4,7 @@ from .provider import JudgeProvider, JudgeRegistry, NoProviderAvailableError
 # Legacy exports (backward compat)
 from .gemini_judge import GeminiRuntimeJudge
 from .ollama_judge import OllamaRuntimeJudge, is_ollama_available
+from .llama_cpp_judge import LlamaCppRuntimeJudge, is_llama_cpp_available
 
 # Register built-in providers on import
 from . import providers as _providers  # noqa: F401
@@ -21,5 +22,6 @@ __all__ = [
     "JudgeProvider", "JudgeRegistry", "NoProviderAvailableError",
     "GeminiRuntimeJudge",
     "OllamaRuntimeJudge", "is_ollama_available",
+    "LlamaCppRuntimeJudge", "is_llama_cpp_available",
     "make_runtime_judge",
 ]

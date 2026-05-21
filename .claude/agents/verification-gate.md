@@ -42,7 +42,7 @@ Evidence:
 [paste relevant output snippets]
 
 Missing verification:
-- [list any claims that couldn't be verified]
+- [claim] — **Fix:** [run the relevant command and paste full stdout/stderr output]
 ```
 
 Mapping: all claims verified with evidence = SHIP. Any claim unverified or

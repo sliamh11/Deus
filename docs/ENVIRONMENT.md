@@ -69,6 +69,12 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `gemma4:e4b` | Ollama judge model |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma` | Ollama embedding model |
+| `LLAMA_CPP_BASE_URL` | `http://localhost:8080/v1` | llama.cpp HTTP base URL (OpenAI-compatible `/v1` prefix); consumed by evolution-loop providers |
+| `LLAMA_CPP_MODEL` | (empty — server default) | Catch-all model override. Empty = use whatever llama-server has loaded (single-model) OR auto-pick (router mode) |
+| `LLAMA_CPP_AGENT_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the agent runtime (chat surface). Used in router mode with multiple GGUFs |
+| `LLAMA_CPP_GEN_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the evolution-loop generative provider (Reflexion, principle extraction) |
+| `LLAMA_CPP_JUDGE_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the evolution-loop judge provider |
+| `LLAMA_CPP_EMBED_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for embeddings (reserved; embedding swap is ADR-gated per Phase 4) |
 | `EMBEDDING_PROVIDER` | `auto` | Embedding backend: `auto`, `gemini`, or `ollama` |
 
 ## Evolution / Eval
@@ -80,8 +86,8 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `EVOLUTION_REFLECTION_THRESHOLD` | `0.6` | Interactions scoring below this trigger corrective reflections |
 | `EVOLUTION_POSITIVE_THRESHOLD` | `0.85` | Interactions scoring above this trigger positive pattern extraction |
 | `EVOLUTION_JUDGE_MODEL` | `models/gemini-3.1-flash-lite` | Gemini model used for judging and principle extraction |
-| `EVOLUTION_JUDGE_PROVIDER` | (auto-detect) | Force a specific judge provider: `ollama`, `gemini`, `claude`, `mock` |
-| `EVOLUTION_GEN_PROVIDER` | (auto-detect) | Force a specific generative provider: `gemini`, `ollama`, `mock` |
+| `EVOLUTION_JUDGE_PROVIDER` | (auto-detect) | Force a specific judge provider: `ollama`, `gemini`, `claude`, `mock`, `llama-cpp` |
+| `EVOLUTION_GEN_PROVIDER` | (auto-detect) | Force a specific generative provider: `gemini`, `ollama`, `mock`, `llama-cpp` |
 | `DEUS_STORAGE_PROVIDER` | (auto-detect) | Force a specific storage provider: `sqlite` |
 | `EVOLUTION_GEN_MODEL` | `models/gemini-3.1-flash-lite` | Default generative model (Gemini) |
 | `EVOLUTION_MAX_REFLECTIONS` | `3` | Max reflections retrieved per agent query |

@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { summarizeToolResult } from './tool-summarize.js';
 import dns from 'dns/promises';
 import fs from 'fs';
 import { request as httpRequest } from 'http';
@@ -18,7 +19,17 @@ import {
   generateToolUseId,
 } from './tool-audit.js';
 
-export type AgentRuntimeId = 'claude' | 'openai';
+// Container-side mirror of the host AgentRuntimeId union. Keep in sync
+// when adding backends.
+export const VALID_BACKENDS = ['claude', 'openai', 'llama-cpp'] as const;
+export type AgentRuntimeId = (typeof VALID_BACKENDS)[number];
+
+export function isValidAgentBackend(value: unknown): value is AgentRuntimeId {
+  return (
+    typeof value === 'string' &&
+    (VALID_BACKENDS as readonly string[]).includes(value)
+  );
+}
 
 export interface ToolBrokerContainerInput {
   groupFolder: string;
@@ -97,11 +108,9 @@ async function runCommand(
       stderr += chunk.toString();
     });
     proc.on('close', (code) => {
-      resolve({
-        stdout: stdout.slice(0, 60_000),
-        stderr: stderr.slice(0, 20_000),
-        exitCode: code ?? 0,
-      });
+      resolve(
+        summarizeToolResult({ command, stdout, stderr, exitCode: code ?? 0 }),
+      );
     });
   });
 }
@@ -132,11 +141,15 @@ async function runProgram(
       });
     });
     proc.on('close', (code) => {
-      resolve({
-        stdout: stdout.slice(0, 60_000),
-        stderr: stderr.slice(0, 20_000),
-        exitCode: code ?? 0,
-      });
+      resolve(
+        summarizeToolResult({
+          program: command,
+          args,
+          stdout,
+          stderr,
+          exitCode: code ?? 0,
+        }),
+      );
     });
   });
 }
@@ -465,7 +478,7 @@ export function getOpenAIToolDefinitions(
           schedule_value: { type: 'string' },
           context_mode: { type: 'string', enum: ['group', 'isolated'] },
           target_group_jid: { type: 'string' },
-          agent_backend: { type: 'string', enum: ['claude', 'openai'] },
+          agent_backend: { type: 'string', enum: [...VALID_BACKENDS] },
         },
         ['prompt', 'schedule_type', 'schedule_value'],
       ),
@@ -504,7 +517,7 @@ export function getOpenAIToolDefinitions(
           prompt: { type: 'string' },
           schedule_type: { type: 'string', enum: ['cron', 'interval', 'once'] },
           schedule_value: { type: 'string' },
-          agent_backend: { type: 'string', enum: ['claude', 'openai'] },
+          agent_backend: { type: 'string', enum: [...VALID_BACKENDS] },
         },
         ['task_id'],
       ),
@@ -519,7 +532,7 @@ export function getOpenAIToolDefinitions(
           name: { type: 'string' },
           folder: { type: 'string' },
           trigger: { type: 'string' },
-          agent_backend: { type: 'string', enum: ['claude', 'openai'] },
+          agent_backend: { type: 'string', enum: [...VALID_BACKENDS] },
         },
         ['jid', 'name', 'folder', 'trigger'],
       ),
@@ -851,10 +864,9 @@ export async function executeBrokerTool(
           isControlGroup(containerInput) && args.target_group_jid
             ? String(args.target_group_jid)
             : containerInput.chatJid,
-        agent_backend:
-          args.agent_backend === 'openai' || args.agent_backend === 'claude'
-            ? args.agent_backend
-            : undefined,
+        agent_backend: isValidAgentBackend(args.agent_backend)
+          ? args.agent_backend
+          : undefined,
         createdBy: containerInput.groupFolder,
         timestamp: new Date().toISOString(),
       });
@@ -882,10 +894,9 @@ export async function executeBrokerTool(
         prompt: args.prompt,
         schedule_type: args.schedule_type,
         schedule_value: args.schedule_value,
-        agent_backend:
-          args.agent_backend === 'openai' || args.agent_backend === 'claude'
-            ? args.agent_backend
-            : undefined,
+        agent_backend: isValidAgentBackend(args.agent_backend)
+          ? args.agent_backend
+          : undefined,
         groupFolder: containerInput.groupFolder,
         isMain: isControlGroup(containerInput),
         timestamp: new Date().toISOString(),
@@ -902,10 +913,9 @@ export async function executeBrokerTool(
         name: String(args.name || ''),
         folder: String(args.folder || ''),
         trigger: String(args.trigger || ''),
-        containerConfig:
-          args.agent_backend === 'openai' || args.agent_backend === 'claude'
-            ? { agentBackend: args.agent_backend }
-            : undefined,
+        containerConfig: isValidAgentBackend(args.agent_backend)
+          ? { agentBackend: args.agent_backend }
+          : undefined,
         timestamp: new Date().toISOString(),
       });
       return { ok: true };

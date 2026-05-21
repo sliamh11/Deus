@@ -55,16 +55,16 @@ At minimum, run TypeScript checks plus targeted backend/session/auth/container t
 
 ## Parity Matrix
 
-| Surface | Claude Default | OpenAI/Codex Opt-In |
-|---|---|---|
-| Selection | Fallback/default backend | `DEUS_AGENT_BACKEND=openai`, group override, or task override |
-| Sessions | Existing Claude session ids wrapped as backend refs | Responses id stored as an OpenAI backend ref |
-| Backend mismatch | Starts fresh instead of resuming wrong backend | Starts fresh instead of resuming wrong backend |
-| Credentials | Placeholder Anthropic credentials via proxy | Placeholder OpenAI credentials via `/openai` proxy route |
-| Context files | Native Claude loading plus registry-managed non-native surfaces | Registry-managed `CLAUDE.md`, `AGENTS.md`, `AI_AGENT_GUIDELINES.md`, and `MEMORY_TREE.md` surfaces |
-| Tools | Existing Claude/MCP tool path | Container ToolBroker-backed function tools |
-| Scheduling | Existing IPC task tools | Same IPC task file contract with optional backend override |
-| Global CLI | `deus` / `deus claude` | `deus codex`, `deus openai`, or `DEUS_CLI_AGENT=codex deus` |
+| Surface | Claude Default | OpenAI/Codex Opt-In | Llama.cpp Local Opt-In |
+|---|---|---|---|
+| Selection | Fallback/default backend | `DEUS_AGENT_BACKEND=openai`, group override, or task override | `DEUS_AGENT_BACKEND=llama-cpp`, group override, or task override |
+| Sessions | Existing Claude session ids wrapped as backend refs | Responses id stored as an OpenAI backend ref | Client-side messages array (no server-side response state); synthetic session id |
+| Backend mismatch | Starts fresh instead of resuming wrong backend | Starts fresh instead of resuming wrong backend | Starts fresh instead of resuming wrong backend |
+| Credentials | Placeholder Anthropic credentials via proxy | Placeholder OpenAI credentials via `/openai` proxy route | Placeholder `LLAMA_CPP_API_KEY` injected; no proxy hop (llama-server has no auth) |
+| Context files | Native Claude loading plus registry-managed non-native surfaces | Registry-managed `CLAUDE.md`, `AGENTS.md`, `AI_AGENT_GUIDELINES.md`, and `MEMORY_TREE.md` surfaces | Same as OpenAI — registry-managed surfaces |
+| Tools | Existing Claude/MCP tool path | Container ToolBroker-backed function tools | Container ToolBroker-backed function tools (same path as OpenAI; reuses MCP bridge) |
+| Scheduling | Existing IPC task tools | Same IPC task file contract with optional backend override | Same IPC task file contract with optional backend override |
+| Global CLI | `deus` / `deus claude` | `deus codex`, `deus openai`, or `DEUS_CLI_AGENT=codex deus` | `deus backend set llama-cpp` (foreground `deus llama` shorthand is a follow-up) |
 
 ## Rollback
 

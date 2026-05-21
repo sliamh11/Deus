@@ -12,9 +12,9 @@ export interface McpResponseOptions {
   truncateAt?: number;
 }
 
-type McpTextContent = { type: 'text'; text: string };
-type McpToolResult = { content: McpTextContent[] };
-type McpErrorResult = McpToolResult & { isError: true };
+export type McpTextContent = { type: 'text'; text: string };
+export type McpToolResult = { content: McpTextContent[] };
+export type McpErrorResult = McpToolResult & { isError: true };
 
 function stripNulls(obj: unknown, truncateAt: number): unknown {
   if (Array.isArray(obj)) {
@@ -109,4 +109,25 @@ export function mcpError(
     content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
     isError: true,
   };
+}
+
+/**
+ * Wraps an async tool handler: success → mcpResponse(result, opts);
+ * thrown error → mcpError(API_ERROR, msg, resource).
+ */
+export async function withMcpError<T>(
+  resource: string,
+  fn: () => Promise<T>,
+  opts?: McpResponseOptions,
+): Promise<McpToolResult | McpErrorResult> {
+  try {
+    const result = await fn();
+    return mcpResponse(result, opts);
+  } catch (err: unknown) {
+    return mcpError(
+      McpErrorCode.API_ERROR,
+      err instanceof Error ? err.message : String(err),
+      resource,
+    );
+  }
 }

@@ -14,7 +14,7 @@ A personal AI that understands you - not just recalls things you've said. It lea
 
 ## What it does
 
-1. **Understands you** - It doesn't just store memories - it breaks conversations into facts, indexes by meaning, and builds a model of what you care about. Ask about something from three weeks ago and it recalls the details, even if you don't remember what you called it. (95% recall on the [LongMemEval](https://arxiv.org/abs/2410.10813) benchmark.)
+1. **Understands you** - It doesn't just store memories - it breaks conversations into facts, indexes by meaning, and builds a model of what you care about. Ask about something from three weeks ago and it recalls the details, even if you don't remember what you called it. Works in any language — Hebrew, Arabic, and other non-Latin scripts included. (95% recall on the [LongMemEval](https://arxiv.org/abs/2410.10813) benchmark; multilingual reranker active.)
 
 2. **Adapts to how you think** - Scores its own responses, generates self-critiques, and rewrites its system prompt based on what worked. Tone, judgment, the kind of suggestions it surfaces - all of it improves at the personality level.
 
@@ -34,6 +34,8 @@ A personal AI that understands you - not just recalls things you've said. It lea
 - **Calendar** - Reads and manages your Google Calendar. Ask what's coming up, or tell it to book something.
 - **Scheduled tasks** - Daily summaries, weekly recaps, reminders - set it and forget it.
 - **Web & video** - Summarize YouTube videos, fetch web pages, or research a topic, all from a chat message.
+- **Self-maintaining docs** - A weekly background agent scans for stale documentation and opens fix PRs automatically.
+- **Reliable long sessions** - Detects infinite tool-call loops and auto-summarizes large tool outputs so long sessions stay coherent.
 
 </details>
 
@@ -50,6 +52,7 @@ A personal AI that understands you - not just recalls things you've said. It lea
 - Node.js 20+, Python 3.11+
 - A [Gemini API key](https://aistudio.google.com/apikey) (free tier is enough)
 - [Ollama](https://ollama.ai/download) for local embeddings and scoring (not an agent backend) - `/setup` pulls the right models automatically based on your hardware
+- **Optional:** [llama.cpp](https://github.com/ggerganov/llama.cpp) for a fully local, API-free agent backend — no per-turn cost, works offline. Run `/add-llama-cpp` to install.
 
 ### Install
 
@@ -114,6 +117,8 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus gcal` | Google Calendar token management (`status`, `auth`, `ping`) |
 | `deus listen` | Record from mic, transcribe locally, copy to clipboard |
 | `deus tui` | Full-screen terminal UI for chat, wardens, services, and channels |
+| `deus backend` | Show active agent backend (`claude`, `codex`, `llama-cpp`) |
+| `deus backend set <name>` | Switch backend for all future sessions |
 
 For direct Codex CLI sessions outside the `deus` launcher, register Deus memory
 recall as an MCP tool through the repo launcher:
@@ -150,7 +155,7 @@ python3 scripts/codex_warden_hooks.py check
 | **Learning** | Adapts at the personality level - tone, judgment, suggestions | No | No | Auto-creates & refines skills | No |
 | **Channels** | 5 (WhatsApp, Telegram, Slack, Discord, Gmail) | 10+ | Via OpenClaw | 15+ (WhatsApp, Telegram, Signal, Matrix...) | None |
 | **Isolation** | Container per conversation | Opt-in Docker | Landlock + seccomp | Per-session | None |
-| **LLM support** | Claude default, OpenAI opt-in | Any provider | Any (via OpenClaw) | Any (10+ providers) | Claude only |
+| **LLM support** | Claude default, OpenAI/llama.cpp opt-in | Any provider | Any (via OpenClaw) | Any (10+ providers) | Claude only |
 | **Setup** | ~5 min | ~15 min | ~20 min | ~10 min | N/A |
 | **Repo size** | ~13 MB | ~592 MB | ~22 MB | ~147 MB | N/A |
 
@@ -169,6 +174,7 @@ Deus goes deep on understanding you and adapting over time. Hermes goes wide on 
 | Benchmarks & token costs | [Benchmarks](docs/benchmarks.md) |
 | Environment variables | [Environment](docs/ENVIRONMENT.md) |
 | Using different AI backends | [Multi-backend](docs/MULTI_BACKEND.md) |
+| Local backend (llama.cpp) | [Multi-backend — llama.cpp](docs/MULTI_BACKEND.md#llamacpp-local-backend) |
 | Backend quality benchmark | [Claude vs Codex parity report](docs/research/backend-quality-benchmark-2026-04-26.md) |
 | Development setup | [Development](docs/DEVELOPMENT.md) |
 | Contributing | [Contributing](CONTRIBUTING.md) |

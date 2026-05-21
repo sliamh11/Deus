@@ -185,6 +185,14 @@ Run this phase only if:
 - `evolution/generative/providers/llama_cpp.py` exists in the current checkout, and
 - `setup/llama-cpp.ts` exists in the current checkout.
 
+### Rebuild the agent container
+
+If upgrading from a build predating llama.cpp support, rebuild the container so the new backend module is available:
+
+```bash
+./container/build.sh
+```
+
 ### Configure repo env vars
 
 Write or update the repo env:
@@ -204,6 +212,12 @@ fi
 
 mkdir -p data/env && cp .env data/env/env
 ```
+
+> **Activate the backend:** Deus wiring is complete but the active backend is unchanged. To switch all future sessions to llama.cpp, run:
+> ```bash
+> deus backend set llama-cpp
+> ```
+> Ollama remains the default for embeddings and judge scoring regardless of this setting.
 
 ### Verify setup surface
 

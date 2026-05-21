@@ -37,7 +37,7 @@ const provider = new GCalProvider();
 
 server.tool(
   'list_events',
-  'List upcoming calendar events',
+  'List upcoming calendar events. Pass select="id,start,summary" + compact=true on list ops to cut payload ~60%.',
   {
     days: z
       .number()
@@ -65,7 +65,7 @@ server.tool(
 
 server.tool(
   'get_event',
-  'Get a single calendar event by ID',
+  'Get a single calendar event by ID. Pass select="id,start,summary,location" + compact=true to slim the response.',
   {
     event_id: z.string().describe('The event ID'),
     compact: z.boolean().optional(),
@@ -87,7 +87,7 @@ server.tool(
 
 server.tool(
   'create_event',
-  'Create a new calendar event',
+  'Create a new calendar event. The returned event accepts select/compact to limit fields in the response payload.',
   {
     title: z.string().describe('Event title'),
     start: z
@@ -121,7 +121,7 @@ server.tool(
 
 server.tool(
   'update_event',
-  'Update an existing calendar event',
+  'Update an existing calendar event. The returned event accepts select/compact to limit fields in the response payload.',
   {
     event_id: z.string().describe('The event ID to update'),
     title: z.string().optional().describe('New title'),
@@ -172,7 +172,7 @@ server.tool(
 
 server.tool(
   'search_events',
-  'Search calendar events by text',
+  'Search calendar events by text. Pass select="id,start,summary" + compact=true on list-of-matches to cut payload.',
   {
     query: z.string().describe('Search text'),
     days: z

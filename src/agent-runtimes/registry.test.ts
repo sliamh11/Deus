@@ -72,11 +72,20 @@ describe('RuntimeRegistry', () => {
   it('lists registered backends', () => {
     registry.register(stubBackend('claude'));
     registry.register(stubBackend('openai'));
+    registry.register(stubBackend('llama-cpp'));
 
     expect(registry.list()).toEqual(
-      expect.arrayContaining(['claude', 'openai']),
+      expect.arrayContaining(['claude', 'openai', 'llama-cpp']),
     );
-    expect(registry.list()).toHaveLength(2);
+    expect(registry.list()).toHaveLength(3);
+  });
+
+  it('registers and retrieves llama-cpp backend', () => {
+    const llama = stubBackend('llama-cpp');
+    registry.register(llama);
+
+    expect(registry.get('llama-cpp')).toBe(llama);
+    expect(registry.has('llama-cpp')).toBe(true);
   });
 
   it('resolves backend from group config', () => {

@@ -1,0 +1,14 @@
+{
+  "rules": [
+    {
+      "id": "channel-in-packages",
+      "path_pattern": "^src/mcp-.*\\.ts$",
+      "message": "MCP channel packages live in packages/mcp-{name}/, not src/. See patterns/channel-add.md."
+    },
+    {
+      "id": "skills-not-in-src",
+      "path_pattern": "^src/[^/]+\\.md$",
+      "message": "Top-level docs in src/ likely belong in .claude/skills/ or docs/."
+    }
+  ]
+}

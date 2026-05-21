@@ -37,7 +37,7 @@ function makeStubRegistry(runTurnOverride?: RunTurnFn): RuntimeRegistry {
     };
   };
   const runTurn = runTurnOverride ?? defaultRunTurn;
-  const stub = (name: 'claude' | 'openai') => ({
+  const stub = (name: 'claude' | 'openai' | 'llama-cpp') => ({
     name: () => name,
     capabilities: () => ({
       shell: true,
