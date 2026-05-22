@@ -283,6 +283,10 @@ export class GroupQueue {
     }, delayMs);
   }
 
+  availableSlots(): number {
+    return Math.max(0, MAX_CONCURRENT_CONTAINERS - this.activeCount);
+  }
+
   private drainGroup(groupJid: string): void {
     if (this.shuttingDown) return;
 

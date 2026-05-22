@@ -433,6 +433,38 @@ describe('GroupQueue', () => {
     await vi.advanceTimersByTimeAsync(10);
   });
 
+  // --- Available slots ---
+
+  it('returns correct availableSlots count', async () => {
+    const completionCallbacks: Array<() => void> = [];
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => completionCallbacks.push(resolve));
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+
+    expect(queue.availableSlots()).toBe(2); // MAX_CONCURRENT_CONTAINERS = 2
+
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(queue.availableSlots()).toBe(1);
+
+    queue.enqueueMessageCheck('group2@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(queue.availableSlots()).toBe(0);
+
+    // Free a slot
+    completionCallbacks[0]();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(queue.availableSlots()).toBe(1);
+
+    completionCallbacks[1]();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(queue.availableSlots()).toBe(2);
+  });
+
   it('preempts when idle arrives with pending tasks', async () => {
     const fs = await import('fs');
     let resolveProcess: () => void;

@@ -78,11 +78,16 @@ sequenceDiagram
     participant DB as GroupQueue
 
     PD->>LAPI: issues(filter: state = Ready for Agent)
-    loop each issue
-        PD->>LAPI: issue.labels() -- find agent:* label
-        PD->>LAPI: updateIssue → Agent Working
+    Note over PD: sort by sortOrder ASC (column drag position)
+    Note over PD: cap dispatch to availableSlots()
+    loop each issue (up to available slots)
+        PD->>LAPI: issue.labels() -- find agent:* or Scoped label
         PD->>DB: enqueueTask(chatJid, issueId, runIssue)
     end
+    Note over ART: issue stays in "Ready for Agent" until run starts
+    ART->>LAPI: updateIssue → Agent Working (best-effort)
+    Note over ART: proceeds even if state update fails
+    ART->>ART: executeAgentRun
     ART-->>PD: output text
     alt success
         PD->>LAPI: createComment(output)

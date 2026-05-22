@@ -279,6 +279,16 @@ async function runIssue(
   issueId: string,
   runContext: RunContext,
 ): Promise<void> {
+  const workingState = ctx.stateByName.get('Agent Working')!;
+  try {
+    await ctx.client.updateIssue(issueId, { stateId: workingState.id });
+  } catch (err) {
+    logger.warn(
+      { issueId, err },
+      'linear-dispatcher: failed to move issue to Agent Working',
+    );
+  }
+
   const { text, error } = await executeAgentRun(ctx, runContext);
 
   ctx.deps.queue.notifyIdle(runContext.chatJid);
@@ -322,13 +332,18 @@ async function pollLinear(): Promise<void> {
   const ctx = _ctx;
 
   const readyState = ctx.stateByName.get('Ready for Agent')!;
-  const workingState = ctx.stateByName.get('Agent Working')!;
 
   const issues = await ctx.client.issues({
     filter: { state: { id: { eq: readyState.id } } },
   });
 
-  for (const issue of issues.nodes) {
+  const sorted = [...issues.nodes].sort((a, b) => a.sortOrder - b.sortOrder);
+
+  let dispatched = 0;
+  const slots = ctx.deps.queue.availableSlots();
+
+  for (const issue of sorted) {
+    if (dispatched >= slots) break;
     if (ctx.inFlightDispatch.has(issue.id)) continue;
 
     const labels = await issue.labels();
@@ -349,16 +364,6 @@ async function pollLinear(): Promise<void> {
       logger.debug(
         { issueId: issue.id },
         'linear-dispatcher: issue has no agent:* label and is not scoped, skipping',
-      );
-      continue;
-    }
-
-    try {
-      await ctx.client.updateIssue(issue.id, { stateId: workingState.id });
-    } catch (err) {
-      logger.warn(
-        { issueId: issue.id, err },
-        'linear-dispatcher: failed to move issue to Agent Working',
       );
       continue;
     }
@@ -405,13 +410,22 @@ async function pollLinear(): Promise<void> {
       runIssue(ctx, issue.id, runContext),
     );
 
+    dispatched++;
     logger.info(
       {
         issueId: issue.id,
         role: roleSpec?.name ?? 'scoped',
         chatJid,
+        sortOrder: issue.sortOrder,
       },
       'linear-dispatcher: enqueued issue for agent run',
+    );
+  }
+
+  if (sorted.length > dispatched) {
+    logger.debug(
+      { total: sorted.length, dispatched, slots },
+      'linear-dispatcher: issues waiting in Ready for Agent (no slots)',
     );
   }
 }

@@ -1,6 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+
+vi.mock('./config.js', async () => {
+  const actual =
+    await vi.importActual<typeof import('./config.js')>('./config.js');
+  const { join } = await import('path');
+  const { tmpdir } = await import('os');
+  return {
+    ...actual,
+    PROJECT_ROOT: join(tmpdir(), `deus-test-${process.pid}`),
+  };
+});
+
+const TEST_PROJECT_ROOT = path.join(os.tmpdir(), `deus-test-${process.pid}`);
+
 import {
   loadRoleSpecs,
   buildIssuePrompt,
@@ -24,6 +39,7 @@ function makeMockDeps(
       enqueueTask: vi.fn(),
       notifyIdle: vi.fn(),
       closeStdin: vi.fn(),
+      availableSlots: vi.fn().mockReturnValue(5),
     } as unknown as LinearDispatcherDependencies['queue'],
     ...overrides,
   };
@@ -175,5 +191,110 @@ describe('startLinearDispatcher', () => {
     const ctx = makeMockCtx();
     startLinearDispatcher(ctx);
     // No timer started because no role specs exist
+  });
+});
+
+describe('pollLinear dispatch ordering', () => {
+  const agentsDir = path.join(TEST_PROJECT_ROOT, '.claude', 'agents');
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentsDir, 'test-role.md'),
+      `---\nname: test-role\nlinear_label: "agent:test"\n---\nYou are a test agent.`,
+    );
+  });
+
+  afterEach(() => {
+    stopLinearDispatcher();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+    fs.rmSync(TEST_PROJECT_ROOT, { recursive: true, force: true });
+  });
+
+  function makeIssue(id: string, sortOrder: number, labelName = 'agent:test') {
+    return {
+      id,
+      title: `Issue ${id}`,
+      identifier: `LIA-${id}`,
+      description: 'test',
+      sortOrder,
+      labels: vi.fn().mockResolvedValue({
+        nodes: [{ name: labelName }],
+      }),
+      comments: vi.fn().mockResolvedValue({ nodes: [] }),
+    };
+  }
+
+  it('dispatches issues in sortOrder ASC', async () => {
+    const enqueueTask = vi.fn();
+    const deps = makeMockDeps({
+      queue: {
+        enqueueTask,
+        notifyIdle: vi.fn(),
+        closeStdin: vi.fn(),
+        availableSlots: vi.fn().mockReturnValue(5),
+      } as unknown as LinearDispatcherDependencies['queue'],
+    });
+
+    const issues = [
+      makeIssue('ccc', 3.0),
+      makeIssue('aaa', 1.0),
+      makeIssue('bbb', 2.0),
+    ];
+
+    const ctx = makeMockCtx({
+      deps,
+      client: {
+        issues: vi.fn().mockResolvedValue({ nodes: issues }),
+        updateIssue: vi.fn().mockResolvedValue({}),
+      } as unknown as LinearContext['client'],
+    });
+
+    startLinearDispatcher(ctx);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(enqueueTask).toHaveBeenCalledTimes(3);
+    const callOrder = enqueueTask.mock.calls.map(
+      (call: unknown[]) => call[1] as string,
+    );
+    expect(callOrder).toEqual(['aaa', 'bbb', 'ccc']);
+  });
+
+  it('throttles dispatch to available slots', async () => {
+    const enqueueTask = vi.fn();
+    const deps = makeMockDeps({
+      queue: {
+        enqueueTask,
+        notifyIdle: vi.fn(),
+        closeStdin: vi.fn(),
+        availableSlots: vi.fn().mockReturnValue(2),
+      } as unknown as LinearDispatcherDependencies['queue'],
+    });
+
+    const issues = [
+      makeIssue('aaa', 1.0),
+      makeIssue('bbb', 2.0),
+      makeIssue('ccc', 3.0),
+      makeIssue('ddd', 4.0),
+    ];
+
+    const ctx = makeMockCtx({
+      deps,
+      client: {
+        issues: vi.fn().mockResolvedValue({ nodes: issues }),
+        updateIssue: vi.fn().mockResolvedValue({}),
+      } as unknown as LinearContext['client'],
+    });
+
+    startLinearDispatcher(ctx);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(enqueueTask).toHaveBeenCalledTimes(2);
+    const callOrder = enqueueTask.mock.calls.map(
+      (call: unknown[]) => call[1] as string,
+    );
+    expect(callOrder).toEqual(['aaa', 'bbb']);
   });
 });
