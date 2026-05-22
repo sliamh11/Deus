@@ -1,4 +1,4 @@
-<!-- sha: 0bdee5e57e07b98eafbfbbce75ecda20788749e5 -->
+<!-- sha: 6539b689cd582d8b724f1909421ce57fa10599a4 -->
 
 # Deus Codebase Map
 
@@ -87,6 +87,7 @@ group-tokens.ts
 image.ts
 index.ts
 ipc.ts
+linear-auto-merge.ts
 linear-dispatcher.ts
 linear-gate-specs.ts
 linear-webhook.ts
@@ -94,6 +95,7 @@ logger.ts
 message-orchestrator.ts
 mount-security.ts
 platform.ts
+pr-url-extractor.ts
 project-registry.ts
 reaction-signal.ts
 remote-control.ts
@@ -135,6 +137,7 @@ codebase_map.py
 codex_warden_hooks.py
 companion_to_braille.py
 compression_benchmark.py
+deus-git-push.sh
 drift_check.py
 embedding_shootout.py
 gcal.mjs
@@ -254,6 +257,7 @@ _Format: `path/to/file` → exported symbols_
 - `src/image.ts` → `ProcessedImage`, `ImageAttachment`, `isImageMessage`, `processImage`, `parseImageReferences`
 - `src/index.ts` → `getAvailableGroups`
 - `src/ipc.ts` → `IpcDeps`, `startIpcWatcher`, `processTaskIpc`
+- `src/linear-auto-merge.ts` → `queryPrChecks`, `attemptAutoMerge`, `sweepPendingAutoMerges`, `triggerAutoMerge`
 - `src/linear-dispatcher.ts` → `LinearDispatcherDependencies`, `GateLabels`, `LinearContext`, `extractFrontmatter`, `loadRoleSpecs`, ...
 - `src/linear-gate-specs.ts` → `GateSpec`, `loadGateSpecs`
 - `src/linear-webhook.ts` → `parseVerdict`, `parseEnrichment`, `parseRatings`, `mergeEnrichment`, `stripEnrichmentSection`, ...
@@ -265,6 +269,7 @@ _Format: `path/to/file` → exported symbols_
 - `src/multi-agent/prompt-templates.ts` → `buildPrompt`
 - `src/multi-agent/types.ts` → `SubagentStatus`, `SubagentResult`, `OrchestratorResult`, `SubagentTask`
 - `src/platform.ts` → `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_WSL`, `PYTHON_BIN`, ...
+- `src/pr-url-extractor.ts` → `extractPrUrl`
 - `src/project-registry.ts` → `detectProjectType`, `SENSITIVE_FILE_PATTERNS`, `SENSITIVE_DIR_PATTERNS`, `registerProject`, `associateProject`, ...
 - `src/reaction-signal.ts` → `emojiToSignal`
 - `src/remote-control.ts` → `restoreRemoteControl`, `getActiveSession`, `_resetForTesting`, `_getStateFilePath`, `startRemoteControl`, ...
