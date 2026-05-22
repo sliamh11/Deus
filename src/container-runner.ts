@@ -545,6 +545,27 @@ export async function runContainerAgent(
       logger.debug({ logFile, verbose: isVerbose }, 'Container log written');
 
       if (code !== 0) {
+        // Container killed externally after producing output — treat as success
+        if (hadStreamingOutput && onOutput) {
+          logger.info(
+            { group: group.name, code, duration },
+            'Container exited non-zero after output (treating as success)',
+          );
+          outputChain.then(() => {
+            resolve({
+              status: 'success',
+              result: null,
+              newSessionRef:
+                newSessionRef ??
+                (newSessionId
+                  ? defaultSession(newSessionId, input.backend || 'claude')
+                  : undefined),
+              newSessionId,
+            });
+          });
+          return;
+        }
+
         logger.error(
           {
             group: group.name,

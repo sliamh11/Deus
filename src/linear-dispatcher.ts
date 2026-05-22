@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { LinearClient } from '@linear/sdk';
+import { DATA_DIR } from './config.js';
 import { parse as parseYaml } from 'yaml';
 import { logger } from './logger.js';
 import { PROJECT_ROOT } from './config.js';
@@ -187,6 +188,21 @@ export async function executeAgentRun(
     }
     if (event.type === 'error') {
       error = event.error;
+    }
+    // Signal container to exit after first result (one-shot gate runs)
+    if (event.type === 'turn_complete') {
+      try {
+        const inputDir = path.join(
+          DATA_DIR,
+          'ipc',
+          runContext.groupFolder,
+          'input',
+        );
+        fs.mkdirSync(inputDir, { recursive: true });
+        fs.writeFileSync(path.join(inputDir, '_close'), '');
+      } catch {
+        /* best-effort */
+      }
     }
   };
 
