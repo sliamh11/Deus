@@ -67,12 +67,14 @@ interface TextContentBlock {
 }
 type ContentBlock = ImageContentBlock | TextContentBlock;
 
+// SYNC-REQUIRED: Duplicated in src/container-runner.ts (host side).
 interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionRef?: RuntimeSession;
   newSessionId?: string;
   error?: string;
+  prUrl?: string;
 }
 
 interface SessionEntry {

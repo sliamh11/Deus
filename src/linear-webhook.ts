@@ -13,6 +13,7 @@ import {
   upsertGateComment,
   getGateCommentId,
 } from './db.js';
+import { triggerAutoMerge } from './linear-auto-merge.js';
 
 const DEFAULT_WEBHOOK_PORT = 3005;
 
@@ -443,6 +444,15 @@ async function handleIssueUpdate(
         logger.warn(
           { issueId: data.id, addIds, safeRemoveIds, err },
           'linear-webhook: failed to update gate labels',
+        );
+      });
+    }
+
+    if (finalVerdict === 'SHIP' && gateSpec.name === 'output-quality-gate') {
+      triggerAutoMerge(ctx, data.id).catch((err) => {
+        logger.warn(
+          { issueId: data.id, err },
+          'linear-webhook: auto-merge trigger failed',
         );
       });
     }

@@ -1,0 +1,14 @@
+{
+  "tools": {
+    "gh": {
+      "binary": "/usr/local/bin/gh",
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
+      "timeout": 60000
+    },
+    "deus-git-push": {
+      "binary": "${DEUS_HOME}/scripts/deus-git-push.sh",
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
+      "timeout": 30000
+    }
+  }
+}

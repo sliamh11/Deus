@@ -83,6 +83,10 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
 );
 
+export const LINEAR_AUTO_MERGE =
+  process.env.LINEAR_AUTO_MERGE === '1' ||
+  process.env.LINEAR_AUTO_MERGE === 'true';
+
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

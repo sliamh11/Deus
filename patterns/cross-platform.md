@@ -3,7 +3,7 @@ governs:
   - src/platform.ts
   - src/cross-platform.test.ts
   - src/config.ts
-last_verified: "2026-05-17T19:00:00" # auto-bump (llama-cpp router mode)
+last_verified: "2026-05-22T23:30:00" # auto-bump (container-github-push)
 test_tasks:
   - "Add a new HOME directory lookup in src/ that must go through src/platform.ts"
   - "Add a shell command helper under src/ that works on macOS, Linux, and Windows"

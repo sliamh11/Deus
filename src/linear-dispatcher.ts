@@ -7,6 +7,8 @@ import { logger } from './logger.js';
 import { PROJECT_ROOT } from './config.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
+import { extractPrUrl } from './pr-url-extractor.js';
+import { upsertIssuePr } from './db.js';
 import { defaultSession } from './agent-runtimes/types.js';
 import type {
   RunContext,
@@ -59,6 +61,7 @@ export interface LinearContext {
   inFlightGate: Set<string>;
   gateLabels: GateLabels;
   teamId: string;
+  repoSlug?: string;
 }
 
 let _timer: ReturnType<typeof setInterval> | null = null;
@@ -138,6 +141,11 @@ async function discoverWorkflowStates(
     map.set(s.name, { id: s.id, name: s.name });
   }
   const required = ['Ready for Agent', 'Agent Working', 'In Review', 'Backlog'];
+  if (!map.has('Done')) {
+    logger.warn(
+      'linear-dispatcher: workflow state "Done" not found — auto-merge will skip Done transition',
+    );
+  }
   for (const name of required) {
     if (!map.has(name)) {
       throw new FatalError(
@@ -188,7 +196,24 @@ export function buildScopedIssuePrompt(
     parts.push(`<comments>\n${commentBlock}\n</comments>`);
   }
   parts.push(
-    '<instructions>\nRead the scope block in the task description. Follow the implementation plan and satisfy all acceptance criteria. Create a feature branch, implement, test, and open a PR. Report what you did when done.\n</instructions>',
+    `<instructions>
+Read the scope block in the task description. Follow the implementation plan and satisfy all acceptance criteria.
+
+## Git Workflow
+1. Create a feature branch: \`git checkout -b feat/${issueIdentifier.toLowerCase().replace(/[^a-z0-9-]/g, '')}-<short-desc>\`
+2. Implement the changes, run tests, commit.
+3. Push the branch using the tool proxy:
+   curl -s -X POST "$DEUS_TOOL_PROXY_URL/tool/deus-git-push" \\
+     -H "Content-Type: application/json" \\
+     -H "x-deus-proxy-token: $DEUS_PROXY_TOKEN" \\
+     -d '{"args": ["-u", "origin", "HEAD"]}'
+4. Create a PR using the tool proxy:
+   curl -s -X POST "$DEUS_TOOL_PROXY_URL/tool/gh" \\
+     -H "Content-Type: application/json" \\
+     -H "x-deus-proxy-token: $DEUS_PROXY_TOKEN" \\
+     -d '{"args": ["pr", "create", "--fill", "--body", "Closes ${issueIdentifier.replace(/[^A-Za-z0-9-]/g, '')}"]}'
+5. Report what you did and include the PR URL in your response.
+</instructions>`,
   );
   return parts.join('\n\n');
 }
@@ -272,6 +297,11 @@ async function runIssue(
       );
     } else {
       const body = text || '(no output produced)';
+      const prUrl = extractPrUrl(body, ctx.repoSlug);
+      if (prUrl) {
+        upsertIssuePr(issueId, prUrl);
+        logger.info({ issueId, prUrl }, 'linear-dispatcher: persisted PR URL');
+      }
       await ctx.client.createComment({ issueId, body });
       const reviewState = ctx.stateByName.get('In Review')!;
       await ctx.client.updateIssue(issueId, { stateId: reviewState.id });
@@ -503,6 +533,26 @@ export async function initLinearContext(
       'linear: context initialized',
     );
 
+    // Derive repo slug for PR URL scoping
+    let repoSlug: string | undefined = process.env.GITHUB_REPO;
+    if (!repoSlug) {
+      try {
+        const { execFileSync } = await import('child_process');
+        const remoteUrl = execFileSync('git', ['remote', 'get-url', 'origin'], {
+          encoding: 'utf-8',
+          timeout: 5000,
+        }).trim();
+        const match = remoteUrl.match(
+          /github\.com[:/]([^/]+\/[^/.]+?)(?:\.git)?$/,
+        );
+        if (match) repoSlug = match[1];
+      } catch {
+        logger.warn(
+          'linear: could not derive GITHUB_REPO from git remote; PR URL scoping disabled',
+        );
+      }
+    }
+
     return {
       client,
       stateByName,
@@ -514,6 +564,7 @@ export async function initLinearContext(
       inFlightGate: new Set(),
       gateLabels,
       teamId,
+      repoSlug,
     };
   } catch (err) {
     if (err instanceof FatalError) {

@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-05-22" # auto-bump (gate-label-fix)
+last_verified: "2026-05-22T23:30:00" # auto-bump (container-github-push)
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"

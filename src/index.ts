@@ -375,6 +375,9 @@ async function main(): Promise<void> {
     'LINEAR_BOT_USER_ID',
     'LINEAR_POLL_INTERVAL_MS',
     'LINEAR_TEAM_ID',
+    'LINEAR_AUTO_MERGE',
+    'GITHUB_TOKEN',
+    'GITHUB_REPO',
   ]);
   for (const [k, v] of Object.entries(linearEnv)) {
     if (v && !process.env[k]) process.env[k] = v;
@@ -419,6 +422,12 @@ async function main(): Promise<void> {
           logger.error({ err }, 'linear-webhook: server failed to start');
         }
       }
+
+      // Sweep pending auto-merges from previous runs
+      const { sweepPendingAutoMerges } = await import('./linear-auto-merge.js');
+      sweepPendingAutoMerges(linearCtx).catch((err) => {
+        logger.warn({ err }, 'auto-merge: startup sweep failed');
+      });
     }
   } else {
     logger.warn('linear: LINEAR_API_KEY not set — subsystems dormant');

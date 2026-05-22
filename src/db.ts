@@ -129,6 +129,15 @@ function createSchema(database: Database.Database): void {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (issue_id, gate_to)
     );
+
+    CREATE TABLE IF NOT EXISTS linear_issue_prs (
+      issue_id TEXT PRIMARY KEY,
+      pr_url TEXT NOT NULL,
+      branch TEXT,
+      auto_merge_state TEXT DEFAULT 'none',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -1209,6 +1218,63 @@ export function getGateCommentId(
     )
     .get(issueId, gateTo) as { comment_id: string } | undefined;
   return row?.comment_id;
+}
+
+// --- Linear issue PR accessors ---
+
+export function upsertIssuePr(
+  issueId: string,
+  prUrl: string,
+  branch?: string,
+): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO linear_issue_prs (issue_id, pr_url, branch, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(issue_id) DO UPDATE SET
+       pr_url = excluded.pr_url,
+       branch = COALESCE(excluded.branch, linear_issue_prs.branch),
+       updated_at = excluded.updated_at`,
+  ).run(issueId, prUrl, branch ?? null, now, now);
+}
+
+export function getIssuePr(
+  issueId: string,
+):
+  | { pr_url: string; branch: string | null; auto_merge_state: string }
+  | undefined {
+  return db
+    .prepare(
+      `SELECT pr_url, branch, auto_merge_state FROM linear_issue_prs WHERE issue_id = ?`,
+    )
+    .get(issueId) as
+    | { pr_url: string; branch: string | null; auto_merge_state: string }
+    | undefined;
+}
+
+export function updatePrAutoMergeState(
+  issueId: string,
+  state: 'none' | 'pending' | 'merged' | 'failed',
+): void {
+  db.prepare(
+    `UPDATE linear_issue_prs SET auto_merge_state = ?, updated_at = ? WHERE issue_id = ?`,
+  ).run(state, new Date().toISOString(), issueId);
+}
+
+export function getPendingAutoMerges(): Array<{
+  issue_id: string;
+  pr_url: string;
+  branch: string | null;
+}> {
+  return db
+    .prepare(
+      `SELECT issue_id, pr_url, branch FROM linear_issue_prs WHERE auto_merge_state = 'pending'`,
+    )
+    .all() as Array<{
+    issue_id: string;
+    pr_url: string;
+    branch: string | null;
+  }>;
 }
 
 // --- JSON migration ---

@@ -74,12 +74,14 @@ export interface ContainerInput {
   effort?: AgentEffortLevel;
 }
 
+// SYNC-REQUIRED: Duplicated in container/agent-runner/src/index.ts.
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionRef?: RuntimeSession;
   newSessionId?: string;
   error?: string;
+  prUrl?: string;
 }
 
 function buildContainerArgs(
