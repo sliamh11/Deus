@@ -360,7 +360,7 @@ export async function initLinearContext(
     }
 
     logger.info(
-      { teamId, botUserId, states: [...stateByName.keys()] },
+      { teamId, states: [...stateByName.keys()] },
       'linear: context initialized',
     );
 
