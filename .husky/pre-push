@@ -1,4 +1,6 @@
 #!/bin/sh
+# Regenerate codebase map (SHA-invalidated, no-op if already fresh)
+python3 scripts/codebase_map.py --output .claude/codebase_map.md
 # Run pattern drift check against merge-base with origin/main before pushing
 BASE=$(git merge-base HEAD origin/main 2>/dev/null) || BASE="HEAD~1"
 python3 scripts/drift_check.py --all --base "$BASE"

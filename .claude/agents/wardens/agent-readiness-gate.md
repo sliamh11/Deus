@@ -18,7 +18,16 @@ You receive an issue title and description (may be empty or minimal). Your job i
 
 ## Step 1: Explore the codebase
 
-Before writing any scope, search for relevant files and context:
+Before writing any scope, use the cached codebase map for efficient exploration:
+
+**Primary path (map present)**:
+1. Read `.claude/codebase_map.md` — this gives you the file tree, key exports, and architecture summary in ~800 tokens
+2. From the map, identify the 3-5 files most relevant to this issue
+3. Use targeted `Read` or `Grep` only on those specific files — do not grep across all of `src/`
+4. Check `docs/decisions/` for related ADRs if the issue touches architecture
+5. Look for existing tests near the relevant files
+
+**Fallback (map absent or stale)**:
 - Grep for keywords from the issue title in `src/`, `scripts/`, `docs/`
 - Read the most relevant files to understand the current architecture
 - Check `AGENTS.md` for project structure and entrypoints
