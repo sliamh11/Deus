@@ -172,6 +172,27 @@ export function buildIssuePrompt(
   return parts.join('\n\n');
 }
 
+export function buildScopedIssuePrompt(
+  issueTitle: string,
+  issueIdentifier: string,
+  issueDescription: string,
+  comments: Array<{ author: string; body: string }>,
+): string {
+  const parts = [
+    `<task>\nYou are an autonomous software engineer. Implement the following issue.\nTitle: ${issueTitle}\nID: ${issueIdentifier}\n\n${issueDescription}\n</task>`,
+  ];
+  if (comments.length > 0) {
+    const commentBlock = comments
+      .map((c) => `[${c.author}]: ${c.body}`)
+      .join('\n\n');
+    parts.push(`<comments>\n${commentBlock}\n</comments>`);
+  }
+  parts.push(
+    '<instructions>\nRead the scope block in the task description. Follow the implementation plan and satisfy all acceptance criteria. Create a feature branch, implement, test, and open a PR. Report what you did when done.\n</instructions>',
+  );
+  return parts.join('\n\n');
+}
+
 export async function executeAgentRun(
   ctx: LinearContext,
   runContext: RunContext,
@@ -282,19 +303,22 @@ async function pollLinear(): Promise<void> {
 
     const labels = await issue.labels();
     const agentLabel = labels.nodes.find((l) => l.name.startsWith('agent:'));
-    if (!agentLabel) {
+    const isScoped = labels.nodes.some((l) => l.name === 'Scoped');
+
+    let roleSpec: RoleSpec | undefined;
+    if (agentLabel) {
+      roleSpec = _roleSpecs.get(agentLabel.name);
+      if (!roleSpec) {
+        logger.warn(
+          { issueId: issue.id, label: agentLabel.name },
+          'linear-dispatcher: no role spec found for label, skipping',
+        );
+        continue;
+      }
+    } else if (!isScoped) {
       logger.debug(
         { issueId: issue.id },
-        'linear-dispatcher: issue has no agent:* label, skipping',
-      );
-      continue;
-    }
-
-    const roleSpec = _roleSpecs.get(agentLabel.name);
-    if (!roleSpec) {
-      logger.warn(
-        { issueId: issue.id, label: agentLabel.name },
-        'linear-dispatcher: no role spec found for label, skipping',
+        'linear-dispatcher: issue has no agent:* label and is not scoped, skipping',
       );
       continue;
     }
@@ -319,13 +343,23 @@ async function pollLinear(): Promise<void> {
       }),
     );
 
-    const prompt = buildIssuePrompt(
-      roleSpec,
-      issue.title,
-      issue.identifier,
-      issue.description ?? undefined,
-      comments,
-    );
+    let prompt: string;
+    if (roleSpec) {
+      prompt = buildIssuePrompt(
+        roleSpec,
+        issue.title,
+        issue.identifier,
+        issue.description ?? undefined,
+        comments,
+      );
+    } else {
+      prompt = buildScopedIssuePrompt(
+        issue.title,
+        issue.identifier,
+        issue.description ?? '',
+        comments,
+      );
+    }
 
     const chatJid = `linear-dispatch-${issue.id.slice(0, 8)}`;
     const runContext: RunContext = {
@@ -342,7 +376,11 @@ async function pollLinear(): Promise<void> {
     );
 
     logger.info(
-      { issueId: issue.id, role: roleSpec.name, chatJid },
+      {
+        issueId: issue.id,
+        role: roleSpec?.name ?? 'scoped',
+        chatJid,
+      },
       'linear-dispatcher: enqueued issue for agent run',
     );
   }
