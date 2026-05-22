@@ -107,6 +107,28 @@ function createSchema(database: Database.Database): void {
       readonly INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS linear_webhook_events (
+      event_key TEXT PRIMARY KEY,
+      issue_id TEXT NOT NULL,
+      gate_to TEXT NOT NULL,
+      from_state_id TEXT NOT NULL,
+      to_state_id TEXT NOT NULL,
+      webhook_ts TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      verdict TEXT,
+      started_at TEXT,
+      finished_at TEXT,
+      error TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS linear_gate_comments (
+      issue_id TEXT NOT NULL,
+      gate_to TEXT NOT NULL,
+      comment_id TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (issue_id, gate_to)
+    );
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -1100,6 +1122,93 @@ export function setGroupProject(
   db.prepare(
     `UPDATE registered_groups SET project_id = ? WHERE folder = ?`,
   ).run(projectId, groupFolder);
+}
+
+// --- Linear webhook event accessors ---
+
+export function insertWebhookEvent(event: {
+  event_key: string;
+  issue_id: string;
+  gate_to: string;
+  from_state_id: string;
+  to_state_id: string;
+  webhook_ts: string;
+}): boolean {
+  const result = db
+    .prepare(
+      `INSERT OR IGNORE INTO linear_webhook_events
+       (event_key, issue_id, gate_to, from_state_id, to_state_id, webhook_ts, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending')`,
+    )
+    .run(
+      event.event_key,
+      event.issue_id,
+      event.gate_to,
+      event.from_state_id,
+      event.to_state_id,
+      event.webhook_ts,
+    );
+  return result.changes > 0;
+}
+
+export function updateWebhookEventStatus(
+  eventKey: string,
+  status: 'running' | 'done' | 'error',
+  extra?: { verdict?: string; error?: string },
+): void {
+  const now = new Date().toISOString();
+  if (status === 'running') {
+    db.prepare(
+      `UPDATE linear_webhook_events SET status = ?, started_at = ? WHERE event_key = ?`,
+    ).run(status, now, eventKey);
+  } else {
+    db.prepare(
+      `UPDATE linear_webhook_events
+       SET status = ?, finished_at = ?, verdict = COALESCE(?, verdict), error = COALESCE(?, error)
+       WHERE event_key = ?`,
+    ).run(status, now, extra?.verdict ?? null, extra?.error ?? null, eventKey);
+  }
+}
+
+export function getLastCompletedGateRun(
+  issueId: string,
+  gateTo: string,
+): { finished_at: string; verdict: string } | undefined {
+  return db
+    .prepare(
+      `SELECT finished_at, verdict FROM linear_webhook_events
+       WHERE issue_id = ? AND gate_to = ? AND status = 'done'
+       ORDER BY finished_at DESC, rowid DESC LIMIT 1`,
+    )
+    .get(issueId, gateTo) as
+    | { finished_at: string; verdict: string }
+    | undefined;
+}
+
+export function upsertGateComment(
+  issueId: string,
+  gateTo: string,
+  commentId: string,
+): void {
+  db.prepare(
+    `INSERT INTO linear_gate_comments (issue_id, gate_to, comment_id, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(issue_id, gate_to) DO UPDATE SET
+       comment_id = excluded.comment_id,
+       updated_at = excluded.updated_at`,
+  ).run(issueId, gateTo, commentId, new Date().toISOString());
+}
+
+export function getGateCommentId(
+  issueId: string,
+  gateTo: string,
+): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT comment_id FROM linear_gate_comments WHERE issue_id = ? AND gate_to = ?`,
+    )
+    .get(issueId, gateTo) as { comment_id: string } | undefined;
+  return row?.comment_id;
 }
 
 // --- JSON migration ---

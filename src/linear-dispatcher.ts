@@ -39,24 +39,35 @@ interface WorkflowState {
   name: string;
 }
 
-let _timer: ReturnType<typeof setInterval> | null = null;
-let _client: LinearClient | null = null;
-let _dispatchGroup: RegisteredGroup | null = null;
-let _roleSpecs: Map<string, RoleSpec> = new Map();
-let _stateMap: Map<string, WorkflowState> = new Map();
-let _inFlight: Set<string> = new Set();
-let _deps: LinearDispatcherDependencies | null = null;
+export interface LinearContext {
+  client: LinearClient;
+  stateByName: Map<string, WorkflowState>;
+  stateById: Map<string, WorkflowState>;
+  botUserId: string;
+  deps: LinearDispatcherDependencies;
+  dispatchGroup: RegisteredGroup;
+  inFlightDispatch: Set<string>;
+  inFlightGate: Set<string>;
+}
 
-function extractFrontmatter(content: string): {
+let _timer: ReturnType<typeof setInterval> | null = null;
+let _roleSpecs: Map<string, RoleSpec> = new Map();
+let _ctx: LinearContext | null = null;
+
+export function extractFrontmatter(content: string): {
   data: Record<string, unknown>;
   body: string;
 } {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!match) return { data: {}, body: content };
-  return {
-    data: parseYaml(match[1]) as Record<string, unknown>,
-    body: match[2],
-  };
+  try {
+    return {
+      data: parseYaml(match[1]) as Record<string, unknown>,
+      body: match[2],
+    };
+  } catch {
+    return { data: {}, body: content };
+  }
 }
 
 export function loadRoleSpecs(agentsDir: string): Map<string, RoleSpec> {
@@ -150,13 +161,11 @@ export function buildIssuePrompt(
   return parts.join('\n\n');
 }
 
-async function runIssue(
-  issueId: string,
+export async function executeAgentRun(
+  ctx: LinearContext,
   runContext: RunContext,
-): Promise<void> {
-  if (!_client || !_dispatchGroup || !_deps || !_stateMap) return;
-
-  const resolvedBackend = _deps.registry.resolve(_dispatchGroup);
+): Promise<{ text: string; error: string }> {
+  const resolvedBackend = ctx.deps.registry.resolve(ctx.dispatchGroup);
   const backend = resolvedBackend.name();
   const sessionRef: RuntimeSession = defaultSession('', backend);
   let result = '';
@@ -165,9 +174,6 @@ async function runIssue(
   const eventSink: RuntimeEventSink = (event) => {
     if (event.type === 'output_text') {
       result += event.text;
-    }
-    if (event.type === 'turn_complete') {
-      _deps!.queue.notifyIdle(runContext.chatJid);
     }
     if (event.type === 'error') {
       error = event.error;
@@ -187,26 +193,41 @@ async function runIssue(
     }
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
-    logger.warn({ issueId, error }, 'linear-dispatcher: agent run failed');
+    logger.warn(
+      { chatJid: runContext.chatJid, error },
+      'linear: agent run failed',
+    );
   }
+
+  return { text: result, error };
+}
+
+async function runIssue(
+  ctx: LinearContext,
+  issueId: string,
+  runContext: RunContext,
+): Promise<void> {
+  const { text, error } = await executeAgentRun(ctx, runContext);
+
+  ctx.deps.queue.notifyIdle(runContext.chatJid);
 
   try {
     if (error) {
-      await _client.createComment({
+      await ctx.client.createComment({
         issueId,
         body: `**Agent run failed**\n\n\`\`\`\n${error}\n\`\`\``,
       });
-      const backlogState = _stateMap.get('Backlog')!;
-      await _client.updateIssue(issueId, { stateId: backlogState.id });
+      const backlogState = ctx.stateByName.get('Backlog')!;
+      await ctx.client.updateIssue(issueId, { stateId: backlogState.id });
       logger.warn(
         { issueId },
         'linear-dispatcher: moved failed issue to Backlog',
       );
     } else {
-      const body = result || '(no output produced)';
-      await _client.createComment({ issueId, body });
-      const reviewState = _stateMap.get('In Review')!;
-      await _client.updateIssue(issueId, { stateId: reviewState.id });
+      const body = text || '(no output produced)';
+      await ctx.client.createComment({ issueId, body });
+      const reviewState = ctx.stateByName.get('In Review')!;
+      await ctx.client.updateIssue(issueId, { stateId: reviewState.id });
       logger.info({ issueId }, 'linear-dispatcher: issue moved to In Review');
     }
   } catch (err) {
@@ -215,22 +236,23 @@ async function runIssue(
       'linear-dispatcher: failed to update Linear issue after run',
     );
   } finally {
-    _inFlight.delete(issueId);
+    ctx.inFlightDispatch.delete(issueId);
   }
 }
 
 async function pollLinear(): Promise<void> {
-  if (!_client || !_stateMap || !_deps || !_dispatchGroup) return;
+  if (!_ctx) return;
+  const ctx = _ctx;
 
-  const readyState = _stateMap.get('Ready for Agent')!;
-  const workingState = _stateMap.get('Agent Working')!;
+  const readyState = ctx.stateByName.get('Ready for Agent')!;
+  const workingState = ctx.stateByName.get('Agent Working')!;
 
-  const issues = await _client.issues({
+  const issues = await ctx.client.issues({
     filter: { state: { id: { eq: readyState.id } } },
   });
 
   for (const issue of issues.nodes) {
-    if (_inFlight.has(issue.id)) continue;
+    if (ctx.inFlightDispatch.has(issue.id)) continue;
 
     const labels = await issue.labels();
     const agentLabel = labels.nodes.find((l) => l.name.startsWith('agent:'));
@@ -252,7 +274,7 @@ async function pollLinear(): Promise<void> {
     }
 
     try {
-      await _client.updateIssue(issue.id, { stateId: workingState.id });
+      await ctx.client.updateIssue(issue.id, { stateId: workingState.id });
     } catch (err) {
       logger.warn(
         { issueId: issue.id, err },
@@ -261,7 +283,7 @@ async function pollLinear(): Promise<void> {
       continue;
     }
 
-    _inFlight.add(issue.id);
+    ctx.inFlightDispatch.add(issue.id);
 
     const issueComments = await issue.comments();
     const comments = await Promise.all(
@@ -289,8 +311,8 @@ async function pollLinear(): Promise<void> {
       effort: 'high',
     };
 
-    _deps.queue.enqueueTask(chatJid, issue.id, () =>
-      runIssue(issue.id, runContext),
+    ctx.deps.queue.enqueueTask(chatJid, issue.id, () =>
+      runIssue(ctx, issue.id, runContext),
     );
 
     logger.info(
@@ -300,23 +322,71 @@ async function pollLinear(): Promise<void> {
   }
 }
 
-export function startLinearDispatcher(
+export async function initLinearContext(
+  apiKey: string,
   deps: LinearDispatcherDependencies,
-): void {
+): Promise<LinearContext | null> {
+  if (!/^[A-Za-z0-9_-]+$/.test(apiKey)) {
+    throw new FatalError('linear: LINEAR_API_KEY contains invalid characters');
+  }
+
+  const client = new LinearClient({ apiKey });
+
+  try {
+    const teamId = await discoverTeamId(client);
+    const stateByName = await discoverWorkflowStates(client, teamId);
+
+    const stateById = new Map<string, WorkflowState>();
+    for (const state of stateByName.values()) {
+      stateById.set(state.id, state);
+    }
+
+    const viewer = await client.viewer;
+    const botUserId = process.env.LINEAR_BOT_USER_ID || viewer.id;
+
+    const existing = Object.values(deps.registeredGroups()).find(
+      (g) => g.folder === DISPATCH_GROUP_JID,
+    );
+    const dispatchGroup: RegisteredGroup = existing || {
+      name: 'Linear Dispatch',
+      folder: DISPATCH_GROUP_JID,
+      trigger: '',
+      added_at: new Date().toISOString(),
+      requiresTrigger: false,
+      isControlGroup: false,
+    };
+    if (!existing) {
+      deps.registerGroup(DISPATCH_GROUP_JID, dispatchGroup);
+    }
+
+    logger.info(
+      { teamId, botUserId, states: [...stateByName.keys()] },
+      'linear: context initialized',
+    );
+
+    return {
+      client,
+      stateByName,
+      stateById,
+      botUserId,
+      deps,
+      dispatchGroup,
+      inFlightDispatch: new Set(),
+      inFlightGate: new Set(),
+    };
+  } catch (err) {
+    if (err instanceof FatalError) {
+      logger.warn({ err }, 'linear: initialization failed — dormant');
+      return null;
+    }
+    throw err;
+  }
+}
+
+export function startLinearDispatcher(ctx: LinearContext): void {
   if (_timer) {
     logger.warn('linear-dispatcher: already running');
     return;
-  }
-
-  const apiKey = process.env.LINEAR_API_KEY || process.env.LINEAR_API_TOKEN;
-  if (!apiKey) {
-    logger.warn('linear-dispatcher: LINEAR_API_KEY not set — daemon dormant');
-    return;
-  }
-  if (!/^[A-Za-z0-9_-]+$/.test(apiKey)) {
-    throw new FatalError(
-      'linear-dispatcher: LINEAR_API_KEY contains invalid characters',
-    );
   }
 
   _roleSpecs = loadRoleSpecs(AGENTS_DIR);
@@ -331,9 +401,7 @@ export function startLinearDispatcher(
     'linear-dispatcher: loaded role specs',
   );
 
-  _client = new LinearClient({ apiKey });
-  _deps = deps;
-  _inFlight = new Set();
+  _ctx = ctx;
 
   const parsedPollMs = parseInt(
     process.env.LINEAR_POLL_INTERVAL_MS || String(DEFAULT_POLL_MS),
@@ -342,67 +410,31 @@ export function startLinearDispatcher(
   const pollMs =
     isNaN(parsedPollMs) || parsedPollMs < 1000 ? DEFAULT_POLL_MS : parsedPollMs;
 
-  fireAndForget(
-    async () => {
-      const teamId = await discoverTeamId(_client!);
-      _stateMap = await discoverWorkflowStates(_client!, teamId);
-
-      const existing = Object.values(deps.registeredGroups()).find(
-        (g) => g.folder === DISPATCH_GROUP_JID,
-      );
-      const dispatchGroup: RegisteredGroup = existing || {
-        name: 'Linear Dispatch',
-        folder: DISPATCH_GROUP_JID,
-        trigger: '',
-        added_at: new Date().toISOString(),
-        requiresTrigger: false,
-        isControlGroup: false,
-      };
-      if (!existing) {
-        deps.registerGroup(DISPATCH_GROUP_JID, dispatchGroup);
-      }
-      _dispatchGroup = dispatchGroup;
-
-      const tick = () => {
-        fireAndForget(() => pollLinear(), {
-          name: 'linear.dispatch',
-          onError: (err) => {
-            if (err instanceof RetryableError) {
-              logger.warn(
-                { err },
-                'linear-dispatcher: transient error, will retry',
-              );
-            } else {
-              logger.error(
-                { err },
-                'linear-dispatcher: unexpected error during poll',
-              );
-            }
-          },
-        });
-      };
-
-      tick();
-      _timer = setInterval(tick, pollMs);
-      _timer.unref();
-      logger.info(
-        { pollMs, teamId, roles: _roleSpecs.size },
-        'linear-dispatcher: daemon started',
-      );
-    },
-    {
-      name: 'linear.dispatch.init',
+  const tick = () => {
+    fireAndForget(() => pollLinear(), {
+      name: 'linear.dispatch',
       onError: (err) => {
-        if (err instanceof FatalError) {
+        if (err instanceof RetryableError) {
           logger.warn(
             { err },
-            'linear-dispatcher: initialization failed — daemon dormant',
+            'linear-dispatcher: transient error, will retry',
           );
         } else {
-          logger.error({ err }, 'linear-dispatcher: unexpected init error');
+          logger.error(
+            { err },
+            'linear-dispatcher: unexpected error during poll',
+          );
         }
       },
-    },
+    });
+  };
+
+  tick();
+  _timer = setInterval(tick, pollMs);
+  _timer.unref();
+  logger.info(
+    { pollMs, roles: _roleSpecs.size },
+    'linear-dispatcher: daemon started',
   );
 }
 
@@ -411,9 +443,5 @@ export function stopLinearDispatcher(): void {
     clearInterval(_timer);
     _timer = null;
   }
-  _client = null;
-  _dispatchGroup = null;
-  _stateMap = new Map();
-  _inFlight = new Set();
-  _deps = null;
+  _ctx = null;
 }

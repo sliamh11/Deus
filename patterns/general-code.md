@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-05-21" # auto-bump (linear-dispatcher)
+last_verified: "2026-05-22" # auto-bump (linear-webhook-gates)
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"

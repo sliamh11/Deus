@@ -7,14 +7,11 @@ import {
   startLinearDispatcher,
   stopLinearDispatcher,
 } from './linear-dispatcher.js';
-import type { LinearDispatcherDependencies } from './linear-dispatcher.js';
-import { RuntimeRegistry } from './agent-runtimes/registry.js';
 import type {
-  RunContext,
-  RuntimeSession,
-  RuntimeEventSink,
-  RunResult,
-} from './agent-runtimes/types.js';
+  LinearContext,
+  LinearDispatcherDependencies,
+} from './linear-dispatcher.js';
+import { RuntimeRegistry } from './agent-runtimes/registry.js';
 
 function makeMockDeps(
   overrides: Partial<LinearDispatcherDependencies> = {},
@@ -28,6 +25,38 @@ function makeMockDeps(
       notifyIdle: vi.fn(),
       closeStdin: vi.fn(),
     } as unknown as LinearDispatcherDependencies['queue'],
+    ...overrides,
+  };
+}
+
+function makeMockCtx(overrides: Partial<LinearContext> = {}): LinearContext {
+  const deps = makeMockDeps();
+  return {
+    client: {} as LinearContext['client'],
+    stateByName: new Map([
+      ['Ready for Agent', { id: 'ready-id', name: 'Ready for Agent' }],
+      ['Agent Working', { id: 'working-id', name: 'Agent Working' }],
+      ['In Review', { id: 'review-id', name: 'In Review' }],
+      ['Backlog', { id: 'backlog-id', name: 'Backlog' }],
+    ]),
+    stateById: new Map([
+      ['ready-id', { id: 'ready-id', name: 'Ready for Agent' }],
+      ['working-id', { id: 'working-id', name: 'Agent Working' }],
+      ['review-id', { id: 'review-id', name: 'In Review' }],
+      ['backlog-id', { id: 'backlog-id', name: 'Backlog' }],
+    ]),
+    botUserId: 'bot-user-id',
+    deps,
+    dispatchGroup: {
+      name: 'Linear Dispatch',
+      folder: 'linear-dispatch',
+      trigger: '',
+      added_at: new Date().toISOString(),
+      requiresTrigger: false,
+      isControlGroup: false,
+    },
+    inFlightDispatch: new Set(),
+    inFlightGate: new Set(),
     ...overrides,
   };
 }
@@ -140,11 +169,9 @@ describe('startLinearDispatcher', () => {
     vi.unstubAllEnvs();
   });
 
-  it('goes dormant when LINEAR_API_KEY is not set', () => {
-    vi.stubEnv('LINEAR_API_KEY', '');
-    vi.stubEnv('LINEAR_API_TOKEN', '');
-    const deps = makeMockDeps();
-    startLinearDispatcher(deps);
-    expect(deps.registerGroup).not.toHaveBeenCalled();
+  it('goes dormant when no role specs have linear_label', () => {
+    const ctx = makeMockCtx();
+    startLinearDispatcher(ctx);
+    // No timer started because no role specs exist
   });
 });

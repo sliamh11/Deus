@@ -1,9 +1,12 @@
+import path from 'path';
 import { pathToFileURL } from 'url';
+import type { Server } from 'http';
 
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
   MAX_MESSAGE_LENGTH,
+  PROJECT_ROOT,
   TOOL_PROXY_PORT,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
@@ -56,9 +59,13 @@ import { createOpenAIRuntime } from './agent-runtimes/openai-backend.js';
 import { createLlamaCppRuntime } from './agent-runtimes/llama-cpp-backend.js';
 import { startGcalSync, stopGcalSync } from './cache/gcal-sync.js';
 import {
+  initLinearContext,
   startLinearDispatcher,
   stopLinearDispatcher,
 } from './linear-dispatcher.js';
+import type { LinearContext } from './linear-dispatcher.js';
+import { loadGateSpecs } from './linear-gate-specs.js';
+import { startLinearWebhookServer } from './linear-webhook.js';
 
 export { getAvailableGroups } from './router-state.js';
 
@@ -103,6 +110,7 @@ async function main(): Promise<void> {
   startGcalSync();
 
   const channels: Channel[] = [];
+  const webhookServers: Server[] = [];
   const queue = new GroupQueue();
 
   // Initialize backend registry — all container-based backends share the same deps
@@ -130,6 +138,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     stopGcalSync();
     stopLinearDispatcher();
+    for (const srv of webhookServers) srv.close();
     proxyServer.close();
     toolProxyServer.close();
     await queue.shutdown(10000);
@@ -356,13 +365,51 @@ async function main(): Promise<void> {
     },
   });
 
-  // Start Linear dispatch daemon (no-op if LINEAR_API_KEY not configured)
-  startLinearDispatcher({
-    registeredGroups: () => state.registeredGroups,
-    registerGroup: (jid, group) => state.registerGroup(jid, group),
-    registry,
-    queue,
-  });
+  // Start Linear subsystems (no-op if LINEAR_API_KEY not configured)
+  const linearApiKey =
+    process.env.LINEAR_API_KEY || process.env.LINEAR_API_TOKEN;
+  let linearCtx: LinearContext | null = null;
+  if (linearApiKey) {
+    try {
+      linearCtx = await initLinearContext(linearApiKey, {
+        registeredGroups: () => state.registeredGroups,
+        registerGroup: (jid, group) => state.registerGroup(jid, group),
+        registry,
+        queue,
+      });
+    } catch (err) {
+      logger.error({ err }, 'linear: initialization failed');
+    }
+    if (linearCtx) {
+      startLinearDispatcher(linearCtx);
+
+      if (process.env.LINEAR_WEBHOOK_SECRET) {
+        const wardensDir = path.join(
+          PROJECT_ROOT,
+          '.claude',
+          'agents',
+          'wardens',
+        );
+        const gateSpecs = loadGateSpecs(wardensDir);
+        if (gateSpecs.size === 0) {
+          logger.warn(
+            'linear-webhook: no gate specs found — webhook server will pass all transitions',
+          );
+        }
+        try {
+          const webhookSrv = await startLinearWebhookServer(
+            linearCtx,
+            gateSpecs,
+          );
+          webhookServers.push(webhookSrv);
+        } catch (err) {
+          logger.error({ err }, 'linear-webhook: server failed to start');
+        }
+      }
+    }
+  } else {
+    logger.warn('linear: LINEAR_API_KEY not set — subsystems dormant');
+  }
 
   // Load skill IPC handlers before starting the IPC watcher
   await loadSkillIpcHandlers();
