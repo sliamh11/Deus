@@ -42,6 +42,8 @@ REVISE only if the title is so vague that meaningful scoping is impossible even 
 
 **Problem statement**: <1-2 sentences grounded in what the codebase currently does and what needs to change>
 
+**Type**: <feature | bug | hotfix | improvement | research>
+
 **Relevant files**:
 - `path/to/file.ts` -- <what it does and why it's relevant>
 
@@ -56,7 +58,12 @@ REVISE only if the title is so vague that meaningful scoping is impossible even 
 
 **Dependencies**: <none / list of blockers or related work>
 
-**Estimated effort**: <trivial | small | medium | large>
+**Ratings**:
+- Effort: <1-5> -- <1=trivial tweak, 2=small focused change, 3=medium multi-file, 4=large cross-cutting, 5=major multi-day>
+- Complexity: <1-5> -- <1=straightforward, 2=some edge cases, 3=non-obvious interactions, 4=architectural decisions, 5=research-heavy unknowns>
+- Impact: <1-5> -- <1=cosmetic, 2=minor convenience, 3=meaningful workflow improvement, 4=significant capability gain, 5=transformative>
+
+**Impact statement**: <1 sentence: what improves compared to the current state, quantified if possible>
 
 ## Verdict: SHIP
 
@@ -74,6 +81,7 @@ Rules:
 - Always explore the codebase before scoping. Never produce a generic scope.
 - Reference actual file paths and function names in requirements and implementation plan.
 - Be specific and actionable in acceptance criteria (verifiable, not aspirational).
-- Use the user's effort units: trivial, small, medium, large.
+- Ratings must be integers 1-5. Be calibrated: a one-file typo fix is Effort 1, a new subsystem is Effort 5.
+- Impact statement must compare to the current state (not an absolute claim).
 - Verdict is exactly `## Verdict: SHIP` or `## Verdict: REVISE`.
 - SHIP only when ALL scope sections are populated with substantive, codebase-grounded content.

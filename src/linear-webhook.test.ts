@@ -14,6 +14,7 @@ import { extractFrontmatter } from './linear-dispatcher.js';
 import {
   parseEnrichment,
   parseVerdict,
+  parseRatings,
   mergeEnrichment,
   stripEnrichmentSection,
 } from './linear-webhook.js';
@@ -267,6 +268,26 @@ Checklist:
     expect(result).not.toContain('Some scope content');
     expect(result).toContain('## Verdict: SHIP');
     expect(result).toContain('All good');
+  });
+});
+
+describe('parseRatings', () => {
+  it('extracts effort and complexity from enrichment', () => {
+    const enrichment = `## Scope
+
+**Ratings**:
+- Effort: 3 -- medium multi-file
+- Complexity: 2 -- some edge cases
+- Impact: 4 -- significant capability gain`;
+    const ratings = parseRatings(enrichment);
+    expect(ratings.effort).toBe(3);
+    expect(ratings.complexity).toBe(2);
+  });
+
+  it('returns undefined for missing ratings', () => {
+    const ratings = parseRatings('No ratings here.');
+    expect(ratings.effort).toBeUndefined();
+    expect(ratings.complexity).toBeUndefined();
   });
 });
 

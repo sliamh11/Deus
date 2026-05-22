@@ -28,6 +28,18 @@ export function parseEnrichment(output: string): string | null {
   return match ? match[1].trim() : null;
 }
 
+export function parseRatings(enrichment: string): {
+  effort?: number;
+  complexity?: number;
+} {
+  const effort = enrichment.match(/[-*]\s*Effort:\s*(\d)/);
+  const complexity = enrichment.match(/[-*]\s*Complexity:\s*(\d)/);
+  return {
+    effort: effort ? parseInt(effort[1], 10) : undefined,
+    complexity: complexity ? parseInt(complexity[1], 10) : undefined,
+  };
+}
+
 export function mergeEnrichment(
   currentDesc: string,
   gateName: string,
@@ -243,6 +255,7 @@ async function handleIssueUpdate(
   await postOrUpdateComment(ctx, data.id, toState.name, runningComment);
 
   let finalVerdict: string | undefined;
+  let finalEnrichment: string | undefined;
   try {
     const chatJid = `linear-gate-${gateSpec.name}-${data.id.slice(0, 8)}`;
 
@@ -293,6 +306,7 @@ async function handleIssueUpdate(
     } else {
       verdict = parsedVerdict ?? gateSpec.fallback;
       const enrichmentBody = parseEnrichment(output);
+      finalEnrichment = enrichmentBody ?? undefined;
       const verdictText = stripEnrichmentSection(output);
       commentBody = formatGateComment(
         gateSpec.name,
@@ -375,6 +389,20 @@ async function handleIssueUpdate(
     } else if (finalVerdict === 'REVISE' && ctx.gateLabels.revise) {
       addIds.push(ctx.gateLabels.revise);
       if (ctx.gateLabels.scoped) removeIds.push(ctx.gateLabels.scoped);
+    }
+    // Apply effort/complexity labels from enrichment ratings
+    if (finalEnrichment) {
+      const ratings = parseRatings(finalEnrichment);
+      // Remove any existing effort/complexity labels first
+      for (const id of Object.values(ctx.gateLabels.effort)) removeIds.push(id);
+      for (const id of Object.values(ctx.gateLabels.complexity))
+        removeIds.push(id);
+      if (ratings.effort && ctx.gateLabels.effort[ratings.effort]) {
+        addIds.push(ctx.gateLabels.effort[ratings.effort]);
+      }
+      if (ratings.complexity && ctx.gateLabels.complexity[ratings.complexity]) {
+        addIds.push(ctx.gateLabels.complexity[ratings.complexity]);
+      }
     }
     if (removeIds.length > 0 || addIds.length > 0) {
       const update: Record<string, unknown> = {};

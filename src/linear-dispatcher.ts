@@ -43,6 +43,8 @@ export interface GateLabels {
   evaluating?: string;
   scoped?: string;
   revise?: string;
+  effort: Record<number, string>;
+  complexity: Record<number, string>;
 }
 
 export interface LinearContext {
@@ -368,9 +370,9 @@ export async function initLinearContext(
     }
 
     // Discover or create gate status labels for board-level visibility
-    const gateLabels: GateLabels = {};
-    const labelDefs: Array<{
-      key: keyof GateLabels;
+    const gateLabels: GateLabels = { effort: {}, complexity: {} };
+    const statusDefs: Array<{
+      key: 'evaluating' | 'scoped' | 'revise';
       name: string;
       color: string;
     }> = [
@@ -378,10 +380,27 @@ export async function initLinearContext(
       { key: 'scoped', name: 'Scoped', color: '#16a34a' },
       { key: 'revise', name: 'Warden: Revise', color: '#dc2626' },
     ];
+    // Effort 1-5: green→yellow→red gradient
+    const effortColors = [
+      '#16a34a',
+      '#65a30d',
+      '#ca8a04',
+      '#ea580c',
+      '#dc2626',
+    ];
+    // Complexity 1-5: blue gradient
+    const complexityColors = [
+      '#93c5fd',
+      '#60a5fa',
+      '#3b82f6',
+      '#2563eb',
+      '#1d4ed8',
+    ];
     try {
       const allLabels = await client.issueLabels();
       const labelMap = new Map(allLabels.nodes.map((l) => [l.name, l.id]));
-      for (const def of labelDefs) {
+
+      for (const def of statusDefs) {
         if (labelMap.has(def.name)) {
           gateLabels[def.key] = labelMap.get(def.name);
         } else {
@@ -392,6 +411,33 @@ export async function initLinearContext(
           });
           const label = await created.issueLabel;
           if (label) gateLabels[def.key] = label.id;
+        }
+      }
+
+      for (let i = 1; i <= 5; i++) {
+        const eName = `Effort: ${i}`;
+        const cName = `Complexity: ${i}`;
+        if (labelMap.has(eName)) {
+          gateLabels.effort[i] = labelMap.get(eName)!;
+        } else {
+          const created = await client.createIssueLabel({
+            name: eName,
+            color: effortColors[i - 1],
+            teamId,
+          });
+          const label = await created.issueLabel;
+          if (label) gateLabels.effort[i] = label.id;
+        }
+        if (labelMap.has(cName)) {
+          gateLabels.complexity[i] = labelMap.get(cName)!;
+        } else {
+          const created = await client.createIssueLabel({
+            name: cName,
+            color: complexityColors[i - 1],
+            teamId,
+          });
+          const label = await created.issueLabel;
+          if (label) gateLabels.complexity[i] = label.id;
         }
       }
     } catch (err) {
