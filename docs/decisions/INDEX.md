@@ -34,6 +34,7 @@ One line per decision. Load the full file only when the topic is directly releva
 | [printing-press-adoption.md](printing-press-adoption.md) | agent-native / CLI / MCP / token-efficiency | Typed exit codes + compact/select for Python CLIs and MCP servers; 4-phase roadmap: protocol → tool proxy → SQLite cache → codegen. Extends error-discipline.md taxonomy to subprocess callers |
 | [hook-dispatch-system.md](hook-dispatch-system.md) | hooks / dispatch / backends | Deus-owned hook contract with Bridge pattern; host-enforced Layer 1 + container-cooperative Layer 2; HookDispatchService on :3002 |
 | [judge-lora-specialization.md](judge-lora-specialization.md) | eval / judge / LoRA | Negative result on Gemma-3n-E4B Q4 (Adapter mean Pearson 0.368 vs Base 0.390) — do NOT adopt run `20260518T071842Z-1614baf-dirty`; keep base Q4 as local judge. **Future judge-quality work begins with cross-stack truth bench + replace-base / logit-mean / frozen-head alternatives BEFORE any retune; retune requires regression bar mean Pearson ≥ Base + 0.05** |
+| [linear-webhook-pipeline.md](linear-webhook-pipeline.md) | linear / dispatch / webhooks / gates | Polling dispatcher + webhook warden gates for Linear Kanban. Enrichment gates write structured scope into issue descriptions via sentinel markers. Config-driven gate specs in `.claude/agents/wardens/` |
 
 ## Related documentation
 
