@@ -62,6 +62,7 @@ function makeMockCtx(overrides: Partial<LinearContext> = {}): LinearContext {
       ['backlog-id', { id: 'backlog-id', name: 'Backlog' }],
     ]),
     botUserId: 'bot-user-id',
+    viewerId: 'viewer-user-id',
     deps,
     dispatchGroup: {
       name: 'Linear Dispatch',

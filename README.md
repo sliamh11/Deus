@@ -117,6 +117,7 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus gcal` | Google Calendar token management (`status`, `auth`, `ping`) |
 | `deus listen` | Record from mic, transcribe locally, copy to clipboard |
 | `deus tui` | Full-screen terminal UI for chat, wardens, services, and channels |
+| `deus pipeline` | Pipeline event audit (`LIA-123`, `--failed`, `--active`, `--since 24h`) |
 | `deus backend` | Show active agent backend (`claude`, `codex`, `llama-cpp`) |
 | `deus backend set <name>` | Switch backend for all future sessions |
 

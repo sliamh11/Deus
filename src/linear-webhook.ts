@@ -14,7 +14,7 @@ import {
   getGateCommentId,
 } from './db.js';
 import { triggerAutoMerge } from './linear-auto-merge.js';
-import { macosNotify } from './linear-notifications.js';
+import { macosNotify, notifyPipelineStep } from './linear-notifications.js';
 
 const DEFAULT_WEBHOOK_PORT = 3005;
 
@@ -224,6 +224,19 @@ async function handleIssueUpdate(
       const elapsed =
         (Date.now() - new Date(lastRun.finished_at).getTime()) / 60_000;
       if (elapsed < gateSpec.cooldownMinutes) {
+        const remainMin = Math.ceil(gateSpec.cooldownMinutes - elapsed);
+        const resetAt = new Date(
+          new Date(lastRun.finished_at).getTime() +
+            gateSpec.cooldownMinutes * 60_000,
+        );
+        const resetTime = resetAt.toISOString().slice(11, 16);
+        notifyPipelineStep(
+          ctx,
+          data.id,
+          data.identifier,
+          'gate_cooldown',
+          `${gateSpec.name}: ${remainMin}min remaining, resets at ${resetTime}`,
+        ).catch(() => {});
         logger.info(
           {
             issueId: data.id,
@@ -392,7 +405,14 @@ async function handleIssueUpdate(
 
     finalVerdict = verdict;
     updateWebhookEventStatus(eventKey, 'done', { verdict });
-    macosNotify('Deus', `${data.identifier}: ${gateSpec.name} ${verdict}`);
+    const eventType = verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
+    notifyPipelineStep(
+      ctx,
+      data.id,
+      data.identifier,
+      eventType,
+      `${gateSpec.name}: ${verdict}`,
+    ).catch(() => {});
     logger.info(
       { issueId: data.id, gate: gateSpec.name, verdict, mode: effectiveMode },
       'linear-webhook: gate evaluation complete',
@@ -400,6 +420,13 @@ async function handleIssueUpdate(
   } catch (err) {
     const errorMsg = err instanceof Error ? err.message : String(err);
     updateWebhookEventStatus(eventKey, 'error', { error: errorMsg });
+    notifyPipelineStep(
+      ctx,
+      data.id,
+      data.identifier,
+      'gate_error',
+      `${gateSpec.name}: ${errorMsg}`,
+    ).catch(() => {});
     logger.error(
       { issueId: data.id, gate: gateSpec.name, err },
       'linear-webhook: gate evaluation failed',
@@ -451,7 +478,7 @@ async function handleIssueUpdate(
     }
 
     if (finalVerdict === 'SHIP' && gateSpec.name === 'output-quality-gate') {
-      triggerAutoMerge(ctx, data.id).catch((err) => {
+      triggerAutoMerge(ctx, data.id, data.identifier).catch((err) => {
         logger.warn(
           { issueId: data.id, err },
           'linear-webhook: auto-merge trigger failed',

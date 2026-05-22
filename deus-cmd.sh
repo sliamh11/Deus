@@ -1508,6 +1508,10 @@ $STARTUP_INSTRUCTION"
         ;;
     esac
     ;;
+  pipeline)
+    shift
+    exec node "$SCRIPT_DIR/dist/linear-pipeline-cli.js" "$@"
+    ;;
   solution)
     # Solution atom management — structured lesson capture.
     shift
@@ -1529,7 +1533,7 @@ $STARTUP_INSTRUCTION"
     exec "$tui_bin" "$@"
     ;;
   *)
-    echo "Usage: deus [claude|codex] [home|auth|web|backend|gcal|listen|logs|solution|sweep|tui] [--agents]"
+    echo "Usage: deus [claude|codex] [home|auth|web|backend|gcal|listen|logs|pipeline|solution|sweep|tui] [--agents]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -1541,6 +1545,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus gcal       Google Calendar token management (status|auth|ping)"
     echo "  deus listen     Record from mic, transcribe, and copy to clipboard"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
+    echo "  deus pipeline   Pipeline event audit (LIA-XX | --failed | --active | --all)"
     echo "  deus solution   Manage solution atoms (list|search|add)"
     echo "  deus sweep      Run threshold calibration sweep against benchmark queries"
     echo "  deus tui        Interactive terminal UI (set tui_default=true in config to use by default)"

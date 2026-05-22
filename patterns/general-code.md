@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-05-23T01:07:00" # auto-bump (pipeline-notifications) # auto-bump (auto-merge-label-cleanup) # auto-bump (retry-aware-prompt) # auto-bump (auto-merge-admin) # auto-bump (auto-merge-lazy-eval)
+last_verified: "2026-05-23T01:57:00" # auto-bump (pipeline-observability)
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"
