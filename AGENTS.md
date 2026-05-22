@@ -165,6 +165,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/convert-to-apple-container` | Switch from Docker to Apple Container |
 | `/customize` | Add channels, integrations, or behavior changes |
 | `/debug` | Debug containers, logs, auth, and runtime issues |
+| `/deep-research` | Multi-stage research pipeline — classifies intent (shallow/deep/creative), fans out lit-scout + brainstormer, synthesizes with citations |
 | `/preferences` | View or modify Deus user preferences |
 | `/preserve` | Save durable memories from the current conversation |
 | `/project-settings` | View or modify external project memory settings |
