@@ -206,3 +206,7 @@ Built on [NanoClaw](https://github.com/qwibitai/nanoclaw) - thanks to the NanoCl
 ## License
 
 MIT
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
