@@ -35,9 +35,15 @@ vi.mock('child_process', async () => {
   };
 });
 
+vi.mock('./auth-providers/anthropic.js', () => ({
+  readCredentialsFile: vi.fn(() => undefined),
+  readKeychainCredentials: vi.fn(() => undefined),
+}));
+
 import fs from 'fs';
 import { execFileSync } from 'child_process';
 import { readEnvFile } from './env.js';
+import { readCredentialsFile } from './auth-providers/anthropic.js';
 import {
   hasApiCredentials,
   hasGeminiApiKey,
@@ -53,6 +59,7 @@ const mockReadEnvFile = vi.mocked(readEnvFile);
 const mockExistsSync = vi.mocked(fs.existsSync);
 const mockReadFileSync = vi.mocked(fs.readFileSync);
 const mockExecFileSync = vi.mocked(execFileSync);
+const mockReadCredentialsFile = vi.mocked(readCredentialsFile);
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -100,10 +107,11 @@ describe('hasApiCredentials', () => {
     expect(hasApiCredentials()).toBe(false);
   });
 
-  it('returns true when ~/.claude/.credentials.json has a valid OAuth token', () => {
-    mockReadFileSync.mockReturnValue(
-      JSON.stringify({ claudeAiOauth: { accessToken: 'oauth-from-file' } }),
-    );
+  it('returns true when credentials file has a valid OAuth token', () => {
+    mockReadCredentialsFile.mockReturnValue({
+      accessToken: 'oauth-from-file',
+      expiresAt: Infinity,
+    });
     expect(hasApiCredentials()).toBe(true);
   });
 

@@ -50,6 +50,7 @@ import { getAllTasks } from './db.js';
 import { writeGroupsSnapshot, writeTasksSnapshot } from './container-runner.js';
 import { Channel, NewMessage, NewReaction } from './types.js';
 import { logReactionSignal } from './evolution-client.js';
+import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { processImage } from './image.js';
 import { logger } from './logger.js';
@@ -366,6 +367,18 @@ async function main(): Promise<void> {
   });
 
   // Start Linear subsystems (no-op if LINEAR_API_KEY not configured)
+  const linearEnv = readEnvFile([
+    'LINEAR_API_KEY',
+    'LINEAR_API_TOKEN',
+    'LINEAR_WEBHOOK_SECRET',
+    'LINEAR_WEBHOOK_PORT',
+    'LINEAR_BOT_USER_ID',
+    'LINEAR_POLL_INTERVAL_MS',
+    'LINEAR_TEAM_ID',
+  ]);
+  for (const [k, v] of Object.entries(linearEnv)) {
+    if (v && !process.env[k]) process.env[k] = v;
+  }
   const linearApiKey =
     process.env.LINEAR_API_KEY || process.env.LINEAR_API_TOKEN;
   let linearCtx: LinearContext | null = null;

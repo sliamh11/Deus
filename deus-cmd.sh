@@ -815,10 +815,32 @@ case "$1" in
       shift 2
       exec node "$SCRIPT_DIR/dist/auth-refresh.js" "$@"
     fi
-    # Validate credentials file is readable before restarting
-    python3 -c 'import sys,json; d=json.load(open(sys.argv[1])); assert d.get("claudeAiOauth",{}).get("accessToken")' "$HOME/.claude/.credentials.json" 2>/dev/null
+    # Validate credentials exist (file or macOS Keychain) before restarting
+    python3 -c '
+import sys, json, subprocess, os
+# Try credentials file first
+try:
+    d = json.load(open(os.path.expanduser("~/.claude/.credentials.json")))
+    assert d.get("claudeAiOauth", {}).get("accessToken")
+    sys.exit(0)
+except Exception:
+    pass
+# Fallback: macOS Keychain
+try:
+    raw = subprocess.check_output(
+        ["security", "find-generic-password", "-s", "Claude Code-credentials",
+         "-a", os.environ.get("USER", ""), "-w"],
+        text=True, stderr=subprocess.DEVNULL).strip()
+    d = json.loads(raw)
+    assert d.get("claudeAiOauth", {}).get("accessToken")
+    sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+' 2>/dev/null
     if [ $? -ne 0 ]; then
-      echo "Error: could not read token from ~/.claude/.credentials.json"
+      echo "Error: no OAuth token found in ~/.claude/.credentials.json or macOS Keychain"
+      echo "Run: claude auth login"
       exit 1
     fi
     # Do NOT write token to .env — the credential proxy reads credentials.json
@@ -1033,9 +1055,26 @@ case "$1" in
       export DEUS_TUI_BACKEND="$CLI_AGENT"
       exec "$tui_bin"
     }
-    TOKEN=$(python3 -c 'import sys,json; print(json.load(open(sys.argv[1]))["claudeAiOauth"]["accessToken"])' "$HOME/.claude/.credentials.json" 2>/dev/null)
+    TOKEN=$(python3 -c '
+import json, os, subprocess, sys
+# Try file first
+try:
+    d = json.load(open(os.path.expanduser("~/.claude/.credentials.json")))
+    print(d["claudeAiOauth"]["accessToken"]); sys.exit(0)
+except Exception: pass
+# Fallback: macOS Keychain
+try:
+    raw = subprocess.check_output(
+        ["security", "find-generic-password", "-s", "Claude Code-credentials",
+         "-a", os.environ.get("USER", ""), "-w"],
+        text=True, stderr=subprocess.DEVNULL).strip()
+    print(json.loads(raw)["claudeAiOauth"]["accessToken"]); sys.exit(0)
+except Exception: pass
+sys.exit(1)
+' 2>/dev/null)
     if [ -z "$TOKEN" ]; then
-      echo "Error: could not read token from ~/.claude/.credentials.json"
+      echo "Error: no OAuth token found in ~/.claude/.credentials.json or macOS Keychain"
+      echo "Run: claude auth login"
       exit 1
     fi
     # Do NOT export CLAUDE_CODE_OAUTH_TOKEN — the Claude CLI reads
@@ -1495,7 +1534,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
     echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
-    echo "  deus auth       Restart background services (credential proxy auto-reads ~/.claude/.credentials.json)"
+    echo "  deus auth       Restart background services (credential proxy reads Keychain or ~/.claude/.credentials.json)"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
     echo "  deus web        Same as 'deus' but launches claude with --chrome (Claude-in-Chrome integration)"
     echo "  deus backend    Manage default AI backend and model (show|set|model|list)"

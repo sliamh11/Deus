@@ -88,7 +88,7 @@ export function readCredentialsFile(): OAuthCredentials | undefined {
  *   Linux:   libsecret / GNOME Keyring (secret-tool CLI)
  *   Windows: Credential Manager (PowerShell)
  */
-function readKeychainCredentials(): OAuthCredentials | undefined {
+export function readKeychainCredentials(): OAuthCredentials | undefined {
   const raw = readRawFromCredentialStore();
   if (!raw) return undefined;
   try {

@@ -13,6 +13,10 @@ import path from 'path';
 
 import { HOME_DIR, CONFIG_DIR, STORE_DIR } from './config.js';
 import { readEnvFile } from './env.js';
+import {
+  readCredentialsFile,
+  readKeychainCredentials,
+} from './auth-providers/anthropic.js';
 import { CODEX_AUTH_PATH } from './auth-providers/openai.js';
 
 const DEUS_CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -23,17 +27,10 @@ const CLAUDE_CREDENTIALS_PATH = path.join(
   '.credentials.json',
 );
 
-/** Check if ~/.claude/.credentials.json has a valid OAuth access token. */
-function hasClaudeCredentialsFile(): boolean {
-  try {
-    const raw = fs.readFileSync(CLAUDE_CREDENTIALS_PATH, 'utf-8');
-    const parsed = JSON.parse(raw) as {
-      claudeAiOauth?: { accessToken?: string };
-    };
-    return !!parsed?.claudeAiOauth?.accessToken;
-  } catch {
-    return false;
-  }
+/** Check if Claude OAuth credentials exist (file or OS keychain). */
+function hasClaudeCredentials(): boolean {
+  const creds = readCredentialsFile() ?? readKeychainCredentials();
+  return !!creds?.accessToken;
 }
 
 /** Check if ~/.codex/auth.json has a valid OAuth access token. */
@@ -76,7 +73,7 @@ export function hasApiCredentials(): boolean {
     process.env.ANTHROPIC_API_KEY ||
     process.env.CLAUDE_CODE_OAUTH_TOKEN ||
     process.env.ANTHROPIC_AUTH_TOKEN ||
-    hasClaudeCredentialsFile()
+    hasClaudeCredentials()
   );
 }
 
