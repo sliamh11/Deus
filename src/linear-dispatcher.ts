@@ -48,6 +48,8 @@ export interface LinearContext {
   dispatchGroup: RegisteredGroup;
   inFlightDispatch: Set<string>;
   inFlightGate: Set<string>;
+  gateRunningLabelId?: string;
+  teamId: string;
 }
 
 let _timer: ReturnType<typeof setInterval> | null = null;
@@ -359,6 +361,30 @@ export async function initLinearContext(
       deps.registerGroup(DISPATCH_GROUP_JID, dispatchGroup);
     }
 
+    // Discover or create Warden: Evaluating label for visual feedback
+    let gateRunningLabelId: string | undefined;
+    try {
+      const labels = await client.issueLabels({
+        filter: { name: { eq: 'Warden: Evaluating' } },
+      });
+      const existing_label = labels.nodes.find(
+        (l) => l.name === 'Warden: Evaluating',
+      );
+      if (existing_label) {
+        gateRunningLabelId = existing_label.id;
+      } else {
+        const created = await client.createIssueLabel({
+          name: 'Warden: Evaluating',
+          color: '#f59e0b',
+          teamId,
+        });
+        const label = await created.issueLabel;
+        gateRunningLabelId = label?.id;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'linear: failed to setup Warden: Evaluating label');
+    }
+
     logger.info(
       { teamId, states: [...stateByName.keys()] },
       'linear: context initialized',
@@ -373,6 +399,8 @@ export async function initLinearContext(
       dispatchGroup,
       inFlightDispatch: new Set(),
       inFlightGate: new Set(),
+      gateRunningLabelId,
+      teamId,
     };
   } catch (err) {
     if (err instanceof FatalError) {

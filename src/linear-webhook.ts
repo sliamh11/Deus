@@ -228,6 +228,20 @@ async function handleIssueUpdate(
 
   updateWebhookEventStatus(eventKey, 'running');
 
+  // Visual feedback: add gate:running label + initial comment
+  if (ctx.gateRunningLabelId) {
+    ctx.client
+      .updateIssue(data.id, { addedLabelIds: [ctx.gateRunningLabelId] })
+      .catch(() => {});
+  }
+  const runningComment = formatGateComment(
+    gateSpec.name,
+    'RUNNING',
+    `Evaluating transition **${fromState.name}** → **${toState.name}**...`,
+    gateSpec.mode,
+  );
+  await postOrUpdateComment(ctx, data.id, toState.name, runningComment);
+
   try {
     const chatJid = `linear-gate-${gateSpec.name}-${data.id.slice(0, 8)}`;
 
@@ -260,10 +274,14 @@ async function handleIssueUpdate(
 
     const { text, error } = await executeAgentRun(ctx, runContext);
 
+    // Container may exit non-zero (e.g., docker kill) but still have output in either field
+    const output = text || error || '';
+    const parsedVerdict = parseVerdict(output);
+
     let verdict: 'SHIP' | 'REVISE' | 'BLOCK';
     let commentBody: string;
 
-    if (error) {
+    if (!parsedVerdict && error) {
       verdict = gateSpec.fallback;
       commentBody = formatGateComment(
         gateSpec.name,
@@ -272,9 +290,9 @@ async function handleIssueUpdate(
         gateSpec.mode,
       );
     } else {
-      verdict = parseVerdict(text) ?? gateSpec.fallback;
-      const enrichmentBody = parseEnrichment(text);
-      const verdictText = stripEnrichmentSection(text);
+      verdict = parsedVerdict ?? gateSpec.fallback;
+      const enrichmentBody = parseEnrichment(output);
+      const verdictText = stripEnrichmentSection(output);
       commentBody = formatGateComment(
         gateSpec.name,
         verdict,
@@ -283,11 +301,18 @@ async function handleIssueUpdate(
       );
 
       if (enrichmentBody) {
+        // Strip markers if the agent included them in the output
+        const startMarker = `<!-- gate:${gateSpec.name}:start -->`;
+        const endMarker = `<!-- gate:${gateSpec.name}:end -->`;
+        const cleanedBody = enrichmentBody
+          .replace(new RegExp(escapeRegex(startMarker), 'g'), '')
+          .replace(new RegExp(escapeRegex(endMarker), 'g'), '')
+          .trim();
         const currentDesc = data.description ?? '';
         const newDesc = mergeEnrichment(
           currentDesc,
           gateSpec.name,
-          enrichmentBody,
+          cleanedBody,
         );
         try {
           await ctx.client.updateIssue(data.id, { description: newDesc });
@@ -339,6 +364,11 @@ async function handleIssueUpdate(
     );
   } finally {
     ctx.inFlightGate.delete(data.id);
+    if (ctx.gateRunningLabelId) {
+      ctx.client
+        .updateIssue(data.id, { removedLabelIds: [ctx.gateRunningLabelId] })
+        .catch(() => {});
+    }
   }
 }
 
