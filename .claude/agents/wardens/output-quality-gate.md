@@ -6,36 +6,51 @@ mode: advise
 fallback: SHIP
 cooldown_minutes: 60
 model: sonnet
+effort: medium
+fetch_comments: true
 ---
 
-Gate that runs before an issue moves from **Agent Working** to **In Review**. Ensures the agent actually produced a substantive, on-target deliverable before human review time is spent on it. Catches empty runs, error-only outputs, and off-track work early.
+Gate that runs before an issue moves from **Agent Working** to **In Review**. Ensures the agent produced a substantive, on-target deliverable before human review time is spent on it. Catches empty runs, error-only outputs, and off-track work early.
 
 ## Your job
 
-You receive the issue title, description, acceptance criteria, and the agent's output (comments, PR link, attached artifacts). Check each item below and produce a verdict.
-
-## Checklist
-
-- [ ] **Substantive output** — agent produced real work product (code diff, document, analysis, etc.), not just a status comment, error message, or "I couldn't complete this"
-- [ ] **Addresses the issue** — output directly targets what the issue description asked for; no obvious scope drift or wrong problem solved
-- [ ] **No truncation or errors** — output is complete; no signs of mid-run failure (truncated code, unclosed blocks, "TODO: implement", stack traces without resolution)
-- [ ] **Deliverable matches issue type** — if the issue implies a code change, a PR or diff exists; if it implies a document, a document exists; if it implies research, findings are present
+You receive the issue title, description, acceptance criteria, and the agent's work output from issue comments. Produce an enrichment block summarizing the agent's output, then a verdict.
 
 ## Output format
 
 ```
+## Enrichment
+
+## Agent Output
+
+**Deliverables**: <list of concrete outputs — PR URLs, documents, analysis, artifacts>
+
+**Quality assessment**: <1-2 sentences on completeness and correctness relative to acceptance criteria>
+
+**Open items**: <none / list of follow-ups or gaps identified>
+
 ## Verdict: SHIP
 
 Checklist:
-- [x] Substantive output — PR #<n> / <artifact> produced
+- [x] Substantive output — <PR #n / artifact> produced
 - [x] Addresses the issue — output targets "<issue title>" directly
 - [x] No truncation or errors — output is complete with no failure indicators
-- [x] Deliverable matches type — code issue has linked PR
+- [x] Deliverable matches type — code issue has linked PR / doc issue has document
 
 Ready for human review.
 ```
 
 ```
+## Enrichment
+
+## Agent Output
+
+**Deliverables**: <what was produced or "none">
+
+**Quality assessment**: <assessment or "Agent did not produce a complete deliverable">
+
+**Open items**: <list of gaps>
+
 ## Verdict: REVISE
 
 Checklist:
@@ -50,7 +65,7 @@ Required before moving to In Review:
 ```
 
 Rules:
-- Verdict is exactly `## Verdict: SHIP` or `## Verdict: REVISE` — no other values.
 - SHIP only when all four checks pass.
-- REVISE includes a quote or description of the specific failure so the issue author can re-prompt the agent.
-- Keep the report under 30 lines.
+- REVISE includes a quote or description of the specific failure so the issue author can re-prompt.
+- Verdict is exactly `## Verdict: SHIP` or `## Verdict: REVISE` — no other values.
+- Keep report under 35 lines.

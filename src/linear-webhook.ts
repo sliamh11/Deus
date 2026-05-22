@@ -16,9 +16,41 @@ import {
 
 const DEFAULT_WEBHOOK_PORT = 3005;
 
-function parseVerdict(output: string): 'SHIP' | 'REVISE' | 'BLOCK' | null {
+export function parseVerdict(
+  output: string,
+): 'SHIP' | 'REVISE' | 'BLOCK' | null {
   const match = output.match(/^## Verdict:\s*(SHIP|REVISE|BLOCK)/m);
   return match ? (match[1] as 'SHIP' | 'REVISE' | 'BLOCK') : null;
+}
+
+export function parseEnrichment(output: string): string | null {
+  const match = output.match(/^## Enrichment\s*\n([\s\S]*?)(?=^## Verdict)/m);
+  return match ? match[1].trim() : null;
+}
+
+export function mergeEnrichment(
+  currentDesc: string,
+  gateName: string,
+  body: string,
+): string {
+  const start = `<!-- gate:${gateName}:start -->`;
+  const end = `<!-- gate:${gateName}:end -->`;
+  const block = `${start}\n${body}\n${end}`;
+  const pattern = new RegExp(
+    `${escapeRegex(start)}[\\s\\S]*?${escapeRegex(end)}`,
+  );
+  if (pattern.test(currentDesc)) {
+    return currentDesc.replace(pattern, block);
+  }
+  return currentDesc ? `${currentDesc}\n\n${block}` : block;
+}
+
+export function stripEnrichmentSection(text: string): string {
+  return text.replace(/^## Enrichment\s*\n[\s\S]*?(?=^## Verdict)/m, '').trim();
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function formatGateComment(
@@ -66,6 +98,25 @@ async function postOrUpdateComment(
   }
 }
 
+async function fetchIssueComments(
+  ctx: LinearContext,
+  issueId: string,
+): Promise<Array<{ author: string; body: string }>> {
+  try {
+    const issue = await ctx.client.issue(issueId);
+    const issueComments = await issue.comments();
+    return Promise.all(
+      issueComments.nodes.map(async (c) => {
+        const user = await c.user;
+        return { author: user?.displayName ?? 'Unknown', body: c.body };
+      }),
+    );
+  } catch (err) {
+    logger.warn({ issueId, err }, 'linear-webhook: failed to fetch comments');
+    return [];
+  }
+}
+
 async function handleIssueUpdate(
   payload: EntityWebhookPayloadWithIssueData,
   ctx: LinearContext,
@@ -85,7 +136,6 @@ async function handleIssueUpdate(
   const fromState = ctx.stateById.get(fromStateId);
   if (!toState || !fromState) return;
 
-  // Loop-break: skip if the bot triggered this transition
   const actorId = payload.actor?.id;
   if (actorId && actorId === ctx.botUserId) {
     logger.debug(
@@ -132,7 +182,6 @@ async function handleIssueUpdate(
     );
     await postOrUpdateComment(ctx, data.id, toState.name, body);
 
-    // Revert regardless of mode for illegal jumps
     try {
       await ctx.client.updateIssue(data.id, { stateId: fromStateId });
     } catch (err) {
@@ -181,11 +230,24 @@ async function handleIssueUpdate(
 
   try {
     const chatJid = `linear-gate-${gateSpec.name}-${data.id.slice(0, 8)}`;
-    const prompt = [
-      `<gate-spec>\n${gateSpec.content}\n</gate-spec>`,
-      `<issue>\nTitle: ${data.title}\nID: ${data.identifier}\n\n${data.description ?? '(no description)'}\n</issue>`,
-      `<transition>\nFrom: ${fromState.name}\nTo: ${toState.name}\n</transition>`,
-    ].join('\n\n');
+
+    let commentBlock = '';
+    if (gateSpec.fetchComments) {
+      const comments = await fetchIssueComments(ctx, data.id);
+      if (comments.length > 0) {
+        commentBlock =
+          '\n\n<comments>\n' +
+          comments.map((c) => `[${c.author}]: ${c.body}`).join('\n\n') +
+          '\n</comments>';
+      }
+    }
+
+    const prompt =
+      [
+        `<gate-spec>\n${gateSpec.content}\n</gate-spec>`,
+        `<issue>\nTitle: ${data.title}\nID: ${data.identifier}\n\n${data.description ?? '(no description)'}\n</issue>`,
+        `<transition>\nFrom: ${fromState.name}\nTo: ${toState.name}\n</transition>`,
+      ].join('\n\n') + commentBlock;
 
     const runContext: RunContext = {
       prompt,
@@ -193,31 +255,56 @@ async function handleIssueUpdate(
       chatJid,
       isControlGroup: false,
       isScheduledTask: true,
-      effort: 'low',
+      effort: gateSpec.effort ?? 'medium',
     };
 
     const { text, error } = await executeAgentRun(ctx, runContext);
 
     let verdict: 'SHIP' | 'REVISE' | 'BLOCK';
+    let commentBody: string;
+
     if (error) {
       verdict = gateSpec.fallback;
-      const body = formatGateComment(
+      commentBody = formatGateComment(
         gateSpec.name,
         verdict,
         `Gate agent error (fallback: ${gateSpec.fallback}):\n\`\`\`\n${error}\n\`\`\``,
         gateSpec.mode,
       );
-      await postOrUpdateComment(ctx, data.id, toState.name, body);
     } else {
       verdict = parseVerdict(text) ?? gateSpec.fallback;
-      const body = formatGateComment(
+      const enrichmentBody = parseEnrichment(text);
+      const verdictText = stripEnrichmentSection(text);
+      commentBody = formatGateComment(
         gateSpec.name,
         verdict,
-        text,
+        verdictText,
         gateSpec.mode,
       );
-      await postOrUpdateComment(ctx, data.id, toState.name, body);
+
+      if (enrichmentBody) {
+        const currentDesc = data.description ?? '';
+        const newDesc = mergeEnrichment(
+          currentDesc,
+          gateSpec.name,
+          enrichmentBody,
+        );
+        try {
+          await ctx.client.updateIssue(data.id, { description: newDesc });
+          logger.info(
+            { issueId: data.id, gate: gateSpec.name },
+            'linear-webhook: enriched issue description',
+          );
+        } catch (err) {
+          logger.warn(
+            { issueId: data.id, err },
+            'linear-webhook: failed to update issue description',
+          );
+        }
+      }
     }
+
+    await postOrUpdateComment(ctx, data.id, toState.name, commentBody);
 
     const effectiveMode = data.labels.some((l) => l.name === 'warden:strict')
       ? 'strict'

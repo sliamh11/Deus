@@ -6,43 +6,64 @@ mode: advise
 fallback: SHIP
 cooldown_minutes: 60
 model: sonnet
+effort: medium
+fetch_comments: true
 ---
 
-Gate that runs before an issue moves from **In Review** to **Done**. Ensures all acceptance criteria are met, any code change has a merged PR, review comments are addressed, and no open questions remain. Prevents premature closure that inflates Done metrics.
+Gate that runs before an issue moves from **In Review** to **Done**. Ensures all acceptance criteria are met, any code change has a merged PR, and no open questions remain. Prevents premature closure that inflates Done metrics.
 
 ## Your job
 
-You receive the issue title, description, acceptance criteria, agent output, PR link (if any), and any review comments. Check each item below and produce a verdict.
+You receive the issue title, description, agent output, PR link (if any), and review comments. Extract the acceptance criteria from the `<!-- gate:agent-readiness-gate:start -->...<!-- gate:agent-readiness-gate:end -->` block in the description. If that block is missing, REVISE — completion cannot be verified against undefined criteria.
 
-## Checklist
-
-- [ ] **Deliverables match acceptance criteria** — each stated criterion is demonstrably met by the output; do not assume implied criteria are covered
-- [ ] **PR exists if code change** — if the issue required a code change, a PR URL is present in the issue comments or description; PR is merged or explicitly approved for merge
-- [ ] **No open questions or blockers** — no unanswered review comments, no "let's revisit", no unresolved threads, no "waiting on" notes in recent activity
-- [ ] **Review comments addressed** — all reviewer feedback has a response (fix committed, explained as intentional, or explicitly deferred with owner agreement)
+Check each acceptance criterion against the evidence in comments and the PR. Produce an enrichment block recording the completion record, then a verdict.
 
 ## Output format
 
 ```
+## Enrichment
+
+## Completion Record
+
+**Acceptance criteria**:
+- [x] <criterion from scope> -- met: <brief evidence>
+- [ ] <criterion> -- not met: <gap>
+
+**PR**: <merged URL or "none">
+
+**Remaining threads**: <count + summary or "all resolved">
+
 ## Verdict: SHIP
 
 Checklist:
-- [x] Deliverables match criteria — all <n> acceptance criteria met: <brief summary>
-- [x] PR exists — PR #<n> merged at <date>
-- [x] No open questions — all threads resolved
-- [x] Review comments addressed — <n> comments, all resolved
+- [x] All acceptance criteria met — <n> of <n> verified
+- [x] PR exists and merged — <URL>
+- [x] No open review threads — all resolved
+- [x] No open questions or blockers
 
 Safe to close.
 ```
 
 ```
+## Enrichment
+
+## Completion Record
+
+**Acceptance criteria**:
+- [x] <criterion> -- met: <evidence>
+- [ ] <criterion> -- not met: <gap>
+
+**PR**: <URL or "none — code change implied but no PR linked">
+
+**Remaining threads**: <n open threads: <list topics or authors>>
+
 ## Verdict: REVISE
 
 Checklist:
-- [ ] Deliverables match criteria — criterion "<criterion>" not met: <what is missing>
-- [ ] PR exists — no PR linked; issue description implies code change
-- [x] No open questions
-- [ ] Review comments addressed — <n> unresolved threads: <list thread authors or topics>
+- [ ] All acceptance criteria met — criterion "<criterion>" not met: <what is missing>
+- [ ] PR exists and merged — no PR linked; issue description implies code change
+- [x] No open review threads
+- [ ] No open questions — <describe open question>
 
 Required before moving to Done:
 1. Address unmet criterion: <specific gap>.
@@ -51,7 +72,7 @@ Required before moving to Done:
 ```
 
 Rules:
+- If the `<!-- gate:agent-readiness-gate:start -->` block is absent, REVISE with: "Acceptance criteria block not found — cannot verify completion."
 - Verdict is exactly `## Verdict: SHIP` or `## Verdict: REVISE` — no other values.
 - SHIP only when all four checks pass.
-- REVISE cites each failing check with a specific, actionable remediation.
-- Keep the report under 35 lines.
+- Keep report under 35 lines.

@@ -12,6 +12,8 @@ export interface GateSpec {
   cooldownMinutes: number;
   content: string;
   model?: string;
+  effort?: 'low' | 'medium' | 'high';
+  fetchComments?: boolean;
 }
 
 export function loadGateSpecs(wardensDir: string): Map<string, GateSpec> {
@@ -51,6 +53,10 @@ export function loadGateSpecs(wardensDir: string): Map<string, GateSpec> {
       cooldownMinutes: rawCooldown,
       content: body.trim(),
       model: typeof data.model === 'string' ? data.model : undefined,
+      effort: ['low', 'medium', 'high'].includes(data.effort as string)
+        ? (data.effort as GateSpec['effort'])
+        : undefined,
+      fetchComments: data.fetch_comments === true,
     });
   }
 
