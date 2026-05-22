@@ -57,6 +57,7 @@ function makeMockCtx(overrides: Partial<LinearContext> = {}): LinearContext {
     },
     inFlightDispatch: new Set(),
     inFlightGate: new Set(),
+    gateLabels: {},
     teamId: 'team-id',
     ...overrides,
   };

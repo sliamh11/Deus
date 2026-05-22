@@ -39,6 +39,12 @@ interface WorkflowState {
   name: string;
 }
 
+export interface GateLabels {
+  evaluating?: string;
+  scoped?: string;
+  revise?: string;
+}
+
 export interface LinearContext {
   client: LinearClient;
   stateByName: Map<string, WorkflowState>;
@@ -48,7 +54,7 @@ export interface LinearContext {
   dispatchGroup: RegisteredGroup;
   inFlightDispatch: Set<string>;
   inFlightGate: Set<string>;
-  gateRunningLabelId?: string;
+  gateLabels: GateLabels;
   teamId: string;
 }
 
@@ -361,28 +367,35 @@ export async function initLinearContext(
       deps.registerGroup(DISPATCH_GROUP_JID, dispatchGroup);
     }
 
-    // Discover or create Warden: Evaluating label for visual feedback
-    let gateRunningLabelId: string | undefined;
+    // Discover or create gate status labels for board-level visibility
+    const gateLabels: GateLabels = {};
+    const labelDefs: Array<{
+      key: keyof GateLabels;
+      name: string;
+      color: string;
+    }> = [
+      { key: 'evaluating', name: 'Warden: Evaluating', color: '#f59e0b' },
+      { key: 'scoped', name: 'Scoped', color: '#16a34a' },
+      { key: 'revise', name: 'Warden: Revise', color: '#dc2626' },
+    ];
     try {
-      const labels = await client.issueLabels({
-        filter: { name: { eq: 'Warden: Evaluating' } },
-      });
-      const existing_label = labels.nodes.find(
-        (l) => l.name === 'Warden: Evaluating',
-      );
-      if (existing_label) {
-        gateRunningLabelId = existing_label.id;
-      } else {
-        const created = await client.createIssueLabel({
-          name: 'Warden: Evaluating',
-          color: '#f59e0b',
-          teamId,
-        });
-        const label = await created.issueLabel;
-        gateRunningLabelId = label?.id;
+      const allLabels = await client.issueLabels();
+      const labelMap = new Map(allLabels.nodes.map((l) => [l.name, l.id]));
+      for (const def of labelDefs) {
+        if (labelMap.has(def.name)) {
+          gateLabels[def.key] = labelMap.get(def.name);
+        } else {
+          const created = await client.createIssueLabel({
+            name: def.name,
+            color: def.color,
+            teamId,
+          });
+          const label = await created.issueLabel;
+          if (label) gateLabels[def.key] = label.id;
+        }
       }
     } catch (err) {
-      logger.warn({ err }, 'linear: failed to setup Warden: Evaluating label');
+      logger.warn({ err }, 'linear: failed to setup gate status labels');
     }
 
     logger.info(
@@ -399,7 +412,7 @@ export async function initLinearContext(
       dispatchGroup,
       inFlightDispatch: new Set(),
       inFlightGate: new Set(),
-      gateRunningLabelId,
+      gateLabels,
       teamId,
     };
   } catch (err) {

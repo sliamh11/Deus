@@ -10,84 +10,70 @@ effort: high
 fetch_comments: false
 ---
 
-Gate that runs before an issue moves from **Todo** to **Ready for Agent**. Scopes the issue so an autonomous agent can act without back-and-forth. A vague or blocked issue wastes an agent run and pollutes cycle metrics.
+Gate that runs before an issue moves from **Todo** to **Ready for Agent**. Scopes the issue so an autonomous agent can act without back-and-forth.
 
 ## Your job
 
-You receive an issue title and description (may be empty). Produce an enrichment block that scopes the work, then a verdict.
+You receive an issue title and description (may be empty or minimal). Your job is to produce a complete, actionable scope block grounded in the actual codebase.
 
-If the description contains `<!-- gate:agent-readiness-gate:start -->`, read the existing scope block and refine it in place — do not start from scratch. SHIP if all sections are substantively populated; REVISE only if a section is still too thin to act on.
+## Step 1: Explore the codebase
 
-REVISE if the title is so vague that meaningful scoping is impossible even with inference (e.g., "misc", "stuff to do", "fix thing").
+Before writing any scope, search for relevant files and context:
+- Grep for keywords from the issue title in `src/`, `scripts/`, `docs/`
+- Read the most relevant files to understand the current architecture
+- Check `AGENTS.md` for project structure and entrypoints
+- Check `docs/decisions/` for related ADRs or prior decisions
+- Look for existing tests that cover the area
+
+Ground your scope in what you find. Reference actual file paths, function names, and patterns.
+
+## Step 2: Write the scope
+
+If the description contains `<!-- gate:agent-readiness-gate:start -->`, refine the existing scope -- do not start from scratch.
+
+REVISE only if the title is so vague that meaningful scoping is impossible even with inference (e.g., "misc", "stuff to do").
 
 ## Output format
 
 ```
 ## Enrichment
 
-<!-- gate:agent-readiness-gate:start -->
-
 ## Scope
 
-**Problem statement**: <1-2 sentences derived from title + any description>
+**Problem statement**: <1-2 sentences grounded in what the codebase currently does and what needs to change>
+
+**Relevant files**:
+- `path/to/file.ts` -- <what it does and why it's relevant>
 
 **Requirements**:
-- <concrete requirement>
+- <concrete requirement referencing actual code>
 
 **Acceptance criteria**:
-- [ ] <verifiable criterion>
+- [ ] <verifiable criterion tied to specific behavior>
 
 **Implementation plan**:
-1. <step with enough detail for an autonomous coding agent>
+1. <step referencing actual files/functions to modify>
 
 **Dependencies**: <none / list of blockers or related work>
 
 **Estimated effort**: <trivial | small | medium | large>
 
-<!-- gate:agent-readiness-gate:end -->
-
 ## Verdict: SHIP
 
 Checklist:
-- [x] Actionable title — "<title>" is specific and unambiguous
-- [x] Problem statement — derived from title/description
-- [x] Acceptance criteria — at least one verifiable criterion present
-- [x] Implementation plan — steps are specific enough for an autonomous agent
-- [x] No blockers — none identified
+- [x] Actionable title
+- [x] Problem statement grounded in codebase
+- [x] Acceptance criteria -- verifiable
+- [x] Implementation plan -- references real files
+- [x] No blockers
 
 Scope block populated. Ready for autonomous agent pickup.
 ```
 
-```
-## Enrichment
-
-<!-- gate:agent-readiness-gate:start -->
-
-## Scope
-
-**Problem statement**: <derived or "Title too vague to derive a problem statement">
-
-...
-
-<!-- gate:agent-readiness-gate:end -->
-
-## Verdict: REVISE
-
-Checklist:
-- [ ] Actionable title — title "<title>" is too vague to scope
-- [ ] Problem statement — cannot be derived without more context
-- [ ] Acceptance criteria — none; agent cannot determine when done
-- [x] Implementation plan — n/a pending above
-- [x] No blockers
-
-Required before moving to Ready for Agent:
-1. <Specific what is missing and how to fix it>.
-```
-
 Rules:
-- Derive scope from even minimal input — infer from title, domain, and common sense.
+- Always explore the codebase before scoping. Never produce a generic scope.
+- Reference actual file paths and function names in requirements and implementation plan.
 - Be specific and actionable in acceptance criteria (verifiable, not aspirational).
-- Write implementation steps detailed enough for an autonomous coding agent to follow.
-- Verdict is exactly `## Verdict: SHIP` or `## Verdict: REVISE` — no other values.
-- SHIP only when ALL scope sections are populated with substantive content.
-- Keep report under 35 lines.
+- Use the user's effort units: trivial, small, medium, large.
+- Verdict is exactly `## Verdict: SHIP` or `## Verdict: REVISE`.
+- SHIP only when ALL scope sections are populated with substantive, codebase-grounded content.

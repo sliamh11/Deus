@@ -228,10 +228,10 @@ async function handleIssueUpdate(
 
   updateWebhookEventStatus(eventKey, 'running');
 
-  // Visual feedback: add gate:running label + initial comment
-  if (ctx.gateRunningLabelId) {
+  // Visual feedback: add evaluating label + initial comment
+  if (ctx.gateLabels.evaluating) {
     ctx.client
-      .updateIssue(data.id, { addedLabelIds: [ctx.gateRunningLabelId] })
+      .updateIssue(data.id, { addedLabelIds: [ctx.gateLabels.evaluating] })
       .catch(() => {});
   }
   const runningComment = formatGateComment(
@@ -242,6 +242,7 @@ async function handleIssueUpdate(
   );
   await postOrUpdateComment(ctx, data.id, toState.name, runningComment);
 
+  let finalVerdict: string | undefined;
   try {
     const chatJid = `linear-gate-${gateSpec.name}-${data.id.slice(0, 8)}`;
 
@@ -350,6 +351,7 @@ async function handleIssueUpdate(
       }
     }
 
+    finalVerdict = verdict;
     updateWebhookEventStatus(eventKey, 'done', { verdict });
     logger.info(
       { issueId: data.id, gate: gateSpec.name, verdict, mode: effectiveMode },
@@ -364,10 +366,21 @@ async function handleIssueUpdate(
     );
   } finally {
     ctx.inFlightGate.delete(data.id);
-    if (ctx.gateRunningLabelId) {
-      ctx.client
-        .updateIssue(data.id, { removedLabelIds: [ctx.gateRunningLabelId] })
-        .catch(() => {});
+    const removeIds: string[] = [];
+    const addIds: string[] = [];
+    if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
+    if (finalVerdict === 'SHIP' && ctx.gateLabels.scoped) {
+      addIds.push(ctx.gateLabels.scoped);
+      if (ctx.gateLabels.revise) removeIds.push(ctx.gateLabels.revise);
+    } else if (finalVerdict === 'REVISE' && ctx.gateLabels.revise) {
+      addIds.push(ctx.gateLabels.revise);
+      if (ctx.gateLabels.scoped) removeIds.push(ctx.gateLabels.scoped);
+    }
+    if (removeIds.length > 0 || addIds.length > 0) {
+      const update: Record<string, unknown> = {};
+      if (removeIds.length > 0) update.removedLabelIds = removeIds;
+      if (addIds.length > 0) update.addedLabelIds = addIds;
+      ctx.client.updateIssue(data.id, update).catch(() => {});
     }
   }
 }
