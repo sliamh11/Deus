@@ -138,6 +138,11 @@ async function handleIssueUpdate(
 
   if (action !== 'update') return;
 
+  logger.info(
+    { issueId: data.id, action, identifier: data.identifier },
+    'linear-webhook: received event',
+  );
+
   // SDK types updatedFrom as JSONObject; stateId is present at runtime for state changes
   const fromStateId = (updatedFrom as Record<string, unknown> | undefined)
     ?.stateId;
@@ -150,15 +155,15 @@ async function handleIssueUpdate(
 
   const actorId = payload.actor?.id;
   if (actorId && actorId === ctx.botUserId) {
-    logger.debug(
-      { issueId: data.id, gate: toState.name },
+    logger.info(
+      { issueId: data.id, gate: toState.name, actorId },
       'linear-webhook: skipping bot-triggered transition',
     );
     return;
   }
 
   if (data.labels.some((l) => l.name === 'warden:skip')) {
-    logger.debug(
+    logger.info(
       { issueId: data.id },
       'linear-webhook: warden:skip label present, skipping',
     );
@@ -217,8 +222,13 @@ async function handleIssueUpdate(
       const elapsed =
         (Date.now() - new Date(lastRun.finished_at).getTime()) / 60_000;
       if (elapsed < gateSpec.cooldownMinutes) {
-        logger.debug(
-          { issueId: data.id, gate: gateSpec.name, elapsed },
+        logger.info(
+          {
+            issueId: data.id,
+            gate: gateSpec.name,
+            elapsedMin: Math.round(elapsed),
+            cooldownMin: gateSpec.cooldownMinutes,
+          },
           'linear-webhook: within cooldown, skipping',
         );
         updateWebhookEventStatus(eventKey, 'done', {
@@ -230,7 +240,7 @@ async function handleIssueUpdate(
   }
 
   if (ctx.inFlightGate.has(data.id)) {
-    logger.debug(
+    logger.info(
       { issueId: data.id },
       'linear-webhook: gate already in flight for issue',
     );
@@ -305,7 +315,20 @@ async function handleIssueUpdate(
       );
     } else {
       verdict = parsedVerdict ?? gateSpec.fallback;
-      const enrichmentBody = parseEnrichment(output);
+      let enrichmentBody = parseEnrichment(output);
+
+      if (!enrichmentBody && !parsedVerdict && output.length > 100) {
+        logger.warn(
+          {
+            issueId: data.id,
+            gate: gateSpec.name,
+            outputLen: output.length,
+          },
+          'linear-webhook: agent output missing ## Enrichment/## Verdict markers, using full output as enrichment',
+        );
+        enrichmentBody = output;
+      }
+
       finalEnrichment = enrichmentBody ?? undefined;
       const verdictText = stripEnrichmentSection(output);
       commentBody = formatGateComment(
@@ -390,25 +413,38 @@ async function handleIssueUpdate(
       addIds.push(ctx.gateLabels.revise);
       if (ctx.gateLabels.scoped) removeIds.push(ctx.gateLabels.scoped);
     }
-    // Apply effort/complexity labels from enrichment ratings
+    // Apply effort/complexity labels only when ratings are actually present
     if (finalEnrichment) {
       const ratings = parseRatings(finalEnrichment);
-      // Remove any existing effort/complexity labels first
-      for (const id of Object.values(ctx.gateLabels.effort)) removeIds.push(id);
-      for (const id of Object.values(ctx.gateLabels.complexity))
-        removeIds.push(id);
-      if (ratings.effort && ctx.gateLabels.effort[ratings.effort]) {
-        addIds.push(ctx.gateLabels.effort[ratings.effort]);
-      }
-      if (ratings.complexity && ctx.gateLabels.complexity[ratings.complexity]) {
-        addIds.push(ctx.gateLabels.complexity[ratings.complexity]);
+      if (ratings.effort || ratings.complexity) {
+        for (const id of Object.values(ctx.gateLabels.effort))
+          removeIds.push(id);
+        for (const id of Object.values(ctx.gateLabels.complexity))
+          removeIds.push(id);
+        if (ratings.effort && ctx.gateLabels.effort[ratings.effort]) {
+          addIds.push(ctx.gateLabels.effort[ratings.effort]);
+        }
+        if (
+          ratings.complexity &&
+          ctx.gateLabels.complexity[ratings.complexity]
+        ) {
+          addIds.push(ctx.gateLabels.complexity[ratings.complexity]);
+        }
       }
     }
-    if (removeIds.length > 0 || addIds.length > 0) {
+    const issueLabels = new Set(data.labels.map((l) => l.id));
+    if (ctx.gateLabels.evaluating) issueLabels.add(ctx.gateLabels.evaluating);
+    const safeRemoveIds = removeIds.filter((id) => issueLabels.has(id));
+    if (safeRemoveIds.length > 0 || addIds.length > 0) {
       const update: Record<string, unknown> = {};
-      if (removeIds.length > 0) update.removedLabelIds = removeIds;
+      if (safeRemoveIds.length > 0) update.removedLabelIds = safeRemoveIds;
       if (addIds.length > 0) update.addedLabelIds = addIds;
-      ctx.client.updateIssue(data.id, update).catch(() => {});
+      ctx.client.updateIssue(data.id, update).catch((err) => {
+        logger.warn(
+          { issueId: data.id, addIds, safeRemoveIds, err },
+          'linear-webhook: failed to update gate labels',
+        );
+      });
     }
   }
 }
