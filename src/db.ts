@@ -1492,6 +1492,167 @@ export function getPipelineEvents(filters?: PipelineEventFilter): Array<{
   }>;
 }
 
+/**
+ * Returns the ISO timestamp at which the given issue entered `stage`.
+ *
+ * - 'Agent Working'    → created_at of the first `agent_started` event
+ * - 'In Review'        → created_at of the first `pr_created` or `agent_completed` event
+ * - 'Ready for Agent'  → created_at of the last `agent_failed` event (retry anchor),
+ *                        or null if there are none (caller should fall back to Linear API)
+ *
+ * Returns null when no anchor event is found.
+ */
+export function getStageEntryTime(
+  issueId: string,
+  stage: string,
+): string | null {
+  if (stage === 'Agent Working') {
+    const row = db
+      .prepare(
+        `SELECT created_at FROM linear_pipeline_events
+         WHERE issue_id = ? AND event_type = 'agent_started'
+         ORDER BY id ASC LIMIT 1`,
+      )
+      .get(issueId) as { created_at: string } | undefined;
+    return row?.created_at ?? null;
+  }
+
+  if (stage === 'In Review') {
+    const row = db
+      .prepare(
+        `SELECT created_at FROM linear_pipeline_events
+         WHERE issue_id = ? AND event_type IN ('pr_created', 'agent_completed')
+         ORDER BY id ASC LIMIT 1`,
+      )
+      .get(issueId) as { created_at: string } | undefined;
+    return row?.created_at ?? null;
+  }
+
+  if (stage === 'Ready for Agent') {
+    const row = db
+      .prepare(
+        `SELECT created_at FROM linear_pipeline_events
+         WHERE issue_id = ? AND event_type = 'agent_failed'
+         ORDER BY id DESC LIMIT 1`,
+      )
+      .get(issueId) as { created_at: string } | undefined;
+    return row?.created_at ?? null;
+  }
+
+  return null;
+}
+
+/**
+ * Computes per-stage median durations from completed first-attempt runs in the local DB.
+ *
+ * Only "clean" (non-retried) runs are included: an issue with an `agent_failed` event
+ * between its first `agent_started` and the subsequent `pr_created`/`agent_completed`
+ * is excluded from the Agent Working sample.
+ *
+ * Stages computed:
+ *   - 'Agent Working' : first agent_started → first pr_created/agent_completed (no agent_failed in between)
+ *   - 'In Review'     : first pr_created/agent_completed → gate_ship
+ *
+ * Returns a Map keyed by stage name; stages with zero complete runs are omitted.
+ */
+export function computeStageMedians(): Map<
+  string,
+  { medianMs: number; sampleSize: number }
+> {
+  const result = new Map<string, { medianMs: number; sampleSize: number }>();
+
+  type EventRow = {
+    id: number;
+    issue_id: string;
+    event_type: string;
+    created_at: string;
+  };
+
+  const events = db
+    .prepare(
+      `SELECT id, issue_id, event_type, created_at
+       FROM linear_pipeline_events
+       WHERE event_type IN ('agent_started','pr_created','agent_completed','agent_failed','gate_ship')
+       ORDER BY id ASC`,
+    )
+    .all() as EventRow[];
+
+  // Group events by issue
+  const byIssue = new Map<string, EventRow[]>();
+  for (const e of events) {
+    if (!byIssue.has(e.issue_id)) byIssue.set(e.issue_id, []);
+    byIssue.get(e.issue_id)!.push(e);
+  }
+
+  const agentWorkingDurations: number[] = [];
+  const inReviewDurations: number[] = [];
+
+  for (const issueEvents of byIssue.values()) {
+    // First agent_started for this issue
+    const firstStart = issueEvents.find(
+      (e) => e.event_type === 'agent_started',
+    );
+    if (!firstStart) continue;
+
+    // First pr_created or agent_completed after first agent_started
+    const firstEnd = issueEvents.find(
+      (e) =>
+        (e.event_type === 'pr_created' || e.event_type === 'agent_completed') &&
+        e.id > firstStart.id,
+    );
+    if (!firstEnd) continue;
+
+    // Exclude retried issues: any agent_failed between firstStart and firstEnd
+    const hadRetry = issueEvents.some(
+      (e) =>
+        e.event_type === 'agent_failed' &&
+        e.id > firstStart.id &&
+        e.id < firstEnd.id,
+    );
+    if (hadRetry) continue;
+
+    const agentMs =
+      new Date(firstEnd.created_at).getTime() -
+      new Date(firstStart.created_at).getTime();
+    if (agentMs > 0) agentWorkingDurations.push(agentMs);
+
+    // In Review: firstEnd → gate_ship
+    const shipEvent = issueEvents.find(
+      (e) => e.event_type === 'gate_ship' && e.id > firstEnd.id,
+    );
+    if (shipEvent) {
+      const reviewMs =
+        new Date(shipEvent.created_at).getTime() -
+        new Date(firstEnd.created_at).getTime();
+      if (reviewMs > 0) inReviewDurations.push(reviewMs);
+    }
+  }
+
+  const median = (durations: number[]): number => {
+    durations.sort((a, b) => a - b);
+    const mid = Math.floor(durations.length / 2);
+    return durations.length % 2 !== 0
+      ? durations[mid]
+      : Math.floor((durations[mid - 1] + durations[mid]) / 2);
+  };
+
+  if (agentWorkingDurations.length > 0) {
+    result.set('Agent Working', {
+      medianMs: median(agentWorkingDurations),
+      sampleSize: agentWorkingDurations.length,
+    });
+  }
+
+  if (inReviewDurations.length > 0) {
+    result.set('In Review', {
+      medianMs: median(inReviewDurations),
+      sampleSize: inReviewDurations.length,
+    });
+  }
+
+  return result;
+}
+
 export function upsertPipelineComment(
   issueId: string,
   commentId: string,
