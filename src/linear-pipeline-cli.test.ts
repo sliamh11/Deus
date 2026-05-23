@@ -405,11 +405,6 @@ describe('buildStageBar', () => {
       // Check RED color used for stage 4 slot
       // We'll do a more targeted ANSI check
       // Extract the raw text around the 4th stage character
-      const stagesRaw = bar.slice(bar.indexOf('[ ') + 2, bar.lastIndexOf(' ]'));
-      // Count ▓ occurrences and verify the 4th one is in RED context
-      // Since ANSI codes make direct indexing tricky, use a split approach
-      const parts = stagesRaw.split('▓');
-      // parts[3] is after the 4th ▓ — check what's before it (in parts[2] suffix or surrounding)
       // A simpler heuristic: RED code (\x1b[31m) must appear in the bar
       expect(bar).toContain('\x1b[31m');
     });
@@ -446,9 +441,11 @@ describe('buildStageBar', () => {
       // And stage 4 was clean — we verify by counting dim ▓ vs red ▓
       // Stages 1-4 are clean (DIM), stage 5 is RED
       // Count occurrences of \x1b[2m▓ (dim complete) — should be 4
+      // eslint-disable-next-line no-control-regex
       const dimCompleteMatches = bar.match(/\x1b\[2m▓/g) ?? [];
       expect(dimCompleteMatches.length).toBe(4);
       // And \x1b[31m▓ (red complete) — should be 1
+      // eslint-disable-next-line no-control-regex
       const redCompleteMatches = bar.match(/\x1b\[31m▓/g) ?? [];
       expect(redCompleteMatches.length).toBe(1);
     });
@@ -481,9 +478,11 @@ describe('buildStageBar', () => {
       const plain = stripAnsi(bar);
       expect(plain).toBe('[ ▓▓▓▓▓▓ ]');
       // Exactly one stage in RED
+      // eslint-disable-next-line no-control-regex
       const redCompleteMatches = bar.match(/\x1b\[31m▓/g) ?? [];
       expect(redCompleteMatches.length).toBe(1);
       // Remaining 5 stages in DIM
+      // eslint-disable-next-line no-control-regex
       const dimCompleteMatches = bar.match(/\x1b\[2m▓/g) ?? [];
       expect(dimCompleteMatches.length).toBe(5);
     });
