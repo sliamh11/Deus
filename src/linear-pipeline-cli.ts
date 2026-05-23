@@ -156,8 +156,10 @@ export function formatElapsed(isoTimestamp: string): string {
 }
 
 function truncate(str: string, maxLen: number): string {
-  if (str.length <= maxLen) return str;
-  return str.slice(0, maxLen - 1) + '…';
+  // DB stores raw gh stderr which embeds newlines/tabs that break TUI rows
+  const clean = str.replace(/[\r\n\t]+/g, ' ');
+  if (clean.length <= maxLen) return clean;
+  return clean.slice(0, maxLen - 1) + '…';
 }
 
 function printEvents(
@@ -174,10 +176,15 @@ function printEvents(
     return;
   }
 
+  const cols = process.stdout.columns || 80;
+  const detailWidth = Math.max(10, cols - 46);
+
   for (const e of events) {
     const time = e.created_at.slice(0, 16).replace('T', ' ');
     const color = colorFor(e.event_type);
-    const detail = e.detail ? ` ${DIM}— ${e.detail}${RESET}` : '';
+    const detail = e.detail
+      ? ` ${DIM}— ${truncate(e.detail, detailWidth)}${RESET}`
+      : '';
     console.log(
       `${DIM}${time}${RESET}  ${CYAN}${e.identifier.padEnd(8)}${RESET}  ${color}${(EVENT_LABELS[e.event_type] || e.event_type).padEnd(22)}${RESET}${detail}`,
     );
@@ -680,7 +687,10 @@ async function startWatchMode(): Promise<void> {
         const time = e.created_at.slice(0, 16).replace('T', ' ');
         const color = colorFor(e.event_type);
         const label = EVENT_LABELS[e.event_type] || e.event_type;
-        const detail = e.detail ? ` ${DIM}— ${e.detail}${RESET}` : '';
+        const detailWidth = Math.max(10, cols - 46);
+        const detail = e.detail
+          ? ` ${DIM}— ${truncate(e.detail, detailWidth)}${RESET}`
+          : '';
         lines.push(
           `  ${DIM}${time}${RESET}  ${color}${label.padEnd(22)}${RESET}${detail}`,
         );
