@@ -541,7 +541,7 @@ function renderDashboardOutput(
     lines.push(`${CYAN} :${opts.cmdLine}█${RESET}`);
   } else {
     lines.push(
-      `${DIM} ↑↓ select · o open · r re-eval · l skip · : cmd · Ctrl+C exit${RESET}`,
+      `${DIM} ↑↓ select · → detail · o open · r re-eval · l skip · : cmd · Ctrl+C exit${RESET}`,
     );
   }
 
@@ -608,6 +608,19 @@ async function startWatchMode(): Promise<void> {
   let cmdMode = false;
   let cmdBuffer = '';
   let actionCtx: ActionContext | null = null;
+  let viewMode: 'list' | 'detail' = 'list';
+  interface DetailData {
+    issue: SelectableIssue;
+    events: Array<{
+      event_type: string;
+      detail: string | null;
+      created_at: string;
+    }>;
+    prUrl: string | null;
+    labelNames: string[];
+    url: string | null;
+  }
+  let detailData: DetailData | null = null;
 
   let cachedActive: ActiveIssue[] = [];
   let cachedQueued: QueuedIssue[] = [];
@@ -625,12 +638,90 @@ async function startWatchMode(): Promise<void> {
     return /rate.?limit/i.test(msg) || /429/.test(msg) || /too many/i.test(msg);
   }
 
+  function renderDetailView(data: DetailData): string {
+    const cols = process.stdout.columns || 100;
+    const { separatorWidth } = computeColumnWidths(cols);
+    const lines: string[] = [];
+    const sg = stateGlyph(data.issue.stateName);
+
+    lines.push(
+      `${BOLD} ${data.issue.identifier}${RESET}  ${sg.color}${sg.glyph} ${data.issue.stateName}${RESET}`,
+    );
+    lines.push(`${DIM} ${'─'.repeat(separatorWidth)}${RESET}`);
+    lines.push(`  ${data.issue.title}`);
+    lines.push('');
+
+    if (data.prUrl) {
+      lines.push(`  ${DIM}PR:${RESET} ${CYAN}${data.prUrl}${RESET}`);
+    }
+    if (data.url) {
+      lines.push(`  ${DIM}URL:${RESET} ${CYAN}${data.url}${RESET}`);
+    }
+    if (data.labelNames.length > 0) {
+      lines.push(
+        `  ${DIM}Labels:${RESET} ${data.labelNames.map((l) => `${YELLOW}${l}${RESET}`).join(' ')}`,
+      );
+    }
+
+    lines.push('');
+    lines.push(`${BOLD} Timeline${RESET}`);
+    lines.push(`${DIM} ${'─'.repeat(separatorWidth)}${RESET}`);
+
+    if (data.events.length === 0) {
+      lines.push(`${DIM}  No pipeline events.${RESET}`);
+    } else {
+      const visible = data.events.slice(-20);
+      if (data.events.length > 20) {
+        lines.push(
+          `${DIM}  ...${data.events.length - 20} earlier events omitted${RESET}`,
+        );
+      }
+      for (const e of visible) {
+        const time = e.created_at.slice(0, 16).replace('T', ' ');
+        const color = colorFor(e.event_type);
+        const label = EVENT_LABELS[e.event_type] || e.event_type;
+        const detail = e.detail ? ` ${DIM}— ${e.detail}${RESET}` : '';
+        lines.push(
+          `  ${DIM}${time}${RESET}  ${color}${label.padEnd(22)}${RESET}${detail}`,
+        );
+      }
+    }
+
+    lines.push('');
+    lines.push(`${BOLD} Actions${RESET}`);
+    lines.push(`${DIM} ${'─'.repeat(separatorWidth)}${RESET}`);
+    lines.push(`  ${CYAN}o${RESET}  Open in browser`);
+    lines.push(`  ${CYAN}r${RESET}  Re-run gate`);
+    lines.push(`  ${CYAN}l${RESET}  Toggle warden:skip`);
+    lines.push(`  ${CYAN}:${RESET}  Command mode (:move <state>)`);
+
+    if (lastActionResult) {
+      lines.push('');
+      const rc = lastActionOk ? GREEN : RED;
+      const icon = lastActionOk ? '✓' : '✗';
+      lines.push(`${rc} ${icon} ${lastActionResult}${RESET}`);
+    }
+
+    lines.push('');
+    if (confirmPending) {
+      lines.push(`${YELLOW} ${confirmLabel} [y/N]${RESET}`);
+    } else if (cmdMode) {
+      lines.push(`${CYAN} :${cmdBuffer}█${RESET}`);
+    } else {
+      lines.push(
+        `${DIM} ← back · o open · r re-eval · l skip · : cmd · Ctrl+C exit${RESET}`,
+      );
+    }
+
+    return lines.join('\n');
+  }
+
   function rerender(): void {
-    const output = renderDashboardOutput(
-      cachedActive,
-      cachedQueued,
-      cachedRecent,
-      {
+    let output: string;
+    if (viewMode === 'detail' && detailData) {
+      output = renderDetailView(detailData);
+    } else {
+      output = renderDashboardOutput(cachedActive, cachedQueued, cachedRecent, {
         error: lastError,
         currentRefreshMs: nextRefreshMs,
         warning: lastWarning,
@@ -641,8 +732,8 @@ async function startWatchMode(): Promise<void> {
         lastResult: lastActionResult
           ? { message: lastActionResult, ok: lastActionOk }
           : undefined,
-      },
-    );
+      });
+    }
     process.stdout.write(CURSOR_HOME + output + '\n' + CLEAR_TO_END);
   }
 
@@ -703,9 +794,61 @@ async function startWatchMode(): Promise<void> {
     }
   }
 
+  async function enterDetailView(): Promise<void> {
+    const issue = allIssues[selectedIndex];
+    if (!issue) return;
+
+    paused = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+
+    const events = getPipelineEvents({ issueId: issue.id });
+    const pr = getIssuePr(issue.id);
+
+    let labelNames: string[] = [];
+    let url: string | null = null;
+    try {
+      const fetched = await client.issue(issue.id);
+      url = fetched.url;
+      const labels = await fetched.labels();
+      labelNames = labels.nodes.map((l) => l.name);
+    } catch {
+      /* best-effort */
+    }
+
+    detailData = {
+      issue,
+      events,
+      prUrl: pr?.pr_url ?? null,
+      labelNames,
+      url,
+    };
+    viewMode = 'detail';
+    rerender();
+  }
+
+  function exitDetailView(): void {
+    viewMode = 'list';
+    detailData = null;
+    resumeRefresh();
+    rerender();
+  }
+
   async function handleOpen(): Promise<void> {
     const issue = allIssues[selectedIndex];
     if (!issue) return;
+
+    const cachedUrl = viewMode === 'detail' && detailData?.url;
+    if (cachedUrl) {
+      const result = handleOpenInBrowser(cachedUrl, issue.identifier);
+      lastActionResult = result.message;
+      lastActionOk = result.ok;
+      rerender();
+      return;
+    }
+
     try {
       const fetched = await client.issue(issue.id);
       const result = handleOpenInBrowser(fetched.url, issue.identifier);
@@ -868,6 +1011,32 @@ async function startWatchMode(): Promise<void> {
         return;
       }
 
+      if (viewMode === 'detail') {
+        if (key === '[D' || (key === '' && key.length === 1)) {
+          exitDetailView();
+          return;
+        }
+        if (key === 'o') {
+          await handleOpen();
+          return;
+        }
+        if (key === 'r') {
+          await handleRerun();
+          return;
+        }
+        if (key === 'l') {
+          await handleToggleSkip();
+          return;
+        }
+        if (key === ':') {
+          cmdMode = true;
+          cmdBuffer = '';
+          rerender();
+          return;
+        }
+        return;
+      }
+
       switch (key) {
         case '[A':
         case 'k':
@@ -878,6 +1047,10 @@ async function startWatchMode(): Promise<void> {
         case 'j':
           selectedIndex = Math.min(allIssues.length - 1, selectedIndex + 1);
           rerender();
+          break;
+        case '[C':
+        case '\r':
+          await enterDetailView();
           break;
         case 'o':
           await handleOpen();
