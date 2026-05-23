@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-05-23T15:30:00" # auto-bump (linear-vault-sync)
+last_verified: "2026-05-23T15:50:00" # auto-bump (ci-fail-redispatch)
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"
