@@ -9,7 +9,7 @@
  * See: docs/decisions/platform-abstraction-layer.md
  */
 
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 
@@ -132,4 +132,14 @@ export function hostGatewayArgs(): string[] {
     return ['--add-host=host.docker.internal:host-gateway'];
   }
   return [];
+}
+
+export const IS_SSH = !!(process.env.SSH_TTY || process.env.SSH_CLIENT);
+
+export function openBrowser(url: string): boolean {
+  if (IS_SSH) return false;
+  const cmd = IS_MACOS ? 'open' : IS_WINDOWS ? 'cmd' : 'xdg-open';
+  const args = IS_WINDOWS ? ['/c', 'start', url] : [url];
+  spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref();
+  return true;
 }

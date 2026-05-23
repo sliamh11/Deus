@@ -39,7 +39,7 @@ interface RoleSpec {
   content: string;
 }
 
-interface WorkflowState {
+export interface WorkflowState {
   id: string;
   name: string;
 }
@@ -134,7 +134,7 @@ async function discoverTeamId(client: LinearClient): Promise<string> {
   return teams.nodes[0].id;
 }
 
-async function discoverWorkflowStates(
+export async function discoverWorkflowStates(
   client: LinearClient,
   teamId: string,
 ): Promise<Map<string, WorkflowState>> {
