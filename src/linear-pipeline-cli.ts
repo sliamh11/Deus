@@ -8,7 +8,11 @@
  *   deus pipeline --active              Currently in-flight issues
  */
 
-import { getPipelineEvents, type PipelineEventFilter } from './db.js';
+import {
+  getPipelineEvents,
+  initDatabase,
+  type PipelineEventFilter,
+} from './db.js';
 import { EVENT_LABELS } from './linear-notifications.js';
 
 const GREEN = '\x1b[32m';
@@ -98,6 +102,8 @@ function main(): void {
     console.log('  deus pipeline --all [--since Xh]     All events');
     process.exit(0);
   }
+
+  initDatabase();
 
   const filter: PipelineEventFilter = {};
   let showFailed = false;
