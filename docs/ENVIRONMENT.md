@@ -149,6 +149,25 @@ Group/task effort overrides:
 - Resolution order is: task override, group override, `DEUS_AGENT_EFFORT`, then `low`.
 - Effort currently applies to the Claude backend only. OpenAI backend logs and ignores the value.
 
+## Linear Automation
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LINEAR_API_TOKEN` | -- | Personal API key (also accepted as `LINEAR_API_KEY`). Generate at Linear Settings > API > Personal API keys |
+| `LINEAR_POLL_INTERVAL_MS` | `30000` | How often the dispatcher polls for "Ready for Agent" issues (ms) |
+| `LINEAR_TEAM_ID` | auto-discovered | Override if the workspace has multiple teams |
+| `LINEAR_WEBHOOK_SECRET` | -- | HMAC-SHA256 secret for webhook signature verification. Required for gates |
+| `LINEAR_WEBHOOK_PORT` | `3005` | Port the webhook server binds to |
+| `LINEAR_BOT_USER_ID` | auto-discovered | Override the bot user ID used to filter out self-triggered webhook events |
+| `LINEAR_AUTO_MERGE` | `0` | Auto-merge agent PRs after CI passes: `0` (off) or `1` (on) |
+
+## GitHub
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `GITHUB_TOKEN` | -- | Personal access token for `gh` CLI (tool proxy injects into container agent calls) |
+| `GITHUB_REPO` | auto-derived | Repository slug (`owner/repo`). Auto-derived from `git remote` if not set |
+
 ## Safety
 
 | Variable | Default | Description |

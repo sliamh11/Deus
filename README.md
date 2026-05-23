@@ -148,6 +148,69 @@ python3 scripts/codex_warden_hooks.py check
 
 ---
 
+## Linear Automation
+
+Use [Linear](https://linear.app) as a Kanban command center for autonomous agent work. Move an issue to **Ready for Agent** and Deus picks it up, implements it in a container, opens a PR, and optionally merges it -- without waiting for you.
+
+### How it works
+
+Issues move through five stages: **Todo → Ready for Agent → Agent Working → In Review → Done**. Three quality checks fire automatically as issues move through the board:
+
+| Check | Fires on | What it does |
+|-------|----------|--------------|
+| **agent-readiness-gate** | Todo → Ready for Agent | Scopes the issue: implementation plan, acceptance criteria, effort/complexity ratings |
+| **output-quality-gate** | Agent Working → In Review | Verifies the agent produced a real deliverable (PR, document, etc.) |
+| **completion-gate** | In Review → Done | Checks all acceptance criteria are met and PR is merged |
+
+When `LINEAR_AUTO_MERGE=1`, Deus automatically merges the agent's PR once CI passes.
+
+Each issue gets a single rolling **Pipeline Log** comment that tracks every event (gate verdicts, agent dispatch, PR creation, merge) -- no comment spam.
+
+### Setup
+
+```
+/add-linear    # Gives Deus read/write access to your Linear workspace
+```
+
+Then configure the automation layer in `.env`:
+
+```bash
+LINEAR_API_TOKEN=lin_api_...    # Linear personal API key
+LINEAR_WEBHOOK_SECRET=...       # For webhook signature verification
+# LINEAR_AUTO_MERGE=1           # Optional: auto-merge agent PRs after CI
+```
+
+Quality checks require a public URL to receive Linear webhook events. For local dev, use [ngrok](https://ngrok.com) (`ngrok http 3005`). Register the URL in Linear Settings → API → Webhooks. Dispatch (polling) works without a webhook URL.
+
+See [Linear automation architecture](docs/decisions/linear-webhook-pipeline.md) for the full setup, gate spec format, and configuration reference.
+
+### Pipeline audit
+
+Check the status of any issue's pipeline from the terminal:
+
+```bash
+deus pipeline PROJ-123               # Full timeline for an issue
+deus pipeline --failed --since 24h   # Failures in the last 24 hours
+deus pipeline --active               # Currently in-flight issues
+```
+
+### Adding or customizing gates
+
+Gates are plain markdown files in `.claude/agents/wardens/`. Adding a gate is one file with YAML frontmatter -- no code change:
+
+```yaml
+---
+name: my-custom-gate
+gate_to: "In Review"
+allowed_from: ["Agent Working"]
+mode: advise          # or strict (reverts on non-SHIP)
+cooldown_minutes: 60
+---
+Your gate prompt here...
+```
+
+---
+
 ## Comparison
 
 |  | **Deus** | **[OpenClaw](https://github.com/openclaw/openclaw)** | **[NemoClaw](https://github.com/NVIDIA/NemoClaw)** | **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** | **Plain Claude** |
@@ -180,6 +243,7 @@ Deus goes deep on understanding you and adapting over time. Hermes goes wide on 
 | Development setup | [Development](docs/DEVELOPMENT.md) |
 | Contributing | [Contributing](CONTRIBUTING.md) |
 | Known limitations | [Limitations](docs/KNOWN_LIMITATIONS.md) |
+| Linear automation | [Setup, gates, and pipeline](docs/decisions/linear-webhook-pipeline.md) |
 | Hook dispatch architecture | [Hook Dispatch System](docs/decisions/hook-dispatch-system.md) |
 
 ---

@@ -262,6 +262,66 @@ Linear webhooks must be configured in the workspace settings (Settings > API > W
 
 Gate agents and dispatch agents run through the same agent runtime as all other Deus agents. They use the `linear-dispatch` group folder, which is a virtual group registered at startup. The agent runtime's credential proxy is required to be running -- Linear-sourced agent runs are not exempt from the proxy dependency.
 
+## Pipeline Observability
+
+Every significant pipeline event is logged to the `linear_pipeline_events` table and surfaced in two ways:
+
+### Unified pipeline comment
+
+Each issue gets a single rolling **Pipeline Log** comment that updates as events occur. The comment body is rebuilt (materialized view pattern) from the event log on each update. A per-issue promise-chain mutex prevents duplicate comment creation under concurrent events. The comment caps at 50 events with a truncation notice for older entries.
+
+Example comment body:
+
+```
+**Pipeline Log**
+
+00:18 -- Gate: agent-readiness-gate -> SHIP
+00:19 -- Agent dispatched
+00:19 -- Agent started working
+00:24 -- PR created -- #488
+00:24 -- -> In Review
+00:28 -- Gate: output-quality-gate -> SHIP
+00:31 -- Auto-merged -> Done
+```
+
+Tracked in `linear_pipeline_comments` (issue_id PK, comment_id). Coexists with per-gate verdict comments (different DB table, different content).
+
+### Pipeline CLI
+
+`deus pipeline` queries the event log from the terminal:
+
+```bash
+deus pipeline PROJ-123             # Full timeline for an issue
+deus pipeline --failed --since 24h # Failures in the last 24 hours
+deus pipeline --active             # In-flight issues (no terminal event yet)
+deus pipeline --all --since 7d     # All events in the last week
+deus pipeline --type gate_revise   # Filter by event type
+```
+
+Color-coded output: green (SHIP/merged/completed), red (REVISE/error/failed), yellow (cooldown/pending), cyan (dispatched/started/PR).
+
+### Event types
+
+| Type | Emitted by | Description |
+|------|-----------|-------------|
+| `gate_ship` | webhook | Gate returned SHIP |
+| `gate_revise` | webhook | Gate returned REVISE |
+| `gate_cooldown` | webhook | Gate skipped (cooldown active) |
+| `gate_error` | webhook | Gate agent errored |
+| `agent_dispatched` | dispatcher | Issue enqueued for agent run |
+| `agent_started` | dispatcher | Agent container started |
+| `agent_completed` | dispatcher | Agent finished successfully |
+| `agent_failed` | dispatcher | Agent errored |
+| `pr_created` | dispatcher | PR URL extracted from agent output |
+| `automerge_pending` | auto-merge | CI poll started |
+| `automerge_done` | auto-merge | PR squash-merged |
+| `automerge_failed` | auto-merge | CI failed or merge blocked |
+| `state_changed` | various | Generic state transition |
+
+### macOS notifications
+
+Every pipeline event also fires a macOS native notification via `osascript` (best-effort, no-op on Linux/Windows). Shows the issue identifier and event label.
+
 ## Consequences
 
 - Linear becomes a first-class command interface for autonomous agent work without custom tooling beyond Deus itself.
