@@ -81,6 +81,11 @@
             "type": "command",
             "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" admin-merge-gate'",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" semantic-search-nudge'",
+            "timeout": 3
           }
         ]
       }
@@ -128,6 +133,16 @@
             "type": "command",
             "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" warden-verdict-tracker'",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "search_code",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" semantic-search-tracker'",
+            "timeout": 3
           }
         ]
       }
