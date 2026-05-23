@@ -1,7 +1,7 @@
 ---
 governs:
   - docs/
-last_verified: "2026-05-22" # auto-bump — dispatch priority ADR update
+last_verified: "2026-05-23" # auto-bump — Linear automation docs
 test_tasks:
   - "Add a new ADR to docs/decisions/ explaining an architectural change"
   - "Update ARCHITECTURE.md after a major refactor"
