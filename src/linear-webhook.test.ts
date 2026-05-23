@@ -18,7 +18,10 @@ import {
   mergeEnrichment,
   stripEnrichmentSection,
   computeScopeLabelChanges,
+  retryWithBackoff,
+  _setSleepFnForTests,
 } from './linear-webhook.js';
+import { RetryableError, UserError, FatalError } from './errors/index.js';
 
 beforeEach(() => {
   _initTestDatabase();
@@ -445,5 +448,153 @@ describe('computeScopeLabelChanges', () => {
     );
     expect(result.addIds).toEqual([]);
     expect(result.removeIds).toEqual([]);
+  });
+});
+
+// ── retryWithBackoff tests ────────────────────────────────────────────────────
+
+describe('retryWithBackoff', () => {
+  beforeEach(() => {
+    // Replace sleep with a no-op for fast tests
+    _setSleepFnForTests(() => Promise.resolve());
+  });
+
+  afterEach(() => {
+    // Restore real sleep after each test
+    _setSleepFnForTests(
+      (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    );
+  });
+
+  it('returns result immediately when handler always succeeds', async () => {
+    const handler = vi.fn().mockResolvedValue('success');
+    const result = await retryWithBackoff(handler, 3, 100);
+    expect(result).toBe('success');
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries and succeeds on Nth attempt (fail then succeed)', async () => {
+    const err = new RetryableError('transient failure');
+    const handler = vi
+      .fn()
+      .mockRejectedValueOnce(err)
+      .mockRejectedValueOnce(err)
+      .mockResolvedValue('ok');
+
+    const result = await retryWithBackoff(handler, 3, 100);
+    expect(result).toBe('ok');
+    expect(handler).toHaveBeenCalledTimes(3);
+  });
+
+  it('throws FatalError after all retries exhausted', async () => {
+    const retryableErr = new RetryableError('always fails');
+    const handler = vi.fn().mockRejectedValue(retryableErr);
+
+    await expect(retryWithBackoff(handler, 3, 100)).rejects.toBeInstanceOf(
+      FatalError,
+    );
+    expect(handler).toHaveBeenCalledTimes(3);
+  });
+
+  it('throws UserError immediately on 4xx error (no retry)', async () => {
+    const httpErr = Object.assign(new Error('Not Found'), { status: 404 });
+    const handler = vi.fn().mockRejectedValue(httpErr);
+
+    await expect(retryWithBackoff(handler, 3, 100)).rejects.toBeInstanceOf(
+      UserError,
+    );
+    // Must be called exactly once — no retries for 4xx
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries on 429 (rate limit) — does not treat it as 4xx non-retryable', async () => {
+    const rateLimitErr = Object.assign(new Error('Too Many Requests'), {
+      status: 429,
+    });
+    const handler = vi
+      .fn()
+      .mockRejectedValueOnce(rateLimitErr)
+      .mockResolvedValue('ok after rate limit');
+
+    const result = await retryWithBackoff(handler, 3, 100);
+    expect(result).toBe('ok after rate limit');
+    expect(handler).toHaveBeenCalledTimes(2);
+  });
+
+  it('rethrows UserError immediately without retry', async () => {
+    const userErr = new UserError('bad input from user');
+    const handler = vi.fn().mockRejectedValue(userErr);
+
+    await expect(retryWithBackoff(handler, 3, 100)).rejects.toBe(userErr);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls sleep between retries', async () => {
+    const sleepCalls: number[] = [];
+    _setSleepFnForTests((ms: number) => {
+      sleepCalls.push(ms);
+      return Promise.resolve();
+    });
+
+    const retryableErr = new RetryableError('fail');
+    const handler = vi
+      .fn()
+      .mockRejectedValueOnce(retryableErr)
+      .mockRejectedValueOnce(retryableErr)
+      .mockResolvedValue('done');
+
+    await retryWithBackoff(handler, 3, 100);
+    // Should have slept twice (after attempt 0 and attempt 1)
+    expect(sleepCalls).toHaveLength(2);
+    // Each delay should be positive and at most WEBHOOK_MAX_DELAY_MS (30_000)
+    for (const delay of sleepCalls) {
+      expect(delay).toBeGreaterThan(0);
+      expect(delay).toBeLessThanOrEqual(30_000);
+    }
+  });
+
+  it('logs webhook.retry on each failed attempt', async () => {
+    const loggerWarnSpy = vi.spyOn(
+      await import('./logger.js').then((m) => m.logger),
+      'warn',
+    );
+
+    const retryableErr = new RetryableError('transient');
+    const handler = vi
+      .fn()
+      .mockRejectedValueOnce(retryableErr)
+      .mockResolvedValue('success');
+
+    await retryWithBackoff(handler, 3, 100);
+
+    const retryCalls = loggerWarnSpy.mock.calls.filter(
+      (call) => call[1] === 'webhook.retry',
+    );
+    expect(retryCalls.length).toBeGreaterThanOrEqual(1);
+    expect(retryCalls[0][0]).toMatchObject({ attempt: 1 });
+
+    loggerWarnSpy.mockRestore();
+  });
+
+  it('logs webhook.failed on exhaustion', async () => {
+    const loggerErrorSpy = vi.spyOn(
+      await import('./logger.js').then((m) => m.logger),
+      'error',
+    );
+
+    const retryableErr = new RetryableError('always fails');
+    const handler = vi.fn().mockRejectedValue(retryableErr);
+
+    await expect(retryWithBackoff(handler, 3, 100)).rejects.toBeInstanceOf(
+      FatalError,
+    );
+
+    const exhaustedCalls = loggerErrorSpy.mock.calls.filter(
+      (call) => call[1] === 'webhook.failed',
+    );
+    expect(exhaustedCalls.length).toBeGreaterThanOrEqual(1);
+    expect(exhaustedCalls[0][0]).toMatchObject({ attempts_exhausted: 3 });
+
+    loggerErrorSpy.mockRestore();
   });
 });

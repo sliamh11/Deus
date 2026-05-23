@@ -22,6 +22,7 @@ Usage:
   python3 scripts/drift_check.py --bench-labels    # validate benchmark expected paths exist in vault
   python3 scripts/drift_check.py --bench-snapshot  # run benchmark and check against stored snapshot (local)
   python3 scripts/drift_check.py --all             # run every fast check above
+  python3 scripts/drift_check.py --cache-map       # validate .claude/codebase_map.md is fresh (CI gating)
   python3 scripts/drift_check.py --validate        # LLM pattern content check (slow)
   python3 scripts/drift_check.py --validate-router # LLM router selection check (slow)
   python3 scripts/drift_check.py --contradictions  # LLM cross-pattern contradictions (slow)
@@ -1218,6 +1219,63 @@ def check_mcp_description_hints(project_root: Path) -> int:
     return 0
 
 
+def check_cache_map(project_root: Path) -> int:
+    """Validate that .claude/codebase_map.md is fresh (stored SHA == HEAD SHA).
+
+    Exit codes:
+      0 — map exists and its SHA matches HEAD (FRESH)
+      1 — map is missing or its SHA does not match HEAD (STALE)
+
+    Designed for CI: ``python3 scripts/drift_check.py --cache-map``
+    """
+    map_path = project_root / ".claude" / "codebase_map.md"
+
+    if not map_path.exists():
+        print("STALE: .claude/codebase_map.md not found — run `python3 scripts/codebase_map.py`")
+        return 1
+
+    # Extract the SHA stored in the first line: <!-- sha: <40-hex> -->
+    try:
+        first_line = map_path.open(encoding="utf-8").readline()
+    except OSError as exc:
+        print(f"STALE: could not read {map_path}: {exc}")
+        return 1
+
+    m = re.search(r"<!--\s*sha:\s*([a-f0-9]{40})\s*-->", first_line)
+    if not m:
+        print("STALE: codebase_map.md has no valid SHA header")
+        return 1
+    stored_sha = m.group(1)
+
+    try:
+        result = subprocess.run(
+            ["git", "log", "-1", "--format=%H"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        head_sha = result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        print("SKIP: git not available — cannot verify codebase_map freshness", file=sys.stderr)
+        return 0
+
+    if not head_sha:
+        print("SKIP: git returned empty SHA", file=sys.stderr)
+        return 0
+
+    if stored_sha == head_sha:
+        print(f"FRESH: codebase_map.md (sha {head_sha[:8]})")
+        return 0
+
+    print(
+        f"STALE: codebase_map.md (stored {stored_sha[:8]}, HEAD {head_sha[:8]}) — "
+        "run `python3 scripts/codebase_map.py`"
+    )
+    return 1
+
+
 def check_all(project_root: Path, base_ref: str | None = None) -> int:
     """Run every fast check in sequence and aggregate exit codes.
 
@@ -1978,9 +2036,18 @@ if __name__ == "__main__":
         help="Touch drifted pattern files to reset their mtime. "
              "Stage the touched files alongside your source changes.",
     )
+    parser.add_argument(
+        "--cache-map",
+        action="store_true",
+        dest="cache_map",
+        help="Validate that .claude/codebase_map.md is fresh (SHA matches HEAD). "
+             "Exits 0 if fresh, 1 if stale or missing. For CI gating.",
+    )
     args = parser.parse_args()
 
-    if args.platform_parity:
+    if args.cache_map:
+        sys.exit(check_cache_map(PROJECT_ROOT))
+    elif args.platform_parity:
         sys.exit(check_platform_parity(PROJECT_ROOT))
     elif args.backend_strategy:
         sys.exit(check_backend_strategy(PROJECT_ROOT))

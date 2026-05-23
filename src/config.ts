@@ -24,6 +24,8 @@ const envConfig = readEnvFile([
   'LLAMA_CPP_GEN_MODEL',
   'LLAMA_CPP_JUDGE_MODEL',
   'LLAMA_CPP_EMBED_MODEL',
+  'WEBHOOK_MAX_RETRIES',
+  'WEBHOOK_BASE_DELAY_MS',
 ]);
 
 export const ASSISTANT_NAME =
@@ -173,3 +175,17 @@ export const INJECTION_SCANNER_CONFIG: InjectionScannerConfig = {
   threshold: parseFloat(process.env.DEUS_INJECTION_SCANNER_THRESHOLD || '0.7'),
   logOnly: process.env.DEUS_INJECTION_SCANNER_LOG_ONLY !== '0', // true unless explicitly set to 0
 };
+
+// ── Webhook retry configuration ───────────────────────────────────────────────
+// Max number of retry attempts for webhook dispatch (excludes first attempt).
+export const WEBHOOK_MAX_RETRIES = parseInt(
+  process.env.WEBHOOK_MAX_RETRIES || envConfig.WEBHOOK_MAX_RETRIES || '3',
+  10,
+);
+// Base delay in ms for exponential backoff: min(base * 2^attempt + jitter, 30_000).
+export const WEBHOOK_BASE_DELAY_MS = parseInt(
+  process.env.WEBHOOK_BASE_DELAY_MS ||
+    envConfig.WEBHOOK_BASE_DELAY_MS ||
+    '1000',
+  10,
+);

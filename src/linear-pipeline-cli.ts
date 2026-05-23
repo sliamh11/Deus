@@ -933,6 +933,12 @@ async function startWatchMode(): Promise<void> {
     });
   }, RESYNC_INTERVAL_MS);
 
+  const resyncTimer = setInterval(() => {
+    seedOrResyncCache(client, teamId).catch((err) => {
+      console.error('issue-cache: background resync failed', err);
+    });
+  }, RESYNC_INTERVAL_MS);
+
   const cleanup = () => {
     if (timer) clearTimeout(timer);
     clearInterval(resyncTimerRef);

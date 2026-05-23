@@ -648,6 +648,49 @@ def _sync_atom_kinds_on_init(repo_root: Path) -> None:
         )
 
 
+def regenerate_codebase_map(repo_root: Path) -> int:
+    """Regenerate .claude/codebase_map.md via scripts/codebase_map.py.
+
+    Called from the pre-push hook to ensure the map is always fresh before
+    a push lands on the remote. Uses SHA-based invalidation so it's a no-op
+    on clean repos where the map is already current.
+
+    Returns 0 on success, 1 on error.
+    """
+    script = repo_root / "scripts" / "codebase_map.py"
+    if not script.exists():
+        print(
+            f"[codebase-map] scripts/codebase_map.py not found at {script} — skipping",
+            file=sys.stderr,
+        )
+        return 0  # non-blocking: missing script is not a push blocker
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=repo_root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[codebase-map] regeneration failed: {exc}", file=sys.stderr)
+        return 0  # non-blocking: map regen failures must not block pushes
+
+    if result.stdout.strip():
+        print(f"[codebase-map] {result.stdout.strip()}")
+    if result.returncode != 0:
+        print(
+            f"[codebase-map] codebase_map.py exited {result.returncode}: "
+            f"{result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return 0  # non-blocking
+    return 0
+
+
 def run_session_init(repo_root: Path) -> int:
     global _PATTERN_ROUTES_CACHE
     for name in (
@@ -2185,6 +2228,12 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "uninstall":
             sub.add_argument("--disable-feature", action="store_true")
 
+    regen_parser = subparsers.add_parser(
+        "regenerate-map",
+        help="Regenerate .claude/codebase_map.md (SHA-invalidated, no-op if fresh)",
+    )
+    regen_parser.add_argument("--repo-root", default=Path(__file__).resolve().parents[1])
+
     return parser
 
 
@@ -2212,6 +2261,8 @@ def main(argv: list[str] | None = None) -> int:
         return check(args)
     if args.action == "uninstall":
         return uninstall(args)
+    if args.action == "regenerate-map":
+        return regenerate_codebase_map(Path(args.repo_root).resolve(strict=False))
     raise AssertionError(args.action)
 
 
