@@ -13,7 +13,7 @@ Tools added:
 - `get_indexing_status` — check indexing progress
 - `clear_index` — remove an index
 
-**Privacy:** All data stays local. Embeddings via Ollama, vectors in a network-isolated Docker Milvus container. No cloud APIs, no telemetry.
+**Privacy:** All data stays local. Embeddings via Ollama, vectors in a network-isolated Docker Milvus container. No cloud APIs, no telemetry. See [Security](#security) for the full defense-in-depth breakdown.
 
 ## Phase 1: Pre-flight
 
@@ -95,67 +95,193 @@ Store the model name and dimension for Phase 4.
 docker ps --filter "name=deus-milvus" --format "{{.Status}}" 2>/dev/null
 ```
 
-If `deus-milvus` is already running, skip to Phase 4.
-
-If `deus-milvus` exists but is stopped:
+If `deus-milvus` is already running and healthy, skip to Phase 4:
 
 ```bash
-docker start deus-milvus
+docker exec deus-milvus curl -sf http://localhost:9091/healthz > /dev/null 2>&1 && echo "HEALTHY" || echo "NOT_HEALTHY"
 ```
 
-### Create network-isolated Milvus
+### Step 3a: Create config files
 
-Create an internal Docker network that blocks all outbound internet:
+Create the Milvus config directory:
 
 ```bash
-docker network create --internal deus-milvus-net 2>/dev/null || true
+mkdir -p ~/.config/deus/milvus
 ```
 
-Start Milvus standalone (single container — includes etcd + minio + milvus):
+Create `~/.config/deus/milvus/embedEtcd.yaml`:
 
 ```bash
-docker run -d --name deus-milvus \
-  --network deus-milvus-net \
-  --restart unless-stopped \
+cat > ~/.config/deus/milvus/embedEtcd.yaml << 'EOF'
+listen-client-urls: http://0.0.0.0:2379
+advertise-client-urls: http://0.0.0.0:2379
+quota-backend-bytes: 4294967296
+auto-compaction-mode: revision
+auto-compaction-retention: "1000"
+EOF
+```
+
+Create `~/.config/deus/milvus/user.yaml` (required mount, no overrides needed):
+
+```bash
+touch ~/.config/deus/milvus/user.yaml
+```
+
+Create `~/.config/deus/milvus/start-milvus.sh`:
+
+```bash
+cat > ~/.config/deus/milvus/start-milvus.sh << 'SCRIPT'
+#!/bin/bash
+set -euo pipefail
+
+CONTAINER=deus-milvus
+INTERNAL_NET=deus-milvus-net
+BRIDGE_NET=deus-milvus-bridge
+
+# Create networks if missing
+docker network create --internal "$INTERNAL_NET" 2>/dev/null || true
+docker network create "$BRIDGE_NET" 2>/dev/null || true
+
+# If container exists but stopped, remove it (clean restart with correct config)
+if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^${CONTAINER}$"; then
+    echo "deus-milvus already running"
+    exit 0
+  fi
+  docker rm "$CONTAINER"
+fi
+
+# Start on bridge network (port publishing requires a non-internal network at creation time)
+docker run -d --name "$CONTAINER" \
+  --network "$BRIDGE_NET" \
+  --restart no \
+  --security-opt seccomp:unconfined \
+  -e ETCD_USE_EMBED=true \
+  -e ETCD_DATA_DIR=/var/lib/milvus/etcd \
+  -e ETCD_CONFIG_PATH=/milvus/configs/embedEtcd.yaml \
+  -e COMMON_STORAGETYPE=local \
+  -e DEPLOY_MODE=STANDALONE \
+  --memory=3g --memory-swap=3g --cpus=2 \
   -p 127.0.0.1:19530:19530 \
   -v deus-milvus-data:/var/lib/milvus \
-  milvusdb/milvus:latest standalone
-```
+  -v "$HOME/.config/deus/milvus/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro" \
+  -v "$HOME/.config/deus/milvus/user.yaml:/milvus/configs/user.yaml:ro" \
+  milvusdb/milvus:latest \
+  milvus run standalone
 
-Note: `milvusdb/milvus:latest` is used because Milvus does not publish clean semver tags (only date-based build tags like `2.6-20260522-fcd078ee`). To pin a specific build, replace `latest` with a date tag from Docker Hub.
-
-Security notes:
-- `--internal` network blocks ALL outbound internet from the container
-- Port `127.0.0.1:19530` is only accessible from localhost, not from the local network
-- Data persists in the `deus-milvus-data` Docker volume across restarts
-- `--restart unless-stopped` auto-starts the container with Docker. On Linux (non-Docker Desktop), this means the container starts on daemon boot — users who don't want this can use `--restart no` instead and start manually
-
-### Wait for Milvus to be ready
-
-```bash
-echo "Waiting for Milvus..."
-for i in $(seq 1 45); do
-  curl -sf http://127.0.0.1:19530/healthz > /dev/null 2>&1 && echo "Milvus is ready (after ${i}s)" && break
-  [ $((i % 10)) -eq 0 ] && echo "Still waiting... (${i}s)"
+# Wait for Milvus to be healthy before switching networks
+HEALTHY=false
+for i in $(seq 1 60); do
+  docker exec "$CONTAINER" curl -sf http://localhost:9091/healthz >/dev/null 2>&1 && HEALTHY=true && break
   sleep 2
 done
+
+if [ "$HEALTHY" != "true" ]; then
+  echo "ERROR: Milvus did not become healthy after 120s"
+  echo "Run: docker logs $CONTAINER --tail 50"
+  exit 1
+fi
+
+# Switch to internal network (blocks all outbound internet)
+docker network connect "$INTERNAL_NET" "$CONTAINER" || { echo "ERROR: failed to connect internal network"; exit 1; }
+docker network disconnect "$BRIDGE_NET" "$CONTAINER" || { echo "ERROR: failed to disconnect bridge network"; exit 1; }
+
+# Verify isolation — hard abort if outbound is reachable
+if docker exec "$CONTAINER" curl -sf --connect-timeout 3 http://1.1.1.1 >/dev/null 2>&1; then
+  echo "ABORT: outbound internet still reachable after network switch"
+  exit 1
+fi
+echo "Network isolation confirmed"
+SCRIPT
+chmod +x ~/.config/deus/milvus/start-milvus.sh
 ```
 
-If Milvus doesn't start within 90 seconds, check logs:
+**Why the network dance?** Docker Desktop for Mac's `--internal` network blocks port publishing — the Docker proxy can't route traffic to containers on internal-only networks. The startup script creates the container on a regular bridge (port publishing works), waits for health, then switches to the internal network (blocks outbound). This survives restarts because the LaunchAgent/systemd unit replays the full sequence.
+
+**Why `seccomp:unconfined`?** Milvus v2.6 uses `clone3()` and `io_uring` syscalls that the Docker default seccomp profile blocks. Without this flag, Milvus crashes on startup.
+
+**Why `--restart no`?** The service manager (LaunchAgent/systemd) owns the lifecycle, not Docker. This ensures the network dance runs on every start.
+
+**Resource limits:** `--memory=3g --cpus=2` prevents Milvus from consuming all host RAM during indexing. Users with more RAM can increase these values in the script.
+
+### Step 3b: Run the startup script
 
 ```bash
-docker logs deus-milvus --tail 20
+bash ~/.config/deus/milvus/start-milvus.sh
 ```
 
-### Verify network isolation
+### Step 3c: Install service manager
+
+**macOS — LaunchAgent:**
 
 ```bash
-docker exec deus-milvus ping -c1 -W2 8.8.8.8 2>&1 || echo "Network isolation confirmed — no outbound internet"
+cat > ~/Library/LaunchAgents/com.deus.milvus.plist << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.deus.milvus</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>bash</string>
+    <string>$HOME/.config/deus/milvus/start-milvus.sh</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>$HOME/Library/Logs/deus-milvus.log</string>
+  <key>StandardErrorPath</key>
+  <string>$HOME/Library/Logs/deus-milvus.error.log</string>
+</dict>
+</plist>
+EOF
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.deus.milvus.plist
 ```
 
-This command must fail. If it succeeds, the `--internal` network was not applied correctly — recreate the container.
+Note: The heredoc uses `<< EOF` (not `<< 'EOF'`) so `$HOME` expands to the absolute path. `launchd` does not expand `~` in plist values.
+
+**Linux — systemd user unit:**
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/deus-milvus.service << 'EOF'
+[Unit]
+Description=Deus Milvus (semantic code search)
+After=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/.config/deus/milvus/start-milvus.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user enable --now deus-milvus.service
+```
 
 ## Phase 4: Configure MCP
+
+### Safety gate
+
+Before writing MCP config, verify these invariants. **Abort if any check fails** — do not proceed with a warning.
+
+**Check 1 — No MILVUS_TOKEN:**
+
+```bash
+[ -n "$MILVUS_TOKEN" ] && echo "ABORT: MILVUS_TOKEN is set. This causes data to be sent to Zilliz Cloud. Run: unset MILVUS_TOKEN" && exit 1 || echo "OK"
+```
+
+If `MILVUS_TOKEN` is set, tell the user to unset it and stop. Do NOT write the MCP config.
+
+**Check 2 — MILVUS_ADDRESS is localhost:**
+
+The config being written must set `MILVUS_ADDRESS` to exactly `127.0.0.1:19530`. Never omit this field — without it, the SDK may auto-provision a Zilliz Cloud cluster if `MILVUS_TOKEN` is set in the future.
 
 ### Read and merge MCP config
 
@@ -184,16 +310,6 @@ The final entry should be:
 
 Replace `<detected-model>` and `<detected-dimension>` with the values from Phase 2.
 
-### Safety check
-
-Verify `MILVUS_TOKEN` is not set in the user's environment — if present without `MILVUS_ADDRESS`, the SDK calls Zilliz Cloud:
-
-```bash
-[ -n "$MILVUS_TOKEN" ] && echo "WARNING: MILVUS_TOKEN is set in your environment. This can cause data to be sent to Zilliz Cloud. Unset it: unset MILVUS_TOKEN" || echo "OK — no MILVUS_TOKEN"
-```
-
-If `MILVUS_TOKEN` is set, warn the user and recommend unsetting it before proceeding.
-
 Configuration notes:
 - `EMBEDDING_BATCH_SIZE=5` is a conservative default to avoid OOM with local models. Users with more RAM can increase this.
 - `HYBRID_MODE=false` disables sparse vector (BM25) search which has reported instability with Milvus standalone. Dense search with the MCP's own reranking is sufficient. Set to `true` to experiment.
@@ -204,15 +320,25 @@ Configuration notes:
 
 ### Smoke test Milvus
 
+Port 9091 is the Milvus management HTTP API (healthz). Port 19530 is the gRPC data port (used by the MCP server). Both must be working.
+
 ```bash
-curl -sf http://127.0.0.1:19530/healthz && echo "Milvus healthy"
+docker exec deus-milvus curl -sf http://localhost:9091/healthz && echo "Milvus healthy"
+```
+
+### Confirm port accessibility
+
+```bash
+python3 -c "import socket; s=socket.socket(); s.settimeout(3); r=s.connect_ex(('127.0.0.1',19530)); print('Port 19530: OK' if r==0 else 'Port 19530: FAIL'); s.close()"
 ```
 
 ### Confirm network isolation
 
 ```bash
-docker exec deus-milvus ping -c1 -W2 8.8.8.8 2>&1 && echo "WARNING: outbound internet reachable" || echo "Isolation confirmed"
+docker exec deus-milvus curl -sf --connect-timeout 3 http://1.1.1.1 2>&1 && echo "WARNING: outbound internet reachable" || echo "Isolation confirmed — no outbound internet"
 ```
+
+This command must fail. If it succeeds, the network switch in `start-milvus.sh` did not complete — re-run the script.
 
 ### Test the MCP server
 
@@ -232,6 +358,26 @@ Tell the user:
 > ```
 > You should only see connections to `127.0.0.1:19530` (Milvus) and `127.0.0.1:11434` (Ollama).
 
+## Security
+
+**Defense in depth — what prevents data leakage:**
+
+| Layer | Mechanism |
+|-------|-----------|
+| Embeddings | `EMBEDDING_PROVIDER=Ollama` — computed locally, never sent to cloud |
+| Vector DB address | `MILVUS_ADDRESS=127.0.0.1:19530` — always set explicitly, prevents Zilliz Cloud auto-provisioning |
+| Cloud token | No `MILVUS_TOKEN` — hard gate enforced by skill (abort, not warn) |
+| Storage | `COMMON_STORAGETYPE=local` — vectors on local filesystem, no S3/MinIO |
+| Port binding | `127.0.0.1` only — not accessible from LAN |
+| Network isolation | `--internal` Docker network — blocks all outbound internet from container |
+| Resource limits | `--memory=3g --cpus=2` — prevents resource exhaustion on shared machines |
+
+**MCP trust boundary:** The `claude-context` MCP server runs on the host as the user — it has unrestricted filesystem read access. It is not sandboxed. Only index directories you trust; avoid indexing paths containing secrets (`.env`, `.aws/`, `.ssh/`, `~/.config/`). Embeddings of cleartext secrets would persist in the unencrypted Milvus volume.
+
+**Supply chain:** The top-level npm package is pinned to `@0.1.13`, but transitive dependencies are resolved at `npx` time without a lockfile. The `--internal` Docker network mitigates container-side supply chain risk; the MCP server's npm tree is the remaining surface.
+
+**Known limitation:** Between container start and the network switch (a few seconds during startup), the container is on the bridge network and theoretically has outbound access. The bridge-first approach is required because Docker Desktop for Mac cannot publish ports on `--internal` or `--network none` networks. In practice, Milvus doesn't make outbound calls during this window — it's initializing etcd and internal services. The startup script applies isolation as soon as healthz returns OK.
+
 ## Troubleshooting
 
 ### Milvus won't start
@@ -242,16 +388,36 @@ Tell the user:
 4. If the container exists but won't start, remove and recreate:
    ```bash
    docker rm -f deus-milvus
-   docker network rm deus-milvus-net 2>/dev/null
+   bash ~/.config/deus/milvus/start-milvus.sh
    ```
-   Then re-run Phase 3.
 
-### "Failed to connect to Milvus"
+### "embedded etcd can not be used under distributed mode"
+
+`DEPLOY_MODE=STANDALONE` is missing. The startup script sets this automatically. If running Docker manually, add `-e DEPLOY_MODE=STANDALONE` to your `docker run` command.
+
+### "failed to create etcd client: connection refused"
+
+`ETCD_USE_EMBED=true` and the config file mounts are missing. The startup script handles this. If running manually, add:
+- `-e ETCD_USE_EMBED=true`
+- `-e ETCD_DATA_DIR=/var/lib/milvus/etcd`
+- `-e ETCD_CONFIG_PATH=/milvus/configs/embedEtcd.yaml`
+- `-v ~/.config/deus/milvus/embedEtcd.yaml:/milvus/configs/embedEtcd.yaml:ro`
+
+### "Failed to connect to Milvus" / Port 19530 not accessible
 
 1. Check Milvus is running: `docker ps --filter "name=deus-milvus"`
-2. Check health: `curl -sf http://127.0.0.1:19530/healthz`
-3. Milvus takes 15-30 seconds to initialize — wait and retry
-4. Check `MILVUS_ADDRESS` in `~/.claude/mcp.json` is `127.0.0.1:19530`
+2. Check health: `docker exec deus-milvus curl -sf http://localhost:9091/healthz`
+3. Check port: `python3 -c "import socket; s=socket.socket(); s.settimeout(3); r=s.connect_ex(('127.0.0.1',19530)); print('open' if r==0 else 'closed'); s.close()"`
+4. If port is closed but container is running, the container may be on the internal network only (port publishing broken). Re-run: `bash ~/.config/deus/milvus/start-milvus.sh`
+5. Check `MILVUS_ADDRESS` in `~/.claude/mcp.json` is `127.0.0.1:19530`
+
+### Port not accessible after Docker restart
+
+The LaunchAgent (macOS) or systemd unit (Linux) should handle restarts automatically. Check logs:
+- macOS: `cat ~/Library/Logs/deus-milvus.error.log`
+- Linux: `journalctl --user -u deus-milvus.service`
+
+If the service manager isn't running, start manually: `bash ~/.config/deus/milvus/start-milvus.sh`
 
 ### Embedding dimension mismatch
 
@@ -266,6 +432,17 @@ Update `EMBEDDING_DIMENSION` in `~/.claude/mcp.json` to match. This is a known u
 ### Node 24 incompatibility
 
 claude-context requires Node 20 or 22. Node 24 is not supported. Check your version with `node --version` and switch if needed (e.g., via `nvm use 22`).
+
+### Upgrading from old installation
+
+If you installed from an earlier version of this skill (before the Docker fix), your container may have `--restart unless-stopped` and be missing config mounts. Run:
+
+```bash
+docker stop deus-milvus && docker rm deus-milvus
+bash ~/.config/deus/milvus/start-milvus.sh
+```
+
+The named volume `deus-milvus-data` is preserved — no indexed data is lost.
 
 ### Re-indexing after volume removal
 
@@ -290,7 +467,27 @@ To completely remove claude-context:
    docker volume rm deus-milvus-data
    ```
 
-4. Remove the Docker network:
+4. Remove Docker networks:
    ```bash
-   docker network rm deus-milvus-net
+   docker network rm deus-milvus-net deus-milvus-bridge 2>/dev/null
+   ```
+
+5. Remove config files:
+   ```bash
+   rm -rf ~/.config/deus/milvus/
+   ```
+
+6. Remove service manager:
+
+   **macOS:**
+   ```bash
+   launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.deus.milvus.plist
+   rm ~/Library/LaunchAgents/com.deus.milvus.plist
+   rm -f ~/Library/Logs/deus-milvus.log ~/Library/Logs/deus-milvus.error.log
+   ```
+
+   **Linux:**
+   ```bash
+   systemctl --user disable --now deus-milvus.service
+   rm ~/.config/systemd/user/deus-milvus.service
    ```
