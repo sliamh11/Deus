@@ -491,3 +491,31 @@ To completely remove claude-context:
    systemctl --user disable --now deus-milvus.service
    rm ~/.config/systemd/user/deus-milvus.service
    ```
+
+## Telemetry
+
+**Audited: 2026-05-23. Milvus 2.6 has no configurable telemetry opt-out - network isolation is sufficient.**
+
+### Milvus 2.6 server (Go)
+
+Searched the `milvus-io/milvus` repo for: `telemetry`, `analytics`, `phoneHome`, `usageReport`, `pingHome`. All GitHub code search queries returned **0 results**.
+
+The repo contains `internal/rootcoord/telemetry/` but it is **internal cluster telemetry only** - client SDK metrics (request counts, error rates, SDK versions) stored in etcd for cluster-internal monitoring. No data is transmitted to external services:
+
+- `manager.go`: stores client metrics in-memory + etcd; pull-based (not push); no external HTTP calls
+- `command_store.go`: writes only to etcd (internal); no Zilliz/external endpoints
+- `configs/milvus.yaml`: no `telemetry`, `analytics`, or phone-home keys present
+- Dockerfile (`build/docker/milvus/ubuntu22.04/Dockerfile`): no telemetry ENV vars; entrypoint is `/tini --`
+- docker-compose env vars (v2.6 standalone): only `MINIO_REGION`, `ETCD_ENDPOINTS`, `MINIO_ADDRESS`
+
+### PyMilvus (Python client)
+
+GitHub code search for `telemetry` in `milvus-io/pymilvus`: **0 results**. No external reporting found.
+
+### milvus-sdk-node (Node.js client)
+
+GitHub code search for `telemetry` in `milvus-io/milvus-sdk-node`: **0 results**. No external reporting found.
+
+### Conclusion
+
+No configurable telemetry opt-out keys exist because Milvus 2.6 does not phone home. The `--internal` Docker network isolation applied in Phase 3 is the complete mitigation. No `user.yaml` overrides are needed for telemetry suppression - `~/.config/deus/milvus/user.yaml` is mounted empty (as a required mount point) and should remain so.
