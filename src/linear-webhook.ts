@@ -17,14 +17,33 @@ import {
 import { triggerAutoMerge } from './linear-auto-merge.js';
 import { macosNotify, notifyPipelineStep } from './linear-notifications.js';
 import { syncVaultPending } from './linear-vault-sync.js';
+import {
+  RetryableError,
+  UserError,
+  FatalError,
+} from './errors/index.js';
+import {
+  WEBHOOK_MAX_RETRIES,
+  WEBHOOK_BASE_DELAY_MS,
+} from './config.js';
 
 const DEFAULT_WEBHOOK_PORT = 3005;
 const LABEL_RETRY_MAX = 3;
 const LABEL_RETRY_BASE_MS = 5_000;
+const WEBHOOK_MAX_DELAY_MS = 30_000;
 
 // Map<issueId, timeout> for deferred auto-merge after genuine cooldowns.
 // Volatile: does not survive restart (sweepStaleInReview covers that case).
 const pendingCooldownRetries = new Map<string, ReturnType<typeof setTimeout>>();
+
+// Async sleep — swapped out in tests for deterministic timing.
+let sleepFn = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Replace the sleep implementation (test-only). */
+export function _setSleepFnForTests(fn: (ms: number) => Promise<void>): void {
+  sleepFn = fn;
+}
 
 async function retryLabelUpdate(
   client: LinearContext['client'],
@@ -57,6 +76,77 @@ async function retryLabelUpdate(
       );
     }
   }
+}
+
+export async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  maxAttempts: number,
+  baseDelayMs: number,
+): Promise<T> {
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+
+      if (err instanceof UserError) {
+        throw err;
+      }
+
+      if (isNonRetryableHttpError(err)) {
+        throw new UserError(
+          `Webhook dispatch failed with non-retryable HTTP error`,
+          { cause: err },
+        );
+      }
+
+      const isLastAttempt = attempt === maxAttempts - 1;
+      if (isLastAttempt) {
+        break;
+      }
+
+      const jitter = Math.random() * baseDelayMs;
+      const delayMs = Math.min(
+        baseDelayMs * Math.pow(2, attempt) + jitter,
+        WEBHOOK_MAX_DELAY_MS,
+      );
+
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        { attempt: attempt + 1, maxAttempts, delayMs: Math.round(delayMs), error: errMsg },
+        'webhook.retry',
+      );
+
+      await sleepFn(delayMs);
+    }
+  }
+
+  const errMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  logger.error(
+    { attempts_exhausted: maxAttempts, error: errMsg },
+    'webhook.failed',
+  );
+  throw new FatalError(`Webhook dispatch failed after ${maxAttempts} attempts`, {
+    cause: lastErr,
+  });
+}
+
+function isNonRetryableHttpError(err: unknown): boolean {
+  if (err instanceof RetryableError) return false;
+  if (!(err instanceof Error)) return false;
+
+  const statusCode = (err as Error & { status?: number; statusCode?: number })
+    .status ??
+    (err as Error & { status?: number; statusCode?: number }).statusCode;
+
+  if (typeof statusCode === 'number') {
+    if (statusCode === 429) return false;
+    if (statusCode >= 400 && statusCode < 500) return true;
+  }
+
+  return false;
 }
 
 let _syncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -432,7 +522,11 @@ async function handleIssueUpdate(
       effort: gateSpec.effort ?? 'medium',
     };
 
-    const { text, error } = await executeAgentRun(ctx, runContext);
+    const { text, error } = await retryWithBackoff(
+      () => executeAgentRun(ctx, runContext),
+      WEBHOOK_MAX_RETRIES,
+      WEBHOOK_BASE_DELAY_MS,
+    );
 
     // Container may exit non-zero (e.g., docker kill) but still have output in either field
     const output = text || error || '';
