@@ -1,5 +1,5 @@
 // Tests for linear-pipeline-cli utilities and buildStageBar
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   parseDuration,
   formatElapsed,
@@ -12,6 +12,7 @@ import {
   type GateRevisionCounts,
   buildStageBar,
   type PipelineEvent,
+  computeETADisplay,
 } from './linear-pipeline-cli.js';
 
 // eslint-disable-next-line no-control-regex
@@ -105,14 +106,14 @@ describe('elapsedMs', () => {
 describe('computeColumnWidths', () => {
   it('returns minimum title width for narrow terminals', () => {
     const { titleWidth, showWhy, showStageBar } = computeColumnWidths(60);
-    expect(titleWidth).toBe(22); // clamped=80, overhead=58, max(20, 22)=22
+    expect(titleWidth).toBe(20); // clamped=80, overhead=64, max(20, 16)=20
     expect(showWhy).toBe(false);
     expect(showStageBar).toBe(false);
   });
 
   it('scales title width for wide terminals', () => {
     const { titleWidth, showStageBar } = computeColumnWidths(120);
-    expect(titleWidth).toBe(50); // overhead=70 (stage only)
+    expect(titleWidth).toBe(44); // overhead=64+12(stage)=76, max(20, 44)=44
     expect(showStageBar).toBe(true);
   });
 
@@ -645,5 +646,94 @@ describe('buildStageBar', () => {
       const bar = buildStageBar([]); // all empty, stage 1 is frontier
       expect(bar).toContain('\x1b[96m░');
     });
+  });
+});
+
+const FIXED_NOW = new Date('2024-06-01T10:00:00.000Z').getTime();
+
+describe('computeETADisplay', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(FIXED_NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns "?" when sampleSize < 5', () => {
+    const ts = new Date(FIXED_NOW - 10 * 60_000).toISOString();
+    expect(computeETADisplay(ts, 30 * 60_000, 4)).toBe('?');
+  });
+
+  it('returns "?" when stageEntryTime is null', () => {
+    expect(computeETADisplay(null, 30 * 60_000, 10)).toBe('?');
+  });
+
+  it('returns "?" when medianMs is undefined', () => {
+    const ts = new Date(FIXED_NOW - 10 * 60_000).toISOString();
+    expect(computeETADisplay(ts, undefined, 10)).toBe('?');
+  });
+
+  it('returns ~Xm for normal in-progress ETA (ceiling of remaining minutes)', () => {
+    // 10 minutes elapsed of 30-minute median → 20 minutes remaining
+    const ts = new Date(FIXED_NOW - 10 * 60_000).toISOString();
+    expect(computeETADisplay(ts, 30 * 60_000, 10)).toBe('~20m');
+  });
+
+  it('returns yellow "past" when over median but ≤ 1.5× (between 1× and 1.5×)', () => {
+    // 35 minutes elapsed, median 30 → 1.167× → yellow
+    const ts = new Date(FIXED_NOW - 35 * 60_000).toISOString();
+    const result = computeETADisplay(ts, 30 * 60_000, 10);
+    expect(stripAnsi(result)).toBe('past');
+    expect(result).toContain('\x1b[33m'); // YELLOW
+    expect(result).not.toContain('\x1b[31m'); // not RED
+  });
+
+  it('returns yellow "past" at exactly 1.5× median (boundary is exclusive for red)', () => {
+    // 45 minutes elapsed, median 30 → exactly 1.5× → yellow (spentMs > 1.5× is false)
+    const ts = new Date(FIXED_NOW - 45 * 60_000).toISOString();
+    const result = computeETADisplay(ts, 30 * 60_000, 10);
+    expect(stripAnsi(result)).toBe('past');
+    expect(result).toContain('\x1b[33m'); // YELLOW
+  });
+
+  it('returns red "past" when significantly over median (>1.5×)', () => {
+    // 50 minutes elapsed, median 30 → 1.667× → red
+    const ts = new Date(FIXED_NOW - 50 * 60_000).toISOString();
+    const result = computeETADisplay(ts, 30 * 60_000, 10);
+    expect(stripAnsi(result)).toBe('past');
+    expect(result).toContain('\x1b[31m'); // RED
+  });
+
+  it('returns yellow "past" at exactly the median (zero remaining ms boundary)', () => {
+    // Exactly at median → remainingMs = 0 → not > 0 → falls to yellow past
+    const ts = new Date(FIXED_NOW - 30 * 60_000).toISOString();
+    const result = computeETADisplay(ts, 30 * 60_000, 10);
+    expect(stripAnsi(result)).toBe('past');
+    expect(result).toContain('\x1b[33m'); // YELLOW
+  });
+
+  it('ETA string stripped of ANSI is at most 5 chars in all branches', () => {
+    const ts10 = new Date(FIXED_NOW - 10 * 60_000).toISOString();
+    const ts35 = new Date(FIXED_NOW - 35 * 60_000).toISOString();
+    const ts50 = new Date(FIXED_NOW - 50 * 60_000).toISOString();
+    const median = 30 * 60_000;
+
+    expect(
+      stripAnsi(computeETADisplay(ts10, median, 10)).length,
+    ).toBeLessThanOrEqual(5);
+    expect(
+      stripAnsi(computeETADisplay(ts35, median, 10)).length,
+    ).toBeLessThanOrEqual(5);
+    expect(
+      stripAnsi(computeETADisplay(ts50, median, 10)).length,
+    ).toBeLessThanOrEqual(5);
+    expect(
+      stripAnsi(computeETADisplay(null, median, 10)).length,
+    ).toBeLessThanOrEqual(5);
+    expect(
+      stripAnsi(computeETADisplay(ts10, median, 3)).length,
+    ).toBeLessThanOrEqual(5);
   });
 });

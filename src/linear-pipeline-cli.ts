@@ -222,11 +222,6 @@ function truncate(str: string, maxLen: number): string {
   return clean.slice(0, maxLen - 1) + '…';
 }
 
-function stripAnsi(str: string): string {
-  // eslint-disable-next-line no-control-regex
-  return str.replace(/\x1b\[[0-9;]*m/g, '');
-}
-
 function formatMedianMs(ms: number): string {
   const minutes = Math.round(ms / 60_000);
   if (minutes < 60) return `${minutes}m`;
@@ -1092,8 +1087,10 @@ async function startWatchMode(): Promise<void> {
   let cachedActive: ActiveIssue[] = [];
   let cachedQueued: QueuedIssue[] = [];
   let cachedRecent: RecentIssue[] = [];
-  let cachedStageMedians: Map<string, { medianMs: number; sampleSize: number }> =
-    new Map();
+  let cachedStageMedians: Map<
+    string,
+    { medianMs: number; sampleSize: number }
+  > = new Map();
   let lastWarning: string | undefined;
   let cachedTodayStats: TodayStats | undefined;
   let cachedGateRevisions: GateRevisionCounts | undefined;
