@@ -18,6 +18,14 @@ You receive the issue title, description, agent output, PR link (if any), and re
 
 Check each acceptance criterion against the evidence in comments and the PR. Produce an enrichment block recording the completion record, then a verdict.
 
+## Invocation context
+
+If the prompt includes `<invocation-context>pre-merge</invocation-context>`, you are running **before** the PR is merged. In this mode:
+- Replace the "PR exists and merged" check with "PR exists and linked" (a PR URL in comments is sufficient).
+- Do not check whether the PR shows as merged -- only verify that acceptance criteria are met.
+- A SHIP verdict authorises the auto-merge to proceed.
+- A REVISE verdict blocks the merge and leaves the issue in In Review.
+
 ## Output format
 
 ```
@@ -37,7 +45,7 @@ Check each acceptance criterion against the evidence in comments and the PR. Pro
 
 Checklist:
 - [x] All acceptance criteria met — <n> of <n> verified
-- [x] PR exists and merged — <URL>
+- [x] PR exists and linked (pre-merge) / merged (post-merge) — <URL>
 - [x] No open review threads — all resolved
 - [x] No open questions or blockers
 
@@ -61,7 +69,7 @@ Safe to close.
 
 Checklist:
 - [ ] All acceptance criteria met — criterion "<criterion>" not met: <what is missing>
-- [ ] PR exists and merged — no PR linked; issue description implies code change
+- [ ] PR exists and linked (pre-merge) / merged (post-merge) — no PR linked; issue description implies code change
 - [x] No open review threads
 - [ ] No open questions — <describe open question>
 

@@ -279,7 +279,18 @@ export async function sweepPendingAutoMerges(
   }
 }
 
-export async function sweepStaleInReview(ctx: LinearContext): Promise<void> {
+export type CompletionChecker = (issueData: {
+  id: string;
+  identifier: string;
+  title: string;
+  description?: string | null;
+  labels: Array<{ id: string; name: string }>;
+}) => Promise<'SHIP' | 'REVISE'>;
+
+export async function sweepStaleInReview(
+  ctx: LinearContext,
+  completionCheck?: CompletionChecker,
+): Promise<void> {
   if (!isAutoMergeEnabled()) return;
 
   const inReviewState = ctx.stateByName.get('In Review');
@@ -305,12 +316,38 @@ export async function sweepStaleInReview(ctx: LinearContext): Promise<void> {
         continue;
       }
 
-      triggerAutoMerge(ctx, issue.id, issue.identifier).catch((err) => {
-        logger.error(
-          { issueId: issue.id, err },
-          'auto-merge: stale sweep failed',
-        );
-      });
+      if (completionCheck) {
+        const issueData = {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          description: issue.description,
+          labels: labels.nodes.map((l) => ({ id: l.id, name: l.name })),
+        };
+        completionCheck(issueData)
+          .then((verdict) => {
+            if (verdict === 'SHIP') {
+              return triggerAutoMerge(ctx, issue.id, issue.identifier);
+            }
+            logger.info(
+              { issueId: issue.id },
+              'auto-merge: sweep completion-gate REVISE, auto-merge blocked',
+            );
+          })
+          .catch((err) => {
+            logger.error(
+              { issueId: issue.id, err },
+              'auto-merge: stale sweep failed',
+            );
+          });
+      } else {
+        triggerAutoMerge(ctx, issue.id, issue.identifier).catch((err) => {
+          logger.error(
+            { issueId: issue.id, err },
+            'auto-merge: stale sweep failed',
+          );
+        });
+      }
       triggered++;
     }
 

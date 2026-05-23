@@ -20,6 +20,7 @@ import {
   computeScopeLabelChanges,
   retryWithBackoff,
   _setSleepFnForTests,
+  runInlineCompletionCheck,
 } from './linear-webhook.js';
 import { RetryableError, UserError, FatalError } from './errors/index.js';
 
@@ -690,5 +691,42 @@ describe('retryWithBackoff', () => {
     // Should use computed backoff (baseDelayMs * 2^0 + jitter), not a fixed value
     expect(sleepCalls[0]).toBeGreaterThan(0);
     expect(sleepCalls[0]).toBeLessThanOrEqual(30_000);
+  });
+});
+
+// ── runInlineCompletionCheck tests ───────────────────────────────────────────
+
+describe('runInlineCompletionCheck', () => {
+  const mockIssueData = {
+    id: 'issue-123',
+    identifier: 'LIA-99',
+    title: 'Test issue',
+    description: 'Test description',
+    labels: [] as Array<{ id: string; name: string }>,
+  };
+
+  it('returns REVISE when completion gate spec is missing', async () => {
+    const emptyGateSpecs = new Map();
+    const ctx = {
+      inFlightGate: new Set<string>(),
+    } as Parameters<typeof runInlineCompletionCheck>[0];
+
+    const result = await runInlineCompletionCheck(
+      ctx,
+      mockIssueData,
+      emptyGateSpecs,
+    );
+    expect(result).toBe('REVISE');
+  });
+
+  it('cleans up inFlightGate even on error', async () => {
+    const emptyGateSpecs = new Map();
+    const inFlightGate = new Set<string>();
+    const ctx = { inFlightGate } as Parameters<
+      typeof runInlineCompletionCheck
+    >[0];
+
+    await runInlineCompletionCheck(ctx, mockIssueData, emptyGateSpecs);
+    expect(inFlightGate.has('issue-123')).toBe(false);
   });
 });

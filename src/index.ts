@@ -399,14 +399,15 @@ async function main(): Promise<void> {
     if (linearCtx) {
       startLinearDispatcher(linearCtx);
 
+      const wardensDir = path.join(
+        PROJECT_ROOT,
+        '.claude',
+        'agents',
+        'wardens',
+      );
+      const gateSpecs = loadGateSpecs(wardensDir);
+
       if (process.env.LINEAR_WEBHOOK_SECRET) {
-        const wardensDir = path.join(
-          PROJECT_ROOT,
-          '.claude',
-          'agents',
-          'wardens',
-        );
-        const gateSpecs = loadGateSpecs(wardensDir);
         if (gateSpecs.size === 0) {
           logger.warn(
             'linear-webhook: no gate specs found — webhook server will pass all transitions',
@@ -429,7 +430,11 @@ async function main(): Promise<void> {
       sweepPendingAutoMerges(linearCtx).catch((err) => {
         logger.warn({ err }, 'auto-merge: startup sweep failed');
       });
-      sweepStaleInReview(linearCtx).catch((err) => {
+      const { runInlineCompletionCheck } = await import('./linear-webhook.js');
+      const ctx = linearCtx;
+      sweepStaleInReview(ctx, (issueData) =>
+        runInlineCompletionCheck(ctx, issueData, gateSpecs),
+      ).catch((err) => {
         logger.warn({ err }, 'auto-merge: stale In Review sweep failed');
       });
     }
