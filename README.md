@@ -117,7 +117,7 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus gcal` | Google Calendar token management (`status`, `auth`, `ping`) |
 | `deus listen` | Record from mic, transcribe locally, copy to clipboard |
 | `deus tui` | Full-screen terminal UI for chat, wardens, services, and channels |
-| `deus pipeline` | Pipeline event audit (`LIA-123`, `--failed`, `--active`, `--since 24h`) |
+| `deus pipeline` | Live pipeline monitor (default), or one-shot audit (`PROJ-123`, `--failed`, `--active`) |
 | `deus backend` | Show active agent backend (`claude`, `codex`, `llama-cpp`) |
 | `deus backend set <name>` | Switch backend for all future sessions |
 
@@ -184,14 +184,15 @@ Quality checks require a public URL to receive Linear webhook events. For local 
 
 See [Linear automation architecture](docs/decisions/linear-webhook-pipeline.md) for the full setup, gate spec format, and configuration reference.
 
-### Pipeline audit
+### Pipeline monitor
 
-Check the status of any issue's pipeline from the terminal:
+Run `deus pipeline` to open a live dashboard that refreshes every 3 seconds, showing active issues and recent completions:
 
 ```bash
+deus pipeline                        # Live monitor (default)
 deus pipeline PROJ-123               # Full timeline for an issue
 deus pipeline --failed --since 24h   # Failures in the last 24 hours
-deus pipeline --active               # Currently in-flight issues
+deus pipeline --active               # One-shot active view
 ```
 
 ### Adding or customizing gates

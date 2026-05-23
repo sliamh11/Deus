@@ -1,18 +1,18 @@
 #!/usr/bin/env node
 /**
- * CLI for pipeline event audit.
+ * Pipeline monitor and event audit CLI.
  *
- * Usage:
- *   deus pipeline LIA-123               Full timeline for an issue
- *   deus pipeline --failed --since 24h  All failures in last 24h
- *   deus pipeline --active              Currently in-flight issues
+ * Default (no args): live dashboard refreshing every 3s via Linear API + local DB.
+ * With args: one-shot queries against the local event log.
  */
 
+import { LinearClient } from '@linear/sdk';
 import {
   getPipelineEvents,
   initDatabase,
   type PipelineEventFilter,
 } from './db.js';
+import { readEnvFile } from './env.js';
 import { EVENT_LABELS } from './linear-notifications.js';
 
 const GREEN = '\x1b[32m';
@@ -20,7 +20,15 @@ const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
 const CYAN = '\x1b[36m';
 const DIM = '\x1b[2m';
+const BOLD = '\x1b[1m';
 const RESET = '\x1b[0m';
+
+const HIDE_CURSOR = '\x1b[?25l';
+const SHOW_CURSOR = '\x1b[?25h';
+const CLEAR_SCREEN = '\x1b[2J\x1b[H';
+
+const REFRESH_MS = 3_000;
+const RECENT_WINDOW_MS = 30 * 60_000;
 
 const FAILED_TYPES = new Set([
   'gate_revise',
@@ -45,11 +53,27 @@ const INFO_TYPES = new Set([
   'state_changed',
 ]);
 
+const TERMINAL_TYPES = new Set([
+  'automerge_done',
+  'automerge_failed',
+  'agent_failed',
+  'moved_done',
+]);
+
+const PIPELINE_STATES = ['Ready for Agent', 'Agent Working', 'In Review'];
+
 function colorFor(eventType: string): string {
   if (SUCCESS_TYPES.has(eventType)) return GREEN;
   if (FAILED_TYPES.has(eventType)) return RED;
   if (PENDING_TYPES.has(eventType)) return YELLOW;
   if (INFO_TYPES.has(eventType)) return CYAN;
+  return DIM;
+}
+
+function stateColor(stateName: string): string {
+  if (stateName === 'Ready for Agent') return YELLOW;
+  if (stateName === 'Agent Working') return CYAN;
+  if (stateName === 'In Review') return GREEN;
   return DIM;
 }
 
@@ -65,6 +89,24 @@ export function parseDuration(input: string): string | null {
         ? value * 3_600_000
         : value * 86_400_000;
   return new Date(Date.now() - ms).toISOString();
+}
+
+export function formatElapsed(isoTimestamp: string): string {
+  const ms = Date.now() - new Date(isoTimestamp).getTime();
+  if (ms < 0) return '0s';
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return `${days}d`;
+}
+
+function truncate(str: string, maxLen: number): string {
+  if (str.length <= maxLen) return str;
+  return str.slice(0, maxLen - 1) + '…';
 }
 
 function printEvents(
@@ -91,12 +133,300 @@ function printEvents(
   }
 }
 
+// ── Watch mode ──────────────────────────────────────────────────────────────
+
+interface ActiveIssue {
+  identifier: string;
+  title: string;
+  stateName: string;
+  lastEvent: string;
+  lastEventTime: string;
+}
+
+interface RecentIssue {
+  identifier: string;
+  eventType: string;
+  lastEvent: string;
+  lastEventTime: string;
+  detail: string | null;
+}
+
+async function discoverTeamId(client: LinearClient): Promise<string> {
+  const teams = await client.teams();
+  if (teams.nodes.length === 0) {
+    throw new Error('No Linear teams found');
+  }
+  const override = process.env.LINEAR_TEAM_ID;
+  if (override) {
+    const match = teams.nodes.find((t) => t.id === override);
+    if (!match) {
+      throw new Error(
+        `LINEAR_TEAM_ID "${override}" not found among ${teams.nodes.length} teams`,
+      );
+    }
+    return match.id;
+  }
+  return teams.nodes[0].id;
+}
+
+async function fetchActiveIssues(
+  client: LinearClient,
+  teamId: string,
+): Promise<ActiveIssue[]> {
+  const issues = await client.issues({
+    filter: {
+      state: { name: { in: PIPELINE_STATES } },
+      team: { id: { eq: teamId } },
+    },
+  });
+
+  const states = await Promise.all(issues.nodes.map((issue) => issue.state));
+  const stateByIssueId = new Map<string, string>();
+  issues.nodes.forEach((issue, i) => {
+    stateByIssueId.set(issue.id, states[i]?.name ?? 'Unknown');
+  });
+
+  const lastEventByIssue = new Map<
+    string,
+    { event_type: string; created_at: string }
+  >();
+  for (const issue of issues.nodes) {
+    const events = getPipelineEvents({ issueId: issue.id });
+    if (events.length > 0) {
+      const last = events[events.length - 1];
+      lastEventByIssue.set(issue.id, {
+        event_type: last.event_type,
+        created_at: last.created_at,
+      });
+    }
+  }
+
+  const result: ActiveIssue[] = issues.nodes.map((issue) => {
+    const lastEvent = lastEventByIssue.get(issue.id);
+    return {
+      identifier: issue.identifier,
+      title: issue.title,
+      stateName: stateByIssueId.get(issue.id) ?? 'Unknown',
+      lastEvent: lastEvent
+        ? EVENT_LABELS[lastEvent.event_type] || lastEvent.event_type
+        : '—',
+      lastEventTime: lastEvent?.created_at ?? issue.updatedAt.toISOString(),
+    };
+  });
+
+  return result.sort((a, b) => {
+    const stateOrder =
+      PIPELINE_STATES.indexOf(a.stateName) -
+      PIPELINE_STATES.indexOf(b.stateName);
+    if (stateOrder !== 0) return stateOrder;
+    return (
+      new Date(b.lastEventTime).getTime() - new Date(a.lastEventTime).getTime()
+    );
+  });
+}
+
+function fetchRecentIssues(): RecentIssue[] {
+  const since = new Date(Date.now() - RECENT_WINDOW_MS).toISOString();
+  const events = getPipelineEvents({ since });
+
+  const issueLatest = new Map<
+    string,
+    {
+      identifier: string;
+      event_type: string;
+      created_at: string;
+      detail: string | null;
+    }
+  >();
+  for (const e of events) {
+    issueLatest.set(e.issue_id, {
+      identifier: e.identifier,
+      event_type: e.event_type,
+      created_at: e.created_at,
+      detail: e.detail,
+    });
+  }
+
+  const recent: RecentIssue[] = [];
+  for (const [, last] of issueLatest) {
+    if (TERMINAL_TYPES.has(last.event_type)) {
+      recent.push({
+        identifier: last.identifier,
+        eventType: last.event_type,
+        lastEvent: EVENT_LABELS[last.event_type] || last.event_type,
+        lastEventTime: last.created_at,
+        detail: last.detail,
+      });
+    }
+  }
+
+  return recent.sort(
+    (a, b) =>
+      new Date(b.lastEventTime).getTime() - new Date(a.lastEventTime).getTime(),
+  );
+}
+
+function renderDashboardOutput(
+  active: ActiveIssue[],
+  recent: RecentIssue[],
+  error?: string,
+): string {
+  const now = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  const lines: string[] = [];
+
+  lines.push(
+    `${BOLD} Deus Pipeline${RESET}${DIM}${' '.repeat(40)}${now}  [every ${REFRESH_MS / 1000}s]${RESET}`,
+  );
+  lines.push(`${DIM} ${'─'.repeat(74)}${RESET}`);
+
+  if (error) {
+    lines.push(`${RED} ⚠ ${error}${RESET}`);
+    lines.push('');
+  }
+
+  lines.push('');
+  lines.push(`${BOLD} ACTIVE${RESET} ${DIM}(${active.length})${RESET}`);
+
+  if (active.length === 0) {
+    lines.push(`${DIM}  No issues in pipeline.${RESET}`);
+  } else {
+    for (const issue of active) {
+      const id = issue.identifier.padEnd(10);
+      const title = truncate(issue.title, 34).padEnd(34);
+      const sc = stateColor(issue.stateName);
+      const state = issue.stateName.padEnd(16);
+      const evt = truncate(issue.lastEvent, 20).padEnd(20);
+      const elapsed = formatElapsed(issue.lastEventTime).padStart(4);
+      lines.push(
+        `  ${CYAN}${id}${RESET} ${title} ${sc}${state}${RESET} ${DIM}${evt}${RESET} ${DIM}${elapsed}${RESET}`,
+      );
+    }
+  }
+
+  if (recent.length > 0) {
+    lines.push('');
+    lines.push(`${DIM} RECENT (${recent.length})${RESET}`);
+    for (const issue of recent) {
+      const id = issue.identifier.padEnd(10);
+      const evtColor = FAILED_TYPES.has(issue.eventType) ? RED : GREEN;
+      const evt = truncate(issue.lastEvent, 20).padEnd(20);
+      const detail = issue.detail ? truncate(issue.detail, 28) : '';
+      const elapsed = formatElapsed(issue.lastEventTime).padStart(4);
+      lines.push(
+        `${DIM}  ${id} ${' '.repeat(34)} ${evtColor}${evt}${DIM} ${detail.padEnd(28)} ${elapsed}${RESET}`,
+      );
+    }
+  }
+
+  lines.push('');
+  lines.push(`${DIM} Ctrl+C to exit${RESET}`);
+
+  return lines.join('\n');
+}
+
+async function startWatchMode(): Promise<void> {
+  const env = readEnvFile([
+    'LINEAR_API_KEY',
+    'LINEAR_API_TOKEN',
+    'LINEAR_TEAM_ID',
+  ]);
+  for (const [k, v] of Object.entries(env)) {
+    if (v && !process.env[k]) process.env[k] = v;
+  }
+
+  const apiKey = process.env.LINEAR_API_KEY || process.env.LINEAR_API_TOKEN;
+  if (!apiKey) {
+    console.error(
+      `${RED}LINEAR_API_TOKEN not set${RESET} — add it to .env for live monitoring.`,
+    );
+    console.error(
+      `${DIM}Falling back to DB-only view. Use 'deus pipeline --active' for one-shot.${RESET}`,
+    );
+    initDatabase();
+    const events = getPipelineEvents();
+    const issueLatest = new Map<string, string>();
+    for (const e of events) issueLatest.set(e.issue_id, e.event_type);
+    const activeIds = new Set<string>();
+    for (const [id, lastType] of issueLatest) {
+      if (!TERMINAL_TYPES.has(lastType)) activeIds.add(id);
+    }
+    printEvents(events.filter((e) => activeIds.has(e.issue_id)));
+    return;
+  }
+
+  initDatabase();
+
+  const client = new LinearClient({ apiKey });
+  let teamId: string;
+  try {
+    teamId = await discoverTeamId(client);
+  } catch (err) {
+    console.error(
+      `${RED}Failed to connect to Linear:${RESET} ${err instanceof Error ? err.message : err}`,
+    );
+    process.exit(1);
+  }
+
+  process.stdout.write(HIDE_CURSOR);
+
+  let rendering = false;
+  let lastError: string | undefined;
+
+  async function tick(): Promise<void> {
+    if (rendering) return;
+    rendering = true;
+    try {
+      const active = await fetchActiveIssues(client, teamId);
+      const recent = fetchRecentIssues();
+      lastError = undefined;
+      const output = renderDashboardOutput(active, recent);
+      process.stdout.write(CLEAR_SCREEN + output + '\n');
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : 'Unknown error';
+      const recent = fetchRecentIssues();
+      const output = renderDashboardOutput([], recent, lastError);
+      process.stdout.write(CLEAR_SCREEN + output + '\n');
+    } finally {
+      rendering = false;
+    }
+  }
+
+  await tick();
+  const interval = setInterval(tick, REFRESH_MS);
+
+  const cleanup = () => {
+    clearInterval(interval);
+    process.stdout.write(SHOW_CURSOR + '\n');
+    process.exit(0);
+  };
+
+  process.on('SIGINT', cleanup);
+  process.on('SIGTERM', cleanup);
+  process.on('SIGWINCH', () => {
+    if (!rendering) tick().catch(() => {});
+  });
+}
+
+// ── One-shot mode (existing behavior) ───────────────────────────────────────
+
 function main(): void {
   const args = process.argv.slice(2);
 
-  if (args.length === 0 || args[0] === '--help') {
+  if (args.length === 0) {
+    startWatchMode().catch((err) => {
+      process.stdout.write(SHOW_CURSOR);
+      console.error(err);
+      process.exit(1);
+    });
+    return;
+  }
+
+  if (args[0] === '--help') {
     console.log('Usage:');
-    console.log('  deus pipeline <IDENTIFIER>          Timeline for an issue');
+    console.log(
+      '  deus pipeline                        Live monitor (default)',
+    );
+    console.log('  deus pipeline <IDENTIFIER>           Timeline for an issue');
     console.log('  deus pipeline --failed [--since Xh]  Failed events');
     console.log('  deus pipeline --active               In-flight issues');
     console.log('  deus pipeline --all [--since Xh]     All events');

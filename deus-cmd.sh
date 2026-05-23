@@ -1510,7 +1510,8 @@ $STARTUP_INSTRUCTION"
     ;;
   pipeline)
     shift
-    exec node "$SCRIPT_DIR/dist/linear-pipeline-cli.js" "$@"
+    # cd required: config.ts evaluates PROJECT_ROOT from process.cwd() at import time
+    cd "$SCRIPT_DIR" && exec node "$SCRIPT_DIR/dist/linear-pipeline-cli.js" "$@"
     ;;
   solution)
     # Solution atom management — structured lesson capture.
