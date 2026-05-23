@@ -15,8 +15,23 @@ import {
 } from './db.js';
 import { triggerAutoMerge } from './linear-auto-merge.js';
 import { macosNotify, notifyPipelineStep } from './linear-notifications.js';
+import { syncVaultPending } from './linear-vault-sync.js';
 
 const DEFAULT_WEBHOOK_PORT = 3005;
+
+let _syncTimer: ReturnType<typeof setTimeout> | null = null;
+
+function debouncedVaultSync(ctx: LinearContext, vaultPath: string): void {
+  if (_syncTimer) clearTimeout(_syncTimer);
+  _syncTimer = setTimeout(async () => {
+    _syncTimer = null;
+    try {
+      await syncVaultPending(ctx.client, ctx.teamId, vaultPath);
+    } catch (err) {
+      logger.debug({ err }, 'vault-sync: failed to sync pending block');
+    }
+  }, 2000);
+}
 
 export function parseVerdict(
   output: string,
@@ -526,10 +541,13 @@ export function startLinearWebhookServer(
   const webhookClient = new LinearWebhookClient(secret);
   const handler = webhookClient.createHandler();
 
-  // handler.on('Issue') provides typed payload but needs narrowing to the issue-specific union member
   handler.on('Issue', (payload) => {
+    if (ctx.vaultPath) {
+      debouncedVaultSync(ctx, ctx.vaultPath);
+    }
+
     handleIssueUpdate(
-      payload as EntityWebhookPayloadWithIssueData,
+      payload as EntityWebhookPayloadWithIssueData, // SDK union needs narrowing to issue-specific payload
       ctx,
       gateSpecs,
     ).catch((err) => {

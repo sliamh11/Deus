@@ -10,6 +10,7 @@ import { fireAndForget } from './async/index.js';
 import { extractPrUrl } from './pr-url-extractor.js';
 import { upsertIssuePr } from './db.js';
 import { notifyPipelineStep } from './linear-notifications.js';
+import { resolveVaultPath } from './solutions/store.js';
 import { defaultSession } from './agent-runtimes/types.js';
 import type {
   RunContext,
@@ -65,6 +66,7 @@ export interface LinearContext {
   gateLabels: GateLabels;
   teamId: string;
   repoSlug?: string;
+  vaultPath: string | null;
 }
 
 let _timer: ReturnType<typeof setInterval> | null = null;
@@ -621,6 +623,7 @@ export async function initLinearContext(
       gateLabels,
       teamId,
       repoSlug,
+      vaultPath: resolveVaultPath(),
     };
   } catch (err) {
     if (err instanceof FatalError) {

@@ -121,15 +121,28 @@ After saving the session log:
         - Trim to the 3 most recent entries (drop the oldest).
         - Replace the entire `previous:` block with the updated list.
         - If `previous:` doesn't exist yet, add it before `pending:`.
-      - **Merge** pending tasks (never replace):
+      - **Sync pending tasks from Linear** (preferred) or merge from session log (fallback):
+
+        **Linear sync path** (use when `mcp__linear__linear_getIssues` tool is available):
+        1. Call `mcp__linear__linear_getIssues` with `limit: 50`.
+        2. For each issue: extract identifier from the `url` field (regex `/issue\/([A-Z]+-\d+)\//`), title, and state name.
+        3. Filter out issues where state is `Done`, `Canceled`, or `Duplicate`.
+        4. Sort by state priority: In Progress > In Review > Agent Working > Ready for Agent > Todo > Backlog. Within each group, sort by identifier number ascending.
+        5. Format each as `  - [ ] <title> (<identifier>)`. Truncate titles longer than 80 chars.
+        6. Prepend the comment line `  # Source of truth: Linear. Synced by /compress.`
+        7. **Replace** the entire `pending:` block with the Linear-sourced list. Do not merge with session log items -- Linear IS the source of truth.
+        8. If any `[x]` items from the session log reference a Linear identifier that is still in the active list, log a note but do NOT remove it -- the issue's state in Linear is authoritative.
+
+        **Fallback merge path** (use when Linear MCP tools are NOT available):
         1. Read the current `pending:` block from CLAUDE.md. If missing, treat as empty list.
         2. Remove completed items: for each `[x]` from the session log, find its match in the pending list:
            - **Match on core identifiers** (file names, feature names, PR numbers, tool names), ignoring parenthetical annotations like `(closed: ...)`, `(done)`, `(PR #N)` and minor wording differences.
-           - **Compound items** (`A + B`): if a pending item has sub-tasks joined by ` + `, match each part independently. All parts matched → remove whole item. Some parts matched → rewrite to keep only unmatched parts. Example: pending `Refactor auth + update docs` with `[x] Refactor auth (done)` → rewrite to `update docs`.
-           - **Dedup pass**: after removals, check each remaining `[ ]` item — if it is semantically covered by any `[x]` (same feature/identifier, different wording), remove it.
+           - **Compound items** (`A + B`): if a pending item has sub-tasks joined by ` + `, match each part independently. All parts matched -> remove whole item. Some parts matched -> rewrite to keep only unmatched parts.
+           - **Dedup pass**: after removals, check each remaining `[ ]` item -- if it is semantically covered by any `[x]` (same feature/identifier, different wording), remove it.
         3. Add any new `[ ]` items from the session log that don't already exist in the pending list and aren't already covered by a `[x]` from this session (avoid duplicates).
-        4. No hard item cap on `pending:`. Total file size is the governor: if `pending:` growth pushes CLAUDE.md over the 75-line check in step (d) below, the oldest non-critical items are archived per (d). Do NOT drop a live `[ ]` solely to hit a count limit — existing removal rules in steps 2-3 (completion matching, dedup) are the only mechanisms that should retire `[ ]` items.
-        5. Write the merged list back to `pending:`.
+        4. Write the merged list back to `pending:`.
+
+        No hard item cap on `pending:`. Total file size is the governor: if `pending:` growth pushes CLAUDE.md over the 75-line check in step (d) below, the oldest non-critical items are archived per (d). Do NOT drop a live `[ ]` solely to hit a count limit.
 
    d. After writing, count total lines in CLAUDE.md. If > 75 lines: read the `critical:` list from the CLAUDE.md frontmatter — that is the authoritative set of protected keys. Identify the oldest non-critical content block (any line whose `key:` prefix is NOT in the `critical:` list) and move it to `$VAULT/CLAUDE-Archive.md` with a date header. Never archive lines whose key appears in `critical:`. If no `critical:` block exists in the frontmatter, fall back to refusing to archive and log a warning — missing schema is safer than guessing. When in doubt, prefer NOT archiving — a 5-line overshoot is fine; losing a load-bearing rule is not.
 

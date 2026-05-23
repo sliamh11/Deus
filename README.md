@@ -195,6 +195,14 @@ deus pipeline --failed --since 24h   # Failures in the last 24 hours
 deus pipeline --active               # One-shot active view
 ```
 
+### Vault sync
+
+Linear is the source of truth for pending tasks. The vault's `CLAUDE.md` `pending:` block stays in sync automatically:
+
+- **Webhook push**: when issues change in Linear, the webhook handler updates the vault file within ~2 seconds (debounced).
+- **Session-start pull**: a `SessionStart` hook queries Linear on every new Claude Code session, ensuring freshness at the moment it matters most.
+- **`/compress` sync**: the `/compress` skill pulls the full active issue list from Linear and rebuilds the pending block.
+
 ### Adding or customizing gates
 
 Gates are plain markdown files in `.claude/agents/wardens/`. Adding a gate is one file with YAML frontmatter -- no code change:

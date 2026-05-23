@@ -1,0 +1,226 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { syncVaultPending, fetchActiveIssues } from './linear-vault-sync.js';
+
+function mockLinearClient(
+  issues: Array<{
+    title: string;
+    identifier: string;
+    url: string;
+    stateName: string;
+    stateType: string;
+  }>,
+) {
+  // Only .issues() is exercised; full LinearClient has ~40 methods
+  return {
+    issues: vi.fn().mockResolvedValue({
+      nodes: issues.map((i) => ({
+        title: i.title,
+        identifier: i.identifier,
+        url: i.url,
+        state: Promise.resolve({ name: i.stateName, type: i.stateType }),
+      })),
+    }),
+  } as any;
+}
+
+describe('fetchActiveIssues', () => {
+  it('filters out completed and canceled issues', async () => {
+    const client = mockLinearClient([
+      {
+        title: 'Active',
+        identifier: 'LIA-1',
+        url: 'https://linear.app/t/issue/LIA-1/',
+        stateName: 'Todo',
+        stateType: 'unstarted',
+      },
+      {
+        title: 'Done',
+        identifier: 'LIA-2',
+        url: 'https://linear.app/t/issue/LIA-2/',
+        stateName: 'Done',
+        stateType: 'completed',
+      },
+      {
+        title: 'Canceled',
+        identifier: 'LIA-3',
+        url: 'https://linear.app/t/issue/LIA-3/',
+        stateName: 'Canceled',
+        stateType: 'canceled',
+      },
+    ]);
+    const result = await fetchActiveIssues(client, 'team-1');
+    expect(result).toHaveLength(1);
+    expect(result[0].identifier).toBe('LIA-1');
+  });
+
+  it('filters out Duplicate state', async () => {
+    const client = mockLinearClient([
+      {
+        title: 'Dup',
+        identifier: 'LIA-4',
+        url: 'https://linear.app/t/issue/LIA-4/',
+        stateName: 'Duplicate',
+        stateType: 'canceled',
+      },
+    ]);
+    const result = await fetchActiveIssues(client, 'team-1');
+    expect(result).toHaveLength(0);
+  });
+
+  it('sorts by state priority then identifier number', async () => {
+    const client = mockLinearClient([
+      {
+        title: 'Backlog item',
+        identifier: 'LIA-10',
+        url: '',
+        stateName: 'Backlog',
+        stateType: 'backlog',
+      },
+      {
+        title: 'In progress',
+        identifier: 'LIA-5',
+        url: '',
+        stateName: 'In Progress',
+        stateType: 'started',
+      },
+      {
+        title: 'Todo second',
+        identifier: 'LIA-8',
+        url: '',
+        stateName: 'Todo',
+        stateType: 'unstarted',
+      },
+      {
+        title: 'Todo first',
+        identifier: 'LIA-3',
+        url: '',
+        stateName: 'Todo',
+        stateType: 'unstarted',
+      },
+    ]);
+    const result = await fetchActiveIssues(client, 'team-1');
+    expect(result.map((i) => i.identifier)).toEqual([
+      'LIA-5',
+      'LIA-3',
+      'LIA-8',
+      'LIA-10',
+    ]);
+  });
+});
+
+describe('syncVaultPending', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vault-sync-test-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('replaces existing pending block', async () => {
+    const claudeMd = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(
+      claudeMd,
+      [
+        '---',
+        'name: Test',
+        '---',
+        'name: Test',
+        'pending:',
+        '  - [ ] Old task (LIA-99)',
+        'index:',
+        '  infra: INFRA.md',
+      ].join('\n'),
+    );
+
+    const client = mockLinearClient([
+      {
+        title: 'New task',
+        identifier: 'LIA-1',
+        url: '',
+        stateName: 'Todo',
+        stateType: 'unstarted',
+      },
+    ]);
+
+    await syncVaultPending(client, 'team-1', tmpDir);
+
+    const result = fs.readFileSync(claudeMd, 'utf-8');
+    expect(result).toContain('New task (LIA-1)');
+    expect(result).not.toContain('Old task (LIA-99)');
+    expect(result).toContain('index:');
+    expect(result).toContain('Source of truth: Linear');
+  });
+
+  it('appends pending block when none exists', async () => {
+    const claudeMd = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(claudeMd, '---\nname: Test\n---\nname: Test\n');
+
+    const client = mockLinearClient([
+      {
+        title: 'First task',
+        identifier: 'LIA-1',
+        url: '',
+        stateName: 'Todo',
+        stateType: 'unstarted',
+      },
+    ]);
+
+    await syncVaultPending(client, 'team-1', tmpDir);
+
+    const result = fs.readFileSync(claudeMd, 'utf-8');
+    expect(result).toContain('pending:');
+    expect(result).toContain('First task (LIA-1)');
+  });
+
+  it('truncates long titles', async () => {
+    const claudeMd = path.join(tmpDir, 'CLAUDE.md');
+    fs.writeFileSync(claudeMd, '---\nname: Test\n---\npending:\n  - [ ] old\n');
+
+    const longTitle = 'A'.repeat(100);
+    const client = mockLinearClient([
+      {
+        title: longTitle,
+        identifier: 'LIA-1',
+        url: '',
+        stateName: 'Todo',
+        stateType: 'unstarted',
+      },
+    ]);
+
+    await syncVaultPending(client, 'team-1', tmpDir);
+
+    const result = fs.readFileSync(claudeMd, 'utf-8');
+    const line = result.split('\n').find((l: string) => l.includes('LIA-1'))!;
+    expect(line.length).toBeLessThan(120);
+    expect(line).toContain('...');
+  });
+
+  it('skips write when content unchanged', async () => {
+    const claudeMd = path.join(tmpDir, 'CLAUDE.md');
+    const content =
+      'pending:\n  # Source of truth: Linear. Synced by /compress.\n  - [ ] Task (LIA-1)\n';
+    fs.writeFileSync(claudeMd, content);
+    const mtime = fs.statSync(claudeMd).mtimeMs;
+
+    const client = mockLinearClient([
+      {
+        title: 'Task',
+        identifier: 'LIA-1',
+        url: '',
+        stateName: 'Todo',
+        stateType: 'unstarted',
+      },
+    ]);
+
+    await syncVaultPending(client, 'team-1', tmpDir);
+
+    const newMtime = fs.statSync(claudeMd).mtimeMs;
+    expect(newMtime).toBe(mtime);
+  });
+});
