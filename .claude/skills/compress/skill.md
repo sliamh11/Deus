@@ -18,11 +18,9 @@ Read `~/.config/deus/config.json` and use the `vault_path` value. If the env var
 
 ## Check memory level (External Project Mode only)
 
-Compute MD5 hash of the current working directory and read `~/.config/deus/projects/<hash>.json`.
-- If memory level is **restricted**: tell the user "Session saving is disabled for restricted projects. Your work is preserved in git commits and Claude Code's native session transcript. Use /project-settings to change this." and stop.
-- If `save_summaries` is **false**: tell the user the same message and stop.
-- If memory level is **standard** or **full** with summaries enabled: proceed.
-- Home mode: always proceed.
+> If External Project Mode: read `branches/external-mode.md` for memory level checks, redaction rules, and Step 0 scope.
+
+Home mode: always proceed.
 
 ## Step 0 — Preserve permanent memories
 
@@ -37,9 +35,7 @@ Do **not** preserve one-off requests or temporary context.
 
 **Where to save:** Update `$VAULT/CLAUDE.md` using the same compact `key: value` format as the file — no prose bullets. One line per insight. If nothing qualifies, skip silently.
 
-**External Project Mode — standard:** Only preserve USER preferences and behavioral corrections (things about the user, not the project). Skip project-specific architecture decisions or code patterns.
-
-**External Project Mode — full:** Preserve both user preferences AND project-relevant decisions.
+External Project Mode scope: see `branches/external-mode.md`.
 
 If `$VAULT/CLAUDE.md` exceeds 200 lines, archive old content to `$VAULT/CLAUDE-Archive.md`.
 
@@ -87,14 +83,7 @@ decisions:
 - `continues` — set when this session resumes a prior investigation. Value: the filename of the earlier session. When setting this field, also update the prior session's frontmatter to add `superseded_by` pointing to the new log.
 - `superseded_by` — forward-pointer added retroactively to a prior session when a continuation is created. Not set directly; always set via the `continues` step above.
 
-**External Project Mode — standard memory level redaction:**
-- Do NOT include specific file paths, function names, or code snippets in the session log
-- Focus on decisions, architecture, and what was tried/learned
-- Files Modified section should use descriptions ("updated the auth middleware") not paths
-- The goal: someone reading this log should understand WHAT was decided and WHY, without leaking code details
-
-**External Project Mode — full memory level:**
-- No redaction needed — include full details as in home mode
+External Project Mode redaction: see `branches/external-mode.md`.
 
 Rules for `decisions:` array:
 - Maximum 3 items. Only include decisions that affect future sessions.
@@ -123,36 +112,21 @@ After saving the session log:
         - If `previous:` doesn't exist yet, add it before `pending:`.
       - **Sync pending tasks from Linear** (preferred) or merge from session log (fallback):
 
-        **Linear sync path** (use when `mcp__linear__linear_getIssues` tool is available):
-        1. Call `mcp__linear__linear_getIssues` with `limit: 50`.
-        2. For each issue: extract identifier from the `url` field (regex `/issue\/([A-Z]+-\d+)\//`), title, and state name.
-        3. Filter out issues where state is `Done`, `Canceled`, or `Duplicate`.
-        4. Sort by state priority: In Progress > In Review > Agent Working > Ready for Agent > Todo > Backlog. Within each group, sort by identifier number ascending.
-        5. Format each as `  - [ ] <title> (<identifier>)`. Truncate titles longer than 80 chars.
-        6. Prepend the comment line `  # Source of truth: Linear. Synced by /compress.`
-        7. **Replace** the entire `pending:` block with the Linear-sourced list. Do not merge with session log items -- Linear IS the source of truth.
-        8. If any `[x]` items from the session log reference a Linear identifier that is still in the active list, log a note but do NOT remove it -- the issue's state in Linear is authoritative.
-
-        **Fallback merge path** (use when Linear MCP tools are NOT available):
-        1. Read the current `pending:` block from CLAUDE.md. If missing, treat as empty list.
-        2. Remove completed items: for each `[x]` from the session log, find its match in the pending list:
-           - **Match on core identifiers** (file names, feature names, PR numbers, tool names), ignoring parenthetical annotations like `(closed: ...)`, `(done)`, `(PR #N)` and minor wording differences.
-           - **Compound items** (`A + B`): if a pending item has sub-tasks joined by ` + `, match each part independently. All parts matched -> remove whole item. Some parts matched -> rewrite to keep only unmatched parts.
-           - **Dedup pass**: after removals, check each remaining `[ ]` item -- if it is semantically covered by any `[x]` (same feature/identifier, different wording), remove it.
-        3. Add any new `[ ]` items from the session log that don't already exist in the pending list and aren't already covered by a `[x]` from this session (avoid duplicates).
-        4. Write the merged list back to `pending:`.
+        **Linear sync path** (preferred):
+        Run: `python3 ~/deus/scripts/sync_linear_pending.py`
+        The script handles caching, staleness detection, GraphQL query, sorting, and formatting.
+        Capture its stdout. Keep the `pending:` key line itself, replace everything below it with the script's stdout.
+        Prepend nothing -- the script includes the `# Source of truth` comment.
+        **Replace** the entire `pending:` block with the script output. Linear IS the source of truth.
+        If any `[x]` items from the session log reference a Linear identifier that is still in the active list, log a note but do NOT remove it -- the issue's state in Linear is authoritative.
+        If the script exits non-zero, read `branches/fallback-merge.md` for the manual merge path.
 
         No hard item cap on `pending:`. Total file size is the governor: if `pending:` growth pushes CLAUDE.md over the 75-line check in step (d) below, the oldest non-critical items are archived per (d). Do NOT drop a live `[ ]` solely to hit a count limit.
 
    d. After writing, count total lines in CLAUDE.md. If > 75 lines: read the `critical:` list from the CLAUDE.md frontmatter — that is the authoritative set of protected keys. Identify the oldest non-critical content block (any line whose `key:` prefix is NOT in the `critical:` list) and move it to `$VAULT/CLAUDE-Archive.md` with a date header. Never archive lines whose key appears in `critical:`. If no `critical:` block exists in the frontmatter, fall back to refusing to archive and log a warning — missing schema is safer than guessing. When in doubt, prefer NOT archiving — a 5-line overshoot is fine; losing a load-bearing rule is not.
 
 2. **Auto-redact sensitive patterns** (External Project Mode, standard memory level only):
-   After saving the file, run the redaction script to strip any code snippets or file contents that leaked through:
-   ```bash
-   python3 ~/deus/scripts/redact_session.py "<full path to saved log>"
-   ```
-   Only run this step when memory level is `standard` (not `full` or `restricted`).
-   If the script fails, skip silently — the log is still saved; instruct the user to review it manually.
+   See `branches/external-mode.md` for redaction details. Skip in home mode.
 
 3. **Index the session log** (always, if scripts are available):
    Run: `python3 ~/deus/scripts/memory_indexer.py --add "<full path to saved log>"`
@@ -169,30 +143,6 @@ After saving the session log:
    Run: `python3 ~/deus/scripts/memory_indexer.py --query "recent work ongoing tasks" --top 2 --recency-boost > ~/.deus/resume_semantic_cache.txt 2>/dev/null &`
 
 7. **Trigger session retrospective** (home mode only, background, opt-in):
-   Skip this step entirely unless ALL of the following are true:
-   a. Current mode is **home mode** (~/deus)
-   b. `"$VAULT/Retrospectives"` directory exists (opt-in gate — if absent, never trigger)
-   c. No retrospective file for today exists: `! test -f "$VAULT/Retrospectives/$(date +%Y-%m-%d)-retrospective.md"`
-   d. The number of session log files newer than the most recent retrospective exceeds the threshold
-
-   To check condition (d):
-   ```bash
-   LATEST_RETRO=$(ls -t "$VAULT/Retrospectives"/*.md 2>/dev/null | head -1)
-   if [ -n "$LATEST_RETRO" ]; then
-     NEW_COUNT=$(find "$VAULT/Session-Logs" -name "*.md" -newer "$LATEST_RETRO" | wc -l | tr -d ' ')
-   else
-     NEW_COUNT=$(find "$VAULT/Session-Logs" -name "*.md" | wc -l | tr -d ' ')
-   fi
-   ```
-
-   Read `session_window` from `~/deus/.claude/wardens/retrospective-schema.md` (default: 20).
-   If `NEW_COUNT >= session_window`, dispatch the retrospective via an in-session Agent subagent (background):
-
-   Use the Agent tool with `subagent_type: "session-retrospective"`, `run_in_background: true`, and prompt:
-   `"Run a session retrospective. SESSION_LOG_ROOT=$VAULT"` (substitute the resolved `$VAULT` variable).
-
-   This avoids `claude -p` which draws from the Agent SDK credit on subscription plans.
-   If the Agent tool is unavailable (e.g. non-Claude backend), skip silently.
-   If any check fails, skip silently — the retrospective can always be triggered manually.
+   Read `branches/retrospective.md` for conditions and dispatch instructions. Skip silently if any check fails.
 
 Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, and whether a session retrospective was triggered (home mode only — report "retrospective triggered (background)" or "retrospective skipped: <reason>").

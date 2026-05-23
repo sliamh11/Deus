@@ -5,8 +5,8 @@ Queries the Linear GraphQL API for active issues and rebuilds the pending:
 block in CLAUDE.md. Uses the same sentinel/block-replace pattern as the
 TypeScript webhook-driven sync in src/linear-vault-sync.ts.
 
-Config resolution: ~/.config/deus/config.json (vault_path, LINEAR_TEAM_ID)
-Token resolution: DEUS_HOME/.env -> LINEAR_API_TOKEN env var
+Config resolution: ~/.config/deus/config.json (vault_path)
+Token resolution: env vars -> DEUS_HOME/.env -> LINEAR_API_TOKEN
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 from urllib.error import URLError
 
-LINEAR_API_URL = "https://linear.app/api/graphql"
+LINEAR_API_URL = "https://api.linear.app/graphql"
 
 STATE_PRIORITY = {
     "In Progress": 0,
@@ -52,7 +52,6 @@ def _vault_path(config: dict) -> Path | None:
 
 
 def _read_env_file() -> dict[str, str]:
-    """Read .env from DEUS_HOME or project dir."""
     candidates = []
     deus_home = os.environ.get("DEUS_HOME")
     if deus_home:
@@ -77,7 +76,7 @@ def _read_env_file() -> dict[str, str]:
     return env_vars
 
 
-def _get_api_token(config: dict) -> str | None:
+def _get_api_token() -> str | None:
     token = os.environ.get("LINEAR_API_TOKEN") or os.environ.get("LINEAR_API_KEY")
     if token:
         return token
@@ -85,7 +84,7 @@ def _get_api_token(config: dict) -> str | None:
     return env_file.get("LINEAR_API_TOKEN") or env_file.get("LINEAR_API_KEY")
 
 
-def _get_team_id(config: dict) -> str | None:
+def _get_team_id() -> str | None:
     tid = os.environ.get("LINEAR_TEAM_ID")
     if tid:
         return tid
@@ -119,7 +118,7 @@ def _discover_team_id(token: str) -> str | None:
 
 def _fetch_issues(token: str, team_id: str) -> list[dict]:
     query = """
-    query($teamId: String!) {
+    query($teamId: ID!) {
       issues(
         filter: {
           team: { id: { eq: $teamId } }
@@ -199,11 +198,11 @@ def main() -> None:
     if not vault or not vault.exists():
         return
 
-    token = _get_api_token(config)
+    token = _get_api_token()
     if not token:
         return
 
-    team_id = _get_team_id(config)
+    team_id = _get_team_id()
     if not team_id:
         team_id = _discover_team_id(token)
     if not team_id:
