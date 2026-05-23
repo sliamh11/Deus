@@ -57,6 +57,7 @@ export interface LinearContext {
   stateByName: Map<string, WorkflowState>;
   stateById: Map<string, WorkflowState>;
   botUserId: string;
+  viewerId: string; // human operator ID, used to assign issues on In Review
   deps: LinearDispatcherDependencies;
   dispatchGroup: RegisteredGroup;
   inFlightDispatch: Set<string>;
@@ -300,9 +301,7 @@ async function runIssue(
     );
   }
 
-  notifyPipelineStep(ctx, issueId, identifier, 'Agent started working').catch(
-    () => {},
-  );
+  notifyPipelineStep(ctx, issueId, identifier, 'agent_started').catch(() => {});
 
   const { text, error } = await executeAgentRun(ctx, runContext);
 
@@ -312,8 +311,11 @@ async function runIssue(
     if (error) {
       await ctx.client.createComment({
         issueId,
-        body: `**Agent run failed**\n\n\`\`\`\n${error}\n\`\`\``,
+        body: `**Agent run failed**\n\n\`\`\`\n${error}\n\`\`\`\n\n---\n*To retry: move to **Todo**, then to **Ready for Agent**.*`,
       });
+      notifyPipelineStep(ctx, issueId, identifier, 'agent_failed', error).catch(
+        () => {},
+      );
       const backlogState = ctx.stateByName.get('Backlog')!;
       await ctx.client.updateIssue(issueId, { stateId: backlogState.id });
       logger.warn(
@@ -324,19 +326,25 @@ async function runIssue(
       const body = text || '(no output produced)';
       const prUrl = extractPrUrl(body, ctx.repoSlug);
       if (prUrl) {
-        upsertIssuePr(issueId, prUrl);
+        upsertIssuePr(issueId, prUrl, undefined, identifier);
         logger.info({ issueId, prUrl }, 'linear-dispatcher: persisted PR URL');
       }
       await ctx.client.createComment({ issueId, body });
+
+      if (prUrl) {
+        notifyPipelineStep(ctx, issueId, identifier, 'pr_created', prUrl).catch(
+          () => {},
+        );
+      }
+
       const reviewState = ctx.stateByName.get('In Review')!;
-      await ctx.client.updateIssue(issueId, { stateId: reviewState.id });
-      notifyPipelineStep(
-        ctx,
-        issueId,
-        identifier,
-        prUrl ? `PR created → In Review` : 'Agent done → In Review',
-        prUrl ?? undefined,
-      ).catch(() => {});
+      await ctx.client.updateIssue(issueId, {
+        stateId: reviewState.id,
+        assigneeId: ctx.viewerId,
+      });
+      notifyPipelineStep(ctx, issueId, identifier, 'agent_completed').catch(
+        () => {},
+      );
       logger.info({ issueId }, 'linear-dispatcher: issue moved to In Review');
     }
   } catch (err) {
@@ -427,6 +435,13 @@ async function pollLinear(): Promise<void> {
       isScheduledTask: true,
       effort: 'high',
     };
+
+    notifyPipelineStep(
+      ctx,
+      issue.id,
+      issue.identifier,
+      'agent_dispatched',
+    ).catch(() => {});
 
     ctx.deps.queue.enqueueTask(chatJid, issue.id, () =>
       runIssue(ctx, issue.id, issue.identifier, runContext),
@@ -598,6 +613,7 @@ export async function initLinearContext(
       stateByName,
       stateById,
       botUserId,
+      viewerId: viewer.id,
       deps,
       dispatchGroup,
       inFlightDispatch: new Set(),

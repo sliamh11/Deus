@@ -134,8 +134,30 @@ function createSchema(database: Database.Database): void {
       issue_id TEXT PRIMARY KEY,
       pr_url TEXT NOT NULL,
       branch TEXT,
+      identifier TEXT,
       auto_merge_state TEXT DEFAULT 'none',
       created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS linear_pipeline_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      issue_id TEXT NOT NULL,
+      identifier TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_pipeline_events_issue
+      ON linear_pipeline_events(issue_id);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_events_type
+      ON linear_pipeline_events(event_type);
+    CREATE INDEX IF NOT EXISTS idx_pipeline_events_created
+      ON linear_pipeline_events(created_at);
+
+    CREATE TABLE IF NOT EXISTS linear_pipeline_comments (
+      issue_id TEXT PRIMARY KEY,
+      comment_id TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
   `);
@@ -145,6 +167,13 @@ function createSchema(database: Database.Database): void {
     database.exec(
       `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
     );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add identifier column to linear_issue_prs (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE linear_issue_prs ADD COLUMN identifier TEXT`);
   } catch {
     /* column already exists */
   }
@@ -1226,16 +1255,18 @@ export function upsertIssuePr(
   issueId: string,
   prUrl: string,
   branch?: string,
+  identifier?: string,
 ): void {
   const now = new Date().toISOString();
   db.prepare(
-    `INSERT INTO linear_issue_prs (issue_id, pr_url, branch, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?)
+    `INSERT INTO linear_issue_prs (issue_id, pr_url, branch, identifier, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(issue_id) DO UPDATE SET
        pr_url = excluded.pr_url,
        branch = COALESCE(excluded.branch, linear_issue_prs.branch),
+       identifier = COALESCE(excluded.identifier, linear_issue_prs.identifier),
        updated_at = excluded.updated_at`,
-  ).run(issueId, prUrl, branch ?? null, now, now);
+  ).run(issueId, prUrl, branch ?? null, identifier ?? null, now, now);
 }
 
 export function getIssuePr(
@@ -1265,16 +1296,115 @@ export function getPendingAutoMerges(): Array<{
   issue_id: string;
   pr_url: string;
   branch: string | null;
+  identifier: string | null;
 }> {
   return db
     .prepare(
-      `SELECT issue_id, pr_url, branch FROM linear_issue_prs WHERE auto_merge_state = 'pending'`,
+      `SELECT issue_id, pr_url, branch, identifier FROM linear_issue_prs WHERE auto_merge_state = 'pending'`,
     )
     .all() as Array<{
     issue_id: string;
     pr_url: string;
     branch: string | null;
+    identifier: string | null;
   }>;
+}
+
+// --- Pipeline event accessors ---
+
+export function logPipelineEvent(
+  issueId: string,
+  identifier: string,
+  eventType: string,
+  detail?: string,
+): void {
+  try {
+    db.prepare(
+      `INSERT INTO linear_pipeline_events (issue_id, identifier, event_type, detail, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(
+      issueId,
+      identifier,
+      eventType,
+      detail ?? null,
+      new Date().toISOString(),
+    );
+  } catch (err) {
+    logger.debug({ issueId, eventType, err }, 'pipeline-event: insert failed');
+  }
+}
+
+export interface PipelineEventFilter {
+  issueId?: string;
+  identifier?: string;
+  eventType?: string;
+  since?: string;
+}
+
+export function getPipelineEvents(filters?: PipelineEventFilter): Array<{
+  id: number;
+  issue_id: string;
+  identifier: string;
+  event_type: string;
+  detail: string | null;
+  created_at: string;
+}> {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+
+  if (filters?.issueId) {
+    conditions.push('issue_id = ?');
+    params.push(filters.issueId);
+  }
+  if (filters?.identifier) {
+    conditions.push('identifier = ?');
+    params.push(filters.identifier);
+  }
+  if (filters?.eventType) {
+    conditions.push('event_type = ?');
+    params.push(filters.eventType);
+  }
+  if (filters?.since) {
+    conditions.push('created_at >= ?');
+    params.push(filters.since);
+  }
+
+  const where =
+    conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  return db
+    .prepare(
+      `SELECT id, issue_id, identifier, event_type, detail, created_at FROM linear_pipeline_events ${where} ORDER BY id ASC`,
+    )
+    .all(...params) as Array<{
+    id: number;
+    issue_id: string;
+    identifier: string;
+    event_type: string;
+    detail: string | null;
+    created_at: string;
+  }>;
+}
+
+export function upsertPipelineComment(
+  issueId: string,
+  commentId: string,
+): void {
+  db.prepare(
+    `INSERT INTO linear_pipeline_comments (issue_id, comment_id, updated_at)
+     VALUES (?, ?, ?)
+     ON CONFLICT(issue_id) DO UPDATE SET
+       comment_id = excluded.comment_id,
+       updated_at = excluded.updated_at`,
+  ).run(issueId, commentId, new Date().toISOString());
+}
+
+export function getPipelineCommentId(issueId: string): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT comment_id FROM linear_pipeline_comments WHERE issue_id = ?`,
+    )
+    .get(issueId) as { comment_id: string } | undefined;
+  return row?.comment_id;
 }
 
 // --- JSON migration ---

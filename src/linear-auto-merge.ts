@@ -17,7 +17,7 @@ import {
 } from './db.js';
 import { logger } from './logger.js';
 import { extractPrUrl } from './pr-url-extractor.js';
-import { macosNotify } from './linear-notifications.js';
+import { macosNotify, notifyPipelineStep } from './linear-notifications.js';
 import type { LinearContext } from './linear-dispatcher.js';
 
 const execFileAsync = promisify(execFile);
@@ -133,9 +133,11 @@ export async function attemptAutoMerge(
   ctx: LinearContext,
   issueId: string,
   prUrl: string,
+  identifier?: string,
   attempt = 0,
 ): Promise<void> {
   if (!isAutoMergeEnabled()) return;
+  const ident = identifier ?? 'unknown';
 
   const checks = await queryPrChecks(prUrl);
   logger.info(
@@ -166,7 +168,9 @@ export async function attemptAutoMerge(
           body: `**Auto-merged** - PR ${prUrl} merged after CI passed.`,
         });
       }
-      macosNotify('Deus', `Auto-merged → Done (${prUrl.split('/').pop()})`);
+      notifyPipelineStep(ctx, issueId, ident, 'automerge_done', prUrl).catch(
+        () => {},
+      );
       logger.info({ issueId, prUrl }, 'auto-merge: merged and moved to Done');
     } else {
       logger.warn(
@@ -174,6 +178,13 @@ export async function attemptAutoMerge(
         'auto-merge: merge failed despite passing CI',
       );
       updatePrAutoMergeState(issueId, 'failed');
+      notifyPipelineStep(
+        ctx,
+        issueId,
+        ident,
+        'automerge_failed',
+        result.error,
+      ).catch(() => {});
       await ctx.client.createComment({
         issueId,
         body: `**Auto-merge failed** - ${result.error}`,
@@ -185,6 +196,13 @@ export async function attemptAutoMerge(
   if (checks.status === 'pending') {
     if (attempt >= MAX_POLL_ATTEMPTS) {
       updatePrAutoMergeState(issueId, 'failed');
+      notifyPipelineStep(
+        ctx,
+        issueId,
+        ident,
+        'automerge_failed',
+        'Timed out',
+      ).catch(() => {});
       await ctx.client.createComment({
         issueId,
         body: `**Auto-merge timed out** - CI still pending after ${MAX_POLL_ATTEMPTS} attempts. PR: ${prUrl}`,
@@ -193,15 +211,24 @@ export async function attemptAutoMerge(
       return;
     }
     setTimeout(() => {
-      attemptAutoMerge(ctx, issueId, prUrl, attempt + 1).catch((err) => {
-        logger.error({ issueId, err }, 'auto-merge: re-check failed');
-      });
+      attemptAutoMerge(ctx, issueId, prUrl, identifier, attempt + 1).catch(
+        (err) => {
+          logger.error({ issueId, err }, 'auto-merge: re-check failed');
+        },
+      );
     }, CI_POLL_INTERVAL_MS);
     return;
   }
 
   // CI failed
   updatePrAutoMergeState(issueId, 'failed');
+  notifyPipelineStep(
+    ctx,
+    issueId,
+    ident,
+    'automerge_failed',
+    checks.summary,
+  ).catch(() => {});
   await ctx.client.createComment({
     issueId,
     body: `**Auto-merge blocked** - CI failed: ${checks.summary}\n\nPR: ${prUrl}`,
@@ -226,8 +253,8 @@ export async function sweepPendingAutoMerges(
     'auto-merge: sweeping pending merges on startup',
   );
 
-  for (const { issue_id, pr_url } of pending) {
-    attemptAutoMerge(ctx, issue_id, pr_url).catch((err) => {
+  for (const { issue_id, pr_url, identifier: ident } of pending) {
+    attemptAutoMerge(ctx, issue_id, pr_url, ident || 'unknown').catch((err) => {
       logger.error({ issueId: issue_id, err }, 'auto-merge: sweep failed');
     });
   }
@@ -236,6 +263,7 @@ export async function sweepPendingAutoMerges(
 export async function triggerAutoMerge(
   ctx: LinearContext,
   issueId: string,
+  identifier?: string,
 ): Promise<void> {
   if (!isAutoMergeEnabled()) return;
 
@@ -271,6 +299,10 @@ export async function triggerAutoMerge(
     return;
   }
 
+  const ident = identifier || 'unknown';
   updatePrAutoMergeState(issueId, 'pending');
-  await attemptAutoMerge(ctx, issueId, pr.pr_url);
+  notifyPipelineStep(ctx, issueId, ident, 'automerge_pending', pr.pr_url).catch(
+    () => {},
+  );
+  await attemptAutoMerge(ctx, issueId, pr.pr_url, ident);
 }
