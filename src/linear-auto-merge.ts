@@ -220,7 +220,7 @@ export async function attemptAutoMerge(
     return;
   }
 
-  // CI failed
+  // CI failed — re-dispatch the agent to fix it
   updatePrAutoMergeState(issueId, 'failed');
   notifyPipelineStep(
     ctx,
@@ -231,13 +231,16 @@ export async function attemptAutoMerge(
   ).catch(() => {});
   await ctx.client.createComment({
     issueId,
-    body: `**Auto-merge blocked** - CI failed: ${checks.summary}\n\nPR: ${prUrl}`,
+    body: `**Auto-merge blocked** - CI failed: ${checks.summary}\n\nPR: ${prUrl}\n\nMoving to Ready for Agent for re-dispatch.`,
   });
-  const backlogState = ctx.stateByName.get('Backlog');
-  if (backlogState) {
-    await ctx.client.updateIssue(issueId, { stateId: backlogState.id });
+  const readyState = ctx.stateByName.get('Ready for Agent');
+  if (readyState) {
+    await ctx.client.updateIssue(issueId, { stateId: readyState.id });
   }
-  logger.warn({ issueId, prUrl }, 'auto-merge: CI failed, moved to Backlog');
+  logger.warn(
+    { issueId, prUrl },
+    'auto-merge: CI failed, moved to Ready for Agent',
+  );
 }
 
 export async function sweepPendingAutoMerges(
