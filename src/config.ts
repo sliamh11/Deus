@@ -184,6 +184,8 @@ export const WEBHOOK_MAX_RETRIES = parseInt(
 );
 // Base delay in ms for exponential backoff: min(base * 2^attempt + jitter, 30_000).
 export const WEBHOOK_BASE_DELAY_MS = parseInt(
-  process.env.WEBHOOK_BASE_DELAY_MS || envConfig.WEBHOOK_BASE_DELAY_MS || '1000',
+  process.env.WEBHOOK_BASE_DELAY_MS ||
+    envConfig.WEBHOOK_BASE_DELAY_MS ||
+    '1000',
   10,
 );
