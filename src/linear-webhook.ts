@@ -12,12 +12,52 @@ import {
   getLastCompletedGateRun,
   upsertGateComment,
   getGateCommentId,
+  getPipelineEvents,
 } from './db.js';
 import { triggerAutoMerge } from './linear-auto-merge.js';
 import { macosNotify, notifyPipelineStep } from './linear-notifications.js';
 import { syncVaultPending } from './linear-vault-sync.js';
 
 const DEFAULT_WEBHOOK_PORT = 3005;
+const LABEL_RETRY_MAX = 3;
+const LABEL_RETRY_BASE_MS = 5_000;
+
+// Map<issueId, timeout> for deferred auto-merge after genuine cooldowns.
+// Volatile: does not survive restart (sweepStaleInReview covers that case).
+const pendingCooldownRetries = new Map<string, ReturnType<typeof setTimeout>>();
+
+async function retryLabelUpdate(
+  client: LinearContext['client'],
+  issueId: string,
+  update: Record<string, unknown>,
+): Promise<void> {
+  for (let i = 0; i < LABEL_RETRY_MAX; i++) {
+    try {
+      await client.updateIssue(issueId, update);
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const isRetryable =
+        msg.includes('rate limit') ||
+        msg.includes('429') ||
+        msg.includes('Too Many');
+      if (!isRetryable || i === LABEL_RETRY_MAX - 1) {
+        logger.warn(
+          { issueId, err, attempt: i + 1 },
+          'retryLabelUpdate: exhausted retries or non-retryable error',
+        );
+        return;
+      }
+      logger.info(
+        { issueId, attempt: i + 1 },
+        'retryLabelUpdate: retrying after rate limit',
+      );
+      await new Promise((r) =>
+        setTimeout(r, LABEL_RETRY_BASE_MS * Math.pow(3, i)),
+      );
+    }
+  }
+}
 
 let _syncTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -258,32 +298,79 @@ async function handleIssueUpdate(
       const elapsed =
         (Date.now() - new Date(lastRun.finished_at).getTime()) / 60_000;
       if (elapsed < gateSpec.cooldownMinutes) {
-        const remainMin = Math.ceil(gateSpec.cooldownMinutes - elapsed);
-        const resetAt = new Date(
-          new Date(lastRun.finished_at).getTime() +
-            gateSpec.cooldownMinutes * 60_000,
-        );
-        const resetTime = resetAt.toISOString().slice(11, 16);
-        notifyPipelineStep(
-          ctx,
-          data.id,
-          data.identifier,
-          'gate_cooldown',
-          `${gateSpec.name}: ${remainMin}min remaining, resets at ${resetTime}`,
-        ).catch(() => {});
-        logger.info(
-          {
-            issueId: data.id,
-            gate: gateSpec.name,
-            elapsedMin: Math.round(elapsed),
-            cooldownMin: gateSpec.cooldownMinutes,
-          },
-          'linear-webhook: within cooldown, skipping',
-        );
-        updateWebhookEventStatus(eventKey, 'done', {
-          verdict: lastRun.verdict,
+        // Bypass cooldown if agent produced new work since last gate run
+        const agentEvents = getPipelineEvents({
+          issueId: data.id,
+          eventType: 'agent_completed',
         });
-        return;
+        const lastAgentDone = agentEvents.at(-1);
+        if (
+          lastAgentDone &&
+          new Date(lastAgentDone.created_at) > new Date(lastRun.finished_at)
+        ) {
+          logger.info(
+            { issueId: data.id, gate: gateSpec.name },
+            'linear-webhook: bypassing cooldown, new agent work detected',
+          );
+          // New agent work post-last-gate means the previous verdict is stale
+        } else {
+          const remainMin = Math.ceil(gateSpec.cooldownMinutes - elapsed);
+          const resetAt = new Date(
+            new Date(lastRun.finished_at).getTime() +
+              gateSpec.cooldownMinutes * 60_000,
+          );
+          const resetTime = resetAt.toISOString().slice(11, 16);
+          notifyPipelineStep(
+            ctx,
+            data.id,
+            data.identifier,
+            'gate_cooldown',
+            `${gateSpec.name}: ${remainMin}min remaining, resets at ${resetTime}`,
+          ).catch(() => {});
+          logger.info(
+            {
+              issueId: data.id,
+              gate: gateSpec.name,
+              elapsedMin: Math.round(elapsed),
+              cooldownMin: gateSpec.cooldownMinutes,
+            },
+            'linear-webhook: within cooldown, skipping',
+          );
+          updateWebhookEventStatus(eventKey, 'done', {
+            verdict: lastRun.verdict,
+          });
+
+          // Schedule deferred auto-merge after cooldown expires
+          const retryDelayMs =
+            (gateSpec.cooldownMinutes - elapsed) * 60_000 + 5_000;
+          if (!pendingCooldownRetries.has(data.id)) {
+            const issueId = data.id;
+            const identifier = data.identifier;
+            const targetStateName = toState.name;
+            const timeout = setTimeout(async () => {
+              pendingCooldownRetries.delete(issueId);
+              try {
+                const issue = await ctx.client.issue(issueId);
+                const currentState = await issue.state;
+                if (currentState?.name === targetStateName) {
+                  await triggerAutoMerge(ctx, issueId, identifier);
+                }
+              } catch (retryErr) {
+                logger.warn(
+                  { issueId, err: retryErr },
+                  'linear-webhook: deferred auto-merge after cooldown failed',
+                );
+              }
+            }, retryDelayMs);
+            pendingCooldownRetries.set(issueId, timeout);
+            logger.info(
+              { issueId: data.id, delayMs: retryDelayMs },
+              'linear-webhook: scheduled deferred auto-merge after cooldown',
+            );
+          }
+
+          return;
+        }
       }
     }
   }
@@ -465,6 +552,18 @@ async function handleIssueUpdate(
       { issueId: data.id, gate: gateSpec.name, err },
       'linear-webhook: gate evaluation failed',
     );
+
+    // Apply fallback verdict on infrastructure errors (matching agent-error path)
+    finalVerdict = gateSpec.fallback;
+    const errorComment = formatGateComment(
+      gateSpec.name,
+      finalVerdict,
+      `Gate infrastructure error (fallback: ${gateSpec.fallback}):\n\`\`\`\n${errorMsg}\n\`\`\``,
+      gateSpec.mode,
+    );
+    postOrUpdateComment(ctx, data.id, toState.name, errorComment).catch(
+      () => {},
+    );
   } finally {
     ctx.inFlightGate.delete(data.id);
     const removeIds: string[] = [];
@@ -504,12 +603,7 @@ async function handleIssueUpdate(
       const update: Record<string, unknown> = {};
       if (safeRemoveIds.length > 0) update.removedLabelIds = safeRemoveIds;
       if (addIds.length > 0) update.addedLabelIds = addIds;
-      ctx.client.updateIssue(data.id, update).catch((err) => {
-        logger.warn(
-          { issueId: data.id, addIds, safeRemoveIds, err },
-          'linear-webhook: failed to update gate labels',
-        );
-      });
+      retryLabelUpdate(ctx.client, data.id, update);
     }
 
     if (finalVerdict === 'SHIP' && gateSpec.name === 'output-quality-gate') {

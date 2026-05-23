@@ -64,16 +64,18 @@ export async function queryPrChecks(prUrl: string): Promise<PrChecksResult> {
     const failing = checks.filter((c) => c.bucket === 'fail');
     const pending = checks.filter((c) => c.bucket === 'pending');
 
-    if (failing.length > 0) {
-      return {
-        status: 'fail',
-        summary: `Failed: ${failing.map((c) => c.name).join(', ')}`,
-      };
-    }
+    // Check pending BEFORE failing: if any checks are still running,
+    // wait for completion before declaring failure (avoids premature redispatch)
     if (pending.length > 0) {
       return {
         status: 'pending',
         summary: `Pending: ${pending.map((c) => c.name).join(', ')}`,
+      };
+    }
+    if (failing.length > 0) {
+      return {
+        status: 'fail',
+        summary: `Failed: ${failing.map((c) => c.name).join(', ')}`,
       };
     }
     return { status: 'pass', summary: `All ${checks.length} checks passed` };
@@ -205,9 +207,19 @@ export async function attemptAutoMerge(
       ).catch(() => {});
       await ctx.client.createComment({
         issueId,
-        body: `**Auto-merge timed out** - CI still pending after ${MAX_POLL_ATTEMPTS} attempts. PR: ${prUrl}`,
+        body: `**Auto-merge timed out** - CI still pending after ${MAX_POLL_ATTEMPTS} attempts. PR: ${prUrl}\n\nMoving to Ready for Agent for re-dispatch.`,
       });
-      logger.warn({ issueId, prUrl }, 'auto-merge: timed out');
+      const readyStateTimeout = ctx.stateByName.get('Ready for Agent');
+      if (readyStateTimeout) {
+        await ctx.client.updateIssue(issueId, {
+          stateId: readyStateTimeout.id,
+          priority: 1,
+        });
+      }
+      logger.warn(
+        { issueId, prUrl },
+        'auto-merge: timed out, moved to Ready for Agent',
+      );
       return;
     }
     setTimeout(() => {
@@ -264,6 +276,52 @@ export async function sweepPendingAutoMerges(
     attemptAutoMerge(ctx, issue_id, pr_url, ident || 'unknown').catch((err) => {
       logger.error({ issueId: issue_id, err }, 'auto-merge: sweep failed');
     });
+  }
+}
+
+export async function sweepStaleInReview(ctx: LinearContext): Promise<void> {
+  if (!isAutoMergeEnabled()) return;
+
+  const inReviewState = ctx.stateByName.get('In Review');
+  if (!inReviewState) return;
+
+  try {
+    const issues = await ctx.client.issues({
+      filter: { state: { id: { eq: inReviewState.id } } },
+    });
+
+    let triggered = 0;
+    for (const issue of issues.nodes) {
+      const labels = await issue.labels();
+      if (labels.nodes.some((l) => l.name === 'warden:skip')) continue;
+
+      const pr = getIssuePr(issue.id);
+      if (pr?.auto_merge_state === 'pending') continue;
+      if (pr?.auto_merge_state === 'merged') {
+        logger.warn(
+          { issueId: issue.id },
+          'auto-merge: issue still In Review but PR marked merged — data inconsistency',
+        );
+        continue;
+      }
+
+      triggerAutoMerge(ctx, issue.id, issue.identifier).catch((err) => {
+        logger.error(
+          { issueId: issue.id, err },
+          'auto-merge: stale sweep failed',
+        );
+      });
+      triggered++;
+    }
+
+    if (triggered > 0) {
+      logger.info(
+        { count: triggered },
+        'auto-merge: swept stale In Review issues',
+      );
+    }
+  } catch (err) {
+    logger.warn({ err }, 'auto-merge: failed to sweep stale In Review issues');
   }
 }
 
