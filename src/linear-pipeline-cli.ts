@@ -15,6 +15,8 @@ import {
   getIssueCacheCount,
   getMaxCachedAt,
   reconcileIssueCache,
+  getStageEntryTime,
+  computeStageMedians,
   initDatabase,
   type PipelineEventFilter,
 } from './db.js';
@@ -145,7 +147,7 @@ export function computeColumnWidths(cols: number): {
 } {
   const showWhy = cols >= 130;
   const showStageBar = cols >= 110;
-  let overhead = 58;
+  let overhead = 64; // +6 for ETA column (1 space + 5 chars)
   if (showWhy) overhead += 18;
   if (showStageBar) overhead += 12;
   const clamped = Math.max(80, cols);
@@ -177,6 +179,40 @@ export function formatElapsed(isoTimestamp: string): string {
   if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
   return `${days}d`;
+}
+
+/** Strip ANSI escape sequences for display-width measurement. */
+function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+/**
+ * Compute the ETA display string for the 5-char ETA column.
+ *
+ * Returns:
+ *   `'?'`      when sampleSize < 5, stageEntryTime is null, or medianMs is undefined
+ *   `'~Xm'`    when remainingMs > 0 (X = ceiling of remaining minutes)
+ *   yellow `'past'` when spent >= median and spent <= 1.5× median
+ *   red    `'past'` when spent > 1.5× median
+ */
+export function computeETADisplay(
+  stageEntryTime: string | null,
+  medianMs: number | undefined,
+  sampleSize: number,
+): string {
+  if (sampleSize < 5 || stageEntryTime === null || medianMs === undefined) {
+    return '?';
+  }
+  const spentMs = Date.now() - new Date(stageEntryTime).getTime();
+  const remainingMs = medianMs - spentMs;
+  if (remainingMs > 0) {
+    return '~' + Math.ceil(remainingMs / 60_000) + 'm';
+  }
+  if (spentMs > 1.5 * medianMs) {
+    return RED + 'past' + RESET;
+  }
+  return YELLOW + 'past' + RESET;
 }
 
 function truncate(str: string, maxLen: number): string {
@@ -527,6 +563,8 @@ interface ActiveIssue {
   statusSummary: string | null;
   reviseCount: number;
   events: PipelineEvent[];
+  /** ISO timestamp at which this issue entered its current stage; null if unknown. */
+  stageEntryTime: string | null;
 }
 
 interface QueuedIssue {
@@ -666,12 +704,18 @@ async function fetchActiveAndQueued(
     }
 
     const enriched = enrichFromDb(row.issue_id, row.updated_at);
+    let stageEntryTime = getStageEntryTime(row.issue_id, row.state_name);
+    if (stageEntryTime === null && row.state_name === 'Ready for Agent') {
+      // Fall back to cache updated_at timestamp
+      stageEntryTime = row.updated_at;
+    }
     active.push({
       id: row.issue_id,
       identifier: row.identifier,
       title: row.title,
       stateName: row.state_name,
       ...enriched,
+      stageEntryTime,
     });
   }
 
@@ -787,6 +831,7 @@ function renderDashboardOutput(
   active: ActiveIssue[],
   queued: QueuedIssue[],
   recent: RecentIssue[],
+  stageMedians: Map<string, { medianMs: number; sampleSize: number }>,
   opts: RenderOptions = {},
 ): string {
   const now = new Date().toLocaleTimeString('en-GB', { hour12: false });
@@ -830,7 +875,7 @@ function renderDashboardOutput(
   const whyHeader = showWhy ? ` ${'WHY'.padEnd(16)}` : '';
   const stageHeader = showStageBar ? '     STAGE' : '';
   lines.push(
-    `${DIM}  ${'ID'.padEnd(8)}  ${'TITLE'.padEnd(titleWidth)} ${'PR'.padStart(6)} ${'STATUS'.padEnd(22)}${whyHeader} ${'AGE'.padStart(4)}${stageHeader}${RESET}`,
+    `${DIM}  ${'ID'.padEnd(8)}  ${'TITLE'.padEnd(titleWidth)} ${'PR'.padStart(6)} ${'STATUS'.padEnd(22)}${whyHeader} ${'AGE'.padStart(4)} ${'ETA'.padEnd(5)}${stageHeader}${RESET}`,
   );
 
   let rowIndex = 0;
@@ -887,8 +932,18 @@ function renderDashboardOutput(
       const whyCol = showWhy ? ` ${DIM}${why}${RESET}` : '';
       const stageCol = showStageBar ? ` ${buildStageBar(issue.events)}` : '';
 
+      const stageInfo = stageMedians.get(issue.stateName);
+      const etaRaw = computeETADisplay(
+        issue.stageEntryTime,
+        stageInfo?.medianMs,
+        stageInfo?.sampleSize ?? 0,
+      );
+      // Pad the ETA field to exactly 5 visible characters
+      const etaPadded =
+        etaRaw + ' '.repeat(Math.max(0, 5 - stripAnsi(etaRaw).length));
+
       lines.push(
-        `${cursor} ${CYAN}${id}${RESET}${glyph} ${title} ${pr} ${DIM}${status}${RESET}${whyCol} ${elapsedColored}${revise}${stageCol}`,
+        `${cursor} ${CYAN}${id}${RESET}${glyph} ${title} ${pr} ${DIM}${status}${RESET}${whyCol} ${elapsedColored} ${etaPadded}${revise}${stageCol}`,
       );
       rowIndex++;
     }
@@ -1037,6 +1092,8 @@ async function startWatchMode(): Promise<void> {
   let cachedActive: ActiveIssue[] = [];
   let cachedQueued: QueuedIssue[] = [];
   let cachedRecent: RecentIssue[] = [];
+  let cachedStageMedians: Map<string, { medianMs: number; sampleSize: number }> =
+    new Map();
   let lastWarning: string | undefined;
   let cachedTodayStats: TodayStats | undefined;
   let cachedGateRevisions: GateRevisionCounts | undefined;
@@ -1150,20 +1207,26 @@ async function startWatchMode(): Promise<void> {
     if (viewMode === 'detail' && detailData) {
       output = renderDetailView(detailData);
     } else {
-      output = renderDashboardOutput(cachedActive, cachedQueued, cachedRecent, {
-        error: lastError,
-        currentRefreshMs: nextRefreshMs,
-        warning: lastWarning,
-        selectedIndex,
-        isPaused: paused,
-        confirmPrompt: confirmPending ? confirmLabel : undefined,
-        cmdLine: cmdMode ? cmdBuffer : undefined,
-        lastResult: lastActionResult
-          ? { message: lastActionResult, ok: lastActionOk }
-          : undefined,
-        todayStats: cachedTodayStats,
-        gateRevisions: cachedGateRevisions,
-      });
+      output = renderDashboardOutput(
+        cachedActive,
+        cachedQueued,
+        cachedRecent,
+        cachedStageMedians,
+        {
+          error: lastError,
+          currentRefreshMs: nextRefreshMs,
+          warning: lastWarning,
+          selectedIndex,
+          isPaused: paused,
+          confirmPrompt: confirmPending ? confirmLabel : undefined,
+          cmdLine: cmdMode ? cmdBuffer : undefined,
+          lastResult: lastActionResult
+            ? { message: lastActionResult, ok: lastActionOk }
+            : undefined,
+          todayStats: cachedTodayStats,
+          gateRevisions: cachedGateRevisions,
+        },
+      );
     }
     process.stdout.write(CURSOR_HOME + CLEAR_TO_END + output + '\n');
   }
@@ -1186,6 +1249,7 @@ async function startWatchMode(): Promise<void> {
       cachedActive = active;
       cachedQueued = queued;
       cachedRecent = recent;
+      cachedStageMedians = computeStageMedians();
       allIssues = [...active, ...queued];
       selectedIndex = Math.min(
         selectedIndex,
