@@ -461,7 +461,9 @@ describe('retryWithBackoff', () => {
 
   afterEach(() => {
     // Restore real sleep after each test
-    _setSleepFnForTests((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
+    _setSleepFnForTests(
+      (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+    );
   });
 
   it('returns result immediately when handler always succeeds', async () => {
@@ -596,3 +598,4 @@ describe('retryWithBackoff', () => {
     loggerErrorSpy.mockRestore();
   });
 });
+
