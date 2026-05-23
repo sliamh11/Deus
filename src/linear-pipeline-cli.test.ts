@@ -1,3 +1,4 @@
+// Tests for linear-pipeline-cli utilities and buildStageBar
 import { describe, it, expect } from 'vitest';
 import {
   parseDuration,
