@@ -257,7 +257,7 @@ describe('buildStageBar', () => {
   describe('mid-pipeline — after agent_started', () => {
     it('stage 1 and 2 complete, stage 3 is frontier', () => {
       const events: PipelineEvent[] = [
-        makeEvent('gate_ship'),    // stage 1 done (scope)
+        makeEvent('gate_ship'), // stage 1 done (scope)
         makeEvent('agent_started'), // stage 2 done
       ];
       const bar = buildStageBar(events);
@@ -272,9 +272,7 @@ describe('buildStageBar', () => {
     });
 
     it('gate_ship before agent_started counts as scope (stage 1) only', () => {
-      const events: PipelineEvent[] = [
-        makeEvent('gate_ship'),
-      ];
+      const events: PipelineEvent[] = [makeEvent('gate_ship')];
       const bar = buildStageBar(events);
       const plain = stripAnsi(bar);
       const stages = plain.slice(2, 8);
@@ -343,12 +341,12 @@ describe('buildStageBar', () => {
   describe('fully-complete pipeline', () => {
     it('all 6 stages complete, no frontier', () => {
       const events: PipelineEvent[] = [
-        makeEvent('gate_ship'),       // stage 1
-        makeEvent('agent_started'),    // stage 2
-        makeEvent('agent_completed'),  // stage 3
-        makeEvent('gate_ship'),        // stage 4
-        makeEvent('gate_ship'),        // stage 5
-        makeEvent('automerge_done'),   // stage 6
+        makeEvent('gate_ship'), // stage 1
+        makeEvent('agent_started'), // stage 2
+        makeEvent('agent_completed'), // stage 3
+        makeEvent('gate_ship'), // stage 4
+        makeEvent('gate_ship'), // stage 5
+        makeEvent('automerge_done'), // stage 6
       ];
       const bar = buildStageBar(events);
       const plain = stripAnsi(bar);
@@ -391,11 +389,11 @@ describe('buildStageBar', () => {
 
     it('gate_revise before stage 4 gate_ship marks stage 4 as revised (RED)', () => {
       const events: PipelineEvent[] = [
-        makeEvent('gate_ship'),       // stage 1
-        makeEvent('agent_started'),    // stage 2
-        makeEvent('agent_completed'),  // stage 3
-        makeEvent('gate_revise'),      // revise before quality gate
-        makeEvent('gate_ship'),        // stage 4
+        makeEvent('gate_ship'), // stage 1
+        makeEvent('agent_started'), // stage 2
+        makeEvent('agent_completed'), // stage 3
+        makeEvent('gate_revise'), // revise before quality gate
+        makeEvent('gate_ship'), // stage 4
       ];
       const bar = buildStageBar(events);
       const plain = stripAnsi(bar);
@@ -411,12 +409,12 @@ describe('buildStageBar', () => {
 
     it('gate_revise before stage 5 gate_ship marks stage 5 as revised (RED)', () => {
       const events: PipelineEvent[] = [
-        makeEvent('gate_ship'),       // stage 1
-        makeEvent('agent_started'),    // stage 2
-        makeEvent('agent_completed'),  // stage 3
-        makeEvent('gate_ship'),        // stage 4 (clean)
-        makeEvent('gate_revise'),      // revise before completion gate
-        makeEvent('gate_ship'),        // stage 5
+        makeEvent('gate_ship'), // stage 1
+        makeEvent('agent_started'), // stage 2
+        makeEvent('agent_completed'), // stage 3
+        makeEvent('gate_ship'), // stage 4 (clean)
+        makeEvent('gate_revise'), // revise before completion gate
+        makeEvent('gate_ship'), // stage 5
       ];
       const bar = buildStageBar(events);
       expect(bar).toContain('\x1b[31m'); // RED used
@@ -427,12 +425,12 @@ describe('buildStageBar', () => {
 
     it('gate_revise between stage 4 and 5 does not mark stage 4 as revised', () => {
       const events: PipelineEvent[] = [
-        makeEvent('gate_ship'),       // stage 1
-        makeEvent('agent_started'),    // stage 2
-        makeEvent('agent_completed'),  // stage 3
-        makeEvent('gate_ship'),        // stage 4 — clean (revise comes AFTER)
-        makeEvent('gate_revise'),      // revise after stage 4 but before stage 5
-        makeEvent('gate_ship'),        // stage 5 — revised
+        makeEvent('gate_ship'), // stage 1
+        makeEvent('agent_started'), // stage 2
+        makeEvent('agent_completed'), // stage 3
+        makeEvent('gate_ship'), // stage 4 — clean (revise comes AFTER)
+        makeEvent('gate_revise'), // revise after stage 4 but before stage 5
+        makeEvent('gate_ship'), // stage 5 — revised
       ];
       const bar = buildStageBar(events);
       // Stage 4 should be DIM (clean), stage 5 should be RED
@@ -452,12 +450,12 @@ describe('buildStageBar', () => {
 
     it('multiple gate_revise events before a gate_ship still only mark that stage red once', () => {
       const events: PipelineEvent[] = [
-        makeEvent('gate_ship'),        // stage 1
-        makeEvent('agent_started'),    // stage 2
-        makeEvent('agent_completed'),  // stage 3
+        makeEvent('gate_ship'), // stage 1
+        makeEvent('agent_started'), // stage 2
+        makeEvent('agent_completed'), // stage 3
         makeEvent('gate_revise'),
-        makeEvent('gate_revise'),      // multiple revises
-        makeEvent('gate_ship'),        // stage 4
+        makeEvent('gate_revise'), // multiple revises
+        makeEvent('gate_ship'), // stage 4
       ];
       const bar = buildStageBar(events);
       const plain = stripAnsi(bar);
@@ -466,13 +464,13 @@ describe('buildStageBar', () => {
 
     it('fully-complete pipeline with revise on stage 4 shows RED for that slot only', () => {
       const events: PipelineEvent[] = [
-        makeEvent('gate_ship'),       // stage 1 — clean
-        makeEvent('agent_started'),    // stage 2
-        makeEvent('agent_completed'),  // stage 3
-        makeEvent('gate_revise'),      // causes stage 4 to be RED
-        makeEvent('gate_ship'),        // stage 4
-        makeEvent('gate_ship'),        // stage 5 — clean
-        makeEvent('automerge_done'),   // stage 6
+        makeEvent('gate_ship'), // stage 1 — clean
+        makeEvent('agent_started'), // stage 2
+        makeEvent('agent_completed'), // stage 3
+        makeEvent('gate_revise'), // causes stage 4 to be RED
+        makeEvent('gate_ship'), // stage 4
+        makeEvent('gate_ship'), // stage 5 — clean
+        makeEvent('automerge_done'), // stage 6
       ];
       const bar = buildStageBar(events);
       const plain = stripAnsi(bar);
@@ -493,8 +491,8 @@ describe('buildStageBar', () => {
       const events: PipelineEvent[] = [
         makeEvent('state_changed'),
         makeEvent('agent_dispatched'),
-        makeEvent('gate_ship'),      // stage 1
-        makeEvent('agent_started'),  // stage 2
+        makeEvent('gate_ship'), // stage 1
+        makeEvent('agent_started'), // stage 2
       ];
       const bar = buildStageBar(events);
       const plain = stripAnsi(bar);
@@ -506,9 +504,7 @@ describe('buildStageBar', () => {
 
     it('no scope gate_ship before agent_started — stage 1 stays as frontier initially', () => {
       // If agent dispatched directly without a scope gate first, stage 1 is not done
-      const events: PipelineEvent[] = [
-        makeEvent('agent_started'),
-      ];
+      const events: PipelineEvent[] = [makeEvent('agent_started')];
       const bar = buildStageBar(events);
       const plain = stripAnsi(bar);
       // stage 1 not done, stage 2 done — frontier is stage 1 still? No:
@@ -528,7 +524,7 @@ describe('buildStageBar', () => {
         makeEvent('agent_started'),
         makeEvent('pr_created'),
         makeEvent('agent_completed'), // redundant — stage 3 already done
-        makeEvent('gate_ship'),       // this should be stage 4 (1st post-stage3 gate_ship)
+        makeEvent('gate_ship'), // this should be stage 4 (1st post-stage3 gate_ship)
       ];
       const bar = buildStageBar(events);
       const plain = stripAnsi(bar);
@@ -541,7 +537,11 @@ describe('buildStageBar', () => {
       const cases: PipelineEvent[][] = [
         [],
         [makeEvent('gate_ship')],
-        [makeEvent('gate_ship'), makeEvent('agent_started'), makeEvent('agent_completed')],
+        [
+          makeEvent('gate_ship'),
+          makeEvent('agent_started'),
+          makeEvent('agent_completed'),
+        ],
         [
           makeEvent('gate_ship'),
           makeEvent('agent_started'),
