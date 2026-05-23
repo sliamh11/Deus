@@ -12,6 +12,8 @@ import {
   getLastCompletedGateRun,
   upsertGateComment,
   getGateCommentId,
+  upsertIssueCache,
+  softDeleteIssueCache,
 } from './db.js';
 import { triggerAutoMerge } from './linear-auto-merge.js';
 import { macosNotify, notifyPipelineStep } from './linear-notifications.js';
@@ -542,15 +544,29 @@ export function startLinearWebhookServer(
   const handler = webhookClient.createHandler();
 
   handler.on('Issue', (payload) => {
+    const raw = payload as EntityWebhookPayloadWithIssueData;
+    const d = raw.data;
+
+    if (raw.action === 'remove') {
+      softDeleteIssueCache(d.id);
+    } else if (d.state?.name) {
+      upsertIssueCache({
+        issue_id: d.id,
+        identifier: d.identifier,
+        title: d.title,
+        state_name: d.state.name,
+        team_id: d.teamId,
+        priority: d.priority,
+        created_at: d.createdAt,
+        updated_at: d.updatedAt,
+      });
+    }
+
     if (ctx.vaultPath) {
       debouncedVaultSync(ctx, ctx.vaultPath);
     }
 
-    handleIssueUpdate(
-      payload as EntityWebhookPayloadWithIssueData, // SDK union needs narrowing to issue-specific payload
-      ctx,
-      gateSpecs,
-    ).catch((err) => {
+    handleIssueUpdate(raw, ctx, gateSpecs).catch((err) => {
       logger.error({ err }, 'linear-webhook: unhandled error in issue handler');
     });
   });

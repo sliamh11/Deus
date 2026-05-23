@@ -2,7 +2,7 @@
 /**
  * Pipeline monitor and event audit CLI.
  *
- * Default (no args): live dashboard refreshing every 10s via Linear API + local DB.
+ * Default (no args): live dashboard backed by webhook-fed SQLite cache (2s refresh).
  * With args: one-shot queries against the local event log.
  */
 
@@ -12,6 +12,10 @@ import {
   getIssuePr,
   getLatestStatusSummary,
   getReviseCount,
+  getIssuesFromCache,
+  getIssueCacheCount,
+  getMaxCachedAt,
+  reconcileIssueCache,
   initDatabase,
   type PipelineEventFilter,
 } from './db.js';
@@ -34,7 +38,10 @@ const ENTER_ALT_SCREEN = '\x1b[?1049h';
 const EXIT_ALT_SCREEN = '\x1b[?1049l';
 
 const REFRESH_MS = 10_000;
+const DISPLAY_REFRESH_MS = 2_000;
 const BACKOFF_MS = 60_000;
+const CACHE_STALE_MS = 6 * 60_000;
+const RESYNC_INTERVAL_MS = 5 * 60_000;
 const RECENT_WINDOW_MS = 30 * 60_000;
 
 const FAILED_TYPES = new Set([
@@ -221,58 +228,104 @@ function extractPrNumber(prUrl: string): string | null {
   return match ? `#${match[1]}` : null;
 }
 
-async function fetchActiveAndQueued(
+function isCacheStale(): boolean {
+  const count = getIssueCacheCount();
+  if (count === 0) return true;
+  const maxCachedAt = getMaxCachedAt();
+  if (!maxCachedAt) return true;
+  return elapsedMs(maxCachedAt) > CACHE_STALE_MS;
+}
+
+async function seedOrResyncCache(
   client: LinearClient,
   teamId: string,
-): Promise<{ active: ActiveIssue[]; queued: QueuedIssue[] }> {
+): Promise<void> {
   const issues = await client.issues({
     filter: {
       state: { name: { in: ALL_VISIBLE_STATES } },
       team: { id: { eq: teamId } },
     },
   });
-
   const states = await Promise.all(issues.nodes.map((issue) => issue.state));
-  const stateByIssueId = new Map<string, string>();
-  issues.nodes.forEach((issue, i) => {
-    stateByIssueId.set(issue.id, states[i]?.name ?? 'Unknown');
-  });
 
+  if (issues.nodes.length === 0) return;
+
+  const upserts = issues.nodes.map((issue, i) => ({
+    issue_id: issue.id,
+    identifier: issue.identifier,
+    title: issue.title,
+    state_name: states[i]?.name ?? 'Unknown',
+    team_id: teamId,
+    priority: issue.priority,
+    created_at: issue.createdAt.toISOString(),
+    updated_at: issue.updatedAt.toISOString(),
+  }));
+
+  const liveIds = new Set(issues.nodes.map((i) => i.id));
+  reconcileIssueCache(liveIds, upserts);
+}
+
+function enrichFromDb(
+  issueId: string,
+  fallbackUpdatedAt: string,
+): {
+  lastEvent: string;
+  lastEventTime: string;
+  prNumber: string | null;
+  statusSummary: string | null;
+  reviseCount: number;
+} {
+  const events = getPipelineEvents({ issueId });
+  const last = events.length > 0 ? events[events.length - 1] : null;
+  const revCount = events.filter((e) => e.event_type === 'gate_revise').length;
+  const pr = getIssuePr(issueId);
+  const prNumber = pr ? extractPrNumber(pr.pr_url) : null;
+  const statusSummary = getLatestStatusSummary(issueId);
+
+  return {
+    lastEvent: last ? EVENT_LABELS[last.event_type] || last.event_type : '—',
+    lastEventTime: last?.created_at ?? fallbackUpdatedAt,
+    prNumber,
+    statusSummary,
+    reviseCount: revCount,
+  };
+}
+
+async function fetchActiveAndQueued(
+  client: LinearClient,
+  teamId: string,
+): Promise<{
+  active: ActiveIssue[];
+  queued: QueuedIssue[];
+  fromCache: boolean;
+}> {
+  let fromCache = !isCacheStale();
+  if (!fromCache) {
+    await seedOrResyncCache(client, teamId);
+    fromCache = true;
+  }
+
+  const cached = getIssuesFromCache(ALL_VISIBLE_STATES);
   const active: ActiveIssue[] = [];
   const queued: QueuedIssue[] = [];
 
-  for (const issue of issues.nodes) {
-    const stateName = stateByIssueId.get(issue.id) ?? 'Unknown';
-
-    if (QUEUED_STATES.includes(stateName)) {
+  for (const row of cached) {
+    if (QUEUED_STATES.includes(row.state_name)) {
       queued.push({
-        identifier: issue.identifier,
-        title: issue.title,
-        stateName,
-        createdAt: issue.createdAt.toISOString(),
+        identifier: row.identifier,
+        title: row.title,
+        stateName: row.state_name,
+        createdAt: row.created_at,
       });
       continue;
     }
 
-    const events = getPipelineEvents({ issueId: issue.id });
-    const last = events.length > 0 ? events[events.length - 1] : null;
-    const revCount = events.filter(
-      (e) => e.event_type === 'gate_revise',
-    ).length;
-
-    const pr = getIssuePr(issue.id);
-    const prNumber = pr ? extractPrNumber(pr.pr_url) : null;
-    const statusSummary = getLatestStatusSummary(issue.id);
-
+    const enriched = enrichFromDb(row.issue_id, row.updated_at);
     active.push({
-      identifier: issue.identifier,
-      title: issue.title,
-      stateName,
-      lastEvent: last ? EVENT_LABELS[last.event_type] || last.event_type : '—',
-      lastEventTime: last?.created_at ?? issue.updatedAt.toISOString(),
-      prNumber,
-      statusSummary,
-      reviseCount: revCount,
+      identifier: row.identifier,
+      title: row.title,
+      stateName: row.state_name,
+      ...enriched,
     });
   }
 
@@ -289,7 +342,7 @@ async function fetchActiveAndQueued(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
   );
 
-  return { active, queued };
+  return { active, queued, fromCache };
 }
 
 function fetchRecentIssues(): RecentIssue[] {
@@ -339,6 +392,7 @@ function renderDashboardOutput(
   recent: RecentIssue[],
   error?: string,
   currentRefreshMs?: number,
+  warning?: string,
 ): string {
   const now = new Date().toLocaleTimeString('en-GB', { hour12: false });
   const cols = process.stdout.columns || 100;
@@ -372,6 +426,10 @@ function renderDashboardOutput(
   if (error) {
     lines.push(`${RED} ⚠ ${error}${RESET}`);
     lines.push('');
+  }
+
+  if (warning) {
+    lines.push(`${YELLOW} ⚠ ${warning}${RESET}`);
   }
 
   lines.push('');
@@ -493,7 +551,7 @@ async function startWatchMode(): Promise<void> {
 
   let rendering = false;
   let lastError: string | undefined;
-  let nextRefreshMs = REFRESH_MS;
+  let nextRefreshMs = DISPLAY_REFRESH_MS;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
   function isRateLimitError(msg: string): boolean {
@@ -504,22 +562,29 @@ async function startWatchMode(): Promise<void> {
     if (rendering) return;
     rendering = true;
     try {
-      const { active, queued } = await fetchActiveAndQueued(client, teamId);
+      const { active, queued, fromCache } = await fetchActiveAndQueued(
+        client,
+        teamId,
+      );
       const recent = fetchRecentIssues();
       lastError = undefined;
-      nextRefreshMs = REFRESH_MS;
+      nextRefreshMs = fromCache ? DISPLAY_REFRESH_MS : REFRESH_MS;
+      const warning = fromCache ? undefined : 'cache stale — polling API';
       const output = renderDashboardOutput(
         active,
         queued,
         recent,
         undefined,
         nextRefreshMs,
+        warning,
       );
       process.stdout.write(CURSOR_HOME + output + '\n' + CLEAR_TO_END);
     } catch (err) {
       lastError = err instanceof Error ? err.message : 'Unknown error';
       if (isRateLimitError(lastError)) {
         nextRefreshMs = BACKOFF_MS;
+      } else {
+        nextRefreshMs = REFRESH_MS;
       }
       const recent = fetchRecentIssues();
       const output = renderDashboardOutput(
@@ -538,8 +603,15 @@ async function startWatchMode(): Promise<void> {
 
   await tick();
 
+  const resyncTimer = setInterval(() => {
+    seedOrResyncCache(client, teamId).catch((err) => {
+      console.error('issue-cache: background resync failed', err);
+    });
+  }, RESYNC_INTERVAL_MS);
+
   const cleanup = () => {
     if (timer) clearTimeout(timer);
+    clearInterval(resyncTimer);
     process.stdout.write(EXIT_ALT_SCREEN + SHOW_CURSOR);
     process.exit(0);
   };

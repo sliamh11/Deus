@@ -161,6 +161,21 @@ function createSchema(database: Database.Database): void {
       comment_id TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS linear_issue_cache (
+      issue_id    TEXT PRIMARY KEY,
+      identifier  TEXT NOT NULL,
+      title       TEXT NOT NULL,
+      state_name  TEXT NOT NULL,
+      team_id     TEXT NOT NULL,
+      priority    INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL,
+      updated_at  TEXT NOT NULL,
+      cached_at   TEXT NOT NULL,
+      deleted_at  TEXT DEFAULT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_issue_cache_state
+      ON linear_issue_cache(state_name);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -363,6 +378,8 @@ export function initDatabase(): void {
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   db = new Database(dbPath);
+  // WAL: allows concurrent reader (CLI dashboard) + writer (webhook server) without blocking
+  db.pragma('journal_mode = WAL');
   createSchema(db);
 
   // Migrate from JSON files if they exist
@@ -1456,6 +1473,141 @@ export function getPipelineCommentId(issueId: string): string | undefined {
     )
     .get(issueId) as { comment_id: string } | undefined;
   return row?.comment_id;
+}
+
+// --- Issue cache ---
+
+export interface IssueCacheRow {
+  issue_id: string;
+  identifier: string;
+  title: string;
+  state_name: string;
+  team_id: string;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+  cached_at: string;
+}
+
+interface IssueCacheInput {
+  issue_id: string;
+  identifier: string;
+  title: string;
+  state_name: string;
+  team_id: string;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
+function doUpsertIssueCache(issue: IssueCacheInput): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO linear_issue_cache
+       (issue_id, identifier, title, state_name, team_id, priority, created_at, updated_at, cached_at, deleted_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+     ON CONFLICT(issue_id) DO UPDATE SET
+       identifier = excluded.identifier,
+       title      = excluded.title,
+       state_name = excluded.state_name,
+       team_id    = excluded.team_id,
+       priority   = excluded.priority,
+       created_at = excluded.created_at,
+       updated_at = excluded.updated_at,
+       cached_at  = excluded.cached_at,
+       deleted_at = NULL`,
+  ).run(
+    issue.issue_id,
+    issue.identifier,
+    issue.title,
+    issue.state_name,
+    issue.team_id,
+    issue.priority,
+    issue.created_at,
+    issue.updated_at,
+    now,
+  );
+}
+
+export function upsertIssueCache(issue: IssueCacheInput): void {
+  try {
+    doUpsertIssueCache(issue);
+  } catch (err) {
+    logger.warn({ err, issueId: issue.issue_id }, 'issue-cache: upsert failed');
+  }
+}
+
+export function softDeleteIssueCache(issueId: string): void {
+  try {
+    db.prepare(
+      `UPDATE linear_issue_cache SET deleted_at = ? WHERE issue_id = ?`,
+    ).run(new Date().toISOString(), issueId);
+  } catch (err) {
+    logger.warn({ err, issueId }, 'issue-cache: soft-delete failed');
+  }
+}
+
+export function getIssueCacheCount(): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM linear_issue_cache WHERE deleted_at IS NULL`,
+    )
+    .get() as { cnt: number };
+  return row.cnt;
+}
+
+export function getMaxCachedAt(): string | null {
+  const row = db
+    .prepare(
+      `SELECT MAX(cached_at) as max_cached FROM linear_issue_cache WHERE deleted_at IS NULL`,
+    )
+    .get() as { max_cached: string | null };
+  return row?.max_cached ?? null;
+}
+
+export function getIssuesFromCache(stateNames: string[]): IssueCacheRow[] {
+  if (stateNames.length === 0) return [];
+  const placeholders = stateNames.map(() => '?').join(', ');
+  return db
+    .prepare(
+      `SELECT issue_id, identifier, title, state_name, team_id, priority,
+              created_at, updated_at, cached_at
+       FROM linear_issue_cache
+       WHERE state_name IN (${placeholders}) AND deleted_at IS NULL
+       ORDER BY state_name, updated_at DESC`,
+    )
+    .all(...stateNames) as IssueCacheRow[];
+}
+
+export function reconcileIssueCache(
+  liveIssueIds: Set<string>,
+  upserts: IssueCacheInput[],
+): void {
+  const run = db.transaction(() => {
+    for (const issue of upserts) {
+      doUpsertIssueCache(issue);
+    }
+    if (liveIssueIds.size > 0) {
+      const now = new Date().toISOString();
+      db.exec(
+        'CREATE TEMP TABLE IF NOT EXISTS _reconcile_live (id TEXT PRIMARY KEY)',
+      );
+      db.exec('DELETE FROM _reconcile_live');
+      const ins = db.prepare(
+        'INSERT OR IGNORE INTO _reconcile_live (id) VALUES (?)',
+      );
+      for (const id of liveIssueIds) {
+        ins.run(id);
+      }
+      db.prepare(
+        `UPDATE linear_issue_cache SET deleted_at = ?
+         WHERE issue_id NOT IN (SELECT id FROM _reconcile_live)
+           AND deleted_at IS NULL`,
+      ).run(now);
+      db.exec('DROP TABLE IF EXISTS _reconcile_live');
+    }
+  });
+  run();
 }
 
 // --- JSON migration ---
