@@ -146,7 +146,8 @@ function createSchema(database: Database.Database): void {
       identifier TEXT NOT NULL,
       event_type TEXT NOT NULL,
       detail TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      status_summary TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_pipeline_events_issue
       ON linear_pipeline_events(issue_id);
@@ -166,6 +167,15 @@ function createSchema(database: Database.Database): void {
   try {
     database.exec(
       `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
+    );
+  } catch {
+    /* column already exists */
+  }
+
+  // Add status_summary column to pipeline events (migration for existing DBs)
+  try {
+    database.exec(
+      `ALTER TABLE linear_pipeline_events ADD COLUMN status_summary TEXT`,
     );
   } catch {
     /* column already exists */
@@ -1317,21 +1327,62 @@ export function logPipelineEvent(
   identifier: string,
   eventType: string,
   detail?: string,
+): number | undefined {
+  try {
+    const result = db
+      .prepare(
+        `INSERT INTO linear_pipeline_events (issue_id, identifier, event_type, detail, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(
+        issueId,
+        identifier,
+        eventType,
+        detail ?? null,
+        new Date().toISOString(),
+      );
+    return Number(result.lastInsertRowid);
+  } catch (err) {
+    logger.debug({ issueId, eventType, err }, 'pipeline-event: insert failed');
+    return undefined;
+  }
+}
+
+export function updatePipelineEventStatusSummary(
+  rowId: number,
+  summary: string,
 ): void {
   try {
     db.prepare(
-      `INSERT INTO linear_pipeline_events (issue_id, identifier, event_type, detail, created_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    ).run(
-      issueId,
-      identifier,
-      eventType,
-      detail ?? null,
-      new Date().toISOString(),
-    );
+      `UPDATE linear_pipeline_events SET status_summary = ? WHERE id = ?`,
+    ).run(summary, rowId);
   } catch (err) {
-    logger.debug({ issueId, eventType, err }, 'pipeline-event: insert failed');
+    logger.debug(
+      { rowId, err },
+      'pipeline-event: status summary update failed',
+    );
   }
+}
+
+export function getLatestStatusSummary(issueId: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT status_summary FROM linear_pipeline_events
+       WHERE issue_id = ? AND status_summary IS NOT NULL
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(issueId) as { status_summary: string } | undefined;
+  return row?.status_summary ?? null;
+}
+
+export function getReviseCount(issueId: string): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM linear_pipeline_events
+       WHERE issue_id = ? AND event_type = 'gate_revise'`,
+    )
+    .get(issueId) as { cnt: number };
+  return row.cnt;
 }
 
 export interface PipelineEventFilter {

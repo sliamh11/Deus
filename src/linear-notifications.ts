@@ -9,11 +9,13 @@
 
 import { execFile } from 'child_process';
 import { logger } from './logger.js';
+import { fireAndForget } from './async/index.js';
 import {
   logPipelineEvent,
   getPipelineEvents,
   upsertPipelineComment,
   getPipelineCommentId,
+  updatePipelineEventStatusSummary,
 } from './db.js';
 import type { LinearContext } from './linear-dispatcher.js';
 
@@ -123,6 +125,51 @@ async function doUpdateUnifiedComment(
   }
 }
 
+const OLLAMA_URL =
+  process.env.OLLAMA_URL || 'http://localhost:11434/api/generate';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'gemma4:e4b';
+const STATUS_SUMMARY_TIMEOUT_MS = 5_000;
+const SKIP_SUMMARY_EVENTS = new Set(['gate_cooldown']);
+
+async function generateStatusSummary(
+  eventType: string,
+  identifier: string,
+  detail?: string,
+): Promise<string | null> {
+  if (SKIP_SUMMARY_EVENTS.has(eventType)) return null;
+
+  const label = EVENT_LABELS[eventType] || eventType;
+  const prompt = `Summarize in 10 words or fewer what is happening. Event: ${label}. Issue: ${identifier}. Detail: ${detail ?? 'none'}. Reply with ONLY the summary, no quotes.`;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), STATUS_SUMMARY_TIMEOUT_MS);
+
+  try {
+    const res = await fetch(OLLAMA_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        prompt,
+        stream: false,
+        options: { temperature: 0.2, num_ctx: 512 },
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    const data = (await res.json()) as { response?: string };
+    return data.response?.trim() || null;
+  } catch (err) {
+    logger.debug(
+      { err, eventType },
+      'pipeline: status summary generation failed',
+    );
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function notifyPipelineStep(
   ctx: LinearContext,
   issueId: string,
@@ -130,10 +177,24 @@ export async function notifyPipelineStep(
   eventType: string,
   detail?: string,
 ): Promise<void> {
-  logPipelineEvent(issueId, identifier, eventType, detail);
+  const rowId = logPipelineEvent(issueId, identifier, eventType, detail);
 
   const label = EVENT_LABELS[eventType] || eventType;
   macosNotify('Deus', `${identifier}: ${label}`);
+
+  if (rowId !== undefined) {
+    fireAndForget(
+      async () => {
+        const summary = await generateStatusSummary(
+          eventType,
+          identifier,
+          detail,
+        );
+        if (summary) updatePipelineEventStatusSummary(rowId, summary);
+      },
+      { name: 'pipeline.status-summary' },
+    );
+  }
 
   await updateUnifiedComment(ctx, issueId);
 }

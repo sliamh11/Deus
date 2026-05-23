@@ -9,6 +9,9 @@
 import { LinearClient } from '@linear/sdk';
 import {
   getPipelineEvents,
+  getIssuePr,
+  getLatestStatusSummary,
+  getReviseCount,
   initDatabase,
   type PipelineEventFilter,
 } from './db.js';
@@ -60,7 +63,12 @@ const TERMINAL_TYPES = new Set([
   'moved_done',
 ]);
 
-const PIPELINE_STATES = ['Ready for Agent', 'Agent Working', 'In Review'];
+const ACTIVE_STATES = ['Ready for Agent', 'Agent Working', 'In Review'];
+const QUEUED_STATES = ['Backlog', 'Todo'];
+const ALL_VISIBLE_STATES = [...QUEUED_STATES, ...ACTIVE_STATES];
+
+const STUCK_THRESHOLD_MS = 7_200_000; // 2h
+const WARN_THRESHOLD_MS = 1_800_000; // 30m
 
 function colorFor(eventType: string): string {
   if (SUCCESS_TYPES.has(eventType)) return GREEN;
@@ -70,11 +78,37 @@ function colorFor(eventType: string): string {
   return DIM;
 }
 
-function stateColor(stateName: string): string {
-  if (stateName === 'Ready for Agent') return YELLOW;
-  if (stateName === 'Agent Working') return CYAN;
-  if (stateName === 'In Review') return GREEN;
-  return DIM;
+function stateGlyph(stateName: string): { glyph: string; color: string } {
+  switch (stateName) {
+    case 'Backlog':
+      return { glyph: '·', color: DIM };
+    case 'Todo':
+      return { glyph: '○', color: DIM };
+    case 'Ready for Agent':
+      return { glyph: '◇', color: YELLOW };
+    case 'In Progress':
+      return { glyph: '●', color: YELLOW };
+    case 'Agent Working':
+      return { glyph: '▶', color: CYAN };
+    case 'In Review':
+      return { glyph: '◆', color: CYAN };
+    default:
+      return { glyph: '?', color: DIM };
+  }
+}
+
+export function elapsedMs(isoTimestamp: string): number {
+  return Math.max(0, Date.now() - new Date(isoTimestamp).getTime());
+}
+
+export function computeColumnWidths(cols: number): {
+  titleWidth: number;
+  separatorWidth: number;
+} {
+  const clamped = Math.max(80, cols);
+  // ID(8) + glyph(2) + PR(6) + status(24) + elapsed(6) + revise(4) + separators(6) = 56
+  const titleWidth = Math.max(20, clamped - 56);
+  return { titleWidth, separatorWidth: clamped - 2 };
 }
 
 export function parseDuration(input: string): string | null {
@@ -92,8 +126,7 @@ export function parseDuration(input: string): string | null {
 }
 
 export function formatElapsed(isoTimestamp: string): string {
-  const ms = Date.now() - new Date(isoTimestamp).getTime();
-  if (ms < 0) return '0s';
+  const ms = elapsedMs(isoTimestamp);
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
@@ -141,6 +174,16 @@ interface ActiveIssue {
   stateName: string;
   lastEvent: string;
   lastEventTime: string;
+  prNumber: string | null;
+  statusSummary: string | null;
+  reviseCount: number;
+}
+
+interface QueuedIssue {
+  identifier: string;
+  title: string;
+  stateName: string;
+  createdAt: string;
 }
 
 interface RecentIssue {
@@ -169,13 +212,18 @@ async function discoverTeamId(client: LinearClient): Promise<string> {
   return teams.nodes[0].id;
 }
 
-async function fetchActiveIssues(
+function extractPrNumber(prUrl: string): string | null {
+  const match = prUrl.match(/\/pull\/(\d+)/);
+  return match ? `#${match[1]}` : null;
+}
+
+async function fetchActiveAndQueued(
   client: LinearClient,
   teamId: string,
-): Promise<ActiveIssue[]> {
+): Promise<{ active: ActiveIssue[]; queued: QueuedIssue[] }> {
   const issues = await client.issues({
     filter: {
-      state: { name: { in: PIPELINE_STATES } },
+      state: { name: { in: ALL_VISIBLE_STATES } },
       team: { id: { eq: teamId } },
     },
   });
@@ -186,43 +234,58 @@ async function fetchActiveIssues(
     stateByIssueId.set(issue.id, states[i]?.name ?? 'Unknown');
   });
 
-  const lastEventByIssue = new Map<
-    string,
-    { event_type: string; created_at: string }
-  >();
-  for (const issue of issues.nodes) {
-    const events = getPipelineEvents({ issueId: issue.id });
-    if (events.length > 0) {
-      const last = events[events.length - 1];
-      lastEventByIssue.set(issue.id, {
-        event_type: last.event_type,
-        created_at: last.created_at,
-      });
-    }
-  }
+  const active: ActiveIssue[] = [];
+  const queued: QueuedIssue[] = [];
 
-  const result: ActiveIssue[] = issues.nodes.map((issue) => {
-    const lastEvent = lastEventByIssue.get(issue.id);
-    return {
+  for (const issue of issues.nodes) {
+    const stateName = stateByIssueId.get(issue.id) ?? 'Unknown';
+
+    if (QUEUED_STATES.includes(stateName)) {
+      queued.push({
+        identifier: issue.identifier,
+        title: issue.title,
+        stateName,
+        createdAt: issue.createdAt.toISOString(),
+      });
+      continue;
+    }
+
+    const events = getPipelineEvents({ issueId: issue.id });
+    const last = events.length > 0 ? events[events.length - 1] : null;
+    const revCount = events.filter(
+      (e) => e.event_type === 'gate_revise',
+    ).length;
+
+    const pr = getIssuePr(issue.id);
+    const prNumber = pr ? extractPrNumber(pr.pr_url) : null;
+    const statusSummary = getLatestStatusSummary(issue.id);
+
+    active.push({
       identifier: issue.identifier,
       title: issue.title,
-      stateName: stateByIssueId.get(issue.id) ?? 'Unknown',
-      lastEvent: lastEvent
-        ? EVENT_LABELS[lastEvent.event_type] || lastEvent.event_type
-        : '—',
-      lastEventTime: lastEvent?.created_at ?? issue.updatedAt.toISOString(),
-    };
-  });
+      stateName,
+      lastEvent: last ? EVENT_LABELS[last.event_type] || last.event_type : '—',
+      lastEventTime: last?.created_at ?? issue.updatedAt.toISOString(),
+      prNumber,
+      statusSummary,
+      reviseCount: revCount,
+    });
+  }
 
-  return result.sort((a, b) => {
+  active.sort((a, b) => {
     const stateOrder =
-      PIPELINE_STATES.indexOf(a.stateName) -
-      PIPELINE_STATES.indexOf(b.stateName);
+      ACTIVE_STATES.indexOf(a.stateName) - ACTIVE_STATES.indexOf(b.stateName);
     if (stateOrder !== 0) return stateOrder;
     return (
       new Date(b.lastEventTime).getTime() - new Date(a.lastEventTime).getTime()
     );
   });
+
+  queued.sort(
+    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+  );
+
+  return { active, queued };
 }
 
 function fetchRecentIssues(): RecentIssue[] {
@@ -268,16 +331,32 @@ function fetchRecentIssues(): RecentIssue[] {
 
 function renderDashboardOutput(
   active: ActiveIssue[],
+  queued: QueuedIssue[],
   recent: RecentIssue[],
   error?: string,
 ): string {
   const now = new Date().toLocaleTimeString('en-GB', { hour12: false });
+  const cols = process.stdout.columns || 100;
+  const { titleWidth, separatorWidth } = computeColumnWidths(cols);
   const lines: string[] = [];
 
+  const stuckCount = active.filter(
+    (i) => elapsedMs(i.lastEventTime) > STUCK_THRESHOLD_MS,
+  ).length;
+  const failCount = recent.filter((i) => FAILED_TYPES.has(i.eventType)).length;
+
+  const stuckLabel =
+    stuckCount > 0
+      ? `${YELLOW}STUCK ${stuckCount}${RESET}`
+      : `${DIM}STUCK 0${RESET}`;
+  const failLabel =
+    failCount > 0 ? `${RED}FAIL ${failCount}${RESET}` : `${DIM}FAIL 0${RESET}`;
+  const statsBar = `ACTIVE ${active.length} ${DIM}·${RESET} ${stuckLabel} ${DIM}·${RESET} ${failLabel}`;
+
   lines.push(
-    `${BOLD} Deus Pipeline${RESET}${DIM}${' '.repeat(40)}${now}  [every ${REFRESH_MS / 1000}s]${RESET}`,
+    `${BOLD} Deus Pipeline${RESET}    ${statsBar}${DIM}${' '.repeat(Math.max(1, cols - 70))}${now}  [every ${REFRESH_MS / 1000}s]${RESET}`,
   );
-  lines.push(`${DIM} ${'─'.repeat(74)}${RESET}`);
+  lines.push(`${DIM} ${'─'.repeat(separatorWidth)}${RESET}`);
 
   if (error) {
     lines.push(`${RED} ⚠ ${error}${RESET}`);
@@ -285,20 +364,52 @@ function renderDashboardOutput(
   }
 
   lines.push('');
-  lines.push(`${BOLD} ACTIVE${RESET} ${DIM}(${active.length})${RESET}`);
 
   if (active.length === 0) {
     lines.push(`${DIM}  No issues in pipeline.${RESET}`);
   } else {
     for (const issue of active) {
-      const id = issue.identifier.padEnd(10);
-      const title = truncate(issue.title, 34).padEnd(34);
-      const sc = stateColor(issue.stateName);
-      const state = issue.stateName.padEnd(16);
-      const evt = truncate(issue.lastEvent, 20).padEnd(20);
-      const elapsed = formatElapsed(issue.lastEventTime).padStart(4);
+      const id = issue.identifier.padEnd(8);
+      const sg = stateGlyph(issue.stateName);
+      const glyph = `${sg.color}${sg.glyph}${RESET}`;
+      const title = truncate(issue.title, titleWidth).padEnd(titleWidth);
+      const pr = issue.prNumber
+        ? `${DIM}${issue.prNumber.padStart(5)}${RESET}`
+        : `${DIM}${'—'.padStart(5)}${RESET}`;
+      const statusText = issue.statusSummary ?? issue.lastEvent;
+      const status = truncate(statusText, 22).padEnd(22);
+
+      const ms = elapsedMs(issue.lastEventTime);
+      const elapsedStr = formatElapsed(issue.lastEventTime).padStart(4);
+      let elapsedColored: string;
+      if (ms > STUCK_THRESHOLD_MS) {
+        elapsedColored = `${RED}${elapsedStr} !!${RESET}`;
+      } else if (ms > WARN_THRESHOLD_MS) {
+        elapsedColored = `${YELLOW}${elapsedStr}${RESET}`;
+      } else {
+        elapsedColored = `${DIM}${elapsedStr}${RESET}`;
+      }
+
+      const revise =
+        issue.reviseCount > 0 ? ` ${RED}×${issue.reviseCount}${RESET}` : '';
+
       lines.push(
-        `  ${CYAN}${id}${RESET} ${title} ${sc}${state}${RESET} ${DIM}${evt}${RESET} ${DIM}${elapsed}${RESET}`,
+        `  ${CYAN}${id}${RESET}${glyph} ${title} ${pr} ${DIM}${status}${RESET} ${elapsedColored}${revise}`,
+      );
+    }
+  }
+
+  if (queued.length > 0) {
+    lines.push('');
+    lines.push(`${DIM} QUEUED (${queued.length})${RESET}`);
+    for (const issue of queued) {
+      const id = issue.identifier.padEnd(8);
+      const sg = stateGlyph(issue.stateName);
+      const glyph = `${sg.color}${sg.glyph}${RESET}`;
+      const title = truncate(issue.title, titleWidth).padEnd(titleWidth);
+      const elapsed = formatElapsed(issue.createdAt).padStart(4);
+      lines.push(
+        `${DIM}  ${id}${RESET}${glyph} ${DIM}${title} ${' '.repeat(28)} ${elapsed}${RESET}`,
       );
     }
   }
@@ -307,13 +418,13 @@ function renderDashboardOutput(
     lines.push('');
     lines.push(`${DIM} RECENT (${recent.length})${RESET}`);
     for (const issue of recent) {
-      const id = issue.identifier.padEnd(10);
+      const id = issue.identifier.padEnd(8);
       const evtColor = FAILED_TYPES.has(issue.eventType) ? RED : GREEN;
-      const evt = truncate(issue.lastEvent, 20).padEnd(20);
-      const detail = issue.detail ? truncate(issue.detail, 28) : '';
+      const evt = truncate(issue.lastEvent, 22).padEnd(22);
+      const detail = issue.detail ? truncate(issue.detail, titleWidth) : '';
       const elapsed = formatElapsed(issue.lastEventTime).padStart(4);
       lines.push(
-        `${DIM}  ${id} ${' '.repeat(34)} ${evtColor}${evt}${DIM} ${detail.padEnd(28)} ${elapsed}${RESET}`,
+        `${DIM}  ${id} ${' '.repeat(2)}${evtColor}${evt}${DIM} ${detail.padEnd(titleWidth)} ${elapsed}${RESET}`,
       );
     }
   }
@@ -376,15 +487,15 @@ async function startWatchMode(): Promise<void> {
     if (rendering) return;
     rendering = true;
     try {
-      const active = await fetchActiveIssues(client, teamId);
+      const { active, queued } = await fetchActiveAndQueued(client, teamId);
       const recent = fetchRecentIssues();
       lastError = undefined;
-      const output = renderDashboardOutput(active, recent);
+      const output = renderDashboardOutput(active, queued, recent);
       process.stdout.write(CLEAR_SCREEN + output + '\n');
     } catch (err) {
       lastError = err instanceof Error ? err.message : 'Unknown error';
       const recent = fetchRecentIssues();
-      const output = renderDashboardOutput([], recent, lastError);
+      const output = renderDashboardOutput([], [], recent, lastError);
       process.stdout.write(CLEAR_SCREEN + output + '\n');
     } finally {
       rendering = false;

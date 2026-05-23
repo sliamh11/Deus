@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parseDuration, formatElapsed } from './linear-pipeline-cli.js';
+import {
+  parseDuration,
+  formatElapsed,
+  elapsedMs,
+  computeColumnWidths,
+} from './linear-pipeline-cli.js';
 
 describe('parseDuration', () => {
   it('parses minutes', () => {
@@ -58,5 +63,52 @@ describe('formatElapsed', () => {
   it('returns 0s for future timestamps', () => {
     const ts = new Date(Date.now() + 10_000).toISOString();
     expect(formatElapsed(ts)).toBe('0s');
+  });
+});
+
+describe('elapsedMs', () => {
+  it('returns positive ms for past timestamps', () => {
+    const ts = new Date(Date.now() - 5000).toISOString();
+    const ms = elapsedMs(ts);
+    expect(ms).toBeGreaterThanOrEqual(4900);
+    expect(ms).toBeLessThan(6000);
+  });
+
+  it('returns 0 for future timestamps', () => {
+    const ts = new Date(Date.now() + 10_000).toISOString();
+    expect(elapsedMs(ts)).toBe(0);
+  });
+
+  it('crosses 30m threshold', () => {
+    const ts = new Date(Date.now() - 31 * 60_000).toISOString();
+    expect(elapsedMs(ts)).toBeGreaterThan(1_800_000);
+  });
+
+  it('crosses 2h threshold', () => {
+    const ts = new Date(Date.now() - 121 * 60_000).toISOString();
+    expect(elapsedMs(ts)).toBeGreaterThan(7_200_000);
+  });
+});
+
+describe('computeColumnWidths', () => {
+  it('returns minimum title width for narrow terminals', () => {
+    const { titleWidth } = computeColumnWidths(60);
+    expect(titleWidth).toBe(24);
+  });
+
+  it('scales title width for wide terminals', () => {
+    const { titleWidth } = computeColumnWidths(120);
+    expect(titleWidth).toBe(64);
+  });
+
+  it('calculates separator width as cols - 2', () => {
+    const { separatorWidth } = computeColumnWidths(100);
+    expect(separatorWidth).toBe(98);
+  });
+
+  it('clamps to min 80 cols', () => {
+    const narrow = computeColumnWidths(40);
+    const min = computeColumnWidths(80);
+    expect(narrow.titleWidth).toBe(min.titleWidth);
   });
 });
