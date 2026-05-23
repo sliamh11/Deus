@@ -311,106 +311,184 @@ Tell the user: "Model `{MODEL}` is already pulled — no action needed."
 **If STATUS=failed:**
 Tell the user: "Model pull failed (see ERROR field). You can retry with `ollama pull {MODEL}` and set `OLLAMA_MODEL={MODEL}` in `~/.config/deus/.env` manually."
 
+
 ## 8. Personality Kickstarter (Optional)
 
-AskUserQuestion: "Deus works best when it knows your preferences. Want to load battle-tested defaults from real usage?" Options: "Yes, show me" / "Skip"
+AskUserQuestion: "Want to load curated behavioral defaults into your Deus config?" Options:
+- "Apply recommended defaults (fastest)"
+- "Let me choose"
+- "Skip for now"
 
-**If Skip:** Continue to step 9.
+**If "Skip for now":** Continue to step 9.
 
-**If Yes, show me:** Run steps 8a → 8b → 8c in order.
+**If "Apply recommended defaults":** Run Path A below.
 
----
-
-### 8a. Bundles
-
-AskUserQuestion (multiSelect): "Which default bundles would you like to enable? Pick any combination." Options:
-- "Bundle A — Universal Defaults (recommended for everyone)"
-- "Bundle B — Developer Workflow (for users who code with Deus)"
-- "Bundle C — Student/Learner Mode (for users who study with Deus)"
-- "None — skip to individual behaviors"
-
-For each selected bundle (A, B, or C), display its bullet list to the user, then ask:
-
-AskUserQuestion: "Here are the items in [Bundle Name]. Anything to add, remove, or rephrase? Describe changes or say 'looks good'."
-
-Apply any edits the user requests to the bullet list before writing. The user is the final author — only write what they approve.
-
-Read `groups/main/CLAUDE.md`. If the file does not exist, create it. Append each selected (and edited) bundle under a `## Behavioral Defaults` heading. If the heading already exists, append after the last item under it; otherwise add it at the end of the file.
-
-**Bundle A — Universal Defaults:**
-- Never execute after asking a confirmation question — stop and wait for explicit response. No exceptions for destructive or irreversible actions.
-- Long-running tasks (>30s) start in the background immediately. Say "started in background" and return control. Don't ask first.
-- Default to the simplest solution. Don't add features, abstraction, or complexity beyond what was asked. Don't add docstrings, comments, or type annotations to code you didn't change.
-- Push back and verify before implementing. If something has a non-obvious tradeoff, flag it and discuss before acting.
-- Session start: give a 2-bullet catch-up ("Previous session: ..." + "Pending: ...") then wait.
-
-**Bundle B — Developer Workflow:**
-- At the start of every new feature or task: run `git status`, confirm the working tree is clean, then create a dedicated feature branch. Never start work on main directly.
-- Every code change cycle: Plan (brief) → Branch → Implement → Verify/test → Propose commit message → Wait for approval → Commit. Never commit without explicit approval.
-- When debugging: read the full pipeline end-to-end before touching anything. Follow data flow across file/language boundaries. Grep all consumers before modifying a function signature.
-- For system exploration: do a full read-everything pass first, synthesize into structured findings, get agreement on priorities before writing code.
-
-**Bundle C — Student/Learner Mode:**
-- 3-minute rule: if stuck for 3 min with no path forward — look at the solution, understand every step, close it, rewrite from scratch.
-- Retrieval practice over re-reading: quiz first, explain after. Every act of retrieval is the learning.
-- Spaced review schedule: next day → 3 days → 1 week → 2 weeks.
-- Interleave problem types — don't block. Demand the reason for every step.
-- Explain with specific example first, then generalize. Never just state the formula.
+**If "Let me choose":** Run Path B below.
 
 ---
 
-### 8b. À la carte behaviors
+### Path A — Recommended Defaults
 
-Present these as a multi-select — independent of bundle selection. Each is a single rule the user can add on top of whatever bundles they chose (or instead of any bundle).
+**Step 1 — Role question:**
 
-AskUserQuestion (multiSelect): "Any of these individual behaviors to add? Pick any that apply." Options:
-- "Image analysis — always route images to a vision model (Gemini) first, never analyze inline"
-- "Research saving — save significant research results to vault with searchable tags frontmatter"
-- "Deploy integrity — rebuild dist/ before restarting; never write rotating credentials (OAuth tokens) to .env"
-- "Deep research workflow — full codebase exploration pass + structured findings before implementing any system-level change"
-- "Code hygiene — only touch code you were asked to change; no docstrings, comments, or annotations added to surrounding functions"
-- "None"
+AskUserQuestion: "What best describes how you'll use Deus?" Options:
+- "Software development"
+- "Research & writing"
+- "Learning & studying"
+- "General assistant / mixed"
 
-For each selected behavior, append its rule under `## Behavioral Defaults` in `groups/main/CLAUDE.md`:
+Map the answer to an overlay:
+- Software development → Developer overlay
+- Research & writing → Researcher overlay
+- Learning & studying → Student overlay
+- General assistant → no overlay (base only)
 
-- **Image analysis:** Always route image/screenshot analysis to a vision model (e.g. Gemini) first. Do not analyze images inline.
-- **Research saving:** Any significant research result (architecture comparisons, platform decisions, tool evaluations) must be saved to the memory vault with `tags:` frontmatter for future retrieval.
-- **Deploy integrity:** Always rebuild `dist/` before restarting any service. Never write auto-rotating credentials (OAuth tokens, session tokens) to `.env` — doing so freezes the token and causes login loops on auto-refresh.
-- **Deep research workflow:** Before implementing any system-level change, run a full codebase exploration (Explore agent) and synthesize structured findings. Get alignment before writing code.
-- **Code hygiene:** Only modify code you were asked to modify. Don't add docstrings, comments, or type annotations to surrounding functions. Don't clean up adjacent code.
+**Step 2 — Preview and consent:**
 
----
+Assemble the full rule list: Base Layer rules + the selected overlay's rules (see rule content below). Display all rules as a numbered list.
 
-### 8c. Evolution seed reflections
+AskUserQuestion: "Here are your defaults. Say 'looks good' to apply, or describe any changes."
 
-Seeds pre-warm the self-improvement loop so it isn't starting cold. Each seed is a past-learned lesson (corrective or positive) that will be retrieved and applied in relevant future conversations.
+Apply any edits the user requests. The user is the final author — only write what they approve.
 
-First, check if the evolution package is available:
+**Step 3 — Write rules:**
+
+Read `groups/main/CLAUDE.md`. If the file does not exist, create it from the template. If a `## Behavioral Defaults` heading already exists, ask the user: "Behavioral defaults already configured. Overwrite / Keep existing / Skip?" — then act accordingly.
+
+Append the approved rules under `## Behavioral Defaults`.
+
+**Step 4 — Import seeds:**
+
+Check if the evolution package is available:
 ```bash
 python3 -c "from evolution.reflexion.store import save_reflection; print('ok')" 2>/dev/null
 ```
-If this fails, tell the user "Evolution package not set up — skipping seed import." and continue to step 9.
+If unavailable, tell the user "Evolution package not set up — skipping seed import." and continue to step 9.
 
-If available, read `seeds/reflections.json` and display a numbered list to the user: show each seed's `summary` and `category` (not the full content, to keep it scannable).
-
-AskUserQuestion (multiSelect): "Which of these seed reflections would you like to import? Deselect any that don't apply to your workflow."
-
-After selection, ask:
-
-AskUserQuestion: "Any seed you'd like to edit before importing? Enter its number(s) (comma-separated), or say 'none'."
-
-For each seed the user wants to edit, show its full `content` and ask for the replacement text. Use their text verbatim.
-
-Then import the final set:
+If available, import the role-matched seeds silently (see seed mapping table below):
 ```bash
-python3 scripts/import_seeds.py --seeds '<json_array_of_final_seeds>'
+python3 scripts/import_seeds.py --seeds '<json_array_of_role_matched_seeds>'
 ```
 
-Report the result: "Imported N reflections (M skipped as near-duplicates)."
+Report: "Imported N seed reflections."
+
+Tell the user: "Defaults saved. You can edit `groups/main/CLAUDE.md` anytime to add, remove, or rephrase any rule."
+
+Continue to step 9.
 
 ---
 
-After all three sub-steps, tell the user: "Defaults saved. You can edit `groups/main/CLAUDE.md` anytime to add, remove, or rephrase any rule."
+### Path B — Let Me Choose
+
+**Step 8a — Overlay selection:**
+
+AskUserQuestion (multiSelect): "Which overlays would you like to add? Pick any combination." Options:
+- "Developer — git workflow, CI gates, security-first"
+- "Researcher — vault saving, explore-first, measure-before-designing"
+- "Student — retrieval practice, spaced review, example-first teaching"
+- "Autonomous Operator — parallel-everything, background-first, memory-search"
+
+**Step 8b — Review pass:**
+
+Assemble the full rule list: Base Layer rules + all selected overlays' rules (see rule content below). Display all rules as a single numbered list.
+
+If the Student overlay is selected, also present optional add-ons after the core rules:
+- "Visual-first explanations: diagrams/flowcharts over text walls; Feynman-first approach (analogy → why it matters → how it connects)"
+- "Route long study sessions to NotebookLM"
+- "Ground theory in code: connect concepts to the code being written, use edge-cases to build intuition"
+
+If all 4 overlays are selected, show a note: "All overlays selected — this adds ~25 rules to your config (loaded every turn). Consider removing overlays that don't match your primary workflow."
+
+AskUserQuestion: "Here are your defaults. Say 'looks good' to apply, or describe any changes."
+
+Apply any edits the user requests.
+
+**Step 8c — À la carte:**
+
+Build the à la carte list dynamically — skip items already covered by a selected overlay:
+- "Research saving — save significant research to vault with tags frontmatter" (skip if Researcher overlay selected)
+- "Code hygiene — only modify code you were asked to modify; no cleanup of surrounding functions"
+- "Memory-first — search vault for prior decisions before implementing any feature" (skip if Autonomous Operator overlay selected)
+
+If all items would be skipped (both Researcher and Autonomous selected), skip this step entirely.
+
+AskUserQuestion (multiSelect): "Any of these cross-cutting behaviors to add?"
+
+Append any selected à la carte rules under `## Behavioral Defaults` alongside the overlay rules.
+
+**Step 8d — Seeds:**
+
+Check evolution package availability (same as Path A Step 4). If unavailable, skip with message.
+
+If available, read `seeds/reflections.json`. Build a pre-selected list based on the role mapping table below. Display the full seed list with `summary` and `category`, with role-matched seeds pre-selected.
+
+AskUserQuestion (multiSelect): "These seed reflections are pre-selected based on your overlays. Deselect any that don't apply."
+
+Import the final set:
+```bash
+python3 scripts/import_seeds.py --seeds '<json_array_of_selected_seeds>'
+```
+
+Report: "Imported N reflections (M skipped as near-duplicates)."
+
+**Step 8e — Write rules:**
+
+Read `groups/main/CLAUDE.md`. If the file does not exist, create it from the template. If a `## Behavioral Defaults` heading already exists, ask the user: "Behavioral defaults already configured. Overwrite / Keep existing / Skip?" — then act accordingly.
+
+Append all approved rules (overlay + à la carte) under `## Behavioral Defaults`.
+
+Tell the user: "Defaults saved. You can edit `groups/main/CLAUDE.md` anytime to add, remove, or rephrase any rule."
+
+---
+
+### Rule Content
+
+**Base Layer (always included, ~150 tokens):**
+- Never execute after asking a confirmation question — stop and wait for explicit response.
+- Run all independent work in parallel: tool calls, agents, research branches. Don't serialize without a hard data dependency.
+- Diagnosis before treatment: identify what changed since it last worked before attempting a fix.
+- Evaluate alternatives before committing: compare at least two approaches before writing code.
+
+**Developer Overlay (~200 tokens):**
+- `git status` + clean tree + feature branch before every task. Never start work on main.
+- Plan → Branch → Implement → Verify → Propose commit → Approval → Commit. Never commit without explicit approval.
+- Use `git worktree add` for branch isolation — never `git checkout` between branches mid-task.
+- One concern per branch — never bundle unrelated changes.
+- Debugging: read full pipeline end-to-end, follow data flow, grep all consumers before modifying signatures.
+- Never merge when CI is failing — hard gate, no exceptions.
+- Security-first: audit diff for secrets, injection, and auth bypasses before every commit.
+
+**Researcher Overlay (~120 tokens):**
+- Save significant research to memory vault with `tags:` frontmatter for future retrieval.
+- Full exploration before system-level changes — read-everything pass, structured findings, get alignment first.
+- Measure before designing — quantify the actual problem before proposing architecture.
+- Pushback-first — when a suggestion has engineering risks, lead with the tradeoff before presenting it as an option.
+
+**Student Overlay (~120 tokens, plus optional add-ons):**
+- 3-minute rule: if stuck for 3 min with no path forward — look at the solution, understand every step, close it, rewrite from scratch.
+- Retrieval practice over re-reading: quiz first, explain after. Every act of retrieval is the learning.
+- Spaced review: next day → 3 days → 1 week → 2 weeks.
+- Interleave problem types — don't block. Demand the reason for every step.
+- Explain with specific example first, then generalize. Never just state the formula.
+
+**Autonomous Operator Overlay (~150 tokens, extends Base parallelism):**
+- Full-pipeline parallelism: when parallel branches have no dependency, each pipeline (implement → review → PR → CI → merge) runs independently end-to-end. Never batch-wait for siblings.
+- Start long-running tasks in background immediately without asking. Say "started in background" and return control.
+- Deep research: fan out parallel research agents from the start, synthesize after all return.
+- Cache-first: before producing anything new (bench runs, research, analysis), check what already exists and is still valid. Only regenerate what changed.
+- Memory-search before implementing: query vault for prior decisions and research before writing code.
+
+### Seed Mapping
+
+Seeds in `seeds/reflections.json` are pre-selected based on the user's role. The base seeds are always included.
+
+| Role | Pre-selected seed IDs |
+|------|----------------------|
+| Base (always) | seed_wait_confirm, seed_parallel_everything, seed_diagnosis_first, seed_evaluate_alternatives |
+| Developer | + seed_dirty_branch, seed_commit_approval, seed_explore_first, seed_minimal_impl, seed_no_scope_creep, seed_worktree_discipline, seed_one_concern_per_branch, seed_never_merge_failing_ci, seed_security_audit |
+| Researcher | + seed_explore_first, seed_tradeoff_flag, seed_memory_search |
+| Student | + (base seeds only — no student-specific seeds yet) |
+| Autonomous | + seed_background_tasks, seed_memory_search |
 
 ## 9. First Steps
 

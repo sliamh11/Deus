@@ -3,7 +3,7 @@ import { LinearWebhookClient } from '@linear/sdk/webhooks';
 import type { EntityWebhookPayloadWithIssueData } from '@linear/sdk/webhooks';
 import { logger } from './logger.js';
 import { executeAgentRun } from './linear-dispatcher.js';
-import type { LinearContext } from './linear-dispatcher.js';
+import type { LinearContext, GateLabels } from './linear-dispatcher.js';
 import type { GateSpec } from './linear-gate-specs.js';
 import type { RunContext } from './agent-runtimes/types.js';
 import {
@@ -61,6 +61,25 @@ export function mergeEnrichment(
 
 export function stripEnrichmentSection(text: string): string {
   return text.replace(/^## Enrichment\s*\n[\s\S]*?(?=^## Verdict)/m, '').trim();
+}
+
+export function computeScopeLabelChanges(
+  gateName: string,
+  finalVerdict: string | undefined,
+  finalEnrichment: string | undefined,
+  gateLabels: GateLabels,
+): { addIds: string[]; removeIds: string[] } {
+  const addIds: string[] = [];
+  const removeIds: string[] = [];
+  if (gateName !== 'agent-readiness-gate') return { addIds, removeIds };
+  if (finalVerdict === 'SHIP' && finalEnrichment && gateLabels.scoped) {
+    addIds.push(gateLabels.scoped);
+    if (gateLabels.revise) removeIds.push(gateLabels.revise);
+  } else if (finalVerdict === 'REVISE' && gateLabels.revise) {
+    addIds.push(gateLabels.revise);
+    if (gateLabels.scoped) removeIds.push(gateLabels.scoped);
+  }
+  return { addIds, removeIds };
 }
 
 function escapeRegex(s: string): string {
@@ -436,13 +455,14 @@ async function handleIssueUpdate(
     const removeIds: string[] = [];
     const addIds: string[] = [];
     if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
-    if (finalVerdict === 'SHIP' && ctx.gateLabels.scoped) {
-      addIds.push(ctx.gateLabels.scoped);
-      if (ctx.gateLabels.revise) removeIds.push(ctx.gateLabels.revise);
-    } else if (finalVerdict === 'REVISE' && ctx.gateLabels.revise) {
-      addIds.push(ctx.gateLabels.revise);
-      if (ctx.gateLabels.scoped) removeIds.push(ctx.gateLabels.scoped);
-    }
+    const scopeLabels = computeScopeLabelChanges(
+      gateSpec.name,
+      finalVerdict,
+      finalEnrichment,
+      ctx.gateLabels,
+    );
+    addIds.push(...scopeLabels.addIds);
+    removeIds.push(...scopeLabels.removeIds);
     // Apply effort/complexity labels only when ratings are actually present
     if (finalEnrichment) {
       const ratings = parseRatings(finalEnrichment);

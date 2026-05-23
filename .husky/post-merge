@@ -1,1 +1,11 @@
 node scripts/migrate.mjs --quiet
+
+# Mark the claude-context index as stale and trigger a background reindex.
+# The reindex script clears the flag on success; sessions warn until it does.
+mkdir -p "$HOME/.deus"
+touch "$HOME/.deus/index_stale.flag"
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+node "$REPO_ROOT/scripts/claude-context-reindex.mjs" "$REPO_ROOT" \
+  >> "$HOME/.deus/index_reindex.log" 2>&1 &
+disown

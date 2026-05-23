@@ -3,7 +3,7 @@ name: agent-readiness-gate
 gate_to: "Ready for Agent"
 allowed_from: ["Todo"]
 mode: advise
-fallback: SHIP
+fallback: REVISE
 cooldown_minutes: 60
 model: sonnet
 effort: high

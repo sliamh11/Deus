@@ -54,5 +54,61 @@
     "category": "general",
     "score_at_gen": 0.85,
     "content": "Before implementing a requested approach, flagged a non-obvious performance tradeoff — the simple solution would work for small data but degrade at scale. User appreciated the heads-up and chose a different approach. Always surface non-obvious tradeoffs before writing code, even if the user didn't ask for analysis. One sentence is enough — then wait."
+  },
+  {
+    "id": "seed_parallel_everything",
+    "summary": "Run all independent work in parallel",
+    "category": "general",
+    "score_at_gen": 0.9,
+    "content": "Ran three independent research queries sequentially, each waiting for the previous to complete before starting the next. None depended on each other's results. The user pointed out this wasted time — all three should have launched in parallel in a single message. For any set of independent operations (tool calls, agent launches, research branches), run them all simultaneously. Only serialize when there's a hard data dependency."
+  },
+  {
+    "id": "seed_worktree_discipline",
+    "summary": "Always use git worktree, never checkout mid-task",
+    "category": "developer_workflow",
+    "score_at_gen": 0.25,
+    "content": "Used `git checkout -b` to switch to a feature branch while other work was in progress on main. This caused confusion when uncommitted changes from the main working tree leaked into the new branch. The correct pattern is `git worktree add` — it creates an isolated copy of the repo for the new branch, leaving the main checkout untouched. Never use `git checkout` to switch branches mid-task."
+  },
+  {
+    "id": "seed_diagnosis_first",
+    "summary": "Identify what changed before attempting a fix",
+    "category": "developer_workflow",
+    "score_at_gen": 0.2,
+    "content": "Jumped straight to fixing a broken feature by rewriting the function, without first investigating what had changed to break it. The actual cause was a config change in a different file — the function was fine. Wasted a full implementation cycle. Before fixing anything, always ask: what changed since this last worked? Check recent commits, config changes, and dependency updates before touching code."
+  },
+  {
+    "id": "seed_evaluate_alternatives",
+    "summary": "Compare at least two approaches before committing",
+    "category": "general",
+    "score_at_gen": 0.2,
+    "content": "Rushed into the first solution that came to mind — a complex workaround that introduced a new dependency. The user asked 'did you consider alternatives?' and pointed out a simpler approach using existing utilities that required half the code. Before committing to any implementation, name at least two approaches, state the tradeoff, and pick deliberately. The first idea is rarely the best one."
+  },
+  {
+    "id": "seed_never_merge_failing_ci",
+    "summary": "Never merge when CI is failing — hard gate",
+    "category": "developer_workflow",
+    "score_at_gen": 0.2,
+    "content": "Attempted to merge a PR while CI checks were still failing, reasoning that the failures were 'unrelated to the change.' The user stopped the merge — CI is a hard gate, no exceptions. Even if the failure looks unrelated, investigate first. A failing CI pipeline means something is wrong, and merging on top of it compounds the problem. Never merge when CI is red."
+  },
+  {
+    "id": "seed_security_audit",
+    "summary": "Audit security impact before every commit",
+    "category": "developer_workflow",
+    "score_at_gen": 0.85,
+    "content": "Before committing a change that touched authentication logic, ran a security audit of the diff — checked for hardcoded credentials, injection vectors, and auth bypasses. Caught a debug line that would have logged a session token to stdout. The repo is treated as public; every commit must pass a security review. This is especially critical for changes touching auth, data storage, or external APIs."
+  },
+  {
+    "id": "seed_one_concern_per_branch",
+    "summary": "Never bundle unrelated changes on the same branch",
+    "category": "developer_workflow",
+    "score_at_gen": 0.25,
+    "content": "Bundled a bug fix and an unrelated refactor on the same branch 'to save time.' During review, the reviewer couldn't tell which changes were the fix and which were cleanup — the PR was sent back for splitting. Unrelated changes on the same branch are harder to review, harder to revert if something breaks, and harder to bisect. One concern per branch, always."
+  },
+  {
+    "id": "seed_memory_search",
+    "summary": "Search vault before implementing — check prior decisions",
+    "category": "general",
+    "score_at_gen": 0.85,
+    "content": "Started implementing a feature from scratch, only to discover mid-implementation that a prior session had already researched the exact same topic and made a design decision. The research was in the vault but I didn't check. Before implementing any feature, run `memory_tree.py query` to search for prior decisions, research, and context. Cite the retrieved path — it prevents duplicated work and contradictory decisions."
   }
 ]
