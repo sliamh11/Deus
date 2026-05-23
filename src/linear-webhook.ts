@@ -17,15 +17,8 @@ import {
 import { triggerAutoMerge } from './linear-auto-merge.js';
 import { macosNotify, notifyPipelineStep } from './linear-notifications.js';
 import { syncVaultPending } from './linear-vault-sync.js';
-import {
-  RetryableError,
-  UserError,
-  FatalError,
-} from './errors/index.js';
-import {
-  WEBHOOK_MAX_RETRIES,
-  WEBHOOK_BASE_DELAY_MS,
-} from './config.js';
+import { RetryableError, UserError, FatalError } from './errors/index.js';
+import { WEBHOOK_MAX_RETRIES, WEBHOOK_BASE_DELAY_MS } from './config.js';
 
 const DEFAULT_WEBHOOK_PORT = 3005;
 const LABEL_RETRY_MAX = 3;
@@ -115,7 +108,12 @@ export async function retryWithBackoff<T>(
 
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.warn(
-        { attempt: attempt + 1, maxAttempts, delayMs: Math.round(delayMs), error: errMsg },
+        {
+          attempt: attempt + 1,
+          maxAttempts,
+          delayMs: Math.round(delayMs),
+          error: errMsg,
+        },
         'webhook.retry',
       );
 
@@ -128,17 +126,20 @@ export async function retryWithBackoff<T>(
     { attempts_exhausted: maxAttempts, error: errMsg },
     'webhook.failed',
   );
-  throw new FatalError(`Webhook dispatch failed after ${maxAttempts} attempts`, {
-    cause: lastErr,
-  });
+  throw new FatalError(
+    `Webhook dispatch failed after ${maxAttempts} attempts`,
+    {
+      cause: lastErr,
+    },
+  );
 }
 
 function isNonRetryableHttpError(err: unknown): boolean {
   if (err instanceof RetryableError) return false;
   if (!(err instanceof Error)) return false;
 
-  const statusCode = (err as Error & { status?: number; statusCode?: number })
-    .status ??
+  const statusCode =
+    (err as Error & { status?: number; statusCode?: number }).status ??
     (err as Error & { status?: number; statusCode?: number }).statusCode;
 
   if (typeof statusCode === 'number') {
@@ -777,3 +778,4 @@ export function startLinearWebhookServer(
     });
   });
 }
+
