@@ -370,7 +370,13 @@ async function pollLinear(): Promise<void> {
     filter: { state: { id: { eq: readyState.id } } },
   });
 
-  const sorted = [...issues.nodes].sort((a, b) => a.sortOrder - b.sortOrder);
+  const sorted = [...issues.nodes].sort((a, b) => {
+    // Priority first (1=urgent > 2=high > 3=medium > 4=low > 0=none)
+    const pa = a.priority === 0 ? 99 : a.priority;
+    const pb = b.priority === 0 ? 99 : b.priority;
+    if (pa !== pb) return pa - pb;
+    return a.sortOrder - b.sortOrder;
+  });
 
   let dispatched = 0;
   const slots = ctx.deps.queue.availableSlots();

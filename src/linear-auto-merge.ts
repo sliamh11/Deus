@@ -235,7 +235,11 @@ export async function attemptAutoMerge(
   });
   const readyState = ctx.stateByName.get('Ready for Agent');
   if (readyState) {
-    await ctx.client.updateIssue(issueId, { stateId: readyState.id });
+    // priority 1 = urgent; ensures CI-fix re-dispatch runs before new work
+    await ctx.client.updateIssue(issueId, {
+      stateId: readyState.id,
+      priority: 1,
+    });
   }
   logger.warn(
     { issueId, prUrl },
