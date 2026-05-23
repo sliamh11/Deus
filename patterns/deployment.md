@@ -3,7 +3,7 @@ governs:
   - src/
   - setup/
   - packages/
-last_verified: "2026-05-23T01:57:00" # auto-bump (pipeline-observability)
+last_verified: "2026-05-23T15:05:00" # auto-bump (pipeline-cli-db-init)
 test_tasks:
   - "Deploy a hotfix to a running service and restart it after rebuilding dist/"
   - "Rebuild the WhatsApp MCP package and pick up the change live"
