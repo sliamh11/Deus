@@ -4,7 +4,14 @@ import {
   formatElapsed,
   elapsedMs,
   computeColumnWidths,
+  renderThroughputFooter,
+  type TodayStats,
+  type GateRevisionCounts,
 } from './linear-pipeline-cli.js';
+
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
+const stripAnsi = (s: string) => s.replace(ANSI_RE, '');
 
 describe('parseDuration', () => {
   it('parses minutes', () => {
@@ -110,5 +117,104 @@ describe('computeColumnWidths', () => {
     const narrow = computeColumnWidths(40);
     const min = computeColumnWidths(80);
     expect(narrow.titleWidth).toBe(min.titleWidth);
+  });
+});
+
+// ── renderThroughputFooter ────────────────────────────────────────────────────
+
+const baseStats: TodayStats = {
+  shipped: 3,
+  failed: 1,
+  medianAgentMs: 14 * 60_000, // 14m
+  automergeFailRate: 33,
+};
+
+describe('renderThroughputFooter', () => {
+  it('renders line 1 with shipped / failed / median / automerge-fail', () => {
+    const lines = renderThroughputFooter(baseStats, {}, 120);
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    const plain = lines[0].replace(ANSI_RE, '');
+    expect(plain).toContain('3 shipped');
+    expect(plain).toContain('1 failed');
+    expect(plain).toContain('Median agent 14m');
+    expect(plain).toContain('Automerge fail 33%');
+  });
+
+  it('renders em-dash when median and automerge-fail are null', () => {
+    const stats: TodayStats = {
+      shipped: 0,
+      failed: 0,
+      medianAgentMs: null,
+      automergeFailRate: null,
+    };
+    const lines = renderThroughputFooter(stats, {}, 120);
+    const plain = lines[0].replace(ANSI_RE, '');
+    expect(plain).toContain('Median agent —');
+    expect(plain).toContain('Automerge fail —');
+  });
+
+  it('renders gate revision bars on line 2', () => {
+    const gates: GateRevisionCounts = {
+      'completion-gate': 5,
+      'readiness-gate': 2,
+      'quality-gate': 1,
+    };
+    const lines = renderThroughputFooter(baseStats, gates, 120);
+    expect(lines.length).toBe(2);
+    const plain = lines[1].replace(ANSI_RE, '');
+    expect(plain).toContain('Gate revisions');
+    expect(plain).toContain('completion-gate');
+    expect(plain).toContain('readiness-gate');
+    expect(plain).toContain('quality-gate');
+  });
+
+  it('highest-count gate gets solid bar (▓), others get light bar (░)', () => {
+    const gates: GateRevisionCounts = { top: 10, mid: 5 };
+    const lines = renderThroughputFooter(baseStats, gates, 120);
+    expect(lines[1]).toContain('▓'); // top gate
+    expect(lines[1]).toContain('░'); // mid gate
+  });
+
+  it('bar length is proportional to revision count', () => {
+    const gates: GateRevisionCounts = { big: 10, small: 2 };
+    const lines = renderThroughputFooter(baseStats, gates, 120);
+    const plain = lines[1].replace(ANSI_RE, '');
+    // big should have more bar chars than small
+    const bigMatch = plain.match(/big\s+(▓+)/);
+    const smallMatch = plain.match(/small\s+(░+)/);
+    expect(bigMatch).not.toBeNull();
+    expect(smallMatch).not.toBeNull();
+    expect(bigMatch![1].length).toBeGreaterThan(smallMatch![1].length);
+  });
+
+  it('omits gate line when no revisions recorded', () => {
+    const lines = renderThroughputFooter(baseStats, {}, 120);
+    expect(lines.length).toBe(1);
+  });
+
+  it('truncates gates that would overflow terminal width', () => {
+    // Very narrow terminal — only the first gate should fit
+    const gates: GateRevisionCounts = { alpha: 5, beta: 4, gamma: 3, delta: 2 };
+    const lines = renderThroughputFooter(baseStats, gates, 30);
+    const plain = lines[1].replace(ANSI_RE, '');
+    // Should contain "Gate revisions" prefix and at least alpha
+    expect(plain).toContain('Gate revisions');
+    // beta/gamma/delta may be clipped; no assertion on their presence
+    expect(plain.length).toBeLessThanOrEqual(30);
+  });
+
+  it('formats median hours correctly', () => {
+    const stats: TodayStats = { ...baseStats, medianAgentMs: 90 * 60_000 }; // 90m = 1h30m
+    const lines = renderThroughputFooter(stats, {}, 120);
+    const plain = lines[0].replace(ANSI_RE, '');
+    expect(plain).toContain('Median agent 1h30m');
+  });
+
+  it('formats exact hours without remainder', () => {
+    const stats: TodayStats = { ...baseStats, medianAgentMs: 2 * 3_600_000 }; // exactly 2h
+    const lines = renderThroughputFooter(stats, {}, 120);
+    const plain = lines[0].replace(ANSI_RE, '');
+    expect(plain).toContain('Median agent 2h');
+    expect(plain).not.toContain('2h0m');
   });
 });

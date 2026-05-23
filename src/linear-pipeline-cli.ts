@@ -29,6 +29,17 @@ import {
   type ActionContext,
 } from './linear-actions.js';
 
+// ── Footer throughput types ──────────────────────────────────────────────────
+
+export interface TodayStats {
+  shipped: number;
+  failed: number;
+  medianAgentMs: number | null;
+  automergeFailRate: number | null; // 0-100 percent, null if no automerge events
+}
+
+export type GateRevisionCounts = Record<string, number>;
+
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
@@ -160,6 +171,163 @@ function truncate(str: string, maxLen: number): string {
   const clean = str.replace(/[\r\n\t]+/g, ' ');
   if (clean.length <= maxLen) return clean;
   return clean.slice(0, maxLen - 1) + '…';
+}
+
+function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function formatMedianMs(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remaining = minutes % 60;
+  return remaining > 0 ? `${hours}h${remaining}m` : `${hours}h`;
+}
+
+// ── Footer throughput computations ───────────────────────────────────────────
+
+export function computeTodayStats(): TodayStats {
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0); // local midnight
+  const since = todayStart.toISOString();
+
+  const todayEvents = getPipelineEvents({ since });
+
+  const shipped = todayEvents.filter(
+    (e) => e.event_type === 'moved_done' || e.event_type === 'automerge_done',
+  ).length;
+
+  const failed = todayEvents.filter(
+    (e) =>
+      e.event_type === 'automerge_failed' || e.event_type === 'agent_failed',
+  ).length;
+
+  const automergeTerminal = todayEvents.filter(
+    (e) =>
+      e.event_type === 'automerge_done' || e.event_type === 'automerge_failed',
+  ).length;
+  const automergeFailed = todayEvents.filter(
+    (e) => e.event_type === 'automerge_failed',
+  ).length;
+  const automergeFailRate =
+    automergeTerminal > 0
+      ? Math.round((automergeFailed / automergeTerminal) * 100)
+      : null;
+
+  // Median agent duration: time from agent_started → agent_completed / pr_created.
+  // Look for starts in all history so we capture cycles that began before today.
+  const allEvents = getPipelineEvents();
+  const issueAgentStart = new Map<string, number>(); // issue_id → latest start ms
+  for (const e of allEvents) {
+    if (e.event_type === 'agent_started') {
+      issueAgentStart.set(e.issue_id, new Date(e.created_at).getTime());
+    }
+  }
+
+  const durations: number[] = [];
+  for (const e of todayEvents) {
+    if (e.event_type === 'agent_completed' || e.event_type === 'pr_created') {
+      const startMs = issueAgentStart.get(e.issue_id);
+      if (startMs !== undefined) {
+        const dur = new Date(e.created_at).getTime() - startMs;
+        if (dur > 0) durations.push(dur);
+      }
+    }
+  }
+
+  let medianAgentMs: number | null = null;
+  if (durations.length > 0) {
+    durations.sort((a, b) => a - b);
+    const mid = Math.floor(durations.length / 2);
+    medianAgentMs =
+      durations.length % 2 === 0
+        ? (durations[mid - 1] + durations[mid]) / 2
+        : durations[mid];
+  }
+
+  return { shipped, failed, medianAgentMs, automergeFailRate };
+}
+
+export function computeGateRevisions(): GateRevisionCounts {
+  const events = getPipelineEvents({ eventType: 'gate_revise' });
+  const counts: GateRevisionCounts = {};
+
+  for (const e of events) {
+    if (e.detail) {
+      // detail format: "{gate-name}: REVISE"  e.g. "completion-gate: REVISE"
+      const match = e.detail.match(/^(.+?):\s*REVISE\b/i);
+      if (match) {
+        const name = match[1].trim();
+        counts[name] = (counts[name] ?? 0) + 1;
+      }
+    }
+  }
+
+  return counts;
+}
+
+// ── Footer throughput renderer ───────────────────────────────────────────────
+
+export function renderThroughputFooter(
+  stats: TodayStats,
+  gateRevisions: GateRevisionCounts,
+  cols: number,
+): string[] {
+  const lines: string[] = [];
+
+  // Line 1 — daily throughput stats
+  const dot = `${DIM}·${RESET}`;
+  const shippedStr = `${GREEN}${stats.shipped} shipped${RESET}`;
+  const failedStr =
+    stats.failed > 0
+      ? `${RED}${stats.failed} failed${RESET}`
+      : `${DIM}${stats.failed} failed${RESET}`;
+  const medianStr =
+    stats.medianAgentMs !== null
+      ? `Median agent ${CYAN}${formatMedianMs(stats.medianAgentMs)}${RESET}`
+      : `${DIM}Median agent —${RESET}`;
+  const failRateStr =
+    stats.automergeFailRate !== null
+      ? `Automerge fail ${stats.automergeFailRate > 50 ? RED : DIM}${stats.automergeFailRate}%${RESET}`
+      : `${DIM}Automerge fail —${RESET}`;
+
+  lines.push(
+    ` ${DIM}Today${RESET} ${shippedStr} ${dot} ${failedStr} ${dot} ${medianStr} ${dot} ${failRateStr}`,
+  );
+
+  // Line 2 — per-gate revision bars, sorted descending by count (worst first)
+  const gates = Object.entries(gateRevisions).sort((a, b) => b[1] - a[1]);
+
+  if (gates.length > 0) {
+    const maxCount = gates[0][1];
+    const MAX_BAR = 5;
+
+    const prefix = ` ${DIM}Gate revisions${RESET}  `;
+    let line2 = prefix;
+    let visibleLen = stripAnsi(prefix).length;
+
+    for (let i = 0; i < gates.length; i++) {
+      const [name, count] = gates[i];
+      const barLen = Math.max(1, Math.round((count / maxCount) * MAX_BAR));
+      // Highest-count gate gets solid block; others get lighter shade
+      const barChar = count === maxCount ? '▓' : '░';
+      const bar = barChar.repeat(barLen);
+      const sep = i > 0 ? '  ' : '';
+      const segment = `${DIM}${name}${RESET} ${CYAN}${bar}${RESET}`;
+      const segVisible = sep + name + ' ' + bar;
+
+      if (visibleLen + segVisible.length > cols - 1) break;
+
+      line2 += sep + segment;
+      visibleLen += segVisible.length;
+    }
+
+    lines.push(line2);
+  }
+
+  return lines;
 }
 
 function printEvents(
@@ -415,6 +583,8 @@ interface RenderOptions {
   confirmPrompt?: string;
   cmdLine?: string;
   lastResult?: { message: string; ok: boolean };
+  todayStats?: TodayStats;
+  gateRevisions?: GateRevisionCounts;
 }
 
 function renderDashboardOutput(
@@ -541,6 +711,16 @@ function renderDashboardOutput(
     lines.push(`${rc} ${icon} ${opts.lastResult.message}${RESET}`);
   }
 
+  if (opts.todayStats) {
+    lines.push('');
+    const footerLines = renderThroughputFooter(
+      opts.todayStats,
+      opts.gateRevisions ?? {},
+      cols,
+    );
+    for (const l of footerLines) lines.push(l);
+  }
+
   lines.push('');
   if (opts.confirmPrompt) {
     lines.push(`${YELLOW} ${opts.confirmPrompt} [y/N]${RESET}`);
@@ -633,6 +813,8 @@ async function startWatchMode(): Promise<void> {
   let cachedQueued: QueuedIssue[] = [];
   let cachedRecent: RecentIssue[] = [];
   let lastWarning: string | undefined;
+  let cachedTodayStats: TodayStats | undefined;
+  let cachedGateRevisions: GateRevisionCounts | undefined;
 
   try {
     actionCtx = await initActionContext(client, teamId);
@@ -742,6 +924,8 @@ async function startWatchMode(): Promise<void> {
         lastResult: lastActionResult
           ? { message: lastActionResult, ok: lastActionOk }
           : undefined,
+        todayStats: cachedTodayStats,
+        gateRevisions: cachedGateRevisions,
       });
     }
     process.stdout.write(CURSOR_HOME + output + '\n' + CLEAR_TO_END);
@@ -750,6 +934,12 @@ async function startWatchMode(): Promise<void> {
   async function tick(): Promise<void> {
     if (rendering) return;
     rendering = true;
+
+    // Footer stats are DB-only — compute before the API call so they're
+    // available in both the success and error render paths.
+    cachedTodayStats = computeTodayStats();
+    cachedGateRevisions = computeGateRevisions();
+
     try {
       const { active, queued, fromCache } = await fetchActiveAndQueued(
         client,
