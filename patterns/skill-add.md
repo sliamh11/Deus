@@ -1,7 +1,7 @@
 ---
 governs:
   - .claude/skills
-last_verified: "2026-05-23T15:38:00" # auto-bump (linear-vault-sync)
+last_verified: "2026-05-23T22:55:00" # auto-bump (compress-linear-cache)
 test_tasks:
   - "Create a new skill under .claude/skills/ that fetches recent Gmail threads"
   - "Add a new skill SKILL.md that documents log rotation steps"
