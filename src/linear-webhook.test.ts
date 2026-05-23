@@ -576,14 +576,19 @@ describe('retryWithBackoff', () => {
     loggerWarnSpy.mockRestore();
   });
 
-  it('logs webhook.failed on exhaustion', async () => {
+  it('logs webhook.failed on exhaustion with first_error and error', async () => {
     const loggerErrorSpy = vi.spyOn(
       await import('./logger.js').then((m) => m.logger),
       'error',
     );
 
-    const retryableErr = new RetryableError('always fails');
-    const handler = vi.fn().mockRejectedValue(retryableErr);
+    const firstErr = new RetryableError('initial transient');
+    const laterErr = new RetryableError('different transient');
+    const handler = vi
+      .fn()
+      .mockRejectedValueOnce(firstErr)
+      .mockRejectedValueOnce(laterErr)
+      .mockRejectedValueOnce(laterErr);
 
     await expect(retryWithBackoff(handler, 3, 100)).rejects.toBeInstanceOf(
       FatalError,
@@ -593,8 +598,97 @@ describe('retryWithBackoff', () => {
       (call) => call[1] === 'webhook.failed',
     );
     expect(exhaustedCalls.length).toBeGreaterThanOrEqual(1);
-    expect(exhaustedCalls[0][0]).toMatchObject({ attempts_exhausted: 3 });
+    expect(exhaustedCalls[0][0]).toMatchObject({
+      attempts_exhausted: 3,
+      first_error: 'initial transient',
+      error: 'different transient',
+    });
 
     loggerErrorSpy.mockRestore();
+  });
+
+  it('uses Retry-After header (numeric seconds) when present on 429', async () => {
+    const sleepCalls: number[] = [];
+    _setSleepFnForTests((ms: number) => {
+      sleepCalls.push(ms);
+      return Promise.resolve();
+    });
+
+    const rateLimitErr = Object.assign(new Error('Too Many Requests'), {
+      status: 429,
+      headers: { 'retry-after': '5' },
+    });
+    const handler = vi
+      .fn()
+      .mockRejectedValueOnce(rateLimitErr)
+      .mockResolvedValue('ok');
+
+    await retryWithBackoff(handler, 3, 100);
+    expect(sleepCalls).toHaveLength(1);
+    expect(sleepCalls[0]).toBe(5000);
+  });
+
+  it('uses Retry-After header from response.headers (axios-style)', async () => {
+    const sleepCalls: number[] = [];
+    _setSleepFnForTests((ms: number) => {
+      sleepCalls.push(ms);
+      return Promise.resolve();
+    });
+
+    const rateLimitErr = Object.assign(new Error('Too Many Requests'), {
+      status: 429,
+      response: { headers: { 'retry-after': '10' } },
+    });
+    const handler = vi
+      .fn()
+      .mockRejectedValueOnce(rateLimitErr)
+      .mockResolvedValue('ok');
+
+    await retryWithBackoff(handler, 3, 100);
+    expect(sleepCalls).toHaveLength(1);
+    expect(sleepCalls[0]).toBe(10_000);
+  });
+
+  it('caps Retry-After at WEBHOOK_MAX_DELAY_MS (30s)', async () => {
+    const sleepCalls: number[] = [];
+    _setSleepFnForTests((ms: number) => {
+      sleepCalls.push(ms);
+      return Promise.resolve();
+    });
+
+    const rateLimitErr = Object.assign(new Error('Too Many Requests'), {
+      status: 429,
+      headers: { 'retry-after': '120' },
+    });
+    const handler = vi
+      .fn()
+      .mockRejectedValueOnce(rateLimitErr)
+      .mockResolvedValue('ok');
+
+    await retryWithBackoff(handler, 3, 100);
+    expect(sleepCalls).toHaveLength(1);
+    expect(sleepCalls[0]).toBe(30_000);
+  });
+
+  it('falls back to exponential backoff when no Retry-After header', async () => {
+    const sleepCalls: number[] = [];
+    _setSleepFnForTests((ms: number) => {
+      sleepCalls.push(ms);
+      return Promise.resolve();
+    });
+
+    const rateLimitErr = Object.assign(new Error('Too Many Requests'), {
+      status: 429,
+    });
+    const handler = vi
+      .fn()
+      .mockRejectedValueOnce(rateLimitErr)
+      .mockResolvedValue('ok');
+
+    await retryWithBackoff(handler, 3, 100);
+    expect(sleepCalls).toHaveLength(1);
+    // Should use computed backoff (baseDelayMs * 2^0 + jitter), not a fixed value
+    expect(sleepCalls[0]).toBeGreaterThan(0);
+    expect(sleepCalls[0]).toBeLessThanOrEqual(30_000);
   });
 });

@@ -79,12 +79,14 @@ export async function retryWithBackoff<T>(
   baseDelayMs: number,
 ): Promise<T> {
   let lastErr: unknown;
+  let firstErr: unknown;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       return await fn();
     } catch (err) {
       lastErr = err;
+      if (attempt === 0) firstErr = err;
 
       if (err instanceof UserError) {
         throw err;
@@ -102,11 +104,14 @@ export async function retryWithBackoff<T>(
         break;
       }
 
-      const jitter = Math.random() * baseDelayMs;
-      const delayMs = Math.min(
-        baseDelayMs * Math.pow(2, attempt) + jitter,
-        WEBHOOK_MAX_DELAY_MS,
-      );
+      const retryAfterMs = extractRetryAfterMs(err);
+      const delayMs =
+        retryAfterMs !== null
+          ? Math.min(retryAfterMs, WEBHOOK_MAX_DELAY_MS)
+          : Math.min(
+              baseDelayMs * Math.pow(2, attempt) + Math.random() * baseDelayMs,
+              WEBHOOK_MAX_DELAY_MS,
+            );
 
       const errMsg = err instanceof Error ? err.message : String(err);
       logger.warn(
@@ -115,6 +120,7 @@ export async function retryWithBackoff<T>(
           maxAttempts,
           delayMs: Math.round(delayMs),
           error: errMsg,
+          ...(retryAfterMs !== null && { retryAfterHeader: true }),
         },
         'webhook.retry',
       );
@@ -123,9 +129,15 @@ export async function retryWithBackoff<T>(
     }
   }
 
-  const errMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  const lastMsg = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  const firstMsg =
+    firstErr instanceof Error ? firstErr.message : String(firstErr);
   logger.error(
-    { attempts_exhausted: maxAttempts, error: errMsg },
+    {
+      attempts_exhausted: maxAttempts,
+      first_error: firstMsg,
+      error: lastMsg,
+    },
     'webhook.failed',
   );
   throw new FatalError(
@@ -134,6 +146,32 @@ export async function retryWithBackoff<T>(
       cause: lastErr,
     },
   );
+}
+
+function extractRetryAfterMs(err: unknown): number | null {
+  if (!(err instanceof Error)) return null;
+  const typed = err as Error & {
+    headers?: Record<string, string>;
+    response?: {
+      headers?: Record<string, string> & { get?: (k: string) => string };
+    };
+  };
+  const raw =
+    typed.headers?.['retry-after'] ??
+    typed.response?.headers?.['retry-after'] ??
+    typed.response?.headers?.get?.('retry-after');
+  if (!raw) return null;
+
+  const seconds = Number(raw);
+  if (!Number.isNaN(seconds) && seconds > 0) {
+    return seconds * 1000;
+  }
+  const dateMs = Date.parse(raw);
+  if (!Number.isNaN(dateMs)) {
+    const delta = dateMs - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+  return null;
 }
 
 function isNonRetryableHttpError(err: unknown): boolean {
