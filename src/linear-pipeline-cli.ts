@@ -330,6 +330,148 @@ export function renderThroughputFooter(
   return lines;
 }
 
+// ── Stage bar ──────────────────────────────────────────────────────────────
+
+/**
+ * A pipeline event row as returned by getPipelineEvents.
+ */
+export interface PipelineEvent {
+  event_type: string;
+  created_at: string;
+}
+
+/**
+ * Renders a fixed-width 10-character stage progress bar for a single issue.
+ *
+ * Bar format: `[ ▓▓▓░·· ]`  (bracket + space + 6 stage chars + space + bracket = 10 chars)
+ *
+ * Stage mapping (in order):
+ *  1. Scope            — first `gate_ship` event before any `agent_started`
+ *  2. Dispatch/working — `agent_started`
+ *  3. Agent done / PR  — `agent_completed` OR `pr_created` (whichever first)
+ *  4. Quality gate     — first `gate_ship` after stage 3
+ *  5. Completion gate  — second `gate_ship` after stage 3
+ *  6. Auto-merge       — `automerge_done`
+ *
+ * Character rules:
+ *  · = not started
+ *  ░ = in progress (current active frontier)
+ *  ▓ = completed
+ *
+ * ANSI color rules:
+ *  - completed ▓ → DIM
+ *  - active ░    → bright CYAN
+ *  - completed ▓ where a gate_revise precedes the corresponding gate_ship → RED
+ */
+export function buildStageBar(events: PipelineEvent[]): string {
+  // Stage completion flags
+  let stage1Done = false; // Scope gate_ship (before agent_started)
+  let stage2Done = false; // agent_started
+  let stage3Done = false; // agent_completed or pr_created
+  let stage4Done = false; // first gate_ship after stage 3
+  let stage5Done = false; // second gate_ship after stage 3
+
+  // Whether a gate_revise preceded the gate_ship for stage 4 or 5
+  let stage4Revised = false;
+  let stage5Revised = false;
+  let stage6Done = false; // automerge_done
+
+  // We also need to track whether there was a gate_revise before the scope gate_ship (stage 1)
+  let stage1Revised = false;
+
+  // Process events in order to determine stage completion
+  let agentStartedSeen = false;
+  let stage3EventSeen = false;
+  let postStage3GateShipCount = 0;
+  let postStage3ReviseBeforeNextShip = false;
+
+  for (const ev of events) {
+    const t = ev.event_type;
+
+    if (!agentStartedSeen) {
+      // We are in the pre-agent phase (stage 1 territory)
+      if (t === 'gate_revise') {
+        // revise before any agent_started → might affect stage 1 red coloring
+        stage1Revised = true;
+      } else if (t === 'gate_ship') {
+        if (!stage1Done) {
+          stage1Done = true;
+          // stage1Revised already set above if applicable
+        }
+      } else if (t === 'agent_started') {
+        agentStartedSeen = true;
+        stage2Done = true;
+      }
+    } else {
+      // agent_started has been seen
+      if (!stage3EventSeen) {
+        if (t === 'agent_completed' || t === 'pr_created') {
+          stage3Done = true;
+          stage3EventSeen = true;
+        }
+      } else {
+        // stage 3 done, now counting gate_ships for stage 4 & 5
+        if (t === 'gate_revise') {
+          postStage3ReviseBeforeNextShip = true;
+        } else if (t === 'gate_ship') {
+          postStage3GateShipCount++;
+          if (postStage3GateShipCount === 1) {
+            stage4Done = true;
+            stage4Revised = postStage3ReviseBeforeNextShip;
+            postStage3ReviseBeforeNextShip = false;
+          } else if (postStage3GateShipCount === 2) {
+            stage5Done = true;
+            stage5Revised = postStage3ReviseBeforeNextShip;
+            postStage3ReviseBeforeNextShip = false;
+          }
+        } else if (t === 'automerge_done') {
+          stage6Done = true;
+        }
+      }
+    }
+  }
+
+  // Determine the active frontier: the first stage that is NOT done
+  // Stages: 1,2,3,4,5,6
+  const stages = [
+    stage1Done,
+    stage2Done,
+    stage3Done,
+    stage4Done,
+    stage5Done,
+    stage6Done,
+  ];
+  const revised = [
+    stage1Revised,
+    false, // stage 2 (agent_started) can't have a revise
+    false, // stage 3
+    stage4Revised,
+    stage5Revised,
+    false, // stage 6
+  ];
+
+  // Find first incomplete stage index (0-based)
+  const frontierIdx = stages.findIndex((done) => !done);
+
+  const chars: string[] = [];
+  for (let i = 0; i < 6; i++) {
+    if (stages[i]) {
+      // Completed
+      const glyph = '▓';
+      const color = revised[i] ? RED : DIM;
+      chars.push(`${color}${glyph}${RESET}`);
+    } else if (i === frontierIdx) {
+      // Active frontier
+      chars.push(`\x1b[96m░${RESET}`); // bright cyan
+    } else {
+      // Not started
+      chars.push(`${DIM}·${RESET}`);
+    }
+  }
+
+  return `[ ${chars.join('')} ]`;
+}
+
 function printEvents(
   events: Array<{
     issue_id: string;
@@ -371,6 +513,7 @@ interface ActiveIssue {
   prNumber: string | null;
   statusSummary: string | null;
   reviseCount: number;
+  events: PipelineEvent[];
 }
 
 interface QueuedIssue {
@@ -666,8 +809,10 @@ function renderDashboardOutput(
       const revise =
         issue.reviseCount > 0 ? ` ${RED}×${issue.reviseCount}${RESET}` : '';
 
+      const stageBar = buildStageBar(issue.events);
+
       lines.push(
-        `${cursor} ${CYAN}${id}${RESET}${glyph} ${title} ${pr} ${DIM}${status}${RESET} ${elapsedColored}${revise}`,
+        `${cursor} ${CYAN}${id}${RESET}${glyph} ${title} ${pr} ${DIM}${status}${RESET} ${elapsedColored}${revise} ${stageBar}`,
       );
       rowIndex++;
     }
