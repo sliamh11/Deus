@@ -17,6 +17,7 @@ import {
   parseRatings,
   mergeEnrichment,
   stripEnrichmentSection,
+  computeScopeLabelChanges,
 } from './linear-webhook.js';
 
 beforeEach(() => {
@@ -380,5 +381,69 @@ bad: yaml: content: here
 
 Body.`);
     expect(result.data).toEqual({});
+  });
+});
+
+describe('computeScopeLabelChanges', () => {
+  const gateLabels = {
+    scoped: 'label-scoped-id',
+    revise: 'label-revise-id',
+    effort: {},
+    complexity: {},
+  };
+
+  it('adds scoped label on agent-readiness-gate SHIP with enrichment', () => {
+    const result = computeScopeLabelChanges(
+      'agent-readiness-gate',
+      'SHIP',
+      '## Scope\n\n**Problem**: fix the bug',
+      gateLabels,
+    );
+    expect(result.addIds).toEqual(['label-scoped-id']);
+    expect(result.removeIds).toEqual(['label-revise-id']);
+  });
+
+  it('no labels on agent-readiness-gate SHIP without enrichment', () => {
+    const result = computeScopeLabelChanges(
+      'agent-readiness-gate',
+      'SHIP',
+      undefined,
+      gateLabels,
+    );
+    expect(result.addIds).toEqual([]);
+    expect(result.removeIds).toEqual([]);
+  });
+
+  it('adds revise label on agent-readiness-gate REVISE', () => {
+    const result = computeScopeLabelChanges(
+      'agent-readiness-gate',
+      'REVISE',
+      undefined,
+      gateLabels,
+    );
+    expect(result.addIds).toEqual(['label-revise-id']);
+    expect(result.removeIds).toEqual(['label-scoped-id']);
+  });
+
+  it('no labels when verdict is undefined (crash path)', () => {
+    const result = computeScopeLabelChanges(
+      'agent-readiness-gate',
+      undefined,
+      undefined,
+      gateLabels,
+    );
+    expect(result.addIds).toEqual([]);
+    expect(result.removeIds).toEqual([]);
+  });
+
+  it('no labels for non-readiness gates even on SHIP with enrichment', () => {
+    const result = computeScopeLabelChanges(
+      'output-quality-gate',
+      'SHIP',
+      '## Scope\n\nsome enrichment',
+      gateLabels,
+    );
+    expect(result.addIds).toEqual([]);
+    expect(result.removeIds).toEqual([]);
   });
 });
