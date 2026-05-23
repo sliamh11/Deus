@@ -1,7 +1,7 @@
 ---
 governs:
   - .claude/skills
-last_verified: "2026-05-23" # auto-bump
+last_verified: "2026-05-23T12:00:00" # auto-bump (fix-claude-context-docker)
 test_tasks:
   - "Create a new skill under .claude/skills/ that fetches recent Gmail threads"
   - "Add a new skill SKILL.md that documents log rotation steps"
