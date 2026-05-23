@@ -2,7 +2,7 @@
 /**
  * Pipeline monitor and event audit CLI.
  *
- * Default (no args): live dashboard refreshing every 3s via Linear API + local DB.
+ * Default (no args): live dashboard refreshing every 10s via Linear API + local DB.
  * With args: one-shot queries against the local event log.
  */
 
@@ -28,9 +28,13 @@ const RESET = '\x1b[0m';
 
 const HIDE_CURSOR = '\x1b[?25l';
 const SHOW_CURSOR = '\x1b[?25h';
-const CLEAR_SCREEN = '\x1b[2J\x1b[H';
+const CURSOR_HOME = '\x1b[H';
+const CLEAR_TO_END = '\x1b[J';
+const ENTER_ALT_SCREEN = '\x1b[?1049h';
+const EXIT_ALT_SCREEN = '\x1b[?1049l';
 
-const REFRESH_MS = 3_000;
+const REFRESH_MS = 10_000;
+const BACKOFF_MS = 60_000;
 const RECENT_WINDOW_MS = 30 * 60_000;
 
 const FAILED_TYPES = new Set([
@@ -334,6 +338,7 @@ function renderDashboardOutput(
   queued: QueuedIssue[],
   recent: RecentIssue[],
   error?: string,
+  currentRefreshMs?: number,
 ): string {
   const now = new Date().toLocaleTimeString('en-GB', { hour12: false });
   const cols = process.stdout.columns || 100;
@@ -353,8 +358,14 @@ function renderDashboardOutput(
     failCount > 0 ? `${RED}FAIL ${failCount}${RESET}` : `${DIM}FAIL 0${RESET}`;
   const statsBar = `ACTIVE ${active.length} ${DIM}·${RESET} ${stuckLabel} ${DIM}·${RESET} ${failLabel}`;
 
+  const effectiveRefreshMs = currentRefreshMs ?? REFRESH_MS;
+  const refreshSec = effectiveRefreshMs / 1000;
+  const refreshLabel =
+    effectiveRefreshMs > REFRESH_MS
+      ? `${YELLOW}[every ${refreshSec}s ↓]${RESET}`
+      : `${DIM}[every ${refreshSec}s]${RESET}`;
   lines.push(
-    `${BOLD} Deus Pipeline${RESET}    ${statsBar}${DIM}${' '.repeat(Math.max(1, cols - 70))}${now}  [every ${REFRESH_MS / 1000}s]${RESET}`,
+    `${BOLD} Deus Pipeline${RESET}    ${statsBar}${DIM}${' '.repeat(Math.max(1, cols - 70))}${now}  ${RESET}${refreshLabel}`,
   );
   lines.push(`${DIM} ${'─'.repeat(separatorWidth)}${RESET}`);
 
@@ -478,10 +489,16 @@ async function startWatchMode(): Promise<void> {
     process.exit(1);
   }
 
-  process.stdout.write(HIDE_CURSOR);
+  process.stdout.write(ENTER_ALT_SCREEN + HIDE_CURSOR);
 
   let rendering = false;
   let lastError: string | undefined;
+  let nextRefreshMs = REFRESH_MS;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  function isRateLimitError(msg: string): boolean {
+    return /rate.?limit/i.test(msg) || /429/.test(msg) || /too many/i.test(msg);
+  }
 
   async function tick(): Promise<void> {
     if (rendering) return;
@@ -490,24 +507,40 @@ async function startWatchMode(): Promise<void> {
       const { active, queued } = await fetchActiveAndQueued(client, teamId);
       const recent = fetchRecentIssues();
       lastError = undefined;
-      const output = renderDashboardOutput(active, queued, recent);
-      process.stdout.write(CLEAR_SCREEN + output + '\n');
+      nextRefreshMs = REFRESH_MS;
+      const output = renderDashboardOutput(
+        active,
+        queued,
+        recent,
+        undefined,
+        nextRefreshMs,
+      );
+      process.stdout.write(CURSOR_HOME + output + '\n' + CLEAR_TO_END);
     } catch (err) {
       lastError = err instanceof Error ? err.message : 'Unknown error';
+      if (isRateLimitError(lastError)) {
+        nextRefreshMs = BACKOFF_MS;
+      }
       const recent = fetchRecentIssues();
-      const output = renderDashboardOutput([], [], recent, lastError);
-      process.stdout.write(CLEAR_SCREEN + output + '\n');
+      const output = renderDashboardOutput(
+        [],
+        [],
+        recent,
+        lastError,
+        nextRefreshMs,
+      );
+      process.stdout.write(CURSOR_HOME + output + '\n' + CLEAR_TO_END);
     } finally {
       rendering = false;
+      timer = setTimeout(tick, nextRefreshMs);
     }
   }
 
   await tick();
-  const interval = setInterval(tick, REFRESH_MS);
 
   const cleanup = () => {
-    clearInterval(interval);
-    process.stdout.write(SHOW_CURSOR + '\n');
+    if (timer) clearTimeout(timer);
+    process.stdout.write(EXIT_ALT_SCREEN + SHOW_CURSOR);
     process.exit(0);
   };
 
@@ -525,7 +558,7 @@ function main(): void {
 
   if (args.length === 0) {
     startWatchMode().catch((err) => {
-      process.stdout.write(SHOW_CURSOR);
+      process.stdout.write(EXIT_ALT_SCREEN + SHOW_CURSOR);
       console.error(err);
       process.exit(1);
     });

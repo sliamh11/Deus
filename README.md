@@ -186,7 +186,7 @@ See [Linear automation architecture](docs/decisions/linear-webhook-pipeline.md) 
 
 ### Pipeline monitor
 
-Run `deus pipeline` to open a live dashboard that refreshes every 3 seconds, showing active issues and recent completions:
+Run `deus pipeline` to open a live dashboard that refreshes every 10 seconds, showing active issues and recent completions:
 
 ```bash
 deus pipeline                        # Live monitor (default)
