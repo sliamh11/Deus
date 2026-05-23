@@ -18,6 +18,12 @@ import {
   storeChatMetadata,
   storeMessage,
   updateTask,
+  upsertIssueCache,
+  softDeleteIssueCache,
+  getIssueCacheCount,
+  getMaxCachedAt,
+  getIssuesFromCache,
+  reconcileIssueCache,
 } from './db.js';
 
 beforeEach(() => {
@@ -626,5 +632,142 @@ describe('backend-aware sessions', () => {
     expect(getSession('shared-folder', 'claude')?.session_id).toBe(
       'claude-session',
     );
+  });
+});
+
+// --- Issue cache ---
+
+function sampleIssue(id: string, stateName: string) {
+  return {
+    issue_id: id,
+    identifier: `LIA-${id}`,
+    title: `Issue ${id}`,
+    state_name: stateName,
+    team_id: 'team-1',
+    priority: 0,
+    created_at: '2026-05-20T10:00:00.000Z',
+    updated_at: '2026-05-20T12:00:00.000Z',
+  };
+}
+
+describe('linear_issue_cache', () => {
+  describe('upsertIssueCache', () => {
+    it('inserts a new row', () => {
+      upsertIssueCache(sampleIssue('1', 'Ready for Agent'));
+      expect(getIssueCacheCount()).toBe(1);
+    });
+
+    it('updates an existing row', () => {
+      upsertIssueCache(sampleIssue('1', 'Ready for Agent'));
+      upsertIssueCache({
+        ...sampleIssue('1', 'Agent Working'),
+        title: 'Updated',
+      });
+      expect(getIssueCacheCount()).toBe(1);
+      const rows = getIssuesFromCache(['Agent Working']);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].title).toBe('Updated');
+    });
+
+    it('re-activates soft-deleted rows', () => {
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      softDeleteIssueCache('1');
+      expect(getIssueCacheCount()).toBe(0);
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      expect(getIssueCacheCount()).toBe(1);
+    });
+  });
+
+  describe('softDeleteIssueCache', () => {
+    it('marks a row as deleted', () => {
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      softDeleteIssueCache('1');
+      expect(getIssueCacheCount()).toBe(0);
+    });
+
+    it('does not crash on nonexistent row', () => {
+      expect(() => softDeleteIssueCache('nonexistent')).not.toThrow();
+    });
+  });
+
+  describe('getIssueCacheCount', () => {
+    it('returns 0 on empty table', () => {
+      expect(getIssueCacheCount()).toBe(0);
+    });
+
+    it('excludes soft-deleted rows', () => {
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      upsertIssueCache(sampleIssue('2', 'Todo'));
+      softDeleteIssueCache('1');
+      expect(getIssueCacheCount()).toBe(1);
+    });
+  });
+
+  describe('getMaxCachedAt', () => {
+    it('returns null on empty table', () => {
+      expect(getMaxCachedAt()).toBeNull();
+    });
+
+    it('returns the most recent cached_at', () => {
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      upsertIssueCache(sampleIssue('2', 'Backlog'));
+      const result = getMaxCachedAt();
+      expect(result).not.toBeNull();
+      expect(typeof result).toBe('string');
+    });
+  });
+
+  describe('getIssuesFromCache', () => {
+    it('returns empty for no matching states', () => {
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      expect(getIssuesFromCache(['Done'])).toHaveLength(0);
+    });
+
+    it('filters by state name', () => {
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      upsertIssueCache(sampleIssue('2', 'Ready for Agent'));
+      upsertIssueCache(sampleIssue('3', 'Done'));
+      const result = getIssuesFromCache(['Todo', 'Ready for Agent']);
+      expect(result).toHaveLength(2);
+    });
+
+    it('excludes soft-deleted rows', () => {
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      upsertIssueCache(sampleIssue('2', 'Todo'));
+      softDeleteIssueCache('1');
+      expect(getIssuesFromCache(['Todo'])).toHaveLength(1);
+    });
+
+    it('returns empty array for empty stateNames', () => {
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      expect(getIssuesFromCache([])).toHaveLength(0);
+    });
+  });
+
+  describe('reconcileIssueCache', () => {
+    it('upserts all issues and soft-deletes stale ones', () => {
+      upsertIssueCache(sampleIssue('old', 'Todo'));
+      reconcileIssueCache(new Set(['1', '2']), [
+        sampleIssue('1', 'Todo'),
+        sampleIssue('2', 'Ready for Agent'),
+      ]);
+      expect(getIssueCacheCount()).toBe(2);
+      expect(getIssuesFromCache(['Todo'])).toHaveLength(1);
+      expect(getIssuesFromCache(['Todo'])[0].identifier).toBe('LIA-1');
+    });
+
+    it('skips soft-delete when liveIssueIds is empty', () => {
+      upsertIssueCache(sampleIssue('1', 'Todo'));
+      reconcileIssueCache(new Set(), []);
+      expect(getIssueCacheCount()).toBe(1);
+    });
+
+    it('handles large sets without hitting SQLite variable limit', () => {
+      const ids = Array.from({ length: 50 }, (_, i) => `id-${i}`);
+      const upserts = ids.map((id) => sampleIssue(id, 'Backlog'));
+      upsertIssueCache(sampleIssue('stale', 'Backlog'));
+      reconcileIssueCache(new Set(ids), upserts);
+      expect(getIssueCacheCount()).toBe(50);
+    });
   });
 });
