@@ -5,7 +5,7 @@ governs:
   - src/startup-gate.ts
   - src/checks.ts
   - setup/
-last_verified: "2026-05-23T15:05:00" # auto-bump (pipeline-cli-db-init)
+last_verified: "2026-05-23T16:23:00" # auto-bump (pipeline-live-monitor)
 test_tasks:
   - "Refactor src/router.ts into smaller modules"
   - "Add a new utility function for parsing timestamps"
