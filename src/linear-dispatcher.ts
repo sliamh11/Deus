@@ -9,7 +9,13 @@ import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
 import { extractPrUrl } from './pr-url-extractor.js';
-import { upsertIssuePr } from './db.js';
+import {
+  CIRCUIT_BREAKER_THRESHOLD,
+  getConsecutiveFailCount,
+  getLastFailTime,
+  logPipelineEvent,
+  upsertIssuePr,
+} from './db.js';
 import { notifyPipelineStep } from './linear-notifications.js';
 import { resolveVaultPath } from './solutions/store.js';
 import { defaultSession } from './agent-runtimes/types.js';
@@ -24,6 +30,8 @@ import type { RegisteredGroup } from './types.js';
 
 const DEFAULT_POLL_MS = 30_000;
 const DISPATCH_GROUP_JID = 'linear-dispatch';
+const BACKOFF_FIRST_MS = 5 * 60_000;
+const BACKOFF_REPEAT_MS = 10 * 60_000;
 const AGENTS_DIR = path.join(PROJECT_ROOT, '.claude', 'agents');
 
 export interface LinearDispatcherDependencies {
@@ -150,6 +158,11 @@ export async function discoverWorkflowStates(
   if (!map.has('Done')) {
     logger.warn(
       'linear-dispatcher: workflow state "Done" not found — auto-merge will skip Done transition',
+    );
+  }
+  if (!map.has('Manual Review Required')) {
+    logger.info(
+      'linear-dispatcher: "Manual Review Required" state not found — circuit breaker will fall back to Backlog',
     );
   }
   for (const name of required) {
@@ -390,12 +403,33 @@ async function runIssue(
       notifyPipelineStep(ctx, issueId, identifier, 'agent_failed', error).catch(
         () => {},
       );
-      const backlogState = ctx.stateByName.get('Backlog')!;
-      await ctx.client.updateIssue(issueId, { stateId: backlogState.id });
-      logger.warn(
-        { issueId },
-        'linear-dispatcher: moved failed issue to Backlog',
-      );
+      const agentFailCount = getConsecutiveFailCount(issueId, 'agent_failed');
+      if (agentFailCount >= CIRCUIT_BREAKER_THRESHOLD) {
+        const manualReviewState = ctx.stateByName.get('Manual Review Required');
+        const parkState = manualReviewState ?? ctx.stateByName.get('Backlog')!;
+        await ctx.client.updateIssue(issueId, { stateId: parkState.id });
+        await ctx.client.createComment({
+          issueId,
+          body: `**Circuit breaker tripped** — ${agentFailCount} consecutive agent failures. Moved to ${parkState.name}.\n\nTo retry: investigate the root cause, then move back to **Ready for Agent**.`,
+        });
+        logPipelineEvent(
+          issueId,
+          identifier,
+          'circuit_breaker_tripped',
+          `${agentFailCount} consecutive agent failures`,
+        );
+        logger.warn(
+          { issueId, agentFailCount },
+          'linear-dispatcher: circuit breaker tripped, parked issue',
+        );
+      } else {
+        const backlogState = ctx.stateByName.get('Backlog')!;
+        await ctx.client.updateIssue(issueId, { stateId: backlogState.id });
+        logger.warn(
+          { issueId },
+          'linear-dispatcher: moved failed issue to Backlog',
+        );
+      }
     } else {
       const body = text || '(no output produced)';
       const prUrl = extractPrUrl(body, ctx.repoSlug);
@@ -418,6 +452,12 @@ async function runIssue(
       });
       notifyPipelineStep(ctx, issueId, identifier, 'agent_completed').catch(
         () => {},
+      );
+      logPipelineEvent(
+        issueId,
+        identifier,
+        'circuit_breaker_reset',
+        'agent completed successfully',
       );
       logger.info({ issueId }, 'linear-dispatcher: issue moved to In Review');
     }
@@ -455,6 +495,43 @@ async function pollLinear(): Promise<void> {
   for (const issue of sorted) {
     if (dispatched >= slots) break;
     if (ctx.inFlightDispatch.has(issue.id)) continue;
+
+    const mergeFailCount = getConsecutiveFailCount(
+      issue.id,
+      'automerge_failed',
+    );
+    if (mergeFailCount > 0) {
+      const lastFail = getLastFailTime(issue.id, 'automerge_failed');
+      if (lastFail) {
+        const backoffMs =
+          mergeFailCount === 1 ? BACKOFF_FIRST_MS : BACKOFF_REPEAT_MS;
+        const elapsed = Date.now() - new Date(lastFail).getTime();
+        if (elapsed < backoffMs) {
+          logger.debug(
+            { issueId: issue.id, mergeFailCount, backoffMs, elapsed },
+            'linear-dispatcher: skipping issue in CI backoff window',
+          );
+          continue;
+        }
+      }
+    }
+
+    const agentFailCount = getConsecutiveFailCount(issue.id, 'agent_failed');
+    if (agentFailCount > 0) {
+      const lastAgentFail = getLastFailTime(issue.id, 'agent_failed');
+      if (lastAgentFail) {
+        const backoffMs =
+          agentFailCount === 1 ? BACKOFF_FIRST_MS : BACKOFF_REPEAT_MS;
+        const elapsed = Date.now() - new Date(lastAgentFail).getTime();
+        if (elapsed < backoffMs) {
+          logger.debug(
+            { issueId: issue.id, agentFailCount, backoffMs, elapsed },
+            'linear-dispatcher: skipping issue in agent failure backoff window',
+          );
+          continue;
+        }
+      }
+    }
 
     const labels = await issue.labels();
     const agentLabel = labels.nodes.find((l) => l.name.startsWith('agent:'));

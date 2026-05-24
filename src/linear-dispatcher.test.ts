@@ -14,6 +14,14 @@ vi.mock('./config.js', async () => {
   };
 });
 
+vi.mock('./db.js', () => ({
+  CIRCUIT_BREAKER_THRESHOLD: 3,
+  getConsecutiveFailCount: vi.fn().mockReturnValue(0),
+  getLastFailTime: vi.fn().mockReturnValue(null),
+  logPipelineEvent: vi.fn(),
+  upsertIssuePr: vi.fn(),
+}));
+
 const TEST_PROJECT_ROOT = path.join(os.tmpdir(), `deus-test-${process.pid}`);
 
 import {

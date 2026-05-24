@@ -52,6 +52,8 @@ export const EVENT_LABELS: Record<string, string> = {
   automerge_failed: 'Auto-merge failed',
   moved_done: 'Moved to Done',
   state_changed: 'State changed',
+  circuit_breaker_tripped: 'Circuit breaker tripped',
+  circuit_breaker_reset: 'Circuit breaker reset',
 };
 
 export function buildPipelineCommentBody(

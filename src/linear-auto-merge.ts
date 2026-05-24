@@ -10,8 +10,11 @@ import { promisify } from 'util';
 
 import { isAutoMergeEnabled } from './config.js';
 import {
+  CIRCUIT_BREAKER_THRESHOLD,
+  getConsecutiveFailCount,
   getIssuePr,
   getPendingAutoMerges,
+  logPipelineEvent,
   updatePrAutoMergeState,
   upsertIssuePr,
 } from './db.js';
@@ -23,6 +26,28 @@ import type { LinearContext } from './linear-dispatcher.js';
 const execFileAsync = promisify(execFile);
 
 const CI_POLL_INTERVAL_MS = 60_000;
+// Separate from linear-dispatcher.ts's inline version due to circular import (LinearContext)
+async function tripCircuitBreaker(
+  ctx: LinearContext,
+  issueId: string,
+  ident: string,
+  failCount: number,
+  reason: string,
+): Promise<void> {
+  const manualReviewState = ctx.stateByName.get('Manual Review Required');
+  const parkState = manualReviewState ?? ctx.stateByName.get('Backlog')!;
+  await ctx.client.updateIssue(issueId, { stateId: parkState.id });
+  await ctx.client.createComment({
+    issueId,
+    body: `**Circuit breaker tripped** — ${failCount} consecutive CI/merge failures${reason ? ` (${reason})` : ''}. Moved to ${parkState.name}.\n\nTo retry: fix the underlying issue, then move back to **Ready for Agent**.`,
+  });
+  logPipelineEvent(
+    issueId,
+    ident,
+    'circuit_breaker_tripped',
+    `${failCount} consecutive automerge failures`,
+  );
+}
 const CI_CHECK_TIMEOUT_MS = 30_000;
 const MERGE_TIMEOUT_MS = 120_000;
 const MAX_POLL_ATTEMPTS = 30;
@@ -173,6 +198,12 @@ export async function attemptAutoMerge(
       notifyPipelineStep(ctx, issueId, ident, 'automerge_done', prUrl).catch(
         () => {},
       );
+      logPipelineEvent(
+        issueId,
+        ident,
+        'circuit_breaker_reset',
+        'merge succeeded',
+      );
       logger.info({ issueId, prUrl }, 'auto-merge: merged and moved to Done');
     } else {
       logger.warn(
@@ -187,10 +218,24 @@ export async function attemptAutoMerge(
         'automerge_failed',
         result.error,
       ).catch(() => {});
-      await ctx.client.createComment({
+      const mergeFailCount = getConsecutiveFailCount(
         issueId,
-        body: `**Auto-merge failed** - ${result.error}`,
-      });
+        'automerge_failed',
+      );
+      if (mergeFailCount >= CIRCUIT_BREAKER_THRESHOLD) {
+        await tripCircuitBreaker(
+          ctx,
+          issueId,
+          ident,
+          mergeFailCount,
+          'merge failure',
+        );
+      } else {
+        await ctx.client.createComment({
+          issueId,
+          body: `**Auto-merge failed** - ${result.error}`,
+        });
+      }
     }
     return;
   }
@@ -205,21 +250,32 @@ export async function attemptAutoMerge(
         'automerge_failed',
         'Timed out',
       ).catch(() => {});
-      await ctx.client.createComment({
+      const timeoutFailCount = getConsecutiveFailCount(
         issueId,
-        body: `**Auto-merge timed out** - CI still pending after ${MAX_POLL_ATTEMPTS} attempts. PR: ${prUrl}\n\nMoving to Ready for Agent for re-dispatch.`,
-      });
-      const readyStateTimeout = ctx.stateByName.get('Ready for Agent');
-      if (readyStateTimeout) {
-        await ctx.client.updateIssue(issueId, {
-          stateId: readyStateTimeout.id,
-          priority: 1,
-        });
-      }
-      logger.warn(
-        { issueId, prUrl },
-        'auto-merge: timed out, moved to Ready for Agent',
+        'automerge_failed',
       );
+      if (timeoutFailCount >= CIRCUIT_BREAKER_THRESHOLD) {
+        await tripCircuitBreaker(
+          ctx,
+          issueId,
+          ident,
+          timeoutFailCount,
+          'timeout',
+        );
+      } else {
+        await ctx.client.createComment({
+          issueId,
+          body: `**Auto-merge timed out** - CI still pending after ${MAX_POLL_ATTEMPTS} attempts. PR: ${prUrl}\n\nMoving to Ready for Agent for re-dispatch.`,
+        });
+        const readyStateTimeout = ctx.stateByName.get('Ready for Agent');
+        if (readyStateTimeout) {
+          await ctx.client.updateIssue(issueId, {
+            stateId: readyStateTimeout.id,
+            priority: 1,
+          });
+        }
+      }
+      logger.warn({ issueId, prUrl }, 'auto-merge: timed out');
       return;
     }
     setTimeout(() => {
@@ -232,7 +288,6 @@ export async function attemptAutoMerge(
     return;
   }
 
-  // CI failed — re-dispatch the agent to fix it
   updatePrAutoMergeState(issueId, 'failed');
   notifyPipelineStep(
     ctx,
@@ -241,22 +296,31 @@ export async function attemptAutoMerge(
     'automerge_failed',
     checks.summary,
   ).catch(() => {});
-  await ctx.client.createComment({
-    issueId,
-    body: `**Auto-merge blocked** - CI failed: ${checks.summary}\n\nPR: ${prUrl}\n\nMoving to Ready for Agent for re-dispatch.`,
-  });
-  const readyState = ctx.stateByName.get('Ready for Agent');
-  if (readyState) {
-    // priority 1 = urgent; ensures CI-fix re-dispatch runs before new work
-    await ctx.client.updateIssue(issueId, {
-      stateId: readyState.id,
-      priority: 1,
+
+  const ciFailCount = getConsecutiveFailCount(issueId, 'automerge_failed');
+  if (ciFailCount >= CIRCUIT_BREAKER_THRESHOLD) {
+    await tripCircuitBreaker(ctx, issueId, ident, ciFailCount, 'CI failure');
+    logger.warn(
+      { issueId, prUrl, ciFailCount },
+      'auto-merge: circuit breaker tripped, parked issue',
+    );
+  } else {
+    await ctx.client.createComment({
+      issueId,
+      body: `**Auto-merge blocked** - CI failed: ${checks.summary}\n\nPR: ${prUrl}\n\nMoving to Ready for Agent for re-dispatch.`,
     });
+    const readyState = ctx.stateByName.get('Ready for Agent');
+    if (readyState) {
+      await ctx.client.updateIssue(issueId, {
+        stateId: readyState.id,
+        priority: 1,
+      });
+    }
+    logger.warn(
+      { issueId, prUrl },
+      'auto-merge: CI failed, moved to Ready for Agent',
+    );
   }
-  logger.warn(
-    { issueId, prUrl },
-    'auto-merge: CI failed, moved to Ready for Agent',
-  );
 }
 
 export async function sweepPendingAutoMerges(

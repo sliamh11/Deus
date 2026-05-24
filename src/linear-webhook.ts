@@ -10,6 +10,7 @@ import {
   insertWebhookEvent,
   updateWebhookEventStatus,
   getLastCompletedGateRun,
+  logPipelineEvent,
   upsertGateComment,
   getGateCommentId,
   upsertIssueCache,
@@ -451,6 +452,19 @@ async function handleIssueUpdate(
       'linear-webhook: skipping bot-triggered transition',
     );
     return;
+  }
+
+  if (toState.name === 'Ready for Agent') {
+    logPipelineEvent(
+      data.id,
+      data.identifier,
+      'circuit_breaker_reset',
+      'manual move to Ready for Agent',
+    );
+    logger.info(
+      { issueId: data.id },
+      'linear-webhook: circuit breaker reset (manual Ready for Agent)',
+    );
   }
 
   if (data.labels.some((l) => l.name === 'warden:skip')) {

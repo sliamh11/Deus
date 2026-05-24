@@ -7,12 +7,15 @@ import {
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
+  getConsecutiveFailCount,
+  getLastFailTime,
   getMessagesSince,
   getNewMessages,
   getAllSessions,
   getAllBackendSessions,
   getTaskById,
   getSession,
+  logPipelineEvent,
   setSession,
   setRegisteredGroup,
   storeChatMetadata,
@@ -768,6 +771,96 @@ describe('linear_issue_cache', () => {
       upsertIssueCache(sampleIssue('stale', 'Backlog'));
       reconcileIssueCache(new Set(ids), upserts);
       expect(getIssueCacheCount()).toBe(50);
+    });
+  });
+});
+
+describe('circuit breaker', () => {
+  describe('getConsecutiveFailCount', () => {
+    it('returns 0 when no events exist', () => {
+      expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(0);
+    });
+
+    it('counts consecutive failures', () => {
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'CI failed');
+      logPipelineEvent(
+        'issue-1',
+        'LIA-1',
+        'automerge_failed',
+        'CI failed again',
+      );
+      expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(2);
+    });
+
+    it('resets count after agent_completed', () => {
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 2');
+      logPipelineEvent('issue-1', 'LIA-1', 'agent_completed');
+      logPipelineEvent(
+        'issue-1',
+        'LIA-1',
+        'automerge_failed',
+        'fail after reset',
+      );
+      expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(1);
+    });
+
+    it('resets count after circuit_breaker_reset', () => {
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 2');
+      logPipelineEvent('issue-1', 'LIA-1', 'circuit_breaker_reset', 'manual');
+      expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(0);
+    });
+
+    it('counts agent failures separately from automerge failures', () => {
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'CI fail');
+      logPipelineEvent('issue-1', 'LIA-1', 'agent_failed', 'agent crash');
+      logPipelineEvent('issue-1', 'LIA-1', 'agent_failed', 'agent crash 2');
+      expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(1);
+      expect(getConsecutiveFailCount('issue-1', 'agent_failed')).toBe(2);
+    });
+
+    it('isolates counts between different issues', () => {
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail');
+      logPipelineEvent('issue-2', 'LIA-2', 'automerge_failed', 'fail');
+      logPipelineEvent('issue-2', 'LIA-2', 'automerge_failed', 'fail 2');
+      expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(1);
+      expect(getConsecutiveFailCount('issue-2', 'automerge_failed')).toBe(2);
+    });
+  });
+
+  describe('getLastFailTime', () => {
+    it('returns null when no events exist', () => {
+      expect(getLastFailTime('issue-1', 'automerge_failed')).toBeNull();
+    });
+
+    it('returns the most recent event time', () => {
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 2');
+      const lastTime = getLastFailTime('issue-1', 'automerge_failed');
+      expect(lastTime).not.toBeNull();
+      expect(typeof lastTime).toBe('string');
+    });
+
+    it('returns time for correct event type only', () => {
+      logPipelineEvent('issue-1', 'LIA-1', 'agent_failed', 'crash');
+      expect(getLastFailTime('issue-1', 'automerge_failed')).toBeNull();
+      expect(getLastFailTime('issue-1', 'agent_failed')).not.toBeNull();
+    });
+
+    it('returns null after reset clears the window', () => {
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
+      logPipelineEvent('issue-1', 'LIA-1', 'circuit_breaker_reset', 'manual');
+      expect(getLastFailTime('issue-1', 'automerge_failed')).toBeNull();
+    });
+
+    it('returns time only from current failure epoch', () => {
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'old fail');
+      logPipelineEvent('issue-1', 'LIA-1', 'agent_completed');
+      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'new fail');
+      const lastTime = getLastFailTime('issue-1', 'automerge_failed');
+      expect(lastTime).not.toBeNull();
+      expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(1);
     });
   });
 });

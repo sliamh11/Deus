@@ -1402,6 +1402,45 @@ export function getReviseCount(issueId: string): number {
   return row.cnt;
 }
 
+export const CIRCUIT_BREAKER_THRESHOLD = 3;
+
+export function getConsecutiveFailCount(
+  issueId: string,
+  eventType: string,
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as cnt FROM linear_pipeline_events
+       WHERE issue_id = ? AND event_type = ?
+       AND rowid > COALESCE(
+         (SELECT MAX(rowid) FROM linear_pipeline_events
+          WHERE issue_id = ? AND event_type IN ('agent_completed', 'circuit_breaker_reset')),
+         0
+       )`,
+    )
+    .get(issueId, eventType, issueId) as { cnt: number };
+  return row.cnt;
+}
+
+export function getLastFailTime(
+  issueId: string,
+  eventType: string,
+): string | null {
+  const row = db
+    .prepare(
+      `SELECT created_at FROM linear_pipeline_events
+       WHERE issue_id = ? AND event_type = ?
+       AND rowid > COALESCE(
+         (SELECT MAX(rowid) FROM linear_pipeline_events
+          WHERE issue_id = ? AND event_type IN ('agent_completed', 'circuit_breaker_reset')),
+         0
+       )
+       ORDER BY rowid DESC LIMIT 1`,
+    )
+    .get(issueId, eventType, issueId) as { created_at: string } | undefined;
+  return row?.created_at ?? null;
+}
+
 export interface PipelineEventFilter {
   issueId?: string;
   identifier?: string;
