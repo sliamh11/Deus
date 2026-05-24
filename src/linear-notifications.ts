@@ -141,7 +141,7 @@ async function generateStatusSummary(
   if (SKIP_SUMMARY_EVENTS.has(eventType)) return null;
 
   const label = EVENT_LABELS[eventType] || eventType;
-  const prompt = `Summarize in 10 words or fewer what is happening. Event: ${label}. Issue: ${identifier}. Detail: ${detail ?? 'none'}. Reply with ONLY the summary, no quotes.`;
+  const prompt = `Summarize in 10 words or fewer what is happening. Event: ${label}. Issue: ${identifier}. Detail: ${detail ?? 'none'}. Reply with ONLY the summary in English, no quotes.`;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), STATUS_SUMMARY_TIMEOUT_MS);
