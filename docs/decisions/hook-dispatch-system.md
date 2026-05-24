@@ -101,6 +101,7 @@ Dedicated HTTP service, completely isolated from credential proxy (:3001). Trans
 | plan-mode-invalidator.sh | Enforcement | Marker management, host-only |
 | plan-mode-session-init.sh | Enforcement | Session lifecycle, host-only |
 | vault-context-hook.py | Enforcement | Context injection, host-only |
+| linear_pending_hook.py | Enforcement | Context injection (pending sync), host-only |
 | standards-pack.py | Enforcement | Context injection, host-only |
 | catchup-freshness.sh | Enforcement | Context injection, host-only |
 | memory-cite.sh | Enforcement | Host filesystem check |
