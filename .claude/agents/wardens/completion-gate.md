@@ -12,6 +12,8 @@ fetch_comments: true
 
 Gate that runs before an issue moves from **In Review** or **In Progress** to **Done**. Ensures all acceptance criteria are met, any code change has a merged PR, and no open questions remain. Prevents premature closure that inflates Done metrics.
 
+**Bypass:** Issues with the `Done: Pre-implemented` label skip this gate entirely. Use this label when closing an issue that was already implemented outside the normal pipeline (e.g., shipped via another PR, discovered during triage).
+
 ## Your job
 
 You receive the issue title, description, agent output, PR link (if any), and review comments. Extract the acceptance criteria from the `<!-- gate:agent-readiness-gate:start -->...<!-- gate:agent-readiness-gate:end -->` block in the description. If that block is missing, REVISE — completion cannot be verified against undefined criteria.

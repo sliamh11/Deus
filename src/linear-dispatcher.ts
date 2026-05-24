@@ -955,6 +955,14 @@ export async function initLinearContext(
         gateLabels.wardenSkip = labelMap.get('warden:skip');
       }
 
+      if (!labelMap.has('Done: Pre-implemented')) {
+        await client.createIssueLabel({
+          name: 'Done: Pre-implemented',
+          color: '#6b7280',
+          teamId,
+        });
+      }
+
       for (let i = 1; i <= 5; i++) {
         const eName = `Effort: ${i}`;
         const cName = `Complexity: ${i}`;

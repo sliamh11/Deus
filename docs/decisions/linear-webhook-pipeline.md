@@ -189,10 +189,11 @@ This means the issue description accumulates structured context from each gate a
 
 1. **Bot actor skip** - if `payload.actor.id === ctx.botUserId`, the event is skipped. This prevents the dispatcher's own state writes from triggering gates.
 2. **`warden:skip` label** - if the issue carries this label, all gate evaluation is skipped for that event.
-3. **Dedup** - `INSERT OR IGNORE` on `linear_webhook_events` using `event_key`. Duplicate webhook deliveries are silently dropped.
-4. **`allowedFrom` check** - illegal transitions (e.g., Backlog directly to Done) are immediately reverted without running a gate agent.
-5. **Cooldown** - if a gate ran for this issue within `cooldown_minutes`, the previous verdict is reused and no agent is spawned.
-6. **`inFlightGate`** - if a gate is already running for this issue, the new event is dropped. One gate run per issue at a time.
+3. **`Done: Pre-implemented` label** - if the issue carries this label AND the target state is Done, gate evaluation is skipped. For issues that were already implemented outside the normal pipeline.
+4. **Dedup** - `INSERT OR IGNORE` on `linear_webhook_events` using `event_key`. Duplicate webhook deliveries are silently dropped.
+5. **`allowedFrom` check** - illegal transitions (e.g., Backlog directly to Done) are immediately reverted without running a gate agent.
+6. **Cooldown** - if a gate ran for this issue within `cooldown_minutes`, the previous verdict is reused and no agent is spawned.
+7. **`inFlightGate`** - if a gate is already running for this issue, the new event is dropped. One gate run per issue at a time.
 
 ## UX -- Advise vs Strict Mode
 

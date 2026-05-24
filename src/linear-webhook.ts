@@ -488,6 +488,17 @@ async function handleIssueUpdate(
     return;
   }
 
+  if (
+    toState.name === 'Done' &&
+    data.labels.some((l) => l.name === 'Done: Pre-implemented')
+  ) {
+    logger.info(
+      { issueId: data.id },
+      'linear-webhook: Done: Pre-implemented label present, skipping gate',
+    );
+    return;
+  }
+
   const gateSpec = gateSpecs.get(toState.name);
   if (!gateSpec) return;
 
