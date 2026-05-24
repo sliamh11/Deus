@@ -638,11 +638,18 @@ async function handleIssueUpdate(
 
   updateWebhookEventStatus(eventKey, 'running');
 
-  // Visual feedback: add evaluating label + initial comment
-  if (ctx.gateLabels.evaluating) {
-    ctx.client
-      .updateIssue(data.id, { addedLabelIds: [ctx.gateLabels.evaluating] })
-      .catch(() => {});
+  // Visual feedback: add evaluating label, remove any prior error label
+  {
+    const startAdded: string[] = [];
+    const startRemoved: string[] = [];
+    if (ctx.gateLabels.evaluating) startAdded.push(ctx.gateLabels.evaluating);
+    if (ctx.gateLabels.error) startRemoved.push(ctx.gateLabels.error);
+    if (startAdded.length > 0 || startRemoved.length > 0) {
+      const startUpdate: Record<string, string[]> = {};
+      if (startAdded.length > 0) startUpdate.addedLabelIds = startAdded;
+      if (startRemoved.length > 0) startUpdate.removedLabelIds = startRemoved;
+      ctx.client.updateIssue(data.id, startUpdate).catch(() => {});
+    }
   }
   const runningComment = formatGateComment(
     gateSpec.name,
@@ -654,6 +661,7 @@ async function handleIssueUpdate(
 
   let finalVerdict: string | undefined;
   let finalEnrichment: string | undefined;
+  let gateDidError = false;
   try {
     const chatJid = `linear-gate-${gateSpec.name}-${data.id.slice(0, 8)}`;
 
@@ -821,6 +829,7 @@ async function handleIssueUpdate(
       'linear-webhook: gate evaluation complete',
     );
   } catch (err) {
+    gateDidError = true;
     const errorMsg = err instanceof Error ? err.message : String(err);
     updateWebhookEventStatus(eventKey, 'error', { error: errorMsg });
     notifyPipelineStep(
@@ -851,6 +860,7 @@ async function handleIssueUpdate(
     const removeIds: string[] = [];
     const addIds: string[] = [];
     if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
+    if (gateDidError && ctx.gateLabels.error) addIds.push(ctx.gateLabels.error);
     const scopeLabels = computeScopeLabelChanges(
       gateSpec.name,
       finalVerdict,
