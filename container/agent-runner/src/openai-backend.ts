@@ -595,6 +595,11 @@ export async function runOpenAIConversation(ctx: OpenAIContext): Promise<void> {
 
     if (shouldClose()) break;
 
+    if (containerInput.isScheduledTask) {
+      log('Scheduled task: exiting after first result');
+      break;
+    }
+
     const nextMessage = await waitForIpcMessage();
     if (nextMessage === null) break;
     prompt = nextMessage;

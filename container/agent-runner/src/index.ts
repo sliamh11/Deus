@@ -1140,6 +1140,11 @@ async function main(): Promise<void> {
         newSessionId: sessionId,
       });
 
+      if (containerInput.isScheduledTask) {
+        log('Scheduled task: exiting after first result');
+        break;
+      }
+
       log('Query ended, waiting for next IPC message...');
 
       // Wait for the next message or _close sentinel
