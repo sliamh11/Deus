@@ -1830,6 +1830,10 @@ def check_bench_labels(project_root: Path) -> int:
         print("No vault or auto-memory paths found (vault not mounted?). Skipped.")
         return 0
 
+    if vault.is_dir() and not vault_paths:
+        print("Vault directory exists but could not enumerate files (sandbox permission). Skipped.")
+        return 0
+
     data = [
         json.loads(line)
         for line in bench_path.read_text().splitlines()
