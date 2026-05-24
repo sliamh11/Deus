@@ -1,4 +1,4 @@
-<!-- sha: 6539b689cd582d8b724f1909421ce57fa10599a4 -->
+<!-- sha: 654d2d6797ce83f3de986fd1bec4cb45612d9aec -->
 
 # Deus Codebase Map
 
@@ -57,6 +57,10 @@ multi-agent/
   orchestrator.ts
   prompt-templates.ts
   types.ts
+private/
+  orchestrator/
+  scripts/
+  trading/
 skills/
   index.ts
   registry.ts
@@ -87,9 +91,13 @@ group-tokens.ts
 image.ts
 index.ts
 ipc.ts
+linear-actions.ts
 linear-auto-merge.ts
 linear-dispatcher.ts
 linear-gate-specs.ts
+linear-notifications.ts
+linear-pipeline-cli.ts
+linear-vault-sync.ts
 linear-webhook.ts
 logger.ts
 message-orchestrator.ts
@@ -112,6 +120,7 @@ tool-registry.ts
 transcription.ts
 types.ts
 user-signal.ts
+x-integration.ts
 ```
 
 ### scripts/
@@ -133,6 +142,7 @@ _exit_codes.py
 _time.py
 analyze_token_efficiency.py
 check-ascii.sh
+claude-context-reindex.mjs
 codebase_map.py
 codex_warden_hooks.py
 companion_to_braille.py
@@ -143,6 +153,7 @@ embedding_shootout.py
 gcal.mjs
 gemini_ocr.py
 import_seeds.py
+linear_vault_sync.py
 log_review.py
 maintenance.py
 memory_benchmark.py
@@ -157,6 +168,7 @@ migrate.mjs
 migrate_atom_tiers.py
 mine_implicit_feedback.py
 redact_session.py
+rename-repo.sh
 review_benchmark.py
 session_concepts.py
 settings_merge.py
@@ -165,6 +177,7 @@ setup-parry-guard.sh
 standards_pack.py
 stop_hook.py
 sync_agent_skills.py
+sync_linear_pending.py
 trec_atom_benchmark.py
 vault_context_hook.py
 wardens.py
@@ -187,6 +200,7 @@ _Format: `path/to/file` → exported symbols_
 - `scripts/embedding_shootout.py` → `ollama_embed`, `l2_dist`, `cosine_sim`, `load_benchmark`, `evaluate_model`, ...
 - `scripts/gemini_ocr.py` → `main`
 - `scripts/import_seeds.py` → `main`
+- `scripts/linear_vault_sync.py` → `main`
 - `scripts/log_review.py` → `parse_pino_log`, `parse_container_log`, `rotate_container_logs`, `rotate_main_logs`, `run_review`, ...
 - `scripts/maintenance.py` → `run_task`, `main`
 - `scripts/memory_benchmark.py` → `recall_at_k`, `mean_reciprocal_rank`, `run_outbound`, `print_outbound_results`, `run_internal`, ...
@@ -207,6 +221,7 @@ _Format: `path/to/file` → exported symbols_
 - `scripts/standards_pack.py` → `load_standards`, `main`
 - `scripts/stop_hook.py` → `should_checkpoint`, `read_transcript`, `extract_topic`, `write_checkpoint`, `main`
 - `scripts/sync_agent_skills.py` → `transform_markdown`, `render_agents_tree`, `check_skill_inventory`, `check_agents_tree`, `sync_agents_tree`, ...
+- `scripts/sync_linear_pending.py` → `main`
 - `scripts/token_bench/aggregate_compression.py` → `parse_log`, `main`
 - `scripts/token_bench/diff.py` → `main`
 - `scripts/token_bench/harness.py` → `est_tokens`, `file_info`, `main`
@@ -257,10 +272,14 @@ _Format: `path/to/file` → exported symbols_
 - `src/image.ts` → `ProcessedImage`, `ImageAttachment`, `isImageMessage`, `processImage`, `parseImageReferences`
 - `src/index.ts` → `getAvailableGroups`
 - `src/ipc.ts` → `IpcDeps`, `startIpcWatcher`, `processTaskIpc`
-- `src/linear-auto-merge.ts` → `queryPrChecks`, `attemptAutoMerge`, `sweepPendingAutoMerges`, `triggerAutoMerge`
-- `src/linear-dispatcher.ts` → `LinearDispatcherDependencies`, `GateLabels`, `LinearContext`, `extractFrontmatter`, `loadRoleSpecs`, ...
+- `src/linear-actions.ts` → `ActionContext`, `ActionResult`, `initActionContext`, `handleOpenInBrowser`, `toggleWardenSkip`, ...
+- `src/linear-auto-merge.ts` → `queryPrChecks`, `attemptAutoMerge`, `sweepPendingAutoMerges`, `CompletionChecker`, `sweepStaleInReview`, ...
+- `src/linear-dispatcher.ts` → `LinearDispatcherDependencies`, `WorkflowState`, `GateLabels`, `LinearContext`, `extractFrontmatter`, ...
 - `src/linear-gate-specs.ts` → `GateSpec`, `loadGateSpecs`
-- `src/linear-webhook.ts` → `parseVerdict`, `parseEnrichment`, `parseRatings`, `mergeEnrichment`, `stripEnrichmentSection`, ...
+- `src/linear-notifications.ts` → `macosNotify`, `EVENT_LABELS`, `buildPipelineCommentBody`, `updateUnifiedComment`, `notifyPipelineStep`
+- `src/linear-pipeline-cli.ts` → `elapsedMs`, `computeColumnWidths`, `parseDuration`, `formatElapsed`
+- `src/linear-vault-sync.ts` → `fetchActiveIssues`, `syncVaultPending`
+- `src/linear-webhook.ts` → `_setSleepFnForTests`, `retryWithBackoff`, `parseVerdict`, `parseEnrichment`, `parseRatings`, ...
 - `src/logger.ts` → `logger`
 - `src/message-orchestrator.ts` → `OrchestratorDeps`, `createMessageOrchestrator`
 - `src/mount-security.ts` → `_resetAllowlistCacheForTests`, `loadMountAllowlist`, `MountValidationResult`, `validateMount`, `validateAdditionalMounts`, ...
@@ -270,6 +289,64 @@ _Format: `path/to/file` → exported symbols_
 - `src/multi-agent/types.ts` → `SubagentStatus`, `SubagentResult`, `OrchestratorResult`, `SubagentTask`
 - `src/platform.ts` → `IS_WINDOWS`, `IS_MACOS`, `IS_LINUX`, `IS_WSL`, `PYTHON_BIN`, ...
 - `src/pr-url-extractor.ts` → `extractPrUrl`
+- `src/private/orchestrator/classifier.ts` → `ClassificationContext`, `classifyByLabel`, `classifyByDescriptionLength`, `classifyByFileCount`, `classifyByDependencyDepth`, ...
+- `src/private/orchestrator/cli.ts` → `runApproveMode`, `findArg`, `createTracker`, `createStore`
+- `src/private/orchestrator/config.ts` → `loadConfig`
+- `src/private/orchestrator/context-builder.ts` → `ContextPackage`, `AgentRole`, `buildContextPackage`, `flattenContext`
+- `src/private/orchestrator/cost-tracker.ts` → `IssueCost`, `CostSummary`, `CostTracker`
+- `src/private/orchestrator/dispatcher.ts` → `DispatcherDeps`, `Dispatcher`
+- `src/private/orchestrator/event-bus.ts` → `EventListener`, `EventBus`, `consoleLogger`
+- `src/private/orchestrator/git-merger.ts` → `GitMerger`, `parseDiffNameStatus`
+- `src/private/orchestrator/github-adapter.ts` → `GitHubAdapterConfig`, `GitHubIssueTracker`
+- `src/private/orchestrator/index.ts` → `Dispatcher`, `MockIssueTracker`, `SandcastleRunner`, `InMemoryStore`, `EventBus`, ...
+- `src/private/orchestrator/instrumented-runner.ts` → `RunMetrics`, `MetricsCallback`, `InstrumentedRunner`
+- `src/private/orchestrator/issue-adapter.ts` → `MockIssueTracker`
+- `src/private/orchestrator/json-logger.ts` → `JsonLoggerOptions`, `generateSpanId`, `jsonLogger`
+- `src/private/orchestrator/label-map.ts` → `LABEL_PREFIX`, `labelToState`, `stateToLabel`, `extractStateLabels`, `extractState`
+- `src/private/orchestrator/langfuse-observer.ts` → `LangfuseConfig`, `LangfuseClient`, `LangfuseTrace`, `LangfuseObserver`
+- `src/private/orchestrator/loop-detector.ts` → `RunOutcome`, `LoopVerdict`, `LoopDetectorConfig`, `LoopDetector`
+- `src/private/orchestrator/merge-parser.ts` → `MergeResult`, `parseMergeOutput`
+- `src/private/orchestrator/model-router.ts` → `ModelTier`, `ModelSelection`, `routeModel`, `getReviewModel`, `getModelId`
+- `src/private/orchestrator/otel-tracer.ts` → `OtelExporter`, `ConsoleOtelExporter`, `OtelTracer`
+- `src/private/orchestrator/prompt-builder.ts` → `buildImplementPrompt`, `buildReviewPrompt`, `buildFixPrompt`
+- `src/private/orchestrator/retry-policy.ts` → `RetryTiming`, `computeRetryDelay`, `shouldRetry`
+- `src/private/orchestrator/review-gate.ts` → `ReviewTier`, `ChangeStats`, `ReviewGateConfig`, `ReviewGate`, `parseDiffStat`
+- `src/private/orchestrator/run-history.ts` → `RunHistoryEntry`, `RunHistoryStore`, `SqliteRunHistory`
+- `src/private/orchestrator/sandcastle-runner.ts` → `SandcastleDeps`, `SandcastleRunner`
+- `src/private/orchestrator/sqlite-store.ts` → `SqliteStore`
+- `src/private/orchestrator/state-machine.ts` → `dispatchTransition`, `reviewTransition`
+- `src/private/orchestrator/store.ts` → `InMemoryStore`
+- `src/private/orchestrator/token-budget.ts` → `BudgetVerdict`, `TokenBudgetConfig`, `TokenBudget`, `extractTokenUsage`, `extractTokenUsageDetails`
+- `src/private/orchestrator/types.ts` → `Issue`, `BlockerRef`, `IssueTracker`, `DispatchState`, `ReleaseReason`, ...
+- `src/private/orchestrator/verdict-parser.ts` → `parseTag`, `parseReviewVerdict`, `formatFindings`
+- `src/private/scripts/gemini_ocr.py` → `main`
+- `src/private/trading/analysis.ts` → `AnalysisInput`, `runAnalysis`
+- `src/private/trading/approval.ts` → `formatApprovalMessage`, `createApprovalRequest`, `isApprovalExpired`, `parseApprovalResponse`, `buildBracketOrder`, ...
+- `src/private/trading/bars-to-studies.ts` → `barsToStudies`
+- `src/private/trading/chat-trigger.ts` → `TriggerMatch`, `parseTriggerMessage`, `TriggerHandlerOptions`, `TriggerHandlerResult`, `handleTriggerMatch`, ...
+- `src/private/trading/config.ts` → `TRADING_ENABLED`, `loadSafetyConfig`
+- `src/private/trading/driver.ts` → `OHLCVBar`, `TvCapture`, `PortfolioCapture`, `TvSource`, `IbkrSource`, ...
+- `src/private/trading/earnings.ts` → `EarningsResult`, `clearEarningsCache`, `checkEarnings`, `checkEarningsBatch`
+- `src/private/trading/gateway-client.ts` → `GatewayClientOptions`, `RawGatewayPosition`, `RawGatewayAccountSummary`, `RawGatewayAuthStatus`, `RawGatewayContract`, ...
+- `src/private/trading/gateway-tv-source.ts` → `Timeframe`, `GatewayTvSourceOptions`, `createGatewayTvSource`
+- `src/private/trading/ibkr-data.ts` → `IBKRPositionsResponse`, `IBKRPosition`, `IBKRAccountSummary`, `IBKROrder`, `getSector`, ...
+- `src/private/trading/ibkr-gateway-source.ts` → `GatewaySourceOptions`, `createGatewayIbkrSource`
+- `src/private/trading/index.ts` → `TRADING_ENABLED`, `loadSafetyConfig`, `detectRegime`, `regimeAllowsTrading`, `getRegimeParams`, ...
+- `src/private/trading/indicators.ts` → `OHLCVBar`, `sma`, `ema`, `emaSeries`, `stdev`, ...
+- `src/private/trading/llm-chain.ts` → `extractJSON`, `parseMultiTFResponse`, `parseSetupResponse`, `QualitativeRisk`, `parseRiskResponse`, ...
+- `src/private/trading/logger.ts` → `logger`
+- `src/private/trading/order-submission.ts` → `SubmitOptions`, `SubmitResult`, `buildOrdersPayload`, `submitBracketOrder`
+- `src/private/trading/pipeline.ts` → `PipelineInput`, `PipelineResult`, `runPipeline`
+- `src/private/trading/prompts.ts` → `buildRegimePrompt`, `buildMultiTFPrompt`, `buildSetupPrompt`, `buildRiskPrompt`, `buildDecisionPrompt`, ...
+- `src/private/trading/regime.ts` → `RegimeInput`, `detectRegime`, `regimeAllowsTrading`, `getRegimeParams`
+- `src/private/trading/safety.ts` → `checkSafetyRails`, `calculatePositionSize`, `estimateCorrelation`, `calculatePortfolioHeat`, `checkMarketHoursBuffer`, ...
+- `src/private/trading/scheduler.ts` → `ScheduleOptions`, `scheduleAnalysis`
+- `src/private/trading/symbol-lock.ts` → `LockMode`, `SymbolLock`, `globalSymbolLock`
+- `src/private/trading/tv-data.ts` → `TVQuote`, `TVStudyEntry`, `TVOHLCVSummary`, `TVPriceLine`, `TVPriceLabel`, ...
+- `src/private/trading/tv-fixture-source.ts` → `loadTvFixture`, `createTvFixtureSource`, `createTvFixtureSourceFromFile`
+- `src/private/trading/types.ts` → `MarketRegime`, `RegimeSignal`, `TimeframeBias`, `TimeframeReading`, `MultiTFResult`, ...
+- `src/private/trading/vix-yahoo.ts` → `YahooVixOptions`, `fetchYahooVix`, `fetchYahooVixStrict`
+- `src/private/trading/vix.ts` → `VixFetchResult`, `IbkrVixProvider`, `TvVixProvider`, `fetchVix`, `isPlausibleVix`
 - `src/project-registry.ts` → `detectProjectType`, `SENSITIVE_FILE_PATTERNS`, `SENSITIVE_DIR_PATTERNS`, `registerProject`, `associateProject`, ...
 - `src/reaction-signal.ts` → `emojiToSignal`
 - `src/remote-control.ts` → `restoreRemoteControl`, `getActiveSession`, `_resetForTesting`, `_getStateFilePath`, `startRemoteControl`, ...
@@ -291,3 +368,4 @@ _Format: `path/to/file` → exported symbols_
 - `src/transcription.ts` → `TranscribeOptions`, `TranscriptionError`, `resolveDefaultModelPath`, `ensureWhisperModel`, `transcribeFile`, ...
 - `src/types.ts` → `AdditionalMount`, `MountAllowlist`, `AllowedRoot`, `AgentEffortLevel`, `VALID_EFFORT_LEVELS`, ...
 - `src/user-signal.ts` → `detectUserSignal`
+- `src/x-integration.ts` → `handleXIpc`

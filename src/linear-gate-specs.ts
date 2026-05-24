@@ -14,6 +14,7 @@ export interface GateSpec {
   model?: string;
   effort?: 'low' | 'medium' | 'high';
   fetchComments?: boolean;
+  revertTo?: string;
 }
 
 export function loadGateSpecs(wardensDir: string): Map<string, GateSpec> {
@@ -39,7 +40,7 @@ export function loadGateSpecs(wardensDir: string): Map<string, GateSpec> {
 
     const mode = data.mode === 'strict' ? 'strict' : 'advise';
 
-    const fallback = data.fallback === 'REVISE' ? 'REVISE' : 'SHIP';
+    const fallback = data.fallback === 'SHIP' ? 'SHIP' : 'REVISE';
 
     const rawCooldown =
       typeof data.cooldown_minutes === 'number' ? data.cooldown_minutes : 60;
@@ -57,6 +58,7 @@ export function loadGateSpecs(wardensDir: string): Map<string, GateSpec> {
         ? (data.effort as GateSpec['effort'])
         : undefined,
       fetchComments: data.fetch_comments === true,
+      revertTo: typeof data.revert_to === 'string' ? data.revert_to : undefined,
     });
   }
 

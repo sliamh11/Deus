@@ -159,7 +159,7 @@ Not a gate.`,
     expect(specs.size).toBe(0);
   });
 
-  it('defaults mode to advise and fallback to SHIP', () => {
+  it('defaults mode to advise and fallback to REVISE', () => {
     fs.writeFileSync(
       path.join(tmpDir, 'minimal.md'),
       `---
@@ -172,8 +172,43 @@ Minimal gate.`,
     const specs = loadGateSpecs(tmpDir);
     const spec = specs.get('Done')!;
     expect(spec.mode).toBe('advise');
-    expect(spec.fallback).toBe('SHIP');
+    expect(spec.fallback).toBe('REVISE');
     expect(spec.cooldownMinutes).toBe(60);
+  });
+
+  it('parses revertTo from frontmatter', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'revert-gate.md'),
+      `---
+name: revert-gate
+gate_to: "In Review"
+allowed_from: ["Agent Working"]
+mode: strict
+revert_to: "Ready for Agent"
+---
+
+Check output.`,
+    );
+
+    const specs = loadGateSpecs(tmpDir);
+    const spec = specs.get('In Review')!;
+    expect(spec.revertTo).toBe('Ready for Agent');
+    expect(spec.mode).toBe('strict');
+  });
+
+  it('defaults revertTo to undefined when not specified', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'no-revert.md'),
+      `---
+gate_to: "Done"
+---
+
+Minimal gate.`,
+    );
+
+    const specs = loadGateSpecs(tmpDir);
+    const spec = specs.get('Done')!;
+    expect(spec.revertTo).toBeUndefined();
   });
 });
 

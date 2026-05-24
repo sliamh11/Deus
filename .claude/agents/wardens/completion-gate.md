@@ -2,8 +2,8 @@
 name: completion-gate
 gate_to: "Done"
 allowed_from: ["In Review"]
-mode: advise
-fallback: SHIP
+mode: strict
+fallback: REVISE
 cooldown_minutes: 60
 model: sonnet
 effort: medium

@@ -200,6 +200,10 @@ export function buildScopedIssuePrompt(
       .join('\n\n');
     parts.push(`<comments>\n${commentBlock}\n</comments>`);
   }
+  const hasReviseHistory = comments.some(
+    (c) => c.body.includes('**Warden:') && c.body.includes('REVISE'),
+  );
+
   const hasAgentHistory = comments.some(
     (c) =>
       c.body.includes('Agent run failed') ||
@@ -209,9 +213,26 @@ export function buildScopedIssuePrompt(
       c.body.includes('PR URL in your response'),
   );
 
+  let contextBlock = '';
+  if (hasReviseHistory) {
+    contextBlock +=
+      'A quality gate REVISE\'d a previous attempt. The gate feedback is in the comments above (look for "**Warden: ... - REVISE**"). Your FIRST priority is to fix the specific issues mentioned in the REVISE feedback. After addressing those, verify remaining acceptance criteria are met. Do not start over from scratch.\n\n';
+  }
+  if (hasAgentHistory) {
+    contextBlock +=
+      'A previous agent attempt exists. Review the comments above — check what was already committed, pushed, or opened as a PR. Continue from where the last attempt stopped. Do not redo completed steps. If CI failed, check out the existing branch, read the CI logs, fix the failures, and push.\n\n';
+  }
+
   parts.push(
     `<instructions>
-${hasAgentHistory ? 'A previous agent attempt exists. Review the comments above — check what was already committed, pushed, or opened as a PR. Continue from where the last attempt stopped. Do not redo completed steps. If CI failed, check out the existing branch, read the CI logs, fix the failures, and push.\n\n' : ''}Read the scope block in the task description. Follow the implementation plan and satisfy all acceptance criteria.
+${contextBlock}Read the scope block in the task description. Follow the implementation plan and satisfy all acceptance criteria.
+
+## Quality Gates (run before pushing)
+1. Run \`npm run build\` to verify TypeScript compiles.
+2. Run \`npx prettier --check src/\` and fix any formatting issues.
+3. Run \`npm test\` if tests exist for the modified area.
+4. Self-review: re-read the acceptance criteria and verify each one is met.
+5. Check your diff for: security issues, hardcoded values, missing error handling at system boundaries.
 
 ## Git Workflow
 1. Create a feature branch: \`git checkout -b feat/${issueIdentifier.toLowerCase().replace(/[^a-z0-9-]/g, '')}-<short-desc>\`

@@ -753,9 +753,35 @@ async function handleIssueUpdate(
 
     if (effectiveMode === 'strict' && verdict !== 'SHIP') {
       try {
-        await ctx.client.updateIssue(data.id, { stateId: fromStateId });
+        let revertStateId = fromStateId;
+        let revertStateName = fromState.name;
+        if (gateSpec.revertTo) {
+          const revertState = ctx.stateByName.get(gateSpec.revertTo);
+          if (revertState) {
+            revertStateId = revertState.id;
+            revertStateName = revertState.name;
+          } else {
+            logger.warn(
+              {
+                issueId: data.id,
+                gate: gateSpec.name,
+                revertTo: gateSpec.revertTo,
+              },
+              'linear-webhook: revert_to state not found, falling back to fromState',
+            );
+          }
+        }
+        await ctx.client.updateIssue(data.id, {
+          stateId: revertStateId,
+          priority: 1,
+        });
         logger.info(
-          { issueId: data.id, gate: gateSpec.name, verdict },
+          {
+            issueId: data.id,
+            gate: gateSpec.name,
+            verdict,
+            revertTo: revertStateName,
+          },
           'linear-webhook: reverted transition (strict mode)',
         );
       } catch (err) {

@@ -132,7 +132,8 @@ Each `.md` file in `.claude/agents/wardens/` with a `gate_to` frontmatter key is
 | `gate_to` | string | required | Workflow state that triggers this gate |
 | `allowed_from` | string[] | `[]` | Legal source states (empty = any) |
 | `mode` | `advise` \| `strict` | `advise` | Whether to revert on non-SHIP verdict |
-| `fallback` | `SHIP` \| `REVISE` | `SHIP` | Verdict used when the agent errors |
+| `fallback` | `SHIP` \| `REVISE` | `REVISE` | Verdict used when the agent errors |
+| `revert_to` | string | fromState | Target state for strict-mode revert (overrides fromState) |
 | `cooldown_minutes` | number | 60 | Minimum minutes between gate runs per issue |
 | `effort` | `low` \| `medium` \| `high` | unset | Passed to `RunContext.effort` |
 | `fetch_comments` | boolean | `false` | Whether to include issue comments in prompt |
@@ -174,11 +175,11 @@ This means the issue description accumulates structured context from each gate a
 
 ## Active Gate Specs
 
-| Gate | Triggers On | Allowed From | Mode | Effort | Fetch Comments |
-|---|---|---|---|---|---|
-| `agent-readiness-gate` | Ready for Agent | Todo | advise | high | no |
-| `output-quality-gate` | In Review | Agent Working | advise | medium | yes |
-| `completion-gate` | Done | In Review | advise | medium | yes |
+| Gate | Triggers On | Allowed From | Mode | Fallback | Revert To | Effort | Fetch Comments |
+|---|---|---|---|---|---|---|---|
+| `agent-readiness-gate` | Ready for Agent | Todo | advise | REVISE | fromState | high | no |
+| `output-quality-gate` | In Review | Agent Working | strict | REVISE | Ready for Agent | medium | yes |
+| `completion-gate` | Done | In Review | strict | REVISE | fromState | medium | yes |
 
 ## Triggers and Loop-Break Mechanisms
 
@@ -197,9 +198,9 @@ This means the issue description accumulates structured context from each gate a
 
 **Advise mode (default):** The gate runs, posts a verdict comment, and the transition stands regardless of verdict. Human is informed but not blocked.
 
-**Strict mode:** On a non-SHIP verdict, the issue is reverted to its source state. The human must address the gate feedback before re-attempting the move.
+**Strict mode:** On a non-SHIP verdict, the issue is reverted to the `revert_to` state (or the source state if unset), with priority set to 1 (urgent) for re-dispatch. The human or dispatcher must address the gate feedback before re-attempting the move. The `output-quality-gate` and `completion-gate` use strict mode by default.
 
-Strict mode can be activated per-issue by adding the `warden:strict` label. This overrides the spec-level `mode` field at evaluation time:
+Strict mode can also be activated per-issue by adding the `warden:strict` label. This overrides the spec-level `mode` field at evaluation time:
 
 ```typescript
 const effectiveMode = data.labels.some((l) => l.name === 'warden:strict')
