@@ -6,6 +6,8 @@ import {
   elapsedMs,
   computeColumnWidths,
   renderThroughputFooter,
+  TERMINAL_TYPES,
+  formatWhyReason,
   type TodayStats,
   type GateRevisionCounts,
   buildStageBar,
@@ -120,6 +122,57 @@ describe('computeColumnWidths', () => {
     const narrow = computeColumnWidths(40);
     const min = computeColumnWidths(80);
     expect(narrow.titleWidth).toBe(min.titleWidth);
+  });
+});
+
+// ── TERMINAL_TYPES ────────────────────────────────────────────────────────────
+
+describe('TERMINAL_TYPES', () => {
+  it('contains gate_error', () => {
+    expect(TERMINAL_TYPES.has('gate_error')).toBe(true);
+  });
+
+  it('contains expected terminal types', () => {
+    expect(TERMINAL_TYPES.has('automerge_done')).toBe(true);
+    expect(TERMINAL_TYPES.has('automerge_failed')).toBe(true);
+    expect(TERMINAL_TYPES.has('agent_failed')).toBe(true);
+    expect(TERMINAL_TYPES.has('moved_done')).toBe(true);
+  });
+
+  it('does not contain non-terminal types', () => {
+    expect(TERMINAL_TYPES.has('agent_started')).toBe(false);
+    expect(TERMINAL_TYPES.has('gate_revise')).toBe(false);
+  });
+});
+
+// ── formatWhyReason ───────────────────────────────────────────────────────────
+
+describe('formatWhyReason', () => {
+  const mkIssue = (stateName: string, events: Array<{ event_type: string }>) =>
+    ({ stateName, events: events.map(e => ({ ...e, id: '1', issue_id: 'i', ts: new Date() } as PipelineEvent)) });
+
+  it('returns Waiting for Ready for Agent with no events', () => {
+    expect(formatWhyReason(mkIssue('Ready for Agent', []))).toBe('Waiting');
+  });
+
+  it('returns Gate error for gate_error event', () => {
+    expect(formatWhyReason(mkIssue('Agent Working', [{ event_type: 'gate_error' }]))).toBe('Gate error');
+  });
+
+  it('returns Review needed for gate_revise event', () => {
+    expect(formatWhyReason(mkIssue('In Review', [{ event_type: 'gate_revise' }]))).toBe('Review needed');
+  });
+
+  it('returns Agent working for agent_started event', () => {
+    expect(formatWhyReason(mkIssue('Agent Working', [{ event_type: 'agent_started' }]))).toBe('Agent working');
+  });
+
+  it('returns CI pending for automerge_pending event', () => {
+    expect(formatWhyReason(mkIssue('In Review', [{ event_type: 'automerge_pending' }]))).toBe('CI pending');
+  });
+
+  it('returns In progress as fallback', () => {
+    expect(formatWhyReason(mkIssue('Some State', [{ event_type: 'unknown_event' }]))).toBe('In progress');
   });
 });
 
