@@ -603,6 +603,7 @@ function enrichFromDb(
   prNumber: string | null;
   statusSummary: string | null;
   reviseCount: number;
+  events: PipelineEvent[];
 } {
   const events = getPipelineEvents({ issueId });
   const last = events.length > 0 ? events[events.length - 1] : null;
@@ -617,6 +618,7 @@ function enrichFromDb(
     prNumber,
     statusSummary,
     reviseCount: revCount,
+    events,
   };
 }
 

@@ -224,13 +224,7 @@ describe('renderThroughputFooter', () => {
 
 // ── buildStageBar tests ──────────────────────────────────────────────────────
 
-/**
- * Strip ANSI escape codes so we can compare the plain characters in the bar.
- */
-function stripAnsi(str: string): string {
-  // eslint-disable-next-line no-control-regex
-  return str.replace(/\x1b\[[0-9;]*m/g, '');
-}
+
 
 function makeEvent(event_type: string): PipelineEvent {
   return { event_type, created_at: new Date().toISOString() };
