@@ -2,6 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-23
+**Scope:** `container/agent-runner/src/hook-dispatch-service.ts`, `container/agent-runner/src/pre-tool-use-hook.ts`, `container/agent-runner/src/post-tool-use-observer.ts`, `container/agent-runner/src/index.ts`
 **Deciders:** Deus Engineering
 **Relates to:** LIA-42 (Phase 2), LIA-41 / PR #456 (Phase 1 — Enforcement Layer)
 
