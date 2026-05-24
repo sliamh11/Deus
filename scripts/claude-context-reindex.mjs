@@ -12,7 +12,7 @@
  * Designed to run in the background (non-blocking for the caller):
  *   node scripts/claude-context-reindex.mjs /path/to/repo >> ~/.deus/index_reindex.log 2>&1 &
  */
-import { spawn } from 'node:child_process';
+import { spawn, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -193,8 +193,11 @@ async function runReindex(directory) {
 
   child.stdin.end();
 
-  // 4. Clear stale flag — index is now fresh
+  // 4. Record the indexed SHA then clear the stale flag — write order prevents
+  //    races where a reader sees the flag gone but the SHA not yet written.
   try {
+    const sha = execSync('git rev-parse HEAD', { cwd: directory, encoding: 'utf8' }).trim();
+    fs.writeFileSync(path.join(os.homedir(), '.deus', 'last_indexed_sha'), sha + '\n');
     fs.unlinkSync(STALE_FLAG);
     log('Stale flag cleared (~/.deus/index_stale.flag removed).');
   } catch {
