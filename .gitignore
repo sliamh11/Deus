@@ -15,6 +15,7 @@ dist/
 # Claude Code runtime artifacts
 .claude/scheduled_tasks.lock
 .claude/worktrees/
+.claude/codebase_map.md
 
 # Local data & auth
 store/
