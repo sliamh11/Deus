@@ -915,6 +915,295 @@ async function handleIssueUpdate(
   }
 }
 
+async function runGateForIssue(
+  ctx: LinearContext,
+  issue: {
+    id: string;
+    identifier: string;
+    title: string;
+    description?: string | null;
+  },
+  labels: Array<{ id: string; name: string }>,
+  gateSpec: GateSpec,
+  stateName: string,
+): Promise<void> {
+  ctx.inFlightGate.add(issue.id);
+  let finalVerdict: string | undefined;
+  let finalEnrichment: string | undefined;
+
+  try {
+    if (ctx.gateLabels.evaluating) {
+      ctx.client
+        .updateIssue(issue.id, { addedLabelIds: [ctx.gateLabels.evaluating] })
+        .catch(() => {});
+    }
+
+    const runningComment = formatGateComment(
+      gateSpec.name,
+      'RUNNING',
+      'Evaluating (startup sweep)...',
+      gateSpec.mode,
+    );
+    await postOrUpdateComment(ctx, issue.id, stateName, runningComment);
+
+    let commentBlock = '';
+    if (gateSpec.fetchComments) {
+      const comments = await fetchIssueComments(ctx, issue.id);
+      if (comments.length > 0) {
+        commentBlock =
+          '\n\n<comments>\n' +
+          comments.map((c) => `[${c.author}]: ${c.body}`).join('\n\n') +
+          '\n</comments>';
+      }
+    }
+
+    const prompt =
+      [
+        `<gate-spec>\n${gateSpec.content}\n</gate-spec>`,
+        `<invocation-context>startup-sweep</invocation-context>`,
+        `<issue>\nTitle: ${issue.title}\nID: ${issue.identifier}\n\n${issue.description ?? '(no description)'}\n</issue>`,
+        `<transition>\nFrom: (startup scan)\nTo: ${stateName}\n</transition>`,
+      ].join('\n\n') + commentBlock;
+
+    const chatJid = `linear-gate-sweep-${gateSpec.name}-${issue.id.slice(0, 8)}`;
+    const runContext: RunContext = {
+      prompt,
+      groupFolder: ctx.dispatchGroup.folder,
+      chatJid,
+      isControlGroup: false,
+      isScheduledTask: true,
+      effort: gateSpec.effort ?? 'medium',
+    };
+
+    const { text, error } = await retryWithBackoff(
+      () => executeAgentRun(ctx, runContext),
+      WEBHOOK_MAX_RETRIES,
+      WEBHOOK_BASE_DELAY_MS,
+    );
+
+    const output = text || error || '';
+    const parsedVerdict = parseVerdict(output);
+    let verdict: 'SHIP' | 'REVISE' | 'BLOCK';
+    let commentBody: string;
+
+    if (!parsedVerdict && error) {
+      // Agent returned error without a verdict — gate didn't run successfully
+      verdict = 'REVISE';
+      commentBody = formatGateComment(
+        gateSpec.name,
+        'ERROR',
+        `Gate agent error (startup sweep):\n\`\`\`\n${error}\n\`\`\``,
+        gateSpec.mode,
+      );
+    } else {
+      verdict = parsedVerdict ?? 'REVISE';
+      const enrichmentBody = parseEnrichment(output);
+      finalEnrichment = enrichmentBody ?? undefined;
+      const verdictText = stripEnrichmentSection(output);
+      commentBody = formatGateComment(
+        gateSpec.name,
+        verdict,
+        verdictText,
+        gateSpec.mode,
+      );
+
+      if (enrichmentBody) {
+        const startMarker = `<!-- gate:${gateSpec.name}:start -->`;
+        const endMarker = `<!-- gate:${gateSpec.name}:end -->`;
+        const cleanedBody = enrichmentBody
+          .replace(new RegExp(escapeRegex(startMarker), 'g'), '')
+          .replace(new RegExp(escapeRegex(endMarker), 'g'), '')
+          .trim();
+        const currentDesc = issue.description ?? '';
+        const newDesc = mergeEnrichment(
+          currentDesc,
+          gateSpec.name,
+          cleanedBody,
+        );
+        ctx.client
+          .updateIssue(issue.id, { description: newDesc })
+          .catch(() => {});
+      }
+    }
+
+    await postOrUpdateComment(ctx, issue.id, stateName, commentBody);
+
+    const effectiveMode = labels.some((l) => l.name === 'warden:strict')
+      ? 'strict'
+      : gateSpec.mode;
+
+    if (effectiveMode === 'strict' && verdict !== 'SHIP') {
+      if (gateSpec.revertTo) {
+        const revertState = ctx.stateByName.get(gateSpec.revertTo);
+        if (revertState) {
+          await ctx.client.updateIssue(issue.id, {
+            stateId: revertState.id,
+            priority: 1,
+          });
+        }
+      } else {
+        logger.warn(
+          { issueId: issue.id, gate: gateSpec.name },
+          'startup-sweep: strict mode revert skipped — no revert_to configured',
+        );
+      }
+    }
+
+    finalVerdict = verdict;
+    const eventType = verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
+    notifyPipelineStep(
+      ctx,
+      issue.id,
+      issue.identifier,
+      eventType,
+      `${gateSpec.name}: ${verdict} (startup sweep)`,
+    ).catch(() => {});
+    logPipelineEvent(
+      issue.id,
+      issue.identifier,
+      eventType,
+      `${gateSpec.name}: ${verdict} (startup sweep)`,
+    );
+    logger.info(
+      { issueId: issue.id, gate: gateSpec.name, verdict, mode: effectiveMode },
+      'startup-sweep: gate evaluation complete',
+    );
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : String(err);
+    const errorComment = formatGateComment(
+      gateSpec.name,
+      'ERROR',
+      `Gate infrastructure error (startup sweep):\n\`\`\`\n${errorMsg}\n\`\`\``,
+      gateSpec.mode,
+    );
+    postOrUpdateComment(ctx, issue.id, stateName, errorComment).catch(() => {});
+    notifyPipelineStep(
+      ctx,
+      issue.id,
+      issue.identifier,
+      'gate_error',
+      `${gateSpec.name}: ${errorMsg} (startup sweep)`,
+    ).catch(() => {});
+    logger.error(
+      { issueId: issue.id, gate: gateSpec.name, err },
+      'startup-sweep: gate evaluation failed',
+    );
+    // Never fallback-SHIP on infrastructure errors — gate didn't actually run
+    finalVerdict = 'REVISE';
+  } finally {
+    ctx.inFlightGate.delete(issue.id);
+
+    const removeIds: string[] = [];
+    const addIds: string[] = [];
+    if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
+    const scopeLabels = computeScopeLabelChanges(
+      gateSpec.name,
+      finalVerdict,
+      finalEnrichment,
+      ctx.gateLabels,
+    );
+    addIds.push(...scopeLabels.addIds);
+    removeIds.push(...scopeLabels.removeIds);
+    if (finalEnrichment) {
+      const ratings = parseRatings(finalEnrichment);
+      if (ratings.effort || ratings.complexity) {
+        for (const id of Object.values(ctx.gateLabels.effort))
+          removeIds.push(id);
+        for (const id of Object.values(ctx.gateLabels.complexity))
+          removeIds.push(id);
+        if (ratings.effort && ctx.gateLabels.effort[ratings.effort]) {
+          addIds.push(ctx.gateLabels.effort[ratings.effort]);
+        }
+        if (
+          ratings.complexity &&
+          ctx.gateLabels.complexity[ratings.complexity]
+        ) {
+          addIds.push(ctx.gateLabels.complexity[ratings.complexity]);
+        }
+      }
+    }
+    const issueLabels = new Set(labels.map((l) => l.id));
+    // Include evaluating in the set so safeRemoveIds always cleans it up
+    if (ctx.gateLabels.evaluating) issueLabels.add(ctx.gateLabels.evaluating);
+    const safeRemoveIds = removeIds.filter((id) => issueLabels.has(id));
+    if (safeRemoveIds.length > 0 || addIds.length > 0) {
+      const update: Record<string, unknown> = {};
+      if (safeRemoveIds.length > 0) update.removedLabelIds = safeRemoveIds;
+      if (addIds.length > 0) update.addedLabelIds = addIds;
+      retryLabelUpdate(ctx.client, issue.id, update);
+    }
+  }
+}
+
+export async function sweepStaleGatedIssues(
+  ctx: LinearContext,
+  gateSpecs: Map<string, GateSpec>,
+): Promise<void> {
+  const sweepableStates = ['Ready for Agent'];
+
+  for (const stateName of sweepableStates) {
+    const gateSpec = gateSpecs.get(stateName);
+    const state = ctx.stateByName.get(stateName);
+    if (!gateSpec || !state) continue;
+
+    let issues;
+    try {
+      issues = await ctx.client.issues({
+        filter: { state: { id: { eq: state.id } } },
+      });
+    } catch (err) {
+      logger.warn(
+        { err, state: stateName },
+        'startup-sweep: failed to query issues',
+      );
+      continue;
+    }
+
+    let triggered = 0;
+    for (const issue of issues.nodes) {
+      const labels = await issue.labels();
+      if (labels.nodes.some((l) => l.name === 'warden:skip')) continue;
+      if (ctx.inFlightGate.has(issue.id)) continue;
+      if (labels.nodes.some((l) => l.name === 'Scoped')) continue;
+
+      const lastRun = getLastCompletedGateRun(issue.id, stateName);
+      if (lastRun) {
+        const elapsed =
+          (Date.now() - new Date(lastRun.finished_at).getTime()) / 60_000;
+        if (elapsed < gateSpec.cooldownMinutes) continue;
+      }
+
+      runGateForIssue(
+        ctx,
+        {
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          description: issue.description,
+        },
+        labels.nodes.map((l) => ({ id: l.id, name: l.name })),
+        gateSpec,
+        stateName,
+      ).catch((err) => {
+        logger.error({ issueId: issue.id, err }, 'startup-sweep: gate failed');
+      });
+      triggered++;
+    }
+
+    if (triggered > 0) {
+      logger.info(
+        { state: stateName, triggered, total: issues.nodes.length },
+        'startup-sweep: fired gates for stale issues',
+      );
+    } else {
+      logger.debug(
+        { state: stateName, total: issues.nodes.length },
+        'startup-sweep: no stale issues found',
+      );
+    }
+  }
+}
+
 export function startLinearWebhookServer(
   ctx: LinearContext,
   gateSpecs: Map<string, GateSpec>,

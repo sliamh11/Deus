@@ -437,6 +437,11 @@ async function main(): Promise<void> {
       ).catch((err) => {
         logger.warn({ err }, 'auto-merge: stale In Review sweep failed');
       });
+
+      const { sweepStaleGatedIssues } = await import('./linear-webhook.js');
+      sweepStaleGatedIssues(ctx, gateSpecs).catch((err) => {
+        logger.warn({ err }, 'startup-sweep: stale gated issues sweep failed');
+      });
     }
   } else {
     logger.warn('linear: LINEAR_API_KEY not set — subsystems dormant');
