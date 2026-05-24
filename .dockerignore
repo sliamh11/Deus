@@ -1,0 +1,4 @@
+# Docker build context: only container/ is needed.
+# build.sh stages skill-agents into container/skill-agents/ before building.
+*
+!container/

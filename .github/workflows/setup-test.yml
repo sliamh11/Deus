@@ -10,6 +10,7 @@ on:
 
 jobs:
   setup-smoke:
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:

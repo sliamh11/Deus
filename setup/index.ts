@@ -63,6 +63,8 @@ async function main(): Promise<void> {
   try {
     const mod = await loader();
     await mod.run(stepArgs);
+    // pino-pretty transport worker thread keeps the event loop alive on Linux
+    process.exit(0);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error({ err, step: stepName }, 'Setup step failed');
