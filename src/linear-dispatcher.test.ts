@@ -17,7 +17,9 @@ vi.mock('./config.js', async () => {
 vi.mock('./db.js', () => ({
   CIRCUIT_BREAKER_THRESHOLD: 3,
   getConsecutiveFailCount: vi.fn().mockReturnValue(0),
+  getIssuePr: vi.fn().mockReturnValue(null),
   getLastFailTime: vi.fn().mockReturnValue(null),
+  getPipelineEvents: vi.fn().mockReturnValue([]),
   logPipelineEvent: vi.fn(),
   upsertIssuePr: vi.fn(),
 }));
