@@ -39,7 +39,7 @@ def _load_config() -> dict:
 def _vault_path(config: dict) -> Path | None:
     env = os.environ.get("DEUS_VAULT_PATH")
     if env:
-        return Path(env).expanduser()
+        rexturn Path(env).expanduser()
     vp = config.get("vault_path", "")
     if vp:
         return Path(vp).expanduser()
@@ -54,7 +54,7 @@ def _load_vault_files(vault: Path, config: dict) -> str:
         try:
             content = fpath.read_text(encoding="utf-8", errors="replace")[:MAX_SECTION_CHARS]
             if content.strip():
-                sections.append(f"=== VAULT: {fname} ===\n{content}")
+                sections.append(f"=== VAULT: {fname} ===\{content}")
         except OSError:
             continue
     return "\n\n".join(sections)
@@ -111,8 +111,9 @@ def _check_index_stale() -> str:
             return (
                 "⚠️ claude-context index is stale — commits have landed since the last reindex.\n"
                 "Semantic code search (`search_code`) results may be outdated.\n"
-                "A background reindex was triggered by post-merge; it will clear this warning when done.\n"
-                "To reindex now: call `index_codebase` with the repo root."
+                "If the user asks to search the codebase, prompt them to run"
+                " 'node scripts/claude-context-reindex.mjs' first before searching.\n"
+                "To reindex now: run `node scripts/claude-context-reindex.mjs` from the repo root."
             )
     except OSError:
         pass
