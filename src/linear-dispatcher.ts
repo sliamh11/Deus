@@ -12,7 +12,9 @@ import { extractPrUrl } from './pr-url-extractor.js';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
   getConsecutiveFailCount,
+  getIssuePr,
   getLastFailTime,
+  getPipelineEvents,
   logPipelineEvent,
   upsertIssuePr,
 } from './db.js';
@@ -185,6 +187,7 @@ export function buildIssuePrompt(
   issueIdentifier: string,
   issueDescription: string | undefined,
   comments: Array<{ author: string; body: string }>,
+  failureDossier?: string | null,
 ): string {
   const parts = [
     `<role>\n${role.content}\n</role>`,
@@ -196,6 +199,9 @@ export function buildIssuePrompt(
       .map((c) => `[${c.author}]: ${c.body}`)
       .join('\n\n');
     parts.push(`<comments>\n${commentBlock}\n</comments>`);
+  }
+  if (failureDossier) {
+    parts.push(failureDossier);
   }
   return parts.join('\n\n');
 }
@@ -268,11 +274,47 @@ export function extractScopeBlock(description: string): string {
   return description.slice(startIdx + startMarker.length, endIdx).trim();
 }
 
+function buildFailureDossier(issueId: string): string | null {
+  const pr = getIssuePr(issueId);
+  if (!pr || pr.auto_merge_state === 'merged') return null;
+
+  const events = getPipelineEvents({
+    issueId,
+    eventType: 'automerge_failed',
+  });
+  const lastFailure = events.at(-1);
+  if (!lastFailure) return null;
+
+  const prNumber = pr.pr_url.match(/\/pull\/(\d+)/)?.[1] ?? '?';
+  const branch = pr.branch ?? 'unknown';
+  const ciDetail = lastFailure.detail ?? 'Unknown failure';
+
+  const lines = [
+    '<failure-context>',
+    'A previous PR exists and CI failed. Fix the existing PR — do NOT create a new one.',
+    `- PR: ${pr.pr_url}`,
+    `- Branch: ${branch}`,
+    `- CI failure: ${ciDetail}`,
+  ];
+  if (prNumber !== '?') {
+    lines.push(
+      `Checkout the branch, run \`gh pr checks ${prNumber}\` to see current CI status, diagnose and fix the failure, then push to the same branch.`,
+    );
+  } else {
+    lines.push(
+      'Checkout the branch, diagnose and fix the CI failure, then push to the same branch.',
+    );
+  }
+  lines.push('</failure-context>');
+  return lines.join('\n');
+}
+
 export function buildScopedIssuePrompt(
   issueTitle: string,
   issueIdentifier: string,
   issueDescription: string,
   comments: Array<{ author: string; body: string }>,
+  failureDossier?: string | null,
 ): string {
   const scopeContent = extractScopeBlock(issueDescription);
   const parts = [
@@ -305,9 +347,14 @@ export function buildScopedIssuePrompt(
     contextBlock +=
       'A quality gate REVISE\'d a previous attempt. The gate feedback is in the comments above (look for "**Warden: ... - REVISE**"). Your FIRST priority is to fix the specific issues mentioned in the REVISE feedback. After addressing those, verify remaining acceptance criteria are met. Do not start over from scratch.\n\n';
   }
-  if (hasAgentHistory) {
+  // Dossier supersedes generic history hint — more specific instruction wins
+  if (hasAgentHistory && !failureDossier) {
     contextBlock +=
       'A previous agent attempt exists. Review the comments above — check what was already committed, pushed, or opened as a PR. Continue from where the last attempt stopped. Do not redo completed steps. If CI failed, check out the existing branch, read the CI logs, fix the failures, and push.\n\n';
+  }
+
+  if (failureDossier) {
+    parts.push(failureDossier);
   }
 
   parts.push(
@@ -565,6 +612,7 @@ async function pollLinear(): Promise<void> {
       }),
     );
 
+    const failureDossier = buildFailureDossier(issue.id);
     let prompt: string;
     if (roleSpec) {
       prompt = buildIssuePrompt(
@@ -573,6 +621,7 @@ async function pollLinear(): Promise<void> {
         issue.identifier,
         issue.description ?? undefined,
         comments,
+        failureDossier,
       );
     } else {
       prompt = buildScopedIssuePrompt(
@@ -580,6 +629,7 @@ async function pollLinear(): Promise<void> {
         issue.identifier,
         issue.description ?? '',
         comments,
+        failureDossier,
       );
     }
 
