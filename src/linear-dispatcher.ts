@@ -59,6 +59,7 @@ export interface GateLabels {
   evaluating?: string;
   scoped?: string;
   revise?: string;
+  error?: string;
   wardenSkip?: string;
   effort: Record<number, string>;
   complexity: Record<number, string>;
@@ -791,13 +792,14 @@ export async function initLinearContext(
     // Discover or create gate status labels for board-level visibility
     const gateLabels: GateLabels = { effort: {}, complexity: {} };
     const statusDefs: Array<{
-      key: 'evaluating' | 'scoped' | 'revise';
+      key: 'evaluating' | 'scoped' | 'revise' | 'error';
       name: string;
       color: string;
     }> = [
       { key: 'evaluating', name: 'Warden: Evaluating', color: '#f59e0b' },
       { key: 'scoped', name: 'Scoped', color: '#16a34a' },
       { key: 'revise', name: 'Warden: Revise', color: '#dc2626' },
+      { key: 'error' as const, name: 'Warden: Error', color: '#ef4444' },
     ];
     // Effort 1-5: green→yellow→red gradient
     const effortColors = [
