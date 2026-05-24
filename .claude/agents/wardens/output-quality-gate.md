@@ -5,7 +5,7 @@ allowed_from: ["Agent Working", "In Progress"]
 mode: strict
 fallback: REVISE
 revert_to: "Ready for Agent"
-cooldown_minutes: 60
+cooldown_minutes: 5
 model: sonnet
 effort: medium
 fetch_comments: true

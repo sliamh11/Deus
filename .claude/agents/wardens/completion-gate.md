@@ -4,7 +4,7 @@ gate_to: "Done"
 allowed_from: ["In Review"]
 mode: strict
 fallback: REVISE
-cooldown_minutes: 60
+cooldown_minutes: 5
 model: sonnet
 effort: medium
 fetch_comments: true

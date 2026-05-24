@@ -4,7 +4,7 @@ gate_to: "Ready for Agent"
 allowed_from: ["Todo"]
 mode: advise
 fallback: REVISE
-cooldown_minutes: 60
+cooldown_minutes: 5
 model: sonnet
 effort: high
 fetch_comments: false
