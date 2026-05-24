@@ -85,11 +85,12 @@ const INFO_TYPES = new Set([
   'state_changed',
 ]);
 
-const TERMINAL_TYPES = new Set([
+export const TERMINAL_TYPES = new Set([
   'automerge_done',
   'automerge_failed',
   'agent_failed',
   'moved_done',
+  'gate_error',
 ]);
 
 const ACTIVE_STATES = ['Ready for Agent', 'Agent Working', 'In Review'];
@@ -138,8 +139,8 @@ export function computeColumnWidths(cols: number): {
   separatorWidth: number;
 } {
   const clamped = Math.max(80, cols);
-  // ID(8) + glyph(2) + PR(7) + status(24) + elapsed(6) + revise(4) + separators(6) = 57
-  const titleWidth = Math.max(20, clamped - 57);
+  // ID(8) + glyph(2) + PR(7) + status(24) + why(17) + elapsed(6) + revise(4) + separators(6) = 74
+  const titleWidth = Math.max(20, clamped - 74);
   return { titleWidth, separatorWidth: clamped - 2 };
 }
 
@@ -735,6 +736,35 @@ interface RenderOptions {
   gateRevisions?: GateRevisionCounts;
 }
 
+export function formatWhyReason(issue: {
+  stateName: string;
+  events: PipelineEvent[];
+}): string {
+  const last = issue.events.length > 0 ? issue.events[issue.events.length - 1] : null;
+  if (!last) {
+    if (issue.stateName === 'Ready for Agent') return 'Waiting';
+    if (issue.stateName === 'Agent Working') return 'Agent working';
+    if (issue.stateName === 'In Review') return 'In review';
+    return 'In progress';
+  }
+  switch (last.event_type) {
+    case 'gate_error': return 'Gate error';
+    case 'gate_revise': return 'Review needed';
+    case 'gate_cooldown': return 'Cooldown';
+    case 'automerge_pending': return 'CI pending';
+    case 'agent_started':
+    case 'agent_dispatched': return 'Agent working';
+    case 'pr_created':
+    case 'agent_completed': return 'Gate pending';
+    case 'state_changed': return 'State changed';
+    default: break;
+  }
+  if (issue.stateName === 'Ready for Agent') return 'Waiting';
+  if (issue.stateName === 'Agent Working') return 'Agent working';
+  if (issue.stateName === 'In Review') return 'In review';
+  return 'In progress';
+}
+
 function renderDashboardOutput(
   active: ActiveIssue[],
   queued: QueuedIssue[],
@@ -751,13 +781,10 @@ function renderDashboardOutput(
   ).length;
   const failCount = recent.filter((i) => FAILED_TYPES.has(i.eventType)).length;
 
-  const stuckLabel =
-    stuckCount > 0
-      ? `${YELLOW}STUCK ${stuckCount}${RESET}`
-      : `${DIM}STUCK 0${RESET}`;
-  const failLabel =
-    failCount > 0 ? `${RED}FAIL ${failCount}${RESET}` : `${DIM}FAIL 0${RESET}`;
-  const statsBar = `ACTIVE ${active.length} ${DIM}·${RESET} ${stuckLabel} ${DIM}·${RESET} ${failLabel}`;
+  const statsParts: string[] = [`ACTIVE ${active.length}`];
+  if (stuckCount > 0) statsParts.push(`${YELLOW}STUCK ${stuckCount}${RESET}`);
+  if (failCount > 0) statsParts.push(`${RED}FAIL ${failCount}${RESET}`);
+  const statsBar = statsParts.join(` ${DIM}·${RESET} `);
 
   const effectiveRefreshMs = opts.currentRefreshMs ?? REFRESH_MS;
   const refreshSec = effectiveRefreshMs / 1000;
@@ -807,16 +834,26 @@ function renderDashboardOutput(
       const pr = issue.prNumber
         ? `${DIM}${issue.prNumber.padStart(6)}${RESET}`
         : `${DIM}${'—'.padStart(6)}${RESET}`;
+      const lastRawEventType =
+        issue.events.length > 0
+          ? issue.events[issue.events.length - 1].event_type
+          : null;
+      const isStale =
+        lastRawEventType !== null &&
+        !TERMINAL_TYPES.has(lastRawEventType) &&
+        elapsedMs(issue.lastEventTime) > 3 * 60_000;
       let statusText = issue.statusSummary ?? issue.lastEvent;
       statusText = statusText
         .replace(GATE_PREFIX_RE, 'Gate: ')
         .replace(AGENT_PREFIX_RE, 'Agent: ');
+      if (isStale) statusText = `[stale] ${statusText}`;
       const status = truncate(statusText, 22).padEnd(22);
+      const why = truncate(formatWhyReason(issue), 16).padEnd(16);
 
       const elapsedStr = formatElapsed(issue.lastEventTime).padStart(4);
       let elapsedColored: string;
       if (ms > STUCK_THRESHOLD_MS) {
-        elapsedColored = `${RED}${elapsedStr} !!${RESET}`;
+        elapsedColored = `${RED}${elapsedStr} ⚠${RESET}`;
       } else if (ms > WARN_THRESHOLD_MS) {
         elapsedColored = `${YELLOW}${elapsedStr}${RESET}`;
       } else {
@@ -829,7 +866,7 @@ function renderDashboardOutput(
       const stageBar = buildStageBar(issue.events);
 
       lines.push(
-        `${cursor} ${CYAN}${id}${RESET}${glyph} ${title} ${pr} ${DIM}${status}${RESET} ${elapsedColored}${revise} ${stageBar}`,
+        `${cursor} ${CYAN}${id}${RESET}${glyph} ${title} ${pr} ${DIM}${status}${RESET} ${DIM}${why}${RESET} ${elapsedColored}${revise} ${stageBar}`,
       );
       rowIndex++;
     }
@@ -892,7 +929,7 @@ function renderDashboardOutput(
     lines.push(`${CYAN} :${opts.cmdLine}█${RESET}`);
   } else {
     lines.push(
-      `${DIM} ↑↓ select · → detail · o open · r re-eval · l skip-gate · : cmd · Ctrl+C exit${RESET}`,
+      `${DIM} ↑↓ select · → detail · o open · r re-eval · l skip · Ctrl+R refresh · Ctrl+C exit | deus pipeline <ID> timeline | --help${RESET}`,
     );
   }
 
@@ -1450,6 +1487,9 @@ async function startWatchMode(): Promise<void> {
           }
           rerender();
           break;
+        case '\x12': // Ctrl+R — immediate refresh
+          tick().catch(() => {});
+          break;
         case '':
           if (key.length === 1) {
             rerender();
@@ -1483,6 +1523,7 @@ function main(): void {
     );
     console.log('  deus pipeline <IDENTIFIER>           Timeline for an issue');
     console.log('  deus pipeline --failed [--since Xh]  Failed events');
+    console.log('  deus pipeline --stuck                Stuck issues (elapsed > 2h)');
     console.log('  deus pipeline --active               In-flight issues');
     console.log('  deus pipeline --all [--since Xh]     All events');
     process.exit(0);
@@ -1492,6 +1533,7 @@ function main(): void {
 
   const filter: PipelineEventFilter = {};
   let showFailed = false;
+  let showStuck = false;
   let showActive = false;
 
   let i = 0;
@@ -1499,6 +1541,8 @@ function main(): void {
     const arg = args[i];
     if (arg === '--failed') {
       showFailed = true;
+    } else if (arg === '--stuck') {
+      showStuck = true;
     } else if (arg === '--active') {
       showActive = true;
     } else if (arg === '--since' && args[i + 1]) {
@@ -1526,6 +1570,18 @@ function main(): void {
 
   if (showFailed) {
     events = events.filter((e) => FAILED_TYPES.has(e.event_type));
+  }
+
+  if (showStuck) {
+    const issueLatestTime = new Map<string, string>();
+    for (const e of events) {
+      issueLatestTime.set(e.issue_id, e.created_at);
+    }
+    const stuckIds = new Set<string>();
+    for (const [id, createdAt] of issueLatestTime) {
+      if (elapsedMs(createdAt) > STUCK_THRESHOLD_MS) stuckIds.add(id);
+    }
+    events = events.filter((e) => stuckIds.has(e.issue_id));
   }
 
   if (showActive) {
