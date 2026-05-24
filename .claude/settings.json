@@ -8,6 +8,11 @@
             "type": "command",
             "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" session-init'",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/linear_pending_hook.py\"'",
+            "timeout": 15
           }
         ]
       }
