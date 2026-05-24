@@ -111,7 +111,6 @@ def _check_index_stale() -> str:
             return (
                 "⚠️ claude-context index is stale — commits have landed since the last reindex.\n"
                 "Semantic code search (`search_code`) results may be outdated.\n"
-                "A background reindex was triggered by post-merge; it will clear this warning when done.\n"
                 "To reindex now: call `index_codebase` with the repo root."
             )
     except OSError:
