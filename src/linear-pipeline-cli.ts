@@ -99,6 +99,9 @@ const ALL_VISIBLE_STATES = [...QUEUED_STATES, ...ACTIVE_STATES];
 const STUCK_THRESHOLD_MS = 7_200_000; // 2h
 const WARN_THRESHOLD_MS = 1_800_000; // 30m
 
+const GATE_PREFIX_RE = /^Gate review required[;:]\s*/i;
+const AGENT_PREFIX_RE = /^Agent started working[;:]\s*/i;
+
 function colorFor(eventType: string): string {
   if (SUCCESS_TYPES.has(eventType)) return GREEN;
   if (FAILED_TYPES.has(eventType)) return RED;
@@ -135,8 +138,8 @@ export function computeColumnWidths(cols: number): {
   separatorWidth: number;
 } {
   const clamped = Math.max(80, cols);
-  // ID(8) + glyph(2) + PR(6) + status(24) + elapsed(6) + revise(4) + separators(6) = 56
-  const titleWidth = Math.max(20, clamped - 56);
+  // ID(8) + glyph(2) + PR(7) + status(24) + elapsed(6) + revise(4) + separators(6) = 57
+  const titleWidth = Math.max(20, clamped - 57);
   return { titleWidth, separatorWidth: clamped - 2 };
 }
 
@@ -761,7 +764,7 @@ function renderDashboardOutput(
   const pauseLabel = opts.isPaused ? `${YELLOW}[paused]${RESET}` : '';
   const refreshLabel =
     effectiveRefreshMs > REFRESH_MS
-      ? `${YELLOW}[every ${refreshSec}s ↓]${RESET}`
+      ? `${YELLOW}[${refreshSec}s rate-limited]${RESET}`
       : `${DIM}[every ${refreshSec}s]${RESET}`;
   lines.push(
     `${BOLD} Deus Pipeline${RESET}    ${statsBar}${DIM}${' '.repeat(Math.max(1, cols - 70))}${now}  ${RESET}${pauseLabel || refreshLabel}`,
@@ -778,6 +781,9 @@ function renderDashboardOutput(
   }
 
   lines.push('');
+  lines.push(
+    `${DIM}  ${'ID'.padEnd(8)}  ${'TITLE'.padEnd(titleWidth)} ${'PR'.padStart(6)} ${'STATUS'.padEnd(22)} ${'AGE'.padStart(4)}     STAGE${RESET}`,
+  );
 
   let rowIndex = 0;
   const sel = opts.selectedIndex ?? -1;
@@ -786,18 +792,27 @@ function renderDashboardOutput(
     lines.push(`${DIM}  No issues in pipeline.${RESET}`);
   } else {
     for (const issue of active) {
-      const cursor = rowIndex === sel ? `${CYAN}▸${RESET}` : ' ';
+      const ms = elapsedMs(issue.lastEventTime);
+      const isStuck = ms > STUCK_THRESHOLD_MS;
+      const cursor =
+        rowIndex === sel
+          ? `${CYAN}▸${RESET}`
+          : isStuck
+            ? `${RED}!${RESET}`
+            : ' ';
       const id = issue.identifier.padEnd(8);
       const sg = stateGlyph(issue.stateName);
       const glyph = `${sg.color}${sg.glyph}${RESET}`;
       const title = truncate(issue.title, titleWidth).padEnd(titleWidth);
       const pr = issue.prNumber
-        ? `${DIM}${issue.prNumber.padStart(5)}${RESET}`
-        : `${DIM}${'—'.padStart(5)}${RESET}`;
-      const statusText = issue.statusSummary ?? issue.lastEvent;
+        ? `${DIM}${issue.prNumber.padStart(6)}${RESET}`
+        : `${DIM}${'—'.padStart(6)}${RESET}`;
+      let statusText = issue.statusSummary ?? issue.lastEvent;
+      statusText = statusText
+        .replace(GATE_PREFIX_RE, 'Gate: ')
+        .replace(AGENT_PREFIX_RE, 'Agent: ');
       const status = truncate(statusText, 22).padEnd(22);
 
-      const ms = elapsedMs(issue.lastEventTime);
       const elapsedStr = formatElapsed(issue.lastEventTime).padStart(4);
       let elapsedColored: string;
       if (ms > STUCK_THRESHOLD_MS) {
@@ -830,8 +845,10 @@ function renderDashboardOutput(
       const glyph = `${sg.color}${sg.glyph}${RESET}`;
       const title = truncate(issue.title, titleWidth).padEnd(titleWidth);
       const elapsed = formatElapsed(issue.createdAt).padStart(4);
+      const qPr = `${DIM}${'—'.padStart(6)}${RESET}`;
+      const qStatus = `${DIM}${'—'.padEnd(22)}${RESET}`;
       lines.push(
-        `${DIM}${cursor} ${id}${RESET}${glyph} ${DIM}${title} ${' '.repeat(28)} ${elapsed}${RESET}`,
+        `${cursor} ${DIM}${id}${RESET}${glyph} ${DIM}${title}${RESET} ${qPr} ${qStatus} ${DIM}${elapsed}${RESET}`,
       );
       rowIndex++;
     }
@@ -875,7 +892,7 @@ function renderDashboardOutput(
     lines.push(`${CYAN} :${opts.cmdLine}█${RESET}`);
   } else {
     lines.push(
-      `${DIM} ↑↓ select · → detail · o open · r re-eval · l skip · : cmd · Ctrl+C exit${RESET}`,
+      `${DIM} ↑↓ select · → detail · o open · r re-eval · l skip-gate · : cmd · Ctrl+C exit${RESET}`,
     );
   }
 
@@ -1026,6 +1043,15 @@ async function startWatchMode(): Promise<void> {
       }
     }
 
+    if (data.events.length > 0) {
+      const bar = buildStageBar(data.events);
+      lines.push('');
+      lines.push(`${BOLD} Stage${RESET}   ${bar}`);
+      lines.push(
+        `${DIM}         Scope Dispatch PR    QGate CmpGate Merge${RESET}`,
+      );
+    }
+
     lines.push('');
     lines.push(`${BOLD} Actions${RESET}`);
     lines.push(`${DIM} ${'─'.repeat(separatorWidth)}${RESET}`);
@@ -1048,7 +1074,7 @@ async function startWatchMode(): Promise<void> {
       lines.push(`${CYAN} :${cmdBuffer}█${RESET}`);
     } else {
       lines.push(
-        `${DIM} ← back · o open · r re-eval · l skip · : cmd · Ctrl+C exit${RESET}`,
+        `${DIM} ← back · o open · r re-eval · l skip-gate · : cmd · Ctrl+C exit${RESET}`,
       );
     }
 
@@ -1075,7 +1101,7 @@ async function startWatchMode(): Promise<void> {
         gateRevisions: cachedGateRevisions,
       });
     }
-    process.stdout.write(CURSOR_HOME + output + '\n' + CLEAR_TO_END);
+    process.stdout.write(CURSOR_HOME + CLEAR_TO_END + output + '\n');
   }
 
   async function tick(): Promise<void> {
@@ -1280,12 +1306,6 @@ async function startWatchMode(): Promise<void> {
     });
   }, RESYNC_INTERVAL_MS);
 
-  const resyncTimer = setInterval(() => {
-    seedOrResyncCache(client, teamId).catch((err) => {
-      console.error('issue-cache: background resync failed', err);
-    });
-  }, RESYNC_INTERVAL_MS);
-
   const cleanup = () => {
     if (timer) clearTimeout(timer);
     clearInterval(resyncTimerRef);
@@ -1316,7 +1336,13 @@ async function startWatchMode(): Promise<void> {
     process.exit(1);
   });
   process.on('SIGWINCH', () => {
-    if (!rendering && !paused) tick().catch(() => {});
+    if (!rendering) {
+      if (paused) {
+        rerender();
+      } else {
+        tick().catch(() => {});
+      }
+    }
   });
 
   if (process.stdin.isTTY) {

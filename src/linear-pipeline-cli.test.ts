@@ -103,12 +103,12 @@ describe('elapsedMs', () => {
 describe('computeColumnWidths', () => {
   it('returns minimum title width for narrow terminals', () => {
     const { titleWidth } = computeColumnWidths(60);
-    expect(titleWidth).toBe(24);
+    expect(titleWidth).toBe(23);
   });
 
   it('scales title width for wide terminals', () => {
     const { titleWidth } = computeColumnWidths(120);
-    expect(titleWidth).toBe(64);
+    expect(titleWidth).toBe(63);
   });
 
   it('calculates separator width as cols - 2', () => {
