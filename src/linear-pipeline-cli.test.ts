@@ -149,7 +149,7 @@ describe('TERMINAL_TYPES', () => {
 
 describe('formatWhyReason', () => {
   const mkIssue = (stateName: string, events: Array<{ event_type: string }>) =>
-    ({ stateName, events: events.map(e => ({ ...e, id: '1', issue_id: 'i', ts: new Date() } as PipelineEvent)) });
+    ({ stateName, events: events.map(e => ({ event_type: e.event_type, created_at: new Date().toISOString() } as PipelineEvent)) });
 
   it('returns Waiting for Ready for Agent with no events', () => {
     expect(formatWhyReason(mkIssue('Ready for Agent', []))).toBe('Waiting');
