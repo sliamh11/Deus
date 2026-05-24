@@ -740,7 +740,8 @@ export function formatWhyReason(issue: {
   stateName: string;
   events: PipelineEvent[];
 }): string {
-  const last = issue.events.length > 0 ? issue.events[issue.events.length - 1] : null;
+  const last =
+    issue.events.length > 0 ? issue.events[issue.events.length - 1] : null;
   if (!last) {
     if (issue.stateName === 'Ready for Agent') return 'Waiting';
     if (issue.stateName === 'Agent Working') return 'Agent working';
@@ -748,16 +749,24 @@ export function formatWhyReason(issue: {
     return 'In progress';
   }
   switch (last.event_type) {
-    case 'gate_error': return 'Gate error';
-    case 'gate_revise': return 'Review needed';
-    case 'gate_cooldown': return 'Cooldown';
-    case 'automerge_pending': return 'CI pending';
+    case 'gate_error':
+      return 'Gate error';
+    case 'gate_revise':
+      return 'Review needed';
+    case 'gate_cooldown':
+      return 'Cooldown';
+    case 'automerge_pending':
+      return 'CI pending';
     case 'agent_started':
-    case 'agent_dispatched': return 'Agent working';
+    case 'agent_dispatched':
+      return 'Agent working';
     case 'pr_created':
-    case 'agent_completed': return 'Gate pending';
-    case 'state_changed': return 'State changed';
-    default: break;
+    case 'agent_completed':
+      return 'Gate pending';
+    case 'state_changed':
+      return 'State changed';
+    default:
+      break;
   }
   if (issue.stateName === 'Ready for Agent') return 'Waiting';
   if (issue.stateName === 'Agent Working') return 'Agent working';
@@ -1523,7 +1532,9 @@ function main(): void {
     );
     console.log('  deus pipeline <IDENTIFIER>           Timeline for an issue');
     console.log('  deus pipeline --failed [--since Xh]  Failed events');
-    console.log('  deus pipeline --stuck                Stuck issues (elapsed > 2h)');
+    console.log(
+      '  deus pipeline --stuck                Stuck issues (elapsed > 2h)',
+    );
     console.log('  deus pipeline --active               In-flight issues');
     console.log('  deus pipeline --all [--since Xh]     All events');
     process.exit(0);
