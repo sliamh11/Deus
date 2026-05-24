@@ -33,6 +33,9 @@ import { runLlamaCppConversation } from './llama-cpp-backend.js';
 import { DoomLoopDetector, createDoomLoopHook } from './doom-loop-detector.js';
 import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 import type { AgentRuntimeId } from './tool-broker.js';
+import { HookDispatchService } from './hook-dispatch-service.js';
+import { createPreToolUseHook } from './pre-tool-use-hook.js';
+import { createPostToolUseObserverHook } from './post-tool-use-observer.js';
 
 interface RuntimeSession {
   backend: AgentRuntimeId;
@@ -811,6 +814,21 @@ async function runQuery(
           : {}),
       },
       hooks: {
+        ...(process.env.HOOK_DISPATCH_ENABLED === 'true'
+          ? {
+              PreToolUse: [
+                {
+                  hooks: [
+                    createPreToolUseHook(
+                      process.env.DEUS_PROXY_HOST ?? 'host.docker.internal',
+                      parseInt(process.env.HOOK_DISPATCH_PORT ?? '3002', 10),
+                      process.env.DEUS_PROXY_TOKEN,
+                    ),
+                  ],
+                },
+              ],
+            }
+          : {}),
         UserPromptSubmit: [
           { hooks: [createMemoryRetrievalHook() as unknown as HookCallback] },
         ],
@@ -825,6 +843,14 @@ async function runQuery(
             hooks.push(createToolSizeLogHook());
           if (process.env.DEUS_TOOL_AUDIT_LOG !== '0')
             hooks.push(createToolAuditHook());
+          if (process.env.HOOK_DISPATCH_ENABLED === 'true')
+            hooks.push(
+              createPostToolUseObserverHook(
+                process.env.DEUS_PROXY_HOST ?? 'host.docker.internal',
+                parseInt(process.env.HOOK_DISPATCH_PORT ?? '3002', 10),
+                process.env.DEUS_PROXY_TOKEN,
+              ),
+            );
           return { PostToolUse: [{ hooks }] };
         })(),
       },
@@ -922,6 +948,20 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+
+  if (process.env.HOOK_DISPATCH_ENABLED === 'true') {
+    const dispatchPort = parseInt(process.env.HOOK_DISPATCH_PORT ?? '3002', 10);
+    const dispatchSvc = new HookDispatchService();
+    try {
+      await dispatchSvc.start(dispatchPort);
+      log(`HookDispatchService started on :${dispatchPort}`);
+    } catch (err) {
+      console.warn(
+        '[index] HookDispatchService failed to start:',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
 
   const backend =
     containerInput.backend || containerInput.sessionRef?.backend || 'claude';
