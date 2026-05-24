@@ -36,6 +36,9 @@
 - Default to cross-platform. Flag OS-specific code loudly in PRs.
 - Chat responses always in English. Hebrew only inside artifacts.
 
+## Code Exploration
+- When exploring unfamiliar code, run `search_code` first to locate relevant areas by meaning, then drill in with grep/read. Semantic search identifies the landscape; grep/read confirms specifics. Never open-code grep -r or find -name as the first move.
+
 ## Memory & Context
 - Before implementing a feature, search memory (`memory_tree.py query "<topic>"`) for prior decisions and research. Cite the retrieved path.
 - Never duplicate content across files. When a rule or config applies in multiple places, write it once and reference it. Duplication is drift waiting to happen.
