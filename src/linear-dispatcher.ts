@@ -1,10 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import { LinearClient } from '@linear/sdk';
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, HOME_DIR, GROUPS_DIR } from './config.js';
 import { parse as parseYaml } from 'yaml';
 import { logger } from './logger.js';
 import { PROJECT_ROOT } from './config.js';
+import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
 import { extractPrUrl } from './pr-url-extractor.js';
@@ -176,13 +177,82 @@ export function buildIssuePrompt(
     `<role>\n${role.content}\n</role>`,
     `<issue>\nTitle: ${issueTitle}\nID: ${issueIdentifier}\n\n${issueDescription ?? '(no description)'}\n</issue>`,
   ];
-  if (comments.length > 0) {
-    const commentBlock = comments
+  const truncated = truncateComments(comments);
+  if (truncated.length > 0) {
+    const commentBlock = truncated
       .map((c) => `[${c.author}]: ${c.body}`)
       .join('\n\n');
     parts.push(`<comments>\n${commentBlock}\n</comments>`);
   }
   return parts.join('\n\n');
+}
+
+export function truncateComments(
+  comments: Array<{ author: string; body: string }>,
+  maxChars: number = 32000,
+): Array<{ author: string; body: string }> {
+  if (comments.length === 0) return [];
+
+  const isGateComment = (c: { body: string }) => c.body.includes('**Warden:');
+
+  const keepSet = new Set<number>();
+  let regularCount = 0;
+  for (let i = comments.length - 1; i >= 0; i--) {
+    if (isGateComment(comments[i])) {
+      keepSet.add(i);
+    } else if (regularCount < 3) {
+      keepSet.add(i);
+      regularCount++;
+    }
+  }
+
+  const preservedChars = [...keepSet].reduce(
+    (sum, i) => sum + comments[i].author.length + comments[i].body.length,
+    0,
+  );
+
+  // Determine which older regular comments fit in the remaining budget
+  let remainingBudget = maxChars - preservedChars;
+  const droppable = comments
+    .map((c, i) => ({ idx: i, chars: c.author.length + c.body.length }))
+    .filter(({ idx }) => !keepSet.has(idx));
+
+  // Fill from newest droppable toward oldest
+  const includedSet = new Set<number>();
+  for (let i = droppable.length - 1; i >= 0; i--) {
+    if (droppable[i].chars <= remainingBudget) {
+      includedSet.add(droppable[i].idx);
+      remainingBudget -= droppable[i].chars;
+    }
+  }
+
+  const omitted = droppable.length - includedSet.size;
+  const result: Array<{ author: string; body: string }> = [];
+  if (omitted > 0) {
+    result.push({
+      author: 'System',
+      body: `[${omitted} earlier comments omitted]`,
+    });
+  }
+
+  // Emit kept comments in original chronological order
+  for (let i = 0; i < comments.length; i++) {
+    if (keepSet.has(i) || includedSet.has(i)) {
+      result.push(comments[i]);
+    }
+  }
+  return result;
+}
+
+export function extractScopeBlock(description: string): string {
+  const startMarker = '<!-- gate:agent-readiness-gate:start -->';
+  const endMarker = '<!-- gate:agent-readiness-gate:end -->';
+  const startIdx = description.indexOf(startMarker);
+  const endIdx = description.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+    return description;
+  }
+  return description.slice(startIdx + startMarker.length, endIdx).trim();
 }
 
 export function buildScopedIssuePrompt(
@@ -191,19 +261,14 @@ export function buildScopedIssuePrompt(
   issueDescription: string,
   comments: Array<{ author: string; body: string }>,
 ): string {
+  const scopeContent = extractScopeBlock(issueDescription);
   const parts = [
-    `<task>\nYou are an autonomous software engineer. Implement the following issue.\nTitle: ${issueTitle}\nID: ${issueIdentifier}\n\n${issueDescription}\n</task>`,
+    `<task>\nYou are an autonomous software engineer. Implement the following issue.\nTitle: ${issueTitle}\nID: ${issueIdentifier}\n\n${scopeContent}\n</task>`,
   ];
-  if (comments.length > 0) {
-    const commentBlock = comments
-      .map((c) => `[${c.author}]: ${c.body}`)
-      .join('\n\n');
-    parts.push(`<comments>\n${commentBlock}\n</comments>`);
-  }
+
   const hasReviseHistory = comments.some(
     (c) => c.body.includes('**Warden:') && c.body.includes('REVISE'),
   );
-
   const hasAgentHistory = comments.some(
     (c) =>
       c.body.includes('Agent run failed') ||
@@ -212,6 +277,15 @@ export function buildScopedIssuePrompt(
       c.body.includes('**Auto-merge blocked**') ||
       c.body.includes('PR URL in your response'),
   );
+
+  // Scan above runs on full array — truncation may drop older slots containing these signals
+  const truncated = truncateComments(comments);
+  if (truncated.length > 0) {
+    const commentBlock = truncated
+      .map((c) => `[${c.author}]: ${c.body}`)
+      .join('\n\n');
+    parts.push(`<comments>\n${commentBlock}\n</comments>`);
+  }
 
   let contextBlock = '';
   if (hasReviseHistory) {
@@ -224,31 +298,7 @@ export function buildScopedIssuePrompt(
   }
 
   parts.push(
-    `<instructions>
-${contextBlock}Read the scope block in the task description. Follow the implementation plan and satisfy all acceptance criteria.
-
-## Quality Gates (run before pushing)
-1. Run \`npm run build\` to verify TypeScript compiles.
-2. Run \`npx prettier --check src/\` and fix any formatting issues.
-3. Run \`npm test\` if tests exist for the modified area.
-4. Self-review: re-read the acceptance criteria and verify each one is met.
-5. Check your diff for: security issues, hardcoded values, missing error handling at system boundaries.
-
-## Git Workflow
-1. Create a feature branch: \`git checkout -b feat/${issueIdentifier.toLowerCase().replace(/[^a-z0-9-]/g, '')}-<short-desc>\`
-2. Implement the changes, run tests, commit.
-3. Push the branch using the tool proxy:
-   curl -s -X POST "$DEUS_TOOL_PROXY_URL/tool/deus-git-push" \\
-     -H "Content-Type: application/json" \\
-     -H "x-deus-proxy-token: $DEUS_PROXY_TOKEN" \\
-     -d '{"args": ["-u", "origin", "HEAD"]}'
-4. Create a PR using the tool proxy:
-   curl -s -X POST "$DEUS_TOOL_PROXY_URL/tool/gh" \\
-     -H "Content-Type: application/json" \\
-     -H "x-deus-proxy-token: $DEUS_PROXY_TOKEN" \\
-     -d '{"args": ["pr", "create", "--fill", "--body", "Closes ${issueIdentifier.replace(/[^A-Za-z0-9-]/g, '')}"]}'
-5. Report what you did and include the PR URL in your response.
-</instructions>`,
+    `<instructions>\n${contextBlock}Read the scope block in the task description. Follow the implementation plan and satisfy all acceptance criteria.\n</instructions>`,
   );
   return parts.join('\n\n');
 }
@@ -461,7 +511,7 @@ async function pollLinear(): Promise<void> {
       prompt,
       groupFolder: DISPATCH_GROUP_JID,
       chatJid,
-      isControlGroup: false,
+      isControlGroup: true,
       isScheduledTask: true,
       effort: 'high',
     };
@@ -522,16 +572,93 @@ export async function initLinearContext(
     const existing = Object.values(deps.registeredGroups()).find(
       (g) => g.folder === DISPATCH_GROUP_JID,
     );
-    const dispatchGroup: RegisteredGroup = existing || {
-      name: 'Linear Dispatch',
-      folder: DISPATCH_GROUP_JID,
-      trigger: '',
-      added_at: new Date().toISOString(),
-      requiresTrigger: false,
-      isControlGroup: false,
-    };
+    let dispatchGroup: RegisteredGroup = existing
+      ? { ...existing }
+      : {
+          name: 'Linear Dispatch',
+          folder: DISPATCH_GROUP_JID,
+          trigger: '',
+          added_at: new Date().toISOString(),
+          requiresTrigger: false,
+          isControlGroup: true,
+        };
     if (!existing) {
       deps.registerGroup(DISPATCH_GROUP_JID, dispatchGroup);
+    }
+    // Upgrade existing installs: dispatch group needs control-group privileges
+    // for writable project mounts (agents create branches, edit files, commit)
+    if (existing && !dispatchGroup.isControlGroup) {
+      dispatchGroup = { ...dispatchGroup, isControlGroup: true };
+      deps.registerGroup(DISPATCH_GROUP_JID, dispatchGroup);
+      logger.info(
+        'linear-dispatcher: upgraded dispatch group to control group',
+      );
+    }
+
+    // Auto-associate project with dispatch group (find-or-create pattern)
+    const dispatchProjectPath = process.env.LINEAR_DISPATCH_PROJECT;
+    if (dispatchProjectPath && !dispatchGroup.projectId) {
+      const resolved = path.resolve(
+        dispatchProjectPath.replace(/^~/, HOME_DIR),
+      );
+      let realPath = '';
+      try {
+        realPath = fs.realpathSync(resolved);
+      } catch {
+        logger.warn(
+          { path: resolved },
+          'linear-dispatcher: LINEAR_DISPATCH_PROJECT path does not exist',
+        );
+      }
+      if (realPath) {
+        let project = getProjectByPath(realPath);
+        if (!project) {
+          try {
+            project = registerProject(path.basename(realPath), realPath, {
+              readonly: false,
+            });
+            logger.info(
+              { projectId: project.id, path: realPath },
+              'linear-dispatcher: auto-registered project',
+            );
+          } catch (err) {
+            project = getProjectByPath(realPath);
+            if (project) {
+              logger.info(
+                { projectId: project.id, path: realPath },
+                'linear-dispatcher: project already registered (race)',
+              );
+            } else {
+              const msg = err instanceof Error ? err.message : String(err);
+              logger.warn(
+                { path: realPath, error: msg },
+                'linear-dispatcher: failed to register project',
+              );
+            }
+          }
+        }
+        if (project) {
+          dispatchGroup = { ...dispatchGroup, projectId: project.id };
+          deps.registerGroup(DISPATCH_GROUP_JID, dispatchGroup);
+          logger.info(
+            { projectId: project.id },
+            'linear-dispatcher: project associated with dispatch group',
+          );
+        }
+      }
+    }
+
+    // Bootstrap group CLAUDE.md from template if not yet initialized
+    const groupDir = path.join(GROUPS_DIR, DISPATCH_GROUP_JID);
+    const claudeMdPath = path.join(groupDir, 'CLAUDE.md');
+    const templatePath = path.join(
+      GROUPS_DIR,
+      DISPATCH_GROUP_JID,
+      'CLAUDE.md.template',
+    );
+    if (!fs.existsSync(claudeMdPath) && fs.existsSync(templatePath)) {
+      fs.copyFileSync(templatePath, claudeMdPath);
+      logger.info('linear-dispatcher: initialized CLAUDE.md from template');
     }
 
     // Discover or create gate status labels for board-level visibility

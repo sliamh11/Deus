@@ -21,6 +21,8 @@ import {
   buildIssuePrompt,
   startLinearDispatcher,
   stopLinearDispatcher,
+  truncateComments,
+  extractScopeBlock,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
@@ -298,5 +300,120 @@ describe('pollLinear dispatch ordering', () => {
       (call: unknown[]) => call[1] as string,
     );
     expect(callOrder).toEqual(['aaa', 'bbb']);
+  });
+});
+
+describe('truncateComments', () => {
+  it('returns empty array for empty input', () => {
+    expect(truncateComments([])).toEqual([]);
+  });
+
+  it('preserves all comments when under budget', () => {
+    const comments = [
+      { author: 'Alice', body: 'First' },
+      { author: 'Bob', body: 'Second' },
+    ];
+    expect(truncateComments(comments)).toEqual(comments);
+  });
+
+  it('always preserves gate verdict comments', () => {
+    const comments = [
+      { author: 'Bot', body: '**Warden: readiness-gate** - SHIP\nLooks good' },
+      { author: 'Alice', body: 'old comment 1' },
+      { author: 'Bob', body: 'old comment 2' },
+      { author: 'Carol', body: 'old comment 3' },
+      { author: 'Dave', body: 'recent 1' },
+      { author: 'Eve', body: 'recent 2' },
+      { author: 'Frank', body: 'recent 3' },
+    ];
+    const result = truncateComments(comments, 50);
+    const bodies = result.map((c) => c.body);
+    expect(bodies).toContain('**Warden: readiness-gate** - SHIP\nLooks good');
+  });
+
+  it('always preserves the most recent 3 regular comments', () => {
+    const comments = [
+      { author: 'A', body: 'old 1' },
+      { author: 'B', body: 'old 2' },
+      { author: 'C', body: 'recent 1' },
+      { author: 'D', body: 'recent 2' },
+      { author: 'E', body: 'recent 3' },
+    ];
+    const result = truncateComments(comments, 10);
+    const bodies = result.map((c) => c.body);
+    expect(bodies).toContain('recent 1');
+    expect(bodies).toContain('recent 2');
+    expect(bodies).toContain('recent 3');
+  });
+
+  it('drops oldest non-gate comments when over budget', () => {
+    const comments = [
+      { author: 'A', body: 'x'.repeat(20000) },
+      { author: 'B', body: 'y'.repeat(20000) },
+      { author: 'C', body: 'recent 1' },
+      { author: 'D', body: 'recent 2' },
+      { author: 'E', body: 'recent 3' },
+    ];
+    const result = truncateComments(comments, 100);
+    expect(result[0]).toEqual({
+      author: 'System',
+      body: '[2 earlier comments omitted]',
+    });
+    expect(result.length).toBe(4); // omission marker + 3 recent
+  });
+
+  it('includes omission marker when older comments are dropped', () => {
+    const comments = [
+      { author: 'A', body: 'old' },
+      { author: 'B', body: 'old' },
+      { author: 'C', body: 'r1' },
+      { author: 'D', body: 'r2' },
+      { author: 'E', body: 'r3' },
+    ];
+    const result = truncateComments(comments, 1);
+    expect(result[0].body).toMatch(/earlier comments omitted/);
+  });
+});
+
+describe('extractScopeBlock', () => {
+  it('extracts content between scope markers', () => {
+    const desc = `Some intro text
+
+<!-- gate:agent-readiness-gate:start -->
+## Scope
+- Fix the login bug
+- Add tests
+<!-- gate:agent-readiness-gate:end -->
+
+<!-- gate:output-quality-gate:start -->
+Quality feedback here
+<!-- gate:output-quality-gate:end -->`;
+
+    const result = extractScopeBlock(desc);
+    expect(result).toContain('Fix the login bug');
+    expect(result).toContain('Add tests');
+    expect(result).not.toContain('Quality feedback');
+    expect(result).not.toContain('Some intro text');
+  });
+
+  it('returns full description when no scope block exists', () => {
+    const desc = 'Just a plain description with no markers.';
+    expect(extractScopeBlock(desc)).toBe(desc);
+  });
+
+  it('returns full description with malformed markers (start only)', () => {
+    const desc = 'Text <!-- gate:agent-readiness-gate:start --> partial block';
+    expect(extractScopeBlock(desc)).toBe(desc);
+  });
+
+  it('returns full description with malformed markers (end only)', () => {
+    const desc = 'Text <!-- gate:agent-readiness-gate:end --> partial block';
+    expect(extractScopeBlock(desc)).toBe(desc);
+  });
+
+  it('returns full description when end comes before start', () => {
+    const desc =
+      '<!-- gate:agent-readiness-gate:end -->before<!-- gate:agent-readiness-gate:start -->';
+    expect(extractScopeBlock(desc)).toBe(desc);
   });
 });

@@ -332,3 +332,13 @@ Every pipeline event also fires a macOS native notification via `osascript` (bes
 - Cooldown and dedup mechanisms prevent runaway agent spend on flapping issues.
 - The SQLite event log provides a complete audit trail of every gate evaluation without external infrastructure.
 - ngrok (or equivalent tunnel) is a hard dependency for local development; production deployments need a stable public endpoint.
+
+## Revision: 2026-05-24 -- Dispatch Group Elevated to Control Group
+
+The dispatch group (`linear-dispatch`) is now registered with `isControlGroup: true`, and dispatch agent `RunContext` uses `isControlGroup: true`. This enables writable project mounts for dispatch agents that need to create branches, edit files, commit, and push.
+
+Previously `isControlGroup: false` -- the mount at `/workspace/project` was forced readonly by `container-mounter.ts:152` (`effectiveReadonly = project.readonly || !isControlGroup`). Dispatch agents could not make code changes.
+
+Gate agents (webhook handler) remain `isControlGroup: false` -- they only read and evaluate, never modify the project.
+
+Security is maintained through mount allowlist validation at project registration time, sensitive file shadowing (`.env`, credentials, `.git/config`), and container isolation. Existing installs are automatically upgraded on next startup.
