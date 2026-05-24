@@ -84,6 +84,11 @@
           },
           {
             "type": "command",
+            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/format-check.sh\"'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" semantic-search-nudge'",
             "timeout": 3
           }
