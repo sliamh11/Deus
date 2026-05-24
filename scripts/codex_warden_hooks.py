@@ -739,7 +739,7 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     tool_name = str(event.get("tool_name") or "")
     if tool_name and not _warden_has_tool(
         config, "plan-reviewer", tool_name,
-        ["Edit", "Write", "MultiEdit", "apply_patch"],
+        ["Edit", "Write", "MultiEdit", "apply_patch", "ExitPlanMode"],
     ):
         return 0
 
