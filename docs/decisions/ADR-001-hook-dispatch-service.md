@@ -1,9 +1,9 @@
 # ADR-001: Hook Dispatch Service — Port :3002 + Observer Layer
 
-**Status**: Accepted  
-**Date**: 2026-05-23  
-**Deciders**: Deus Engineering  
-**Relates to**: LIA-42 (Phase 2), LIA-41 / PR #456 (Phase 1 — Enforcement Layer)
+**Status:** Accepted
+**Date:** 2026-05-23
+**Deciders:** Deus Engineering
+**Relates to:** LIA-42 (Phase 2), LIA-41 / PR #456 (Phase 1 — Enforcement Layer)
 
 ---
 
