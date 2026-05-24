@@ -219,6 +219,9 @@ describe('renderThroughputFooter', () => {
     const plain = lines[0].replace(ANSI_RE, '');
     expect(plain).toContain('Median agent 2h');
     expect(plain).not.toContain('2h0m');
+  });
+});
+
 // ── buildStageBar tests ──────────────────────────────────────────────────────
 
 /**
