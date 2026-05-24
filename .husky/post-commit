@@ -1,5 +1,0 @@
-#!/bin/sh
-# Mark the claude-context index as potentially stale after each commit.
-# The post-merge hook triggers a background reindex and clears this flag.
-mkdir -p "$HOME/.deus"
-touch "$HOME/.deus/index_stale.flag"
