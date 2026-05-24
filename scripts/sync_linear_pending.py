@@ -151,7 +151,7 @@ def _format_pending(issues: list[dict]) -> str:
         STATE_PRIORITY.get(i.get("state", {}).get("name", ""), 99),
         int(re.sub(r"\D", "", i.get("identifier", "0")) or "0"),
     ))
-    lines = ["  # Source of truth: Linear. Synced by /compress."]
+    lines = ["  # Source of truth: Linear. Synced by SessionStart hook (/compress as fallback)."]
     for issue in issues:
         title = issue.get("title", "")
         if len(title) > 80:
