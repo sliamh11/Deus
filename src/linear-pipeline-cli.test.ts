@@ -224,8 +224,6 @@ describe('renderThroughputFooter', () => {
 
 // ── buildStageBar tests ──────────────────────────────────────────────────────
 
-
-
 function makeEvent(event_type: string): PipelineEvent {
   return { event_type, created_at: new Date().toISOString() };
 }
