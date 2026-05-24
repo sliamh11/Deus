@@ -9,13 +9,14 @@
  *   5. Memory database initialized
  *   6. Gemini API key (suggested, not required)
  */
-import { execSync, spawnSync } from 'child_process';
+import { execFileSync, execSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import { HOME_DIR, CONFIG_DIR } from '../src/config.js';
 import { resolvePython } from '../src/checks.js';
 import { logger } from '../src/logger.js';
+import { isUnderProtectedDir } from '../src/platform.js';
 import { emitStatus } from './status.js';
 
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
@@ -277,6 +278,30 @@ export async function run(args: string[]): Promise<void> {
 
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + '\n');
   logger.info({ configPath: CONFIG_PATH }, 'Config written');
+
+  // ── 4b. Ensure Claude Code sandbox allows vault access ──────────────────
+  if (isUnderProtectedDir(vaultPath)) {
+    const vaultTilde = vaultPath.startsWith(HOME_DIR)
+      ? '~' + vaultPath.slice(HOME_DIR.length)
+      : vaultPath;
+    try {
+      execFileSync(
+        pythonCmd,
+        [
+          path.join(process.cwd(), 'scripts', 'settings_merge.py'),
+          'sandbox-allow',
+          vaultTilde,
+        ],
+        { encoding: 'utf-8', timeout: 5000 },
+      );
+      logger.info(
+        { path: vaultTilde },
+        'Added vault to Claude Code sandbox allowlist',
+      );
+    } catch (err) {
+      logger.warn({ err }, 'Could not update Claude Code sandbox settings');
+    }
+  }
 
   // ── 5. Initialize memory database ────────────────────────────────────────
   try {

@@ -182,6 +182,12 @@ if __name__ == "__main__":
              "SETTINGS_SUBST_<N>_OLD / SETTINGS_SUBST_<N>_NEW (N=0,1,...).",
     )
 
+    sp = sub.add_parser(
+        "sandbox-allow",
+        help="Add a path to sandbox.filesystem.allowWrite (dedup, flock)",
+    )
+    sp.add_argument("path_to_add", help="Path to add (e.g. ~/Desktop/vault)")
+
     args = parser.parse_args()
 
     if args.cmd == "merge" or args.cmd is None:
@@ -222,3 +228,16 @@ if __name__ == "__main__":
 
         result = rewrite_settings(args.path, _subst_transform)
         print(json.dumps(result, indent=2))
+
+    elif args.cmd == "sandbox-allow":
+        new_path = args.path_to_add
+
+        def _add_sandbox_path(settings: dict[str, Any]) -> dict[str, Any]:
+            sandbox = settings.setdefault("sandbox", {})
+            fs_cfg = sandbox.setdefault("filesystem", {})
+            existing = fs_cfg.get("allowWrite", [])
+            if new_path not in existing:
+                fs_cfg["allowWrite"] = existing + [new_path]
+            return settings
+
+        rewrite_settings(args.path, _add_sandbox_path)

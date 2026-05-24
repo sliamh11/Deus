@@ -12,6 +12,7 @@
 import { execFileSync, spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
+import path from 'path';
 
 // ── Platform detection ─────────────────────────────────────────────────────
 
@@ -32,6 +33,31 @@ export const PYTHON_BIN =
 
 /** Home directory. Always use this — process.env.HOME is undefined on Windows. */
 export const homeDir = os.homedir();
+
+const MACOS_PROTECTED_DIRS = [
+  'Desktop',
+  'Documents',
+  'Downloads',
+  'Pictures',
+  'Movies',
+  'Music',
+  'Library',
+];
+
+/**
+ * Check if a path is under a macOS TCC-protected directory.
+ * Claude Code's Bash sandbox restricts access to these directories.
+ * Linux/Windows: no equivalent restriction — always returns false.
+ */
+export function isUnderProtectedDir(absPath: string): boolean {
+  if (!IS_MACOS) return false;
+  return MACOS_PROTECTED_DIRS.some((dir) => {
+    const protectedPath = path.join(homeDir, dir);
+    return (
+      absPath === protectedPath || absPath.startsWith(protectedPath + path.sep)
+    );
+  });
+}
 
 // ── Process management ─────────────────────────────────────────────────────
 
