@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
-context_search suite — token cost: claude-context search_code vs grep/find
+context_search suite — token cost: claude-context search_code / explore vs grep/find
 
 Measures token consumption for a fixed set of code-search tasks comparing
-three retrieval strategies:
+four retrieval strategies:
 
   grep     — ``grep -rn`` with query-specific patterns; measures raw output.
   find     — ``find + head`` file-listing approach; counts tokens of matched
              file paths + first-N-line previews.
   semantic — claude-context ``search_code`` MCP tool (requires running MCP
              server; skipped gracefully with a warning when unavailable).
+  explore  — Anthropic Messages API (claude-haiku-3-5-20241022); asks the
+             model to list relevant files directly.  Gracefully disabled when
+             ANTHROPIC_API_KEY is unset.  Token counts are exact
+             (response.usage.input_tokens + response.usage.output_tokens).
 
-Primary metric: token_savings_pct = 1 - (semantic_tokens / grep_tokens)
+Primary metric: token_savings_pct = 1 - (strategy_tokens / grep_tokens)
 Secondary:      hit@1, hit@3 accuracy (does the expected path appear in the
                 top-1 / top-3 results?), latency_ms per strategy.
 
@@ -20,12 +24,15 @@ accuracy is deterministic and reproducible without a live judge.
 
 Run:
   python -m bench run context_search
-  python -m bench run context_search --no-semantic   # skip MCP column
+  python -m bench run context_search --no-semantic    # skip MCP column
+  python -m bench run context_search --no-explore     # skip Anthropic API column
   python -m bench run context_search --repo-root /path/to/deus
+  python -m bench run context_search --output /tmp/bench.json  # write JSON artifact
 
 Output:
   Prints a summary table to stdout.  When --save is passed to the bench CLI
-  the RunResult is persisted to the bench store.
+  the RunResult is persisted to the bench store.  Use --output to write a
+  machine-readable JSON artifact for CI regression tracking.
 
 Methodology notes (from bench-methodology):
   - Fail loudly: missing expected file raises, not silently skips.
@@ -39,6 +46,7 @@ Methodology notes (from bench-methodology):
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import shutil
@@ -468,6 +476,98 @@ def _run_semantic(
     )
 
 
+def _run_explore(
+    task: SearchTask,
+    repo_root: Path,
+    verbose: bool = False,
+) -> StrategyResult:
+    """
+    Explore strategy: call Claude claude-haiku-3-5-20241022 via Anthropic Messages API.
+
+    Asks the model to list the most relevant file paths for the task query.
+    Token count is exact: ``response.usage.input_tokens + response.usage.output_tokens``.
+    Gracefully disabled (available=False) when ANTHROPIC_API_KEY is unset or
+    on any API/auth failure.
+    """
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return StrategyResult(
+            strategy="explore",
+            tokens=0,
+            latency_ms=0,
+            raw_chars=0,
+            hit_at_1=False,
+            hit_at_3=False,
+            result_paths=[],
+            available=False,
+            error="EXPLORE_SKIP: ANTHROPIC_API_KEY not set",
+        )
+
+    t0 = time.monotonic()
+    try:
+        import anthropic  # noqa: PLC0415 — intentional late import
+
+        client = anthropic.Anthropic()
+        system_prompt = (
+            "You are a code search assistant for a TypeScript/Python monorepo. "
+            "Given a search query, list the most relevant file paths that would "
+            "answer it. Return only repo-relative file paths, one per line, "
+            "with no extra explanation or formatting."
+        )
+        user_prompt = (
+            f"Repository root: {repo_root}\n\n"
+            f"Query: {task.query}"
+        )
+        response = client.messages.create(
+            model="claude-haiku-3-5-20241022",
+            max_tokens=512,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        # Exact token count from API response (not a character heuristic)
+        tokens = response.usage.input_tokens + response.usage.output_tokens
+        raw_text = response.content[0].text if response.content else ""
+        raw_chars = len(raw_text)
+
+        # Extract file paths: lines containing "/" (strip list markers)
+        result_paths: list[str] = []
+        for line in raw_text.splitlines():
+            line = line.strip().lstrip("-*•123456789. ").rstrip(":")
+            if line and "/" in line and not line.startswith("http"):
+                result_paths.append(line)
+            if len(result_paths) >= 10:
+                break
+
+        hit1, hit3 = _check_hits(result_paths, task.expected_paths)
+
+        return StrategyResult(
+            strategy="explore",
+            tokens=tokens,
+            latency_ms=elapsed_ms,
+            raw_chars=raw_chars,
+            hit_at_1=hit1,
+            hit_at_3=hit3,
+            result_paths=result_paths[:10],
+            available=True,
+            meta={"model": "claude-haiku-3-5-20241022", "tokens_exact": True},
+        )
+
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return StrategyResult(
+            strategy="explore",
+            tokens=0,
+            latency_ms=elapsed_ms,
+            raw_chars=0,
+            hit_at_1=False,
+            hit_at_3=False,
+            result_paths=[],
+            available=False,
+            error=f"EXPLORE_ERROR ({type(exc).__name__}): {exc}",
+        )
+
+
 # ---------------------------------------------------------------------------
 # Accuracy helper
 # ---------------------------------------------------------------------------
@@ -509,6 +609,7 @@ class TaskResult:
     grep: StrategyResult
     find: StrategyResult
     semantic: StrategyResult
+    explore: StrategyResult
 
     @property
     def token_savings_pct(self) -> float | None:
@@ -516,6 +617,13 @@ class TaskResult:
         if not self.semantic.available or self.grep.tokens == 0:
             return None
         return 1.0 - (self.semantic.tokens / self.grep.tokens)
+
+    @property
+    def explore_savings_pct(self) -> float | None:
+        """explore tokens saved vs grep baseline (None if explore unavailable)."""
+        if not self.explore.available or self.grep.tokens == 0:
+            return None
+        return 1.0 - (self.explore.tokens / self.grep.tokens)
 
     @property
     def grep_vs_find_savings_pct(self) -> float:
@@ -530,6 +638,7 @@ def _run_task(
     repo_root: Path,
     mcp_url: str | None,
     verbose: bool = False,
+    explore_enabled: bool = True,
 ) -> TaskResult:
     if verbose:
         print(f"  [{task.task_id}] running grep ...", end=" ", flush=True)
@@ -548,105 +657,151 @@ def _run_task(
         else:
             print(f"skipped ({semantic_res.error})")
 
-    return TaskResult(task=task, grep=grep_res, find=find_res, semantic=semantic_res)
+    if explore_enabled:
+        if verbose:
+            print(f"  [{task.task_id}] running explore ...", end=" ", flush=True)
+        explore_res = _run_explore(task, repo_root, verbose=verbose)
+        if verbose:
+            if explore_res.available:
+                print(f"done ({explore_res.tokens} tok)")
+            else:
+                print(f"skipped ({explore_res.error})")
+    else:
+        explore_res = StrategyResult(
+            strategy="explore",
+            tokens=0,
+            latency_ms=0,
+            raw_chars=0,
+            hit_at_1=False,
+            hit_at_3=False,
+            result_paths=[],
+            available=False,
+            error="EXPLORE_SKIP: --no-explore flag",
+        )
+
+    return TaskResult(
+        task=task,
+        grep=grep_res,
+        find=find_res,
+        semantic=semantic_res,
+        explore=explore_res,
+    )
 
 
 # ---------------------------------------------------------------------------
 # Summary report printer
 # ---------------------------------------------------------------------------
 
-def _print_report(results: list[TaskResult], semantic_available: bool) -> None:
-    SEP = "-" * 92
+def _print_report(
+    results: list[TaskResult],
+    semantic_available: bool,
+    explore_available: bool = False,
+) -> None:
+    SEP = "-" * 116
     print()
-    print("=" * 92)
-    print("  context_search benchmark — token cost: semantic search_code vs grep vs find+head")
-    print("=" * 92)
+    print("=" * 116)
+    print("  context_search benchmark — token cost: grep / find / semantic / explore")
+    print("=" * 116)
 
-    col_w = 28
-    header = (
-        f"{'Task':<{col_w}}  {'Grep tok':>8}  {'Find tok':>8}"
-    )
-    if semantic_available:
-        header += f"  {'Sem tok':>8}  {'Savings%':>8}  {'Hit@1':>5}  {'Hit@3':>5}"
-    else:
-        header += f"  {'Sem tok':>8}  {'Hit@1 (grep)':>12}  {'Hit@3 (grep)':>12}"
+    col_w = 26
+    header = f"{'Task':<{col_w}}  {'Grep tok':>8}  {'Find tok':>8}"
+    header += f"  {'Sem tok':>8}  {'SemSav%':>8}"
+    header += f"  {'Exp tok':>8}  {'ExpSav%':>8}"
+    header += f"  {'GH@3':>5}  {'SH@3':>5}  {'EH@3':>5}"
     print(header)
     print(SEP)
 
     grep_total = 0
     find_total = 0
     sem_total = 0
-    hit1_grep = 0
+    exp_total = 0
     hit3_grep = 0
-    hit1_sem = 0
     hit3_sem = 0
+    hit3_exp = 0
 
     for tr in results:
         grep_tok = tr.grep.tokens
         find_tok = tr.find.tokens
         sem_tok = tr.semantic.tokens if tr.semantic.available else 0
+        exp_tok = tr.explore.tokens if tr.explore.available else 0
 
         grep_total += grep_tok
         find_total += find_tok
         if tr.semantic.available:
             sem_total += sem_tok
+        if tr.explore.available:
+            exp_total += exp_tok
 
-        if tr.grep.hit_at_1:
-            hit1_grep += 1
         if tr.grep.hit_at_3:
             hit3_grep += 1
-        if tr.semantic.hit_at_1:
-            hit1_sem += 1
         if tr.semantic.hit_at_3:
             hit3_sem += 1
+        if tr.explore.hit_at_3:
+            hit3_exp += 1
 
-        savings_s = ""
+        sem_s = f"{sem_tok:>8}" if tr.semantic.available else "     n/a"
+        exp_s = f"{exp_tok:>8}" if tr.explore.available else "     n/a"
+
+        sem_sav_s = ""
         if tr.token_savings_pct is not None:
             pct = tr.token_savings_pct * 100
             sign = "+" if pct >= 0 else ""
-            savings_s = f"{sign}{pct:.1f}%"
+            sem_sav_s = f"{sign}{pct:.1f}%"
 
-        sem_s = f"{sem_tok:>8}" if tr.semantic.available else "    n/a "
-        hit1_g = "✓" if tr.grep.hit_at_1 else "✗"
-        hit3_g = "✓" if tr.grep.hit_at_3 else "✗"
-        hit1_s = "✓" if tr.semantic.hit_at_1 else ("?" if not tr.semantic.available else "✗")
-        hit3_s = "✓" if tr.semantic.hit_at_3 else ("?" if not tr.semantic.available else "✗")
+        exp_sav_s = ""
+        if tr.explore_savings_pct is not None:
+            pct = tr.explore_savings_pct * 100
+            sign = "+" if pct >= 0 else ""
+            exp_sav_s = f"{sign}{pct:.1f}%"
+
+        gh3 = "✓" if tr.grep.hit_at_3 else "✗"
+        sh3 = "✓" if tr.semantic.hit_at_3 else ("?" if not tr.semantic.available else "✗")
+        eh3 = "✓" if tr.explore.hit_at_3 else ("?" if not tr.explore.available else "✗")
 
         row = (
             f"{tr.task.task_id:<{col_w}}  {grep_tok:>8}  {find_tok:>8}"
+            f"  {sem_s}  {sem_sav_s:>8}"
+            f"  {exp_s}  {exp_sav_s:>8}"
+            f"  {gh3:>5}  {sh3:>5}  {eh3:>5}"
         )
-        if semantic_available:
-            row += f"  {sem_s}  {savings_s:>8}  {hit1_s:>5}  {hit3_s:>5}"
-        else:
-            row += f"  {sem_s}  {hit1_g:>12}  {hit3_g:>12}"
         print(row)
 
     print(SEP)
 
     n = len(results)
     sem_avail_count = sum(1 for tr in results if tr.semantic.available)
+    exp_avail_count = sum(1 for tr in results if tr.explore.available)
 
-    print(f"{'TOTALS':<{col_w}}  {grep_total:>8}  {find_total:>8}", end="")
-    if semantic_available and sem_avail_count:
-        overall_savings = 1.0 - (sem_total / grep_total) if grep_total else 0.0
-        sign = "+" if overall_savings >= 0 else ""
-        print(
-            f"  {sem_total:>8}  {sign}{overall_savings * 100:.1f}%"
-            f"  {hit1_sem}/{n}   {hit3_sem}/{n}"
-        )
-    else:
-        print(
-            f"  {'n/a':>8}  {hit1_grep:>12}/{n}  {hit3_grep:>12}/{n}"
-        )
+    sem_tot_s = f"{sem_total:>8}" if sem_avail_count else "     n/a"
+    exp_tot_s = f"{exp_total:>8}" if exp_avail_count else "     n/a"
+
+    sem_sav_tot_s = ""
+    if sem_avail_count and grep_total:
+        v = (1.0 - sem_total / grep_total) * 100
+        sem_sav_tot_s = f"{'+' if v >= 0 else ''}{v:.1f}%"
+
+    exp_sav_tot_s = ""
+    if exp_avail_count and grep_total:
+        v = (1.0 - exp_total / grep_total) * 100
+        exp_sav_tot_s = f"{'+' if v >= 0 else ''}{v:.1f}%"
+
+    print(
+        f"{'TOTALS':<{col_w}}  {grep_total:>8}  {find_total:>8}"
+        f"  {sem_tot_s}  {sem_sav_tot_s:>8}"
+        f"  {exp_tot_s}  {exp_sav_tot_s:>8}"
+        f"  {hit3_grep}/{n}  {hit3_sem}/{n}  {hit3_exp}/{n}"
+    )
 
     print()
-    print("Token savings = 1 - (semantic_tokens / grep_tokens) per task")
-    print("Accuracy: hit@k = expected path in top-k results (prefix match)")
+    print("Token savings = 1 - (strategy_tokens / grep_tokens) | Hit@3 columns: GH@3=grep, SH@3=semantic, EH@3=explore")
     if not semantic_available:
         print()
         print("NOTE: semantic (search_code) column unavailable — run with")
         print("  --mcp-url http://localhost:<port>  or set CLAUDE_CONTEXT_MCP_URL")
-        print("  to enable comparison against claude-context.")
+    if not explore_available:
+        print()
+        print("NOTE: explore (Claude API) column unavailable — set ANTHROPIC_API_KEY")
+        print("  or remove --no-explore to enable.")
     print()
 
 
@@ -678,6 +833,19 @@ def run_context_search(argv: list[str]) -> RunResult:
         help="Skip the semantic (search_code) strategy entirely.",
     )
     p.add_argument(
+        "--no-explore",
+        action="store_true",
+        help="Skip the explore (Anthropic Messages API) strategy entirely.",
+    )
+    p.add_argument(
+        "--output",
+        metavar="PATH",
+        help=(
+            "Write benchmark results as a UTF-8 JSON file to PATH.  "
+            "Keys: git_sha, timestamp, per_task, summary."
+        ),
+    )
+    p.add_argument(
         "--tasks",
         default="all",
         help="Comma-separated task IDs to run, or 'all' (default).",
@@ -694,6 +862,7 @@ def run_context_search(argv: list[str]) -> RunResult:
         sys.exit(1)
 
     mcp_url: str | None = None if args.no_semantic else args.mcp_url
+    explore_enabled: bool = not args.no_explore
 
     # Filter tasks
     if args.tasks == "all":
@@ -712,14 +881,19 @@ def run_context_search(argv: list[str]) -> RunResult:
 
     if args.verbose:
         sem_note = f"MCP URL: {mcp_url}" if mcp_url else "semantic DISABLED"
-        print(f"context_search: repo={repo_root}  {sem_note}")
+        exp_note = "explore ENABLED" if explore_enabled else "explore DISABLED"
+        print(f"context_search: repo={repo_root}  {sem_note}  {exp_note}")
         print(f"context_search: running {len(tasks_to_run)} tasks")
 
     t_suite_start = time.monotonic()
     task_results: list[TaskResult] = []
 
     for task in tasks_to_run:
-        tr = _run_task(task, repo_root, mcp_url, verbose=args.verbose)
+        tr = _run_task(
+            task, repo_root, mcp_url,
+            verbose=args.verbose,
+            explore_enabled=explore_enabled,
+        )
         task_results.append(tr)
 
     suite_elapsed_ms = int((time.monotonic() - t_suite_start) * 1000)
@@ -730,12 +904,16 @@ def run_context_search(argv: list[str]) -> RunResult:
     cases: list[CaseResult] = []
     total_grep_tokens = 0
     total_sem_tokens = 0
+    total_exp_tokens = 0
     semantic_available_global = any(tr.semantic.available for tr in task_results)
+    explore_available_global = any(tr.explore.available for tr in task_results)
 
     for tr in task_results:
         total_grep_tokens += tr.grep.tokens
         if tr.semantic.available:
             total_sem_tokens += tr.semantic.tokens
+        if tr.explore.available:
+            total_exp_tokens += tr.explore.tokens
 
         # Accuracy score: hit@3 is primary; bonus for hit@1
         def _acc_score(res: StrategyResult) -> float:
@@ -750,8 +928,9 @@ def run_context_search(argv: list[str]) -> RunResult:
         grep_acc = _acc_score(tr.grep)
         find_acc = _acc_score(tr.find)
         sem_acc = _acc_score(tr.semantic) if tr.semantic.available else None
+        exp_acc = _acc_score(tr.explore) if tr.explore.available else None
 
-        # Token savings vs grep baseline (positive = semantic wins)
+        # Token savings vs grep baseline (positive = strategy wins)
         savings = tr.token_savings_pct
 
         # Primary case: grep baseline
@@ -811,6 +990,33 @@ def run_context_search(argv: list[str]) -> RunResult:
             meta=sem_meta,
         ))
 
+        # Explore case (may be unavailable)
+        exp_meta: dict[str, Any] = {
+            "strategy": "explore",
+            "available": tr.explore.available,
+            "explore_savings_pct": tr.explore_savings_pct,
+        }
+        if tr.explore.available:
+            exp_meta.update({
+                "hit_at_1": tr.explore.hit_at_1,
+                "hit_at_3": tr.explore.hit_at_3,
+                "raw_chars": tr.explore.raw_chars,
+                "result_paths": tr.explore.result_paths,
+                "tokens_exact": True,
+            })
+        else:
+            exp_meta["error"] = tr.explore.error
+
+        cases.append(CaseResult(
+            case_id=f"{tr.task.task_id}__explore",
+            score=exp_acc if exp_acc is not None else 0.0,
+            tokens_in=tr.explore.tokens,
+            tokens_out=0,
+            latency_ms=tr.explore.latency_ms,
+            passed=tr.explore.hit_at_3 if tr.explore.available else False,
+            meta=exp_meta,
+        ))
+
     # -----------------------------------------------------------------------
     # Suite-level score:
     #   - if semantic available: primary = token savings; accuracy is secondary
@@ -837,9 +1043,72 @@ def run_context_search(argv: list[str]) -> RunResult:
         if semantic_available_global and total_grep_tokens
         else None
     )
+    overall_explore_savings_pct = (
+        (1.0 - total_exp_tokens / total_grep_tokens) * 100
+        if explore_available_global and total_grep_tokens
+        else None
+    )
 
     # Print human-readable report
-    _print_report(task_results, semantic_available_global)
+    _print_report(task_results, semantic_available_global, explore_available_global)
+
+    # -----------------------------------------------------------------------
+    # Optional JSON artifact (--output PATH)
+    # -----------------------------------------------------------------------
+    if args.output:
+        try:
+            git_sha = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                capture_output=True,
+                text=True,
+                cwd=str(repo_root),
+            ).stdout.strip() or "unknown"
+        except Exception:
+            git_sha = "unknown"
+
+        per_task_json = []
+        for tr in task_results:
+            per_task_json.append({
+                "task_id": tr.task.task_id,
+                "grep_tokens": tr.grep.tokens,
+                "find_tokens": tr.find.tokens,
+                "semantic_tokens": tr.semantic.tokens if tr.semantic.available else None,
+                "explore_tokens": tr.explore.tokens if tr.explore.available else None,
+                "semantic_savings_pct": tr.token_savings_pct,
+                "explore_savings_pct": tr.explore_savings_pct,
+                "grep_hit3": tr.grep.hit_at_3,
+                "semantic_hit3": tr.semantic.hit_at_3 if tr.semantic.available else None,
+                "explore_hit3": tr.explore.hit_at_3 if tr.explore.available else None,
+            })
+
+        payload: dict[str, Any] = {
+            "git_sha": git_sha,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "per_task": per_task_json,
+            "summary": {
+                "n_tasks": n_tasks,
+                "grep_tokens_total": total_grep_tokens,
+                "semantic_tokens_total": total_sem_tokens if semantic_available_global else None,
+                "explore_tokens_total": total_exp_tokens if explore_available_global else None,
+                "semantic_savings_pct": overall_savings_pct,
+                "explore_savings_pct": overall_explore_savings_pct,
+                "grep_hit3_rate": (
+                    sum(1 for tr in task_results if tr.grep.hit_at_3) / n_tasks
+                    if n_tasks else 0.0
+                ),
+                "semantic_hit3_rate": (
+                    sum(1 for tr in task_results if tr.semantic.hit_at_3) / n_tasks
+                    if semantic_available_global and n_tasks else None
+                ),
+                "explore_hit3_rate": (
+                    sum(1 for tr in task_results if tr.explore.hit_at_3) / n_tasks
+                    if explore_available_global and n_tasks else None
+                ),
+            },
+        }
+        Path(args.output).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        if args.verbose:
+            print(f"Results written to {args.output}")
 
     return RunResult(
         suite="context_search",
@@ -850,14 +1119,23 @@ def run_context_search(argv: list[str]) -> RunResult:
         meta={
             "n_tasks": n_tasks,
             "semantic_available": semantic_available_global,
+            "explore_available": explore_available_global,
             "grep_tokens_total": total_grep_tokens,
             "semantic_tokens_total": total_sem_tokens if semantic_available_global else None,
+            "explore_tokens_total": total_exp_tokens if explore_available_global else None,
             "overall_token_savings_pct": overall_savings_pct,
+            "overall_explore_savings_pct": overall_explore_savings_pct,
             "grep_hit3_rate": sum(1 for tr in task_results if tr.grep.hit_at_3) / n_tasks if n_tasks else 0.0,
             "semantic_hit3_rate": (
                 sum(1 for tr in task_results if tr.semantic.hit_at_3)
                 / n_tasks
                 if semantic_available_global and n_tasks
+                else None
+            ),
+            "explore_hit3_rate": (
+                sum(1 for tr in task_results if tr.explore.hit_at_3)
+                / n_tasks
+                if explore_available_global and n_tasks
                 else None
             ),
             "chars_per_token": CHARS_PER_TOKEN,
