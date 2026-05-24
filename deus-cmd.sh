@@ -58,6 +58,34 @@ _write_env_key() {
   fi
 }
 
+_build_and_restart() {
+  local no_restart=false quiet=false
+  for arg in "$@"; do
+    case "$arg" in
+      --no-restart) no_restart=true ;;
+      --quiet) quiet=true ;;
+    esac
+  done
+  $quiet || printf "  Building...\r"
+  (cd "$SCRIPT_DIR" && npm run build --silent) || { echo "Build failed."; exit 1; }
+  if [[ "$OSTYPE" != msys* && "$OSTYPE" != cygwin* ]]; then
+    LINK_DIR="$HOME/.local/bin"
+    mkdir -p "$LINK_DIR"
+    ln -sf "$SCRIPT_DIR/deus-cmd.sh" "$LINK_DIR/deus"
+  fi
+  if ! $no_restart; then
+    # Linux/Windows restart not implemented yet — project_windows_support.md
+    if [[ "$OSTYPE" == darwin* ]]; then
+      launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
+      $quiet || echo "Deus built and restarted (CLI symlink refreshed)."
+    else
+      $quiet || echo "Built. Service restart: not implemented on this platform."
+    fi
+  else
+    $quiet || echo "Built (restart skipped)."
+  fi
+}
+
 _backend_to_display() {
   case "$1" in
     openai) echo "codex" ;;
@@ -847,17 +875,9 @@ sys.exit(1)
     # directly via getDynamicOAuthToken() with a 5-min cache. Writing to .env
     # would permanently freeze the token and cause a login loop on next refresh.
     #
-    # Always rebuild before restarting — prevents silent dist/src drift where
-    # a source fix is present but the running binary is stale (root cause of
-    # the login loop regression: fix was in src but never compiled into dist).
-    printf "  Building...\r"
-    (cd "$SCRIPT_DIR" && npm run build --silent) || { echo "Build failed — not restarting."; exit 1; }
-    # Re-create CLI symlink — catches repo moves/renames
-    LINK_DIR="$HOME/.local/bin"
-    mkdir -p "$LINK_DIR"
-    ln -sf "$SCRIPT_DIR/deus-cmd.sh" "$LINK_DIR/deus"
-    [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
-    echo "Deus built and restarted (CLI symlink refreshed)."
+    # Rebuild and restart — prevents silent dist/src drift where a source fix
+    # is present but the running binary is stale.
+    _build_and_restart
     ;;
   gcal)
     case "${2:-status}" in
@@ -866,9 +886,8 @@ sys.exit(1)
         node "$SCRIPT_DIR/scripts/setup-gcal-auth.mjs"
         if [ $? -eq 0 ]; then
           echo ""
-          echo "Restarting Deus to pick up new tokens..."
-          [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
-          echo "Done."
+          echo "Rebuilding and restarting Deus to pick up new tokens..."
+          _build_and_restart
         fi
         ;;
       ping)
@@ -1533,14 +1552,19 @@ $STARTUP_INSTRUCTION"
     fi
     exec "$tui_bin" "$@"
     ;;
+  build)
+    shift
+    _build_and_restart "$@"
+    ;;
   *)
-    echo "Usage: deus [claude|codex] [home|auth|web|backend|gcal|listen|logs|pipeline|solution|sweep|tui] [--agents]"
+    echo "Usage: deus [claude|codex] [home|auth|build|web|backend|gcal|listen|logs|pipeline|solution|sweep|tui] [--agents]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
     echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
-    echo "  deus auth       Restart background services (credential proxy reads Keychain or ~/.claude/.credentials.json)"
+    echo "  deus auth       Validate credentials and rebuild+restart"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
+    echo "  deus build      Compile TypeScript and restart the service (--no-restart, --quiet)"
     echo "  deus web        Same as 'deus' but launches claude with --chrome (Claude-in-Chrome integration)"
     echo "  deus backend    Manage default AI backend and model (show|set|model|list)"
     echo "  deus gcal       Google Calendar token management (status|auth|ping)"

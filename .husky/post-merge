@@ -9,3 +9,9 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 node "$REPO_ROOT/scripts/claude-context-reindex.mjs" "$REPO_ROOT" \
   >> "$HOME/.deus/index_reindex.log" 2>&1 &
 disown
+
+# Rebuild and restart if source files changed
+if git diff-tree --name-only ORIG_HEAD HEAD 2>/dev/null | grep -qE '^(src/|container/)'; then
+  "$REPO_ROOT/deus-cmd.sh" build --quiet >> "$HOME/.deus/build.log" 2>&1 &
+  disown
+fi
