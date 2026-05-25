@@ -161,6 +161,19 @@ export const DEUS_CONTEXT_FILE_MAX_CHARS =
   envConfig.DEUS_CONTEXT_FILE_MAX_CHARS ||
   '';
 
+// ── Context compaction thresholds ────────────────────────────────────────────
+// At WARN_PCT the user sees an advisory; at AUTO_COMPACT_PCT auto-compaction fires.
+// Matches TUI defaults (context_alert_shown / auto_compact_threshold). Override for testing:
+// DEUS_CONTEXT_WARN_PCT=5 DEUS_CONTEXT_AUTO_COMPACT_PCT=10
+export const CONTEXT_WARN_PCT = parseInt(
+  process.env.DEUS_CONTEXT_WARN_PCT || '70',
+  10,
+);
+export const CONTEXT_AUTO_COMPACT_PCT = parseInt(
+  process.env.DEUS_CONTEXT_AUTO_COMPACT_PCT || '75',
+  10,
+);
+
 // Credential proxy authentication.
 // Per-group tokens generated in group-tokens.ts (process-lifetime).
 // Set DEUS_PROXY_AUTH=0 to disable enforcement (ignored in production).

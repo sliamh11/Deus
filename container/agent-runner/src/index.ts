@@ -78,6 +78,22 @@ interface ContainerOutput {
   newSessionId?: string;
   error?: string;
   prUrl?: string;
+  contextStats?: ContextStats;
+  compactionEvent?: CompactionEvent;
+}
+
+interface ContextStats {
+  tokens: number;
+  limit: number;
+  pct: number;
+  warn?: boolean;
+  autoCompact?: boolean;
+}
+
+interface CompactionEvent {
+  trigger: 'manual' | 'auto';
+  preTokens?: number;
+  summary?: string;
 }
 
 interface SessionEntry {
@@ -116,6 +132,29 @@ const SWARM_SIGNALS = [
   'multiple agents',
   'spawn agent',
 ];
+
+// Module-level state is safe: container runs one session per process lifecycle.
+let _lastContextStats: ContextStats | undefined;
+let _contextAlertShown = false;
+let _compactTriggered = false;
+let _pendingCompactionEvent: CompactionEvent | undefined;
+let _trackedSessionId: string | undefined;
+
+// Forwarded from host via DEUS_CONTEXT_WARN_PCT / DEUS_CONTEXT_AUTO_COMPACT_PCT.
+// Defaults match host-side src/config.ts; container trusts the forwarded values.
+const WARN_PCT = parseInt(process.env.DEUS_CONTEXT_WARN_PCT || '70', 10);
+const AUTO_COMPACT_PCT = parseInt(
+  process.env.DEUS_CONTEXT_AUTO_COMPACT_PCT || '75',
+  10,
+);
+
+function resetContextTracking(sessionId?: string): void {
+  _lastContextStats = undefined;
+  _contextAlertShown = false;
+  _compactTriggered = false;
+  _pendingCompactionEvent = undefined;
+  _trackedSessionId = sessionId;
+}
 
 /**
  * Push-based async iterable for streaming user messages to the SDK.
@@ -307,11 +346,28 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 }
 
 /**
- * Append SDK-reported per-turn usage metadata to JSONL. This is the direct
- * billing signal (inputTokens, outputTokens, cache read/create, cost) and the
- * basis for before/after token-efficiency comparisons. Opt-out: DEUS_USAGE_LOG=0.
+ * Compute context utilization stats (always) and append usage metadata to JSONL.
+ * DEUS_USAGE_LOG=0 skips the JSONL write but NOT the stats -- they feed the
+ * compaction UX regardless of logging preference.
  */
 function logUsage(msg: SDKResultMessage): void {
+  const firstModel = Object.values(msg.modelUsage)[0];
+  const contextWindow = firstModel?.contextWindow ?? 0;
+  if (contextWindow > 0) {
+    const tokens = msg.usage.inputTokens + msg.usage.outputTokens;
+    const pct = Math.round((tokens / contextWindow) * 100);
+    const stats: ContextStats = { tokens, limit: contextWindow, pct };
+    if (pct >= WARN_PCT && !_contextAlertShown) {
+      stats.warn = true;
+      _contextAlertShown = true;
+    }
+    if (pct >= AUTO_COMPACT_PCT && !_compactTriggered) {
+      stats.autoCompact = true;
+      _compactTriggered = true;
+    }
+    _lastContextStats = stats;
+  }
+
   if (process.env.DEUS_USAGE_LOG === '0') return;
   try {
     const logPath = '/workspace/group/logs/usage.jsonl';
@@ -869,6 +925,9 @@ async function runQuery(
 
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
+      if (newSessionId !== _trackedSessionId) {
+        resetContextTracking(newSessionId);
+      }
       log(`Session initialized: ${newSessionId}`);
     }
 
@@ -899,7 +958,10 @@ async function runQuery(
         result: textResult || null,
         newSessionRef: defaultSession(newSessionId),
         newSessionId,
+        contextStats: _lastContextStats,
+        compactionEvent: _pendingCompactionEvent,
       });
+      _pendingCompactionEvent = undefined;
     }
   }
 

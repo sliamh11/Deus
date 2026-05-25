@@ -17,6 +17,8 @@ import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_TIMEOUT,
+  CONTEXT_AUTO_COMPACT_PCT,
+  CONTEXT_WARN_PCT,
   CREDENTIAL_PROXY_PORT,
   DEUS_CONTEXT_FILE_MAX_CHARS,
   DEUS_OPENAI_MODEL,
@@ -82,6 +84,22 @@ export interface ContainerOutput {
   newSessionId?: string;
   error?: string;
   prUrl?: string;
+  contextStats?: ContextStats;
+  compactionEvent?: CompactionEvent;
+}
+
+export interface ContextStats {
+  tokens: number;
+  limit: number;
+  pct: number;
+  warn?: boolean;
+  autoCompact?: boolean;
+}
+
+export interface CompactionEvent {
+  trigger: 'manual' | 'auto';
+  preTokens?: number;
+  summary?: string;
 }
 
 function buildContainerArgs(
@@ -107,6 +125,12 @@ function buildContainerArgs(
       `DEUS_CONTEXT_FILE_MAX_CHARS=${DEUS_CONTEXT_FILE_MAX_CHARS}`,
     );
   }
+  args.push(
+    '-e',
+    `DEUS_CONTEXT_WARN_PCT=${CONTEXT_WARN_PCT}`,
+    '-e',
+    `DEUS_CONTEXT_AUTO_COMPACT_PCT=${CONTEXT_AUTO_COMPACT_PCT}`,
+  );
 
   const linearKey = process.env.LINEAR_API_KEY || process.env.LINEAR_API_TOKEN;
   if (linearKey) {

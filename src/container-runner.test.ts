@@ -28,6 +28,8 @@ vi.mock('./config.js', () => ({
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
   CONTAINER_TIMEOUT: 1800000, // 30min
   CONFIG_DIR: '/tmp/deus-test-config',
+  CONTEXT_AUTO_COMPACT_PCT: 75,
+  CONTEXT_WARN_PCT: 70,
   CREDENTIAL_PROXY_PORT: 3001,
   DATA_DIR: '/tmp/deus-test-data',
   DEUS_CONTEXT_FILE_MAX_CHARS: '12345',
