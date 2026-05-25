@@ -140,7 +140,7 @@ Check the issue.`,
     expect(spec.name).toBe('test-gate');
     expect(spec.allowedFrom).toEqual(['Todo']);
     expect(spec.mode).toBe('advise');
-    expect(spec.fallback).toBe('SHIP');
+    expect(spec.fallback).toBe('REVISE');
     expect(spec.cooldownMinutes).toBe(30);
     expect(spec.content).toBe('Check the issue.');
   });
