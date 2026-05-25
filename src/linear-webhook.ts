@@ -2,7 +2,7 @@ import { createServer, Server } from 'http';
 import { LinearWebhookClient } from '@linear/sdk/webhooks';
 import type { EntityWebhookPayloadWithIssueData } from '@linear/sdk/webhooks';
 import { logger } from './logger.js';
-import { executeAgentRun } from './linear-dispatcher.js';
+import { executeAgentRun, extractScopeBlock } from './linear-dispatcher.js';
 import type { LinearContext, GateLabels } from './linear-dispatcher.js';
 import type { GateSpec } from './linear-gate-specs.js';
 import type { RunContext } from './agent-runtimes/types.js';
@@ -16,6 +16,11 @@ import {
   upsertIssueCache,
   softDeleteIssueCache,
   getPipelineEvents,
+  upsertGateMeta,
+  getGateMeta,
+  incrementAttemptCount,
+  appendReviseHistory,
+  computeEnrichmentHash,
 } from './db.js';
 import { triggerAutoMerge } from './linear-auto-merge.js';
 import { notifyPipelineStep } from './linear-notifications.js';
@@ -258,7 +263,8 @@ export function computeScopeLabelChanges(
 ): { addIds: string[]; removeIds: string[] } {
   const addIds: string[] = [];
   const removeIds: string[] = [];
-  if (gateName !== 'agent-readiness-gate') return { addIds, removeIds };
+  if (gateName !== 'agent-readiness-gate' && gateName !== 'enrichment-gate')
+    return { addIds, removeIds };
   if (finalVerdict === 'SHIP' && finalEnrichment && gateLabels.scoped) {
     addIds.push(gateLabels.scoped);
     if (gateLabels.revise) removeIds.push(gateLabels.revise);
@@ -418,6 +424,102 @@ export async function runInlineCompletionCheck(
     return 'REVISE';
   } finally {
     ctx.inFlightGate.delete(issueData.id);
+  }
+}
+
+async function trackGateMetaAndEscalate(
+  ctx: LinearContext,
+  issueId: string,
+  issueIdentifier: string,
+  gateSpec: GateSpec,
+  toStateName: string,
+  finalVerdict: string,
+  finalEnrichment: string,
+): Promise<void> {
+  if (finalVerdict === 'SHIP') {
+    // Strip sentinel markers before hashing so it matches extractScopeBlock output
+    const startMarker = `<!-- gate:${gateSpec.name}:start -->`;
+    const endMarker = `<!-- gate:${gateSpec.name}:end -->`;
+    const cleanedForHash = finalEnrichment
+      .replace(new RegExp(escapeRegex(startMarker), 'g'), '')
+      .replace(new RegExp(escapeRegex(endMarker), 'g'), '')
+      .trim();
+    const hash = computeEnrichmentHash(cleanedForHash);
+    upsertGateMeta(issueId, gateSpec.name, {
+      enrichmentHash: hash,
+      enrichmentSnapshot: cleanedForHash,
+      shippedAt: new Date().toISOString(),
+      resetReviseHistory: true,
+    });
+    logger.info(
+      { issueId, gate: gateSpec.name },
+      'linear-webhook: stored enrichment hash + snapshot',
+    );
+  } else if (finalVerdict === 'REVISE') {
+    const count = incrementAttemptCount(issueId, gateSpec.name);
+    // Extract actionable gaps section; fall back to truncated enrichment
+    const gapsMatch = finalEnrichment.match(
+      /\*\*Gaps found\*\*:\s*([\s\S]*?)(?=\n##|\n\*\*|$)/,
+    );
+    const summary = gapsMatch
+      ? gapsMatch[1].trim().slice(0, 300)
+      : finalEnrichment.slice(0, 200) +
+        (finalEnrichment.length > 200 ? '...' : '');
+    appendReviseHistory(issueId, gateSpec.name, summary);
+    logger.info(
+      { issueId, gate: gateSpec.name, attemptCount: count },
+      'linear-webhook: incremented attempt count + appended revise history',
+    );
+
+    if (gateSpec.maxAttempts && count >= gateSpec.maxAttempts) {
+      const manualState = ctx.stateByName.get('Manual Review Required');
+      if (manualState) {
+        const meta = getGateMeta(issueId, gateSpec.name);
+        const historyLines = (meta?.reviseHistory ?? [])
+          .map((r, i) => `${i + 1}. ${r}`)
+          .join('\n');
+        const guideBody = [
+          `**Warden: ${gateSpec.name}** - BLOCKED`,
+          '',
+          `This issue has been revised ${count} times without passing the ${gateSpec.name} gate. Moving to manual review.`,
+          '',
+          '### REVISE history',
+          historyLines || '(no history recorded)',
+          '',
+          '### How to unblock',
+          '1. Review the REVISE history above to understand what gaps remain',
+          '2. Fix the issue description to address the specific gaps',
+          '3. Remove the `warden:blocked` label',
+          '4. Drag the issue back to **Todo** to re-enter enrichment',
+          '',
+          '---',
+          `*Gate: ${gateSpec.name} | BLOCKED after ${count} attempts | ${new Date().toISOString()}*`,
+        ].join('\n');
+        await postOrUpdateComment(ctx, issueId, toStateName, guideBody);
+        try {
+          const blockLabelIds = ctx.gateLabels.blocked
+            ? [ctx.gateLabels.blocked]
+            : [];
+          await ctx.client.updateIssue(issueId, {
+            stateId: manualState.id,
+            ...(blockLabelIds.length > 0
+              ? { addedLabelIds: blockLabelIds }
+              : {}),
+          });
+          logPipelineEvent(
+            issueId,
+            issueIdentifier,
+            'gate_blocked',
+            `${gateSpec.name}: BLOCKED after ${count} attempts`,
+          );
+        } catch (blockErr) {
+          logger.warn(
+            { issueId, err: blockErr },
+            'linear-webhook: failed to move issue to Manual Review Required',
+          );
+        }
+      }
+    }
   }
 }
 
@@ -660,6 +762,70 @@ async function handleIssueUpdate(
   }
   ctx.inFlightGate.add(data.id);
 
+  // --- Bouncer entry-path router: short-circuit on fresh enrichment hash ---
+  if (gateSpec.name === 'bouncer-gate') {
+    const enrichmentMeta = getGateMeta(data.id, 'enrichment-gate');
+    if (enrichmentMeta?.enrichmentHash && enrichmentMeta.shippedAt) {
+      const ageHours =
+        (Date.now() - new Date(enrichmentMeta.shippedAt).getTime()) / 3_600_000;
+      // 72h: beyond a typical sprint's scope-change window
+      if (ageHours < 72) {
+        const currentScope = extractScopeBlock(
+          data.description ?? '',
+          'enrichment-gate',
+        );
+        const currentHash = computeEnrichmentHash(currentScope);
+        if (currentHash === enrichmentMeta.enrichmentHash) {
+          // Path A: hash matches, enrichment is fresh -- SHIP without LLM
+          const body = formatGateComment(
+            gateSpec.name,
+            'SHIP',
+            'Enrichment hash valid and fresh -- fast-path approval.',
+            gateSpec.mode,
+          );
+          await postOrUpdateComment(ctx, data.id, toState.name, body);
+          updateWebhookEventStatus(eventKey, 'done', { verdict: 'SHIP' });
+          notifyPipelineStep(
+            ctx,
+            data.id,
+            data.identifier,
+            'gate_ship',
+            `${gateSpec.name}: SHIP (hash fast-path)`,
+          ).catch(() => {});
+          logger.info(
+            {
+              issueId: data.id,
+              gate: gateSpec.name,
+              ageHours: Math.round(ageHours),
+            },
+            'linear-webhook: bouncer fast-path SHIP (hash match)',
+          );
+          ctx.inFlightGate.delete(data.id);
+          return;
+        }
+      }
+    }
+  }
+
+  // Strip bounced labels on RfA entry so they don't persist after re-validation
+  if (toState.name === 'Ready for Agent') {
+    const bouncedLabelIds = [
+      ctx.gateLabels.bouncedUnscoped,
+      ctx.gateLabels.bouncedStale,
+      ctx.gateLabels.bouncedNoContext,
+    ].filter((id): id is string => !!id);
+    if (bouncedLabelIds.length > 0) {
+      const issueBouncedIds = bouncedLabelIds.filter((id) =>
+        data.labels.some((l) => l.id === id),
+      );
+      if (issueBouncedIds.length > 0) {
+        retryLabelUpdate(ctx.client, data.id, {
+          removedLabelIds: issueBouncedIds,
+        });
+      }
+    }
+  }
+
   updateWebhookEventStatus(eventKey, 'running');
 
   // Visual feedback: add evaluating label, remove any prior error label
@@ -700,12 +866,26 @@ async function handleIssueUpdate(
       }
     }
 
+    // Path C: inject prior feedback for post-REVISE re-entry
+    let priorFeedbackBlock = '';
+    if (gateSpec.name === 'bouncer-gate') {
+      const meta = getGateMeta(data.id, 'bouncer-gate');
+      if (meta && meta.attemptCount > 0 && meta.reviseHistory.length > 0) {
+        priorFeedbackBlock =
+          '\n\n<prior-feedback>\nThis issue was previously bounced. Prior REVISE reasons:\n' +
+          meta.reviseHistory.map((r, i) => `${i + 1}. ${r}`).join('\n') +
+          '\n\nVerify these gaps have been addressed.\n</prior-feedback>';
+      }
+    }
+
     const prompt =
       [
         `<gate-spec>\n${gateSpec.content}\n</gate-spec>`,
         `<issue>\nTitle: ${data.title}\nID: ${data.identifier}\n\n${data.description ?? '(no description)'}\n</issue>`,
         `<transition>\nFrom: ${fromState.name}\nTo: ${toState.name}\n</transition>`,
-      ].join('\n\n') + commentBlock;
+      ].join('\n\n') +
+      commentBlock +
+      priorFeedbackBlock;
 
     const runContext: RunContext = {
       prompt,
@@ -893,6 +1073,24 @@ async function handleIssueUpdate(
     );
     addIds.push(...scopeLabels.addIds);
     removeIds.push(...scopeLabels.removeIds);
+
+    // Bouncer: apply bounced:<reason> label on REVISE, strip on SHIP
+    if (gateSpec.name === 'bouncer-gate') {
+      const allBouncedIds = [
+        ctx.gateLabels.bouncedUnscoped,
+        ctx.gateLabels.bouncedStale,
+        ctx.gateLabels.bouncedNoContext,
+      ].filter((id): id is string => !!id);
+      if (finalVerdict === 'REVISE') {
+        // Always 'unscoped' until bouncer output parsing is wired
+        const bouncedId = ctx.gateLabels.bouncedUnscoped;
+        if (bouncedId) addIds.push(bouncedId);
+      } else if (finalVerdict === 'SHIP') {
+        // Strip all bounced labels on SHIP
+        removeIds.push(...allBouncedIds);
+      }
+    }
+
     // Apply effort/complexity labels only when ratings are actually present
     if (finalEnrichment) {
       const ratings = parseRatings(finalEnrichment);
@@ -920,6 +1118,25 @@ async function handleIssueUpdate(
       if (safeRemoveIds.length > 0) update.removedLabelIds = safeRemoveIds;
       if (addIds.length > 0) update.addedLabelIds = addIds;
       retryLabelUpdate(ctx.client, data.id, update);
+    }
+
+    if (finalVerdict && finalEnrichment && !gateDidError) {
+      try {
+        await trackGateMetaAndEscalate(
+          ctx,
+          data.id,
+          data.identifier,
+          gateSpec,
+          toState.name,
+          finalVerdict,
+          finalEnrichment,
+        );
+      } catch (metaErr) {
+        logger.warn(
+          { issueId: data.id, gate: gateSpec.name, err: metaErr },
+          'linear-webhook: failed to update gate meta',
+        );
+      }
     }
 
     if (finalVerdict === 'SHIP' && gateSpec.name === 'output-quality-gate') {
@@ -1166,6 +1383,25 @@ async function runGateForIssue(
       if (addIds.length > 0) update.addedLabelIds = addIds;
       retryLabelUpdate(ctx.client, issue.id, update);
     }
+
+    if (finalVerdict && finalEnrichment) {
+      try {
+        await trackGateMetaAndEscalate(
+          ctx,
+          issue.id,
+          issue.identifier,
+          gateSpec,
+          stateName,
+          finalVerdict,
+          finalEnrichment,
+        );
+      } catch (metaErr) {
+        logger.warn(
+          { issueId: issue.id, gate: gateSpec.name, err: metaErr },
+          'startup-sweep: failed to update gate meta',
+        );
+      }
+    }
   }
 }
 
@@ -1173,7 +1409,7 @@ export async function sweepStaleGatedIssues(
   ctx: LinearContext,
   gateSpecs: Map<string, GateSpec>,
 ): Promise<void> {
-  const sweepableStates = ['Ready for Agent'];
+  const sweepableStates = ['Todo', 'Ready for Agent'];
 
   for (const stateName of sweepableStates) {
     const gateSpec = gateSpecs.get(stateName);

@@ -63,6 +63,10 @@ export interface GateLabels {
   revise?: string;
   error?: string;
   wardenSkip?: string;
+  blocked?: string;
+  bouncedUnscoped?: string;
+  bouncedStale?: string;
+  bouncedNoContext?: string;
   effort: Record<number, string>;
   complexity: Record<number, string>;
 }
@@ -166,6 +170,11 @@ export async function discoverWorkflowStates(
       'linear-dispatcher: workflow state "Done" not found — auto-merge will skip Done transition',
     );
   }
+  if (!map.has('Todo')) {
+    logger.warn(
+      'linear-dispatcher: "Todo" state not found — enrichment gate will not fire',
+    );
+  }
   if (!map.has('Manual Review Required')) {
     logger.info(
       'linear-dispatcher: "Manual Review Required" state not found — circuit breaker will fall back to Backlog',
@@ -267,11 +276,27 @@ export function truncateComments(
   return result;
 }
 
-export function extractScopeBlock(description: string): string {
-  const startMarker = '<!-- gate:agent-readiness-gate:start -->';
-  const endMarker = '<!-- gate:agent-readiness-gate:end -->';
+export function extractScopeBlock(
+  description: string,
+  gateName = 'enrichment-gate',
+): string {
+  const startMarker = `<!-- gate:${gateName}:start -->`;
+  const endMarker = `<!-- gate:${gateName}:end -->`;
   const startIdx = description.indexOf(startMarker);
   const endIdx = description.indexOf(endMarker);
+  // Legacy fallback: remove once all issues migrated off agent-readiness-gate sentinels
+  if (
+    (startIdx === -1 || endIdx === -1) &&
+    gateName !== 'agent-readiness-gate'
+  ) {
+    const legacyStart = '<!-- gate:agent-readiness-gate:start -->';
+    const legacyEnd = '<!-- gate:agent-readiness-gate:end -->';
+    const ls = description.indexOf(legacyStart);
+    const le = description.indexOf(legacyEnd);
+    if (ls !== -1 && le !== -1 && le > ls) {
+      return description.slice(ls + legacyStart.length, le).trim();
+    }
+  }
   if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
     return description;
   }
@@ -953,6 +978,38 @@ export async function initLinearContext(
 
       if (labelMap.has('warden:skip')) {
         gateLabels.wardenSkip = labelMap.get('warden:skip');
+      }
+
+      const bouncedDefs: Array<{
+        key:
+          | 'blocked'
+          | 'bouncedUnscoped'
+          | 'bouncedStale'
+          | 'bouncedNoContext';
+        name: string;
+        color: string;
+      }> = [
+        { key: 'blocked', name: 'warden:blocked', color: '#dc2626' },
+        { key: 'bouncedUnscoped', name: 'bounced:unscoped', color: '#f97316' },
+        { key: 'bouncedStale', name: 'bounced:stale', color: '#f97316' },
+        {
+          key: 'bouncedNoContext',
+          name: 'bounced:no-context',
+          color: '#f97316',
+        },
+      ];
+      for (const def of bouncedDefs) {
+        if (labelMap.has(def.name)) {
+          gateLabels[def.key] = labelMap.get(def.name);
+        } else {
+          const created = await client.createIssueLabel({
+            name: def.name,
+            color: def.color,
+            teamId,
+          });
+          const label = await created.issueLabel;
+          if (label) gateLabels[def.key] = label.id;
+        }
       }
 
       if (!labelMap.has('Done: Pre-implemented')) {

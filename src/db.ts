@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { createHash } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -160,6 +161,17 @@ function createSchema(database: Database.Database): void {
       issue_id TEXT PRIMARY KEY,
       comment_id TEXT NOT NULL,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS linear_gate_meta (
+      issue_id TEXT NOT NULL,
+      gate_name TEXT NOT NULL,
+      enrichment_hash TEXT,
+      enrichment_snapshot TEXT,
+      attempt_count INTEGER DEFAULT 0,
+      revise_history TEXT,
+      shipped_at TEXT,
+      PRIMARY KEY (issue_id, gate_name)
     );
 
     CREATE TABLE IF NOT EXISTS linear_issue_cache (
@@ -1274,6 +1286,125 @@ export function getGateCommentId(
     )
     .get(issueId, gateTo) as { comment_id: string } | undefined;
   return row?.comment_id;
+}
+
+// --- Linear gate meta accessors ---
+
+export interface GateMeta {
+  issueId: string;
+  gateName: string;
+  enrichmentHash: string | null;
+  enrichmentSnapshot: string | null;
+  attemptCount: number;
+  reviseHistory: string[];
+  shippedAt: string | null;
+}
+
+export function upsertGateMeta(
+  issueId: string,
+  gateName: string,
+  fields: {
+    enrichmentHash?: string;
+    enrichmentSnapshot?: string;
+    shippedAt?: string;
+    resetReviseHistory?: boolean;
+  },
+): void {
+  const reviseHistory = fields.resetReviseHistory ? '[]' : null;
+  db.prepare(
+    `INSERT INTO linear_gate_meta (issue_id, gate_name, enrichment_hash, enrichment_snapshot, shipped_at, revise_history, attempt_count)
+     VALUES (?, ?, ?, ?, ?, ?, 0)
+     ON CONFLICT(issue_id, gate_name) DO UPDATE SET
+       enrichment_hash = COALESCE(excluded.enrichment_hash, linear_gate_meta.enrichment_hash),
+       enrichment_snapshot = COALESCE(excluded.enrichment_snapshot, linear_gate_meta.enrichment_snapshot),
+       shipped_at = COALESCE(excluded.shipped_at, linear_gate_meta.shipped_at),
+       revise_history = COALESCE(excluded.revise_history, linear_gate_meta.revise_history),
+       attempt_count = CASE WHEN excluded.shipped_at IS NOT NULL THEN 0 ELSE linear_gate_meta.attempt_count END`,
+  ).run(
+    issueId,
+    gateName,
+    fields.enrichmentHash ?? null,
+    fields.enrichmentSnapshot ?? null,
+    fields.shippedAt ?? null,
+    reviseHistory,
+  );
+}
+
+export function getGateMeta(
+  issueId: string,
+  gateName: string,
+): GateMeta | null {
+  const row = db
+    .prepare(
+      `SELECT issue_id, gate_name, enrichment_hash, enrichment_snapshot, attempt_count, revise_history, shipped_at
+       FROM linear_gate_meta WHERE issue_id = ? AND gate_name = ?`,
+    )
+    .get(issueId, gateName) as
+    | {
+        issue_id: string;
+        gate_name: string;
+        enrichment_hash: string | null;
+        enrichment_snapshot: string | null;
+        attempt_count: number;
+        revise_history: string | null;
+        shipped_at: string | null;
+      }
+    | undefined;
+  if (!row) return null;
+  let history: string[];
+  try {
+    history = row.revise_history ? JSON.parse(row.revise_history) : [];
+  } catch {
+    history = [];
+  }
+  return {
+    issueId: row.issue_id,
+    gateName: row.gate_name,
+    enrichmentHash: row.enrichment_hash,
+    enrichmentSnapshot: row.enrichment_snapshot,
+    attemptCount: row.attempt_count,
+    reviseHistory: history,
+    shippedAt: row.shipped_at,
+  };
+}
+
+export function incrementAttemptCount(
+  issueId: string,
+  gateName: string,
+): number {
+  db.prepare(
+    `INSERT INTO linear_gate_meta (issue_id, gate_name, attempt_count)
+     VALUES (?, ?, 1)
+     ON CONFLICT(issue_id, gate_name) DO UPDATE SET
+       attempt_count = linear_gate_meta.attempt_count + 1`,
+  ).run(issueId, gateName);
+  const row = db
+    .prepare(
+      `SELECT attempt_count FROM linear_gate_meta WHERE issue_id = ? AND gate_name = ?`,
+    )
+    .get(issueId, gateName) as { attempt_count: number } | undefined;
+  return row?.attempt_count ?? 1;
+}
+
+export function appendReviseHistory(
+  issueId: string,
+  gateName: string,
+  summary: string,
+): void {
+  const meta = getGateMeta(issueId, gateName);
+  const history = meta?.reviseHistory ?? [];
+  history.push(summary);
+  db.prepare(
+    `INSERT INTO linear_gate_meta (issue_id, gate_name, revise_history)
+     VALUES (?, ?, ?)
+     ON CONFLICT(issue_id, gate_name) DO UPDATE SET
+       revise_history = excluded.revise_history`,
+  ).run(issueId, gateName, JSON.stringify(history));
+}
+
+export function computeEnrichmentHash(content: string): string {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  return createHash('sha256').update(normalized).digest('hex');
 }
 
 // --- Linear issue PR accessors ---

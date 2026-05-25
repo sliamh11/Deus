@@ -15,6 +15,7 @@ export interface GateSpec {
   effort?: 'low' | 'medium' | 'high';
   fetchComments?: boolean;
   revertTo?: string;
+  maxAttempts?: number;
 }
 
 export function loadGateSpecs(wardensDir: string): Map<string, GateSpec> {
@@ -59,6 +60,8 @@ export function loadGateSpecs(wardensDir: string): Map<string, GateSpec> {
         : undefined,
       fetchComments: data.fetch_comments === true,
       revertTo: typeof data.revert_to === 'string' ? data.revert_to : undefined,
+      maxAttempts:
+        typeof data.max_attempts === 'number' ? data.max_attempts : undefined,
     });
   }
 

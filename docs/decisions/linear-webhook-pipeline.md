@@ -29,16 +29,17 @@ Gate specs are markdown files in `.claude/agents/wardens/` with YAML frontmatter
 
 ```mermaid
 flowchart LR
-    BL[Backlog] --> TD[Todo]
-    TD -- "gate: agent-readiness-gate\n(advise)" --> RFA[Ready for Agent]
+    BL[Backlog] -- "gate: enrichment-gate\n(advise)" --> TD[Todo]
+    TD -- "gate: bouncer-gate\n(advise→strict)" --> RFA[Ready for Agent]
     RFA -- "dispatcher poll" --> AW[Agent Working]
-    AW -- "gate: output-quality-gate\n(advise)" --> IR[In Review]
-    IR -- "gate: completion-gate\n(advise)" --> DN[Done]
+    AW -- "gate: output-quality-gate\n(strict)" --> IR[In Review]
+    IR -- "gate: completion-gate\n(strict)" --> DN[Done]
 
     AW -- "agent error" --> BL
+    TD -- "BLOCK after 3 REVISE" --> MR[Manual Review Required]
 ```
 
-Gates fire on transitions into: **Ready for Agent**, **In Review**, **Done**. The transition into **Agent Working** is made by the dispatcher itself (bot actor) and is skipped by the webhook handler.
+Gates fire on transitions into: **Todo**, **Ready for Agent**, **In Review**, **Done**. The enrichment gate (Backlog->Todo) is a Mutating Admission Controller that produces the scope block. The bouncer gate (Todo->RfA) is a Validating Admission Controller that checks scope completeness, with a hash fast-path that skips LLM when enrichment is fresh. The transition into **Agent Working** is made by the dispatcher itself (bot actor) and is skipped by the webhook handler.
 
 ### End-to-End Request Flow
 
@@ -135,6 +136,7 @@ Each `.md` file in `.claude/agents/wardens/` with a `gate_to` frontmatter key is
 | `fallback` | `SHIP` \| `REVISE` | `REVISE` | Verdict used when the agent errors |
 | `revert_to` | string | fromState | Target state for strict-mode revert (overrides fromState) |
 | `cooldown_minutes` | number | 60 | Minimum minutes between gate runs per issue |
+| `max_attempts` | number | unset | BLOCK after this many REVISE rounds (moves to Manual Review Required) |
 | `effort` | `low` \| `medium` \| `high` | unset | Passed to `RunContext.effort` |
 | `fetch_comments` | boolean | `false` | Whether to include issue comments in prompt |
 
@@ -171,15 +173,32 @@ Gate agents can emit an `## Enrichment` section above `## Verdict`. The webhook 
 3. Patches the existing sentinel block in-place on re-runs, or appends if absent.
 4. Writes the updated description back to Linear.
 
-This means the issue description accumulates structured context from each gate as the issue progresses. The `completion-gate` reads the `<!-- gate:agent-readiness-gate:start -->` block to verify acceptance criteria -- gates downstream depend on enrichment written by gates upstream.
+This means the issue description accumulates structured context from each gate as the issue progresses. The `completion-gate` reads the full description which includes the enrichment block. `extractScopeBlock(description, gateName)` extracts the scope content with a legacy fallback for pre-migration `agent-readiness-gate` sentinels.
+
+### Gate Meta Tracking
+
+The `linear_gate_meta` table tracks per-issue, per-gate metadata:
+
+| Column | Type | Purpose |
+|---|---|---|
+| `issue_id` | TEXT | Linear issue ID (composite PK) |
+| `gate_name` | TEXT | Gate spec name (composite PK) |
+| `enrichment_hash` | TEXT | SHA-256 of enrichment block (for bouncer fast-path) |
+| `enrichment_snapshot` | TEXT | Full enrichment block at last SHIP |
+| `attempt_count` | INTEGER | REVISE round counter (reset on SHIP) |
+| `revise_history` | TEXT | JSON array of one-line REVISE summaries (for BLOCK guide) |
+| `shipped_at` | TEXT | ISO timestamp of last SHIP |
+
+The bouncer gate uses the enrichment hash for a fast-path: if the hash matches the current description and is less than 72 hours old, SHIP without an LLM call.
 
 ## Active Gate Specs
 
-| Gate | Triggers On | Allowed From | Mode | Fallback | Revert To | Effort | Fetch Comments |
-|---|---|---|---|---|---|---|---|
-| `agent-readiness-gate` | Ready for Agent | Todo | advise | REVISE | fromState | high | no |
-| `output-quality-gate` | In Review | Agent Working | strict | REVISE | Ready for Agent | medium | yes |
-| `completion-gate` | Done | In Review | strict | REVISE | fromState | medium | yes |
+| Gate | Triggers On | Allowed From | Mode | Fallback | Max Attempts | Revert To | Effort | Fetch Comments |
+|---|---|---|---|---|---|---|---|---|
+| `enrichment-gate` | Todo | Backlog | advise | REVISE | 3 | - | high | no |
+| `bouncer-gate` | Ready for Agent | Todo | advise (planned: strict) | REVISE | - | Todo | medium | no |
+| `output-quality-gate` | In Review | Agent Working | strict | REVISE | - | Ready for Agent | medium | yes |
+| `completion-gate` | Done | In Review | strict | REVISE | - | fromState | medium | yes |
 
 ## Triggers and Loop-Break Mechanisms
 

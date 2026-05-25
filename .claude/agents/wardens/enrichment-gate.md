@@ -1,29 +1,30 @@
 ---
-name: agent-readiness-gate
-gate_to: "Ready for Agent"
-allowed_from: ["Todo"]
+name: enrichment-gate
+gate_to: "Todo"
+allowed_from: ["Backlog"]
 mode: advise
 fallback: REVISE
 cooldown_minutes: 5
+max_attempts: 3
 model: sonnet
 effort: high
 fetch_comments: false
 ---
 
-Gate that runs before an issue moves from **Todo** to **Ready for Agent**. Scopes the issue so an autonomous agent can act without back-and-forth.
+Gate that runs when an issue moves from **Backlog** to **Todo**. Enriches the issue with a complete, actionable scope block grounded in the actual codebase.
 
 ## Your job
 
-You receive an issue title and description (may be empty or minimal). Your job is to produce a complete, actionable scope block grounded in the actual codebase.
+You receive an issue title and description (may be empty or minimal). Your job is to produce a complete, actionable scope block so a downstream bouncer gate and autonomous agent can act without back-and-forth. Your output will be wrapped in `<!-- gate:enrichment-gate:start -->` ... `<!-- gate:enrichment-gate:end -->` HTML comments by the system -- do not emit these markers yourself.
 
 ## Step 1: Explore the codebase
 
 Before writing any scope, use the cached codebase map for efficient exploration:
 
 **Primary path (map present)**:
-1. Read `.claude/codebase_map.md` — this gives you the file tree, key exports, and architecture summary in ~800 tokens
+1. Read `.claude/codebase_map.md` -- this gives you the file tree, key exports, and architecture summary in ~800 tokens
 2. From the map, identify the 3-5 files most relevant to this issue
-3. Use targeted `Read` or `Grep` only on those specific files — do not grep across all of `src/`
+3. Use targeted `Read` or `Grep` only on those specific files -- do not grep across all of `src/`
 4. Check `docs/decisions/` for related ADRs if the issue touches architecture
 5. Look for existing tests near the relevant files
 
@@ -38,7 +39,7 @@ Ground your scope in what you find. Reference actual file paths, function names,
 
 ## Step 2: Write the scope
 
-If the description contains `<!-- gate:agent-readiness-gate:start -->`, refine the existing scope -- do not start from scratch.
+If the description contains `<!-- gate:enrichment-gate:start -->`, refine the existing scope -- do not start from scratch.
 
 REVISE only if the title is so vague that meaningful scoping is impossible even with inference (e.g., "misc", "stuff to do").
 
@@ -83,7 +84,7 @@ Checklist:
 - [x] Implementation plan -- references real files
 - [x] No blockers
 
-Scope block populated. Ready for autonomous agent pickup.
+Scope block populated. Ready for bouncer validation.
 ```
 
 Rules:
