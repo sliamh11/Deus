@@ -33,11 +33,15 @@ def load_scores(db_path: Path) -> dict[str, np.ndarray]:
         print(f"Error: Database not found at {db_path}", file=sys.stderr)
         sys.exit(1)
 
-    conn = sqlite3.connect(str(db_path))
-    rows = conn.execute(
-        "SELECT judge_dims FROM interactions WHERE judge_dims IS NOT NULL AND parse_error = 0"
-    ).fetchall()
-    conn.close()
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute(
+            "SELECT judge_dims FROM interactions WHERE judge_dims IS NOT NULL AND parse_error = 0"
+        ).fetchall()
+        conn.close()
+    except sqlite3.OperationalError as e:
+        print(f"Error: Cannot read database at {db_path}: {e}", file=sys.stderr)
+        sys.exit(1)
 
     if not rows:
         print("Error: No scored interactions found in database.", file=sys.stderr)
@@ -81,33 +85,31 @@ def grm_log_likelihood(params: np.ndarray, responses: np.ndarray, n_categories: 
     bs = params[1:]
     n = len(responses)
 
+    # 21-point Gauss-Hermite quadrature over theta ~ N(0,1) -- fast approximation
+    # that avoids full EM while being adequate for n > 200.
+    theta_points = np.linspace(-3, 3, 21)
+    theta_weights = np.exp(-theta_points**2 / 2) / np.sqrt(2 * np.pi)
+    theta_weights /= theta_weights.sum()
+
     ll = 0.0
     for i in range(n):
-        cat = int(responses[i])
-        # P(X >= k) = 1 / (1 + exp(-a * (theta - b_k)))
-        # For GRM with unknown theta, marginalize over standard normal
-        # Simplified: use empirical Bayes with theta ~ N(0,1) quadrature
-        theta_points = np.linspace(-3, 3, 21)
-        theta_weights = np.exp(-theta_points**2 / 2) / np.sqrt(2 * np.pi)
-        theta_weights /= theta_weights.sum()
+        cat = min(int(responses[i]), n_categories - 1)
 
         p_item = 0.0
         for t, w in zip(theta_points, theta_weights):
-            # Cumulative probabilities
             cum_probs = np.zeros(n_categories + 1)
-            cum_probs[0] = 1.0  # P(X >= 0) = 1
+            cum_probs[0] = 1.0
             for k in range(len(bs)):
                 cum_probs[k + 1] = 1.0 / (1.0 + np.exp(-a * (t - bs[k])))
-            cum_probs[-1] = 0.0  # P(X >= K) = 0
+            cum_probs[-1] = 0.0
 
-            # Category probability = P(X >= k) - P(X >= k+1)
-            p_cat = cum_probs[cat] - cum_probs[min(cat + 1, n_categories)]
+            p_cat = cum_probs[cat] - cum_probs[cat + 1]
             p_cat = max(p_cat, 1e-10)
             p_item += w * p_cat
 
         ll += np.log(max(p_item, 1e-10))
 
-    return -ll  # Minimize negative log-likelihood
+    return -ll
 
 
 def fit_grm(scores: np.ndarray, n_categories: int = 5) -> dict:
