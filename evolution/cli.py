@@ -424,7 +424,7 @@ def cmd_dismiss_review_finding(json_str: str) -> None:
 
 
 # Allowlist of valid warden identifiers for dismiss_warden_finding.
-_VALID_WARDENS = frozenset(["plan_review", "threat_modeling", "code_review"])
+_VALID_WARDENS = frozenset(["plan_review", "threat_modeling", "code_review", "ai_engineering"])
 
 
 def cmd_dismiss_warden_finding(json_str: str) -> None:

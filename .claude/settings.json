@@ -79,6 +79,11 @@
           },
           {
             "type": "command",
+            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" ai-eng-gate'",
+            "timeout": 5
+          },
+          {
+            "type": "command",
             "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" verification-gate'",
             "timeout": 5
           },

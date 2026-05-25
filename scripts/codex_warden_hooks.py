@@ -51,6 +51,7 @@ HOOK_SPECS: tuple[HookSpec, ...] = (
         "Invalidating Deus plan review",
     ),
     HookSpec("PreToolUse", "Bash", "code-review-gate", 5, "Checking Deus code review"),
+    HookSpec("PreToolUse", "Bash", "ai-eng-gate", 5, "Checking AI engineering review"),
     HookSpec("PreToolUse", "Bash", "verification-gate", 5, "Checking Deus verification"),
     HookSpec(
         "PreToolUse",
@@ -291,7 +292,7 @@ def _is_excluded(path: Path, marker_dir: Path) -> bool:
     if "/.claude/projects/" in path_text and "/memory/" in path_text:
         return True
 
-    marker_names = {".plan-reviewed", ".code-reviewed", ".threat-modeled", ".verified"}
+    marker_names = {".plan-reviewed", ".code-reviewed", ".threat-modeled", ".verified", ".ai-eng-reviewed"}
     return _is_relative_to(path, marker_dir) and path.name in marker_names
 
 
@@ -698,6 +699,7 @@ def run_session_init(repo_root: Path) -> int:
         ".code-reviewed",
         ".threat-modeled",
         ".verified",
+        ".ai-eng-reviewed",
         ".admin-merge-approved",
         ".migration-nudged",
         ".semantic-search-used",
@@ -869,6 +871,89 @@ def run_code_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     return 0
 
 
+# Files that assemble prompts or call LLM APIs directly
+_AI_ENG_BASENAMES = {
+    "linear-dispatcher.ts", "linear-webhook.ts", "linear-notifications.ts",
+    "linear-gate-specs.ts", "memory_indexer.py", "memory_tree.py",
+}
+# Directory prefixes whose children involve LLM logic (judge, agent specs)
+_AI_ENG_DIR_PREFIXES = ("evolution/", ".claude/agents/")
+
+
+def _diff_touches_llm_files(repo_root: Path) -> bool:
+    """Check if staged/unstaged changes touch LLM-related files. Fail-closed."""
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            capture_output=True, text=True, cwd=repo_root, timeout=10,
+        )
+        if result.returncode != 0:
+            return True
+        files = result.stdout.strip().split("\n") if result.stdout.strip() else []
+        result2 = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, cwd=repo_root, timeout=10,
+        )
+        if result2.returncode != 0:
+            return True
+        files += result2.stdout.strip().split("\n") if result2.stdout.strip() else []
+    except Exception:
+        return True
+    for f in files:
+        basename = f.split("/")[-1]
+        if basename in _AI_ENG_BASENAMES:
+            return True
+        if f.startswith(_AI_ENG_DIR_PREFIXES):
+            return True
+    return False
+
+
+def run_ai_eng_gate(event: dict[str, Any], repo_root: Path) -> int:
+    config = _wardens_config(repo_root)
+    if not _warden_enabled(config, "ai-eng-warden"):
+        return 0
+
+    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+    if _worktree_for_cwd(cwd, repo_root) is None:
+        return 0
+
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else ""
+    if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
+        return 0
+    if _marker(repo_root, ".ai-eng-reviewed").exists():
+        return 0
+
+    if not _diff_touches_llm_files(repo_root):
+        return 0
+
+    mark_cmd = (
+        f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
+        f"mark ai-eng-reviewed SHIP \"reason\""
+    )
+
+    if _last_verdict_is_blocking(repo_root, "ai-eng-warden"):
+        last = _last_verdict(repo_root, "ai-eng-warden")
+        reason = (
+            f"[ai-eng-gate] BLOCKED: last ai-eng-warden verdict was {last}.\n\n"
+            "Re-run the ai-eng-warden after fixing the issues. Trivial bypass is "
+            f"not permitted after {last} — no exceptions.\n\n"
+            f"After SHIP:\n{mark_cmd}"
+        )
+    else:
+        reason = (
+            "[ai-eng-gate] BLOCKED: no AI engineering review marker.\n\n"
+            "This commit touches LLM-related code. Run the ai-eng-warden and wait "
+            "for VERDICT: SHIP. Then run:\n\n"
+            f"{mark_cmd}\n\n"
+            "Trivial-commit bypass (non-LLM changes only):\n"
+            f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
+            f"mark ai-eng-reviewed TRIVIAL \"reason\""
+        )
+    _block_pre_tool(reason)
+    return 0
+
+
 def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
     config = _wardens_config(repo_root)
     if not _warden_enabled(config, "verification-gate"):
@@ -1025,6 +1110,8 @@ def run_code_review_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     if not paths:
         return 0
     _marker(repo_root, ".code-reviewed").unlink(missing_ok=True)
+    # LLM code is a subset of all code — source edits invalidate both markers
+    _marker(repo_root, ".ai-eng-reviewed").unlink(missing_ok=True)
     return 0
 
 
@@ -1705,7 +1792,7 @@ VERDICT_RE = re.compile(
     re.MULTILINE,
 )
 
-WARDEN_SUBAGENT_TYPES = frozenset({"plan-reviewer", "code-reviewer", "threat-modeler", "verification-gate"})
+WARDEN_SUBAGENT_TYPES = frozenset({"plan-reviewer", "code-reviewer", "threat-modeler", "verification-gate", "ai-eng-warden"})
 
 
 def run_verdict_tracker(event: dict[str, Any], repo_root: Path) -> int:
@@ -1802,6 +1889,7 @@ RUNNERS = {
     "plan-review-gate": run_plan_review_gate,
     "plan-mode-invalidator": run_plan_mode_invalidator,
     "code-review-gate": run_code_review_gate,
+    "ai-eng-gate": run_ai_eng_gate,
     "verification-gate": run_verification_gate,
     "admin-merge-gate": run_admin_merge_gate,
     "stop-checkpoint": run_stop_checkpoint,
@@ -1826,6 +1914,7 @@ RUNNERS = {
 MARKER_NAMES = {
     "plan-reviewed": "plan-reviewer",
     "code-reviewed": "code-reviewer",
+    "ai-eng-reviewed": "ai-eng-warden",
     "threat-modeled": "threat-modeler",
     "verified": "verification-gate",
 }
