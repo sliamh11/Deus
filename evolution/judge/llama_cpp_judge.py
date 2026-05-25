@@ -147,7 +147,8 @@ def _build_eval_prompt(
 
 
 def _parse_result(raw: str) -> JudgeResult:
-    # Strip markdown fences if present
+    # Defensive fallback: response_format guarantees JSON, but older llama-server
+    # versions silently ignore the field — keep parsing guards.
     text = raw.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()

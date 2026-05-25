@@ -151,6 +151,8 @@ _JSON_BLOCK_RE = re.compile(r"\{[^{}]*\}")
 
 
 def _parse_result(raw: str) -> JudgeResult:
+    # Defensive fallback: constrained decoding guarantees valid JSON, but older
+    # Ollama versions silently ignore the `format` field — keep parsing guards.
     text = raw.strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
