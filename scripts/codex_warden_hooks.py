@@ -703,6 +703,7 @@ def run_session_init(repo_root: Path) -> int:
         ".admin-merge-approved",
         ".migration-nudged",
         ".semantic-search-used",
+        ".warden-memo.md",
     ):
         _marker(repo_root, name).unlink(missing_ok=True)
     _PATTERN_ROUTES_CACHE = None
@@ -731,6 +732,7 @@ def run_plan_mode_invalidator(event: dict[str, Any], repo_root: Path) -> int:
 
     if should_clear:
         _marker(repo_root, ".plan-reviewed").unlink(missing_ok=True)
+        _marker(repo_root, ".warden-memo.md").unlink(missing_ok=True)
     return 0
 
 
