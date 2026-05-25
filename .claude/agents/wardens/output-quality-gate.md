@@ -1,7 +1,7 @@
 ---
 name: output-quality-gate
 gate_to: "In Review"
-allowed_from: ["Agent Working", "In Progress"]
+allowed_from: ["Agent Working", "In Progress", "Ready for Agent"]
 mode: strict
 fallback: REVISE
 revert_to: "Ready for Agent"

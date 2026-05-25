@@ -1,7 +1,7 @@
 ---
 name: completion-gate
 gate_to: "Done"
-allowed_from: ["In Review"]
+allowed_from: ["In Review", "In Progress"]
 mode: strict
 fallback: REVISE
 cooldown_minutes: 5
@@ -10,7 +10,7 @@ effort: medium
 fetch_comments: true
 ---
 
-Gate that runs before an issue moves from **In Review** to **Done**. Ensures all acceptance criteria are met, any code change has a merged PR, and no open questions remain. Prevents premature closure that inflates Done metrics.
+Gate that runs before an issue moves from **In Review** or **In Progress** to **Done**. Ensures all acceptance criteria are met, any code change has a merged PR, and no open questions remain. Prevents premature closure that inflates Done metrics.
 
 ## Your job
 

@@ -59,6 +59,32 @@ interface PrChecksResult {
   summary: string;
 }
 
+export async function queryPrState(
+  prUrl: string,
+): Promise<{ state: 'OPEN' | 'CLOSED' | 'MERGED' } | null> {
+  const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
+  if (!prNumber) return null;
+
+  const repoMatch = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull/);
+  const repo = repoMatch?.[1];
+  if (!repo) return null;
+
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      ['pr', 'view', prNumber, '--repo', repo, '--json', 'state'],
+      { timeout: CI_CHECK_TIMEOUT_MS },
+    );
+    const data = JSON.parse(stdout) as { state: string };
+    const VALID_STATES = new Set(['OPEN', 'CLOSED', 'MERGED']);
+    if (!VALID_STATES.has(data.state)) return null;
+    return { state: data.state as 'OPEN' | 'CLOSED' | 'MERGED' };
+  } catch (err) {
+    logger.warn({ prUrl, err }, 'auto-merge: failed to query PR state');
+    return null;
+  }
+}
+
 export async function queryPrChecks(prUrl: string): Promise<PrChecksResult> {
   const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
   if (!prNumber) {

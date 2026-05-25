@@ -9,6 +9,7 @@ import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
 import { extractPrUrl } from './pr-url-extractor.js';
+import { queryPrState } from './linear-auto-merge.js';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
   getConsecutiveFailCount,
@@ -16,6 +17,7 @@ import {
   getLastFailTime,
   getPipelineEvents,
   logPipelineEvent,
+  updatePrAutoMergeState,
   upsertIssuePr,
 } from './db.js';
 import { notifyPipelineStep } from './linear-notifications.js';
@@ -420,6 +422,104 @@ export async function executeAgentRun(
   return { text: result, error };
 }
 
+// Checks live PR state via gh CLI and routes the issue accordingly.
+// DB-first in triageIssue avoids the API call when we already know the answer;
+// this function only runs when the DB record is stale or absent.
+async function handlePrState(
+  ctx: LinearContext,
+  issueId: string,
+  identifier: string,
+  prUrl: string,
+): Promise<'skip' | 'dispatch'> {
+  const prState = await queryPrState(prUrl);
+  if (!prState) return 'dispatch';
+
+  if (prState.state === 'MERGED') {
+    updatePrAutoMergeState(issueId, 'merged');
+    const doneState = ctx.stateByName.get('Done');
+    if (!doneState) {
+      logger.warn(
+        { issueId },
+        'triage: "Done" state not found, falling back to dispatch',
+      );
+      return 'dispatch';
+    }
+    await ctx.client.updateIssue(issueId, { stateId: doneState.id });
+    logPipelineEvent(issueId, identifier, 'triage_skip_merged', prUrl);
+    logger.info({ issueId, prUrl }, 'triage: PR merged, moved to Done');
+    return 'skip';
+  }
+
+  if (prState.state === 'OPEN') {
+    const reviewState = ctx.stateByName.get('In Review');
+    if (!reviewState) {
+      logger.warn(
+        { issueId },
+        'triage: "In Review" state not found, falling back to dispatch',
+      );
+      return 'dispatch';
+    }
+    await ctx.client.updateIssue(issueId, { stateId: reviewState.id });
+    logPipelineEvent(issueId, identifier, 'triage_skip_open_pr', prUrl);
+    logger.info({ issueId, prUrl }, 'triage: PR open, moved to In Review');
+    return 'skip';
+  }
+
+  // CLOSED: PR was abandoned/superseded. Dispatch a fresh agent to redo the work.
+  logger.info({ issueId, prUrl }, 'triage: PR closed, dispatching fresh agent');
+  return 'dispatch';
+}
+
+// Pre-dispatch triage: checks DB then live GH state then comment text scan.
+// Returns 'skip' when the issue already has a merged/open PR (no agent needed).
+async function triageIssue(
+  ctx: LinearContext,
+  issue: { id: string; identifier: string; description: string | null },
+  comments: Array<{ author: string; body: string }>,
+): Promise<'dispatch' | 'skip'> {
+  const dbRecord = getIssuePr(issue.id);
+
+  if (dbRecord?.auto_merge_state === 'merged') {
+    const doneState = ctx.stateByName.get('Done');
+    if (!doneState) {
+      logger.warn(
+        { issueId: issue.id },
+        'triage: "Done" state not found, falling back to dispatch',
+      );
+      return 'dispatch';
+    }
+    await ctx.client.updateIssue(issue.id, { stateId: doneState.id });
+    logPipelineEvent(
+      issue.id,
+      issue.identifier,
+      'triage_skip_merged',
+      dbRecord.pr_url,
+    );
+    logger.info(
+      { issueId: issue.id },
+      'triage: DB shows merged, moved to Done',
+    );
+    return 'skip';
+  }
+
+  if (dbRecord?.pr_url) {
+    return handlePrState(ctx, issue.id, issue.identifier, dbRecord.pr_url);
+  }
+
+  // Fallback: scan issue text for PR URLs not yet recorded in DB
+  const textToScan = [
+    issue.description ?? '',
+    ...comments.map((c) => c.body),
+  ].join('\n');
+  const foundUrl = extractPrUrl(textToScan, ctx.repoSlug);
+  if (foundUrl) {
+    upsertIssuePr(issue.id, foundUrl, undefined, issue.identifier);
+    return handlePrState(ctx, issue.id, issue.identifier, foundUrl);
+  }
+
+  return 'dispatch';
+}
+
 async function runIssue(
   ctx: LinearContext,
   issueId: string,
@@ -603,6 +703,7 @@ async function pollLinear(): Promise<void> {
       continue;
     }
 
+    // Add before triage to prevent concurrent polls from double-processing the same issue
     ctx.inFlightDispatch.add(issue.id);
 
     const issueComments = await issue.comments();
@@ -612,6 +713,20 @@ async function pollLinear(): Promise<void> {
         return { author: user?.displayName ?? 'Unknown', body: c.body };
       }),
     );
+
+    const triageResult = await triageIssue(
+      ctx,
+      {
+        id: issue.id,
+        identifier: issue.identifier,
+        description: issue.description ?? null,
+      },
+      comments,
+    );
+    if (triageResult === 'skip') {
+      ctx.inFlightDispatch.delete(issue.id);
+      continue;
+    }
 
     const failureDossier = buildFailureDossier(issue.id);
     let prompt: string;
