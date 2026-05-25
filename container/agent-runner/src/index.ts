@@ -20,8 +20,10 @@ import {
   query,
   HookCallback,
   PreCompactHookInput,
+  PostCompactHookInput,
   PostToolUseHookInput,
   SDKResultMessage,
+  SDKCompactBoundaryMessage,
 } from '@anthropic-ai/claude-agent-sdk';
 import { fileURLToPath } from 'url';
 
@@ -138,6 +140,7 @@ let _lastContextStats: ContextStats | undefined;
 let _contextAlertShown = false;
 let _compactTriggered = false;
 let _pendingCompactionEvent: CompactionEvent | undefined;
+let _lastBoundaryPreTokens: number | undefined;
 let _trackedSessionId: string | undefined;
 
 // Forwarded from host via DEUS_CONTEXT_WARN_PCT / DEUS_CONTEXT_AUTO_COMPACT_PCT.
@@ -153,6 +156,7 @@ function resetContextTracking(sessionId?: string): void {
   _contextAlertShown = false;
   _compactTriggered = false;
   _pendingCompactionEvent = undefined;
+  _lastBoundaryPreTokens = undefined;
   _trackedSessionId = sessionId;
 }
 
@@ -343,6 +347,34 @@ function createPreCompactHook(assistantName?: string): HookCallback {
 
     return {};
   };
+}
+
+function createPostCompactHook(): HookCallback {
+  return async (input, _toolUseId, _context) => {
+    const postCompact = input as PostCompactHookInput;
+    _pendingCompactionEvent = {
+      trigger: postCompact.trigger,
+      summary: postCompact.compact_summary,
+      preTokens: _lastBoundaryPreTokens,
+    };
+    _lastBoundaryPreTokens = undefined;
+    log(`PostCompact: trigger=${postCompact.trigger}`);
+    return {};
+  };
+}
+
+// PostCompact hook fires before or after compact_boundary (ordering not guaranteed).
+// This helper handles either ordering by backfilling pre_tokens both directions.
+function handleCompactBoundary(message: SDKCompactBoundaryMessage): void {
+  const preTokens = message.compact_metadata.pre_tokens;
+  _lastBoundaryPreTokens = preTokens;
+  const pending = _pendingCompactionEvent as CompactionEvent | undefined;
+  if (pending) {
+    pending.preTokens = preTokens;
+  } else {
+    log('compact_boundary without pending event -- hook may fire later');
+  }
+  log(`compact_boundary: pre_tokens=${preTokens}`);
 }
 
 /**
@@ -891,6 +923,7 @@ async function runQuery(
         PreCompact: [
           { hooks: [createPreCompactHook(containerInput.assistantName)] },
         ],
+        PostCompact: [{ hooks: [createPostCompactHook()] }],
         PostToolUseFailure: [{ hooks: [createDoomLoopHook(doomDetector)] }],
         ...(() => {
           const hooks: HookCallback[] = [];
@@ -929,6 +962,13 @@ async function runQuery(
         resetContextTracking(newSessionId);
       }
       log(`Session initialized: ${newSessionId}`);
+    }
+
+    if (
+      message.type === 'system' &&
+      (message as { subtype?: string }).subtype === 'compact_boundary'
+    ) {
+      handleCompactBoundary(message as SDKCompactBoundaryMessage);
     }
 
     if (
@@ -1091,6 +1131,8 @@ async function main(): Promise<void> {
 
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);
+    _pendingCompactionEvent = undefined;
+    _lastBoundaryPreTokens = undefined;
     let slashSessionId: string | undefined;
     let compactBoundarySeen = false;
     let hadError = false;
@@ -1112,6 +1154,7 @@ async function main(): Promise<void> {
             PreCompact: [
               { hooks: [createPreCompactHook(containerInput.assistantName)] },
             ],
+            PostCompact: [{ hooks: [createPostCompactHook()] }],
           },
         },
       })) {
@@ -1126,13 +1169,12 @@ async function main(): Promise<void> {
           log(`Session after slash command: ${slashSessionId}`);
         }
 
-        // Observe compact_boundary to confirm compaction completed
         if (
           message.type === 'system' &&
           (message as { subtype?: string }).subtype === 'compact_boundary'
         ) {
           compactBoundarySeen = true;
-          log('Compact boundary observed — compaction completed');
+          handleCompactBoundary(message as SDKCompactBoundaryMessage);
         }
 
         if (message.type === 'result') {
@@ -1150,14 +1192,18 @@ async function main(): Promise<void> {
               error: textResult || 'Session command failed.',
               newSessionRef: defaultSession(slashSessionId),
               newSessionId: slashSessionId,
+              compactionEvent: _pendingCompactionEvent,
             });
+            _pendingCompactionEvent = undefined;
           } else {
             writeOutput({
               status: 'success',
               result: textResult || 'Conversation compacted.',
               newSessionRef: defaultSession(slashSessionId),
               newSessionId: slashSessionId,
+              compactionEvent: _pendingCompactionEvent,
             });
+            _pendingCompactionEvent = undefined;
           }
           resultEmitted = true;
         }
@@ -1173,14 +1219,12 @@ async function main(): Promise<void> {
       `Slash command done. compactBoundarySeen=${compactBoundarySeen}, hadError=${hadError}`,
     );
 
-    // Warn if compact_boundary was never observed — compaction may not have occurred
     if (!hadError && !compactBoundarySeen) {
       log(
         'WARNING: compact_boundary was not observed. Compaction may not have completed.',
       );
     }
 
-    // Only emit final session marker if no result was emitted yet and no error occurred
     if (!resultEmitted && !hadError) {
       writeOutput({
         status: 'success',
@@ -1189,9 +1233,10 @@ async function main(): Promise<void> {
           : 'Compaction requested but compact_boundary was not observed.',
         newSessionRef: defaultSession(slashSessionId),
         newSessionId: slashSessionId,
+        compactionEvent: _pendingCompactionEvent,
       });
+      _pendingCompactionEvent = undefined;
     } else if (!hadError) {
-      // Emit session-only marker so host updates session tracking
       writeOutput({
         status: 'success',
         result: null,

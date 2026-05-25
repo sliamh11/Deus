@@ -383,6 +383,27 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           resetIdleTimer();
         }
 
+        if (result.status === 'success' && result.result) {
+          if (result.contextStats?.warn) {
+            const s = result.contextStats;
+            await channel.sendMessage(
+              chatJid,
+              `Context at ${s.pct}% (${s.tokens.toLocaleString()} / ${s.limit.toLocaleString()} tokens). Use /compact to free space.`,
+            );
+          }
+
+          if (result.compactionEvent?.trigger === 'auto') {
+            const e = result.compactionEvent;
+            const preInfo = e.preTokens
+              ? ` (was ${e.preTokens.toLocaleString()} tokens)`
+              : '';
+            await channel.sendMessage(
+              chatJid,
+              `Context auto-compacted${preInfo}. Use /compact manually to control timing.`,
+            );
+          }
+        }
+
         if (result.status === 'success') {
           queue.notifyIdle(chatJid);
         }
