@@ -755,7 +755,7 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     if tool_name == "ExitPlanMode":
         mark_cmd = (
             f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
-            f"mark plan-reviewed SHIP \"reason\""
+            f"mark plan-reviewed SHIP \"reason\" --repo-root {shlex.quote(str(repo_root))}"
         )
         if _last_verdict_is_blocking(repo_root, "plan-reviewer"):
             last = _last_verdict(repo_root, "plan-reviewer")
@@ -768,7 +768,7 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
         else:
             reason = (
                 "[plan-review-gate] BLOCKED: no plan-reviewer approval marker.\n\n"
-                "Run the plan-reviewer Warden and wait for VERDICT: SHIP before "
+                "Run the plan-reviewer Warden for this project and wait for VERDICT: SHIP before "
                 "exiting plan mode. Then run:\n\n"
                 f"{mark_cmd}"
             )
@@ -802,7 +802,7 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
         target_list = "  - (filtered target — gate still applies)"
     mark_cmd = (
         f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
-        f"mark plan-reviewed SHIP \"reason\""
+        f"mark plan-reviewed SHIP \"reason\" --repo-root {shlex.quote(str(repo_root))}"
     )
 
     if _last_verdict_is_blocking(repo_root, "plan-reviewer"):
@@ -816,12 +816,12 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     else:
         reason = (
             "[plan-review-gate] BLOCKED: no plan-reviewer approval marker.\n\n"
-            "Before editing Deus source, run the plan-reviewer Warden and wait for "
+            "Before editing this project, run the plan-reviewer Warden and wait for "
             "VERDICT: SHIP. Then run:\n\n"
             f"{mark_cmd}\n\n"
             "Trivial-change bypass (typos, comments, single-line renames):\n"
             f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
-            f"mark plan-reviewed TRIVIAL \"reason\"\n\n"
+            f"mark plan-reviewed TRIVIAL \"reason\" --repo-root {shlex.quote(str(repo_root))}\n\n"
             f"Targets:\n{target_list}"
         )
     _block_pre_tool(reason)
@@ -846,7 +846,7 @@ def run_code_review_gate(event: dict[str, Any], repo_root: Path) -> int:
 
     mark_cmd = (
         f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
-        f"mark code-reviewed SHIP \"reason\""
+        f"mark code-reviewed SHIP \"reason\" --repo-root {shlex.quote(str(repo_root))}"
     )
 
     if _last_verdict_is_blocking(repo_root, "code-reviewer"):
@@ -860,12 +860,12 @@ def run_code_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     else:
         reason = (
             "[code-review-gate] BLOCKED: no code-reviewer approval marker.\n\n"
-            "Before committing Deus changes, run the code-reviewer Warden and wait "
+            "Before committing changes, run the code-reviewer Warden and wait "
             "for VERDICT: SHIP. Then run:\n\n"
             f"{mark_cmd}\n\n"
             "Trivial-commit bypass (typos, deps, config-only):\n"
             f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
-            f"mark code-reviewed TRIVIAL \"reason\""
+            f"mark code-reviewed TRIVIAL \"reason\" --repo-root {shlex.quote(str(repo_root))}"
         )
     _block_pre_tool(reason)
     return 0
