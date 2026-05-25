@@ -461,6 +461,19 @@ async function handleIssueUpdate(
       'circuit_breaker_reset',
       'manual move to Ready for Agent',
     );
+    // Auto-strip warden:skip on RfA entry so gates work normally on the next cycle
+    if (
+      ctx.gateLabels.wardenSkip &&
+      data.labels.some((l) => l.name === 'warden:skip')
+    ) {
+      retryLabelUpdate(ctx.client, data.id, {
+        removedLabelIds: [ctx.gateLabels.wardenSkip],
+      });
+      logger.info(
+        { issueId: data.id },
+        'linear-webhook: stripped warden:skip label on Ready for Agent entry',
+      );
+    }
     logger.info(
       { issueId: data.id },
       'linear-webhook: circuit breaker reset (manual Ready for Agent)',
