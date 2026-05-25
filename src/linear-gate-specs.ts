@@ -8,7 +8,7 @@ export interface GateSpec {
   gateTo: string;
   allowedFrom: string[];
   mode: 'advise' | 'strict';
-  fallback: 'SHIP' | 'REVISE';
+  fallback: 'REVISE';
   cooldownMinutes: number;
   content: string;
   model?: string;
@@ -41,7 +41,13 @@ export function loadGateSpecs(wardensDir: string): Map<string, GateSpec> {
 
     const mode = data.mode === 'strict' ? 'strict' : 'advise';
 
-    const fallback = data.fallback === 'SHIP' ? 'SHIP' : 'REVISE';
+    if (data.fallback === 'SHIP') {
+      logger.warn(
+        { file, gate: gateTo },
+        'gate spec declares fallback: SHIP (deprecated, overriding to REVISE)',
+      );
+    }
+    const fallback = 'REVISE' as const;
 
     const rawCooldown =
       typeof data.cooldown_minutes === 'number' ? data.cooldown_minutes : 60;
