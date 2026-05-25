@@ -174,6 +174,12 @@ export const CONTEXT_AUTO_COMPACT_PCT = parseInt(
   10,
 );
 
+// Opt-in context notifications (70% warning, auto-compact notice).
+// Off by default for a smooth, silent experience. DEUS_CONTEXT_NOTIFY=1 enables.
+export const CONTEXT_NOTIFY =
+  process.env.DEUS_CONTEXT_NOTIFY === '1' ||
+  process.env.DEUS_CONTEXT_NOTIFY === 'true';
+
 // Credential proxy authentication.
 // Per-group tokens generated in group-tokens.ts (process-lifetime).
 // Set DEUS_PROXY_AUTH=0 to disable enforcement (ignored in production).

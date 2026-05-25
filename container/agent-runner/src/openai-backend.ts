@@ -45,12 +45,21 @@ export interface ContainerInput {
   effort?: 'low' | 'medium' | 'high' | 'max';
 }
 
+interface ContextStats {
+  tokens: number;
+  limit: number;
+  pct: number;
+  warn?: boolean;
+  autoCompact?: boolean;
+}
+
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionRef?: RuntimeSession;
   newSessionId?: string;
   error?: string;
+  contextStats?: ContextStats;
 }
 
 interface OpenAIResponse {

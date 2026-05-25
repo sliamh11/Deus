@@ -255,6 +255,7 @@ export function extractSessionCommand(
   let text = content.trim();
   text = text.replace(triggerPattern, '').trim();
   if (text === '/compact') return '/compact';
+  if (text === '/context') return '/context';
   return null;
 }
 
@@ -275,6 +276,15 @@ export interface AgentResult {
   result?: string | object | null;
 }
 
+/** Context info returned by the orchestrator for the /context command. */
+export interface ContextInfo {
+  backend: string;
+  tokens?: number;
+  limit?: number;
+  pct?: number;
+  lastCompactedAt?: string;
+}
+
 /** Dependencies injected by the orchestrator. */
 export interface SessionCommandDeps {
   sendMessage: (text: string) => Promise<void>;
@@ -288,6 +298,7 @@ export interface SessionCommandDeps {
   formatMessages: (msgs: NewMessage[], timezone: string) => string;
   /** Whether the denied sender would normally be allowed to interact (for denial messages). */
   canSenderInteract: (msg: NewMessage) => boolean;
+  getContextInfo?: () => ContextInfo | undefined;
 }
 
 function resultToText(result: string | object | null | undefined): string {
@@ -336,6 +347,26 @@ export async function handleSessionCommand(opts: {
     if (deps.canSenderInteract(cmdMsg)) {
       await deps.sendMessage('Session commands require admin access.');
     }
+    deps.advanceCursor(cmdMsg.timestamp);
+    return { handled: true, success: true };
+  }
+
+  // /context is host-side only — no container spawn needed.
+  if (command === '/context') {
+    const info = deps.getContextInfo?.();
+    const lines = [
+      `Context — ${groupName}`,
+      `  Backend: ${info?.backend ?? 'unknown'}`,
+    ];
+    if (info?.tokens != null && info?.limit != null) {
+      lines.push(
+        `  Tokens: ${info.tokens.toLocaleString()} / ${info.limit.toLocaleString()} (${info.pct ?? 0}%)`,
+      );
+    } else {
+      lines.push('  Tokens: no stats available yet');
+    }
+    lines.push(`  Last compacted: ${info?.lastCompactedAt ?? 'never'}`);
+    await deps.sendMessage(lines.join('\n'));
     deps.advanceCursor(cmdMsg.timestamp);
     return { handled: true, success: true };
   }

@@ -58,12 +58,21 @@ export interface ContainerInput {
   effort?: 'low' | 'medium' | 'high' | 'max';
 }
 
+interface ContextStats {
+  tokens: number;
+  limit: number;
+  pct: number;
+  warn?: boolean;
+  autoCompact?: boolean;
+}
+
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionRef?: RuntimeSession;
   newSessionId?: string;
   error?: string;
+  contextStats?: ContextStats;
 }
 
 interface LlamaCppContext {
@@ -102,6 +111,22 @@ interface ChatCompletionResponse {
 }
 
 const COMPACT_KEEP_TURNS = 8;
+const LLAMA_CPP_CONTEXT_WINDOW = parseInt(
+  process.env.LLAMA_CPP_CONTEXT_WINDOW || '32768',
+  10,
+);
+const AUTO_COMPACT_PCT = parseInt(
+  process.env.DEUS_CONTEXT_AUTO_COMPACT_PCT || '75',
+  10,
+);
+
+function estimateTokens(messages: ChatMessage[]): number {
+  let chars = 0;
+  for (const m of messages) {
+    chars += typeof m.content === 'string' ? m.content.length : 0;
+  }
+  return Math.round(chars / 4);
+}
 
 function isControlGroup(containerInput: ContainerInput): boolean {
   return containerInput.isControlGroup ?? containerInput.isMain ?? false;
@@ -482,6 +507,18 @@ export async function runLlamaCppConversation(
       : prompt;
 
     try {
+      const estTokens = estimateTokens(messages);
+      const estPct = Math.round((estTokens / LLAMA_CPP_CONTEXT_WINDOW) * 100);
+      if (estPct >= AUTO_COMPACT_PCT && messages.length > 2) {
+        const before = messages.length;
+        const truncated = compactMessages(messages);
+        messages.length = 0;
+        messages.push(...truncated);
+        log(
+          `Proactive compact: ${before} → ${messages.length} msgs (${estPct}% of ${LLAMA_CPP_CONTEXT_WINDOW})`,
+        );
+      }
+
       const turn = await runSingleTurn(
         enrichedPrompt,
         containerInput,
@@ -489,6 +526,14 @@ export async function runLlamaCppConversation(
         log,
         doomDetector,
       );
+
+      const postTokens = estimateTokens(messages);
+      const postPct = Math.round((postTokens / LLAMA_CPP_CONTEXT_WINDOW) * 100);
+      const contextStats: ContextStats = {
+        tokens: postTokens,
+        limit: LLAMA_CPP_CONTEXT_WINDOW,
+        pct: postPct,
+      };
 
       writeOutput({
         status: 'success',
@@ -498,6 +543,7 @@ export async function runLlamaCppConversation(
           backend: 'llama-cpp',
           session_id: sessionId,
         },
+        contextStats,
       });
       writeOutput({
         status: 'success',

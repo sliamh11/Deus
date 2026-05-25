@@ -88,7 +88,8 @@ function createSchema(database: Database.Database): void {
       metadata_json TEXT,
       last_used_at TEXT,
       orphaned_at TEXT,
-      orphan_reason TEXT
+      orphan_reason TEXT,
+      last_compacted_at TEXT
     );
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
@@ -257,6 +258,12 @@ function createSchema(database: Database.Database): void {
   }
 
   ensureAuditableBackendSessions(database);
+
+  try {
+    database.exec(`ALTER TABLE sessions ADD COLUMN last_compacted_at TEXT`);
+  } catch {
+    /* column already exists */
+  }
 
   // Create projects table if it doesn't exist (migration for existing DBs)
   database.exec(`
@@ -944,6 +951,37 @@ export function getSessionLastUsedAt(
           .get(groupFolder)
   ) as { last_used_at: string | null } | undefined;
   return row?.last_used_at ?? undefined;
+}
+
+export function setLastCompactedAt(groupFolder: string, backend: string): void {
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE sessions SET last_compacted_at = ?
+     WHERE group_folder = ? AND backend = ? AND orphaned_at IS NULL`,
+  ).run(now, groupFolder, backend);
+}
+
+export function getLastCompactedAt(
+  groupFolder: string,
+  backend?: string,
+): string | undefined {
+  const row = (
+    backend
+      ? db
+          .prepare(
+            `SELECT last_compacted_at FROM sessions
+             WHERE group_folder = ? AND backend = ? AND orphaned_at IS NULL`,
+          )
+          .get(groupFolder, backend)
+      : db
+          .prepare(
+            `SELECT last_compacted_at FROM sessions
+             WHERE group_folder = ? AND orphaned_at IS NULL
+             ORDER BY last_used_at DESC LIMIT 1`,
+          )
+          .get(groupFolder)
+  ) as { last_compacted_at: string | null } | undefined;
+  return row?.last_compacted_at ?? undefined;
 }
 
 export function getAllSessions(): Record<string, RuntimeSession> {

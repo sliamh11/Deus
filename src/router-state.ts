@@ -21,7 +21,7 @@ import {
   setRegisteredGroup,
   setRouterState,
 } from './db.js';
-import type { AvailableGroup } from './container-runner.js';
+import type { AvailableGroup, ContextStats } from './container-runner.js';
 import type { AgentRuntimeId, RuntimeSession } from './agent-runtimes/types.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { logger } from './logger.js';
@@ -35,6 +35,7 @@ export class RouterState {
   > = {};
   private _registeredGroups: Record<string, RegisteredGroup> = {};
   private _lastAgentTimestamp: Record<string, string> = {};
+  private _contextStats: Record<string, ContextStats> = {};
 
   load(): void {
     this._lastTimestamp = getRouterState('last_timestamp') || '';
@@ -116,6 +117,14 @@ export class RouterState {
     if (Object.keys(this._sessions[folder] ?? {}).length === 0) {
       delete this._sessions[folder];
     }
+  }
+
+  getContextStats(folder: string): ContextStats | undefined {
+    return this._contextStats[folder];
+  }
+
+  setContextStats(folder: string, stats: ContextStats): void {
+    this._contextStats[folder] = stats;
   }
 
   get registeredGroups(): Record<string, RegisteredGroup> {

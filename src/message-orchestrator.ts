@@ -11,6 +11,7 @@
 import { autoCompressSession } from './auto-compress.js';
 import {
   ASSISTANT_NAME,
+  CONTEXT_NOTIFY,
   IDLE_TIMEOUT,
   INJECTION_SCANNER_CONFIG,
   POLL_INTERVAL,
@@ -36,9 +37,11 @@ import {
 import {
   clearSession,
   getAllTasks,
+  getLastCompactedAt,
   getMessagesSince,
   getNewMessages,
   getSessionLastUsedAt,
+  setLastCompactedAt,
   setRegisteredGroup,
   setSession,
 } from './db.js';
@@ -68,6 +71,7 @@ export interface OrchestratorDeps {
 export function createMessageOrchestrator(deps: OrchestratorDeps) {
   const { state, queue, registry, channels } = deps;
   let messageLoopRunning = false;
+  const autoCompactFired = new Set<string>();
 
   async function runAgent(
     group: RegisteredGroup,
@@ -107,6 +111,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         }
         clearSession(group.folder, backend);
         state.clearSession(group.folder, backend);
+        autoCompactFired.delete(group.folder);
         sessionRef = undefined;
       }
     }
@@ -305,6 +310,19 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
                 isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
           );
         },
+        getContextInfo: () => {
+          const resolvedBackend = registry.resolve(group);
+          const backend = resolvedBackend.name();
+          const stats = state.getContextStats(group.folder);
+          const lastCompactedAt = getLastCompactedAt(group.folder, backend);
+          return {
+            backend,
+            tokens: stats?.tokens,
+            limit: stats?.limit,
+            pct: stats?.pct,
+            lastCompactedAt,
+          };
+        },
       },
     });
     if (cmdResult.handled) return cmdResult.success;
@@ -383,7 +401,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           resetIdleTimer();
         }
 
-        if (result.status === 'success' && result.result) {
+        if (CONTEXT_NOTIFY && result.status === 'success' && result.result) {
           if (result.contextStats?.warn) {
             const s = result.contextStats;
             await channel.sendMessage(
@@ -402,6 +420,39 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
               `Context auto-compacted${preInfo}. Use /compact manually to control timing.`,
             );
           }
+        }
+
+        if (result.contextStats) {
+          state.setContextStats(group.folder, result.contextStats);
+        }
+
+        if (result.compactionEvent) {
+          const resolvedBackend = registry.resolve(group);
+          setLastCompactedAt(group.folder, resolvedBackend.name());
+        }
+
+        if (
+          result.contextStats?.autoCompact &&
+          !result.compactionEvent &&
+          !autoCompactFired.has(group.folder)
+        ) {
+          autoCompactFired.add(group.folder);
+          logger.info(
+            { group: group.name, pct: result.contextStats.pct },
+            'Auto-compact threshold reached, dispatching /compact',
+          );
+          runAgent(group, '/compact', chatJid, [], async () => {}).then(
+            () => {
+              autoCompactFired.delete(group.folder);
+            },
+            (err) => {
+              autoCompactFired.delete(group.folder);
+              logger.warn(
+                { group: group.name, err },
+                'Auto-compact dispatch failed',
+              );
+            },
+          );
         }
 
         if (result.status === 'success') {

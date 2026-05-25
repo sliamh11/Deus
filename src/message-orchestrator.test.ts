@@ -33,6 +33,7 @@ vi.mock('./config.js', () => ({
     threshold: 0.7,
     logOnly: true,
   },
+  CONTEXT_NOTIFY: false,
 }));
 
 vi.mock('./guardrails/injection-scanner.js', () => ({
@@ -59,6 +60,11 @@ vi.mock('./db.js', () => ({
   getNewMessages: vi.fn(() => ({ messages: [], newTimestamp: '' })),
   getAllTasks: vi.fn(() => []),
   setSession: vi.fn(),
+  clearSession: vi.fn(),
+  getSessionLastUsedAt: vi.fn(() => undefined),
+  setRegisteredGroup: vi.fn(),
+  getLastCompactedAt: vi.fn(() => undefined),
+  setLastCompactedAt: vi.fn(),
 }));
 
 vi.mock('./container-runner.js', () => ({
