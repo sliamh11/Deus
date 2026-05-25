@@ -26,8 +26,11 @@ import {
   toggleWardenSkip,
   triggerGateRerun,
   moveIssueState,
+  startIssueOrchestration,
+  STARTABLE_STATES,
   type ActionContext,
 } from './linear-actions.js';
+import { setPollInterval } from './linear-dispatcher.js';
 
 // ── Footer throughput types ──────────────────────────────────────────────────
 
@@ -137,11 +140,17 @@ export function elapsedMs(isoTimestamp: string): number {
 export function computeColumnWidths(cols: number): {
   titleWidth: number;
   separatorWidth: number;
+  showWhy: boolean;
+  showStageBar: boolean;
 } {
+  const showWhy = cols >= 130;
+  const showStageBar = cols >= 110;
+  let overhead = 58;
+  if (showWhy) overhead += 18;
+  if (showStageBar) overhead += 12;
   const clamped = Math.max(80, cols);
-  // ID(8) + glyph(2) + PR(7) + status(24) + why(17) + elapsed(6) + revise(4) + separators(6) = 74
-  const titleWidth = Math.max(20, clamped - 74);
-  return { titleWidth, separatorWidth: clamped - 2 };
+  const titleWidth = Math.max(20, clamped - overhead);
+  return { titleWidth, separatorWidth: clamped - 2, showWhy, showStageBar };
 }
 
 export function parseDuration(input: string): string | null {
@@ -782,7 +791,8 @@ function renderDashboardOutput(
 ): string {
   const now = new Date().toLocaleTimeString('en-GB', { hour12: false });
   const cols = process.stdout.columns || 100;
-  const { titleWidth, separatorWidth } = computeColumnWidths(cols);
+  const { titleWidth, separatorWidth, showWhy, showStageBar } =
+    computeColumnWidths(cols);
   const lines: string[] = [];
 
   const stuckCount = active.filter(
@@ -817,8 +827,10 @@ function renderDashboardOutput(
   }
 
   lines.push('');
+  const whyHeader = showWhy ? ` ${'WHY'.padEnd(16)}` : '';
+  const stageHeader = showStageBar ? '     STAGE' : '';
   lines.push(
-    `${DIM}  ${'ID'.padEnd(8)}  ${'TITLE'.padEnd(titleWidth)} ${'PR'.padStart(6)} ${'STATUS'.padEnd(22)} ${'AGE'.padStart(4)}     STAGE${RESET}`,
+    `${DIM}  ${'ID'.padEnd(8)}  ${'TITLE'.padEnd(titleWidth)} ${'PR'.padStart(6)} ${'STATUS'.padEnd(22)}${whyHeader} ${'AGE'.padStart(4)}${stageHeader}${RESET}`,
   );
 
   let rowIndex = 0;
@@ -872,10 +884,11 @@ function renderDashboardOutput(
       const revise =
         issue.reviseCount > 0 ? ` ${RED}×${issue.reviseCount}${RESET}` : '';
 
-      const stageBar = buildStageBar(issue.events);
+      const whyCol = showWhy ? ` ${DIM}${why}${RESET}` : '';
+      const stageCol = showStageBar ? ` ${buildStageBar(issue.events)}` : '';
 
       lines.push(
-        `${cursor} ${CYAN}${id}${RESET}${glyph} ${title} ${pr} ${DIM}${status}${RESET} ${DIM}${why}${RESET} ${elapsedColored}${revise} ${stageBar}`,
+        `${cursor} ${CYAN}${id}${RESET}${glyph} ${title} ${pr} ${DIM}${status}${RESET}${whyCol} ${elapsedColored}${revise}${stageCol}`,
       );
       rowIndex++;
     }
@@ -938,7 +951,7 @@ function renderDashboardOutput(
     lines.push(`${CYAN} :${opts.cmdLine}█${RESET}`);
   } else {
     lines.push(
-      `${DIM} ↑↓ select · → detail · o open · r re-eval · l skip · Ctrl+R refresh · Ctrl+C exit | deus pipeline <ID> timeline | --help${RESET}`,
+      `${DIM} ↑↓ select · → detail · o open · r re-eval · l skip · s start · : cmd (:move/:poll/:start) · Ctrl+R refresh · Ctrl+C exit${RESET}`,
     );
   }
 
@@ -1004,6 +1017,8 @@ async function startWatchMode(): Promise<void> {
   let confirmLabel = '';
   let cmdMode = false;
   let cmdBuffer = '';
+  let cmdCompletions: string[] = [];
+  let cmdCompletionIdx = -1;
   let actionCtx: ActionContext | null = null;
   let viewMode: 'list' | 'detail' = 'list';
   interface DetailData {
@@ -1104,7 +1119,10 @@ async function startWatchMode(): Promise<void> {
     lines.push(`  ${CYAN}o${RESET}  Open in browser`);
     lines.push(`  ${CYAN}r${RESET}  Re-run gate`);
     lines.push(`  ${CYAN}l${RESET}  Toggle warden:skip`);
-    lines.push(`  ${CYAN}:${RESET}  Command mode (:move <state>)`);
+    lines.push(`  ${CYAN}s${RESET}  Start orchestration (Backlog/Todo only)`);
+    lines.push(
+      `  ${CYAN}:${RESET}  Command mode (:move <state> · :poll <s> · :start)`,
+    );
 
     if (lastActionResult) {
       lines.push('');
@@ -1120,7 +1138,7 @@ async function startWatchMode(): Promise<void> {
       lines.push(`${CYAN} :${cmdBuffer}█${RESET}`);
     } else {
       lines.push(
-        `${DIM} ← back · o open · r re-eval · l skip-gate · : cmd · Ctrl+C exit${RESET}`,
+        `${DIM} ← back · o open · r re-eval · l skip · s start · : cmd · Ctrl+C exit${RESET}`,
       );
     }
 
@@ -1200,6 +1218,8 @@ async function startWatchMode(): Promise<void> {
     confirmLabel = '';
     cmdMode = false;
     cmdBuffer = '';
+    cmdCompletions = [];
+    cmdCompletionIdx = -1;
     timer = setTimeout(tick, 0);
   }
 
@@ -1326,8 +1346,59 @@ async function startWatchMode(): Promise<void> {
     rerender();
   }
 
+  async function handleStart(): Promise<void> {
+    const issue = allIssues[selectedIndex];
+    if (!issue || !actionCtx) return;
+    if (!STARTABLE_STATES.has(issue.stateName)) {
+      lastActionResult = `Can only start Backlog/Todo issues (current: ${issue.stateName})`;
+      lastActionOk = false;
+      rerender();
+      return;
+    }
+    confirmLabel = `Start orchestration for ${issue.identifier}?`;
+    confirmPending = async () => {
+      const result = await startIssueOrchestration(
+        actionCtx!,
+        issue.id,
+        issue.identifier,
+        issue.stateName,
+      );
+      lastActionResult = result.message;
+      lastActionOk = result.ok;
+    };
+    paused = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    rerender();
+  }
+
   async function dispatchCommand(input: string): Promise<void> {
-    const moveMatch = input.trim().match(/^move\s+(.+)$/i);
+    const trimmed = input.trim();
+
+    const pollMatch = trimmed.match(/^poll\s+(\d+)$/i);
+    if (pollMatch) {
+      const seconds = parseInt(pollMatch[1], 10);
+      if (isNaN(seconds) || seconds < 5 || seconds > 300) {
+        lastActionResult = 'Poll interval must be 5-300 seconds';
+        lastActionOk = false;
+        return;
+      }
+      const ok = setPollInterval(seconds * 1000);
+      lastActionResult = ok
+        ? `Poll interval → ${seconds}s`
+        : 'Dispatcher not running';
+      lastActionOk = ok;
+      return;
+    }
+
+    if (trimmed.toLowerCase() === 'start') {
+      await handleStart();
+      return;
+    }
+
+    const moveMatch = trimmed.match(/^move\s+(.+)$/i);
     if (moveMatch) {
       const targetState = moveMatch[1].replace(/^["']|["']$/g, '');
       const issue = allIssues[selectedIndex];
@@ -1342,7 +1413,8 @@ async function startWatchMode(): Promise<void> {
       lastActionOk = result.ok;
       return;
     }
-    lastActionResult = `Unknown command: ${input}`;
+
+    lastActionResult = `Unknown command: ${trimmed}`;
     lastActionOk = false;
   }
 
@@ -1421,16 +1493,41 @@ async function startWatchMode(): Promise<void> {
           await dispatchCommand(cmdBuffer);
           cmdMode = false;
           cmdBuffer = '';
+          cmdCompletions = [];
+          cmdCompletionIdx = -1;
           resumeRefresh();
+          rerender();
+        } else if (key === '\t') {
+          const movePrefix = cmdBuffer.match(/^move\s+(.*)/i);
+          if (movePrefix && actionCtx) {
+            const partial = movePrefix[1].toLowerCase();
+            if (cmdCompletionIdx < 0 || cmdCompletions.length === 0) {
+              cmdCompletions = [...actionCtx.stateByName.keys()].filter((n) =>
+                n.toLowerCase().startsWith(partial),
+              );
+              cmdCompletionIdx = 0;
+            } else {
+              cmdCompletionIdx = (cmdCompletionIdx + 1) % cmdCompletions.length;
+            }
+            if (cmdCompletions.length > 0) {
+              cmdBuffer = `move ${cmdCompletions[cmdCompletionIdx]}`;
+            }
+          }
           rerender();
         } else if (key === '') {
           cmdBuffer = cmdBuffer.slice(0, -1);
+          cmdCompletions = [];
+          cmdCompletionIdx = -1;
           rerender();
         } else if (key === '' && key.length === 1) {
+          cmdCompletions = [];
+          cmdCompletionIdx = -1;
           resumeRefresh();
           rerender();
         } else if (key.length === 1 && key >= ' ') {
           cmdBuffer += key;
+          cmdCompletions = [];
+          cmdCompletionIdx = -1;
           rerender();
         }
         return;
@@ -1451,6 +1548,10 @@ async function startWatchMode(): Promise<void> {
         }
         if (key === 'l') {
           await handleToggleSkip();
+          return;
+        }
+        if (key === 's') {
+          await handleStart();
           return;
         }
         if (key === ':') {
@@ -1485,6 +1586,9 @@ async function startWatchMode(): Promise<void> {
           break;
         case 'l':
           await handleToggleSkip();
+          break;
+        case 's':
+          await handleStart();
           break;
         case ':':
           cmdMode = true;

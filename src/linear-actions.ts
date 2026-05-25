@@ -12,6 +12,7 @@ export interface ActionContext {
   teamId: string;
   stateByName: Map<string, WorkflowState>;
   wardenSkipLabelId: string | null;
+  scopedLabelId: string | null;
 }
 
 export interface ActionResult {
@@ -32,15 +33,15 @@ export async function initActionContext(
     const stateByName = await discoverWorkflowStates(client, teamId);
 
     let wardenSkipLabelId: string | null = null;
+    let scopedLabelId: string | null = null;
     const labels = await client.issueLabels();
     for (const label of labels.nodes) {
-      if (label.name === 'warden:skip') {
-        wardenSkipLabelId = label.id;
-        break;
-      }
+      if (label.name === 'warden:skip') wardenSkipLabelId = label.id;
+      if (label.name === 'Scoped') scopedLabelId = label.id;
+      if (wardenSkipLabelId && scopedLabelId) break;
     }
 
-    return { client, teamId, stateByName, wardenSkipLabelId };
+    return { client, teamId, stateByName, wardenSkipLabelId, scopedLabelId };
   } catch (err) {
     logger.warn({ err }, 'linear-actions: init failed, actions disabled');
     return null;
@@ -179,19 +180,88 @@ export async function moveIssueState(
   identifier: string,
   toStateName: string,
 ): Promise<ActionResult> {
-  const state = ctx.stateByName.get(toStateName);
+  const state =
+    ctx.stateByName.get(toStateName) ??
+    [...ctx.stateByName.values()].find(
+      (s) => s.name.toLowerCase() === toStateName.toLowerCase(),
+    );
   if (!state) {
-    return { ok: false, message: `State "${toStateName}" not found` };
+    const valid = [...ctx.stateByName.keys()].join(', ');
+    return {
+      ok: false,
+      message: `State "${toStateName}" not found. Valid: ${valid}`,
+    };
   }
 
   try {
     await ctx.client.updateIssue(issueId, { stateId: state.id });
-    logPipelineEvent(issueId, identifier, 'state_changed', `→ ${toStateName}`);
-    return { ok: true, message: `${identifier} → ${toStateName}` };
+    logPipelineEvent(issueId, identifier, 'state_changed', `→ ${state.name}`);
+    return { ok: true, message: `${identifier} → ${state.name}` };
   } catch (err) {
     return {
       ok: false,
       message: `Move failed: ${err instanceof Error ? err.message : err}`,
+    };
+  }
+}
+
+export const STARTABLE_STATES = new Set(['Backlog', 'Todo']);
+
+export async function startIssueOrchestration(
+  ctx: ActionContext,
+  issueId: string,
+  identifier: string,
+  currentState: string,
+): Promise<ActionResult> {
+  if (!STARTABLE_STATES.has(currentState)) {
+    return {
+      ok: false,
+      message: `Can only start from Backlog/Todo (current: ${currentState})`,
+    };
+  }
+
+  const rfaState = ctx.stateByName.get('Ready for Agent');
+  if (!rfaState) {
+    return { ok: false, message: 'Ready for Agent state not found' };
+  }
+
+  try {
+    if (currentState === 'Backlog') {
+      const todoState = ctx.stateByName.get('Todo');
+      if (todoState) {
+        await ctx.client.updateIssue(issueId, { stateId: todoState.id });
+        logPipelineEvent(
+          issueId,
+          identifier,
+          'state_changed',
+          '→ Todo (start orchestration)',
+        );
+      }
+    }
+
+    const updatePayload: { stateId: string; addedLabelIds?: string[] } = {
+      stateId: rfaState.id,
+    };
+    if (ctx.scopedLabelId) {
+      updatePayload.addedLabelIds = [ctx.scopedLabelId];
+    }
+
+    await ctx.client.updateIssue(issueId, updatePayload);
+    logPipelineEvent(
+      issueId,
+      identifier,
+      'state_changed',
+      '→ Ready for Agent (start orchestration)',
+    );
+
+    return {
+      ok: true,
+      message: `${identifier} → Ready for Agent${ctx.scopedLabelId ? ' + Scoped' : ''}`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: `Start failed: ${err instanceof Error ? err.message : err}`,
     };
   }
 }

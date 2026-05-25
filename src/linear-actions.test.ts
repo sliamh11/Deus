@@ -25,6 +25,7 @@ import {
   toggleWardenSkip,
   triggerGateRerun,
   moveIssueState,
+  startIssueOrchestration,
   type ActionContext,
 } from './linear-actions.js';
 
@@ -50,6 +51,7 @@ function makeCtx(overrides?: Partial<ActionContext>): ActionContext {
     teamId: 'team-1',
     stateByName,
     wardenSkipLabelId: 'label-skip',
+    scopedLabelId: 'label-scoped',
     ...overrides,
   };
 }
@@ -272,5 +274,78 @@ describe('moveIssueState', () => {
     const result = await moveIssueState(ctx, 'issue-1', 'LIA-1', 'Done');
     expect(result.ok).toBe(false);
     expect(result.message).toContain('forbidden');
+  });
+
+  it('matches state names case-insensitively', async () => {
+    const ctx = makeCtx();
+    const result = await moveIssueState(ctx, 'issue-1', 'LIA-1', 'todo');
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('Todo');
+  });
+});
+
+describe('startIssueOrchestration', () => {
+  it('rejects non-startable states', async () => {
+    const ctx = makeCtx();
+    const result = await startIssueOrchestration(
+      ctx,
+      'issue-1',
+      'LIA-1',
+      'In Review',
+    );
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('Backlog/Todo');
+  });
+
+  it('moves Todo directly to Ready for Agent with Scoped label', async () => {
+    const ctx = makeCtx();
+    const result = await startIssueOrchestration(
+      ctx,
+      'issue-1',
+      'LIA-1',
+      'Todo',
+    );
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('Ready for Agent');
+    const calls = (ctx.client.updateIssue as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1]).toEqual({
+      stateId: 's-ready',
+      addedLabelIds: ['label-scoped'],
+    });
+  });
+
+  it('moves Backlog through Todo then to Ready for Agent', async () => {
+    const ctx = makeCtx();
+    const result = await startIssueOrchestration(
+      ctx,
+      'issue-1',
+      'LIA-1',
+      'Backlog',
+    );
+    expect(result.ok).toBe(true);
+    const calls = (ctx.client.updateIssue as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0][1]).toEqual({ stateId: 's-todo' });
+    expect(calls[1][1]).toEqual({
+      stateId: 's-ready',
+      addedLabelIds: ['label-scoped'],
+    });
+  });
+
+  it('skips label add when scopedLabelId is null', async () => {
+    const ctx = makeCtx({ scopedLabelId: null });
+    const result = await startIssueOrchestration(
+      ctx,
+      'issue-1',
+      'LIA-1',
+      'Todo',
+    );
+    expect(result.ok).toBe(true);
+    const calls = (ctx.client.updateIssue as ReturnType<typeof vi.fn>).mock
+      .calls;
+    expect(calls[0][1]).toEqual({ stateId: 's-ready' });
   });
 });

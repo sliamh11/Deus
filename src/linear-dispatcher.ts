@@ -84,6 +84,7 @@ export interface LinearContext {
 }
 
 let _timer: ReturnType<typeof setInterval> | null = null;
+let _tick: (() => void) | null = null;
 let _roleSpecs: Map<string, RoleSpec> = new Map();
 let _ctx: LinearContext | null = null;
 
@@ -1060,7 +1061,7 @@ export function startLinearDispatcher(ctx: LinearContext): void {
   const pollMs =
     isNaN(parsedPollMs) || parsedPollMs < 1000 ? DEFAULT_POLL_MS : parsedPollMs;
 
-  const tick = () => {
+  _tick = () => {
     fireAndForget(() => pollLinear(), {
       name: 'linear.dispatch',
       onError: (err) => {
@@ -1079,8 +1080,8 @@ export function startLinearDispatcher(ctx: LinearContext): void {
     });
   };
 
-  tick();
-  _timer = setInterval(tick, pollMs);
+  _tick();
+  _timer = setInterval(_tick, pollMs);
   _timer.unref();
   logger.info(
     { pollMs, roles: _roleSpecs.size },
@@ -1093,5 +1094,19 @@ export function stopLinearDispatcher(): void {
     clearInterval(_timer);
     _timer = null;
   }
+  _tick = null;
   _ctx = null;
+}
+
+const MIN_POLL_MS = 5_000;
+const MAX_POLL_MS = 300_000;
+
+export function setPollInterval(ms: number): boolean {
+  if (!_tick) return false;
+  const clamped = Math.max(MIN_POLL_MS, Math.min(MAX_POLL_MS, ms));
+  if (_timer) clearInterval(_timer);
+  _timer = setInterval(_tick, clamped);
+  _timer.unref();
+  logger.info({ pollMs: clamped }, 'linear-dispatcher: poll interval updated');
+  return true;
 }

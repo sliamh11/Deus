@@ -104,13 +104,22 @@ describe('elapsedMs', () => {
 
 describe('computeColumnWidths', () => {
   it('returns minimum title width for narrow terminals', () => {
-    const { titleWidth } = computeColumnWidths(60);
-    expect(titleWidth).toBe(20);
+    const { titleWidth, showWhy, showStageBar } = computeColumnWidths(60);
+    expect(titleWidth).toBe(22); // clamped=80, overhead=58, max(20, 22)=22
+    expect(showWhy).toBe(false);
+    expect(showStageBar).toBe(false);
   });
 
   it('scales title width for wide terminals', () => {
-    const { titleWidth } = computeColumnWidths(120);
-    expect(titleWidth).toBe(46);
+    const { titleWidth, showStageBar } = computeColumnWidths(120);
+    expect(titleWidth).toBe(50); // overhead=70 (stage only)
+    expect(showStageBar).toBe(true);
+  });
+
+  it('shows all columns at 130+', () => {
+    const { showWhy, showStageBar } = computeColumnWidths(150);
+    expect(showWhy).toBe(true);
+    expect(showStageBar).toBe(true);
   });
 
   it('calculates separator width as cols - 2', () => {
