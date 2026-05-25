@@ -63,6 +63,21 @@ def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
         "model": model,
         "prompt": full_prompt,
         "stream": False,
+        "format": {
+            "type": "object",
+            "properties": {
+                "quality": {"type": "number"},
+                "safety": {"type": "number"},
+                "tool_use": {"type": "number"},
+                "personalization": {"type": "number"},
+                "rationale": {"type": "string"}
+            },
+            "required": ["quality", "safety", "tool_use", "personalization", "rationale"]
+        },
+        "options": {
+            "temperature": 0,
+            "seed": 42,
+        },
     }).encode()
     req = urllib.request.Request(
         _ollama_url("/api/generate"),
