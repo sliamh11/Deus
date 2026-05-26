@@ -493,6 +493,25 @@ def cmd_dismiss_warden_finding(json_str: str) -> None:
         print(json.dumps({"id": None, "status": "duplicate", "reason": "Similar reflection already exists"}))
 
 
+def cmd_mine_corrections(dry_run: bool = False, limit: Optional[int] = None) -> None:
+    """Mine session-correction signals from existing interactions."""
+    from .mining import mine_corrections
+    result = mine_corrections(dry_run=dry_run, limit=limit)
+    prefix = "[dry-run] " if dry_run else ""
+    print(f"{prefix}Matched: {result['matched']} correction pairs")
+    if not dry_run:
+        print(f"Updated: {result['updated']} | Skipped: {result['skipped']}")
+    if result['examples']:
+        print("\nExamples:")
+        for ex in result['examples']:
+            print(f"  Target: {ex['target_prompt']}")
+            print(f"  Follow-up: {ex['followup']}")
+            print()
+    if result['matched'] < 20:
+        print("Warning: fewer than 20 matches — CORRECTION_VOCAB may need tuning")
+    # Reversal: UPDATE interactions SET user_signal = NULL WHERE correction_mined_at IS NOT NULL
+
+
 def cmd_serve() -> None:
     from .mcp_server import _run_mcp_server
     _run_mcp_server()
@@ -558,6 +577,11 @@ def main() -> None:
     # serve
     sub.add_parser("serve", help="Start MCP stdio server")
 
+    # mine-corrections
+    p_mine = sub.add_parser("mine-corrections", help="Mine session-correction signals from existing interactions")
+    p_mine.add_argument("--dry-run", action="store_true", help="Preview matches without updating DB")
+    p_mine.add_argument("--limit", type=int, default=None, help="Process at most N pairs")
+
     # backfill
     p_backfill = sub.add_parser("backfill", help="Backfill historical sessions into evolution loop")
     p_backfill.add_argument("--sessions-dir", type=Path,
@@ -615,6 +639,8 @@ def main() -> None:
             sys.exit(1)
     elif args.cmd == "serve":
         cmd_serve()
+    elif args.cmd == "mine-corrections":
+        cmd_mine_corrections(dry_run=args.dry_run, limit=args.limit)
     elif args.cmd == "backfill":
         from .backfill import run_backfill, print_status, SESSIONS_DIR
         if args.status:

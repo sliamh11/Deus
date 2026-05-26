@@ -96,6 +96,17 @@ COMPACT_AFTER_DAYS = int(os.environ.get("EVOLUTION_COMPACT_AFTER_DAYS", "7"))
 JUDGE_BATCH_SIZE = int(os.environ.get("EVOLUTION_JUDGE_BATCH_SIZE", "5"))
 
 
+# ── Correction Mining ───────────────────────────────────────────────────────
+
+CORRECTION_VOCAB = [
+    "without the", "not like that", "can you redo", "shorter", "longer",
+    "different format", "try again", "no,", "wrong",
+    "that's not", "thats not", "don't include", "remove the", "change the",
+    "actually,", "i meant", "i said",
+]
+CORRECTION_MAX_PROMPT_LEN = int(os.environ.get("EVOLUTION_CORRECTION_MAX_LEN", "120"))
+
+
 def load_api_key() -> str:
     """Load GEMINI_API_KEY from .env files (in priority order) or environment."""
     for path in _ENV_SEARCH_PATHS:
