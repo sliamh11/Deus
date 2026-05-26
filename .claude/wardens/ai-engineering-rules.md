@@ -12,6 +12,14 @@
 
 ---
 
+## exploration-semantic-first
+**Severity:** informational
+**Applies when:** Reviewer reads code beyond the diff to trace prompt data origins, verify injection surfaces, or cross-reference related prompt-construction paths.
+**Check:** Did exploration begin with `search_code` (semantic search) before broad grep/find?
+**Rule:** Locate by meaning first; confirm with targeted reads. Don't open-code `grep -r` or `find -name` across the whole repo as the first move.
+
+---
+
 ## PILLAR 1: QUALITY — Context Management, Prompts, Architecture
 
 ### quality-context-positioning
@@ -212,3 +220,7 @@
 
 ### security-sentinel-less-parsing
 **Remediation:** Add a sentinel constant. Slice the output buffer to the region after the sentinel before running any structured-output parser. If adding sentinels to an existing system, stage it: parse-after-sentinel when present, fall back to full-scan with a warning log.
+
+### exploration-semantic-first
+**Cite:** `core-behavioral-rules.md` "Code Exploration" section
+**Remediation:** Use `search_code "<concept>"` to find relevant prompt-construction paths semantically, then confirm with targeted reads. Reserve broad `grep -r` for cases where semantic search has already narrowed the surface.
