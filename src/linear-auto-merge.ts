@@ -13,6 +13,7 @@ import {
   CIRCUIT_BREAKER_THRESHOLD,
   getConsecutiveFailCount,
   getIssuePr,
+  getOpenPrsForActiveIssues,
   getPendingAutoMerges,
   logPipelineEvent,
   updatePrAutoMergeState,
@@ -449,6 +450,224 @@ export async function sweepStaleInReview(
     }
   } catch (err) {
     logger.warn({ err }, 'auto-merge: failed to sweep stale In Review issues');
+  }
+}
+
+/**
+ * Builds a rebase context prompt to inject when routing a conflicting PR back
+ * to Ready for Agent.
+ */
+export function buildConflictRebasePrompt(
+  prUrl: string,
+  changedFiles: number,
+  baseBranch: string,
+): string {
+  const lines = [
+    '<conflict-context>',
+    'The PR for this issue has a merge conflict with the base branch.',
+    `- PR: ${prUrl}`,
+    `- Changed files: ${changedFiles}`,
+    `- Base branch: ${baseBranch}`,
+    '',
+    'To resolve: check out the branch, rebase onto the latest base branch',
+    `(\`git fetch origin && git rebase origin/${baseBranch}\`), resolve any`,
+    'conflicts, then force-push the branch.',
+    '</conflict-context>',
+  ];
+  return lines.join('\n');
+}
+
+type MergeableState = 'MERGEABLE' | 'CONFLICTING' | 'UNKNOWN';
+
+interface PrMergeabilityResult {
+  mergeable: MergeableState;
+  mergeStateStatus: string;
+  changedFiles: number;
+  headRefName: string;
+  baseRefName: string;
+}
+
+async function queryPrMergeability(
+  prUrl: string,
+): Promise<PrMergeabilityResult | null> {
+  const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
+  if (!prNumber) return null;
+  const repoMatch = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull/);
+  const repo = repoMatch?.[1];
+  if (!repo) return null;
+
+  try {
+    const { stdout } = await execFileAsync(
+      'gh',
+      [
+        'pr',
+        'view',
+        prNumber,
+        '--repo',
+        repo,
+        '--json',
+        'mergeable,mergeStateStatus,changedFiles,headRefName,baseRefName',
+      ],
+      { timeout: CI_CHECK_TIMEOUT_MS },
+    );
+    return JSON.parse(stdout) as PrMergeabilityResult;
+  } catch (err) {
+    logger.warn(
+      { prUrl, err },
+      'conflict-check: failed to query PR mergeability',
+    );
+    return null;
+  }
+}
+
+const LARGE_PR_FILE_THRESHOLD = 10;
+
+/**
+ * Sweeps active issues (Agent Working + In Review) for conflicting PRs.
+ * On CONFLICTING: logs event, applies Conflict label, routes to Manual Review
+ * Required (>=10 changed files) or Ready for Agent with rebase context (<10).
+ * Skips issues already labeled "conflict" or in Manual Review Required.
+ * Runs every poll cycle; lightweight because it only hits the GitHub API for
+ * PRs that exist in the DB.
+ */
+export async function checkConflictingPrs(ctx: LinearContext): Promise<void> {
+  const activePrs = getOpenPrsForActiveIssues();
+  if (activePrs.length === 0) return;
+
+  for (const { issue_id, pr_url, identifier } of activePrs) {
+    const ident = identifier ?? 'unknown';
+
+    try {
+      const mergeability = await queryPrMergeability(pr_url);
+      if (!mergeability) continue;
+
+      // UNKNOWN means GitHub is still computing — skip, check next poll
+      if (mergeability.mergeable === 'UNKNOWN') {
+        logger.debug(
+          { issueId: issue_id, prUrl: pr_url },
+          'conflict-check: mergeable=UNKNOWN, will retry next poll',
+        );
+        continue;
+      }
+
+      if (mergeability.mergeable !== 'CONFLICTING') continue;
+
+      // Fetch current labels to check skip conditions
+      let currentLabels: Array<{ id: string; name: string }> = [];
+      try {
+        const issue = await ctx.client.issue(issue_id);
+        const labelConn = await issue.labels();
+        currentLabels = labelConn.nodes.map((l) => ({
+          id: l.id,
+          name: l.name,
+        }));
+      } catch (err) {
+        logger.warn(
+          { issueId: issue_id, err },
+          'conflict-check: failed to fetch issue labels, skipping',
+        );
+        continue;
+      }
+
+      // Skip if already labeled conflict
+      if (currentLabels.some((l) => l.name === 'conflict')) {
+        logger.debug(
+          { issueId: issue_id },
+          'conflict-check: already labeled conflict, skipping',
+        );
+        continue;
+      }
+
+      // Skip if already in Manual Review Required
+      const issueObj = await ctx.client.issue(issue_id);
+      const issueState = await issueObj.state;
+      if (issueState?.name === 'Manual Review Required') {
+        logger.debug(
+          { issueId: issue_id },
+          'conflict-check: already in Manual Review Required, skipping',
+        );
+        continue;
+      }
+
+      // Log the conflict event
+      logPipelineEvent(issue_id, ident, 'merge_conflict', pr_url);
+      notifyPipelineStep(ctx, issue_id, ident, 'merge_conflict', pr_url).catch(
+        () => {},
+      );
+
+      // Apply Conflict label
+      const labelUpdates: Record<string, unknown> = {};
+      if (ctx.gateLabels.conflict) {
+        labelUpdates.addedLabelIds = [ctx.gateLabels.conflict];
+      }
+
+      const isLargePr = mergeability.changedFiles >= LARGE_PR_FILE_THRESHOLD;
+
+      if (isLargePr) {
+        // Large PR — park in Manual Review Required
+        const manualReviewState = ctx.stateByName.get('Manual Review Required');
+        if (manualReviewState) {
+          await ctx.client.updateIssue(issue_id, {
+            stateId: manualReviewState.id,
+            ...labelUpdates,
+          });
+          await ctx.client.createComment({
+            issueId: issue_id,
+            body: `**Merge conflict detected** — PR ${pr_url} has conflicts with the base branch.\n\nThis PR touches ${mergeability.changedFiles} files (≥${LARGE_PR_FILE_THRESHOLD}), so it has been moved to **Manual Review Required** for a human to resolve.\n\nTo retry after resolving: rebase the branch and move back to **Ready for Agent**.`,
+          });
+          logger.info(
+            {
+              issueId: issue_id,
+              prUrl: pr_url,
+              changedFiles: mergeability.changedFiles,
+            },
+            'conflict-check: large PR conflict, moved to Manual Review Required',
+          );
+        } else {
+          logger.warn(
+            { issueId: issue_id },
+            'conflict-check: Manual Review Required state not found, skipping routing',
+          );
+        }
+      } else {
+        // Small PR — route back to Ready for Agent with rebase context
+        const readyState = ctx.stateByName.get('Ready for Agent');
+        if (readyState) {
+          await ctx.client.updateIssue(issue_id, {
+            stateId: readyState.id,
+            priority: 1,
+            ...labelUpdates,
+          });
+          const rebasePrompt = buildConflictRebasePrompt(
+            pr_url,
+            mergeability.changedFiles,
+            mergeability.baseRefName,
+          );
+          await ctx.client.createComment({
+            issueId: issue_id,
+            body: `**Merge conflict detected** — PR ${pr_url} has conflicts with \`${mergeability.baseRefName}\`.\n\nMoved back to **Ready for Agent** with rebase instructions.\n\n\`\`\`\n${rebasePrompt}\n\`\`\``,
+          });
+          logger.info(
+            {
+              issueId: issue_id,
+              prUrl: pr_url,
+              changedFiles: mergeability.changedFiles,
+            },
+            'conflict-check: small PR conflict, moved to Ready for Agent',
+          );
+        } else {
+          logger.warn(
+            { issueId: issue_id },
+            'conflict-check: Ready for Agent state not found, skipping routing',
+          );
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        { issueId: issue_id, prUrl: pr_url, err },
+        'conflict-check: error processing PR, skipping',
+      );
+    }
   }
 }
 
