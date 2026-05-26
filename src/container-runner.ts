@@ -642,7 +642,7 @@ export async function runContainerAgent(
                 ? reflections.reflectionIds
                 : undefined,
             contextTokens: estimateTokens(input.prompt),
-            hasCode: false, // streaming mode: result is null, no code blocks
+            hasCode: false,
           });
           resolve({
             status: 'success',

@@ -1,5 +1,4 @@
 """Tests for the has_code column and signal pipeline additions."""
-import pytest
 
 
 def test_has_code_column_migration():

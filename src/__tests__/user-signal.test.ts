@@ -8,7 +8,6 @@ describe('detectUserSignal', () => {
     expect(detectUserSignal('exactly')).toBe('positive');
     expect(detectUserSignal('great job')).toBe('positive');
     expect(detectUserSignal('love it')).toBe('positive');
-    expect(detectUserSignal('works')).toBe('positive');
     expect(detectUserSignal('that works')).toBe('positive');
     expect(detectUserSignal('looks good')).toBe('positive');
     expect(detectUserSignal('lgtm')).toBe('positive');

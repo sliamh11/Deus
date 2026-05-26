@@ -19,7 +19,6 @@ const POSITIVE_KEYWORDS = [
   'well done',
   'nailed it',
   'spot on',
-  'works',
   'that works',
   'looks good',
   'lgtm',
