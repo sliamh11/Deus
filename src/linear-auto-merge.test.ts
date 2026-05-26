@@ -6,6 +6,8 @@ import {
   getIssuePr,
   updatePrAutoMergeState,
   getPendingAutoMerges,
+  getOpenPrsForActiveIssues,
+  upsertIssueCache,
 } from './db.js';
 
 const execFileMock = vi.fn();
@@ -126,5 +128,332 @@ describe('queryPrChecks', () => {
     const { queryPrChecks } = await import('./linear-auto-merge.js');
     const result = await queryPrChecks('https://github.com/test/repo/pull/1');
     expect(result.status).toBe('pass');
+  });
+});
+
+describe('getOpenPrsForActiveIssues', () => {
+  it('returns PRs for issues in Agent Working or In Review', () => {
+    // Seed issue cache with two active issues and one Done issue
+    upsertIssueCache({
+      issue_id: 'issue-working',
+      identifier: 'LIA-1',
+      title: 'Working issue',
+      state_name: 'Agent Working',
+      team_id: 'team-1',
+      priority: 2,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    upsertIssueCache({
+      issue_id: 'issue-review',
+      identifier: 'LIA-2',
+      title: 'Review issue',
+      state_name: 'In Review',
+      team_id: 'team-1',
+      priority: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    upsertIssueCache({
+      issue_id: 'issue-done',
+      identifier: 'LIA-3',
+      title: 'Done issue',
+      state_name: 'Done',
+      team_id: 'team-1',
+      priority: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
+    upsertIssuePr(
+      'issue-working',
+      'https://github.com/o/r/pull/10',
+      'feat/a',
+      'LIA-1',
+    );
+    upsertIssuePr(
+      'issue-review',
+      'https://github.com/o/r/pull/11',
+      'feat/b',
+      'LIA-2',
+    );
+    upsertIssuePr(
+      'issue-done',
+      'https://github.com/o/r/pull/12',
+      'feat/c',
+      'LIA-3',
+    );
+    // Mark done PR as merged
+    updatePrAutoMergeState('issue-done', 'merged');
+
+    const active = getOpenPrsForActiveIssues();
+    expect(active).toHaveLength(2);
+    const ids = active.map((p) => p.issue_id).sort();
+    expect(ids).toEqual(['issue-review', 'issue-working']);
+  });
+
+  it('excludes merged PRs even if issue is in active state', () => {
+    upsertIssueCache({
+      issue_id: 'issue-merged',
+      identifier: 'LIA-4',
+      title: 'Merged issue',
+      state_name: 'Agent Working',
+      team_id: 'team-1',
+      priority: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    upsertIssuePr(
+      'issue-merged',
+      'https://github.com/o/r/pull/20',
+      'feat/m',
+      'LIA-4',
+    );
+    updatePrAutoMergeState('issue-merged', 'merged');
+
+    const active = getOpenPrsForActiveIssues();
+    expect(active).toHaveLength(0);
+  });
+});
+
+describe('buildConflictRebasePrompt', () => {
+  it('includes PR URL, changed files, and base branch', async () => {
+    const { buildConflictRebasePrompt } =
+      await import('./linear-auto-merge.js');
+    const prompt = buildConflictRebasePrompt(
+      'https://github.com/o/r/pull/42',
+      5,
+      'main',
+    );
+    expect(prompt).toContain('https://github.com/o/r/pull/42');
+    expect(prompt).toContain('5');
+    expect(prompt).toContain('main');
+    expect(prompt).toContain('rebase');
+  });
+});
+
+describe('checkConflictingPrs', () => {
+  function makeCtx(
+    overrides: {
+      updateIssue?: ReturnType<typeof vi.fn>;
+      createComment?: ReturnType<typeof vi.fn>;
+      issue?: ReturnType<typeof vi.fn>;
+    } = {},
+  ) {
+    const updateIssue = overrides.updateIssue ?? vi.fn().mockResolvedValue({});
+    const createComment =
+      overrides.createComment ?? vi.fn().mockResolvedValue({});
+    const issue =
+      overrides.issue ??
+      vi.fn().mockResolvedValue({
+        labels: vi.fn().mockResolvedValue({ nodes: [] }),
+        state: Promise.resolve({ name: 'In Review' }),
+      });
+
+    return {
+      client: { updateIssue, createComment, issue },
+      stateByName: new Map([
+        ['Ready for Agent', { id: 'ready-id', name: 'Ready for Agent' }],
+        [
+          'Manual Review Required',
+          { id: 'manual-id', name: 'Manual Review Required' },
+        ],
+        ['In Review', { id: 'review-id', name: 'In Review' }],
+        ['Agent Working', { id: 'working-id', name: 'Agent Working' }],
+      ]),
+      gateLabels: { conflict: 'conflict-label-id', effort: {}, complexity: {} },
+    } as unknown as import('./linear-dispatcher.js').LinearContext;
+  }
+
+  it('skips PRs with UNKNOWN mergeability', async () => {
+    upsertIssueCache({
+      issue_id: 'issue-u',
+      identifier: 'LIA-10',
+      title: 'Unknown issue',
+      state_name: 'In Review',
+      team_id: 'team-1',
+      priority: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    upsertIssuePr(
+      'issue-u',
+      'https://github.com/o/r/pull/100',
+      'feat/u',
+      'LIA-10',
+    );
+
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({
+        mergeable: 'UNKNOWN',
+        mergeStateStatus: 'UNKNOWN',
+        changedFiles: 3,
+        headRefName: 'feat/u',
+        baseRefName: 'main',
+      }),
+    });
+
+    const ctx = makeCtx();
+    const { checkConflictingPrs } = await import('./linear-auto-merge.js');
+    await checkConflictingPrs(ctx);
+
+    expect(ctx.client.updateIssue).not.toHaveBeenCalled();
+    expect(ctx.client.createComment).not.toHaveBeenCalled();
+  });
+
+  it('routes small conflicting PR to Ready for Agent', async () => {
+    upsertIssueCache({
+      issue_id: 'issue-small',
+      identifier: 'LIA-11',
+      title: 'Small conflict',
+      state_name: 'In Review',
+      team_id: 'team-1',
+      priority: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    upsertIssuePr(
+      'issue-small',
+      'https://github.com/o/r/pull/101',
+      'feat/s',
+      'LIA-11',
+    );
+
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({
+        mergeable: 'CONFLICTING',
+        mergeStateStatus: 'DIRTY',
+        changedFiles: 3,
+        headRefName: 'feat/s',
+        baseRefName: 'main',
+      }),
+    });
+
+    const ctx = makeCtx();
+    const { checkConflictingPrs } = await import('./linear-auto-merge.js');
+    await checkConflictingPrs(ctx);
+
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      'issue-small',
+      expect.objectContaining({ stateId: 'ready-id' }),
+    );
+    expect(ctx.client.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ issueId: 'issue-small' }),
+    );
+  });
+
+  it('routes large conflicting PR to Manual Review Required', async () => {
+    upsertIssueCache({
+      issue_id: 'issue-large',
+      identifier: 'LIA-12',
+      title: 'Large conflict',
+      state_name: 'In Review',
+      team_id: 'team-1',
+      priority: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    upsertIssuePr(
+      'issue-large',
+      'https://github.com/o/r/pull/102',
+      'feat/l',
+      'LIA-12',
+    );
+
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({
+        mergeable: 'CONFLICTING',
+        mergeStateStatus: 'DIRTY',
+        changedFiles: 15,
+        headRefName: 'feat/l',
+        baseRefName: 'main',
+      }),
+    });
+
+    const ctx = makeCtx();
+    const { checkConflictingPrs } = await import('./linear-auto-merge.js');
+    await checkConflictingPrs(ctx);
+
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      'issue-large',
+      expect.objectContaining({ stateId: 'manual-id' }),
+    );
+  });
+
+  it('skips issues already labeled conflict', async () => {
+    upsertIssueCache({
+      issue_id: 'issue-already',
+      identifier: 'LIA-13',
+      title: 'Already labeled',
+      state_name: 'In Review',
+      team_id: 'team-1',
+      priority: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    upsertIssuePr(
+      'issue-already',
+      'https://github.com/o/r/pull/103',
+      'feat/x',
+      'LIA-13',
+    );
+
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({
+        mergeable: 'CONFLICTING',
+        mergeStateStatus: 'DIRTY',
+        changedFiles: 3,
+        headRefName: 'feat/x',
+        baseRefName: 'main',
+      }),
+    });
+
+    // Issue already has conflict label
+    const issueWithLabel = {
+      labels: vi.fn().mockResolvedValue({
+        nodes: [{ id: 'conflict-label-id', name: 'conflict' }],
+      }),
+      state: Promise.resolve({ name: 'In Review' }),
+    };
+    const ctx = makeCtx({ issue: vi.fn().mockResolvedValue(issueWithLabel) });
+    const { checkConflictingPrs } = await import('./linear-auto-merge.js');
+    await checkConflictingPrs(ctx);
+
+    expect(ctx.client.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it('skips MERGEABLE PRs', async () => {
+    upsertIssueCache({
+      issue_id: 'issue-mergeable',
+      identifier: 'LIA-14',
+      title: 'Mergeable issue',
+      state_name: 'In Review',
+      team_id: 'team-1',
+      priority: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    upsertIssuePr(
+      'issue-mergeable',
+      'https://github.com/o/r/pull/104',
+      'feat/m',
+      'LIA-14',
+    );
+
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({
+        mergeable: 'MERGEABLE',
+        mergeStateStatus: 'CLEAN',
+        changedFiles: 2,
+        headRefName: 'feat/m',
+        baseRefName: 'main',
+      }),
+    });
+
+    const ctx = makeCtx();
+    const { checkConflictingPrs } = await import('./linear-auto-merge.js');
+    await checkConflictingPrs(ctx);
+
+    expect(ctx.client.updateIssue).not.toHaveBeenCalled();
   });
 });

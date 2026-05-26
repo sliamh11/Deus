@@ -1506,6 +1506,27 @@ export function getPendingAutoMerges(): Array<{
   }>;
 }
 
+export function getOpenPrsForActiveIssues(): Array<{
+  issue_id: string;
+  pr_url: string;
+  identifier: string | null;
+}> {
+  return db
+    .prepare(
+      `SELECT p.issue_id, p.pr_url, p.identifier
+       FROM linear_issue_prs p
+       JOIN linear_issue_cache c ON p.issue_id = c.issue_id
+       WHERE c.state_name IN ('Agent Working', 'In Review')
+         AND c.deleted_at IS NULL
+         AND p.auto_merge_state != 'merged'`,
+    )
+    .all() as Array<{
+    issue_id: string;
+    pr_url: string;
+    identifier: string | null;
+  }>;
+}
+
 // --- Pipeline event accessors ---
 
 export function logPipelineEvent(
