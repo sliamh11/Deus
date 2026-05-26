@@ -836,7 +836,42 @@ export function formatWhyReason(issue: {
   return 'In progress';
 }
 
-function renderDashboardOutput(
+/**
+ * Truncates the lines array to fit within `viewportHeight` rows.
+ * Preserves the first `headerCount` lines and the last `footerCount` lines.
+ * Inserts a single truncation indicator line when content is clipped.
+ */
+export function capViewport(
+  lines: string[],
+  viewportHeight: number,
+  headerCount: number,
+  footerCount: number,
+): string[] {
+  const total = lines.length;
+  // +1 accounts for the truncation indicator line we'll insert
+  if (total <= viewportHeight) return lines;
+
+  const available = viewportHeight - headerCount - footerCount - 1; // -1 for indicator
+  if (available <= 0) {
+    // Viewport is so tiny we can't show any content rows — just header + indicator + footer
+    const indicator = `  ${DIM}... (resize terminal to see issues)${RESET}`;
+    return [
+      ...lines.slice(0, headerCount),
+      indicator,
+      ...lines.slice(total - footerCount),
+    ];
+  }
+
+  const hidden = total - headerCount - footerCount - available;
+  const indicator = `  ${DIM}... +${hidden} more issues (resize terminal to see all)${RESET}`;
+  return [
+    ...lines.slice(0, headerCount + available),
+    indicator,
+    ...lines.slice(total - footerCount),
+  ];
+}
+
+export function renderDashboardOutput(
   active: ActiveIssue[],
   queued: QueuedIssue[],
   recent: RecentIssue[],
@@ -886,6 +921,8 @@ function renderDashboardOutput(
   lines.push(
     `${DIM}  ${'ID'.padEnd(8)}  ${'TITLE'.padEnd(titleWidth)} ${'PR'.padStart(6)} ${'STATUS'.padEnd(22)}${whyHeader} ${'AGE'.padStart(4)} ${'ETA'.padEnd(5)}${stageHeader}${RESET}`,
   );
+  // Snapshot how many header lines we've built so far (everything above the data rows)
+  const headerLineCount = lines.length;
 
   let rowIndex = 0;
   const sel = opts.selectedIndex ?? -1;
@@ -1019,7 +1056,16 @@ function renderDashboardOutput(
     );
   }
 
-  return lines.join('\n');
+  // Footer is always the last 2 lines: empty separator + hint/status
+  const footerLineCount = 2;
+  const viewportHeight = process.stdout.rows ?? 40;
+  const capped = capViewport(
+    lines,
+    viewportHeight,
+    headerLineCount,
+    footerLineCount,
+  );
+  return capped.join('\n');
 }
 
 async function startWatchMode(): Promise<void> {

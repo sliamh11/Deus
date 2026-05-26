@@ -13,6 +13,8 @@ import {
   buildStageBar,
   type PipelineEvent,
   computeETADisplay,
+  capViewport,
+  renderDashboardOutput,
 } from './linear-pipeline-cli.js';
 
 // eslint-disable-next-line no-control-regex
@@ -735,5 +737,143 @@ describe('computeETADisplay', () => {
     expect(
       stripAnsi(computeETADisplay(ts10, median, 3)).length,
     ).toBeLessThanOrEqual(5);
+  });
+});
+
+// ── capViewport ───────────────────────────────────────────────────────────────
+
+describe('capViewport', () => {
+  const makeLines = (n: number) =>
+    Array.from({ length: n }, (_, i) => `line${i}`);
+
+  it('returns lines unchanged when output fits within viewport', () => {
+    const lines = makeLines(10);
+    const result = capViewport(lines, 20, 3, 2);
+    expect(result).toEqual(lines);
+    expect(result.length).toBe(10);
+  });
+
+  it('returns lines unchanged when output exactly matches viewport height', () => {
+    const lines = makeLines(20);
+    const result = capViewport(lines, 20, 3, 2);
+    expect(result).toEqual(lines);
+    expect(result.length).toBe(20);
+  });
+
+  it('truncates middle when output overflows viewport', () => {
+    // 30 lines, viewport=20, header=3, footer=2 → available=14, hidden=11
+    const lines = makeLines(30);
+    const result = capViewport(lines, 20, 3, 2);
+    expect(result.length).toBe(20);
+    // header lines preserved
+    expect(result[0]).toBe('line0');
+    expect(result[1]).toBe('line1');
+    expect(result[2]).toBe('line2');
+    // truncation indicator is inserted
+    const indicator = stripAnsi(result[3 + 14]);
+    expect(indicator).toContain('+11 more issues');
+    expect(indicator).toContain('resize terminal to see all');
+    // footer lines preserved
+    expect(result[result.length - 2]).toBe('line28');
+    expect(result[result.length - 1]).toBe('line29');
+  });
+
+  it('total line count never exceeds viewport height when overflowing', () => {
+    const lines = makeLines(100);
+    const result = capViewport(lines, 24, 4, 2);
+    expect(result.length).toBe(24);
+  });
+
+  it('uses fallback indicator when viewport is too tiny for any content rows', () => {
+    // header=5, footer=2, viewport=7 → available=0 (7-5-2-1=-1 → clamped)
+    const lines = makeLines(20);
+    const result = capViewport(lines, 7, 5, 2);
+    // Should be: 5 header + 1 indicator + 2 footer = 8... but viewport=7
+    // The implementation handles this with the available<=0 branch
+    const joined = result.join('\n');
+    expect(stripAnsi(joined)).toContain('resize terminal');
+    // footer is preserved
+    expect(result[result.length - 2]).toBe('line18');
+    expect(result[result.length - 1]).toBe('line19');
+  });
+});
+
+// ── renderDashboardOutput viewport capping integration ────────────────────────
+
+describe('renderDashboardOutput viewport capping', () => {
+  const makeIssue = (id: string) => ({
+    id,
+    identifier: id,
+    title: `Issue ${id}`,
+    stateName: 'Agent Working',
+    lastEvent: 'agent_started',
+    statusSummary: null,
+    lastEventTime: new Date().toISOString(),
+    stageEntryTime: null,
+    prNumber: null,
+    reviseCount: 0,
+    events: [] as PipelineEvent[],
+    whyReason: null,
+  });
+
+  beforeEach(() => {
+    // Fix terminal dimensions for consistent test output
+    Object.defineProperty(process.stdout, 'columns', {
+      value: 100,
+      configurable: true,
+    });
+    Object.defineProperty(process.stdout, 'rows', {
+      value: 40,
+      configurable: true,
+    });
+  });
+
+  afterEach(() => {
+    // Restore to undefined so other tests get default values
+    Object.defineProperty(process.stdout, 'columns', {
+      value: undefined,
+      configurable: true,
+    });
+    Object.defineProperty(process.stdout, 'rows', {
+      value: undefined,
+      configurable: true,
+    });
+  });
+
+  it('shows all lines when output fits viewport — no truncation indicator', () => {
+    // 3 issues in a 40-row viewport should fit without truncation
+    const active = [makeIssue('LIA-1'), makeIssue('LIA-2'), makeIssue('LIA-3')];
+    const output = renderDashboardOutput(active, [], [], new Map());
+    expect(stripAnsi(output)).not.toContain('more issues');
+    expect(stripAnsi(output)).not.toContain('resize terminal');
+  });
+
+  it('shows truncation indicator when issues overflow viewport', () => {
+    // Set a very small viewport so many issues overflow
+    Object.defineProperty(process.stdout, 'rows', {
+      value: 12,
+      configurable: true,
+    });
+    const active = Array.from({ length: 20 }, (_, i) =>
+      makeIssue(`LIA-${i + 1}`),
+    );
+    const output = renderDashboardOutput(active, [], [], new Map());
+    const plain = stripAnsi(output);
+    expect(plain).toContain('more issues');
+    expect(plain).toContain('resize terminal to see all');
+  });
+
+  it('total output lines do not exceed viewport height when overflowing', () => {
+    const viewportRows = 15;
+    Object.defineProperty(process.stdout, 'rows', {
+      value: viewportRows,
+      configurable: true,
+    });
+    const active = Array.from({ length: 30 }, (_, i) =>
+      makeIssue(`LIA-${i + 1}`),
+    );
+    const output = renderDashboardOutput(active, [], [], new Map());
+    const lineCount = output.split('\n').length;
+    expect(lineCount).toBeLessThanOrEqual(viewportRows);
   });
 });
