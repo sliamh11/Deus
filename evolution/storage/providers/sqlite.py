@@ -981,18 +981,23 @@ class SQLiteStorageProvider(StorageProvider):
         db = self._connect()
         rows = db.execute(
             """
-            SELECT a.id AS target_id,
-                   a.prompt AS target_prompt,
-                   b.prompt AS followup_prompt,
-                   a.session_id
-            FROM interactions a
-            JOIN interactions b ON b.session_id = a.session_id
-                AND b.timestamp > a.timestamp
-                AND b.id != a.id
-            WHERE a.user_signal IS NULL
-              AND a.session_id IS NOT NULL
-              AND LENGTH(b.prompt) < ?
-            ORDER BY a.session_id, a.timestamp
+            WITH ranked AS (
+                SELECT a.id AS target_id,
+                       a.prompt AS target_prompt,
+                       b.prompt AS followup_prompt,
+                       a.session_id,
+                       ROW_NUMBER() OVER (PARTITION BY a.id ORDER BY b.timestamp) AS rn
+                FROM interactions a
+                JOIN interactions b ON b.session_id = a.session_id
+                    AND b.timestamp > a.timestamp
+                    AND b.id != a.id
+                WHERE a.user_signal IS NULL
+                  AND a.session_id IS NOT NULL
+                  AND LENGTH(b.prompt) < ?
+            )
+            SELECT target_id, target_prompt, followup_prompt, session_id
+            FROM ranked WHERE rn = 1
+            ORDER BY session_id, target_id
             """,
             (max_followup_len,),
         ).fetchall()
@@ -1006,15 +1011,14 @@ class SQLiteStorageProvider(StorageProvider):
         if not ids:
             return 0
         db = self._connect()
-        updated = 0
-        for iid in ids:
-            cursor = db.execute(
-                """UPDATE interactions
-                   SET user_signal = 'correction', correction_mined_at = ?
-                   WHERE id = ? AND user_signal IS NULL""",
-                (mined_at, iid),
-            )
-            updated += cursor.rowcount
+        placeholders = ",".join("?" * len(ids))
+        cursor = db.execute(
+            f"""UPDATE interactions
+               SET user_signal = 'correction', correction_mined_at = ?
+               WHERE id IN ({placeholders}) AND user_signal IS NULL""",
+            [mined_at] + list(ids),
+        )
+        updated = cursor.rowcount
         db.commit()
         db.close()
         return updated

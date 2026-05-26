@@ -126,3 +126,71 @@ def test_mine_corrections_preserves_existing_signal(test_db):
     row = db.execute("SELECT user_signal FROM interactions WHERE id = 'i5'").fetchone()
     assert row[0] == "negative"  # Should NOT be overwritten to 'correction'
     db.close()
+
+
+def test_adjacent_only_correction(tmp_path, monkeypatch):
+    """Only the immediate next short message in session is returned, not later ones."""
+    import evolution.config as config_mod
+    import evolution.db as db_mod
+    from evolution.storage.provider import StorageRegistry
+    from evolution.storage.providers.sqlite import SQLiteStorageProvider, _migrated_paths
+
+    db_path = tmp_path / "test_adjacent.db"
+    monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", db_path)
+    monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", db_path)
+
+    db = sqlite3.connect(db_path)
+    db.execute("""
+        CREATE TABLE interactions (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            group_folder TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            response TEXT,
+            tools_used TEXT,
+            latency_ms REAL,
+            judge_score REAL,
+            judge_dims TEXT,
+            eval_suite TEXT DEFAULT 'runtime',
+            session_id TEXT,
+            domain_presets TEXT,
+            user_signal TEXT,
+            parse_error INTEGER DEFAULT 0,
+            context_tokens INTEGER,
+            has_code INTEGER DEFAULT 0,
+            correction_mined_at TEXT
+        )
+    """)
+    # Session s4: A → B (short, first follow-up) → C (short, second follow-up)
+    # Only B should appear as followup for A; C is not the immediate next short message.
+    db.execute("INSERT INTO interactions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+               ("i7", "2026-01-01T01:00:00", "test", "Write me a sorting algorithm", "def sort...", "[]", 100, 0.5, "{}", "runtime", "s4", None, None, 0, None, 0, None))
+    db.execute("INSERT INTO interactions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+               ("i8", "2026-01-01T01:01:00", "test", "no, try again", None, "[]", 50, None, None, "runtime", "s4", None, None, 0, None, 0, None))
+    db.execute("INSERT INTO interactions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+               ("i9", "2026-01-01T01:02:00", "test", "still wrong", None, "[]", 50, None, None, "runtime", "s4", None, None, 0, None, 0, None))
+    db.commit()
+    db.close()
+
+    reg = StorageRegistry.default()
+    reg.register(SQLiteStorageProvider())
+    _migrated_paths.discard(str(db_path))
+
+    provider = SQLiteStorageProvider()
+    # max_followup_len=50 covers both "no, try again" (14 chars) and "still wrong" (11 chars)
+    candidates = provider.get_correction_candidates(max_followup_len=50)
+
+    # Filter to only s4 candidates to isolate this test
+    s4_candidates = [c for c in candidates if c["session_id"] == "s4"]
+
+    # i7 should have exactly one candidate, and it should be the immediate next (i8, "no, try again")
+    i7_candidates = [c for c in s4_candidates if c["target_id"] == "i7"]
+    assert len(i7_candidates) == 1, f"Expected 1 candidate for i7, got {len(i7_candidates)}: {i7_candidates}"
+    assert i7_candidates[0]["followup_prompt"] == "no, try again", (
+        f"Expected immediate follow-up 'no, try again', got '{i7_candidates[0]['followup_prompt']}'"
+    )
+
+    # i8 itself should also appear as a target, with i9 as its followup
+    i8_candidates = [c for c in s4_candidates if c["target_id"] == "i8"]
+    assert len(i8_candidates) == 1, f"Expected 1 candidate for i8, got {len(i8_candidates)}: {i8_candidates}"
+    assert i8_candidates[0]["followup_prompt"] == "still wrong"
