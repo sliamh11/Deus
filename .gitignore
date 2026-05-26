@@ -8,6 +8,7 @@ dist/
 .claude/.plan-reviewed
 .claude/.code-reviewed
 .claude/.threat-modeled
+.claude/.warden-verdicts.json.bak-*
 
 # Warden config (user-local toggle state and custom instructions)
 .claude/wardens/config.json

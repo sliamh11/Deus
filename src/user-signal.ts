@@ -22,8 +22,6 @@ const POSITIVE_KEYWORDS = [
   'that works',
   'looks good',
   'lgtm',
-  'thanks',
-  'thank you',
 ];
 
 const NEGATIVE_KEYWORDS = [

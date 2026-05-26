@@ -11,8 +11,6 @@ describe('detectUserSignal', () => {
     expect(detectUserSignal('that works')).toBe('positive');
     expect(detectUserSignal('looks good')).toBe('positive');
     expect(detectUserSignal('lgtm')).toBe('positive');
-    expect(detectUserSignal('thanks')).toBe('positive');
-    expect(detectUserSignal('thank you')).toBe('positive');
   });
 
   it('detects negative keywords', () => {
