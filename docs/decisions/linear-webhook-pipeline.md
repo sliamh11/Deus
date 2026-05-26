@@ -198,7 +198,7 @@ The bouncer gate uses the enrichment hash for a fast-path: if the hash matches t
 | `enrichment-gate` | Todo | Backlog | advise | REVISE | 3 | - | high | no |
 | `bouncer-gate` | Ready for Agent | Todo | advise (planned: strict) | REVISE | - | Todo | medium | no |
 | `output-quality-gate` | In Review | Agent Working | strict | REVISE | - | Ready for Agent | medium | yes |
-| `completion-gate` | Done | In Review | strict | REVISE | - | fromState | medium | yes |
+| `completion-gate` | Done | (any) | strict | REVISE | - | fromState | medium | yes |
 
 ## Triggers and Loop-Break Mechanisms
 

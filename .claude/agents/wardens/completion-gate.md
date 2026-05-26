@@ -1,7 +1,7 @@
 ---
 name: completion-gate
 gate_to: "Done"
-allowed_from: ["In Review", "In Progress"]
+allowed_from: []
 mode: strict
 fallback: REVISE
 cooldown_minutes: 5

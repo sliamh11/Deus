@@ -210,6 +210,15 @@ Minimal gate.`,
     const spec = specs.get('Done')!;
     expect(spec.revertTo).toBeUndefined();
   });
+
+  it('completion-gate allows Done from any state (empty allowedFrom)', () => {
+    const realDir = path.join(process.cwd(), '.claude', 'agents', 'wardens');
+    const specs = loadGateSpecs(realDir);
+    const spec = specs.get('Done');
+    expect(spec).toBeDefined();
+    expect(spec!.name).toBe('completion-gate');
+    expect(spec!.allowedFrom).toEqual([]);
+  });
 });
 
 describe('parseEnrichment', () => {
