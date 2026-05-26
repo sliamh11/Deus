@@ -3,6 +3,34 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
+const execFileMock = vi.fn();
+
+vi.mock('child_process', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('child_process')>();
+  const { promisify } = await import('util');
+  type ExecFileCb = (err: Error | null, stdout: string, stderr: string) => void;
+  const mockFn = vi.fn((...args: unknown[]) => {
+    const cb = args[args.length - 1];
+    if (typeof cb === 'function') {
+      const result = execFileMock(args[0], args[1]);
+      if (result?.error) (cb as ExecFileCb)(result.error, '', '');
+      else (cb as ExecFileCb)(null, result?.stdout ?? '', result?.stderr ?? '');
+    }
+  });
+  // promisify(execFile) uses a custom symbol to return { stdout, stderr }
+  (mockFn as unknown as Record<symbol, unknown>)[promisify.custom] = (
+    ...args: unknown[]
+  ) => {
+    const result = execFileMock(args[0], args[1]);
+    if (result?.error) return Promise.reject(result.error);
+    return Promise.resolve({
+      stdout: result?.stdout ?? '',
+      stderr: result?.stderr ?? '',
+    });
+  };
+  return { ...orig, execFile: mockFn };
+});
+
 vi.mock('./config.js', async () => {
   const actual =
     await vi.importActual<typeof import('./config.js')>('./config.js');
@@ -25,6 +53,10 @@ vi.mock('./db.js', () => ({
   getOpenPrsForActiveIssues: vi.fn().mockReturnValue([]),
 }));
 
+vi.mock('./linear-notifications.js', () => ({
+  notifyPipelineStep: vi.fn().mockResolvedValue(undefined),
+}));
+
 const TEST_PROJECT_ROOT = path.join(os.tmpdir(), `deus-test-${process.pid}`);
 
 import {
@@ -34,6 +66,7 @@ import {
   stopLinearDispatcher,
   truncateComments,
   extractScopeBlock,
+  applyPatchArtifact,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
@@ -426,5 +459,308 @@ Quality feedback here
     const desc =
       '<!-- gate:agent-readiness-gate:end -->before<!-- gate:agent-readiness-gate:start -->';
     expect(extractScopeBlock(desc)).toBe(desc);
+  });
+});
+
+describe('applyPatchArtifact', () => {
+  const patchGroupDir = path.join(
+    TEST_PROJECT_ROOT,
+    'groups',
+    'linear-dispatch',
+  );
+  const createComment = vi.fn().mockResolvedValue({});
+
+  function patchCtx(): LinearContext {
+    return makeMockCtx({
+      client: {
+        createComment,
+        updateIssue: vi.fn().mockResolvedValue({}),
+      } as unknown as LinearContext['client'],
+      repoSlug: 'test/repo',
+    });
+  }
+
+  beforeEach(() => {
+    execFileMock.mockReset();
+    createComment.mockClear();
+    fs.mkdirSync(patchGroupDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(patchGroupDir, { recursive: true, force: true });
+  });
+
+  it('returns no-op when no patch files exist', async () => {
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('returns no-op when group dir does not exist', async () => {
+    const result = await applyPatchArtifact(
+      '/nonexistent/dir',
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+    expect(result).toEqual({ prUrl: null, applied: false });
+  });
+
+  it('skips .applied patch files', async () => {
+    fs.writeFileSync(
+      path.join(patchGroupDir, 'LIA-99.patch.applied'),
+      'old patch',
+    );
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+    expect(result).toEqual({ prUrl: null, applied: false });
+  });
+
+  it('refuses when not on main branch', async () => {
+    fs.writeFileSync(
+      path.join(patchGroupDir, 'LIA-99.patch'),
+      'diff --git ...',
+    );
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse')
+        return { stdout: 'feat/other\n' };
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('not `main`'),
+      }),
+    );
+  });
+
+  it('refuses when working tree is dirty', async () => {
+    fs.writeFileSync(
+      path.join(patchGroupDir, 'LIA-99.patch'),
+      'diff --git ...',
+    );
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status')
+        return { stdout: 'M src/foo.ts\n' };
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('uncommitted changes'),
+      }),
+    );
+  });
+
+  it('succeeds via git am when patch is mbox format', async () => {
+    const patchPath = path.join(patchGroupDir, 'LIA-99.patch');
+    fs.writeFileSync(patchPath, 'From abc123\nSubject: fix\n\ndiff --git ...');
+
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'am') return { stdout: '' };
+      if (cmd === 'npm') return { stdout: '' };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/10\n' };
+      return { stdout: '' };
+    });
+
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+    expect(result).toEqual({
+      prUrl: 'https://github.com/test/repo/pull/10',
+      applied: true,
+    });
+    // git apply should NOT have been called (am succeeded)
+    const applyCalls = execFileMock.mock.calls.filter(
+      (c: unknown[]) => c[0] === 'git' && (c[1] as string[])[0] === 'apply',
+    );
+    expect(applyCalls).toHaveLength(0);
+  });
+
+  it('applies patch, builds, pushes, creates PR on success', async () => {
+    const patchPath = path.join(patchGroupDir, 'LIA-99.patch');
+    fs.writeFileSync(patchPath, 'diff --git a/foo b/foo');
+    fs.writeFileSync(
+      path.join(patchGroupDir, 'LIA-99-status.md'),
+      '```bash\ngit commit -m "fix: resolve scheduled task exit"\n```',
+    );
+
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'pull') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'checkout') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'git' && args[0] === 'apply') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'add') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'commit') return { stdout: '' };
+      if (cmd === 'npm' && args[0] === 'run') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'push') return { stdout: '' };
+      if (cmd === 'gh' && args[0] === 'pr')
+        return { stdout: 'https://github.com/test/repo/pull/42\n' };
+      return { stdout: '' };
+    });
+
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+    expect(result).toEqual({
+      prUrl: 'https://github.com/test/repo/pull/42',
+      applied: true,
+    });
+    expect(fs.existsSync(patchPath)).toBe(false);
+    expect(fs.existsSync(patchPath + '.applied')).toBe(true);
+  });
+
+  it('parses commit message from status file', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    fs.writeFileSync(
+      path.join(patchGroupDir, 'LIA-99-status.md'),
+      'some text\ngit commit -m "my custom message"\nmore text',
+    );
+
+    const commitArgs: string[][] = [];
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'git' && args[0] === 'commit') {
+        commitArgs.push([...args]);
+        return { stdout: '' };
+      }
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    await applyPatchArtifact(patchGroupDir, 'LIA-99', 'issue-id', patchCtx());
+    expect(commitArgs[0]).toContain('my custom message');
+  });
+
+  it('posts comment and cleans up on build failure', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'npm' && args[0] === 'run')
+        return { error: new Error('tsc: error TS2345') };
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('build failed'),
+      }),
+    );
+  });
+
+  it('posts comment and cleans up on git apply failure', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'git' && args[0] === 'apply')
+        return { error: new Error('patch does not apply') };
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('git apply'),
+      }),
+    );
+  });
+
+  it('leaves branch on gh pr create failure', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+
+    const gitCalls: Array<{ cmd: string; args: string[] }> = [];
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      gitCalls.push({ cmd, args: [...args] });
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh') return { error: new Error('auth required') };
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('create PR manually'),
+      }),
+    );
+    // Should NOT delete branch (push succeeded)
+    const branchDeletes = gitCalls.filter(
+      (c) => c.cmd === 'git' && c.args[0] === 'branch' && c.args[1] === '-D',
+    );
+    expect(branchDeletes).toHaveLength(0);
   });
 });

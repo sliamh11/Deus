@@ -1,5 +1,7 @@
+import { execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
 import { LinearClient } from '@linear/sdk';
 import { DATA_DIR, HOME_DIR, GROUPS_DIR } from './config.js';
 import { parse as parseYaml } from 'yaml';
@@ -8,6 +10,7 @@ import { PROJECT_ROOT } from './config.js';
 import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
+import { IS_MACOS, IS_LINUX } from './platform.js';
 import { extractPrUrl } from './pr-url-extractor.js';
 import { queryPrState, checkConflictingPrs } from './linear-auto-merge.js';
 import {
@@ -32,11 +35,16 @@ import type { RuntimeRegistry } from './agent-runtimes/registry.js';
 import type { GroupQueue } from './group-queue.js';
 import type { RegisteredGroup } from './types.js';
 
+const execFileAsync = promisify(execFile);
+
 const DEFAULT_POLL_MS = 30_000;
 const DISPATCH_GROUP_JID = 'linear-dispatch';
 const BACKOFF_FIRST_MS = 5 * 60_000;
 const BACKOFF_REPEAT_MS = 10 * 60_000;
 const AGENTS_DIR = path.join(PROJECT_ROOT, '.claude', 'agents');
+const GIT_TIMEOUT_MS = 30_000;
+const BUILD_TIMEOUT_MS = 120_000;
+const PUSH_TIMEOUT_MS = 120_000;
 
 export interface LinearDispatcherDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -92,6 +100,8 @@ let _timer: ReturnType<typeof setInterval> | null = null;
 let _tick: (() => void) | null = null;
 let _roleSpecs: Map<string, RoleSpec> = new Map();
 let _ctx: LinearContext | null = null;
+// Promise-chain serializer — same pattern as commentLocks in linear-notifications.ts
+let _patchMutex: Promise<void> = Promise.resolve();
 
 export function extractFrontmatter(content: string): {
   data: Record<string, unknown>;
@@ -449,6 +459,276 @@ export async function executeAgentRun(
   return { text: result, error };
 }
 
+function parseCommitMessage(groupDir: string, identifier: string): string {
+  const statusFile = path.join(groupDir, `${identifier}-status.md`);
+  try {
+    if (fs.existsSync(statusFile)) {
+      const content = fs.readFileSync(statusFile, 'utf-8');
+      const match = content.match(/git commit -m "([^"]+)"/);
+      if (match) return match[1];
+    }
+  } catch {
+    /* best-effort */
+  }
+  return `${identifier}: auto-apply patch artifact`;
+}
+
+export async function applyPatchArtifact(
+  groupDir: string,
+  identifier: string,
+  issueId: string,
+  ctx: LinearContext,
+): Promise<{ prUrl: string | null; applied: boolean }> {
+  const noResult = { prUrl: null, applied: false };
+  const gitOpts = { cwd: PROJECT_ROOT, timeout: GIT_TIMEOUT_MS };
+
+  if (!(IS_MACOS || IS_LINUX)) return noResult;
+  if (!fs.existsSync(groupDir)) return noResult;
+
+  const patchFiles = fs
+    .readdirSync(groupDir)
+    .filter(
+      (f) =>
+        f.startsWith(identifier) &&
+        f.endsWith('.patch') &&
+        !f.endsWith('.applied') &&
+        path.basename(f) === f,
+    );
+
+  if (patchFiles.length === 0) return noResult;
+
+  if (patchFiles.length > 1) {
+    logger.info(
+      { identifier, count: patchFiles.length },
+      'patch-applicator: multiple patches found, using newest',
+    );
+  }
+
+  const sorted = patchFiles
+    .map((f) => ({
+      name: f,
+      mtime: fs.statSync(path.join(groupDir, f)).mtimeMs,
+    }))
+    .sort((a, b) => b.mtime - a.mtime);
+  const patchFileName = sorted[0].name;
+  const patchFilePath = path.join(groupDir, patchFileName);
+  const patchRelPath = path.relative(PROJECT_ROOT, patchFilePath);
+  const commitMessage = parseCommitMessage(groupDir, identifier);
+  const branchName = `feat/${identifier.toLowerCase()}-auto-patch`;
+
+  // Acquire mutex
+  const prev = _patchMutex;
+  let releaseMutex!: () => void;
+  _patchMutex = new Promise<void>((r) => {
+    releaseMutex = r;
+  });
+  await prev;
+
+  // Global serialization: a slow build blocks other patches, but concurrent
+  // git operations on one working tree corrupt state. Acceptable for the
+  // expected throughput (1-2 patches/hour).
+  async function cleanup(deleteBranch: boolean): Promise<void> {
+    try {
+      await execFileAsync('git', ['checkout', 'main'], gitOpts);
+      if (deleteBranch) {
+        await execFileAsync('git', ['branch', '-D', branchName], gitOpts);
+      }
+    } catch {
+      // Checkout failure leaves HEAD on feat branch; next mutex holder re-checks branch
+      /* best-effort */
+    }
+    releaseMutex();
+  }
+
+  try {
+    // Branch safety: refuse if not on main
+    const { stdout: currentBranch } = await execFileAsync(
+      'git',
+      ['rev-parse', '--abbrev-ref', 'HEAD'],
+      gitOpts,
+    );
+    if (currentBranch.trim() !== 'main') {
+      await ctx.client.createComment({
+        issueId,
+        body: `**Patch auto-apply skipped** — working tree is on branch \`${currentBranch.trim()}\`, not \`main\`.\n\nApply manually:\n\`\`\`bash\ngit apply ${patchRelPath}\n\`\`\``,
+      });
+      notifyPipelineStep(
+        ctx,
+        issueId,
+        identifier,
+        'patch_failed',
+        'not on main',
+      ).catch(() => {});
+      releaseMutex();
+      return noResult;
+    }
+
+    // Dirty tree check
+    const { stdout: status } = await execFileAsync(
+      'git',
+      ['status', '--porcelain'],
+      gitOpts,
+    );
+    if (status.trim()) {
+      await ctx.client.createComment({
+        issueId,
+        body: `**Patch auto-apply skipped** — working tree has uncommitted changes.\n\nApply manually:\n\`\`\`bash\ngit apply ${patchRelPath}\n\`\`\``,
+      });
+      notifyPipelineStep(
+        ctx,
+        issueId,
+        identifier,
+        'patch_failed',
+        'dirty tree',
+      ).catch(() => {});
+      releaseMutex();
+      return noResult;
+    }
+
+    // Pull latest main
+    await execFileAsync('git', ['pull', '--ff-only'], gitOpts);
+
+    // Create feature branch (-B creates or resets)
+    await execFileAsync('git', ['checkout', '-B', branchName], gitOpts);
+
+    // Try git am first (for format-patch output), fall back to git apply
+    let applied = false;
+    try {
+      await execFileAsync('git', ['am', patchFilePath], {
+        ...gitOpts,
+        timeout: 60_000,
+      });
+      applied = true;
+    } catch {
+      try {
+        await execFileAsync('git', ['am', '--abort'], gitOpts);
+      } catch {
+        /* may not be in am state */
+      }
+
+      try {
+        await execFileAsync('git', ['apply', patchFilePath], {
+          ...gitOpts,
+          timeout: 60_000,
+        });
+        await execFileAsync('git', ['add', '-A'], gitOpts);
+        await execFileAsync('git', ['commit', '-m', commitMessage], gitOpts);
+        applied = true;
+      } catch (applyErr) {
+        const stderr =
+          applyErr instanceof Error ? applyErr.message : String(applyErr);
+        await ctx.client.createComment({
+          issueId,
+          body: `**Patch auto-apply failed** — \`git apply\` returned an error:\n\n\`\`\`\n${stderr.slice(0, 2000)}\n\`\`\`\n\nApply manually: \`git apply ${patchRelPath}\``,
+        });
+        notifyPipelineStep(
+          ctx,
+          issueId,
+          identifier,
+          'patch_failed',
+          'git apply failed',
+        ).catch(() => {});
+        await cleanup(true);
+        return noResult;
+      }
+    }
+
+    if (!applied) {
+      await cleanup(true);
+      return noResult;
+    }
+
+    // Build verification
+    try {
+      await execFileAsync('npm', ['run', 'build'], {
+        cwd: PROJECT_ROOT,
+        timeout: BUILD_TIMEOUT_MS,
+      });
+    } catch (buildErr) {
+      const stderr =
+        buildErr instanceof Error ? buildErr.message : String(buildErr);
+      await ctx.client.createComment({
+        issueId,
+        body: `**Patch applied but build failed** — \`npm run build\` exited with error:\n\n\`\`\`\n${stderr.slice(0, 2000)}\n\`\`\`\n\nBranch \`${branchName}\` has been deleted. Fix build errors and reapply.`,
+      });
+      notifyPipelineStep(
+        ctx,
+        issueId,
+        identifier,
+        'patch_failed',
+        'build failed',
+      ).catch(() => {});
+      await cleanup(true);
+      return noResult;
+    }
+
+    // Push
+    await execFileAsync('git', ['push', '-u', 'origin', 'HEAD'], {
+      ...gitOpts,
+      timeout: PUSH_TIMEOUT_MS,
+    });
+
+    // Create PR
+    let prUrl: string | null = null;
+    try {
+      const { stdout: prOutput } = await execFileAsync(
+        'gh',
+        [
+          'pr',
+          'create',
+          '--title',
+          `feat(${identifier}): auto-apply patch`,
+          '--body',
+          `Auto-applied from ${patchFileName}\n\nRef: ${identifier}`,
+        ],
+        { ...gitOpts, timeout: 60_000 },
+      );
+      prUrl = extractPrUrl(prOutput, ctx.repoSlug) ?? prOutput.trim();
+    } catch (prErr) {
+      // Push succeeded — leave branch for manual PR creation
+      const stderr = prErr instanceof Error ? prErr.message : String(prErr);
+      await ctx.client.createComment({
+        issueId,
+        body: `**Patch applied and pushed** but \`gh pr create\` failed:\n\n\`\`\`\n${stderr.slice(0, 1000)}\n\`\`\`\n\nBranch \`${branchName}\` is pushed — create PR manually.`,
+      });
+      notifyPipelineStep(
+        ctx,
+        issueId,
+        identifier,
+        'patch_failed',
+        'gh pr create failed',
+      ).catch(() => {});
+      await cleanup(false);
+      return noResult;
+    }
+
+    // Success — rename patch, notify, return
+    try {
+      fs.renameSync(patchFilePath, patchFilePath + '.applied');
+    } catch {
+      /* best-effort */
+    }
+
+    notifyPipelineStep(ctx, issueId, identifier, 'patch_applied', prUrl).catch(
+      () => {},
+    );
+    logger.info(
+      { issueId, prUrl, patchFileName },
+      'patch-applicator: PR created from patch artifact',
+    );
+
+    await cleanup(false);
+    return { prUrl, applied: true };
+  } catch (err) {
+    logger.warn(
+      { issueId, err },
+      'patch-applicator: unexpected error during patch application',
+    );
+    await cleanup(true);
+    return noResult;
+  }
+}
+
 // Checks live PR state via gh CLI and routes the issue accordingly.
 // DB-first in triageIssue avoids the API call when we already know the answer;
 // this function only runs when the DB record is stale or absent.
@@ -607,7 +887,28 @@ async function runIssue(
       }
     } else {
       const body = text || '(no output produced)';
-      const prUrl = extractPrUrl(body, ctx.repoSlug);
+      let prUrl = extractPrUrl(body, ctx.repoSlug);
+
+      if (!prUrl) {
+        try {
+          const groupDir = path.join(GROUPS_DIR, DISPATCH_GROUP_JID);
+          const patchResult = await applyPatchArtifact(
+            groupDir,
+            identifier,
+            issueId,
+            ctx,
+          );
+          if (patchResult.applied && patchResult.prUrl) {
+            prUrl = patchResult.prUrl;
+          }
+        } catch (patchErr) {
+          logger.warn(
+            { issueId, patchErr },
+            'linear-dispatcher: patch application failed',
+          );
+        }
+      }
+
       if (prUrl) {
         upsertIssuePr(issueId, prUrl, undefined, identifier);
         logger.info({ issueId, prUrl }, 'linear-dispatcher: persisted PR URL');
