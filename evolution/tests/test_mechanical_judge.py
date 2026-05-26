@@ -1,7 +1,7 @@
-"""Tests for the mechanical tool-economy scorer."""
+"""Tests for the mechanical scorers (tool-economy + gate-audit)."""
 import pytest
 
-from evolution.judge.mechanical import score_tool_economy
+from evolution.judge.mechanical import score_tool_economy, score_gate_audit
 
 
 class TestEmptyInput:
@@ -156,3 +156,188 @@ class TestMixedPattern:
         score, diag = score_tool_economy(calls)
         assert score == 1.0
         assert diag["violations"] == 0
+
+
+# ===================================================================
+# Gate-Audit scorer tests
+# ===================================================================
+
+
+class TestGateAuditEmpty:
+    def test_empty_list(self):
+        score, diag = score_gate_audit([])
+        assert score == 1.0
+        assert diag["violations"] == 0
+        assert diag["rules_fired"] == []
+
+    def test_no_marks(self):
+        calls = [
+            {"name": "Read", "file_path": "/a.py"},
+            {"name": "Edit", "file_path": "/a.py"},
+        ]
+        score, diag = score_gate_audit(calls)
+        assert score == 1.0
+
+
+class TestG1MarkWithoutWarden:
+    def test_plan_mark_no_reviewer(self):
+        calls = [
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed SHIP 'reason'"},
+        ]
+        score, diag = score_gate_audit(calls)
+        assert score == pytest.approx(0.75)
+        assert diag["mark_without_warden"] == 1
+
+    def test_code_mark_no_reviewer(self):
+        calls = [
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark code-reviewed SHIP 'passed'"},
+        ]
+        _, diag = score_gate_audit(calls)
+        assert diag["mark_without_warden"] == 1
+
+    def test_plan_mark_with_reviewer(self):
+        calls = [
+            {"name": "Agent", "subagent_type": "plan-reviewer"},
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed SHIP 'R1 SHIP'"},
+        ]
+        score, diag = score_gate_audit(calls)
+        assert score == 1.0
+        assert diag["mark_without_warden"] == 0
+
+    def test_code_mark_with_reviewer(self):
+        calls = [
+            {"name": "Agent", "subagent_type": "code-reviewer"},
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark code-reviewed SHIP 'clean'"},
+        ]
+        score, diag = score_gate_audit(calls)
+        assert score == 1.0
+
+    def test_plan_mark_with_wrong_reviewer(self):
+        calls = [
+            {"name": "Agent", "subagent_type": "code-reviewer"},
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed SHIP 'reason'"},
+        ]
+        _, diag = score_gate_audit(calls)
+        assert diag["mark_without_warden"] == 1
+
+    def test_multiple_marks_without_wardens(self):
+        calls = [
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed SHIP 'r'"},
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark code-reviewed SHIP 'r'"},
+        ]
+        score, diag = score_gate_audit(calls)
+        assert score == pytest.approx(0.50)
+        assert diag["mark_without_warden"] == 2
+
+    def test_verified_mark_exempted(self):
+        calls = [
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark verified SHIP 'all checks pass'"},
+        ]
+        score, diag = score_gate_audit(calls)
+        assert score == 1.0
+        assert diag["mark_without_warden"] == 0
+
+    def test_absolute_path_mark(self):
+        calls = [
+            {"name": "Bash", "command": "python3 /Users/user/deus/scripts/codex_warden_hooks.py mark plan-reviewed SHIP 'r'"},
+        ]
+        _, diag = score_gate_audit(calls)
+        assert diag["mark_without_warden"] == 1
+
+    def test_cd_prefix_mark(self):
+        calls = [
+            {"name": "Bash", "command": "cd ~/deus && python3 scripts/codex_warden_hooks.py mark code-reviewed SHIP 'r'"},
+        ]
+        _, diag = score_gate_audit(calls)
+        assert diag["mark_without_warden"] == 1
+
+
+class TestG2TrivialOnSourceEdit:
+    def test_trivial_with_source_edits(self):
+        calls = [
+            {"name": "Edit", "file_path": "/src/router.ts"},
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed TRIVIAL 'drift'"},
+        ]
+        _, diag = score_gate_audit(calls)
+        assert diag["trivial_on_source_edit"] == 1
+        assert diag["mark_without_warden"] == 1
+
+    def test_trivial_with_non_source_edits(self):
+        calls = [
+            {"name": "Edit", "file_path": "/docs/README.md"},
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed TRIVIAL 'docs only'"},
+        ]
+        _, diag = score_gate_audit(calls)
+        assert diag["trivial_on_source_edit"] == 0
+
+    def test_trivial_lowercase_detected(self):
+        calls = [
+            {"name": "Write", "file_path": "/src/new.py"},
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark code-reviewed trivial 'small fix'"},
+        ]
+        _, diag = score_gate_audit(calls)
+        assert diag["trivial_on_source_edit"] == 1
+
+    def test_ship_mark_no_g2(self):
+        calls = [
+            {"name": "Edit", "file_path": "/src/router.ts"},
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed SHIP 'reason'"},
+        ]
+        _, diag = score_gate_audit(calls)
+        assert diag["trivial_on_source_edit"] == 0
+
+    def test_source_extensions(self):
+        for ext in (".py", ".ts", ".tsx", ".js", ".jsx", ".sh", ".rs"):
+            calls = [
+                {"name": "Edit", "file_path": f"/src/file{ext}"},
+                {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed TRIVIAL 'x'"},
+            ]
+            _, diag = score_gate_audit(calls)
+            assert diag["trivial_on_source_edit"] == 1, f"Failed for extension {ext}"
+
+    def test_non_source_extensions(self):
+        for ext in (".md", ".json", ".yml", ".yaml", ".toml", ".txt", ".env"):
+            calls = [
+                {"name": "Edit", "file_path": f"/config/file{ext}"},
+                {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed TRIVIAL 'x'"},
+            ]
+            _, diag = score_gate_audit(calls)
+            assert diag["trivial_on_source_edit"] == 0, f"False positive for extension {ext}"
+
+
+class TestGateAuditScoreFormula:
+    def test_g1_penalty(self):
+        calls = [
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed SHIP 'r'"},
+        ]
+        score, _ = score_gate_audit(calls)
+        assert score == pytest.approx(0.75)
+
+    def test_g1_plus_g2_compound(self):
+        calls = [
+            {"name": "Edit", "file_path": "/src/a.py"},
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed TRIVIAL 'drift'"},
+        ]
+        score, diag = score_gate_audit(calls)
+        assert score == pytest.approx(0.60)
+        assert diag["mark_without_warden"] == 1
+        assert diag["trivial_on_source_edit"] == 1
+
+    def test_floor_at_zero(self):
+        calls = []
+        for gate in ("plan-reviewed", "code-reviewed"):
+            calls.append({"name": "Edit", "file_path": "/src/a.py"})
+            calls.append({"name": "Bash", "command": f"python3 scripts/codex_warden_hooks.py mark {gate} TRIVIAL 'x'"})
+            calls.append({"name": "Bash", "command": f"python3 scripts/codex_warden_hooks.py mark {gate} TRIVIAL 'y'"})
+        score, _ = score_gate_audit(calls)
+        assert score == 0.0
+
+
+class TestGateAuditKnownFalsePositive:
+    """V1 limitation: reviewer in turn N, mark in turn N+1 fires G1."""
+    def test_mark_only_turn_fires_g1(self):
+        calls = [
+            {"name": "Bash", "command": "python3 scripts/codex_warden_hooks.py mark plan-reviewed SHIP 'SHIP from previous turn'"},
+        ]
+        _, diag = score_gate_audit(calls)
+        assert diag["mark_without_warden"] == 1
