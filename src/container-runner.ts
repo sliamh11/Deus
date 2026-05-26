@@ -61,6 +61,11 @@ import { getProjectById } from './db.js';
 const OUTPUT_START_MARKER = '---DEUS_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---DEUS_OUTPUT_END---';
 
+function containsCodeBlock(text: string | null): boolean {
+  if (!text) return false;
+  return /```[\s\S]{10,}?```/.test(text);
+}
+
 export interface ContainerInput {
   prompt: string;
   backend?: AgentRuntimeId;
@@ -235,6 +240,10 @@ export async function runContainerAgent(
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
+  // Detect user signal BEFORE reflections prepend — reflections inflate prompt
+  // length past MAX_SIGNAL_LENGTH, causing false-null on short feedback messages.
+  const userSignal = detectUserSignal(input.prompt);
+
   // Pre-dispatch: inject relevant reflections from the evolution loop.
   // getReflections returns '' when evolution is disabled or nothing is found —
   // no tokens are added in that case.
@@ -246,7 +255,6 @@ export async function runContainerAgent(
   // Detect domain tags for evolution loop metadata (no prompt injection).
   // detectDomainsWithFallback: fast keyword path first; if no keywords match,
   // falls back to a Gemini LLM call bounded to 3 s. Never throws.
-  const userSignal = detectUserSignal(input.prompt);
   const domains = await detectDomainsWithFallback(input.prompt);
 
   // Pre-dispatch: build project type hint if group has an associated project.
@@ -634,6 +642,7 @@ export async function runContainerAgent(
                 ? reflections.reflectionIds
                 : undefined,
             contextTokens: estimateTokens(input.prompt),
+            hasCode: false, // streaming mode: result is null, no code blocks
           });
           resolve({
             status: 'success',
@@ -696,6 +705,7 @@ export async function runContainerAgent(
               ? reflections.reflectionIds
               : undefined,
           contextTokens: estimateTokens(input.prompt),
+          hasCode: containsCodeBlock(output.result),
         });
 
         resolve(output);

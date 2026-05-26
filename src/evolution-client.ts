@@ -32,6 +32,7 @@ export interface LogInteractionParams {
   userSignal?: string;
   retrievedReflectionIds?: string[];
   contextTokens?: number;
+  hasCode?: boolean;
 }
 
 export interface ReflectionsResult {
@@ -88,6 +89,7 @@ export function logInteraction(params: LogInteractionParams): void {
     user_signal: params.userSignal ?? null,
     retrieved_reflection_ids: params.retrievedReflectionIds ?? [],
     context_tokens: params.contextTokens ?? null,
+    has_code: params.hasCode ? 1 : 0,
   });
 
   // Spawn detached so it survives even if the host process exits quickly

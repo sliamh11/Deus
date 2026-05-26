@@ -40,6 +40,8 @@ _UPDATABLE_INTERACTION_COLS = frozenset({
     "parse_error",
     "latency_ms",
     "timestamp",
+    "has_code",
+    "user_signal",
 })
 
 # Guard against concurrent schema migrations from multiple threads
@@ -256,6 +258,7 @@ class SQLiteStorageProvider(StorageProvider):
             ("user_signal", "TEXT"),
             ("parse_error", "INTEGER DEFAULT 0"),
             ("context_tokens", "INTEGER"),
+            ("has_code", "INTEGER DEFAULT 0"),
         ]:
             try:
                 # safe: col + coltype come from the literal tuple-list
@@ -316,6 +319,7 @@ class SQLiteStorageProvider(StorageProvider):
         domain_presets: Optional[str] = None,
         user_signal: Optional[str] = None,
         context_tokens: Optional[int] = None,
+        has_code: Optional[int] = None,
     ) -> str:
         db = self._connect()
         db.execute(
@@ -323,13 +327,13 @@ class SQLiteStorageProvider(StorageProvider):
             INSERT OR REPLACE INTO interactions
                 (id, timestamp, group_folder, prompt, response, tools_used,
                  latency_ms, eval_suite, session_id, domain_presets, user_signal,
-                 context_tokens)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 context_tokens, has_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 interaction_id, timestamp, group_folder, prompt, response,
                 tools_used, latency_ms, eval_suite, session_id,
-                domain_presets, user_signal, context_tokens,
+                domain_presets, user_signal, context_tokens, has_code,
             ),
         )
         db.commit()

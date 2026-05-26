@@ -23,6 +23,7 @@ def log_interaction(
     domain_presets: Optional[list[str]] = None,
     user_signal: Optional[str] = None,
     context_tokens: Optional[int] = None,
+    has_code: Optional[int] = None,
 ) -> str:
     """
     Persist one agent interaction.  Returns the interaction ID.
@@ -44,6 +45,7 @@ def log_interaction(
         domain_presets=json.dumps(domain_presets) if domain_presets else None,
         user_signal=user_signal,
         context_tokens=context_tokens,
+        has_code=has_code,
     )
     return iid
 

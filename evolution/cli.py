@@ -218,6 +218,10 @@ def cmd_log_interaction(json_str: str) -> None:
     if context_tokens is not None:
         context_tokens = int(context_tokens)
 
+    has_code = params.get("has_code")
+    if has_code is not None:
+        has_code = int(has_code)
+
     session_id = params.get("session_id")
 
     iid = log_interaction(
@@ -231,6 +235,7 @@ def cmd_log_interaction(json_str: str) -> None:
         domain_presets=domain_presets if isinstance(domain_presets, list) else None,
         user_signal=user_signal,
         context_tokens=context_tokens,
+        has_code=has_code,
     )
 
     # Batch judge: check if we've accumulated enough unjudged interactions

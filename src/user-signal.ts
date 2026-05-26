@@ -19,6 +19,12 @@ const POSITIVE_KEYWORDS = [
   'well done',
   'nailed it',
   'spot on',
+  'works',
+  'that works',
+  'looks good',
+  'lgtm',
+  'thanks',
+  'thank you',
 ];
 
 const NEGATIVE_KEYWORDS = [
@@ -31,9 +37,13 @@ const NEGATIVE_KEYWORDS = [
   'completely wrong',
   'no thats wrong',
   "no that's wrong",
+  'not what i asked',
+  'redo',
+  'start over',
+  'redo this',
 ];
 
-const MAX_SIGNAL_LENGTH = 80;
+const MAX_SIGNAL_LENGTH = 200;
 
 export function detectUserSignal(
   prompt: string,

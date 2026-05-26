@@ -56,6 +56,7 @@ class StorageProvider(ABC):
         domain_presets: Optional[str] = None,
         user_signal: Optional[str] = None,
         context_tokens: Optional[int] = None,
+        has_code: Optional[int] = None,
     ) -> str:
         """Persist one agent interaction. Returns the interaction ID."""
         ...
