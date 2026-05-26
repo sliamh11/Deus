@@ -3,7 +3,7 @@ governs:
   - src/
   - setup/
   - packages/
-last_verified: "2026-05-26" # LIA-90: conflict detection sweep added
+last_verified: "2026-05-26" # LIA-96: dashboard viewport capping
 test_tasks:
   - "Deploy a hotfix to a running service and restart it after rebuilding dist/"
   - "Rebuild the WhatsApp MCP package and pick up the change live"
