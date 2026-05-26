@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from evolution.cc_backfill import _extract_pairs
-from evolution.judge.criteria import compose_score, _DIM_DEFAULTS, COMPOSITE_WEIGHTS
+from evolution.judge.criteria import compose_score, DIM_DEFAULTS, COMPOSITE_WEIGHTS
 
 
 def _make_jsonl(entries: list[dict]) -> str:
@@ -153,4 +153,4 @@ class TestComposeScoreBackwardCompat:
         assert score == pytest.approx(expected)
 
     def test_dim_defaults_match_weights_keys(self):
-        assert set(COMPOSITE_WEIGHTS.keys()) == set(_DIM_DEFAULTS.keys())
+        assert set(COMPOSITE_WEIGHTS.keys()) == set(DIM_DEFAULTS.keys())

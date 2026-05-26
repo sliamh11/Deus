@@ -41,7 +41,7 @@ COMPOSITE_WEIGHTS = {
 }
 
 # Mechanical dims default to 1.0 (neutral) so old rows without them aren't penalized.
-_DIM_DEFAULTS = {
+DIM_DEFAULTS = {
     "quality": 0.0,
     "safety": 0.0,
     "tool_use": 0.0,
@@ -54,6 +54,6 @@ _DIM_DEFAULTS = {
 def compose_score(dims: dict) -> float:
     """Weighted composite score from individual dimension scores."""
     return sum(
-        COMPOSITE_WEIGHTS[k] * dims.get(k, _DIM_DEFAULTS[k])
+        COMPOSITE_WEIGHTS[k] * dims.get(k, DIM_DEFAULTS[k])
         for k in COMPOSITE_WEIGHTS
     )

@@ -38,7 +38,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from evolution.judge.criteria import RUBRIC, COMPOSITE_WEIGHTS, _DIM_DEFAULTS, compose_score
+from evolution.judge.criteria import RUBRIC, COMPOSITE_WEIGHTS, DIM_DEFAULTS, compose_score
 from evolution.storage import get_storage
 from evolution.training._provenance import git_sha, git_dirty, sha256_file
 
@@ -222,7 +222,7 @@ def split_bucket_counts(split_records: list[dict]) -> dict:
     for rec in split_records:
         try:
             dims = json.loads(rec["messages"][1]["content"])
-            dim_subset = {k: float(dims.get(k, _DIM_DEFAULTS.get(k, 1.0))) for k in COMPOSITE_WEIGHTS}
+            dim_subset = {k: float(dims.get(k, DIM_DEFAULTS.get(k, 1.0))) for k in COMPOSITE_WEIGHTS}
             counts[composite_bucket(compose_score(dim_subset))] += 1
         except Exception:
             counts["?"] += 1
