@@ -37,6 +37,25 @@ Before writing any scope, use the cached codebase map for efficient exploration:
 
 Ground your scope in what you find. Reference actual file paths, function names, and patterns.
 
+## Step 1.5: Check for existing implementations
+
+While exploring the codebase in Step 1, also check whether the described functionality already exists:
+
+1. Search for functions, routes, components, or modules that match the issue's described behavior
+2. Look for test files that verify the described capability
+3. Check if the codebase map mentions the feature area as already implemented
+
+**If the feature fully exists** (matching function/module found, tests exist that verify the behavior):
+- REVISE with: "Feature appears to already exist at `path/to/file.ts:L42` [cite specific evidence]. Recommend closing with `Done: Pre-implemented` label, or updating the issue description to clarify what's missing."
+
+**If partially implemented** (some pieces exist, others missing):
+- SHIP -- proceed to Step 2, but note what exists and what's missing in the scope block under Requirements
+- Adjust effort/complexity ratings to reflect only the remaining work
+
+**When in doubt** (ambiguous naming, stale code, removed-then-readded): treat as partial and proceed to Step 2.
+
+**If not implemented:** proceed to Step 2 normally.
+
 ## Step 2: Write the scope
 
 If the description contains `<!-- gate:enrichment-gate:start -->`, refine the existing scope -- do not start from scratch.
@@ -94,4 +113,5 @@ Rules:
 - Ratings must be integers 1-5. Be calibrated: a one-file typo fix is Effort 1, a new subsystem is Effort 5.
 - Impact statement must compare to the current state (not an absolute claim).
 - Verdict is exactly `## Verdict: SHIP` or `## Verdict: REVISE`.
+- Before scoping, check if the feature already exists. REVISE if fully implemented.
 - SHIP only when ALL scope sections are populated with substantive, codebase-grounded content.
