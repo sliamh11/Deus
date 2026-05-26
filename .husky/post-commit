@@ -1,0 +1,4 @@
+#!/bin/sh
+# Incremental code search reindex: only re-index files changed in this commit.
+# macOS/Linux only. Runs in background to avoid blocking commits.
+python3 "$(git rev-parse --show-toplevel)/scripts/code_search.py" reindex "$(git rev-parse --show-toplevel)" --diff HEAD~1 >> "$HOME/.deus/code_search_reindex.log" 2>&1 &

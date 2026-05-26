@@ -1,9 +1,17 @@
 ---
 name: add-claude-context
-description: Add semantic code search via claude-context MCP server. Fully local — Ollama embeddings + network-isolated Docker Milvus. No data leaves the machine.
+description: "[DEPRECATED] Replaced by scripts/code_search.py (native sqlite-vec + Ollama). Do not use."
 ---
 
-# Add Claude Context (Semantic Code Search)
+# Add Claude Context (Semantic Code Search) -- DEPRECATED
+
+> **This skill is deprecated.** claude-context (Milvus-based) was evaluated and found to have never worked due to 5 cascading bugs (wrong config path, corrupt npx cache, wrong protocol, broken network isolation, short timeout). Milvus is also massive overkill for code search at any realistic codebase scale.
+>
+> **Replacement:** `scripts/code_search.py` -- native semantic code search using sqlite-vec + Ollama embeddings + RRF fusion, following the `memory_tree.py` pattern. No Docker, no Milvus, no external dependencies beyond Ollama.
+
+The content below is preserved for historical reference only.
+
+---
 
 This skill adds semantic code search to Claude Code via the [claude-context](https://github.com/zilliztech/claude-context) MCP server by Zilliz. Once installed, Claude can index any codebase and search it by meaning — not just keyword matching.
 

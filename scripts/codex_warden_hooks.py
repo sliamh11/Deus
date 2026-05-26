@@ -741,7 +741,6 @@ def run_session_init(repo_root: Path) -> int:
         ".ai-eng-reviewed",
         ".admin-merge-approved",
         ".migration-nudged",
-        ".semantic-search-used",
         ".warden-memo.md",
         ".commit-window",
     ):
@@ -1909,40 +1908,6 @@ def run_migration_nudge(event: dict[str, Any], repo_root: Path) -> int:
     return 0
 
 
-# Matches broad filesystem searches that bypass semantic search:
-# - grep -r / grep --recursive (with optional flags between grep and pattern)
-# - find <path> -name
-_BROAD_SEARCH_RE = re.compile(
-    r"\bgrep\b[^|;&\n]*?(?:-\w*r\w*|--recursive)\b"
-    r"|\bfind\b[^|;&\n]*?-name\b"
-)
-
-
-def run_semantic_search_nudge(event: dict[str, Any], repo_root: Path) -> int:
-    """Nudge toward search_code when grep -r / find -name is used without prior semantic search."""
-    tool_input = event.get("tool_input")
-    command = tool_input.get("command") if isinstance(tool_input, dict) else ""
-    if not isinstance(command, str) or not _BROAD_SEARCH_RE.search(command):
-        return 0
-    if _marker(repo_root, ".semantic-search-used").exists():
-        return 0
-    _warn_post_tool(
-        "[semantic-search-nudge] You\'re about to run a broad filesystem search. "
-        "Consider calling search_code first - describe what you\'re looking for in "
-        "plain language and let semantic search narrow the field. Then use grep/read "
-        "to confirm specifics. (Nudge only - the command will still run.)"
-    )
-    return 0
-
-
-def run_semantic_search_tracker(event: dict[str, Any], repo_root: Path) -> int:
-    """Record that search_code was called this session so the nudge stays quiet."""
-    marker = _marker(repo_root, ".semantic-search-used")
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
-    return 0
-
-
 RUNNERS = {
     "session-init": lambda event, repo: run_session_init(repo),
     "plan-review-gate": run_plan_review_gate,
@@ -1965,8 +1930,6 @@ RUNNERS = {
     "migration-nudge": run_migration_nudge,
     "orchestrator-preflight": run_orchestrator_preflight,
     "warden-verdict-tracker": run_verdict_tracker,
-    "semantic-search-nudge": run_semantic_search_nudge,
-    "semantic-search-tracker": run_semantic_search_tracker,
 }
 
 
