@@ -2466,3 +2466,120 @@ def test_match_pattern_docs_returns_most_specific_first(tmp_path):
     assert len(matched) == 2
     assert matched[0].stem == "channel"
     assert matched[1].stem == "general"
+
+
+# --- Worktree path resolution tests (LIA-70) ---
+
+
+def git_worktree(main_repo: Path, worktree_path: Path, branch: str = "feat/wt-test") -> Path:
+    """Add a git worktree at *worktree_path* from *main_repo* on a new branch."""
+    # Need at least one commit for `git worktree add` to work.
+    (main_repo / "README.md").write_text("init\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=main_repo, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["git", "commit", "-m", "init", "--allow-empty"],
+        cwd=main_repo,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["git", "worktree", "add", "-b", branch, str(worktree_path)],
+        cwd=main_repo,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return worktree_path
+
+
+def test_plan_review_gate_blocks_edits_in_worktree_when_repo_root_is_main(
+    tmp_path, capsys
+):
+    """LIA-70: gate fires correctly when cwd is a worktree and repo_root is the main repo.
+
+    The historical failure mode: warden-shim.sh passed the worktree path as
+    --repo-root. _worktree_for_cwd then compared (worktree/.git file) against
+    (common .git dir) and found them not equal, so it returned None → every
+    gate silently no-oped.
+
+    After the fix the shim derives REPO_ROOT via --git-common-dir (the shared
+    .git directory parent), so --repo-root always points at the main repo and
+    _worktree_for_cwd succeeds.
+
+    This test replicates that scenario at the Python layer: it passes the
+    main_repo as repo_root and the worktree as cwd, confirming the gate blocks.
+    """
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_path = tmp_path / "worktree"
+    git_worktree(main_repo, wt_path)
+
+    (wt_path / "src").mkdir(exist_ok=True)
+    (wt_path / "src" / "app.ts").write_text("code\n", encoding="utf-8")
+
+    # Simulate the shim passing main_repo as repo_root (post-fix behavior).
+    event = {
+        "cwd": str(wt_path),
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Edit",
+        "tool_use_id": "tool",
+        "tool_input": {"file_path": str(wt_path / "src" / "app.ts")},
+    }
+
+    rc = hooks.run_plan_review_gate(event, main_repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    specific = output["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert "plan-reviewer" in specific["permissionDecisionReason"]
+
+
+def test_marker_in_wrong_location_when_repo_root_is_worktree_path(tmp_path, capsys):
+    """LIA-70: when repo_root == worktree, markers are written to the worktree, not the main repo.
+
+    This is the actual failure mode of the broken shim: the gate still fires
+    (because _worktree_for_cwd has a `top == repo_root` short-circuit), but
+    _marker(repo_root, ...) writes to worktree/.claude/ instead of
+    main_repo/.claude/. So the worktree session's markers are isolated from
+    the main-thread session — a SHIP mark in the main session does not clear
+    the worktree's gate and vice versa.
+
+    After the fix the shim derives REPO_ROOT from --git-common-dir so both
+    the main and worktree sessions share the same marker directory.
+    """
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_path = tmp_path / "worktree"
+    git_worktree(main_repo, wt_path)
+    (wt_path / ".claude").mkdir(exist_ok=True)
+
+    # Simulate the broken shim — worktree path passed as repo_root.
+    hooks.mark_warden("plan-reviewed", "SHIP", "LIA-70 baseline test", wt_path)
+
+    # With the broken shim, marker lands in the worktree, not the main repo.
+    assert (wt_path / ".claude" / ".plan-reviewed").exists()
+    # The main repo's gate state is untouched — SHIP in worktree != SHIP in main.
+    assert not (main_repo / ".claude" / ".plan-reviewed").exists()
+
+
+def test_marker_written_to_main_repo_not_worktree(tmp_path):
+    """LIA-70: markers are written to main_repo/.claude/, not worktree/.claude/.
+
+    Ensures _marker(repo_root, ...) resolves into the shared main repo so
+    worktree agents share the same gate state as the main-thread session.
+    """
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_path = tmp_path / "worktree"
+    git_worktree(main_repo, wt_path)
+    (wt_path / ".claude").mkdir(exist_ok=True)  # worktree also has .claude/
+
+    # mark_warden uses _marker(repo_root, ...) internally.
+    hooks.mark_warden("plan-reviewed", "SHIP", "LIA-70 test", main_repo)
+
+    # Marker must be in the main repo.
+    assert (main_repo / ".claude" / ".plan-reviewed").exists()
+    # Marker must NOT be written to the worktree.
+    assert not (wt_path / ".claude" / ".plan-reviewed").exists()
