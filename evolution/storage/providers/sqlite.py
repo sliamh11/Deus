@@ -259,11 +259,8 @@ class SQLiteStorageProvider(StorageProvider):
             ("user_signal", "TEXT"),
             ("parse_error", "INTEGER DEFAULT 0"),
             ("context_tokens", "INTEGER"),
-<<<<<<< HEAD
             ("has_code", "INTEGER DEFAULT 0"),
-=======
             ("correction_mined_at", "TEXT"),
->>>>>>> b7eb59ae (feat(evolution): add session-correction mining for implicit signals)
         ]:
             try:
                 # safe: col + coltype come from the literal tuple-list
