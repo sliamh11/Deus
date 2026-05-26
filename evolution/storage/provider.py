@@ -206,6 +206,11 @@ class StorageProvider(ABC):
         ...
 
     @abstractmethod
+    def get_interactions_with_signals(self, limit: int = 20) -> list[dict]:
+        """Get interactions that have a non-null user_signal, most recent first."""
+        ...
+
+    @abstractmethod
     def get_style_reflections(self, min_score: float, limit: int = 20) -> list[dict]:
         """Get style-category reflections above a minimum score.
 

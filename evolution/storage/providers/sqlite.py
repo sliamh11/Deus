@@ -730,6 +730,19 @@ class SQLiteStorageProvider(StorageProvider):
         db.close()
         return [dict(r) for r in rows]
 
+    def get_interactions_with_signals(self, limit: int = 20) -> list[dict]:
+        db = self._connect()
+        rows = db.execute(
+            """
+            SELECT prompt, response, user_signal FROM interactions
+            WHERE user_signal IS NOT NULL
+            ORDER BY timestamp DESC LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        db.close()
+        return [{"prompt": r[0], "response": r[1], "user_signal": r[2]} for r in rows]
+
     def get_style_reflections(self, min_score: float, limit: int = 20) -> list[dict]:
         db = self._connect()
         rows = db.execute(
