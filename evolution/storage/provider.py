@@ -205,6 +205,14 @@ class StorageProvider(ABC):
         """Get all reflections linked to a specific interaction."""
         ...
 
+    @abstractmethod
+    def get_style_reflections(self, min_score: float, limit: int = 20) -> list[dict]:
+        """Get style-category reflections above a minimum score.
+
+        Only returns non-archived reflections (archived_at IS NULL enforced at SQL layer).
+        """
+        ...
+
     # ── Artifact operations ──────────────────────────────────────────────────
 
     @abstractmethod

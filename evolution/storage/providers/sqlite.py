@@ -730,6 +730,20 @@ class SQLiteStorageProvider(StorageProvider):
         db.close()
         return [dict(r) for r in rows]
 
+    def get_style_reflections(self, min_score: float, limit: int = 20) -> list[dict]:
+        db = self._connect()
+        rows = db.execute(
+            """
+            SELECT content, category, score_at_gen, timestamp
+            FROM reflections
+            WHERE category = 'style' AND score_at_gen > ? AND archived_at IS NULL
+            ORDER BY timestamp DESC LIMIT ?
+            """,
+            (min_score, limit),
+        ).fetchall()
+        db.close()
+        return [dict(zip(["content", "category", "score_at_gen", "timestamp"], r)) for r in rows]
+
     # ── Artifact operations ──────────────────────────────────────────────────
 
     def save_artifact(

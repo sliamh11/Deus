@@ -61,6 +61,7 @@ class FakeStorageProvider(StorageProvider):
     def count_helpful_reflections(self): return 0
     def reflections_by_category(self): return []
     def get_reflections_for_interaction(self, *a): return []
+    def get_style_reflections(self, *a, **kw): return []
     def save_artifact(self, **kw): ...
     def get_active_artifact(self, *a): ...
     def list_artifacts(self, *a, **kw): return []

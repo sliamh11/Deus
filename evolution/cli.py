@@ -511,6 +511,26 @@ def cmd_mine_corrections(dry_run: bool = False, limit: Optional[int] = None) -> 
         print("Warning: fewer than 20 matches — CORRECTION_VOCAB may need tuning")
 
 
+def cmd_taste(force: bool = False, min_interactions: int = 20) -> None:
+    """Generate or update the taste/style hypothesis profile."""
+    from .taste_profile import generate_taste_profile
+    result = generate_taste_profile(min_interactions=min_interactions, force=force)
+    if not result:
+        sys.exit(1)
+
+
+def cmd_consolidate_style(min_score: float = 0.7, force: bool = False) -> None:
+    """Consolidate style reflections into the taste profile."""
+    from .taste_profile import consolidate_style_reflections
+    result = consolidate_style_reflections(min_score=min_score, force=force)
+    if result:
+        print("Style consolidation complete.")
+    else:
+        print("Not enough style reflections to consolidate.")
+        if not force:
+            sys.exit(1)
+
+
 def cmd_serve() -> None:
     from .mcp_server import _run_mcp_server
     _run_mcp_server()
@@ -572,6 +592,16 @@ def main() -> None:
                              help="Embedding provider (default: auto-detect)")
     p_optparams.add_argument("--db", help="Path to memory_tree.db (default: ~/.deus/memory_tree.db)")
     p_optparams.add_argument("--force", action="store_true", help="Save artifact even if score regressed")
+
+    # taste
+    p_taste = sub.add_parser("taste", help="Generate taste/style hypothesis profile")
+    p_taste.add_argument("--force", action="store_true", help="Override minimum interaction check")
+    p_taste.add_argument("--min-interactions", type=int, default=20, help="Min scored interactions (default: 20)")
+
+    # consolidate-style
+    p_consolidate = sub.add_parser("consolidate-style", help="Consolidate style reflections into taste profile")
+    p_consolidate.add_argument("--min-score", type=float, default=0.7, help="Min reflection score (default: 0.7)")
+    p_consolidate.add_argument("--force", action="store_true", help="Override minimum count check")
 
     # serve
     sub.add_parser("serve", help="Start MCP stdio server")
@@ -636,6 +666,10 @@ def main() -> None:
         )
         if not aid:
             sys.exit(1)
+    elif args.cmd == "taste":
+        cmd_taste(force=args.force, min_interactions=args.min_interactions)
+    elif args.cmd == "consolidate-style":
+        cmd_consolidate_style(min_score=args.min_score, force=args.force)
     elif args.cmd == "serve":
         cmd_serve()
     elif args.cmd == "mine-corrections":

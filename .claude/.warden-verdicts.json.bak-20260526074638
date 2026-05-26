@@ -1,0 +1,8 @@
+{
+  "plan-reviewer": {
+    "reason": "remediation",
+    "source": "mark",
+    "ts": "2026-05-26T07:42:57Z",
+    "verdict": "SHIP"
+  }
+}
