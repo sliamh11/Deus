@@ -781,6 +781,11 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     # otherwise `(worktree, paths_after_filtering)`. Empty `paths` after
     # filtering must NOT bypass the gate (the pre-fix `not paths` short-
     # circuit was the ExitPlanMode enforcement gap, PR #430).
+    #
+    # Scope note (LIA-77): this Python gate is intentionally scoped to deus
+    # worktrees. Edits in non-git directories (vault, scratch, config files)
+    # are covered by the user-level bash hook at ~/.claude/hooks/plan-review-gate.sh,
+    # which falls back to the deus marker when not in a wardens-enabled repo.
     worktree, paths = _managed_paths(event, repo_root)
     if worktree is None:
         return 0

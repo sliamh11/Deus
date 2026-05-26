@@ -203,10 +203,15 @@ def test_plan_review_gate_blocks_worktree_excluded_target_without_marker(tmp_pat
 
 
 def test_plan_review_gate_returns_zero_outside_worktree(tmp_path, capsys):
-    """Event from cwd outside any git worktree → gate passes silently.
+    """Event from cwd outside any git worktree → Python gate passes silently.
 
     Pins the non-worktree early-exit. Without this, the empty-paths fix
     could regress in the other direction (firing the gate everywhere).
+
+    LIA-77 scope note: this Python gate is intentionally scoped to deus
+    worktrees. The user-level bash hook (~/.claude/hooks/plan-review-gate.sh)
+    handles non-git and non-wardens-repo directories by falling back to the
+    deus marker. This test pins the Python gate boundary; it is not a gap.
     """
     hooks = load_hooks()
     outside = tmp_path / "outside"
