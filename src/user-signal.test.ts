@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { detectUserSignal } from './user-signal.js';
 
-// MAX_SIGNAL_LENGTH = 80 (from source)
-const MAX_SIGNAL_LENGTH = 80;
+const MAX_SIGNAL_LENGTH = 200;
 
 describe('detectUserSignal', () => {
   // Positive signals
@@ -52,13 +51,12 @@ describe('detectUserSignal', () => {
   });
 
   it('returns null when message exceeds MAX_SIGNAL_LENGTH', () => {
-    const longMessage = 'perfect '.repeat(12); // 96 chars > 80
+    const longMessage = 'perfect ' + 'x'.repeat(200);
     expect(longMessage.length).toBeGreaterThan(MAX_SIGNAL_LENGTH);
     expect(detectUserSignal(longMessage)).toBeNull();
   });
 
   it('returns signal when message is exactly at MAX_SIGNAL_LENGTH', () => {
-    // Build a message exactly 80 chars long that contains "wrong"
     const msg = 'wrong' + ' '.repeat(MAX_SIGNAL_LENGTH - 5);
     expect(msg.length).toBe(MAX_SIGNAL_LENGTH);
     expect(detectUserSignal(msg)).toBe('negative');
