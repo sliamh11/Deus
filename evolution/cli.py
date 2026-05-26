@@ -509,7 +509,6 @@ def cmd_mine_corrections(dry_run: bool = False, limit: Optional[int] = None) -> 
             print()
     if result['matched'] < 20:
         print("Warning: fewer than 20 matches — CORRECTION_VOCAB may need tuning")
-    # Reversal: UPDATE interactions SET user_signal = NULL WHERE correction_mined_at IS NOT NULL
 
 
 def cmd_serve() -> None:

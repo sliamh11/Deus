@@ -26,7 +26,6 @@ def test_db(tmp_path, monkeypatch):
     db_path = tmp_path / "test_evolution.db"
     monkeypatch.setattr(config_mod, "EVOLUTION_DB_PATH", db_path)
     monkeypatch.setattr(db_mod, "EVOLUTION_DB_PATH", db_path)
-    monkeypatch.setattr(config_mod, "DB_PATH", tmp_path / "nonexistent_legacy.db")
 
     db = sqlite3.connect(db_path)
     db.execute("""

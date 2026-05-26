@@ -47,6 +47,8 @@ class FakeStorageProvider(StorageProvider):
     def count_interactions(self, **kw): return 0
     def score_trend(self, **kw): return []
     def token_trend(self, **kw): return []
+    def get_correction_candidates(self, *a, **kw): return []
+    def bulk_label_corrections(self, *a, **kw): return 0
     def score_by_reflection_count(self): return []
     def save_reflection(self, **kw): ...
     def get_reflections_by_embedding(self, *a, **kw): return []

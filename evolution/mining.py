@@ -1,9 +1,8 @@
 """
 Session-correction mining for the Evolution loop.
 
-Retroactively extracts implicit negative signals from existing interactions by
-detecting correction patterns in follow-up messages within the same session.
-Batch Filter/Transform pattern: stateless pure functions, no class hierarchy.
+Retroactively extracts implicit negative signals from existing interactions
+by detecting correction patterns in follow-up messages within the same session.
 """
 import logging
 import re
@@ -15,15 +14,13 @@ from .storage import get_storage
 
 log = logging.getLogger(__name__)
 
-# Pre-compile vocab patterns for efficiency
 _CORRECTION_PATTERNS = [re.compile(re.escape(v), re.IGNORECASE) for v in CORRECTION_VOCAB]
 
 
 def _is_correction(text: str) -> bool:
     """Check if text matches any correction vocabulary pattern."""
-    lower = text.lower().strip()
     for pattern in _CORRECTION_PATTERNS:
-        if pattern.search(lower):
+        if pattern.search(text):
             return True
     return False
 
@@ -45,69 +42,36 @@ def mine_corrections(
     Returns dict with keys: matched, updated, skipped, examples.
     """
     store = get_storage()
-    db = store._connect()
+    rows = store.get_correction_candidates(max_followup_len=CORRECTION_MAX_PROMPT_LEN)
 
-    # Self-join: find interactions followed by short corrective messages
-    query = """
-        SELECT a.id AS target_id,
-               a.prompt AS target_prompt,
-               b.prompt AS followup_prompt,
-               a.session_id
-        FROM interactions a
-        JOIN interactions b ON b.session_id = a.session_id
-            AND b.timestamp > a.timestamp
-            AND b.id != a.id
-        WHERE a.user_signal IS NULL
-          AND a.session_id IS NOT NULL
-          AND LENGTH(b.prompt) < ?
-        ORDER BY a.session_id, a.timestamp
-    """
-    rows = db.execute(query, (CORRECTION_MAX_PROMPT_LEN,)).fetchall()
-
-    # Deduplicate: only the first follow-up per target interaction
     seen_targets: set = set()
     matched = []
     for row in rows:
-        target_id = row[0]
+        target_id = row["target_id"]
         if target_id in seen_targets:
             continue
-        followup = row[2]
+        followup = row["followup_prompt"]
         if _is_correction(followup):
             seen_targets.add(target_id)
             matched.append({
                 "target_id": target_id,
-                "target_prompt": row[1][:100],
+                "target_prompt": row["target_prompt"][:100],
                 "followup": followup[:100],
-                "session_id": row[3],
+                "session_id": row["session_id"],
             })
             if limit and len(matched) >= limit:
                 break
 
     updated = 0
-    skipped = 0
     now = datetime.now(timezone.utc).isoformat()
 
     if not dry_run and matched:
-        for m in matched:
-            try:
-                db.execute(
-                    """UPDATE interactions
-                       SET user_signal = 'correction',
-                           correction_mined_at = ?
-                       WHERE id = ? AND user_signal IS NULL""",
-                    (now, m["target_id"]),
-                )
-                updated += 1
-            except Exception as exc:
-                log.warning("Failed to update %s: %s", m["target_id"], exc)
-                skipped += 1
-        db.commit()
-
-    db.close()
+        ids = [m["target_id"] for m in matched]
+        updated = store.bulk_label_corrections(ids=ids, mined_at=now)
 
     return {
         "matched": len(matched),
         "updated": updated,
-        "skipped": skipped,
+        "skipped": len(matched) - updated if not dry_run else 0,
         "examples": matched[:5],
     }

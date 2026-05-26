@@ -307,6 +307,23 @@ class StorageProvider(ABC):
         ...
 
     @abstractmethod
+    def get_correction_candidates(self, max_followup_len: int) -> list[dict]:
+        """Get session pairs where a short follow-up might indicate a correction.
+
+        Returns rows with keys: target_id, target_prompt, followup_prompt, session_id.
+        Only includes rows where user_signal IS NULL on the target.
+        """
+        ...
+
+    @abstractmethod
+    def bulk_label_corrections(self, ids: list[str], mined_at: str) -> int:
+        """Label interactions as corrections. Only updates rows where user_signal IS NULL.
+
+        Returns the number of rows actually updated.
+        """
+        ...
+
+    @abstractmethod
     def score_by_reflection_count(self) -> list[dict]:
         """
         Return average judge score grouped by the number of reflections an
