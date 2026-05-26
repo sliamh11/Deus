@@ -53,6 +53,7 @@ A personal AI that understands you - not just recalls things you've said. It lea
 - A [Gemini API key](https://aistudio.google.com/apikey) (free tier is enough)
 - [Ollama](https://ollama.ai/download) for local embeddings and scoring (not an agent backend) - `/setup` pulls the right models automatically based on your hardware
 - **Optional:** [llama.cpp](https://github.com/ggerganov/llama.cpp) for a fully local, API-free agent backend — no per-turn cost, works offline. Run `/add-llama-cpp` to install.
+- **Optional:** [free-claude-code](https://github.com/Alishahryar1/free-claude-code) proxy for using Claude Code CLI with alternative models (Ollama, llama-server, Gemini). Launch with `deus fcc` after configuring via `deus provider` and `deus model`.
 
 ### Install
 
@@ -113,6 +114,10 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus` | Launch in the current directory (project mode if outside `~/deus`) |
 | `deus home` | Launch in home mode regardless of current directory |
 | `deus codex` | Use OpenAI/Codex backend for this session |
+| `deus fcc` | Launch with a local proxy model (Ollama, llama-server, Gemini) |
+| `deus provider <name>` | Switch proxy provider (`ollama`, `llamacpp`, `gemini`) |
+| `deus model <name>` | Switch proxy model (auto-prefixes active provider) |
+| `deus model dashboard` | Open proxy admin UI in browser |
 | `deus auth` | Rebuild and restart background services |
 | `deus gcal` | Google Calendar token management (`status`, `auth`, `ping`) |
 | `deus listen` | Record from mic, transcribe locally, copy to clipboard |
@@ -276,6 +281,8 @@ Built and maintained solo - no company, no funding. If Deus is useful to you, sp
 ## Acknowledgments
 
 Built on [NanoClaw](https://github.com/qwibitai/nanoclaw) - thanks to the NanoClaw team for the foundation.
+
+Multi-model proxy support powered by [free-claude-code](https://github.com/Alishahryar1/free-claude-code) - a local reverse proxy that enables Claude Code CLI to work with alternative LLM providers.
 
 ## License
 

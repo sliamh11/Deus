@@ -19,9 +19,12 @@ SCRIPT_DIR="$(_resolve_script_dir)"
 # Prefix selection changes both the foreground CLI and runtime backend for this
 # invocation. Plain `deus` still defaults to Claude unless env/config says
 # otherwise.
-if [ "$1" = "codex" ] || [ "$1" = "claude" ]; then
+if [ "$1" = "codex" ] || [ "$1" = "claude" ] || [ "$1" = "fcc" ]; then
   if [ "$1" = "claude" ]; then
     export DEUS_CLI_AGENT="claude"
+    export DEUS_AGENT_BACKEND="claude"
+  elif [ "$1" = "fcc" ]; then
+    export DEUS_CLI_AGENT="fcc"
     export DEUS_AGENT_BACKEND="claude"
   else
     export DEUS_CLI_AGENT="codex"
@@ -84,6 +87,25 @@ _build_and_restart() {
   else
     $quiet || echo "Built (restart skipped)."
   fi
+}
+
+_fcc_validate_model_name() {
+  if ! printf '%s' "$1" | grep -qE '^[a-zA-Z0-9_./:@-]+$'; then
+    echo "Error: invalid characters in model name."
+    exit 1
+  fi
+}
+
+_fcc_current_full() {
+  grep '^MODEL=' ~/.fcc/.env 2>/dev/null | cut -d= -f2
+}
+
+_fcc_current_provider() {
+  _fcc_current_full | cut -d/ -f1
+}
+
+_fcc_current_model() {
+  _fcc_current_full | cut -d/ -f2-
 }
 
 _backend_to_display() {
@@ -1109,6 +1131,26 @@ sys.exit(1)
       fi
     }
 
+    launch_fcc() {
+      if ! command -v fcc-claude >/dev/null 2>&1; then
+        echo "Error: fcc-claude not found. Install: uv tool install free-claude-code@git+https://github.com/Alishahryar1/free-claude-code.git"
+        return 127
+      fi
+      if ! curl -s http://127.0.0.1:8082/health >/dev/null 2>&1; then
+        echo "Starting fcc-server..."
+        mkdir -p ~/.fcc/logs
+        fcc-server > ~/.fcc/logs/server.log 2>&1 &
+        sleep 3  # wait for server to bind before health check
+        if ! curl -s http://127.0.0.1:8082/health >/dev/null 2>&1; then
+          echo "Error: fcc-server failed to start. Check ~/.fcc/logs/server.log"
+          return 1
+        fi
+      fi
+      local fcc_model=$(grep '^MODEL=' ~/.fcc/.env 2>/dev/null | cut -d= -f2)
+      echo "Proxy: $fcc_model"
+      fcc-claude "$@"
+    }
+
     launch_codex() {
       if ! command -v codex >/dev/null 2>&1; then
         echo "Error: Codex CLI not found. Install/login to Codex, or use DEUS_CLI_AGENT=claude."
@@ -1132,6 +1174,10 @@ sys.exit(1)
     }
 
     launch_agent() {
+      if [ "$CLI_AGENT" = "fcc" ]; then
+        launch_fcc "$@"
+        return $?
+      fi
       if [ "$CLI_AGENT" = "ollama" ]; then
         echo "Error: Ollama backend is not yet available as a CLI agent."
         echo "Use 'deus backend set claude' or 'deus backend set openai' instead."
@@ -1556,11 +1602,204 @@ $STARTUP_INSTRUCTION"
     shift
     _build_and_restart "$@"
     ;;
+  provider)
+    shift
+    FCC_PROXY="http://127.0.0.1:8082"
+    FCC_PROVIDERS="ollama llamacpp gemini"
+
+    case "${1:-}" in
+      "")
+        FCC_PROV=$(_fcc_current_provider)
+        echo "Provider: ${FCC_PROV:-not configured}"
+        echo ""
+        echo "Available:"
+        for p in ollama llamacpp gemini; do
+          if [[ "$p" == "$FCC_PROV" ]]; then
+            echo "  * $p (active)"
+          else
+            echo "    $p"
+          fi
+        done
+        echo ""
+        echo "Usage: deus provider <name>"
+        echo ""
+        echo "Examples:"
+        echo "  deus provider ollama      # local models via Ollama"
+        echo "  deus provider llamacpp    # local models via llama-server (:8080)"
+        echo "  deus provider gemini      # Google AI Studio (needs API key)"
+        ;;
+      *)
+        FCC_NEW_PROV="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+        case "$FCC_NEW_PROV" in
+          ollama|llamacpp|gemini) ;;
+          llama-cpp|llama_cpp) FCC_NEW_PROV="llamacpp" ;;
+          *)
+            echo "Unknown provider: $1"
+            echo "Available: $FCC_PROVIDERS"
+            exit 1
+            ;;
+        esac
+        FCC_OLD_MODEL=$(grep '^MODEL=' ~/.fcc/.env 2>/dev/null | cut -d= -f2 | cut -d/ -f2-)
+        FCC_NEW_MODEL="${FCC_NEW_PROV}/${FCC_OLD_MODEL}"
+        _fcc_validate_model_name "$FCC_NEW_MODEL"
+        FCC_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FCC_PROXY/admin/api/config/apply" \
+          -H "Content-Type: application/json" \
+          -d "{\"values\":{\"MODEL\":\"$FCC_NEW_MODEL\"}}" 2>&1)
+        if [[ "$FCC_HTTP" == "200" ]]; then
+          echo "Provider: $FCC_NEW_PROV"
+          echo "Model:    $FCC_NEW_MODEL"
+        else
+          echo "Failed. Is fcc-server running? (HTTP $FCC_HTTP)"
+          exit 1
+        fi
+        ;;
+    esac
+    ;;
+  model)
+    shift
+    FCC_PROXY="http://127.0.0.1:8082"
+
+    case "${1:-}" in
+      "")
+        FCC_FULL=$(_fcc_current_full)
+        FCC_PROV=$(_fcc_current_provider)
+        FCC_MOD=$(_fcc_current_model)
+        echo "Provider: ${FCC_PROV:-not set}"
+        echo "Model:    ${FCC_MOD:-not set}"
+        echo ""
+        echo "Commands:"
+        echo "  deus model <name>         Switch model (auto-prefixes active provider)"
+        echo "  deus model pull <name>    Download a model for the active provider"
+        echo "  deus model dashboard      Open proxy admin UI in browser"
+        echo ""
+        echo "Examples (by provider):"
+        case "${FCC_PROV:-ollama}" in
+          ollama)
+            echo "  deus model qwen3.6                     # ollama/qwen3.6"
+            echo "  deus model gemma4:e4b                   # ollama/gemma4:e4b"
+            echo "  deus model pull qwen3:32b               # download via ollama pull"
+            ;;
+          llamacpp)
+            echo "  deus model ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M"
+            echo "  deus model pull ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M  # download from HuggingFace"
+            ;;
+          gemini)
+            echo "  deus model gemini-2.5-flash             # no download needed"
+            echo "  deus model gemini-2.5-pro"
+            ;;
+          *)
+            echo "  deus model <model-name>"
+            ;;
+        esac
+        ;;
+      dashboard|dash|admin)
+        FCC_ADMIN_URL="http://127.0.0.1:8082/admin"
+        if command -v open >/dev/null 2>&1; then
+          open "$FCC_ADMIN_URL"
+        elif command -v xdg-open >/dev/null 2>&1; then
+          xdg-open "$FCC_ADMIN_URL"
+        else
+          echo "Open in browser: $FCC_ADMIN_URL"
+        fi
+        ;;
+      pull)
+        if [[ -z "$2" ]]; then
+          FCC_PROV=$(_fcc_current_provider)
+          echo "Usage: deus model pull <model-name>"
+          echo ""
+          case "${FCC_PROV:-ollama}" in
+            ollama)
+              echo "Examples (provider: ollama):"
+              echo "  deus model pull qwen3:32b"
+              echo "  deus model pull llama3.3:70b"
+              echo "  deus model pull deepseek-r1:14b"
+              ;;
+            llamacpp)
+              echo "Examples (provider: llamacpp — uses HuggingFace):"
+              echo "  deus model pull ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M"
+              echo "  deus model pull bartowski/Qwen3-32B-GGUF:Q4_K_M"
+              ;;
+            gemini)
+              echo "Gemini models are cloud-hosted — no download needed."
+              echo "Switch directly: deus model gemini-2.5-flash"
+              ;;
+          esac
+          exit 1
+        fi
+        _fcc_validate_model_name "$2"
+        FCC_PROV=$(_fcc_current_provider)
+        case "${FCC_PROV:-ollama}" in
+          ollama)
+            echo "Pulling $2 via Ollama..."
+            ollama pull "$2"
+            if [[ $? -eq 0 ]]; then
+              echo ""
+              echo "Ready. Switch with: deus model $2"
+            fi
+            ;;
+          llamacpp)
+            FCC_HF_REPO=$(echo "$2" | cut -d: -f1)
+            FCC_HF_FILE=$(echo "$2" | cut -d: -f2)
+            if [[ "$FCC_HF_FILE" == "$FCC_HF_REPO" ]]; then
+              echo "Usage for llamacpp: deus model pull <org/repo:filename>"
+              echo "Example: deus model pull ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M"
+              exit 1
+            fi
+            echo "Downloading $FCC_HF_REPO ($FCC_HF_FILE) from HuggingFace..."
+            huggingface-cli download "$FCC_HF_REPO" --include "*${FCC_HF_FILE}*" --local-dir "$HOME/.cache/llama-cpp-models"
+            if [[ $? -eq 0 ]]; then
+              echo ""
+              echo "Downloaded to ~/.cache/llama-cpp-models/"
+              echo "To use: update LLAMA_CPP_MODEL in ~/.config/deus/llama-cpp.env"
+              echo "  then: launchctl kickstart -k gui/\$(id -u)/com.deus.llama-cpp"
+              echo "  then: deus model $2"
+            fi
+            ;;
+          gemini)
+            echo "Gemini models are cloud-hosted — no download needed."
+            echo "Switch directly: deus model gemini-2.5-flash"
+            ;;
+          *)
+            echo "Pull not supported for provider: $FCC_PROV"
+            ;;
+        esac
+        ;;
+      *)
+        FCC_PROV=$(_fcc_current_provider)
+        if [[ -z "$FCC_PROV" ]]; then
+          echo "No provider set. Run 'deus provider <ollama|llamacpp|gemini>' first."
+          exit 1
+        fi
+
+        FCC_NEW_MODEL="${FCC_PROV}/${1}"
+        _fcc_validate_model_name "$FCC_NEW_MODEL"
+
+        if pgrep -qx "claude" 2>/dev/null || pgrep -qx "fcc-claude" 2>/dev/null; then
+          echo "Warning: Claude Code session active - switch takes effect next session."
+          echo -n "Continue? [y/N] "
+          read -r reply
+          [[ "$reply" != [yY] ]] && exit 0
+        fi
+
+        FCC_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FCC_PROXY/admin/api/config/apply" \
+          -H "Content-Type: application/json" \
+          -d "{\"values\":{\"MODEL\":\"$FCC_NEW_MODEL\"}}" 2>&1)
+
+        if [[ "$FCC_HTTP" == "200" ]]; then
+          echo "Switched to: $FCC_NEW_MODEL"
+        else
+          echo "Failed. Is fcc-server running? (HTTP $FCC_HTTP)"
+          exit 1
+        fi
+        ;;
+    esac
+    ;;
   *)
-    echo "Usage: deus [claude|codex] [home|auth|build|web|backend|gcal|listen|logs|pipeline|solution|sweep|tui] [--agents]"
+    echo "Usage: deus [claude|codex] [home|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|solution|sweep|tui] [--agents]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
+    echo "  deus fcc        Launch with proxy model (see: deus provider, deus model)"
     echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
     echo "  deus auth       Validate credentials and rebuild+restart"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
@@ -1569,6 +1808,8 @@ $STARTUP_INSTRUCTION"
     echo "  deus backend    Manage default AI backend and model (show|set|model|list)"
     echo "  deus gcal       Google Calendar token management (status|auth|ping)"
     echo "  deus listen     Record from mic, transcribe, and copy to clipboard"
+    echo "  deus provider   Switch proxy provider (ollama|llamacpp|gemini)"
+    echo "  deus model      Switch proxy model or open dashboard (model-name|dashboard)"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
     echo "  deus pipeline   Pipeline event audit (LIA-XX | --failed | --active | --all)"
     echo "  deus solution   Manage solution atoms (list|search|add)"
