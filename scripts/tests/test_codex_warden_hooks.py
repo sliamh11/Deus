@@ -2466,3 +2466,189 @@ def test_match_pattern_docs_returns_most_specific_first(tmp_path):
     assert len(matched) == 2
     assert matched[0].stem == "channel"
     assert matched[1].stem == "general"
+
+
+# ---------------------------------------------------------------------------
+# mark-batch + commit window tests
+# ---------------------------------------------------------------------------
+
+def test_mark_batch_creates_all_markers(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+
+    rc = hooks.mark_batch_wardens(
+        [
+            "code-reviewed:SHIP:looks good",
+            "ai-eng-reviewed:SHIP:no AI issues",
+            "verified:SHIP:tests pass",
+        ],
+        repo,
+    )
+
+    assert rc == 0
+    assert (repo / ".claude" / ".code-reviewed").exists()
+    assert (repo / ".claude" / ".ai-eng-reviewed").exists()
+    assert (repo / ".claude" / ".verified").exists()
+
+    verdicts = json.loads((repo / ".claude" / ".warden-verdicts.json").read_text())
+    assert verdicts["code-reviewer"]["verdict"] == "SHIP"
+    assert verdicts["ai-eng-warden"]["verdict"] == "SHIP"
+    assert verdicts["verification-gate"]["verdict"] == "SHIP"
+
+
+def test_mark_batch_opens_commit_window(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+
+    assert not hooks._in_commit_window(repo)
+
+    hooks.mark_batch_wardens(["code-reviewed:SHIP:looks good"], repo)
+
+    assert hooks._in_commit_window(repo)
+
+
+def test_mark_batch_rejects_unknown_marker(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+
+    rc = hooks.mark_batch_wardens(["no-such-warden:SHIP:reason"], repo)
+
+    assert rc != 0
+    # No marker files or commit window should have been written
+    assert not (repo / ".claude" / ".commit-window").exists()
+
+
+def test_mark_batch_rejects_malformed_spec(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+
+    rc = hooks.mark_batch_wardens(["code-reviewed:SHIP"], repo)  # missing reason
+
+    assert rc != 0
+    assert not (repo / ".claude" / ".code-reviewed").exists()
+
+
+def test_mark_batch_atomic_on_validation_failure(tmp_path):
+    """If the second spec is invalid, the first marker must NOT be written."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+
+    rc = hooks.mark_batch_wardens(
+        [
+            "code-reviewed:SHIP:valid",
+            "no-such-warden:SHIP:invalid",
+        ],
+        repo,
+    )
+
+    assert rc != 0
+    assert not (repo / ".claude" / ".code-reviewed").exists()
+    assert not (repo / ".claude" / ".commit-window").exists()
+
+
+def test_mark_batch_blocks_trivial_after_revise(tmp_path, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+    monkeypatch.setenv("DEUS_WARDEN_BYPASS_LOG", str(tmp_path / "bypass.jsonl"))
+    monkeypatch.delenv("CLAUDE_JOB_DIR", raising=False)
+
+    hooks._write_verdict(repo, "code-reviewer", "REVISE", "issues found", "agent")
+
+    rc = hooks.mark_batch_wardens(["code-reviewed:TRIVIAL:quick fix"], repo)
+
+    assert rc == 2
+    assert not (repo / ".claude" / ".code-reviewed").exists()
+
+
+def test_mark_batch_colon_in_reason(tmp_path):
+    """Colons inside the reason field must not break parsing."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+
+    rc = hooks.mark_batch_wardens(
+        ["code-reviewed:SHIP:LIA-98: workflow improvement"],
+        repo,
+    )
+
+    assert rc == 0
+    assert (repo / ".claude" / ".code-reviewed").exists()
+
+
+def test_commit_window_blocks_code_review_invalidator(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.ts").write_text("old\n", encoding="utf-8")
+    marker = repo / ".claude" / ".code-reviewed"
+    marker.touch()
+
+    # Open a commit window
+    hooks._set_commit_window(repo)
+
+    rc = hooks.run_code_review_invalidator(apply_patch_event(repo, "src/app.ts"), repo)
+
+    assert rc == 0
+    # Marker must survive because we are inside the commit window
+    assert marker.exists()
+
+
+def test_commit_window_blocks_verification_invalidator(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.ts").write_text("old\n", encoding="utf-8")
+    marker = repo / ".claude" / ".verified"
+    marker.touch()
+
+    hooks._set_commit_window(repo)
+
+    rc = hooks.run_verification_invalidator(apply_patch_event(repo, "src/app.ts"), repo)
+
+    assert rc == 0
+    assert marker.exists()
+
+
+def test_expired_commit_window_does_not_block_invalidator(tmp_path, monkeypatch):
+    """An expired commit window (> TTL) must NOT suppress invalidation."""
+    import time
+
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.ts").write_text("old\n", encoding="utf-8")
+    marker = repo / ".claude" / ".code-reviewed"
+    marker.touch()
+
+    hooks._set_commit_window(repo)
+
+    # Fake the commit-window file mtime to be in the past (TTL + 1 seconds ago)
+    window_path = repo / ".claude" / ".commit-window"
+    past = time.time() - (hooks.COMMIT_WINDOW_TTL_SECONDS + 1)
+    import os
+    os.utime(window_path, (past, past))
+
+    rc = hooks.run_code_review_invalidator(apply_patch_event(repo, "src/app.ts"), repo)
+
+    assert rc == 0
+    # Window has expired — marker should be deleted as normal
+    assert not marker.exists()
+
+
+def test_session_init_clears_commit_window(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+
+    hooks._set_commit_window(repo)
+    assert (repo / ".claude" / ".commit-window").exists()
+
+    hooks.run_session_init(repo)
+
+    assert not (repo / ".claude" / ".commit-window").exists()

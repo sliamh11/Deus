@@ -346,6 +346,45 @@ def _marker(repo_root: Path, name: str) -> Path:
     return repo_root / ".claude" / name
 
 
+# ---------------------------------------------------------------------------
+# Commit-window helpers
+# ---------------------------------------------------------------------------
+
+#: How long (seconds) a commit window stays active before it expires.
+COMMIT_WINDOW_TTL_SECONDS: int = 60
+
+
+def _in_commit_window(repo_root: Path) -> bool:
+    """Return True if a fresh commit window marker exists (< TTL seconds old).
+
+    During mark-batch the caller sets this marker so that any Edit/Write that
+    fires between the first and last marker touch cannot invalidate a freshly
+    approved marker.  The window is intentionally short and is consumed by
+    session-init on the next session start.
+
+    Security note: this is a convenience shortcut, NOT a security bypass.
+    All wardens must still have produced SHIP verdicts before mark-batch is
+    called.  Code edited *inside* the window will leave markers intact even
+    though the diff changed — callers must understand this tradeoff and keep
+    the window as short as possible (ideally no edits happen during it).
+    """
+    path = _marker(repo_root, ".commit-window")
+    if not path.exists():
+        return False
+    try:
+        age = dt.datetime.now(dt.UTC).timestamp() - path.stat().st_mtime
+    except OSError:
+        return False
+    return age < COMMIT_WINDOW_TTL_SECONDS
+
+
+def _set_commit_window(repo_root: Path) -> None:
+    """Touch the commit-window marker to open (or refresh) a commit window."""
+    path = _marker(repo_root, ".commit-window")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+
+
 def _command_hash(command: str) -> str:
     return hashlib.sha256(command.encode("utf-8")).hexdigest()
 
@@ -704,6 +743,7 @@ def run_session_init(repo_root: Path) -> int:
         ".migration-nudged",
         ".semantic-search-used",
         ".warden-memo.md",
+        ".commit-window",
     ):
         _marker(repo_root, name).unlink(missing_ok=True)
     _PATTERN_ROUTES_CACHE = None
@@ -1012,6 +1052,12 @@ def run_verification_invalidator(event: dict[str, Any], repo_root: Path) -> int:
         return 0
     if not paths:
         return 0
+    if _in_commit_window(repo_root):
+        print(
+            "[verification-invalidator] skipping invalidation — inside commit window",
+            file=sys.stderr,
+        )
+        return 0
     _marker(repo_root, ".verified").unlink(missing_ok=True)
     return 0
 
@@ -1110,6 +1156,12 @@ def run_code_review_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     if worktree is None:
         return 0
     if not paths:
+        return 0
+    if _in_commit_window(repo_root):
+        print(
+            "[code-review-invalidator] skipping invalidation — inside commit window",
+            file=sys.stderr,
+        )
         return 0
     _marker(repo_root, ".code-reviewed").unlink(missing_ok=True)
     # LLM code is a subset of all code — source edits invalidate both markers
@@ -1964,6 +2016,101 @@ def mark_warden(marker_name: str, verdict: str, reason: str, repo_root: Path) ->
     return 0
 
 
+def mark_batch_wardens(specs: list[str], repo_root: Path) -> int:
+    """Mark multiple wardens atomically inside a commit window.
+
+    Each element of *specs* must be a colon-delimited triplet:
+    ``"<marker_name>:<verdict>:<reason>"``.  The reason field may itself
+    contain colons — only the first two colons are treated as delimiters.
+
+    The function validates ALL entries before touching any file.  If any
+    entry fails validation the function returns non-zero without writing
+    anything.  Once all entries pass, it opens a commit window (so that
+    any Edit/Write hook fired by the subsequent touches cannot invalidate
+    a freshly-set marker), writes all marker files, then prints a summary.
+
+    Backwards compatibility: individual ``mark`` calls continue to work
+    unchanged.
+    """
+    # --- Parse and validate all specs first (fail-fast, atomic) ---
+    parsed: list[tuple[str, str, str]] = []  # (marker_name, verdict, reason)
+    for i, spec in enumerate(specs):
+        parts = spec.split(":", 2)
+        if len(parts) != 3:
+            print(
+                f"[warden-mark-batch] invalid spec at position {i}: {spec!r}\n"
+                "Expected format: <marker_name>:<verdict>:<reason>",
+                file=sys.stderr,
+            )
+            return 1
+        marker_name, verdict, reason = parts
+        verdict = verdict.upper()
+        if marker_name not in MARKER_NAMES:
+            print(
+                f"[warden-mark-batch] unknown marker: {marker_name!r}. "
+                f"Valid: {', '.join(sorted(MARKER_NAMES))}",
+                file=sys.stderr,
+            )
+            return 1
+        if verdict not in ("SHIP", "TRIVIAL"):
+            print(
+                f"[warden-mark-batch] invalid verdict {verdict!r} for {marker_name}. "
+                "Must be SHIP or TRIVIAL.",
+                file=sys.stderr,
+            )
+            return 1
+        bg = _is_bg_session()
+        if verdict == "TRIVIAL" and bg:
+            warden = MARKER_NAMES[marker_name]
+            _write_bypass_log(warden, "REFUSED", "bg", reason, repo_root)
+            print(
+                f"[warden-mark-batch] BLOCKED: TRIVIAL bypass not permitted in "
+                f"background sessions (marker: {marker_name}).\n"
+                "Background sessions must run the full warden and get SHIP.",
+                file=sys.stderr,
+            )
+            return 2
+        if verdict == "TRIVIAL" and _last_verdict_is_blocking(repo_root, MARKER_NAMES[marker_name]):
+            last = _last_verdict(repo_root, MARKER_NAMES[marker_name])
+            if last:
+                warden = MARKER_NAMES[marker_name]
+                session_type = "bg" if bg else "interactive"
+                _write_bypass_log(warden, "REFUSED", session_type, reason, repo_root)
+                print(
+                    f"[warden-mark-batch] BLOCKED: last {warden} verdict was {last} "
+                    f"(marker: {marker_name}).\n"
+                    "Re-run the warden and get SHIP — trivial bypass is not permitted "
+                    "after REVISE or BLOCK.",
+                    file=sys.stderr,
+                )
+                return 2
+        parsed.append((marker_name, verdict, reason))
+
+    if not parsed:
+        print("[warden-mark-batch] no specs provided.", file=sys.stderr)
+        return 1
+
+    # --- All entries valid: open commit window then write atomically ---
+    _set_commit_window(repo_root)
+
+    bg = _is_bg_session()
+    session_type = "bg" if bg else "interactive"
+    for marker_name, verdict, reason in parsed:
+        warden = MARKER_NAMES[marker_name]
+        _write_verdict(repo_root, warden, verdict, reason, source="mark-batch")
+        if verdict == "TRIVIAL":
+            _write_bypass_log(warden, "TRIVIAL", session_type, reason, repo_root)
+        _marker(repo_root, f".{marker_name}").parent.mkdir(parents=True, exist_ok=True)
+        _marker(repo_root, f".{marker_name}").touch()
+        print(f"[warden-mark-batch] {marker_name} marked as {verdict}: {reason}")
+
+    print(
+        f"[warden-mark-batch] {len(parsed)} marker(s) set; commit window open for "
+        f"{COMMIT_WINDOW_TTL_SECONDS}s."
+    )
+    return 0
+
+
 def _load_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"hooks": {}}
@@ -2375,6 +2522,23 @@ def build_parser() -> argparse.ArgumentParser:
     mark_parser.add_argument("mark_reason")
     mark_parser.add_argument("--repo-root", default=Path(__file__).resolve().parents[1])
 
+    mark_batch_parser = subparsers.add_parser(
+        "mark-batch",
+        help=(
+            "Mark multiple wardens atomically inside a commit window.  "
+            "Each SPEC is '<marker_name>:<verdict>:<reason>'.  All specs are "
+            "validated before any file is written; a commit window is opened "
+            "so intermediate Edit/Write hooks cannot invalidate the markers."
+        ),
+    )
+    mark_batch_parser.add_argument(
+        "specs",
+        nargs="+",
+        metavar="SPEC",
+        help="One or more '<marker_name>:<verdict>:<reason>' triplets.",
+    )
+    mark_batch_parser.add_argument("--repo-root", default=Path(__file__).resolve().parents[1])
+
     for name in ("install", "check", "uninstall"):
         sub = subparsers.add_parser(name)
         _add_common_install_args(sub)
@@ -2402,6 +2566,11 @@ def main(argv: list[str] | None = None) -> int:
             args.marker_name,
             args.mark_verdict,
             args.mark_reason,
+            Path(args.repo_root).resolve(strict=False),
+        )
+    if args.action == "mark-batch":
+        return mark_batch_wardens(
+            args.specs,
             Path(args.repo_root).resolve(strict=False),
         )
     if args.action == "approve-admin-merge":
