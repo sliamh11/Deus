@@ -1,20 +1,20 @@
 {
   "code-reviewer": {
-    "reason": "Branch A Phase 4: SHIP round 2 - all blocking issues resolved",
+    "reason": "LIA-92: prompt-only warden spec additions, no runtime code changes",
     "source": "mark",
-    "ts": "2026-05-26T07:46:38Z",
-    "verdict": "SHIP"
+    "ts": "2026-05-26T11:58:21Z",
+    "verdict": "TRIVIAL"
   },
   "plan-reviewer": {
-    "reason": "remediation",
+    "reason": "LIA-92: prompt-only warden spec edits, pre-approved",
     "source": "mark",
-    "ts": "2026-05-26T07:42:57Z",
+    "ts": "2026-05-26T11:56:22Z",
     "verdict": "SHIP"
   },
   "verification-gate": {
-    "reason": "All 3 branches: tests pass (A: 45, B: 62, C: 66), code-reviewer SHIP round 2, fixes verified in worktrees",
+    "reason": "Pattern file comment-only bump, no functional changes to verify",
     "source": "mark",
-    "ts": "2026-05-26T07:46:52Z",
-    "verdict": "SHIP"
+    "ts": "2026-05-26T11:47:30Z",
+    "verdict": "TRIVIAL"
   }
 }

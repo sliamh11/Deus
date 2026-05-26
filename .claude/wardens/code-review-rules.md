@@ -7,6 +7,12 @@
 > Detail tier (below `## Remediation Details`): `Cite`, `Remediation`.
 > Severity: `blocking` (must fix before SHIP) · `warning` (should address) · `informational` (author's awareness).
 
+## exploration-semantic-first
+**Severity:** informational
+**Applies when:** Reviewer reads code beyond the diff to verify a finding (e.g., checking callers, confirming dead code, cross-referencing related modules).
+**Check:** Did exploration begin with `search_code` (semantic search) before broad grep/find?
+**Rule:** Locate by meaning first; confirm with targeted reads. Don't open-code `grep -r` or `find -name` across the whole repo as the first move.
+
 ## ci-preservation-95
 **Severity:** blocking
 **Applies when:** Diff modifies vault `CLAUDE.md`, `INFRA.md`, `STUDY.md`, or `MEMORY.md`.
@@ -216,3 +222,7 @@
 ### hook-pr-smoke-test
 **Cite:** `feedback_hook_pr_smoke_test`
 **Remediation:** Run a real Claude Code session that exercises the modified hook, then paste the relevant `claude logs <session-id>` output (or a transcript excerpt) into the PR body before marking it ready.
+
+### exploration-semantic-first
+**Cite:** `core-behavioral-rules.md` "Code Exploration" section
+**Remediation:** Use `search_code "<concept>"` to find relevant areas semantically, then drill in with `grep`/`read` for confirmation. Reserve broad `grep -r` for cases where semantic search has already narrowed the surface.

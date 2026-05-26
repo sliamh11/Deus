@@ -9,7 +9,7 @@ import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
 import { extractPrUrl } from './pr-url-extractor.js';
-import { queryPrState } from './linear-auto-merge.js';
+import { queryPrState, checkConflictingPrs } from './linear-auto-merge.js';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
   getConsecutiveFailCount,
@@ -67,6 +67,7 @@ export interface GateLabels {
   bouncedUnscoped?: string;
   bouncedStale?: string;
   bouncedNoContext?: string;
+  conflict?: string;
   effort: Record<number, string>;
   complexity: Record<number, string>;
 }
@@ -649,6 +650,11 @@ async function pollLinear(): Promise<void> {
   if (!_ctx) return;
   const ctx = _ctx;
 
+  // Conflict detection sweep — runs every poll alongside dispatch
+  checkConflictingPrs(ctx).catch((err) => {
+    logger.warn({ err }, 'linear-dispatcher: conflict check sweep failed');
+  });
+
   const readyState = ctx.stateByName.get('Ready for Agent')!;
 
   const issues = await ctx.client.issues({
@@ -1010,6 +1016,18 @@ export async function initLinearContext(
           const label = await created.issueLabel;
           if (label) gateLabels[def.key] = label.id;
         }
+      }
+
+      if (labelMap.has('conflict')) {
+        gateLabels.conflict = labelMap.get('conflict');
+      } else {
+        const created = await client.createIssueLabel({
+          name: 'conflict',
+          color: '#b45309',
+          teamId,
+        });
+        const label = await created.issueLabel;
+        if (label) gateLabels.conflict = label.id;
       }
 
       if (!labelMap.has('Done: Pre-implemented')) {

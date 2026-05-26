@@ -22,6 +22,7 @@ vi.mock('./db.js', () => ({
   getPipelineEvents: vi.fn().mockReturnValue([]),
   logPipelineEvent: vi.fn(),
   upsertIssuePr: vi.fn(),
+  getOpenPrsForActiveIssues: vi.fn().mockReturnValue([]),
 }));
 
 const TEST_PROJECT_ROOT = path.join(os.tmpdir(), `deus-test-${process.pid}`);

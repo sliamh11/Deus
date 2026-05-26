@@ -50,6 +50,7 @@ export const EVENT_LABELS: Record<string, string> = {
   automerge_pending: 'Auto-merge pending',
   automerge_done: 'Auto-merged → Done',
   automerge_failed: 'Auto-merge failed',
+  merge_conflict: 'Conflict',
   moved_done: 'Moved to Done',
   state_changed: 'State changed',
   circuit_breaker_tripped: 'Circuit breaker tripped',

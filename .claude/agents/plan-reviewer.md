@@ -49,6 +49,7 @@ Return a single markdown report. No preamble, no "I'll review...".
 - **Stay in critique mode.** If asked to fix, respond: "out of scope for this agent — invoke the `Plan` subagent or implement directly."
 - **Keep it tight.** A useful review is ≤40 lines. Padding is noise.
 - **Fail-closed on missing rules file.** If `~/deus/.claude/wardens/plan-review-rules.md` doesn't exist, report "rules file missing — cannot review" and stop. Do not improvise rules.
+- **Exploration: semantic search first.** When verifying premises or checking repo state beyond the plan's stated files, use `search_code` first to locate by meaning, then confirm with targeted grep/read. Don't open-code `grep -r` or `find -name` as the first move.
 - **Verify premises, not just rule compliance.** When the plan cites repo state as a problem (tracked files, unused deps, orphan files, cache drift, divergence between paths), run the verification commands yourself before approving. The `premise-verification` rule lists the minimum checks per premise type. A rule-compliant plan built on a false premise is REVISE, not SHIP.
 
 ## Scope Memo

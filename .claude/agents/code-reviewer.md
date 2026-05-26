@@ -56,6 +56,7 @@ Return a single markdown report. No preamble.
 - **Tight output.** Target ≤50 lines. A long review is a signal/noise red flag.
 - **Fail-closed on missing rules file.** If `~/deus/.claude/wardens/code-review-rules.md` doesn't exist, report "rules file missing — cannot review" and stop. Do not improvise rules.
 - **Diff is authoritative.** If memory or docs contradict what's in the diff, trust the diff — memory is a snapshot, code is live.
+- **Exploration: semantic search first.** When verifying a finding requires looking beyond the diff (e.g., checking if a function is used elsewhere), use `search_code` first to locate by meaning, then confirm with targeted grep/read. Don't open-code `grep -r` or `find -name` as the first move.
 
 ## Scope Memo
 
