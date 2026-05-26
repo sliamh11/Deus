@@ -328,7 +328,7 @@ def run_cc_backfill(
 
     from .reflexion.generator import generate_reflection, generate_positive_reflection
     from .reflexion.store import save_reflection
-    from .judge.mechanical import score_tool_economy, score_gate_audit
+    from .judge.mechanical import score_tool_economy, score_gate_audit, score_completion_honesty
     from .judge.criteria import compose_score
 
     for i, pair in enumerate(pairs):
@@ -376,6 +376,7 @@ def run_cc_backfill(
             tool_calls = pair.get("tool_calls", [])
             te_score, te_diag = score_tool_economy(tool_calls)
             ga_score, ga_diag = score_gate_audit(tool_calls)
+            ch_score, ch_diag = score_completion_honesty(tool_calls, response_text=pair["response"])
 
             dims = {
                 "quality": result.quality,
@@ -384,6 +385,7 @@ def run_cc_backfill(
                 "personalization": result.personalization,
                 "tool_economy": te_score,
                 "gate_audit": ga_score,
+                "completion_honesty": ch_score,
             }
             composite = compose_score(dims)
             update_score(iid, composite, dims, parse_error=result.is_parse_error)
@@ -392,7 +394,7 @@ def run_cc_backfill(
                 print(f"  score={composite:.2f}  q={result.quality:.2f}  "
                       f"s={result.safety:.2f}  t={result.tool_use:.2f}  "
                       f"p={result.personalization:.2f}  te={te_score:.2f}  "
-                      f"ga={ga_score:.2f}")
+                      f"ga={ga_score:.2f}  ch={ch_score:.2f}")
 
             # Generate reflections
             if not result.is_parse_error:

@@ -28,7 +28,7 @@ from evolution.judge.criteria import COMPOSITE_WEIGHTS as CURRENT_WEIGHTS, DIM_D
 DB_PATH = Path(os.environ.get("DEUS_EVOLUTION_DB", os.path.expanduser("~/.deus/evolution.db")))
 
 LLM_DIMS = ("quality", "safety", "tool_use", "personalization")
-MECH_DIMS = ("tool_economy", "gate_audit")
+MECH_DIMS = ("tool_economy", "gate_audit", "completion_honesty")
 
 # Pre-mechanical baseline: original 4-dim LLM-only weights (for composite impact comparison).
 LLM_ONLY_WEIGHTS = {"quality": 0.45, "safety": 0.25, "tool_use": 0.15, "personalization": 0.15}
@@ -188,7 +188,7 @@ def report_weight_sensitivity(rows: list[dict]) -> None:
         ("current",  CURRENT_WEIGHTS),
         ("te=0.15",  {**CURRENT_WEIGHTS, "quality": 0.25, "tool_economy": 0.15}),
         ("ga=0.10",  {**CURRENT_WEIGHTS, "quality": 0.25, "gate_audit": 0.10}),
-        ("no-mech",  {**LLM_ONLY_WEIGHTS, "tool_economy": 0.0, "gate_audit": 0.0}),
+        ("no-mech",  {**LLM_ONLY_WEIGHTS, **{k: 0.0 for k in MECH_DIMS}}),
     ]
 
     print(f"  {'scenario':>10s}  {'avg':>6s}  {'stddev':>6s}  {'<0.5':>5s}  {'<0.3':>5s}")
@@ -203,7 +203,7 @@ def report_weight_sensitivity(rows: list[dict]) -> None:
 
 def rescore_mechanical(db_path: Path) -> int:
     """Re-score all rows with mechanical dims without re-running LLM judge."""
-    from evolution.judge.mechanical import score_tool_economy, score_gate_audit
+    from evolution.judge.mechanical import score_tool_economy, score_gate_audit, score_completion_honesty
     from evolution.judge.criteria import compose_score
     from evolution.cc_backfill import collect_pairs, CC_SESSIONS_DIR
 
@@ -227,12 +227,15 @@ def rescore_mechanical(db_path: Path) -> int:
 
             pair = pair_map.get(iid)
             tool_calls = pair.get("tool_calls", []) if pair else []
+            response_text = pair.get("response", "") if pair else ""
 
             te_score, _ = score_tool_economy(tool_calls)
             ga_score, _ = score_gate_audit(tool_calls)
+            ch_score, _ = score_completion_honesty(tool_calls, response_text)
 
             dims["tool_economy"] = te_score
             dims["gate_audit"] = ga_score
+            dims["completion_honesty"] = ch_score
             composite = compose_score(dims)
 
             db.execute(

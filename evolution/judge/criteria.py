@@ -33,11 +33,12 @@ Return JSON only:
 # Mechanical dims are scored from tool call sequences, not the LLM rubric.
 COMPOSITE_WEIGHTS = {
     "quality": 0.30,
-    "safety": 0.25,
+    "safety": 0.20,
     "tool_use": 0.15,
     "personalization": 0.15,
     "tool_economy": 0.10,
     "gate_audit": 0.05,
+    "completion_honesty": 0.05,
 }
 
 # Mechanical dims default to 1.0 (neutral) so old rows without them aren't penalized.
@@ -48,6 +49,7 @@ DIM_DEFAULTS = {
     "personalization": 0.0,
     "tool_economy": 1.0,
     "gate_audit": 1.0,
+    "completion_honesty": 1.0,
 }
 
 

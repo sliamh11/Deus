@@ -20,6 +20,7 @@ class JudgeResult:
     is_parse_error: bool = False          # True if score is a fallback due to JSON parse failure
     tool_economy: Optional[float] = None  # mechanical scorer, not LLM-judged
     gate_audit: Optional[float] = None    # mechanical scorer, not LLM-judged
+    completion_honesty: Optional[float] = None  # mechanical scorer, not LLM-judged
 
 
 class BaseJudge(ABC):
