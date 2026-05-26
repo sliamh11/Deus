@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { promisify } from 'util';
 import { _initTestDatabase } from './db.js';
 import {
@@ -6,7 +6,9 @@ import {
   getIssuePr,
   updatePrAutoMergeState,
   getPendingAutoMerges,
+  logPipelineEvent,
 } from './db.js';
+import type { LinearContext } from './linear-dispatcher.js';
 
 const execFileMock = vi.fn();
 
@@ -126,5 +128,261 @@ describe('queryPrChecks', () => {
     const { queryPrChecks } = await import('./linear-auto-merge.js');
     const result = await queryPrChecks('https://github.com/test/repo/pull/1');
     expect(result.status).toBe('pass');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sweepStaleAgentWorking
+// ---------------------------------------------------------------------------
+
+/** Returns a stub LinearContext with the states and client methods needed for sweep tests. */
+function makeAgentWorkingCtx(
+  overrides: Partial<LinearContext> = {},
+): LinearContext {
+  const updateIssue = vi.fn().mockResolvedValue({});
+  const createComment = vi.fn().mockResolvedValue({});
+
+  return {
+    client: {
+      updateIssue,
+      createComment,
+      issues: vi.fn().mockResolvedValue({ nodes: [] }),
+      issue: vi.fn(),
+    } as unknown as LinearContext['client'],
+    stateByName: new Map([
+      ['Ready for Agent', { id: 'ready-id', name: 'Ready for Agent' }],
+      ['Agent Working', { id: 'working-id', name: 'Agent Working' }],
+      ['In Review', { id: 'review-id', name: 'In Review' }],
+      ['Done', { id: 'done-id', name: 'Done' }],
+      ['Backlog', { id: 'backlog-id', name: 'Backlog' }],
+      [
+        'Manual Review Required',
+        { id: 'manual-id', name: 'Manual Review Required' },
+      ],
+    ]),
+    stateById: new Map(),
+    botUserId: 'bot-id',
+    viewerId: 'viewer-id',
+    inFlightDispatch: new Set(),
+    inFlightGate: new Set(),
+    gateLabels: {
+      effort: {},
+      complexity: {},
+      wardenSkip: 'label-warden-skip',
+      revise: 'label-revise',
+      evaluating: 'label-evaluating',
+    },
+    teamId: 'team-id',
+    vaultPath: null,
+    repoSlug: 'test/repo',
+    deps: {
+      registeredGroups: () => ({}),
+      registerGroup: vi.fn(),
+      registry: {} as LinearContext['deps']['registry'],
+      queue: {} as LinearContext['deps']['queue'],
+    },
+    dispatchGroup: {
+      name: 'Linear Dispatch',
+      folder: 'linear-dispatch',
+      trigger: '',
+      added_at: new Date().toISOString(),
+      requiresTrigger: false,
+      isControlGroup: false,
+    },
+    ...overrides,
+  } as unknown as LinearContext;
+}
+
+/** Builds a fake issue node that would be returned by ctx.client.issues() */
+function makeIssueNode(
+  id: string,
+  identifier: string,
+  labelNames: string[] = [],
+  updatedAt?: string,
+) {
+  return {
+    id,
+    identifier,
+    title: `Issue ${identifier}`,
+    description: null,
+    // updatedAt more than 2 hours ago by default
+    updatedAt:
+      updatedAt ?? new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    labels: vi.fn().mockResolvedValue({
+      nodes: labelNames.map((name) => ({ id: `label-${name}`, name })),
+    }),
+  };
+}
+
+describe('sweepStaleAgentWorking', () => {
+  const ORIGINAL_AUTO_MERGE = process.env.LINEAR_AUTO_MERGE;
+
+  beforeEach(() => {
+    process.env.LINEAR_AUTO_MERGE = '1';
+    _initTestDatabase();
+    execFileMock.mockReset();
+  });
+
+  afterEach(() => {
+    process.env.LINEAR_AUTO_MERGE = ORIGINAL_AUTO_MERGE;
+  });
+
+  it('moves issue to Done when the PR is already merged', async () => {
+    const issueId = 'issue-merged-pr';
+    const prUrl = 'https://github.com/test/repo/pull/42';
+
+    logPipelineEvent(issueId, 'LIA-1', 'agent_started');
+    upsertIssuePr(issueId, prUrl);
+
+    // gh pr view returns MERGED
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({ state: 'MERGED' }),
+    });
+
+    const issueNode = makeIssueNode(issueId, 'LIA-1');
+    const ctx = makeAgentWorkingCtx({
+      client: {
+        updateIssue: vi.fn().mockResolvedValue({}),
+        createComment: vi.fn().mockResolvedValue({}),
+        issues: vi.fn().mockResolvedValue({ nodes: [issueNode] }),
+        issue: vi.fn(),
+      } as unknown as LinearContext['client'],
+    });
+
+    const { sweepStaleAgentWorking } = await import('./linear-auto-merge.js');
+    // Pass thresholdMs=0 so recently-added DB events are still treated as stale
+    await sweepStaleAgentWorking(ctx, 0);
+
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ stateId: 'done-id' }),
+    );
+    expect(ctx.client.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId,
+        body: expect.stringContaining('already merged'),
+      }),
+    );
+  });
+
+  it('moves issue to In Review when PR exists but is not merged', async () => {
+    const issueId = 'issue-open-pr';
+    const prUrl = 'https://github.com/test/repo/pull/99';
+    upsertIssuePr(issueId, prUrl);
+
+    execFileMock.mockReturnValue({
+      stdout: JSON.stringify({ state: 'OPEN' }),
+    });
+
+    const issueNode = makeIssueNode(issueId, 'LIA-2');
+    const ctx = makeAgentWorkingCtx({
+      client: {
+        updateIssue: vi.fn().mockResolvedValue({}),
+        createComment: vi.fn().mockResolvedValue({}),
+        issues: vi.fn().mockResolvedValue({ nodes: [issueNode] }),
+        issue: vi.fn(),
+      } as unknown as LinearContext['client'],
+    });
+
+    const { sweepStaleAgentWorking } = await import('./linear-auto-merge.js');
+    await sweepStaleAgentWorking(ctx, 0);
+
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ stateId: 'review-id' }),
+    );
+  });
+
+  it('moves issue to In Review when agent_completed event exists but no PR', async () => {
+    const issueId = 'issue-completed-no-pr';
+    logPipelineEvent(issueId, 'LIA-3', 'agent_started');
+    logPipelineEvent(issueId, 'LIA-3', 'agent_completed');
+
+    const issueNode = makeIssueNode(issueId, 'LIA-3');
+    const ctx = makeAgentWorkingCtx({
+      client: {
+        updateIssue: vi.fn().mockResolvedValue({}),
+        createComment: vi.fn().mockResolvedValue({}),
+        issues: vi.fn().mockResolvedValue({ nodes: [issueNode] }),
+        issue: vi.fn(),
+      } as unknown as LinearContext['client'],
+    });
+
+    const { sweepStaleAgentWorking } = await import('./linear-auto-merge.js');
+    await sweepStaleAgentWorking(ctx, 0);
+
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ stateId: 'review-id' }),
+    );
+  });
+
+  it('moves issue to Manual Review Required when stale with no progress signal', async () => {
+    const issueId = 'issue-no-signal';
+    // No pipeline events, no PR — genuinely stuck with no info
+
+    const issueNode = makeIssueNode(issueId, 'LIA-4');
+    const ctx = makeAgentWorkingCtx({
+      client: {
+        updateIssue: vi.fn().mockResolvedValue({}),
+        createComment: vi.fn().mockResolvedValue({}),
+        issues: vi.fn().mockResolvedValue({ nodes: [issueNode] }),
+        issue: vi.fn(),
+      } as unknown as LinearContext['client'],
+    });
+
+    const { sweepStaleAgentWorking } = await import('./linear-auto-merge.js');
+    await sweepStaleAgentWorking(ctx, 0);
+
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ stateId: 'manual-id' }),
+    );
+  });
+
+  it('does not transition an issue that is currently in-flight', async () => {
+    const issueId = 'issue-inflight';
+
+    const issueNode = makeIssueNode(issueId, 'LIA-5');
+    const updateIssue = vi.fn().mockResolvedValue({});
+    const ctx = makeAgentWorkingCtx({
+      client: {
+        updateIssue,
+        createComment: vi.fn().mockResolvedValue({}),
+        issues: vi.fn().mockResolvedValue({ nodes: [issueNode] }),
+        issue: vi.fn(),
+      } as unknown as LinearContext['client'],
+      inFlightDispatch: new Set([issueId]),
+    });
+
+    const { sweepStaleAgentWorking } = await import('./linear-auto-merge.js');
+    // Even with threshold=0, in-flight issues must be skipped
+    await sweepStaleAgentWorking(ctx, 0);
+
+    expect(updateIssue).not.toHaveBeenCalled();
+  });
+
+  it('does not transition an issue that entered Agent Working recently (under threshold)', async () => {
+    const issueId = 'issue-fresh';
+    // Seed an agent_started event with current timestamp (well under 60 min threshold)
+    logPipelineEvent(issueId, 'LIA-6', 'agent_started');
+
+    const recentUpdatedAt = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago
+    const issueNode = makeIssueNode(issueId, 'LIA-6', [], recentUpdatedAt);
+    const updateIssue = vi.fn().mockResolvedValue({});
+    const ctx = makeAgentWorkingCtx({
+      client: {
+        updateIssue,
+        createComment: vi.fn().mockResolvedValue({}),
+        issues: vi.fn().mockResolvedValue({ nodes: [issueNode] }),
+        issue: vi.fn(),
+      } as unknown as LinearContext['client'],
+    });
+
+    const { sweepStaleAgentWorking } = await import('./linear-auto-merge.js');
+    // Use the default 60-minute threshold — the 5-minute-old event should not be swept
+    await sweepStaleAgentWorking(ctx);
+
+    expect(updateIssue).not.toHaveBeenCalled();
   });
 });

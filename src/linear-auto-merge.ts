@@ -14,6 +14,8 @@ import {
   getConsecutiveFailCount,
   getIssuePr,
   getPendingAutoMerges,
+  getPipelineEvents,
+  getStageEntryTime,
   logPipelineEvent,
   updatePrAutoMergeState,
   upsertIssuePr,
@@ -449,6 +451,246 @@ export async function sweepStaleInReview(
     }
   } catch (err) {
     logger.warn({ err }, 'auto-merge: failed to sweep stale In Review issues');
+  }
+}
+
+/** Issues stuck in Agent Working for longer than this are considered stale. */
+const AGENT_WORKING_STALE_THRESHOLD_MS = 60 * 60_000; // 60 minutes
+
+/**
+ * Sweeps issues that are stuck in "Agent Working" and reconciles their state.
+ *
+ * Decision tree for an issue past the stale threshold:
+ *   1. Has a merged PR           → move to Done
+ *   2. Has an open/closed PR     → move to In Review (existing merge path handles it)
+ *   3. No PR, agent_completed    → move to In Review (let completion gate decide)
+ *   4. Most recent event is agent_failed → move to Ready for Agent (circuit-breaker aware)
+ *   5. No signal at all          → move to Manual Review Required
+ *
+ * Issues that are actively in-flight or under the threshold are left alone.
+ */
+export async function sweepStaleAgentWorking(
+  ctx: LinearContext,
+  thresholdMs = AGENT_WORKING_STALE_THRESHOLD_MS,
+): Promise<void> {
+  if (!isAutoMergeEnabled()) return;
+
+  const agentWorkingState = ctx.stateByName.get('Agent Working');
+  if (!agentWorkingState) return;
+
+  let issues;
+  try {
+    issues = await ctx.client.issues({
+      filter: { state: { id: { eq: agentWorkingState.id } } },
+    });
+  } catch (err) {
+    logger.warn({ err }, 'auto-merge: failed to query Agent Working issues');
+    return;
+  }
+
+  const now = Date.now();
+  let reconciled = 0;
+
+  for (const issue of issues.nodes) {
+    // Skip in-flight agents — they are actively running in this process
+    if (ctx.inFlightDispatch.has(issue.id)) continue;
+
+    const labels = await issue.labels();
+    if (labels.nodes.some((l) => l.name === 'warden:skip')) continue;
+
+    // Skip issues that haven't exceeded the stale threshold
+    const entryTime = getStageEntryTime(issue.id, 'Agent Working');
+    if (entryTime) {
+      const ageMs = now - new Date(entryTime).getTime();
+      if (ageMs < thresholdMs) continue;
+    }
+    // If no entry time in DB, use the issue's own updatedAt as a conservative fallback
+    else {
+      const updatedAt = issue.updatedAt as Date | string | undefined;
+      if (updatedAt) {
+        const ageMs =
+          now -
+          (updatedAt instanceof Date
+            ? updatedAt.getTime()
+            : new Date(updatedAt as string).getTime());
+        if (ageMs < thresholdMs) continue;
+      }
+      // If we have no timestamp at all, fall through to reconcile
+    }
+
+    const ident = issue.identifier;
+
+    // Check for a known PR
+    const pr = getIssuePr(issue.id);
+    if (pr) {
+      if (pr.auto_merge_state === 'pending') continue; // merge already in progress
+
+      const prState = await queryPrState(pr.pr_url);
+      if (prState?.state === 'MERGED') {
+        // PR is already merged — move straight to Done
+        const doneState = ctx.stateByName.get('Done');
+        if (doneState) {
+          const labelUpdate: Record<string, unknown> = {
+            stateId: doneState.id,
+          };
+          const addIds: string[] = [];
+          const removeIds: string[] = [];
+          if (ctx.gateLabels.wardenSkip) addIds.push(ctx.gateLabels.wardenSkip);
+          if (ctx.gateLabels.revise) removeIds.push(ctx.gateLabels.revise);
+          if (ctx.gateLabels.evaluating)
+            removeIds.push(ctx.gateLabels.evaluating);
+          if (addIds.length > 0) labelUpdate.addedLabelIds = addIds;
+          if (removeIds.length > 0) labelUpdate.removedLabelIds = removeIds;
+          await ctx.client.updateIssue(issue.id, labelUpdate);
+          await ctx.client.createComment({
+            issueId: issue.id,
+            body: `**State reconciled** — PR ${pr.pr_url} was already merged. Moved to Done.`,
+          });
+          updatePrAutoMergeState(issue.id, 'merged');
+          logPipelineEvent(
+            issue.id,
+            ident,
+            'circuit_breaker_reset',
+            'sweep: pr already merged',
+          );
+          logger.info(
+            { issueId: issue.id, prUrl: pr.pr_url },
+            'auto-merge: Agent Working sweep → Done (PR already merged)',
+          );
+          reconciled++;
+        }
+        continue;
+      }
+
+      // PR exists but isn't merged — move to In Review so the normal path handles it
+      const reviewState = ctx.stateByName.get('In Review');
+      if (reviewState) {
+        await ctx.client.updateIssue(issue.id, { stateId: reviewState.id });
+        await ctx.client.createComment({
+          issueId: issue.id,
+          body: `**State reconciled** — issue was stuck in Agent Working with an open PR. Moved to In Review for auto-merge processing.\n\nPR: ${pr.pr_url}`,
+        });
+        logPipelineEvent(
+          issue.id,
+          ident,
+          'agent_completed',
+          'sweep: moved to In Review (open PR found)',
+        );
+        logger.info(
+          { issueId: issue.id, prUrl: pr.pr_url },
+          'auto-merge: Agent Working sweep → In Review (open PR)',
+        );
+        reconciled++;
+      }
+      continue;
+    }
+
+    // No PR recorded — inspect pipeline events to distinguish completed vs. failed vs. no-signal
+    const events = getPipelineEvents({ issueId: issue.id });
+    const relevantEvents = events.filter(
+      (e) =>
+        e.event_type === 'agent_completed' ||
+        e.event_type === 'agent_failed' ||
+        e.event_type === 'agent_started',
+    );
+
+    // Find the most recent terminal event
+    const lastRelevant = relevantEvents.at(-1);
+
+    if (lastRelevant?.event_type === 'agent_completed') {
+      // Agent finished cleanly but somehow state wasn't updated — move to In Review
+      const reviewState = ctx.stateByName.get('In Review');
+      if (reviewState) {
+        await ctx.client.updateIssue(issue.id, {
+          stateId: reviewState.id,
+          assigneeId: ctx.viewerId,
+        });
+        await ctx.client.createComment({
+          issueId: issue.id,
+          body: `**State reconciled** — agent completed but issue was still in Agent Working. Moved to In Review.`,
+        });
+        logPipelineEvent(
+          issue.id,
+          ident,
+          'circuit_breaker_reset',
+          'sweep: agent_completed but stuck in Agent Working',
+        );
+        logger.info(
+          { issueId: issue.id },
+          'auto-merge: Agent Working sweep → In Review (agent_completed found)',
+        );
+        reconciled++;
+      }
+      continue;
+    }
+
+    if (lastRelevant?.event_type === 'agent_failed') {
+      // Agent failed — check circuit breaker then route to Ready for Agent or Manual Review
+      const failCount = getConsecutiveFailCount(issue.id, 'agent_failed');
+      if (failCount >= CIRCUIT_BREAKER_THRESHOLD) {
+        await tripCircuitBreaker(
+          ctx,
+          issue.id,
+          ident,
+          failCount,
+          'stale sweep',
+        );
+        logger.warn(
+          { issueId: issue.id, failCount },
+          'auto-merge: Agent Working sweep → circuit breaker tripped',
+        );
+      } else {
+        const readyState = ctx.stateByName.get('Ready for Agent');
+        if (readyState) {
+          await ctx.client.updateIssue(issue.id, {
+            stateId: readyState.id,
+          });
+          await ctx.client.createComment({
+            issueId: issue.id,
+            body: `**State reconciled** — agent run failed and issue was stuck in Agent Working. Moved back to Ready for Agent for re-dispatch.`,
+          });
+          logPipelineEvent(
+            issue.id,
+            ident,
+            'circuit_breaker_reset',
+            'sweep: moved to Ready for Agent after agent_failed',
+          );
+          logger.info(
+            { issueId: issue.id },
+            'auto-merge: Agent Working sweep → Ready for Agent (agent_failed)',
+          );
+        }
+      }
+      reconciled++;
+      continue;
+    }
+
+    // No recognisable terminal event — the issue is truly stuck with no progress signal
+    const manualReviewState = ctx.stateByName.get('Manual Review Required');
+    const parkState = manualReviewState ?? ctx.stateByName.get('Backlog')!;
+    await ctx.client.updateIssue(issue.id, { stateId: parkState.id });
+    await ctx.client.createComment({
+      issueId: issue.id,
+      body: `**State reconciled** — issue has been stuck in Agent Working with no progress signal for over an hour. Moved to ${parkState.name} for manual review.\n\nTo retry: investigate, then move back to **Ready for Agent**.`,
+    });
+    logPipelineEvent(
+      issue.id,
+      ident,
+      'circuit_breaker_tripped',
+      'sweep: no progress signal, moved to manual review',
+    );
+    logger.warn(
+      { issueId: issue.id },
+      'auto-merge: Agent Working sweep → Manual Review Required (no signal)',
+    );
+    reconciled++;
+  }
+
+  if (reconciled > 0) {
+    logger.info(
+      { count: reconciled },
+      'auto-merge: swept stale Agent Working issues',
+    );
   }
 }
 

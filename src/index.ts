@@ -425,8 +425,11 @@ async function main(): Promise<void> {
       }
 
       // Sweep pending auto-merges and stale In Review issues from previous runs
-      const { sweepPendingAutoMerges, sweepStaleInReview } =
-        await import('./linear-auto-merge.js');
+      const {
+        sweepPendingAutoMerges,
+        sweepStaleInReview,
+        sweepStaleAgentWorking,
+      } = await import('./linear-auto-merge.js');
       sweepPendingAutoMerges(linearCtx).catch((err) => {
         logger.warn({ err }, 'auto-merge: startup sweep failed');
       });
@@ -436,6 +439,9 @@ async function main(): Promise<void> {
         runInlineCompletionCheck(ctx, issueData, gateSpecs),
       ).catch((err) => {
         logger.warn({ err }, 'auto-merge: stale In Review sweep failed');
+      });
+      sweepStaleAgentWorking(ctx).catch((err) => {
+        logger.warn({ err }, 'auto-merge: stale Agent Working sweep failed');
       });
 
       const { sweepStaleGatedIssues } = await import('./linear-webhook.js');
