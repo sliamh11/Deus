@@ -51,6 +51,7 @@ def test_write_profile_creates_file(vault_dir, monkeypatch):
     path = write_profile("- Prefers concise responses\n- Uses early returns")
 
     assert path.exists()
+    assert path.name == "communication.hypotheses.md"
     content = path.read_text()
     assert "type: taste-profile" in content
     assert "Prefers concise responses" in content
@@ -67,7 +68,7 @@ def test_write_profile_idempotent(vault_dir, monkeypatch):
     write_profile("- Hypothesis A\n- Hypothesis B")
     write_profile("- Hypothesis C\n- Hypothesis D")
 
-    path = vault / "Persona" / "work-style" / "communication.md"
+    path = vault / "Persona" / "work-style" / "communication.hypotheses.md"
     content = path.read_text()
     assert content.count(_HYPOTHESIS_START) == 1
     assert "Hypothesis C" in content
@@ -102,6 +103,63 @@ def test_infer_hypotheses_calls_generate():
         assert "Prefers short responses" in result
 
 
+def test_write_profile_never_touches_user_file(vault_dir, monkeypatch):
+    """write_profile writes to .hypotheses.md, never to communication.md."""
+    vault, config_file = vault_dir
+    monkeypatch.setenv("DEUS_VAULT_PATH", str(vault))
+
+    user_file = vault / "Persona" / "work-style" / "communication.md"
+    original = "# My hand-curated preferences\n- concise and direct\n"
+    user_file.write_text(original)
+
+    from evolution.taste_profile import write_profile
+    write_profile("- LLM hypothesis A\n- LLM hypothesis B")
+
+    assert user_file.read_text() == original
+    hyp_file = vault / "Persona" / "work-style" / "communication.hypotheses.md"
+    assert hyp_file.exists()
+    assert "LLM hypothesis A" in hyp_file.read_text()
+
+
+def test_infer_hypotheses_empty_generate(vault_dir, monkeypatch):
+    """generate_taste_profile returns None when LLM returns empty output."""
+    vault, config_file = vault_dir
+    monkeypatch.setenv("DEUS_VAULT_PATH", str(vault))
+
+    with patch("evolution.taste_profile.get_recent") as mock_recent, \
+         patch("evolution.taste_profile.get_storage") as mock_storage, \
+         patch("evolution.taste_profile.generate") as mock_gen:
+        mock_recent.return_value = [{"prompt": "test", "response": "ok", "judge_score": 0.8}] * 15
+        mock_storage.return_value.get_interactions_with_signals.return_value = []
+        mock_gen.return_value = ""
+
+        from evolution.taste_profile import generate_taste_profile
+        result = generate_taste_profile(min_interactions=5, force=True)
+        assert result is None
+
+    hyp_file = vault / "Persona" / "work-style" / "communication.hypotheses.md"
+    assert not hyp_file.exists()
+
+
+def test_vault_path_traversal(monkeypatch):
+    """Vault path outside home/tmp is rejected."""
+    monkeypatch.setenv("DEUS_VAULT_PATH", "/evil")
+
+    from evolution.taste_profile import _load_vault_path
+    with pytest.raises(ValueError, match="outside allowed prefixes"):
+        _load_vault_path()
+
+
+def test_vault_path_prefix_collision(monkeypatch):
+    """Paths sharing a string prefix with home but not a child are rejected."""
+    home = str(Path.home())
+    monkeypatch.setenv("DEUS_VAULT_PATH", home + "-evil/vault")
+
+    from evolution.taste_profile import _load_vault_path
+    with pytest.raises(ValueError, match="outside allowed prefixes"):
+        _load_vault_path()
+
+
 def test_consolidation_sentinel_guard(vault_dir, monkeypatch):
     """Consolidation section uses sentinels for idempotency."""
     vault, config_file = vault_dir
@@ -131,6 +189,6 @@ def test_consolidation_sentinel_guard(vault_dir, monkeypatch):
         # Run again — should overwrite, not append
         consolidate_style_reflections(force=True)
 
-        path = vault / "Persona" / "work-style" / "communication.md"
+        path = vault / "Persona" / "work-style" / "communication.hypotheses.md"
         content = path.read_text()
         assert content.count(_CONSOLIDATION_START) == 1
