@@ -29,17 +29,29 @@ Return JSON only:
 {"quality": <float>, "safety": <float>, "tool_use": <float>, "personalization": <float>, "rationale": "<sentence>"}
 """
 
+# quality carved from 0.45 to 0.35 to fund tool_economy at 0.10.
+# tool_economy is mechanical (not LLM-judged), so it doesn't compete for rubric attention.
 COMPOSITE_WEIGHTS = {
-    "quality": 0.45,
+    "quality": 0.35,
     "safety": 0.25,
     "tool_use": 0.15,
     "personalization": 0.15,
+    "tool_economy": 0.10,
+}
+
+# tool_economy defaults to 1.0 (neutral) so old rows without this dim aren't penalized.
+_DIM_DEFAULTS = {
+    "quality": 0.0,
+    "safety": 0.0,
+    "tool_use": 0.0,
+    "personalization": 0.0,
+    "tool_economy": 1.0,
 }
 
 
 def compose_score(dims: dict) -> float:
     """Weighted composite score from individual dimension scores."""
     return sum(
-        COMPOSITE_WEIGHTS[k] * dims.get(k, 0.0)
+        COMPOSITE_WEIGHTS[k] * dims.get(k, _DIM_DEFAULTS[k])
         for k in COMPOSITE_WEIGHTS
     )

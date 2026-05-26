@@ -76,6 +76,16 @@ def _extract_user_text(entry: dict) -> Optional[str]:
     return None
 
 
+def _extract_tool_call_input(block: dict) -> dict:
+    """Extract scoring-relevant fields from a tool_use content block."""
+    inp = block.get("input", {})
+    result = {"name": block.get("name", "")}
+    for field in ("file_path", "subagent_type", "command"):
+        if field in inp:
+            result[field] = inp[field]
+    return result
+
+
 def _extract_assistant_content(entry: dict) -> Optional[dict]:
     """Extract text + tool names from a complete assistant entry."""
     msg = entry.get("message", {})
@@ -118,7 +128,17 @@ def _extract_pairs(jsonl_path: Path) -> Iterator[dict]:
     except (OSError, json.JSONDecodeError):
         return
 
-    # Collect turns in order: real user prompts and complete assistant messages
+    # Pass 1: pre-compute final content blocks per msg_id (streaming dedup)
+    msg_final_content: dict[str, list] = {}
+    for entry in lines:
+        if entry.get("type") != "assistant":
+            continue
+        msg = entry.get("message", {})
+        msg_id = msg.get("id")
+        if msg_id and msg.get("stop_reason") is not None:
+            msg_final_content[msg_id] = msg.get("content", [])
+
+    # Pass 2: walk in order, collect turns with enriched tool call data
     turns: list[tuple[str, dict]] = []
     seen_msg_ids: set[str] = set()
 
@@ -132,24 +152,38 @@ def _extract_pairs(jsonl_path: Path) -> Iterator[dict]:
 
         elif entry_type == "assistant":
             msg_id = entry.get("message", {}).get("id")
-            # Dedup streaming: keep only the last entry per message ID
-            # (entries come in order, so last seen with stop_reason wins)
             content = _extract_assistant_content(entry)
             if content and msg_id:
+                # Extract enriched tool call inputs from the final content
+                enriched_calls = []
+                final_blocks = msg_final_content.get(msg_id, [])
+                for block in final_blocks:
+                    if isinstance(block, dict) and block.get("type") == "tool_use":
+                        enriched_calls.append(_extract_tool_call_input(block))
+
                 if msg_id in seen_msg_ids:
-                    # Replace previous entry for this msg_id
                     for i in range(len(turns) - 1, -1, -1):
                         if turns[i][0] == "assistant" and turns[i][1].get("msg_id") == msg_id:
-                            turns[i] = ("assistant", {**content, "msg_id": msg_id})
+                            turns[i] = ("assistant", {
+                                **content,
+                                "msg_id": msg_id,
+                                "tool_calls": enriched_calls,
+                            })
                             break
                 else:
                     seen_msg_ids.add(msg_id)
-                    turns.append(("assistant", {**content, "msg_id": msg_id}))
+                    turns.append(("assistant", {
+                        **content,
+                        "msg_id": msg_id,
+                        "tool_calls": enriched_calls,
+                    }))
 
-    # Pair: for each user turn, find the last assistant response before the next user turn
+    # Pair: tool_calls aggregates across all assistant msgs in a turn;
+    # tools comes from the last assistant msg only (backward compat).
     pair_index = 0
     current_user = None
     last_assistant = None
+    turn_tool_calls: list[dict] = []
 
     for role, data in turns:
         if role == "user":
@@ -160,15 +194,17 @@ def _extract_pairs(jsonl_path: Path) -> Iterator[dict]:
                         "prompt": current_user,
                         "response": response_text,
                         "tools": last_assistant.get("tools", []),
+                        "tool_calls": list(turn_tool_calls),
                         "pair_index": pair_index,
                     }
                     pair_index += 1
             current_user = data["text"]
             last_assistant = None
+            turn_tool_calls = []
         elif role == "assistant":
             last_assistant = data
+            turn_tool_calls.extend(data.get("tool_calls", []))
 
-    # Emit the final pair
     if current_user is not None and last_assistant is not None:
         response_text = last_assistant["text"]
         if len(response_text) >= _MIN_RESPONSE_LEN:
@@ -176,6 +212,7 @@ def _extract_pairs(jsonl_path: Path) -> Iterator[dict]:
                 "prompt": current_user,
                 "response": response_text,
                 "tools": last_assistant.get("tools", []),
+                "tool_calls": list(turn_tool_calls),
                 "pair_index": pair_index,
             }
 
@@ -231,6 +268,7 @@ def collect_pairs(
                 "prompt": pair["prompt"],
                 "response": pair["response"],
                 "tools": pair["tools"],
+                "tool_calls": pair.get("tool_calls", []),
             })
             if limit and len(pairs) >= limit:
                 return pairs
@@ -290,6 +328,8 @@ def run_cc_backfill(
 
     from .reflexion.generator import generate_reflection, generate_positive_reflection
     from .reflexion.store import save_reflection
+    from .judge.mechanical import score_tool_economy
+    from .judge.criteria import compose_score
 
     for i, pair in enumerate(pairs):
         iid = pair["interaction_id"]
@@ -333,27 +373,31 @@ def run_cc_backfill(
                 stats["processed"] += 1
                 continue
 
+            te_score, te_diag = score_tool_economy(pair.get("tool_calls", []))
+
             dims = {
                 "quality": result.quality,
                 "safety": result.safety,
                 "tool_use": result.tool_use,
                 "personalization": result.personalization,
+                "tool_economy": te_score,
             }
-            update_score(iid, result.score, dims, parse_error=result.is_parse_error)
+            composite = compose_score(dims)
+            update_score(iid, composite, dims, parse_error=result.is_parse_error)
 
             if verbose:
-                print(f"  score={result.score:.2f}  q={result.quality:.2f}  "
+                print(f"  score={composite:.2f}  q={result.quality:.2f}  "
                       f"s={result.safety:.2f}  t={result.tool_use:.2f}  "
-                      f"p={result.personalization:.2f}")
+                      f"p={result.personalization:.2f}  te={te_score:.2f}")
 
             # Generate reflections
             if not result.is_parse_error:
-                if result.score < REFLECTION_THRESHOLD:
+                if composite < REFLECTION_THRESHOLD:
                     try:
                         content, category = generate_reflection(
                             prompt=pair["prompt"],
                             response=pair["response"],
-                            score=result.score,
+                            score=composite,
                             dims=dims,
                             rationale=result.rationale,
                             tools_used=pair["tools"],
@@ -361,7 +405,7 @@ def run_cc_backfill(
                         save_reflection(
                             content=content,
                             category=category,
-                            score_at_gen=result.score,
+                            score_at_gen=composite,
                             interaction_id=iid,
                             group_folder=pair["group_folder"],
                         )
@@ -371,12 +415,12 @@ def run_cc_backfill(
                     except Exception as exc:
                         if verbose:
                             print(f"  !! reflection failed: {exc}")
-                elif result.score >= POSITIVE_THRESHOLD:
+                elif composite >= POSITIVE_THRESHOLD:
                     try:
                         content, category = generate_positive_reflection(
                             prompt=pair["prompt"],
                             response=pair["response"],
-                            score=result.score,
+                            score=composite,
                             dims=dims,
                             rationale=result.rationale,
                             tools_used=pair["tools"],
@@ -384,7 +428,7 @@ def run_cc_backfill(
                         save_reflection(
                             content=content,
                             category=category,
-                            score_at_gen=result.score,
+                            score_at_gen=composite,
                             interaction_id=iid,
                             group_folder=pair["group_folder"],
                         )
