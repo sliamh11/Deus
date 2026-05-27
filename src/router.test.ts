@@ -90,7 +90,8 @@ describe('stripInternalTags', () => {
   });
 
   it('strips multiple and multiline internal blocks', () => {
-    const input = 'start<internal>\nline1\nline2\n</internal>middle<internal>x</internal>end';
+    const input =
+      'start<internal>\nline1\nline2\n</internal>middle<internal>x</internal>end';
     expect(stripInternalTags(input)).toBe('startmiddleend');
   });
 });
