@@ -14,3 +14,4 @@
 2026-05-26T11:47:30Z | verification-gate | TRIVIAL | Pattern file comment-only bump, no functional changes to verify
 2026-05-26T11:56:22Z | plan-reviewer   | SHIP    | LIA-92: prompt-only warden spec edits, pre-approved
 2026-05-26T11:58:21Z | code-reviewer   | TRIVIAL | LIA-92: prompt-only warden spec additions, no runtime code changes
+2026-05-27T12:02:02Z | plan-reviewer   | SHIP    | LIA-102 content was plan-reviewed and approved (SHIP verdict) by container agent; this is a markdown-only append to a warden spec file with no runtime code changes

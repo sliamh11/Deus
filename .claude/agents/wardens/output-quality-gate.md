@@ -70,3 +70,44 @@ Rules:
 - REVISE includes a quote or description of the specific failure so the issue author can re-prompt.
 - Verdict is exactly `## Verdict: SHIP` or `## Verdict: REVISE` — no other values.
 - Keep report under 35 lines.
+
+## Check: User Activation Path
+
+**When to apply**: Scan the diff for local-state signals before applying this check. If none are detected, skip entirely (auto-PASS). Local-state signals include:
+
+- Reads from or writes to a SQLite database (`.db`, `better-sqlite3`, `sqlite-vec`)
+- Calibration fixture files (`.jsonl`, `.json` in `scripts/tests/fixtures/` or similar)
+- Embedding index files (`.idx`, vector store files)
+- Hook-populated config (`.husky/`, `.git/hooks/`, startup-time config writes)
+- On-disk caches that must exist before the feature works correctly
+
+**If local-state signals are detected**, verify all three sub-checks:
+
+1. **Trigger** — Is there a `.husky/post-merge`, `.git/hooks/post-merge`, or startup-path call that populates the state after a fresh `git pull`? Scan `.husky/` and startup entry points (e.g., `src/index.ts`, `main()` equivalents).
+
+2. **Graceful degrade** — Does the diff include a `logger.warn`, `console.warn`, or fallback value (e.g., `confidence = 0.5`) emitted when the store is absent? Silent failure (no warning, no fallback) fails this sub-check.
+
+3. **Doc/Auto** — Is population automated (auto-init on first run) or documented in README / install steps? Check for a `generate_fixture`, auto-init call on first access, or a README section covering the local-state setup.
+
+**REVISE template when any sub-check fails**:
+
+```
+## Verdict: REVISE
+
+Checklist:
+- [x] Substantive output
+- [x] Addresses the issue
+- [ ] User activation path — local-state dependency detected, sub-check(s) failed:
+  - [ ] Trigger: <file:line where population call is missing> — Add a `.husky/post-merge` trigger or auto-init on first use.
+  - [ ] Graceful degrade: <file:line> — Add a `logger.warn` when state is absent.
+  - [ ] Doc/Auto: <what is undocumented> — Document in README or add auto-init.
+
+Required before moving to In Review:
+Add a `.husky/post-merge` trigger or auto-init on first use; add a `logger.warn` when state is absent.
+```
+
+**SHIP example when all sub-checks pass or no local-state detected**:
+
+```
+- [x] User activation path — no local-state dependency detected (stateless change) / all three sub-checks pass
+```

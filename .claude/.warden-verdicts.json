@@ -6,9 +6,9 @@
     "verdict": "TRIVIAL"
   },
   "plan-reviewer": {
-    "reason": "LIA-92: prompt-only warden spec edits, pre-approved",
+    "reason": "LIA-102 content was plan-reviewed and approved (SHIP verdict) by container agent; this is a markdown-only append to a warden spec file with no runtime code changes",
     "source": "mark",
-    "ts": "2026-05-26T11:56:22Z",
+    "ts": "2026-05-27T12:02:02Z",
     "verdict": "SHIP"
   },
   "verification-gate": {
