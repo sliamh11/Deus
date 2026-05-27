@@ -145,7 +145,12 @@ vi.mock('fs', async () => {
 // ── Imports (after mocks) ────────────────────────────────────────────────────
 
 import { createMessageOrchestrator } from './message-orchestrator.js';
-import { getMessagesSince, getNewMessages, clearSession, setSession } from './db.js';
+import {
+  getMessagesSince,
+  getNewMessages,
+  clearSession,
+  setSession,
+} from './db.js';
 import { findChannel } from './router.js';
 import {
   handleSessionCommand,
