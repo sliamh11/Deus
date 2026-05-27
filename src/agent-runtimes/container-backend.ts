@@ -65,7 +65,7 @@ export class ContainerRuntime implements AgentRuntime {
       if (output.result) {
         await eventSink({ type: 'output_text', text: output.result });
       }
-      if (output.newSessionRef || output.newSessionId) {
+      if ((output.newSessionRef || output.newSessionId) && output.status !== 'error') {
         const ref =
           output.newSessionRef ??
           defaultSession(output.newSessionId!, this.backendName);

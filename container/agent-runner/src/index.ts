@@ -1306,12 +1306,15 @@ async function main(): Promise<void> {
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err);
+    // Claude SDK throws "No conversation found" when session ID no longer exists server-side.
+    // Mirrored in src/message-orchestrator.ts — update both if the SDK message changes.
+    const isStaleSession = errorMessage.includes('No conversation found');
     log(`Agent error: ${errorMessage}`);
     writeOutput({
       status: 'error',
       result: null,
-      newSessionRef: defaultSession(sessionId),
-      newSessionId: sessionId,
+      newSessionRef: isStaleSession ? undefined : defaultSession(sessionId),
+      newSessionId: isStaleSession ? undefined : sessionId,
       error: errorMessage,
     });
     throw err instanceof Error ? err : new Error(errorMessage);

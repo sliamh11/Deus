@@ -213,17 +213,22 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         eventSink,
       );
 
-      if (runResult.sessionRef) {
-        state.setSession(group.folder, runResult.sessionRef);
-        setSession(group.folder, runResult.sessionRef);
-      }
-
       if (runResult.status === 'error') {
+        // Claude SDK error for dead sessions. Mirrored in container/agent-runner/src/index.ts.
+        if (runResult.error?.includes('No conversation found')) {
+          clearSession(group.folder, backend);
+          state.clearSession(group.folder, backend);
+        }
         logger.error(
           { group: group.name, error: runResult.error },
           'Container agent error',
         );
         return 'error';
+      }
+
+      if (runResult.sessionRef) {
+        state.setSession(group.folder, runResult.sessionRef);
+        setSession(group.folder, runResult.sessionRef);
       }
 
       return 'success';

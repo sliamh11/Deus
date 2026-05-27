@@ -145,7 +145,7 @@ vi.mock('fs', async () => {
 // ── Imports (after mocks) ────────────────────────────────────────────────────
 
 import { createMessageOrchestrator } from './message-orchestrator.js';
-import { getMessagesSince, getNewMessages } from './db.js';
+import { getMessagesSince, getNewMessages, clearSession, setSession } from './db.js';
 import { findChannel } from './router.js';
 import {
   handleSessionCommand,
@@ -381,6 +381,41 @@ describe('processGroupMessages', () => {
       'group@g.us',
       'ts-prev',
     );
+  });
+
+  it('clears stale session on "No conversation found" error instead of persisting it', async () => {
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
+
+    const mockClearSession = vi.mocked(clearSession);
+    const mockSetSession = vi.mocked(setSession);
+    mockClearSession.mockClear();
+    mockSetSession.mockClear();
+    state.clearSession.mockClear();
+    state.setSession.mockClear();
+
+    activeRunTurn = async () => ({
+      status: 'error',
+      result: null,
+      error: 'No conversation found with session ID: abc123',
+      sessionRef: { backend: 'claude' as const, session_id: 'abc123' },
+    });
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+    expect(result).toBe(false);
+    expect(mockClearSession).toHaveBeenCalledWith('whatsapp_main', 'claude');
+    expect(state.clearSession).toHaveBeenCalledWith('whatsapp_main', 'claude');
+    expect(mockSetSession).not.toHaveBeenCalled();
+    expect(state.setSession).not.toHaveBeenCalled();
   });
 
   it('does NOT roll back cursor when output was already sent to the user', async () => {
