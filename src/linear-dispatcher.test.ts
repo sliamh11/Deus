@@ -57,6 +57,11 @@ vi.mock('./linear-notifications.js', () => ({
   notifyPipelineStep: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('./platform.js', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('./platform.js')>();
+  return { ...orig, IS_MACOS: true, IS_LINUX: false };
+});
+
 const TEST_PROJECT_ROOT = path.join(os.tmpdir(), `deus-test-${process.pid}`);
 
 import {
