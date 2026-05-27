@@ -529,7 +529,7 @@ Host-side tools that give agents structural and semantic awareness of the codeba
 | Tool | Question it answers | Type | Used by |
 |------|-------------------|------|---------|
 | **CodeGraph** | "What depends on this?" / "What breaks if I change this?" / "What's the call chain from A to B?" | MCP server (`codegraph serve --mcp`). Pre-indexed call graph in SQLite -- callers, callees, impact analysis, dependency chains. Auto-syncs on file changes. | Explore, code-reviewer, plan-reviewer, architecture-snapshot, qa-tester, general-purpose |
-| **claude-context** | "Do we already have something that does X?" / "Where is the logic that handles Y?" | MCP server. Semantic code search via Ollama embeddings + Milvus. Finds code by meaning, not text match. | All code-related agents (semantic-search-first rule) |
+| **code_search** | "Do we already have something that does X?" / "Where is the logic that handles Y?" | MCP server (`code_search_mcp.py`). Semantic code search via sqlite-vec + FTS5 with RRF fusion. Each result includes a `retrieval_confidence` score (percentile-calibrated) so the consuming agent knows whether the query matched the codebase. Replaces claude-context/Milvus. | All code-related agents (semantic-search-first rule) |
 | **grep / find** | "Where exactly does string X appear?" / "Which files match pattern Y?" | Shell. Exact text match -- fast and precise when you know the symbol name. | All agents (after semantic/structural narrowing) |
 | **Understand-Anything** | "How does this whole project fit together?" / "Walk me through the architecture." | Claude Code plugin. Interactive knowledge graph -- `/understand` for full analysis, `/understand-chat` for Q&A, `/understand-dashboard` for visualization. | Human operator (learning/onboarding) |
 | **Mermaid** | "Show me a diagram of X." | MCP server. Diagram generation from Mermaid DSL. | architecture-snapshot, any agent producing visual output |
@@ -538,7 +538,7 @@ Host-side tools that give agents structural and semantic awareness of the codeba
 
 Agents follow a three-stage pattern when exploring code. Each stage narrows the search space for the next:
 
-1. **Semantic search** (`search_code` via claude-context) -- "what code is *about* this topic?" Identifies candidate areas by meaning.
+1. **Semantic search** (`search_code` via code_search) -- "what code is *about* this topic?" Identifies candidate areas by meaning. Results include `retrieval_confidence` (0-1) so agents can gauge result quality.
 2. **Structural query** (`codegraph_callers` / `codegraph_callees` / `codegraph_impact`) -- "what *connects to* these candidates?" Narrows to the dependency cone of the focal file. Cuts irrelevant reads and keeps context windows focused.
 3. **Exact lookup** (grep/read) -- confirms specifics in the filtered set.
 

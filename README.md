@@ -248,7 +248,7 @@ Deus goes deep on understanding you and adapting over time. Hermes goes wide on 
 | How it works | [Architecture](docs/ARCHITECTURE.md) |
 | Memory system | [Architecture - Memory](docs/ARCHITECTURE.md#memory-system) |
 | Self-improvement loop | [Architecture - Evolution](docs/ARCHITECTURE.md#evolution-loop) |
-| Developer tools (CodeGraph, claude-context, etc.) | [Architecture - Developer Tools](docs/ARCHITECTURE.md#developer-tools) |
+| Developer tools (CodeGraph, code_search, etc.) | [Architecture - Developer Tools](docs/ARCHITECTURE.md#developer-tools) |
 | Security model | [Security](docs/SECURITY.md) |
 | Benchmarks & token costs | [Benchmarks](docs/benchmarks.md) |
 | Environment variables | [Environment](docs/ENVIRONMENT.md) |
