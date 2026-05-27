@@ -77,27 +77,23 @@ export function buildVolumeMounts(
   const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isControlGroup) {
-    // Main gets the project root read-only. Writable paths the agent needs
-    // (group folder, IPC, .claude/) are mounted separately below.
-    // Read-only prevents the agent from modifying host application code
-    // (src/, dist/, package.json, etc.) which would bypass the sandbox
-    // entirely on next restart.
-    mounts.push({
-      hostPath: projectRoot,
-      containerPath: '/workspace/project',
-      readonly: true,
-    });
-
-    // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Credentials are injected by the credential proxy, never exposed to containers.
-    // os.devNull is '/dev/null' on Unix and '\\.\nul' on Windows.
-    const envFile = path.join(projectRoot, '.env');
-    if (fs.existsSync(envFile)) {
+    // Only mount the Deus project root as a fallback when no worktree or
+    // external project will provide /workspace/project (avoids duplicate mounts).
+    const hasProjectOverride = !!(worktreePath || group.projectId);
+    if (!hasProjectOverride) {
       mounts.push({
-        hostPath: os.devNull,
-        containerPath: '/workspace/project/.env',
+        hostPath: projectRoot,
+        containerPath: '/workspace/project',
         readonly: true,
       });
+      const envFile = path.join(projectRoot, '.env');
+      if (fs.existsSync(envFile)) {
+        mounts.push({
+          hostPath: os.devNull,
+          containerPath: '/workspace/project/.env',
+          readonly: true,
+        });
+      }
     }
 
     // Main also gets its group folder as the working directory

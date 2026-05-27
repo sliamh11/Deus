@@ -1429,108 +1429,106 @@ export async function initLinearContext(
       '#2563eb',
       '#1d4ed8',
     ];
+    let labelMap = new Map<string, string>();
     try {
       const allLabels = await client.issueLabels();
-      const labelMap = new Map(allLabels.nodes.map((l) => [l.name, l.id]));
+      labelMap = new Map(allLabels.nodes.map((l) => [l.name, l.id]));
+    } catch (err) {
+      logger.error(
+        { err },
+        'linear: failed to fetch labels — gate labels will be unavailable',
+      );
+    }
 
-      for (const def of statusDefs) {
-        if (labelMap.has(def.name)) {
-          gateLabels[def.key] = labelMap.get(def.name);
-        } else {
-          const created = await client.createIssueLabel({
-            name: def.name,
-            color: def.color,
-            teamId,
-          });
-          const label = await created.issueLabel;
-          if (label) gateLabels[def.key] = label.id;
-        }
-      }
-
-      if (labelMap.has('warden:skip')) {
-        gateLabels.wardenSkip = labelMap.get('warden:skip');
-      }
-
-      const bouncedDefs: Array<{
-        key:
-          | 'blocked'
-          | 'bouncedUnscoped'
-          | 'bouncedStale'
-          | 'bouncedNoContext';
-        name: string;
-        color: string;
-      }> = [
-        { key: 'blocked', name: 'warden:blocked', color: '#dc2626' },
-        { key: 'bouncedUnscoped', name: 'bounced:unscoped', color: '#f97316' },
-        { key: 'bouncedStale', name: 'bounced:stale', color: '#f97316' },
-        {
-          key: 'bouncedNoContext',
-          name: 'bounced:no-context',
-          color: '#f97316',
-        },
-      ];
-      for (const def of bouncedDefs) {
-        if (labelMap.has(def.name)) {
-          gateLabels[def.key] = labelMap.get(def.name);
-        } else {
-          const created = await client.createIssueLabel({
-            name: def.name,
-            color: def.color,
-            teamId,
-          });
-          const label = await created.issueLabel;
-          if (label) gateLabels[def.key] = label.id;
-        }
-      }
-
-      if (labelMap.has('conflict')) {
-        gateLabels.conflict = labelMap.get('conflict');
-      } else {
+    async function ensureLabel(
+      key: string,
+      name: string,
+      color: string,
+    ): Promise<string | undefined> {
+      try {
+        if (labelMap.has(name)) return labelMap.get(name);
         const created = await client.createIssueLabel({
-          name: 'conflict',
-          color: '#b45309',
+          name,
+          color,
           teamId,
         });
         const label = await created.issueLabel;
-        if (label) gateLabels.conflict = label.id;
+        return label?.id;
+      } catch (err) {
+        logger.warn(
+          { err, label: name },
+          'linear: failed to create/discover label',
+        );
+        return undefined;
       }
+    }
 
-      if (!labelMap.has('Done: Pre-implemented')) {
-        await client.createIssueLabel({
-          name: 'Done: Pre-implemented',
-          color: '#6b7280',
-          teamId,
-        });
-      }
+    for (const def of statusDefs) {
+      const id = await ensureLabel(def.key, def.name, def.color);
+      if (id) gateLabels[def.key] = id;
+    }
 
-      for (let i = 1; i <= 5; i++) {
-        const eName = `Effort: ${i}`;
-        const cName = `Complexity: ${i}`;
-        if (labelMap.has(eName)) {
-          gateLabels.effort[i] = labelMap.get(eName)!;
-        } else {
-          const created = await client.createIssueLabel({
-            name: eName,
-            color: effortColors[i - 1],
-            teamId,
-          });
-          const label = await created.issueLabel;
-          if (label) gateLabels.effort[i] = label.id;
-        }
-        if (labelMap.has(cName)) {
-          gateLabels.complexity[i] = labelMap.get(cName)!;
-        } else {
-          const created = await client.createIssueLabel({
-            name: cName,
-            color: complexityColors[i - 1],
-            teamId,
-          });
-          const label = await created.issueLabel;
-          if (label) gateLabels.complexity[i] = label.id;
-        }
-      }
-    } catch (err) {
-      logger.warn({ err }, 'linear: failed to setup gate status labels');
+    if (labelMap.has('warden:skip')) {
+      gateLabels.wardenSkip = labelMap.get('warden:skip');
+    }
+
+    const bouncedDefs: Array<{
+      key: 'blocked' | 'bouncedUnscoped' | 'bouncedStale' | 'bouncedNoContext';
+      name: string;
+      color: string;
+    }> = [
+      { key: 'blocked', name: 'warden:blocked', color: '#dc2626' },
+      { key: 'bouncedUnscoped', name: 'bounced:unscoped', color: '#f97316' },
+      { key: 'bouncedStale', name: 'bounced:stale', color: '#f97316' },
+      {
+        key: 'bouncedNoContext',
+        name: 'bounced:no-context',
+        color: '#f97316',
+      },
+    ];
+    for (const def of bouncedDefs) {
+      const id = await ensureLabel(def.key, def.name, def.color);
+      if (id) gateLabels[def.key] = id;
+    }
+
+    const conflictId = await ensureLabel('conflict', 'conflict', '#b45309');
+    if (conflictId) gateLabels.conflict = conflictId;
+
+    await ensureLabel('done-pre', 'Done: Pre-implemented', '#6b7280');
+
+    for (let i = 1; i <= 5; i++) {
+      const eId = await ensureLabel(
+        `effort-${i}`,
+        `Effort: ${i}`,
+        effortColors[i - 1],
+      );
+      if (eId) gateLabels.effort[i] = eId;
+      const cId = await ensureLabel(
+        `complexity-${i}`,
+        `Complexity: ${i}`,
+        complexityColors[i - 1],
+      );
+      if (cId) gateLabels.complexity[i] = cId;
+    }
+
+    const populatedKeys = Object.entries(gateLabels)
+      .filter(
+        ([k, v]) => k !== 'effort' && k !== 'complexity' && v !== undefined,
+      )
+      .map(([k]) => k);
+    const missingKeys = ['evaluating', 'scoped', 'revise', 'error'].filter(
+      (k) => !(gateLabels as unknown as Record<string, unknown>)[k],
+    );
+    if (missingKeys.length > 0) {
+      logger.error(
+        { missingKeys },
+        'linear: some gate labels failed to populate — label operations will be no-ops for these',
+      );
+    } else {
+      logger.info(
+        { populated: populatedKeys.length },
+        'linear: all gate labels populated',
+      );
     }
 
     logger.info(

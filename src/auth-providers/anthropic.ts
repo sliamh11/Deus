@@ -325,16 +325,21 @@ export class AnthropicAuthProvider implements AuthProvider {
       delete headers['x-api-key'];
       headers['x-api-key'] = this.secrets.ANTHROPIC_API_KEY;
     } else {
-      // OAuth mode: replace placeholder Bearer token with the real one
-      // only when the container actually sends an Authorization header
-      // (exchange request + auth probes). Post-exchange requests use
-      // x-api-key only, so they pass through without token injection.
+      // OAuth mode: replace placeholder Bearer token with the real one.
       if (headers['authorization']) {
         delete headers['authorization'];
         const token = this.envOauthToken || getDynamicOAuthToken();
         if (token) {
           headers['authorization'] = `Bearer ${token}`;
+        } else {
+          console.error(
+            '[credential-proxy] OAuth mode: no token available to inject — request will reach Anthropic without auth',
+          );
         }
+      } else if (!headers['x-api-key']) {
+        console.error(
+          '[credential-proxy] OAuth mode: request has neither Authorization nor x-api-key header — auth will fail',
+        );
       }
     }
   }
