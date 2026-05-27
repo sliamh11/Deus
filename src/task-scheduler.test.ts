@@ -4,6 +4,7 @@ import { _initTestDatabase, createTask, getTaskById } from './db.js';
 import {
   _resetSchedulerLoopForTests,
   computeNextRun,
+  safeSlice,
   startSchedulerLoop,
 } from './task-scheduler.js';
 import type {
@@ -518,5 +519,30 @@ describe('startSchedulerLoop execution path', () => {
       backend: 'claude',
       session_id: 'claude-session-next',
     });
+  });
+});
+
+describe('safeSlice', () => {
+  it('slices ASCII strings normally', () => {
+    expect(safeSlice('hello world', 5)).toBe('hello');
+  });
+
+  it('preserves emoji code points at boundary', () => {
+    expect(safeSlice('hello 🎉🎊 world', 8)).toBe('hello 🎉🎊');
+  });
+
+  it('does not split surrogate pairs', () => {
+    const emoji50 = '🎉'.repeat(50);
+    const sliced = safeSlice(emoji50, 25);
+    expect(sliced).toBe('🎉'.repeat(25));
+    expect([...sliced]).toHaveLength(25);
+  });
+
+  it('handles empty string', () => {
+    expect(safeSlice('', 10)).toBe('');
+  });
+
+  it('returns full string when shorter than limit', () => {
+    expect(safeSlice('short', 100)).toBe('short');
   });
 });

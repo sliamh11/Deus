@@ -1,6 +1,18 @@
 import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
 
+// Iterate by code point to avoid splitting UTF-16 surrogate pairs (emoji crash on Anthropic API).
+export function safeSlice(str: string, maxCodePoints: number): string {
+  let result = '';
+  let count = 0;
+  for (const ch of str) {
+    if (count >= maxCodePoints) break;
+    result += ch;
+    count++;
+  }
+  return result;
+}
+
 import { fireAndForget } from './async/index.js';
 import {
   defaultSession,
@@ -255,7 +267,7 @@ async function runTask(
   const resultSummary = error
     ? `Error: ${error}`
     : result
-      ? result.slice(0, 200)
+      ? safeSlice(result, 200)
       : 'Completed';
   updateTaskAfterRun(task.id, nextRun, resultSummary);
 }

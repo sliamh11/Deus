@@ -13,6 +13,18 @@ import { CronExpressionParser } from 'cron-parser';
 
 import { VALID_BACKENDS } from './tool-broker.js';
 
+// Iterate by code point to avoid splitting UTF-16 surrogate pairs (emoji crash on Anthropic API).
+function safeSlice(str: string, maxCodePoints: number): string {
+  let result = '';
+  let count = 0;
+  for (const ch of str) {
+    if (count >= maxCodePoints) break;
+    result += ch;
+    count++;
+  }
+  return result;
+}
+
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
@@ -259,7 +271,7 @@ server.tool(
             status: string;
             next_run: string;
           }) =>
-            `- [${t.id}] ${t.prompt.slice(0, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
+            `- [${t.id}] ${safeSlice(t.prompt, 50)}... (${t.schedule_type}: ${t.schedule_value}) - ${t.status}, next: ${t.next_run || 'N/A'}`,
         )
         .join('\n');
 
