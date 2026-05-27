@@ -480,9 +480,11 @@ export async function applyPatchArtifact(
   identifier: string,
   issueId: string,
   ctx: LinearContext,
+  worktreePath?: string,
 ): Promise<{ prUrl: string | null; applied: boolean }> {
   const noResult = { prUrl: null, applied: false };
-  const gitOpts = { cwd: PROJECT_ROOT, timeout: GIT_TIMEOUT_MS };
+  const effectiveCwd = worktreePath ?? PROJECT_ROOT;
+  const gitOpts = { cwd: effectiveCwd, timeout: GIT_TIMEOUT_MS };
 
   if (!(IS_MACOS || IS_LINUX)) return noResult;
   if (!fs.existsSync(groupDir)) return noResult;
@@ -514,7 +516,7 @@ export async function applyPatchArtifact(
     .sort((a, b) => b.mtime - a.mtime);
   const patchFileName = sorted[0].name;
   const patchFilePath = path.join(groupDir, patchFileName);
-  const patchRelPath = path.relative(PROJECT_ROOT, patchFilePath);
+  const patchRelPath = path.relative(effectiveCwd, patchFilePath);
   const commitMessage = parseCommitMessage(groupDir, identifier);
   const branchName = `feat/${identifier.toLowerCase()}-auto-patch`;
 
@@ -533,68 +535,71 @@ export async function applyPatchArtifact(
   // git operations on one working tree corrupt state. Acceptable for the
   // expected throughput (1-2 patches/hour).
   async function cleanup(deleteBranch: boolean): Promise<void> {
-    try {
-      await execFileAsync('git', ['checkout', 'main'], gitOpts);
-      if (deleteBranch) {
-        await execFileAsync('git', ['branch', '-D', branchName], gitOpts);
+    if (!worktreePath) {
+      try {
+        await execFileAsync('git', ['checkout', 'main'], gitOpts);
+        if (deleteBranch) {
+          await execFileAsync('git', ['branch', '-D', branchName], gitOpts);
+        }
+      } catch {
+        /* best-effort */
       }
-    } catch {
-      // Checkout failure leaves HEAD on feat branch; next mutex holder re-checks branch
-      /* best-effort */
     }
     releaseMutex();
   }
 
   try {
-    // Branch safety: refuse if not on main
-    const { stdout: currentBranch } = await execFileAsync(
-      'git',
-      ['rev-parse', '--abbrev-ref', 'HEAD'],
-      gitOpts,
-    );
-    if (currentBranch.trim() !== 'main') {
-      await ctx.client.createComment({
-        issueId,
-        body: `**Patch auto-apply skipped** — working tree is on branch \`${currentBranch.trim()}\`, not \`main\`.\n\nApply manually:\n\`\`\`bash\ngit apply ${patchRelPath}\n\`\`\``,
-      });
-      notifyPipelineStep(
-        ctx,
-        issueId,
-        identifier,
-        'patch_failed',
-        `hash:${patchHash} not on main`,
-      ).catch(() => {});
-      releaseMutex();
-      return noResult;
+    if (!worktreePath) {
+      // Branch safety: refuse if not on main
+      const { stdout: currentBranch } = await execFileAsync(
+        'git',
+        ['rev-parse', '--abbrev-ref', 'HEAD'],
+        gitOpts,
+      );
+      if (currentBranch.trim() !== 'main') {
+        await ctx.client.createComment({
+          issueId,
+          body: `**Patch auto-apply skipped** — working tree is on branch \`${currentBranch.trim()}\`, not \`main\`.\n\nApply manually:\n\`\`\`bash\ngit apply ${patchRelPath}\n\`\`\``,
+        });
+        notifyPipelineStep(
+          ctx,
+          issueId,
+          identifier,
+          'patch_failed',
+          `hash:${patchHash} not on main`,
+        ).catch(() => {});
+        releaseMutex();
+        return noResult;
+      }
+
+      // Dirty tree check
+      const { stdout: status } = await execFileAsync(
+        'git',
+        ['status', '--porcelain'],
+        gitOpts,
+      );
+      if (status.trim()) {
+        await ctx.client.createComment({
+          issueId,
+          body: `**Patch auto-apply skipped** — working tree has uncommitted changes.\n\nApply manually:\n\`\`\`bash\ngit apply ${patchRelPath}\n\`\`\``,
+        });
+        notifyPipelineStep(
+          ctx,
+          issueId,
+          identifier,
+          'patch_failed',
+          `hash:${patchHash} dirty tree`,
+        ).catch(() => {});
+        releaseMutex();
+        return noResult;
+      }
+
+      // Pull latest main
+      await execFileAsync('git', ['pull', '--ff-only'], gitOpts);
+
+      // Create feature branch (-B creates or resets)
+      await execFileAsync('git', ['checkout', '-B', branchName], gitOpts);
     }
-
-    // Dirty tree check
-    const { stdout: status } = await execFileAsync(
-      'git',
-      ['status', '--porcelain'],
-      gitOpts,
-    );
-    if (status.trim()) {
-      await ctx.client.createComment({
-        issueId,
-        body: `**Patch auto-apply skipped** — working tree has uncommitted changes.\n\nApply manually:\n\`\`\`bash\ngit apply ${patchRelPath}\n\`\`\``,
-      });
-      notifyPipelineStep(
-        ctx,
-        issueId,
-        identifier,
-        'patch_failed',
-        `hash:${patchHash} dirty tree`,
-      ).catch(() => {});
-      releaseMutex();
-      return noResult;
-    }
-
-    // Pull latest main
-    await execFileAsync('git', ['pull', '--ff-only'], gitOpts);
-
-    // Create feature branch (-B creates or resets)
-    await execFileAsync('git', ['checkout', '-B', branchName], gitOpts);
 
     // Pre-flight: reject patches touching blocked paths
     const blockedPathsRaw = (process.env.DEUS_PATCH_BLOCKED_PATHS ?? '')
@@ -707,7 +712,7 @@ export async function applyPatchArtifact(
       };
       await new Promise<void>((resolve, reject) => {
         const child = spawn('npm', ['run', 'build'], {
-          cwd: PROJECT_ROOT,
+          cwd: effectiveCwd,
           env: buildEnv,
           detached: true,
           stdio: ['ignore', 'ignore', 'pipe'],
@@ -921,6 +926,46 @@ async function triageIssue(
   return 'dispatch';
 }
 
+async function ensureIssueWorktree(
+  identifier: string,
+): Promise<{ worktreePath: string; branchName: string } | null> {
+  if (!(IS_MACOS || IS_LINUX)) return null;
+  const branchName = `feat/${identifier.toLowerCase()}-auto-patch`;
+  const worktreePath = path.join(DATA_DIR, 'worktrees', identifier);
+  if (fs.existsSync(worktreePath)) return { worktreePath, branchName };
+  fs.mkdirSync(path.join(DATA_DIR, 'worktrees'), { recursive: true });
+  await execFileAsync(
+    'git',
+    ['worktree', 'add', worktreePath, '-b', branchName],
+    { cwd: PROJECT_ROOT, timeout: GIT_TIMEOUT_MS },
+  );
+  return { worktreePath, branchName };
+}
+
+async function cleanupWorktree(worktreePath: string): Promise<void> {
+  try {
+    await execFileAsync(
+      'git',
+      ['worktree', 'remove', '--force', worktreePath],
+      { cwd: PROJECT_ROOT, timeout: GIT_TIMEOUT_MS },
+    );
+  } catch {
+    try {
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+    try {
+      await execFileAsync('git', ['worktree', 'prune'], {
+        cwd: PROJECT_ROOT,
+        timeout: GIT_TIMEOUT_MS,
+      });
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
 async function runIssue(
   ctx: LinearContext,
   issueId: string,
@@ -991,6 +1036,7 @@ async function runIssue(
             identifier,
             issueId,
             ctx,
+            runContext.worktreePath,
           );
           if (patchResult.applied && patchResult.prUrl) {
             prUrl = patchResult.prUrl;
@@ -1038,6 +1084,9 @@ async function runIssue(
     );
   } finally {
     ctx.inFlightDispatch.delete(issueId);
+    if (runContext.worktreePath) {
+      await cleanupWorktree(runContext.worktreePath).catch(() => {});
+    }
   }
 }
 
@@ -1177,6 +1226,16 @@ async function pollLinear(): Promise<void> {
     }
 
     const chatJid = `linear-dispatch-${issue.id.slice(0, 8)}`;
+    let worktreePath: string | undefined;
+    try {
+      const wt = await ensureIssueWorktree(issue.identifier);
+      if (wt) worktreePath = wt.worktreePath;
+    } catch (wtErr) {
+      logger.warn(
+        { issueId: issue.id, err: wtErr },
+        'linear-dispatcher: failed to create worktree, dispatching without isolation',
+      );
+    }
     const runContext: RunContext = {
       prompt,
       groupFolder: DISPATCH_GROUP_JID,
@@ -1184,6 +1243,7 @@ async function pollLinear(): Promise<void> {
       isControlGroup: true,
       isScheduledTask: true,
       effort: 'high',
+      ...(worktreePath && { worktreePath }),
     };
 
     notifyPipelineStep(
@@ -1234,6 +1294,16 @@ export async function initLinearContext(
     const stateById = new Map<string, WorkflowState>();
     for (const state of stateByName.values()) {
       stateById.set(state.id, state);
+    }
+
+    // Prune stale worktrees from previous crashes
+    try {
+      await execFileAsync('git', ['worktree', 'prune'], {
+        cwd: PROJECT_ROOT,
+        timeout: GIT_TIMEOUT_MS,
+      });
+    } catch {
+      /* best-effort */
     }
 
     const viewer = await client.viewer;

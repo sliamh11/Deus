@@ -79,6 +79,7 @@ export interface ContainerInput {
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   projectHint?: string;
   effort?: AgentEffortLevel;
+  worktreePath?: string;
 }
 
 // SYNC-REQUIRED: Duplicated in container/agent-runner/src/index.ts.
@@ -280,7 +281,11 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isControlGroup);
+  const mounts = buildVolumeMounts(
+    group,
+    input.isControlGroup,
+    input.worktreePath,
+  );
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `deus-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(

@@ -40,6 +40,7 @@ export interface RunContext {
   backendConfig?: Record<string, unknown>;
   imageInputs?: Array<{ relativePath: string; mediaType: string }>;
   toolBroker?: ToolBroker;
+  worktreePath?: string;
 }
 
 export type RuntimeEvent =

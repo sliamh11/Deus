@@ -949,4 +949,80 @@ describe('applyPatchArtifact', () => {
 
     expect(result.applied).toBe(true);
   });
+
+  it('skips main/dirty checks when worktreePath is provided', async () => {
+    const worktreeDir = path.join(TEST_PROJECT_ROOT, 'worktrees', 'LIA-99');
+    fs.mkdirSync(worktreeDir, { recursive: true });
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+
+    const gitCalls: Array<{ cmd: string; args: string[] }> = [];
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      gitCalls.push({ cmd, args: [...args] });
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+      worktreeDir,
+    );
+
+    expect(result.applied).toBe(true);
+    // Should NOT have called rev-parse (no main check)
+    const revParseCalls = gitCalls.filter(
+      (c) => c.cmd === 'git' && c.args[0] === 'rev-parse',
+    );
+    expect(revParseCalls).toHaveLength(0);
+    // Should NOT have called status (no dirty check)
+    const statusCalls = gitCalls.filter(
+      (c) => c.cmd === 'git' && c.args[0] === 'status',
+    );
+    expect(statusCalls).toHaveLength(0);
+    // Should NOT have called checkout -B (no branch creation)
+    const checkoutCalls = gitCalls.filter(
+      (c) =>
+        c.cmd === 'git' && c.args[0] === 'checkout' && c.args.includes('-B'),
+    );
+    expect(checkoutCalls).toHaveLength(0);
+
+    fs.rmSync(worktreeDir, { recursive: true, force: true });
+  });
+
+  it('uses worktreePath as cwd for git operations', async () => {
+    const worktreeDir = path.join(TEST_PROJECT_ROOT, 'worktrees', 'LIA-99');
+    fs.mkdirSync(worktreeDir, { recursive: true });
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+      worktreeDir,
+    );
+
+    // Verify spawn (build) was called with worktreeDir as cwd
+    const buildCall = spawnMock.mock.calls.find(
+      (c: unknown[]) => c[0] === 'npm' && (c[1] as string[])[0] === 'run',
+    ) as unknown[] | undefined;
+    expect(buildCall).toBeDefined();
+    const buildOpts = buildCall![2] as Record<string, unknown>;
+    expect(buildOpts.cwd).toBe(worktreeDir);
+
+    fs.rmSync(worktreeDir, { recursive: true, force: true });
+  });
 });

@@ -70,6 +70,7 @@ function resolveVaultPath(): string | null {
 export function buildVolumeMounts(
   group: RegisteredGroup,
   isControlGroup: boolean,
+  worktreePath?: string,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -125,12 +126,56 @@ export function buildVolumeMounts(
     }
   }
 
-  // External project mount: when a group has an associated project,
-  // mount it at /workspace/project so the agent works on the external codebase.
-  // Security: project path was validated against mount-allowlist at registration time.
-  // We re-validate the real path hasn't changed (symlink TOCTOU defense) and
-  // shadow sensitive files to prevent credential exfiltration.
-  if (group.projectId) {
+  // Per-task worktree override: mount the worktree instead of the project root.
+  // Worktree is always writable — the agent must commit back to its branch.
+  // Apply credential shadows defensively (same as regular project mounts).
+  if (worktreePath && fs.existsSync(worktreePath)) {
+    const realWorktree = fs.realpathSync(worktreePath);
+    if (realWorktree !== path.resolve(worktreePath)) {
+      logger.warn(
+        { worktreePath, realWorktree },
+        'Worktree path changed after creation, skipping mount',
+      );
+    } else {
+      mounts.push({
+        hostPath: realWorktree,
+        containerPath: '/workspace/project',
+        readonly: false,
+      });
+      for (const pattern of SENSITIVE_FILE_PATTERNS) {
+        const filePath = path.join(worktreePath, pattern);
+        if (fs.existsSync(filePath)) {
+          mounts.push({
+            hostPath: os.devNull,
+            containerPath: `/workspace/project/${pattern}`,
+            readonly: true,
+          });
+        }
+      }
+      for (const dirPattern of SENSITIVE_DIR_PATTERNS) {
+        const dirPath = path.join(worktreePath, dirPattern);
+        if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
+          const shadowDir = path.join(
+            DATA_DIR,
+            'worktree-shadows',
+            path.basename(worktreePath),
+            dirPattern,
+          );
+          fs.mkdirSync(shadowDir, { recursive: true, mode: 0o700 });
+          mounts.push({
+            hostPath: shadowDir,
+            containerPath: `/workspace/project/${dirPattern}`,
+            readonly: true,
+          });
+        }
+      }
+    }
+  } else if (group.projectId) {
+    // External project mount: when a group has an associated project,
+    // mount it at /workspace/project so the agent works on the external codebase.
+    // Security: project path was validated against mount-allowlist at registration time.
+    // We re-validate the real path hasn't changed (symlink TOCTOU defense) and
+    // shadow sensitive files to prevent credential exfiltration.
     const project = getProjectById(group.projectId);
     if (project && fs.existsSync(project.path)) {
       // TOCTOU defense: re-resolve symlinks at mount time.

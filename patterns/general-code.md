@@ -1,4 +1,5 @@
 ---
+last_verified: 2026-05-27
 governs:
   - src/
   - evolution/

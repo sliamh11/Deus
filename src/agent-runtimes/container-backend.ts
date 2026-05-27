@@ -100,6 +100,9 @@ export class ContainerRuntime implements AgentRuntime {
         ...(runContext.imageInputs?.length && {
           imageAttachments: runContext.imageInputs,
         }),
+        ...(runContext.worktreePath && {
+          worktreePath: runContext.worktreePath,
+        }),
       },
       (proc, containerName) =>
         this.deps.registerProcess(
