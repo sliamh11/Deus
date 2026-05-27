@@ -622,6 +622,55 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
         "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
         ("indexed_directory", str(base)),
     )
+
+    # Auto-populate calibration distribution if missing (needed for retrieval_confidence)
+    cal_row = db.execute(
+        "SELECT value FROM index_meta WHERE key = 'calibration_distances'"
+    ).fetchone()
+    calibrated = bool(cal_row)
+    if not cal_row and embed and sqlite_vec is not None:
+        chunk_count = db.execute(
+            "SELECT COUNT(*) FROM chunks WHERE orphaned_at IS NULL AND embedded_at IS NOT NULL"
+        ).fetchone()[0]
+        if chunk_count >= 20:
+            sample_rows = db.execute(
+                "SELECT chunk_name FROM chunks "
+                "WHERE orphaned_at IS NULL AND embedded_at IS NOT NULL "
+                "AND chunk_name IS NOT NULL AND length(chunk_name) > 3 "
+                "AND chunk_type IN ('function', 'method', 'class') "
+                "ORDER BY RANDOM() LIMIT 150"
+            ).fetchall()
+            cal_distances: list[float] = []
+            for (chunk_name,) in sample_rows:
+                query = chunk_name.replace("_", " ")
+                if len(query) < 4:
+                    continue
+                try:
+                    emb = _embed_text(query)
+                    vec_row = db.execute(
+                        "SELECT rowid FROM chunks_vec WHERE embedding MATCH ? ORDER BY distance LIMIT 1",
+                        (_serialize(emb),),
+                    ).fetchall()
+                    if vec_row:
+                        cos = db.execute(
+                            "SELECT vec_distance_cosine(embedding, ?) FROM chunks_vec WHERE rowid = ?",
+                            (_serialize(emb), vec_row[0][0]),
+                        ).fetchone()
+                        if cos:
+                            cal_distances.append(cos[0])
+                except Exception:
+                    pass
+            if cal_distances:
+                cal_distances.sort()
+                db.execute(
+                    "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('calibration_distances', ?)",
+                    [json.dumps(cal_distances)],
+                )
+                calibrated = True
+                global _cal_cache
+                _cal_cache = None
+                print(f"Auto-calibrated: stored {len(cal_distances)} distances", file=sys.stderr)
+
     db.commit()
     db.close()
 
@@ -630,6 +679,7 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
         "chunks_added": total_added,
         "chunks_unchanged": total_skipped,
         "embeddings": "yes" if embed else "no (Ollama unavailable)",
+        "calibrated": calibrated,
     }
 
 
