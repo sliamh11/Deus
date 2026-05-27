@@ -4,6 +4,51 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.16.0](https://github.com/sliamh11/Deus/compare/v1.15.0...v1.16.0) (2026-05-27)
+
+
+### Features
+
+* **cli:** add multi-model proxy integration via free-claude-code ([#566](https://github.com/sliamh11/Deus/issues/566)) ([07e7c05](https://github.com/sliamh11/Deus/commit/07e7c0511453ead963eeb980e799f17ccb2e9020))
+* **compaction:** auto-compact, /context command, llama-cpp overflow guard (LIA-94) ([#549](https://github.com/sliamh11/Deus/issues/549)) ([a08d0e7](https://github.com/sliamh11/Deus/commit/a08d0e71e6f1d6b4a69cf25764542cef634f8cc9))
+* **compaction:** extend ContainerOutput with contextStats and compactionEvent (LIA-94) ([#547](https://github.com/sliamh11/Deus/issues/547)) ([5ee7ee0](https://github.com/sliamh11/Deus/commit/5ee7ee05d786204adb760d4b951b32cd0eb159cc))
+* **compaction:** post-compact hook and host notifications (LIA-94) ([#548](https://github.com/sliamh11/Deus/issues/548)) ([e2b8ac0](https://github.com/sliamh11/Deus/commit/e2b8ac05b602d659d3ca2e0a8d04b57e10645760))
+* **evolution:** add IRT-GRM judge reliability diagnostic ([#555](https://github.com/sliamh11/Deus/issues/555)) ([f29dd70](https://github.com/sliamh11/Deus/commit/f29dd70290046123b781b7af495aa94661c194db))
+* **evolution:** add session-correction mining for implicit signals ([#564](https://github.com/sliamh11/Deus/issues/564)) ([ae805d1](https://github.com/sliamh11/Deus/commit/ae805d1d4f2c737aca535356dfe4251a21b5974d))
+* **evolution:** add taste hypothesis profile and style consolidation ([#565](https://github.com/sliamh11/Deus/issues/565)) ([9721081](https://github.com/sliamh11/Deus/commit/97210818ea53e901436e18b032e2dee1f955e191))
+* **evolution:** add tool-economy mechanical judge dimension ([#570](https://github.com/sliamh11/Deus/issues/570)) ([70ed0c7](https://github.com/sliamh11/Deus/commit/70ed0c7f4218d288f1f2e9121455c7f7920da44b))
+* **evolution:** constrained decoding + deterministic judge scoring ([#552](https://github.com/sliamh11/Deus/issues/552)) ([365e32b](https://github.com/sliamh11/Deus/commit/365e32be877d40d4e18ffd48a93b7394fbda58c2))
+* **evolution:** fix style reflection categorization and improve style awareness ([#557](https://github.com/sliamh11/Deus/issues/557)) ([c4d80b2](https://github.com/sliamh11/Deus/commit/c4d80b2f56540ac787d659cded258317a9f3c4e0))
+* **evolution:** fix zero-signal bug, add has_code tagging, expand user signals ([#563](https://github.com/sliamh11/Deus/issues/563)) ([0769d91](https://github.com/sliamh11/Deus/commit/0769d91fffbfd228dd12b96014e122bcb42e078c))
+* **evolution:** mechanical judge dimensions -- gate-audit + completion-honesty + diagnostic ([#572](https://github.com/sliamh11/Deus/issues/572)) ([3d55a52](https://github.com/sliamh11/Deus/commit/3d55a522477b824596557c783f500a52ba2ba665))
+* **pipeline:** auto-apply container agent patches on the host ([#588](https://github.com/sliamh11/Deus/issues/588)) ([d080be3](https://github.com/sliamh11/Deus/commit/d080be3c320f45016f9abc997ea9dc3099b6d7ae))
+* **pipeline:** detect and handle merge-conflicting PRs (LIA-90) ([#578](https://github.com/sliamh11/Deus/issues/578)) ([1eea7cf](https://github.com/sliamh11/Deus/commit/1eea7cf7639dc6a9db87745b542969f7067fabc9))
+* **pipeline:** eliminate SHIP from gate fallback type union ([#553](https://github.com/sliamh11/Deus/issues/553)) ([6af478b](https://github.com/sliamh11/Deus/commit/6af478bea1d13a397502958417a6131327ee2da0))
+* **pipeline:** enrichment gate detects already-implemented features (LIA-95) ([#571](https://github.com/sliamh11/Deus/issues/571)) ([f9b754c](https://github.com/sliamh11/Deus/commit/f9b754c0dea204e82206a853e178a3756a132bc2))
+* **pipeline:** reconcile stale Agent Working issues (LIA-97) ([#583](https://github.com/sliamh11/Deus/issues/583)) ([d1e8b07](https://github.com/sliamh11/Deus/commit/d1e8b076e42a7a2fabee01471e90cf75478e4779))
+* **pipeline:** two-gate architecture -- enrichment + bouncer gates ([#544](https://github.com/sliamh11/Deus/issues/544)) ([5bfafbc](https://github.com/sliamh11/Deus/commit/5bfafbc45861b6c9fdb9f6a3a8e3565c894cd11f))
+* **pipeline:** viewport capping for dashboard overflow (LIA-96) ([#582](https://github.com/sliamh11/Deus/issues/582)) ([267f152](https://github.com/sliamh11/Deus/commit/267f152ca75fe9f69472f087ed5b19146b9ddf85))
+* **search:** native semantic code search with weighted RRF fusion ([#589](https://github.com/sliamh11/Deus/issues/589)) ([82b4272](https://github.com/sliamh11/Deus/commit/82b4272ee73bbba5329dfd09f3c2d1dee7b5bd4c))
+* **test:** add fast-check for property-based FSM testing ([#554](https://github.com/sliamh11/Deus/issues/554)) ([05e7f1a](https://github.com/sliamh11/Deus/commit/05e7f1ab2beb627f085c639fdca17bfd8f9e2fe5))
+* **wardens:** add mark-batch + commit window to prevent O(N²) re-review cycles (LIA-98) ([#579](https://github.com/sliamh11/Deus/issues/579)) ([a1977a2](https://github.com/sliamh11/Deus/commit/a1977a2f7bf4d3719c8b3875ded261a631a484a3))
+* **wardens:** enforce semantic-search-first in warden specs (LIA-92) ([#575](https://github.com/sliamh11/Deus/issues/575)) ([f55c508](https://github.com/sliamh11/Deus/commit/f55c508c18ce71ccb82b10aba87834317aedb77b))
+* **wardens:** improve ai-eng-warden with audit mode, tracing, and 3 new rules ([#546](https://github.com/sliamh11/Deus/issues/546)) ([d4e2672](https://github.com/sliamh11/Deus/commit/d4e2672920d7221b6508a5b0e499d48a74b019a6))
+* **wardens:** progressive disclosure + handoff memos ([#556](https://github.com/sliamh11/Deus/issues/556)) ([246fe35](https://github.com/sliamh11/Deus/commit/246fe35323680359cf36ff6a7edded8ddd23d70f))
+
+
+### Bug Fixes
+
+* **evolution:** harden taste profile with sibling-file arch and injection defense ([#567](https://github.com/sliamh11/Deus/issues/567)) ([e5b4fd0](https://github.com/sliamh11/Deus/commit/e5b4fd09f58b45d75c4a036ef9803b1fab460cad))
+* **hooks:** resolve REPO_ROOT from git-common-dir for worktree sessions (LIA-70) ([#580](https://github.com/sliamh11/Deus/issues/580)) ([98c071c](https://github.com/sliamh11/Deus/commit/98c071cbfe8b7069d9f2ed66b23218ce091dfd1a))
+* **hooks:** widen plan-review-gate scope to non-git and vault paths (LIA-77) ([#576](https://github.com/sliamh11/Deus/issues/576)) ([158dbf5](https://github.com/sliamh11/Deus/commit/158dbf5ee9b5ce182c794bdbe3e97d36c107432c))
+* **mining:** adjacent-only correction mining and batch SQL updates ([#568](https://github.com/sliamh11/Deus/issues/568)) ([b9d6229](https://github.com/sliamh11/Deus/commit/b9d62290affdccc3e74db6c9e548cc53deabbaaa))
+* **pipeline:** add logger.warn when gate fallback verdict is applied (LIA-75) ([#550](https://github.com/sliamh11/Deus/issues/550)) ([fc23460](https://github.com/sliamh11/Deus/commit/fc234605b18d6fc5310ffe342b0c0d63690f3595))
+* **pipeline:** allow Done transitions from any state ([#587](https://github.com/sliamh11/Deus/issues/587)) ([e3e08f6](https://github.com/sliamh11/Deus/commit/e3e08f62649932b7ba2ca1d5cd5bf6bdaa517919))
+* **session:** break stale session retry storm on dead conversations ([#592](https://github.com/sliamh11/Deus/issues/592)) ([d30912e](https://github.com/sliamh11/Deus/commit/d30912e92069e1a63e61f14b4d8ac07fa91f801a))
+* use surrogate-safe string slicing for task prompts ([#591](https://github.com/sliamh11/Deus/issues/591)) ([fe75e6d](https://github.com/sliamh11/Deus/commit/fe75e6d89742db7982632cbbc3e55be0f91abb67))
+* **user-signal:** remove false-positive signals; gitignore warden backups ([#569](https://github.com/sliamh11/Deus/issues/569)) ([aab2331](https://github.com/sliamh11/Deus/commit/aab233107e9193f5e829c774a61d9710139f965a))
+* **warden-hooks:** add --repo-root to mark commands, generalize messages (LIA-77) ([#551](https://github.com/sliamh11/Deus/issues/551)) ([fffaddc](https://github.com/sliamh11/Deus/commit/fffaddc4c742e9994a09f5823c47fa615529dc12))
+
 ## [1.15.0](https://github.com/sliamh11/Deus/compare/v1.14.0...v1.15.0) (2026-05-25)
 
 
