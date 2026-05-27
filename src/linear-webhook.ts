@@ -912,7 +912,12 @@ async function handleIssueUpdate(
     if (!parsedVerdict && error) {
       verdict = gateSpec.fallback;
       logger.warn(
-        { issueId: data.id, gate: gateSpec.name, fallback: gateSpec.fallback, error },
+        {
+          issueId: data.id,
+          gate: gateSpec.name,
+          fallback: gateSpec.fallback,
+          error,
+        },
         'linear-webhook: gate agent error, applying fallback verdict',
       );
       commentBody = formatGateComment(
