@@ -1,4 +1,5 @@
-import { execFile } from 'child_process';
+import { execFile, spawn } from 'child_process';
+import { createHash } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 import { promisify } from 'util';
@@ -10,7 +11,7 @@ import { PROJECT_ROOT } from './config.js';
 import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
-import { IS_MACOS, IS_LINUX } from './platform.js';
+import { IS_MACOS, IS_LINUX, forceKillProcessGroup } from './platform.js';
 import { extractPrUrl } from './pr-url-extractor.js';
 import { queryPrState, checkConflictingPrs } from './linear-auto-merge.js';
 import {
@@ -45,6 +46,7 @@ const AGENTS_DIR = path.join(PROJECT_ROOT, '.claude', 'agents');
 const GIT_TIMEOUT_MS = 30_000;
 const BUILD_TIMEOUT_MS = 120_000;
 const PUSH_TIMEOUT_MS = 120_000;
+const BLOCKED_PATHS_DEFAULT = ['.github/workflows/'];
 
 export interface LinearDispatcherDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -524,6 +526,9 @@ export async function applyPatchArtifact(
   });
   await prev;
 
+  const patchBytes = fs.readFileSync(patchFilePath);
+  const patchHash = createHash('sha256').update(patchBytes).digest('hex');
+
   // Global serialization: a slow build blocks other patches, but concurrent
   // git operations on one working tree corrupt state. Acceptable for the
   // expected throughput (1-2 patches/hour).
@@ -557,7 +562,7 @@ export async function applyPatchArtifact(
         issueId,
         identifier,
         'patch_failed',
-        'not on main',
+        `hash:${patchHash} not on main`,
       ).catch(() => {});
       releaseMutex();
       return noResult;
@@ -579,7 +584,7 @@ export async function applyPatchArtifact(
         issueId,
         identifier,
         'patch_failed',
-        'dirty tree',
+        `hash:${patchHash} dirty tree`,
       ).catch(() => {});
       releaseMutex();
       return noResult;
@@ -590,6 +595,58 @@ export async function applyPatchArtifact(
 
     // Create feature branch (-B creates or resets)
     await execFileAsync('git', ['checkout', '-B', branchName], gitOpts);
+
+    // Pre-flight: reject patches touching blocked paths
+    const blockedPathsRaw = (process.env.DEUS_PATCH_BLOCKED_PATHS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const effectiveBlockedPaths =
+      blockedPathsRaw.length > 0 ? blockedPathsRaw : BLOCKED_PATHS_DEFAULT;
+    try {
+      const { stdout: statOut } = await execFileAsync(
+        'git',
+        ['apply', '--stat', patchFilePath],
+        { ...gitOpts, timeout: 30_000 },
+      );
+      const touchedFiles = statOut
+        .split('\n')
+        .filter((line) => line.includes(' | '))
+        .map((line) => line.split(' | ')[0].trim())
+        .filter(Boolean);
+      const blockedFiles = touchedFiles.filter((f) =>
+        effectiveBlockedPaths.some((prefix) => f.startsWith(prefix)),
+      );
+      if (blockedFiles.length > 0) {
+        await ctx.client.createComment({
+          issueId,
+          body: `**Patch auto-apply blocked** — patch touches restricted paths: ${blockedFiles.map((f) => `\`${f}\``).join(', ')}.\n\nApply manually after review.`,
+        });
+        notifyPipelineStep(
+          ctx,
+          issueId,
+          identifier,
+          'patch_failed',
+          `hash:${patchHash} blocked paths: ${blockedFiles.join(',')}`,
+        ).catch(() => {});
+        await cleanup(true);
+        return noResult;
+      }
+    } catch (statErr) {
+      logger.warn(
+        { issueId, err: statErr },
+        'patch-applicator: git apply --stat failed, rejecting patch',
+      );
+      notifyPipelineStep(
+        ctx,
+        issueId,
+        identifier,
+        'patch_failed',
+        `hash:${patchHash} stat pre-flight failed`,
+      ).catch(() => {});
+      await cleanup(true);
+      return noResult;
+    }
 
     // Try git am first (for format-patch output), fall back to git apply
     let applied = false;
@@ -626,7 +683,7 @@ export async function applyPatchArtifact(
           issueId,
           identifier,
           'patch_failed',
-          'git apply failed',
+          `hash:${patchHash} git apply failed`,
         ).catch(() => {});
         await cleanup(true);
         return noResult;
@@ -638,11 +695,44 @@ export async function applyPatchArtifact(
       return noResult;
     }
 
-    // Build verification
+    // Build verification (sanitized env, process-group kill on timeout)
     try {
-      await execFileAsync('npm', ['run', 'build'], {
-        cwd: PROJECT_ROOT,
-        timeout: BUILD_TIMEOUT_MS,
+      const buildEnv: Record<string, string | undefined> = {
+        PATH: process.env.PATH,
+        HOME: HOME_DIR,
+        NODE_ENV: process.env.NODE_ENV ?? 'production',
+        LANG: process.env.LANG,
+        TZ: process.env.TZ,
+        TERM: process.env.TERM,
+      };
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn('npm', ['run', 'build'], {
+          cwd: PROJECT_ROOT,
+          env: buildEnv,
+          detached: true,
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        const stderrChunks: Buffer[] = [];
+        child.stderr?.on('data', (d: Buffer) => stderrChunks.push(d));
+
+        const killTimer = setTimeout(() => {
+          if (child.pid) forceKillProcessGroup(child.pid);
+          reject(new Error(`Build timed out after ${BUILD_TIMEOUT_MS}ms`));
+        }, BUILD_TIMEOUT_MS);
+        killTimer.unref();
+
+        child.on('close', (code) => {
+          clearTimeout(killTimer);
+          if (code !== 0)
+            reject(
+              new Error(Buffer.concat(stderrChunks).toString().slice(0, 2000)),
+            );
+          else resolve();
+        });
+        child.on('error', (err) => {
+          clearTimeout(killTimer);
+          reject(err);
+        });
       });
     } catch (buildErr) {
       const stderr =
@@ -656,7 +746,7 @@ export async function applyPatchArtifact(
         issueId,
         identifier,
         'patch_failed',
-        'build failed',
+        `hash:${patchHash} build failed`,
       ).catch(() => {});
       await cleanup(true);
       return noResult;
@@ -696,7 +786,7 @@ export async function applyPatchArtifact(
         issueId,
         identifier,
         'patch_failed',
-        'gh pr create failed',
+        `hash:${patchHash} gh pr create failed`,
       ).catch(() => {});
       await cleanup(false);
       return noResult;
@@ -709,9 +799,13 @@ export async function applyPatchArtifact(
       /* best-effort */
     }
 
-    notifyPipelineStep(ctx, issueId, identifier, 'patch_applied', prUrl).catch(
-      () => {},
-    );
+    notifyPipelineStep(
+      ctx,
+      issueId,
+      identifier,
+      'patch_applied',
+      `hash:${patchHash} pr:${prUrl}`,
+    ).catch(() => {});
     logger.info(
       { issueId, prUrl, patchFileName },
       'patch-applicator: PR created from patch artifact',

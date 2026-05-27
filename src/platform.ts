@@ -111,6 +111,33 @@ export function forceKillProcess(pid: number): void {
   }
 }
 
+/**
+ * Force-kill a process group cross-platform.
+ * - Unix: SIGKILL to process group (-pid), falls back to individual PID.
+ * - Windows: `taskkill /F /T /PID` kills the entire tree.
+ */
+export function forceKillProcessGroup(pid: number): void {
+  if (IS_WINDOWS) {
+    try {
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+        stdio: 'pipe',
+      });
+    } catch {
+      // already dead
+    }
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      // already dead
+    }
+  }
+}
+
 /** Check if a process is still alive (signal 0 probe). */
 export function processExists(pid: number): boolean {
   try {

@@ -4,10 +4,12 @@ import path from 'path';
 import os from 'os';
 
 const execFileMock = vi.fn();
+const spawnMock = vi.fn();
 
 vi.mock('child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('child_process')>();
   const { promisify } = await import('util');
+  const { EventEmitter } = await import('events');
   type ExecFileCb = (err: Error | null, stdout: string, stderr: string) => void;
   const mockFn = vi.fn((...args: unknown[]) => {
     const cb = args[args.length - 1];
@@ -28,7 +30,36 @@ vi.mock('child_process', async (importOriginal) => {
       stderr: result?.stderr ?? '',
     });
   };
-  return { ...orig, execFile: mockFn };
+  const mockSpawnFn = vi.fn((...args: unknown[]) => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 12345,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+    });
+    const result = spawnMock(
+      args[0] as string,
+      args[1] as string[],
+      args[2] as Record<string, unknown>,
+    ) as
+      | { code?: number; stderr?: string; hang?: boolean; error?: Error }
+      | undefined;
+    if (result?.hang) {
+      // Don't emit — test controls timeout
+    } else if (result?.error) {
+      process.nextTick(() => child.emit('error', result.error));
+    } else {
+      const code = result?.code ?? 0;
+      if (result?.stderr) {
+        const stderrStr = result.stderr;
+        process.nextTick(() =>
+          child.stderr.emit('data', Buffer.from(stderrStr)),
+        );
+      }
+      process.nextTick(() => child.emit('close', code));
+    }
+    return child;
+  });
+  return { ...orig, execFile: mockFn, spawn: mockSpawnFn };
 });
 
 vi.mock('./config.js', async () => {
@@ -59,7 +90,12 @@ vi.mock('./linear-notifications.js', () => ({
 
 vi.mock('./platform.js', async (importOriginal) => {
   const orig = await importOriginal<typeof import('./platform.js')>();
-  return { ...orig, IS_MACOS: true, IS_LINUX: false };
+  return {
+    ...orig,
+    IS_MACOS: true,
+    IS_LINUX: false,
+    forceKillProcessGroup: vi.fn(),
+  };
 });
 
 const TEST_PROJECT_ROOT = path.join(os.tmpdir(), `deus-test-${process.pid}`);
@@ -487,6 +523,8 @@ describe('applyPatchArtifact', () => {
 
   beforeEach(() => {
     execFileMock.mockReset();
+    spawnMock.mockReset();
+    spawnMock.mockReturnValue({ code: 0 });
     createComment.mockClear();
     fs.mkdirSync(patchGroupDir, { recursive: true });
   });
@@ -591,7 +629,6 @@ describe('applyPatchArtifact', () => {
       if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
       if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
       if (cmd === 'git' && args[0] === 'am') return { stdout: '' };
-      if (cmd === 'npm') return { stdout: '' };
       if (cmd === 'gh')
         return { stdout: 'https://github.com/test/repo/pull/10\n' };
       return { stdout: '' };
@@ -607,9 +644,12 @@ describe('applyPatchArtifact', () => {
       prUrl: 'https://github.com/test/repo/pull/10',
       applied: true,
     });
-    // git apply should NOT have been called (am succeeded)
+    // git apply (non-stat) should NOT have been called (am succeeded)
     const applyCalls = execFileMock.mock.calls.filter(
-      (c: unknown[]) => c[0] === 'git' && (c[1] as string[])[0] === 'apply',
+      (c: unknown[]) =>
+        c[0] === 'git' &&
+        (c[1] as string[])[0] === 'apply' &&
+        !(c[1] as string[]).includes('--stat'),
     );
     expect(applyCalls).toHaveLength(0);
   });
@@ -632,7 +672,6 @@ describe('applyPatchArtifact', () => {
       if (cmd === 'git' && args[0] === 'apply') return { stdout: '' };
       if (cmd === 'git' && args[0] === 'add') return { stdout: '' };
       if (cmd === 'git' && args[0] === 'commit') return { stdout: '' };
-      if (cmd === 'npm' && args[0] === 'run') return { stdout: '' };
       if (cmd === 'git' && args[0] === 'push') return { stdout: '' };
       if (cmd === 'gh' && args[0] === 'pr')
         return { stdout: 'https://github.com/test/repo/pull/42\n' };
@@ -682,13 +721,12 @@ describe('applyPatchArtifact', () => {
   it('posts comment and cleans up on build failure', async () => {
     fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
 
+    spawnMock.mockReturnValue({ code: 1, stderr: 'tsc: error TS2345' });
     execFileMock.mockImplementation((cmd: string, args: string[]) => {
       if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
       if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
       if (cmd === 'git' && args[0] === 'am')
         return { error: new Error('not mbox') };
-      if (cmd === 'npm' && args[0] === 'run')
-        return { error: new Error('tsc: error TS2345') };
       return { stdout: '' };
     });
 
@@ -715,6 +753,10 @@ describe('applyPatchArtifact', () => {
       if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
       if (cmd === 'git' && args[0] === 'am')
         return { error: new Error('not mbox') };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat'))
+        return {
+          stdout: ' src/foo.ts | 1 +\n 1 file changed, 1 insertion(+)\n',
+        };
       if (cmd === 'git' && args[0] === 'apply')
         return { error: new Error('patch does not apply') };
       return { stdout: '' };
@@ -767,5 +809,144 @@ describe('applyPatchArtifact', () => {
       (c) => c.cmd === 'git' && c.args[0] === 'branch' && c.args[1] === '-D',
     );
     expect(branchDeletes).toHaveLength(0);
+  });
+
+  it('build env does not contain host credentials', async () => {
+    const origGH = process.env.GITHUB_TOKEN;
+    const origLK = process.env.LINEAR_API_KEY;
+    const origAK = process.env.ANTHROPIC_API_KEY;
+    process.env.GITHUB_TOKEN = 'gh-secret';
+    process.env.LINEAR_API_KEY = 'linear-secret';
+    process.env.ANTHROPIC_API_KEY = 'anthropic-secret';
+
+    try {
+      fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+      execFileMock.mockImplementation((cmd: string, args: string[]) => {
+        if (cmd === 'git' && args[0] === 'rev-parse')
+          return { stdout: 'main\n' };
+        if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+        if (cmd === 'git' && args[0] === 'am')
+          return { error: new Error('not mbox') };
+        if (cmd === 'gh')
+          return { stdout: 'https://github.com/test/repo/pull/1\n' };
+        return { stdout: '' };
+      });
+
+      await applyPatchArtifact(patchGroupDir, 'LIA-99', 'issue-id', patchCtx());
+
+      expect(spawnMock).toHaveBeenCalledWith(
+        'npm',
+        ['run', 'build'],
+        expect.objectContaining({
+          env: expect.not.objectContaining({
+            GITHUB_TOKEN: expect.anything(),
+            LINEAR_API_KEY: expect.anything(),
+            ANTHROPIC_API_KEY: expect.anything(),
+          }),
+        }),
+      );
+      const buildCall = spawnMock.mock.calls.find(
+        (c: unknown[]) => c[0] === 'npm' && (c[1] as string[])[0] === 'run',
+      ) as unknown[] | undefined;
+      expect(buildCall).toBeDefined();
+      const buildOpts = buildCall![2] as Record<
+        string,
+        Record<string, unknown>
+      >;
+      expect(buildOpts.env).toHaveProperty('PATH');
+      expect(buildOpts.env).toHaveProperty('HOME');
+    } finally {
+      process.env.GITHUB_TOKEN = origGH;
+      process.env.LINEAR_API_KEY = origLK;
+      process.env.ANTHROPIC_API_KEY = origAK;
+    }
+  });
+
+  it('patch hash appears in pipeline event on success', async () => {
+    const { notifyPipelineStep: notifyMock } =
+      await import('./linear-notifications.js');
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff content');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    await applyPatchArtifact(patchGroupDir, 'LIA-99', 'issue-id', patchCtx());
+
+    const appliedCall = (
+      notifyMock as ReturnType<typeof vi.fn>
+    ).mock.calls.find((c: unknown[]) => c[3] === 'patch_applied');
+    expect(appliedCall).toBeDefined();
+    expect(appliedCall![4]).toMatch(/^hash:[0-9a-f]{64} pr:/);
+  });
+
+  it('rejects patch touching blocked paths', async () => {
+    const { notifyPipelineStep: notifyMock } =
+      await import('./linear-notifications.js');
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout:
+            ' .github/workflows/ci.yml | 5 ++---\n src/foo.ts              | 10 ++++++++++\n 2 files changed, 12 insertions(+), 3 deletions(-)\n',
+        };
+      }
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('restricted paths'),
+      }),
+    );
+    const failedCall = (notifyMock as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) =>
+        c[3] === 'patch_failed' && (c[4] as string).includes('blocked paths'),
+    );
+    expect(failedCall).toBeDefined();
+  });
+
+  it('allows patches that only touch non-blocked paths', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout:
+            ' src/foo.ts | 10 ++++++++++\n 1 file changed, 10 insertions(+)\n',
+        };
+      }
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+
+    expect(result.applied).toBe(true);
   });
 });
