@@ -5,7 +5,7 @@ Follows the memory_tree.py pattern: sqlite-vec for vector storage, FTS5 for
 BM25, Reciprocal Rank Fusion to combine both signals. Incremental indexing
 via stat()+mtime and content SHA-256.
 
-Subcommands: reindex | search | status
+Subcommands: reindex | search | status | generate-fixture | benchmark
 
 DB path: ~/.deus/code_search.db (override via DEUS_CODE_SEARCH_DB).
 Embedding: reuses evolution.providers.embeddings (Ollama embeddinggemma 768d).
@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import argparse
 import ast
+import bisect
 import hashlib
+import json
 import os
 import re
 import secrets
@@ -633,19 +635,29 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
 
 # ── Search ────────────────────────────────────────────────────────────────────
 
+_cal_cache: list[float] | None = None
+
+
 def search(
     query: str,
     k: int = DEFAULT_TOP_K,
-    abstain_threshold: float = 0.0,
     gap_threshold: float = 0.0,
     min_confidence: float = 0.0,
+    rrf_k: int = DEFAULT_RRF_K,
 ) -> list[dict[str, Any]]:
-    """Semantic + BM25 search with weighted RRF fusion."""
+    """Semantic + BM25 search with weighted RRF fusion.
+
+    Returns results with retrieval_confidence (0-1): query-level signal
+    indicating how well the query matches the indexed codebase. Computed
+    via percentile rank against a stored calibration distribution. Below
+    0.3 = likely out-of-domain.
+    """
     if not DB_PATH.exists():
         return [{"error": "No index. Run: code_search.py reindex <directory>"}]
 
     db = _init_db()
     results: list[dict[str, Any]] = []
+    top_vec_distance: float = 2.0
 
     # Vector search (rowid-based)
     vec_candidates: list[tuple[int, int]] = []
@@ -661,6 +673,14 @@ def search(
                 (_serialize(qvec), k * 3),
             ).fetchall()
             vec_candidates = [(rowid, rank + 1) for rank, (rowid, _dist) in enumerate(rows)]
+            if rows:
+                top_rid = rows[0][0]
+                cos_row = db.execute(
+                    "SELECT vec_distance_cosine(embedding, ?) FROM chunks_vec WHERE rowid = ?",
+                    (_serialize(qvec), top_rid),
+                ).fetchone()
+                if cos_row:
+                    top_vec_distance = cos_row[0]
     except Exception as exc:
         print(f"WARNING: vector search failed: {exc}", file=sys.stderr)
         vec_candidates = []
@@ -700,14 +720,26 @@ def search(
 
     # Fuse with type/extension weighting
     if vec_ranked or fts_ranked:
-        fused = _rrf_fuse(vec_ranked, fts_ranked, k_rrf=DEFAULT_RRF_K, top=k, chunk_meta=chunk_meta)
+        fused = _rrf_fuse(vec_ranked, fts_ranked, k_rrf=rrf_k, top=k, chunk_meta=chunk_meta)
     else:
         fused = []
 
-    # Abstain gate
-    if fused and abstain_threshold > 0.0 and fused[0][1] < abstain_threshold:
-        db.close()
-        return []
+    # Compute retrieval confidence via percentile rank against calibration distribution
+    global _cal_cache
+    if _cal_cache is None:
+        cal_row = db.execute(
+            "SELECT value FROM index_meta WHERE key = 'calibration_distances'"
+        ).fetchone()
+        if cal_row:
+            _cal_cache = json.loads(cal_row[0])
+    if _cal_cache:
+        percentile = bisect.bisect_left(_cal_cache, top_vec_distance) / len(_cal_cache)
+        retrieval_confidence = round(1.0 - percentile, 3)
+    else:
+        print("WARNING: no calibration data — run generate-fixture first", file=sys.stderr)
+        retrieval_confidence = round(max(0.0, 1.0 - (top_vec_distance / 2.0)), 3)
+    if not fts_ranked and retrieval_confidence < 0.5:
+        retrieval_confidence = round(retrieval_confidence * 0.5, 3)
 
     # Gap-threshold truncation: cut after a large score cliff (keep high-confidence cluster)
     if gap_threshold > 0.0 and len(fused) > 1:
@@ -719,7 +751,7 @@ def search(
         fused = fused[:cutoff]
 
     # Compute confidence: score normalized to theoretical max (rank-1 in both lists)
-    max_score = 2.0 / (DEFAULT_RRF_K + 1)
+    max_score = 2.0 / (rrf_k + 1)
 
     # Fetch chunk details
     for rid, score in fused:
@@ -734,14 +766,20 @@ def search(
         if row:
             content = row[3]
             snippet = content[:500] + ("..." if len(content) > 500 else "")
-            results.append({
+            entry: dict[str, Any] = {
                 "file": row[0],
                 "type": row[1],
                 "name": row[2] or "(anonymous)",
                 "snippet": snippet,
                 "score": round(score, 6),
                 "confidence": round(confidence, 3),
-            })
+                "retrieval_confidence": retrieval_confidence,
+            }
+            if top_vec_distance >= 2.0:
+                entry["low_confidence_warning"] = "embedding unavailable — confidence unreliable"
+            elif retrieval_confidence < 0.3:
+                entry["low_confidence_warning"] = "query may be outside indexed codebase"
+            results.append(entry)
 
     db.close()
     return results
@@ -777,6 +815,306 @@ def status() -> dict[str, Any]:
     }
 
 
+# ── Fixture Generation ────────────────────────────────────────────────────────
+
+ABSTAIN_QUERIES_FAR = [
+    "kubernetes pod scheduling",
+    "React Native navigation stack",
+    "Flutter widget lifecycle",
+    "Django ORM migrations",
+    "AWS Lambda cold start optimization",
+    "GraphQL schema stitching",
+    "Redis cluster failover",
+    "Terraform state locking",
+    "iOS SwiftUI animations",
+    "Kafka consumer group rebalancing",
+]
+
+ABSTAIN_QUERIES_NEAR = [
+    "pgvector HNSW index tuning parameters",
+    "Weaviate hybrid search configuration",
+    "Pinecone serverless index namespacing",
+    "cosine similarity threshold selection theory",
+    "GGUF quantization format internals",
+    "Qdrant collection snapshots for backup",
+    "chromadb collection sharding strategy",
+    "LangChain output parser retry strategies",
+    "Haystack pipeline node custom connectors",
+    "MLflow experiment tracking with nested runs",
+]
+
+
+def generate_fixture(
+    repo_dir: str | Path,
+    output: str | Path | None = None,
+    seed: int = 42,
+) -> list[dict[str, Any]]:
+    """Mine docstrings + git history + manual abstain queries into a benchmark fixture."""
+    import random
+
+    repo = Path(repo_dir).resolve()
+    rng = random.Random(seed)
+    items: list[dict[str, Any]] = []
+
+    # 1a. Docstring mining
+    try:
+        ls = subprocess.run(
+            ["git", "ls-files", "--", "*.py"],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+        py_files = [f.strip() for f in ls.stdout.strip().split("\n") if f.strip()]
+    except Exception:
+        py_files = []
+
+    seen_queries: set[str] = set()
+    docstring_candidates: list[dict[str, Any]] = []
+
+    for rel in py_files:
+        if "/tests/" in rel or rel.startswith("test_") or "/test_" in rel:
+            continue
+        fpath = repo / rel
+        if not fpath.exists():
+            continue
+        try:
+            source = fpath.read_text(encoding="utf-8", errors="replace")
+            tree = ast.parse(source, filename=str(fpath))
+        except Exception:
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name.startswith("_") and node.name != "__init__":
+                continue
+            if node.name == "__init__":
+                continue
+            ds = ast.get_docstring(node)
+            if not ds or len(ds) < 20:
+                continue
+            first_sentence = ds.split(".")[0].strip()
+            if len(first_sentence) < 15:
+                continue
+            if first_sentence in seen_queries:
+                continue
+            seen_queries.add(first_sentence)
+            docstring_candidates.append({
+                "query": first_sentence,
+                "expected_file": rel,
+                "expected_name": node.name,
+                "tag": "docstring",
+            })
+
+    if len(docstring_candidates) > 100:
+        docstring_candidates = rng.sample(docstring_candidates, 100)
+    items.extend(docstring_candidates)
+
+    # 1b. Git history mining
+    try:
+        log = subprocess.run(
+            ["git", "log", "--no-merges", "--format=%H %s", "-200"],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+        commits = [ln.strip() for ln in log.stdout.strip().split("\n") if ln.strip()]
+    except Exception:
+        commits = []
+
+    _skip_re = re.compile(r"^(chore|docs)(\([^)]*\))?:|^(Merge |release-please)")
+    git_items: list[dict[str, Any]] = []
+
+    for entry in commits:
+        parts = entry.split(" ", 1)
+        if len(parts) < 2:
+            continue
+        sha, msg = parts
+        if len(msg) < 15:
+            continue
+        if _skip_re.match(msg):
+            continue
+
+        files_out = subprocess.run(
+            ["git", "log", "--format=", "--name-only", "-1", sha],
+            cwd=str(repo), capture_output=True, text=True,
+        )
+        changed = [
+            f.strip() for f in files_out.stdout.strip().split("\n")
+            if f.strip() and Path(f.strip()).suffix.lower() in SUPPORTED_EXTENSIONS
+        ]
+        if not changed:
+            continue
+        if all(Path(f).suffix.lower() in DOC_EXTENSIONS for f in changed):
+            continue
+
+        query = re.sub(r"^(feat|fix|refactor|perf|test|ci|build)\([^)]*\):\s*", "", msg)
+        query = re.sub(r"^(feat|fix|refactor|perf|test|ci|build):\s*", "", query)
+        query = re.sub(r"\s*\(#\d+\)", "", query)
+        if query in seen_queries:
+            continue
+        seen_queries.add(query)
+        git_items.append({
+            "query": query,
+            "expected_files": changed[:5],
+            "tag": "git-history",
+        })
+
+    if len(git_items) > 50:
+        git_items = rng.sample(git_items, 50)
+    items.extend(git_items)
+
+    # 1c. Manual abstain queries (far-OOD + near-OOD)
+    for q in ABSTAIN_QUERIES_FAR:
+        items.append({"query": q, "abstain": True, "tag": "abstain-far"})
+    for q in ABSTAIN_QUERIES_NEAR:
+        items.append({"query": q, "abstain": True, "tag": "abstain-near"})
+
+    # Write JSONL
+    if output:
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as f:
+            for item in items:
+                f.write(json.dumps(item, ensure_ascii=False) + "\n")
+        print(f"Wrote {len(items)} fixture items to {out_path}", file=sys.stderr)
+
+    # Store calibration distribution (in-domain query distances) for percentile confidence
+    if DB_PATH.exists():
+        db = _init_db()
+        cal_distances: list[float] = []
+        for item in items:
+            if item.get("abstain"):
+                continue
+            emb = _embed_text(item["query"])
+            vec_rows = db.execute(
+                "SELECT rowid FROM chunks_vec WHERE embedding MATCH ? ORDER BY distance LIMIT 1",
+                (_serialize(emb),),
+            ).fetchall()
+            if vec_rows:
+                cos_row = db.execute(
+                    "SELECT vec_distance_cosine(embedding, ?) FROM chunks_vec WHERE rowid = ?",
+                    (_serialize(emb), vec_rows[0][0]),
+                ).fetchone()
+                if cos_row:
+                    cal_distances.append(cos_row[0])
+        cal_distances.sort()
+        db.execute(
+            "INSERT OR REPLACE INTO index_meta (key, value) VALUES ('calibration_distances', ?)",
+            [json.dumps(cal_distances)],
+        )
+        db.commit()
+        db.close()
+        global _cal_cache
+        _cal_cache = None
+        print(f"Stored {len(cal_distances)} calibration distances in index_meta", file=sys.stderr)
+
+    return items
+
+
+# ── Benchmark ────────────────────────────────────────────────────────────────
+
+def benchmark(
+    dataset: list[dict[str, Any]],
+    *,
+    k: int = 5,
+    gap_threshold: float = 0.0,
+    rrf_k: int = DEFAULT_RRF_K,
+) -> dict[str, Any]:
+    """Run dataset queries, compute recall@k, MRR@k, abstain accuracy, latency."""
+    n = len(dataset)
+    if n == 0:
+        return {"error": "empty dataset"}
+
+    by_tag: dict[str, dict[str, Any]] = {}
+    recall_hits = 0
+    mrr_sum = 0.0
+    abstain_correct = 0
+    abstain_total = 0
+    non_abstain_count = 0
+    latencies: list[float] = []
+    confidence_by_tag: dict[str, list[float]] = {}
+
+    for item in dataset:
+        q = item["query"]
+        expected_files = item.get("expected_files") or (
+            [item["expected_file"]] if item.get("expected_file") else []
+        )
+        expected_name = item.get("expected_name")
+        tag = item.get("tag", "abstain" if item.get("abstain") else "single")
+        expect_abstain = bool(item.get("abstain"))
+
+        bucket = by_tag.setdefault(tag, {"n": 0, "hits": 0, "mrr": 0.0})
+        bucket["n"] += 1
+
+        t0 = time.monotonic()
+        results = search(q, k=k, gap_threshold=gap_threshold, rrf_k=rrf_k)
+        latencies.append(time.monotonic() - t0)
+
+        ret_conf = results[0].get("retrieval_confidence", 0.0) if results else 0.0
+        confidence_by_tag.setdefault(tag, []).append(ret_conf)
+
+        if expect_abstain:
+            abstain_total += 1
+            if ret_conf < 0.3:
+                abstain_correct += 1
+                bucket.setdefault("abstain_correct", 0)
+                bucket["abstain_correct"] += 1
+            continue
+
+        non_abstain_count += 1
+
+        empty = len(results) == 0 or (len(results) == 1 and "error" in results[0])
+        if empty:
+            continue
+
+        returned_files = [r["file"] for r in results if "file" in r]
+        returned_names = [r["name"] for r in results if "name" in r]
+
+        hit = any(ef in returned_files for ef in expected_files)
+        if expected_name and not hit:
+            hit = expected_name in returned_names
+
+        if hit:
+            recall_hits += 1
+            bucket["hits"] += 1
+            for idx, r in enumerate(results):
+                match = (r.get("file") in expected_files or
+                         (expected_name and r.get("name") == expected_name))
+                if match:
+                    reciprocal = 1.0 / (idx + 1)
+                    mrr_sum += reciprocal
+                    bucket["mrr"] += reciprocal
+                    break
+
+    latencies.sort()
+    p50 = latencies[len(latencies) // 2] if latencies else 0
+    p95 = latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))] if latencies else 0
+
+    tag_report: dict[str, dict[str, Any]] = {}
+    for tag, s in by_tag.items():
+        confs = confidence_by_tag.get(tag, [])
+        mean_conf = round(sum(confs) / len(confs), 3) if confs else 0.0
+        entry: dict[str, Any] = {"n": s["n"], "mean_confidence": mean_conf}
+        if tag.startswith("abstain"):
+            entry["abstain_accuracy"] = round(s.get("abstain_correct", 0) / s["n"], 3) if s["n"] else None
+        else:
+            entry["recall_at_k"] = round(s["hits"] / s["n"], 3) if s["n"] else 0
+            entry["mrr_at_k"] = round(s["mrr"] / s["n"], 3) if s["n"] else 0
+        tag_report[tag] = entry
+
+    return {
+        "n": n,
+        "recall_at_k": round(recall_hits / non_abstain_count, 3) if non_abstain_count else 0,
+        "mrr_at_k": round(mrr_sum / non_abstain_count, 3) if non_abstain_count else 0,
+        "abstain_accuracy": round(abstain_correct / abstain_total, 3) if abstain_total else None,
+        "latency_p50_ms": round(p50 * 1000, 1),
+        "latency_p95_ms": round(p95 * 1000, 1),
+        "by_tag": tag_report,
+        "config": {"k": k, "gap_threshold": gap_threshold, "rrf_k": rrf_k},
+    }
+
+
+# ── Calibration Sweep ────────────────────────────────────────────────────────
+
+
+
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -792,6 +1130,14 @@ def main() -> None:
     p_search.add_argument("-k", type=int, default=DEFAULT_TOP_K)
 
     sub.add_parser("status", help="Show index status")
+
+    p_fixture = sub.add_parser("generate-fixture", help="Generate benchmark fixture from codebase")
+    p_fixture.add_argument("directory", nargs="?", default=".")
+    p_fixture.add_argument("-o", "--output", default="scripts/tests/fixtures/code_search_bench.jsonl")
+
+    p_bench = sub.add_parser("benchmark", help="Run benchmark against fixture")
+    p_bench.add_argument("fixture", help="Path to JSONL fixture")
+    p_bench.add_argument("-k", type=int, default=5)
 
     args = parser.parse_args()
     if not args.command:
@@ -809,6 +1155,14 @@ def main() -> None:
         print(json.dumps(results, indent=2))
     elif args.command == "status":
         print(json.dumps(status(), indent=2))
+    elif args.command == "generate-fixture":
+        items = generate_fixture(args.directory, output=args.output)
+        print(json.dumps({"count": len(items), "output": args.output}, indent=2))
+    elif args.command == "benchmark":
+        with open(args.fixture) as f:
+            dataset = [json.loads(line) for line in f if line.strip()]
+        result = benchmark(dataset, k=args.k)
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":

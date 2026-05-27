@@ -57,8 +57,11 @@ def _run_mcp_server() -> None:
     def search_code(query: str, k: int = 10, min_confidence: float = 0.0) -> str:
         """Search indexed code semantically. Returns ranked code chunks matching the query.
 
-        Each result includes a confidence score (0-1). Values below 0.3 indicate
-        weak matches; above 0.7 indicates strong signal.
+        Each result includes two confidence scores:
+        - confidence (0-1): per-result ranking quality (RRF score normalized).
+        - retrieval_confidence (0-1): query-level signal indicating how well the
+          query matches the indexed codebase. Below 0.3 = likely out-of-domain.
+          This value is identical across all results for the same query.
 
         Args:
             query: Natural-language description of what you're looking for

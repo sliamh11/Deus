@@ -16,11 +16,13 @@ Receive a description of an evaluation setup and systematically audit it for met
 
 2. **Check sampling validity** -- Verify that compared systems use matched sampling parameters (temperature, top_k, top_p, repeat_penalty, min_p, frequency/presence penalties). Unmatched sampling defaults produce 5-10x quality deltas independent of model quality. Flag any cross-stack comparison (Ollama vs. llama-server, vs. mlx_lm, etc.) as requiring explicit sampling verification. Latency metrics are sampling-insensitive; quality metrics are sampling-dominated.
 
-3. **Check measurement scope** -- Verify: (a) the metric measures what the conclusion claims, (b) measurement is on the actual deployment stack (not a proxy), (c) no cross-stack gap is inferred from different hardware/quantization/runtime combinations without re-measurement. Flag scope leakage: applying a result derived from stack X to justify a conclusion about stack Y.
+3. **Check score semantics** -- If a threshold, gate, or decision boundary is applied to a score: verify the score encodes the dimension being decided on. Rank-based scores (RRF, percentile, rank-reciprocal) only encode relative position, not absolute quality -- a threshold on them cannot distinguish "good match ranked #1" from "bad match ranked #1". Flag when a quality-based decision (abstain, confidence, reject) uses an ordinal/rank-derived metric. Flag when fusion or aggregation discards the signal axis the gate needs (e.g. cosine distance carries quality, RRF destroys it).
 
-4. **Audit the judge or scorer** -- If a judge model or human rater is used: check for judge bias toward length, judge bias toward its own outputs, judge reliability (is inter-rater agreement reported?), and ceiling effects. If automated metrics (BLEU, Pearson, etc.) are used: check whether the metric is appropriate for the task type.
+4. **Check measurement scope** -- Verify: (a) the metric measures what the conclusion claims, (b) measurement is on the actual deployment stack (not a proxy), (c) no cross-stack gap is inferred from different hardware/quantization/runtime combinations without re-measurement. Flag scope leakage: applying a result derived from stack X to justify a conclusion about stack Y.
 
-5. **Check baseline and identity validity** -- Verify that model identity is confirmed (same weights, same quantization, same chat template) before comparing. Tokenizer variants and chat template differences can contribute ~0.05 residual delta. State which errors would cause a qualitatively wrong conclusion vs. quantitatively imprecise one.
+5. **Audit the judge or scorer** -- If a judge model or human rater is used: check for judge bias toward length, judge bias toward its own outputs, judge reliability (is inter-rater agreement reported?), and ceiling effects. If automated metrics (BLEU, Pearson, etc.) are used: check whether the metric is appropriate for the task type.
+
+6. **Check baseline and identity validity** -- Verify that model identity is confirmed (same weights, same quantization, same chat template) before comparing. Tokenizer variants and chat template differences can contribute ~0.05 residual delta. State which errors would cause a qualitatively wrong conclusion vs. quantitatively imprecise one.
 
 ## Constraints
 

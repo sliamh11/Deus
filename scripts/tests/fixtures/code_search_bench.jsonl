@@ -1,0 +1,170 @@
+{"query": "Try to inject a bug using the given pattern", "expected_file": "scripts/review_benchmark.py", "expected_name": "find_and_inject", "tag": "docstring"}
+{"query": "Return a LlamaCppRuntimeJudge for scoring production interactions", "expected_file": "evolution/judge/llama_cpp_judge.py", "expected_name": "make_runtime_judge", "tag": "docstring"}
+{"query": "Extract all valid pairs from CC session files", "expected_file": "evolution/cc_backfill.py", "expected_name": "collect_pairs", "tag": "docstring"}
+{"query": "Extract the 4-dimension score dict from a model-generated string", "expected_file": "evolution/training/bench_judge_lora.py", "expected_name": "parse_judge_response", "tag": "docstring"}
+{"query": "Label interactions as corrections", "expected_file": "evolution/storage/provider.py", "expected_name": "bulk_label_corrections", "tag": "docstring"}
+{"query": "Get the most recent principle extraction for a domain", "expected_file": "evolution/storage/provider.py", "expected_name": "get_last_extraction", "tag": "docstring"}
+{"query": "Record user feedback (thumbs up/down) for an interaction", "expected_file": "evolution/mcp_server.py", "expected_name": "record_feedback_tool", "tag": "docstring"}
+{"query": "Resolve best provider and return a runtime judge", "expected_file": "evolution/judge/__init__.py", "expected_name": "make_runtime_judge", "tag": "docstring"}
+{"query": "Print a memory health report and persist a daily snapshot for trend tracking", "expected_file": "scripts/memory_indexer.py", "expected_name": "cmd_health", "tag": "docstring"}
+{"query": "Resolve the best available provider", "expected_file": "evolution/generative/provider.py", "expected_name": "resolve", "tag": "docstring"}
+{"query": "Retrieval with persona-trigger gating, focused retries, supplementary\nhints, and adaptive K", "expected_file": "scripts/memory_tree.py", "expected_name": "retrieve_with_policy", "tag": "docstring"}
+{"query": "Report docs/ files that are not referenced by any pattern (informational)", "expected_file": "scripts/drift_check.py", "expected_name": "check_coverage", "tag": "docstring"}
+{"query": "Manually trigger reflection generation for an interaction", "expected_file": "evolution/cli.py", "expected_name": "cmd_reflect", "tag": "docstring"}
+{"query": "Fire-and-forget logging + deferred batch judge, called by Node", "expected_file": "evolution/cli.py", "expected_name": "cmd_log_interaction", "tag": "docstring"}
+{"query": "Persist one agent interaction", "expected_file": "evolution/ilog/interaction_log.py", "expected_name": "log_interaction", "tag": "docstring"}
+{"query": "Save a prompt artifact, deactivating previous ones for the same module", "expected_file": "evolution/storage/provider.py", "expected_name": "save_artifact", "tag": "docstring"}
+{"query": "Count scored interactions since a timestamp, optionally filtered by domain", "expected_file": "evolution/storage/provider.py", "expected_name": "count_new_scored", "tag": "docstring"}
+{"query": "Generate entity articles", "expected_file": "scripts/memory_indexer.py", "expected_name": "cmd_compile", "tag": "docstring"}
+{"query": "Emit a GraphViz dot string of the tree + see_also edges", "expected_file": "scripts/memory_tree.py", "expected_name": "render_graph", "tag": "docstring"}
+{"query": "Run the CC session backfill", "expected_file": "evolution/cc_backfill.py", "expected_name": "run_cc_backfill", "tag": "docstring"}
+{"query": "Cosine similarity", "expected_file": "scripts/memory_tree.py", "expected_name": "cosine", "tag": "docstring"}
+{"query": "Increment the times_retrieved counter for a reflection", "expected_file": "evolution/storage/provider.py", "expected_name": "increment_reflection_retrieved", "tag": "docstring"}
+{"query": "Rewrite Claude-specific wording into the local Codex compatibility form", "expected_file": "scripts/sync_agent_skills.py", "expected_name": "transform_markdown", "tag": "docstring"}
+{"query": "Enforce the Backend strategy trait convention (ADR: backend-strategy-trait", "expected_file": "scripts/drift_check.py", "expected_name": "check_backend_strategy", "tag": "docstring"}
+{"query": "List artifacts, optionally filtered by module", "expected_file": "evolution/storage/provider.py", "expected_name": "list_artifacts", "tag": "docstring"}
+{"query": "Run a single maintenance task", "expected_file": "scripts/maintenance.py", "expected_name": "run_task", "tag": "docstring"}
+{"query": "4-phase retrieval: flat cosine → FTS5 BM25 → graph expansion → abstain", "expected_file": "scripts/memory_tree.py", "expected_name": "retrieve", "tag": "docstring"}
+{"query": "Load model (with optional adapter) and score each record", "expected_file": "evolution/training/bench_judge_lora.py", "expected_name": "run_bench", "tag": "docstring"}
+{"query": "Session-scoped judge model (OllamaJudge preferred, GeminiJudge fallback)", "expected_file": "eval/conftest.py", "expected_name": "judge", "tag": "docstring"}
+{"query": "Embed a single text string", "expected_file": "evolution/providers/embeddings.py", "expected_name": "embed", "tag": "docstring"}
+{"query": "Load kind=standard atoms as condensed one-liners within token budget", "expected_file": "scripts/standards_pack.py", "expected_name": "load_standards", "tag": "docstring"}
+{"query": "Semantic + BM25 search with weighted RRF fusion", "expected_file": "scripts/code_search.py", "expected_name": "search", "tag": "docstring"}
+{"query": "Mine implicit feedback signals from session query sequences", "expected_file": "scripts/mine_implicit_feedback.py", "expected_name": "mine_signals", "tag": "docstring"}
+{"query": "Convenience: batch-embed a list of texts using the configured provider", "expected_file": "evolution/providers/embeddings.py", "expected_name": "embed_batch", "tag": "docstring"}
+{"query": "Get style-category reflections above a minimum score", "expected_file": "evolution/storage/provider.py", "expected_name": "get_style_reflections", "tag": "docstring"}
+{"query": "Discover source files to index", "expected_file": "scripts/code_search.py", "expected_name": "discover_files", "tag": "docstring"}
+{"query": "Return the expected `", "expected_file": "scripts/sync_agent_skills.py", "expected_name": "render_agents_tree", "tag": "docstring"}
+{"query": "Merge new terms, evict to cap, write back", "expected_file": "scripts/session_concepts.py", "expected_name": "update_concepts", "tag": "docstring"}
+{"query": "Run the full two-phase benchmark", "expected_file": "scripts/compression_benchmark.py", "expected_name": "run_benchmark", "tag": "docstring"}
+{"query": "Fetch recent interactions, optionally filtered", "expected_file": "evolution/ilog/interaction_log.py", "expected_name": "get_recent", "tag": "docstring"}
+{"query": "Mark multiple wardens atomically inside a commit window", "expected_file": "scripts/codex_warden_hooks.py", "expected_name": "mark_batch_wardens", "tag": "docstring"}
+{"query": "Run dataset queries, compute recall@k, MRR@k, abstain accuracy, latency", "expected_file": "scripts/code_search.py", "expected_name": "benchmark", "tag": "docstring"}
+{"query": "Estimate token count for a single string", "expected_file": "evolution/token_counter.py", "expected_name": "estimate_tokens", "tag": "docstring"}
+{"query": "Load GEMINI_API_KEY from", "expected_file": "evolution/config.py", "expected_name": "load_api_key", "tag": "docstring"}
+{"query": "Add or replace a field in the YAML frontmatter block", "expected_file": "scripts/memory_gc.py", "expected_name": "set_frontmatter_field", "tag": "docstring"}
+{"query": "Export atoms filtered by privacy to standalone markdown", "expected_file": "scripts/memory_indexer.py", "expected_name": "cmd_export", "tag": "docstring"}
+{"query": "Create a runtime judge instance for scoring interactions", "expected_file": "evolution/judge/provider.py", "expected_name": "make_runtime_judge", "tag": "docstring"}
+{"query": "Check vault memory files for basic structural integrity", "expected_file": "scripts/compression_benchmark.py", "expected_name": "check_vault_integrity", "tag": "docstring"}
+{"query": "Register a provider", "expected_file": "evolution/generative/provider.py", "expected_name": "register", "tag": "docstring"}
+{"query": "Identify knowledge gaps: high-frequency session topics with low atom coverage", "expected_file": "scripts/memory_indexer.py", "expected_name": "cmd_gaps", "tag": "docstring"}
+{"query": "Deterministic short rationale from the dim signature", "expected_file": "evolution/training/build_judge_lora_dataset.py", "expected_name": "synth_rationale", "tag": "docstring"}
+{"query": "Extract JSON from LLM response, handling code fences and trailing junk", "expected_file": "scripts/compression_benchmark.py", "expected_name": "parse_json", "tag": "docstring"}
+{"query": "Insert or update a node + its embedding + FTS5 index", "expected_file": "scripts/memory_tree.py", "expected_name": "upsert_node", "tag": "docstring"}
+{"query": "Persist a reflection with its embedding", "expected_file": "evolution/storage/provider.py", "expected_name": "save_reflection", "tag": "docstring"}
+{"query": "Return True if this backend can serve requests right now", "expected_file": "evolution/generative/provider.py", "expected_name": "is_available", "tag": "docstring"}
+{"query": "Open (or create) the Deus evolution SQLite database and ensure all\nevolution tables exist", "expected_file": "evolution/db.py", "expected_name": "open_db", "tag": "docstring"}
+{"query": "Return {total, scored, avg_score} for an eval_suite", "expected_file": "evolution/storage/provider.py", "expected_name": "interaction_stats", "tag": "docstring"}
+{"query": "Parse judge_dims JSON", "expected_file": "evolution/training/build_judge_lora_dataset.py", "expected_name": "parse_dims", "tag": "docstring"}
+{"query": "Parse JSONL transcript into [{role, text}] — only turns with actual text", "expected_file": "scripts/stop_hook.py", "expected_name": "read_transcript", "tag": "docstring"}
+{"query": "Extract weighted (term, score) pairs from a single prompt", "expected_file": "scripts/session_concepts.py", "expected_name": "extract_terms", "tag": "docstring"}
+{"query": "Daily average judge scores for the last N days", "expected_file": "evolution/ilog/interaction_log.py", "expected_name": "score_trend", "tag": "docstring"}
+{"query": "Run the same dataset under five variants so we can read the marginal\nvalue of each retrieval phase:\n\n    V0  — flat only, no see_also, no abstain (baseline)\n    V1  — flat + abstain only\n    V2  — flat + see_also only\n    V3  — full minus coherence gate\n    V4  — full with coherence gate (current production)", "expected_file": "scripts/memory_tree.py", "expected_name": "benchmark_ablation", "tag": "docstring"}
+{"query": "Scan atoms, classify, and optionally write kind: field", "expected_file": "scripts/migrate_atom_tiers.py", "expected_name": "migrate_atoms", "tag": "docstring"}
+{"query": "Run LongMemEval benchmark and return metric dict", "expected_file": "scripts/memory_benchmark.py", "expected_name": "run_outbound", "tag": "docstring"}
+{"query": "Extract atomic facts and classify each as critical or supplementary", "expected_file": "scripts/compression_benchmark.py", "expected_name": "extract_and_classify_facts", "tag": "docstring"}
+{"query": "Batch-embed in a single HTTP call, chunked by OLLAMA_EMBED_BATCH_MAX", "expected_file": "evolution/providers/embeddings.py", "expected_name": "embed_batch", "tag": "docstring"}
+{"query": "Run behavioral tests: LLM answers using only compressed doc, then score", "expected_file": "scripts/compression_benchmark.py", "expected_name": "run_behavioral", "tag": "docstring"}
+{"query": "Generate (or skip if fresh) the codebase map at output_path", "expected_file": "scripts/codebase_map.py", "expected_name": "generate_map", "tag": "docstring"}
+{"query": "Return reflection counts grouped by category", "expected_file": "evolution/storage/provider.py", "expected_name": "reflections_by_category", "tag": "docstring"}
+{"query": "Sum estimated tokens across multiple strings", "expected_file": "evolution/token_counter.py", "expected_name": "sum_tokens", "tag": "docstring"}
+{"query": "Generate text from a prompt", "expected_file": "evolution/generative/provider.py", "expected_name": "generate", "tag": "docstring"}
+{"query": "Extract top principles from the best and worst interactions", "expected_file": "evolution/reflexion/principles.py", "expected_name": "extract_principles", "tag": "docstring"}
+{"query": "Dismiss a false-positive conflict", "expected_file": "scripts/memory_indexer.py", "expected_name": "cmd_dismiss_conflict", "tag": "docstring"}
+{"query": "Sample real production queries, stratified and deduped", "expected_file": "scripts/trec_atom_benchmark.py", "expected_name": "stage_sample", "tag": "docstring"}
+{"query": "True if path belongs to an external population (e", "expected_file": "scripts/memory_tree.py", "expected_name": "is_external_namespace", "tag": "docstring"}
+{"query": "Delete expired atom files from the vault Atoms/ directory", "expected_file": "scripts/memory_gc.py", "expected_name": "run_atoms_gc", "tag": "docstring"}
+{"query": "Batch embed via the evolution provider", "expected_file": "scripts/memory_tree.py", "expected_name": "embed_batch_text", "tag": "docstring"}
+{"query": "Run a one-step smoke test exercising the real training code path", "expected_file": "evolution/training/_smoke.py", "expected_name": "run_smoke", "tag": "docstring"}
+{"query": "Select N random patterns, ensuring category diversity", "expected_file": "scripts/review_benchmark.py", "expected_name": "select_patterns", "tag": "docstring"}
+{"query": "User-facing strings, filenames, weekday checks", "expected_file": "scripts/_time.py", "expected_name": "local_now", "tag": "docstring"}
+{"query": "Compute optimal affine transform y = a*x + b that maps scores\nto a uniform-ish distribution (target: well-calibrated judge)", "expected_file": "evolution/diagnostics/irt_judge_diagnostic.py", "expected_name": "compute_calibration_transform", "tag": "docstring"}
+{"query": "Count reflections linked to backfill interactions", "expected_file": "evolution/storage/provider.py", "expected_name": "backfill_reflection_count", "tag": "docstring"}
+{"query": "Acquire flock, read current JSON, apply transform_fn(), atomic write", "expected_file": "scripts/settings_merge.py", "expected_name": "rewrite_settings", "tag": "docstring"}
+{"query": "Return True when the caller is an agent expecting structured output", "expected_file": "scripts/_agent_io.py", "expected_name": "is_agent_context", "tag": "docstring"}
+{"query": "LLM-based correctness check — the behavioral backstop", "expected_file": "scripts/drift_check.py", "expected_name": "check_validate", "tag": "docstring"}
+{"query": "Whether the working tree has uncommitted changes", "expected_file": "evolution/training/_provenance.py", "expected_name": "git_dirty", "tag": "docstring"}
+{"query": "Unique provider name, e", "expected_file": "evolution/generative/provider.py", "expected_name": "name", "tag": "docstring"}
+{"query": "Get all reflections linked to a specific interaction", "expected_file": "evolution/storage/provider.py", "expected_name": "get_reflections_for_interaction", "tag": "docstring"}
+{"query": "Find entity pairs in different domains with shared graph neighbors", "expected_file": "scripts/memory_indexer.py", "expected_name": "find_cross_domain_bridges", "tag": "docstring"}
+{"query": "Record a query for blind-spot analysis", "expected_file": "scripts/memory_indexer.py", "expected_name": "log_query", "tag": "docstring"}
+{"query": "Check new atom against similar existing atoms for contradictions", "expected_file": "scripts/memory_indexer.py", "expected_name": "detect_contradictions", "tag": "docstring"}
+{"query": "Extract the test_tasks list from a pattern's YAML frontmatter", "expected_file": "scripts/drift_check.py", "expected_name": "parse_test_tasks", "tag": "docstring"}
+{"query": "Append result dict as JSONL to results", "expected_file": "scripts/memory_benchmark.py", "expected_name": "save_results", "tag": "docstring"}
+{"query": "Return the currently active artifact for a module, or None", "expected_file": "evolution/optimizer/artifacts.py", "expected_name": "get_active", "tag": "docstring"}
+{"query": "Full pipeline: inject on throwaway branch → diff → cleanup", "expected_file": "scripts/review_benchmark.py", "expected_name": "cmd_run", "tag": "docstring"}
+{"query": "Verify every repo-owned skill is documented in AGENTS", "expected_file": "scripts/sync_agent_skills.py", "expected_name": "check_skill_inventory", "tag": "docstring"}
+{"query": "Idempotent maintenance pass: discover new, orphan missing, reembed stale", "expected_file": "scripts/memory_tree.py", "expected_name": "autofix_tree", "tag": "docstring"}
+{"query": "Save an original/compressed pair as golden reference files", "expected_file": "scripts/compression_benchmark.py", "expected_name": "save_golden", "tag": "docstring"}
+{"query": "Per-dimension table + headline aggregate + verdict line driven by\nmean Pearson delta (not composite)", "expected_file": "evolution/training/bench_judge_lora.py", "expected_name": "print_comparison", "tag": "docstring"}
+{"query": "Recompute temperature for all live atoms", "expected_file": "scripts/memory_indexer.py", "expected_name": "cmd_decay", "tag": "docstring"}
+{"query": "bidirectional vault-Linear pending sync", "expected_files": [".claude/skills/compress/skill.md", "README.md", "patterns/deployment.md", "patterns/general-code.md", "patterns/skill-add.md"], "tag": "git-history"}
+{"query": "vault context injection for non-CLI sessions", "expected_files": ["deus-cmd.sh", "patterns/deployment.md", "patterns/general-code.md", "scripts/vault_context_hook.py", "src/remote-control.test.ts"], "tag": "git-history"}
+{"query": "add doc-gardener weekly cron agent", "expected_files": [".claude/agents/doc-gardener.md", "patterns/deployment.md", "patterns/general-code.md", "src/doc-gardener-seed.ts", "src/index.ts"], "tag": "git-history"}
+{"query": "judge-LoRA step-2.1 smoke-test gate + working defaults", "expected_files": ["evolution/training/__tests__/test_smoke.py", "evolution/training/__tests__/test_train_judge_lora.py", "evolution/training/_smoke.py", "evolution/training/train_judge_lora.py", "patterns/eval-change.md"], "tag": "git-history"}
+{"query": "completion-gate before auto-merge + LIA-51 Retry-After patch", "expected_files": [".claude/agents/wardens/completion-gate.md", "patterns/deployment.md", "patterns/general-code.md", "src/index.ts", "src/linear-auto-merge.ts"], "tag": "git-history"}
+{"query": "auto-strip warden:skip on Ready for Agent entry", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/linear-webhook.ts"], "tag": "git-history"}
+{"query": "auto-classify promoted atoms via classify_atom()", "expected_files": ["patterns/eval-change.md", "scripts/memory_indexer.py", "scripts/tests/test_memory_indexer.py"], "tag": "git-history"}
+{"query": "format sweep — measure tier1_coverage by (format, budget)", "expected_files": ["scripts/bench/standards_format_sweep.py"], "tag": "git-history"}
+{"query": "progressive disclosure + handoff memos", "expected_files": [".claude/agents/ai-eng-warden.md", ".claude/agents/code-reviewer.md", ".claude/agents/plan-reviewer.md", ".claude/wardens/ai-engineering-rules.md", ".claude/wardens/code-review-rules.md"], "tag": "git-history"}
+{"query": "widen plan-review-gate scope to non-git and vault paths (LIA-77)", "expected_files": ["scripts/codex_warden_hooks.py", "scripts/tests/test_codex_warden_hooks.py"], "tag": "git-history"}
+{"query": "post-compact hook and host notifications (LIA-94)", "expected_files": ["container/agent-runner/src/index.ts", "patterns/debugging.md", "patterns/deployment.md", "patterns/general-code.md", "src/message-orchestrator.ts"], "tag": "git-history"}
+{"query": "strip post-merge auto-reindex and remove post-commit hook", "expected_files": ["scripts/claude-context-reindex.mjs", "scripts/vault_context_hook.py"], "tag": "git-history"}
+{"query": "dashboard TUI UX overhaul", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/linear-pipeline-cli.test.ts", "src/linear-pipeline-cli.ts"], "tag": "git-history"}
+{"query": "plan-review-gate stops over-firing on outside-worktree targets", "expected_files": ["scripts/codex_warden_hooks.py", "scripts/tests/test_codex_warden_hooks.py"], "tag": "git-history"}
+{"query": "adjacent-only correction mining and batch SQL updates", "expected_files": ["evolution/storage/providers/sqlite.py", "evolution/tests/test_mining.py"], "tag": "git-history"}
+{"query": "llama.cpp as eval-side generative + judge provider (Ideas #2A + #2B)", "expected_files": ["docs/ENVIRONMENT.md", "docs/MULTI_BACKEND.md", "evolution/config.py", "evolution/generative/providers/__init__.py", "evolution/generative/providers/llama_cpp.py"], "tag": "git-history"}
+{"query": "add HookDispatchService and PreToolUse/PostToolUse observer layer (LIA-42)", "expected_files": ["container/agent-runner/src/hook-dispatch-service.test.ts", "container/agent-runner/src/hook-dispatch-service.ts", "container/agent-runner/src/index.ts", "container/agent-runner/src/post-tool-use-observer.ts", "container/agent-runner/src/pre-tool-use-hook.ts"], "tag": "git-history"}
+{"query": "clean up warden labels on auto-merge Done transition", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/linear-auto-merge.ts", "src/linear-dispatcher.ts"], "tag": "git-history"}
+{"query": "keyboard write-back actions for dashboard", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/db.test.ts", "src/linear-actions.test.ts", "src/linear-actions.ts"], "tag": "git-history"}
+{"query": "portable warden gates with verdict tracking", "expected_files": [".claude/hooks/warden-shim.sh", "docs/agent-agnostic-debt.md", "patterns/documentation.md", "scripts/codex_warden_hooks.py", "scripts/tests/test_codex_warden_hooks.py"], "tag": "git-history"}
+{"query": "allow pre-implemented issues to close without gate revert (LIA-85)", "expected_files": [".claude/agents/wardens/completion-gate.md", "docs/decisions/linear-webhook-pipeline.md", "patterns/deployment.md", "patterns/documentation.md", "patterns/general-code.md"], "tag": "git-history"}
+{"query": "auto-reindex claude-context on PR merge", "expected_files": ["scripts/claude-context-reindex.mjs", "scripts/vault_context_hook.py"], "tag": "git-history"}
+{"query": "threat-model-gate fires on filtered security paths", "expected_files": ["scripts/codex_warden_hooks.py", "scripts/tests/test_codex_warden_hooks.py"], "tag": "git-history"}
+{"query": "add logger.warn when gate fallback verdict is applied (LIA-75)", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/linear-webhook.ts"], "tag": "git-history"}
+{"query": "add dispatch service for ticket-driven agent runs", "expected_files": ["AGENTS.md", "patterns/deployment.md", "patterns/general-code.md", "src/index.ts", "src/linear-dispatcher.test.ts"], "tag": "git-history"}
+{"query": "prevent compress gate from blocking repeatedly", "expected_files": ["scripts/stop_hook.py"], "tag": "git-history"}
+{"query": "detect and handle merge-conflicting PRs (LIA-90)", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/db.ts", "src/linear-auto-merge.test.ts", "src/linear-auto-merge.ts"], "tag": "git-history"}
+{"query": "rewrite_settings() for safe path substitutions (#RETRO-05)", "expected_files": ["scripts/settings_merge.py", "scripts/tests/test_settings_merge.py"], "tag": "git-history"}
+{"query": "sqlite-fts5 cache layer with gcal pilot", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "patterns/security-review.md", "src/cache/cache-query.ts", "src/cache/gcal-sync.ts"], "tag": "git-history"}
+{"query": "dashboard overhaul — adaptive width, glyphs, AI status, SLA coloring", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/db.ts", "src/linear-notifications.ts", "src/linear-pipeline-cli.test.ts"], "tag": "git-history"}
+{"query": "swap reranker to multilingual bge-reranker-v2-m3", "expected_files": ["docs/benchmarks.md", "docs/decisions/atom-retrieval-pipeline.md", "patterns/documentation.md", "patterns/eval-change.md", "scripts/memory_indexer.py"], "tag": "git-history"}
+{"query": "dashboard UX - responsive width, poll, start, move autocomplete", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/linear-actions.test.ts", "src/linear-actions.ts", "src/linear-dispatcher.ts"], "tag": "git-history"}
+{"query": "standards_pack cache invalidates on atom content edits", "expected_files": ["scripts/standards_pack.py", "scripts/tests/test_memory_tree.py"], "tag": "git-history"}
+{"query": "gate label updates + enrichment fallback + observability", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/linear-dispatcher.ts", "src/linear-webhook.ts"], "tag": "git-history"}
+{"query": "add explore strategy and --output artifact to context_search suite (LIA-61)", "expected_files": ["scripts/bench/suites/context_search.py"], "tag": "git-history"}
+{"query": "plan-review gate fires on empty-paths edits in worktrees", "expected_files": ["scripts/codex_warden_hooks.py", "scripts/tests/test_codex_warden_hooks.py"], "tag": "git-history"}
+{"query": "pipeline dashboard + Linear board UX improvements", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/linear-dispatcher.ts", "src/linear-notifications.ts", "src/linear-pipeline-cli.test.ts"], "tag": "git-history"}
+{"query": "strict gates, fail-closed fallbacks, intra-agent review", "expected_files": [".claude/agents/wardens/completion-gate.md", ".claude/agents/wardens/output-quality-gate.md", ".claude/codebase_map.md", "docs/decisions/linear-webhook-pipeline.md", "patterns/cross-platform.md"], "tag": "git-history"}
+{"query": "add session-correction mining for implicit signals", "expected_files": ["evolution/cli.py", "evolution/config.py", "evolution/mining.py", "evolution/storage/provider.py", "evolution/storage/providers/sqlite.py"], "tag": "git-history"}
+{"query": "add sync_linear_pending.py with auto-invalidating cache", "expected_files": [".claude/skills/compress/skill.md", "patterns/skill-add.md", "scripts/linear_vault_sync.py", "scripts/sync_linear_pending.py"], "tag": "git-history"}
+{"query": "add unit tests for router.ts pure functions", "expected_files": ["src/router.test.ts"], "tag": "git-history"}
+{"query": "hard-block admin-merge when CI is red (#RETRO-06)", "expected_files": ["scripts/codex_warden_hooks.py", "scripts/tests/test_codex_warden_hooks.py"], "tag": "git-history"}
+{"query": "agent-native protocol for mcp-x + mcp-whatsapp + drift_check upgrade", "expected_files": ["packages/mcp-channel-core/src/index.ts", "packages/mcp-channel-core/src/response.ts", "packages/mcp-whatsapp/src/index.ts", "packages/mcp-x/src/index.ts", "patterns/channel-add.md"], "tag": "git-history"}
+{"query": "add AI Engineering warden", "expected_files": [".claude/agents/ai-eng-warden.md", ".claude/wardens/ai-engineering-rules.md", "evolution/cli.py", "patterns/eval-change.md", "patterns/general-code.md"], "tag": "git-history"}
+{"query": "resolve 6 orchestration bugs causing stuck In Review issues", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/index.ts", "src/linear-auto-merge.test.ts", "src/linear-auto-merge.ts"], "tag": "git-history"}
+{"query": "restore worktree-edit exclusion for marker invalidators", "expected_files": ["scripts/codex_warden_hooks.py", "scripts/tests/test_codex_warden_hooks.py"], "tag": "git-history"}
+{"query": "fix style reflection categorization and improve style awareness", "expected_files": ["evolution/judge/criteria.py", "evolution/reflexion/generator.py", "evolution/tests/test_reflexion_generator.py", "patterns/eval-change.md", "patterns/general-code.md"], "tag": "git-history"}
+{"query": "agent-native protocol for Python CLIs and MCP servers", "expected_files": ["docs/decisions/INDEX.md", "docs/decisions/error-discipline.md", "docs/decisions/printing-press-adoption.md", "packages/mcp-channel-core/src/index.ts", "packages/mcp-channel-core/src/response.ts"], "tag": "git-history"}
+{"query": "add mark-batch + commit window to prevent O(N²) re-review cycles (LIA-98)", "expected_files": ["scripts/codex_warden_hooks.py", "scripts/tests/test_codex_warden_hooks.py"], "tag": "git-history"}
+{"query": "priority-ordered dispatch with slot throttling", "expected_files": ["docs/decisions/linear-webhook-pipeline.md", "patterns/deployment.md", "patterns/documentation.md", "patterns/general-code.md", "src/group-queue.test.ts"], "tag": "git-history"}
+{"query": "kubernetes pod scheduling", "abstain": true, "tag": "abstain-far"}
+{"query": "React Native navigation stack", "abstain": true, "tag": "abstain-far"}
+{"query": "Flutter widget lifecycle", "abstain": true, "tag": "abstain-far"}
+{"query": "Django ORM migrations", "abstain": true, "tag": "abstain-far"}
+{"query": "AWS Lambda cold start optimization", "abstain": true, "tag": "abstain-far"}
+{"query": "GraphQL schema stitching", "abstain": true, "tag": "abstain-far"}
+{"query": "Redis cluster failover", "abstain": true, "tag": "abstain-far"}
+{"query": "Terraform state locking", "abstain": true, "tag": "abstain-far"}
+{"query": "iOS SwiftUI animations", "abstain": true, "tag": "abstain-far"}
+{"query": "Kafka consumer group rebalancing", "abstain": true, "tag": "abstain-far"}
+{"query": "pgvector HNSW index tuning parameters", "abstain": true, "tag": "abstain-near"}
+{"query": "Weaviate hybrid search configuration", "abstain": true, "tag": "abstain-near"}
+{"query": "Pinecone serverless index namespacing", "abstain": true, "tag": "abstain-near"}
+{"query": "cosine similarity threshold selection theory", "abstain": true, "tag": "abstain-near"}
+{"query": "GGUF quantization format internals", "abstain": true, "tag": "abstain-near"}
+{"query": "Qdrant collection snapshots for backup", "abstain": true, "tag": "abstain-near"}
+{"query": "chromadb collection sharding strategy", "abstain": true, "tag": "abstain-near"}
+{"query": "LangChain output parser retry strategies", "abstain": true, "tag": "abstain-near"}
+{"query": "Haystack pipeline node custom connectors", "abstain": true, "tag": "abstain-near"}
+{"query": "MLflow experiment tracking with nested runs", "abstain": true, "tag": "abstain-near"}
