@@ -11,5 +11,8 @@ sentence-transformers>=3.0.0
 mcp==1.27.1
 starlette==1.0.1                # CVE-2026-48710 fix — MCP's >=0.27 constraint is too loose
 
+# GLiNER local NER — optional; install to enable DEUS_ENTITY_PROVIDER=auto|gliner
+# gliner>=0.2.0
+
 # DSPy optimizer (optional — install when running `evolve optimize`)
 # dspy>=3.2.0

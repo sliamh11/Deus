@@ -54,6 +54,13 @@ DB_PATH = Path(os.environ.get("DEUS_DB", "~/.deus/memory.db")).expanduser()
 LAST_RESUME_LEARNINGS = Path("~/.deus/last_resume_learnings.txt").expanduser()
 HEALTH_LOG_PATH = Path("~/.deus/memory_health.jsonl").expanduser()
 
+# Entity extraction provider: "auto" tries GLiNER first (local), falls back to Gemini cascade.
+# "gemini" skips GLiNER entirely.  "gliner" requires GLiNER installed.
+ENTITY_PROVIDER = os.environ.get("DEUS_ENTITY_PROVIDER", "auto")
+
+# Module-level GLiNER model cache — loaded at most once per process.
+_gliner_model = None
+
 
 def _load_vault_path() -> Path:
     """Load vault path from config.json or DEUS_VAULT_PATH env var."""
@@ -2038,8 +2045,111 @@ def _ent_rel_prompt(content: str) -> str:
     )
 
 
-def extract_entities_and_relations(content: str) -> dict:
-    """Extract entities and relationships from a session log via Gemini Flash."""
+def _extract_entities_gliner(content: str) -> "dict | None":
+    """Extract entities locally using GLiNER.
+
+    Returns a dict with the same schema consumed by the DB layer:
+      {"entities": [{"name": str, "entity_type": str}], "relationships": []}
+    or None when GLiNER is not installed.
+
+    Note: GLiNER does not produce relationships; call
+    _extract_relationships_ollama() separately to fill them in.
+    """
+    global _gliner_model
+    try:
+        from gliner import GLiNER  # type: ignore[import]
+    except ImportError:
+        return None
+
+    # Map spec label "organization" to the canonical DB value "org".
+    labels = ["person", "project", "tool", "concept", "org"]
+    if _gliner_model is None:
+        _gliner_model = GLiNER.from_pretrained("urchade/gliner_medium-v2.1")
+    model = _gliner_model
+    # Use the same content-extraction helper as the Gemini path for consistency.
+    text = _extract_content_for_llm(content)
+    raw_entities = model.predict_entities(text[:4000], labels, threshold=0.3)
+
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict] = []
+    for e in raw_entities:
+        key = (e["text"].lower(), e["label"])
+        if key not in seen:
+            seen.add(key)
+            # Use "entity_type" to match the downstream schema (line 3251).
+            unique.append({"name": e["text"], "entity_type": e["label"]})
+        if len(unique) >= 10:
+            break
+
+    return {"entities": unique, "relationships": []}
+
+
+def _extract_relationships_ollama(content: str, entities: list) -> list:
+    """Extract relationships via Ollama (gemma3:1b) running at localhost:11434.
+
+    Returns a list of {"source": str, "target": str, "rel_type": str} dicts
+    (up to 10).  Returns [] on any error or when fewer than 2 entities exist.
+    """
+    import urllib.request
+
+    if not entities or len(entities) < 2:
+        return []
+
+    entity_names = [e["name"] for e in entities]
+    entity_list = ", ".join(f'"{n}"' for n in entity_names)
+    text_snippet = _extract_content_for_llm(content)[:2000]
+    prompt = (
+        "Given these entities: " + entity_list + "\n\n"
+        "And this text:\n" + text_snippet + "\n\n"
+        "List relationships between the entities as a JSON array.\n"
+        "Each item: {\"source\": \"...\", \"target\": \"...\", "
+        "\"rel_type\": \"uses|works_on|prefers|knows|depends_on|related_to\"}\n"
+        "Output ONLY the JSON array, no markdown fencing, max 10 items.\n"
+        "If no relationships, output []."
+    )
+    payload = json.dumps({
+        "model": "gemma3:1b",
+        "prompt": prompt,
+        "stream": False,
+    }).encode()
+    req = urllib.request.Request(
+        "http://localhost:11434/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+        raw = data.get("response", "").strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"```[a-z]*\n?", "", raw).strip()
+        result = json.loads(raw)
+        if not isinstance(result, list):
+            return []
+        valid = []
+        for item in result:
+            if (
+                isinstance(item, dict)
+                and "source" in item
+                and "target" in item
+                and "rel_type" in item
+            ):
+                valid.append({
+                    "source": item["source"],
+                    "target": item["target"],
+                    "rel_type": item["rel_type"],
+                })
+            if len(valid) >= 10:
+                break
+        return valid
+    except Exception as exc:
+        print(f"  WARN: Ollama relationship extraction failed: {exc}", file=sys.stderr)
+        return []
+
+
+def _extract_entities_and_relations_gemini(content: str) -> dict:
+    """Extract entities and relationships via the Gemini cascade (original path)."""
     prompt = _ent_rel_prompt(content)
     try:
         response = _generate_with_fallback(
@@ -2063,6 +2173,40 @@ def extract_entities_and_relations(content: str) -> dict:
         return {"entities": [], "relationships": []}
     except json.JSONDecodeError:
         return {"entities": [], "relationships": []}
+
+
+def extract_entities_and_relations(content: str) -> dict:
+    """Extract entities and relationships from a session log.
+
+    Routing is controlled by the DEUS_ENTITY_PROVIDER env var (default "auto"):
+      - "auto"   — try GLiNER locally first; if unavailable (ImportError) fall
+                   back to the Gemini cascade.  When GLiNER succeeds, also try
+                   Ollama for relationship extraction.
+      - "gliner" — require GLiNER; skip Gemini entirely (raises on ImportError).
+      - "gemini" — skip GLiNER entirely; use the Gemini cascade.
+    """
+    provider = ENTITY_PROVIDER.lower()
+
+    if provider == "gemini":
+        return _extract_entities_and_relations_gemini(content)
+
+    # "auto" or "gliner": attempt GLiNER first.
+    gliner_result = _extract_entities_gliner(content)
+
+    if gliner_result is None:
+        # GLiNER not installed.
+        if provider == "gliner":
+            print(
+                "  WARN: DEUS_ENTITY_PROVIDER=gliner but gliner package not installed.",
+                file=sys.stderr,
+            )
+            return {"entities": [], "relationships": []}
+        # auto: fall back to Gemini.
+        return _extract_entities_and_relations_gemini(content)
+
+    # GLiNER succeeded — enrich with Ollama relationships.
+    relationships = _extract_relationships_ollama(content, gliner_result["entities"])
+    return {"entities": gliner_result["entities"], "relationships": relationships}
 
 
 def _contradiction_prompt(fact_a: str, fact_b: str) -> str:
