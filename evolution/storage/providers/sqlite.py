@@ -43,6 +43,7 @@ _UPDATABLE_INTERACTION_COLS = frozenset({
     "has_code",
     "user_signal",
     "correction_mined_at",
+    "judge_schema_version",
 })
 
 # Guard against concurrent schema migrations from multiple threads
@@ -254,6 +255,7 @@ class SQLiteStorageProvider(StorageProvider):
             pass  # Already exists or vec0 not available
 
         # Domain presets, user signal, parse_error, context_tokens columns (added in v1.3+)
+        # judge_schema_version tracks which RUBRIC format produced the score (added in v1.6)
         for col, coltype in [
             ("domain_presets", "TEXT"),
             ("user_signal", "TEXT"),
@@ -261,6 +263,7 @@ class SQLiteStorageProvider(StorageProvider):
             ("context_tokens", "INTEGER"),
             ("has_code", "INTEGER DEFAULT 0"),
             ("correction_mined_at", "TEXT"),
+            ("judge_schema_version", "INTEGER DEFAULT NULL"),
         ]:
             try:
                 # safe: col + coltype come from the literal tuple-list

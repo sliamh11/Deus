@@ -258,6 +258,64 @@ def print_report(results: dict) -> None:
     print("=" * 60)
 
 
+def run_triage(scores_by_dim: dict[str, np.ndarray]) -> None:
+    """
+    Run three focused triage tests and print a brief actionable report.
+
+    Test A: Corpus shape check — note to re-run on Gemini ground truth.
+    Test B: Boundary saturation — pct_at_bounds; note integer format reduces this.
+    Test C: Safety IRT exclusion — safety is genuinely binary; flag for exclusion.
+    """
+    print("=" * 60)
+    print("IRT Triage Report (3 tests)")
+    print("=" * 60)
+    print()
+
+    # Test A: Corpus shape check
+    print("## Test A — Corpus shape check")
+    print("  Note: These results reflect the current corpus distribution.")
+    print("  ACTION: Re-run this diagnostic on Gemini ground-truth labels to")
+    print("  verify corpus shape is not an artifact of the local judge model.")
+    for dim, scores in scores_by_dim.items():
+        n = len(scores)
+        mean = float(np.mean(scores)) if n else float("nan")
+        std = float(np.std(scores)) if n else float("nan")
+        print(f"  {dim}: n={n}, mean={mean:.3f}, std={std:.3f}")
+    print()
+
+    # Test B: Boundary saturation
+    print("## Test B — Boundary saturation (pct_at_bounds)")
+    print("  Scores at 0.0 or 1.0 exactly saturate the scale.")
+    print("  Integer Likert format (quality_level 1-5) reduces saturation vs raw float.")
+    for dim, scores in scores_by_dim.items():
+        if len(scores) == 0:
+            print(f"  {dim}: no data")
+            continue
+        pct = float(((scores <= 0.05) | (scores >= 0.95)).mean()) * 100
+        flag = " <-- HIGH saturation" if pct > 30 else ""
+        print(f"  {dim}: {pct:.1f}% at bounds{flag}")
+    print("  NOTE: With per-dim integer format, re-run to confirm saturation reduction.")
+    print()
+
+    # Test C: Safety binary exclusion
+    print("## Test C — Safety IRT exclusion")
+    safety_scores = scores_by_dim.get("safety", np.array([]))
+    if len(safety_scores) == 0:
+        print("  safety: no data")
+    else:
+        n = len(safety_scores)
+        pct_safe = float((safety_scores >= 0.95).mean()) * 100
+        pct_unsafe = float((safety_scores <= 0.05).mean()) * 100
+        print(f"  safety: n={n}, pct_safe(≥0.95)={pct_safe:.1f}%, pct_unsafe(≤0.05)={pct_unsafe:.1f}%")
+        if pct_safe + pct_unsafe > 90:
+            print("  VERDICT: safety is genuinely binary — EXCLUDE from IRT-GRM analysis.")
+            print("  GRM discrimination for binary items is not interpretable as ordinal reliability.")
+        else:
+            print("  VERDICT: safety has sufficient spread for IRT — OK to include.")
+    print()
+    print("=" * 60)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="IRT-GRM Judge Reliability Diagnostic — diagnoses calibration vs validity gaps"
@@ -265,9 +323,24 @@ def main():
     parser.add_argument("--db", type=Path, default=DB_PATH, help="Path to evolution database")
     parser.add_argument("--json", action="store_true", help="Output as JSON instead of human-readable")
     parser.add_argument("--categories", type=int, default=5, help="Number of GRM categories (default: 5)")
+    parser.add_argument(
+        "--triage",
+        action="store_true",
+        help=(
+            "Run 3-test triage instead of full IRT-GRM: "
+            "(A) corpus shape check with Gemini ground-truth note, "
+            "(B) boundary saturation pct_at_bounds, "
+            "(C) safety binary exclusion check"
+        ),
+    )
     args = parser.parse_args()
 
     scores = load_scores(args.db)
+
+    if args.triage:
+        run_triage(scores)
+        return
+
     results = diagnose(scores)
 
     if args.json:

@@ -18,7 +18,7 @@ from ..config import (
     load_api_key,
 )
 from .base import BaseJudge, JudgeResult
-from .criteria import RUBRIC, compose_score
+from .criteria import RUBRIC, compose_score, _normalize_dim
 
 _client = None
 
@@ -178,11 +178,15 @@ def _parse_result(raw: str) -> JudgeResult:
         )
 
     try:
+        quality = _normalize_dim("quality", data)
+        safety = _normalize_dim("safety", data)
+        tool_use = _normalize_dim("tool_use", data)
+        personalization = _normalize_dim("personalization", data)
         dims = {
-            "quality": float(data.get("quality", 0.5)),
-            "safety": float(data.get("safety", 1.0)),
-            "tool_use": float(data.get("tool_use", 1.0)),
-            "personalization": float(data.get("personalization", 0.5)),
+            "quality": quality,
+            "safety": safety,
+            "tool_use": tool_use,
+            "personalization": personalization,
         }
         return JudgeResult(
             score=compose_score(dims),
