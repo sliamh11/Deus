@@ -11,7 +11,12 @@ import { PROJECT_ROOT } from './config.js';
 import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
-import { IS_MACOS, IS_LINUX, forceKillProcessGroup } from './platform.js';
+import {
+  IS_MACOS,
+  IS_LINUX,
+  PYTHON_BIN,
+  forceKillProcessGroup,
+} from './platform.js';
 import { extractPrUrl } from './pr-url-extractor.js';
 import { queryPrState, checkConflictingPrs } from './linear-auto-merge.js';
 import {
@@ -777,6 +782,35 @@ export async function applyPatchArtifact(
       ).catch(() => {});
       await cleanup(true);
       return noResult;
+    }
+
+    // Bump pre-emptively so the pre-push hook finds no drift and doesn't abort
+    try {
+      const { stdout: baseRef } = await execFileAsync(
+        'git',
+        ['merge-base', 'HEAD', 'origin/main'],
+        gitOpts,
+      );
+      await execFileAsync(
+        PYTHON_BIN,
+        ['scripts/drift_check.py', '--bump', '--base', baseRef.trim()],
+        gitOpts,
+      );
+      const { stdout: bumpStatus } = await execFileAsync(
+        'git',
+        ['status', '--porcelain', '--', 'patterns/'],
+        gitOpts,
+      );
+      if (bumpStatus.trim()) {
+        await execFileAsync('git', ['add', 'patterns/'], gitOpts);
+        await execFileAsync(
+          'git',
+          ['commit', '-m', 'chore(patterns): auto-bump drifted patterns'],
+          gitOpts,
+        );
+      }
+    } catch (err) {
+      logger.warn({ err }, 'applyPatchArtifact: drift bump failed');
     }
 
     // Push

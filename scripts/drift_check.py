@@ -2080,6 +2080,6 @@ if __name__ == "__main__":
     elif args.adr:
         sys.exit(check_adr(PROJECT_ROOT))
     elif args.bump:
-        sys.exit(main(bump=True))
+        sys.exit(main(bump=True, base_ref=args.base))
     else:
         sys.exit(main(base_ref=args.base))

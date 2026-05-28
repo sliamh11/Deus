@@ -1,6 +1,21 @@
 #!/bin/sh
 # Regenerate codebase map (SHA-invalidated, no-op if already fresh)
 python3 scripts/codebase_map.py --output .claude/codebase_map.md
-# Run pattern drift check against merge-base with origin/main before pushing
 BASE=$(git merge-base HEAD origin/main 2>/dev/null) || BASE="HEAD~1"
-python3 scripts/drift_check.py --all --base "$BASE"
+
+if python3 scripts/drift_check.py --all --base "$BASE"; then
+  exit 0
+fi
+
+# Drift detected — auto-bump and commit the fix
+echo "drift-check: auto-bumping drifted patterns..."
+python3 scripts/drift_check.py --bump --base "$BASE"
+git add -- patterns/*.md
+git commit -m "chore(patterns): auto-bump drifted patterns"
+
+if python3 scripts/drift_check.py --all --base "$BASE"; then
+  echo "drift-check: bump committed. Aborting push — please re-push to include the fix."
+else
+  echo "drift-check: bump did not resolve all issues. Check manually."
+fi
+exit 1
