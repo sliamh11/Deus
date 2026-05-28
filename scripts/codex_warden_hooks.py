@@ -63,6 +63,13 @@ HOOK_SPECS: tuple[HookSpec, ...] = (
     HookSpec(
         "PostToolUse",
         "Edit|Write|MultiEdit|apply_patch",
+        "memo-enricher",
+        3,
+        "Enriching Deus warden memo",
+    ),
+    HookSpec(
+        "PostToolUse",
+        "Edit|Write|MultiEdit|apply_patch",
         "memory-tree-hook",
         5,
         "Updating Deus memory tree",
@@ -1881,6 +1888,121 @@ def run_verdict_tracker(event: dict[str, Any], repo_root: Path) -> int:
     return 0
 
 
+def _find_importers(file_path: Path, repo_root: Path) -> list[str]:
+    """Return list of files that import *file_path*, relative to *repo_root*.
+
+    Searches ``src/`` for .ts files and ``evolution/`` + ``scripts/`` for .py
+    files.  Returns paths relative to repo_root, or absolute if they fall
+    outside repo_root.  Errors are swallowed so the hook stays fail-open.
+    """
+    suffix = file_path.suffix.lower()
+    importers: list[str] = []
+
+    if suffix == ".ts":
+        search_dirs = [repo_root / "src"]
+        # Match import/from/require lines that reference this module stem.
+        stem = file_path.stem
+        pattern = rf"(import|from|require).*['\"].*{re.escape(stem)}['\"]"
+    elif suffix == ".py":
+        search_dirs = [repo_root / "evolution", repo_root / "scripts"]
+        stem = file_path.stem
+        pattern = rf"(import|from).*\b{re.escape(stem)}\b"
+    else:
+        return importers
+
+    for search_dir in search_dirs:
+        if not search_dir.is_dir():
+            continue
+        try:
+            result = subprocess.run(
+                ["grep", "-rlE", pattern, str(search_dir)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=10,
+            )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                found = Path(line)
+                # Exclude the file itself
+                if found.resolve(strict=False) == file_path.resolve(strict=False):
+                    continue
+                try:
+                    importers.append(str(found.relative_to(repo_root)))
+                except ValueError:
+                    importers.append(line)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _debug(f"[memo-enricher] grep failed for {file_path}: {exc}")
+
+    return importers
+
+
+def run_memo_enricher(event: dict[str, Any], repo_root: Path) -> int:
+    """PostToolUse: append edited-file info and import graph to .warden-memo.md.
+
+    Accumulates entries across multiple edits within a session so downstream
+    wardens (code-reviewer, ai-eng-warden) can skip redundant blast-radius
+    discovery.  Fails open — any error is debug-logged and the hook returns 0.
+
+    Growth note: the memo is NOT capped in size here because session-init and
+    plan-mode-invalidator clean it up; unbounded growth within a single session
+    is acceptable.
+    """
+    worktree, paths = _managed_paths(event, repo_root)
+    if worktree is None or not paths:
+        return 0
+
+    memo_path = _marker(repo_root, ".warden-memo.md")
+    memo_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read existing memo to de-duplicate edited-file entries.
+    existing_text = ""
+    if memo_path.exists():
+        try:
+            existing_text = memo_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            _debug(f"[memo-enricher] read failed: {exc}")
+
+    new_entries: list[str] = []
+    for file_path in paths:
+        try:
+            rel = str(file_path.relative_to(worktree))
+        except ValueError:
+            rel = str(file_path)
+
+        # Skip if this exact path already appears in the memo.
+        if f"`{rel}`" in existing_text:
+            continue
+
+        importers = _find_importers(file_path, repo_root)
+
+        entry_lines = [
+            "",
+            "## Warden Memo (auto-generated)",
+            "### Edited Files",
+            f"- `{rel}`",
+        ]
+        if importers:
+            entry_lines.append("### Import Graph")
+            callers = ", ".join(f"`{imp}`" for imp in importers[:10])
+            entry_lines.append(f"- `{rel}` ← {callers}")
+
+        new_entries.extend(entry_lines)
+
+    if not new_entries:
+        return 0
+
+    try:
+        with memo_path.open("a", encoding="utf-8") as f:
+            f.write("\n".join(new_entries) + "\n")
+    except OSError as exc:
+        _debug(f"[memo-enricher] write failed: {exc}")
+
+    return 0
+
+
 def run_migration_nudge(event: dict[str, Any], repo_root: Path) -> int:
     """Once per session, check for pending migrations and emit a nudge."""
     marker = _marker(repo_root, ".migration-nudged")
@@ -1927,6 +2049,7 @@ RUNNERS = {
     "placement-guard": run_placement_guard,
     "catchup-freshness": run_catchup_freshness,
     "memory-retrieval": run_memory_retrieval,
+    "memo-enricher": run_memo_enricher,
     "migration-nudge": run_migration_nudge,
     "orchestrator-preflight": run_orchestrator_preflight,
     "warden-verdict-tracker": run_verdict_tracker,
