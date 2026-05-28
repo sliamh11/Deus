@@ -16,11 +16,13 @@ import { extractPrUrl } from './pr-url-extractor.js';
 import { queryPrState, checkConflictingPrs } from './linear-auto-merge.js';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
+  clearLiveness,
   getConsecutiveFailCount,
   getIssuePr,
   getLastFailTime,
   getPipelineEvents,
   logPipelineEvent,
+  stampLiveness,
   updatePrAutoMergeState,
   upsertIssuePr,
 } from './db.js';
@@ -102,8 +104,28 @@ let _timer: ReturnType<typeof setInterval> | null = null;
 let _tick: (() => void) | null = null;
 let _roleSpecs: Map<string, RoleSpec> = new Map();
 let _ctx: LinearContext | null = null;
+let _lastTickAt: number = Date.now();
+let _pollMs: number = DEFAULT_POLL_MS;
 // Promise-chain serializer — same pattern as commentLocks in linear-notifications.ts
 let _patchMutex: Promise<void> = Promise.resolve();
+
+export function getDispatcherHealth(): {
+  lastTickAt: number;
+  pollMs: number;
+} | null {
+  return _ctx ? { lastTickAt: _lastTickAt, pollMs: _pollMs } : null;
+}
+
+export function withWatchdog<T>(
+  label: string,
+  promise: Promise<T>,
+  thresholdMs: number,
+  onStall: () => void,
+): Promise<T> {
+  const timer = setTimeout(() => onStall(), thresholdMs);
+  timer.unref();
+  return promise.finally(() => clearTimeout(timer));
+}
 
 export function extractFrontmatter(content: string): {
   data: Record<string, unknown>;
@@ -984,7 +1006,33 @@ async function runIssue(
 
   notifyPipelineStep(ctx, issueId, identifier, 'agent_started').catch(() => {});
 
-  const { text, error } = await executeAgentRun(ctx, runContext);
+  const DEFAULT_DISPATCH_WATCHDOG_MS = 90 * 60 * 1000;
+  const _parsedDispatchWatchdog = parseInt(
+    process.env.DISPATCH_WATCHDOG_MS || '',
+    10,
+  );
+  const dispatchWatchdogMs =
+    isNaN(_parsedDispatchWatchdog) || _parsedDispatchWatchdog < 1000
+      ? DEFAULT_DISPATCH_WATCHDOG_MS
+      : _parsedDispatchWatchdog;
+  const { text, error } = await withWatchdog(
+    `dispatch:${identifier}`,
+    executeAgentRun(ctx, runContext),
+    dispatchWatchdogMs,
+    () => {
+      logPipelineEvent(
+        issueId,
+        identifier,
+        'dispatch_stalled',
+        `threshold=${dispatchWatchdogMs}ms`,
+      );
+      stampLiveness(`dispatch_stalled:${issueId}`, {
+        identifier,
+        thresholdMs: dispatchWatchdogMs,
+      });
+    },
+  );
+  clearLiveness(`dispatch_stalled:${issueId}`);
 
   ctx.deps.queue.notifyIdle(runContext.chatJid);
 
@@ -1084,6 +1132,7 @@ async function runIssue(
     );
   } finally {
     ctx.inFlightDispatch.delete(issueId);
+    clearLiveness(`dispatch_in_flight:${issueId}`);
     if (runContext.worktreePath) {
       await cleanupWorktree(runContext.worktreePath).catch(() => {});
     }
@@ -1093,6 +1142,12 @@ async function runIssue(
 async function pollLinear(): Promise<void> {
   if (!_ctx) return;
   const ctx = _ctx;
+
+  _lastTickAt = Date.now();
+  stampLiveness('dispatcher_poll', {
+    pollMs: _pollMs,
+    inFlightCount: ctx.inFlightDispatch.size,
+  });
 
   // Conflict detection sweep — runs every poll alongside dispatch
   checkConflictingPrs(ctx).catch((err) => {
@@ -1181,6 +1236,10 @@ async function pollLinear(): Promise<void> {
 
     // Add before triage to prevent concurrent polls from double-processing the same issue
     ctx.inFlightDispatch.add(issue.id);
+    stampLiveness(`dispatch_in_flight:${issue.id}`, {
+      identifier: issue.identifier,
+      startedAt: new Date().toISOString(),
+    });
 
     const issueComments = await issue.comments();
     const comments = await Promise.all(
@@ -1201,6 +1260,7 @@ async function pollLinear(): Promise<void> {
     );
     if (triageResult === 'skip') {
       ctx.inFlightDispatch.delete(issue.id);
+      clearLiveness(`dispatch_in_flight:${issue.id}`);
       continue;
     }
 
@@ -1606,6 +1666,7 @@ export function startLinearDispatcher(ctx: LinearContext): void {
   );
   const pollMs =
     isNaN(parsedPollMs) || parsedPollMs < 1000 ? DEFAULT_POLL_MS : parsedPollMs;
+  _pollMs = pollMs;
 
   _tick = () => {
     fireAndForget(() => pollLinear(), {

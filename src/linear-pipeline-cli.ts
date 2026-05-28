@@ -1736,6 +1736,71 @@ async function startWatchMode(): Promise<void> {
   await tick();
 }
 
+// ── Health check ─────────────────────────────────────────────────────────────
+
+interface HealthReadyResponse {
+  status: 'ok' | 'degraded' | 'stalled';
+  dispatcher: {
+    lastTickAt: number | null;
+    lagMs: number | null;
+    pollMs: number;
+    inFlightCount: number;
+  };
+  webhook: { lastIngestAt: string | null; recentLagMs: number | null };
+  inFlight: Array<{
+    subsystem: string;
+    startedAt: string;
+    elapsedMs: number;
+  }>;
+  gates: string[];
+  reasons: string[];
+}
+
+function prettyPrintHealth(data: HealthReadyResponse): void {
+  const statusColor =
+    data.status === 'ok'
+      ? '\x1b[32m'
+      : data.status === 'degraded'
+        ? '\x1b[33m'
+        : '\x1b[31m';
+  const reset = '\x1b[0m';
+
+  console.log(`${statusColor}Pipeline: ${data.status.toUpperCase()}${reset}`);
+  console.log();
+
+  const lagStr =
+    data.dispatcher.lagMs != null
+      ? `${Math.round(data.dispatcher.lagMs / 1000)}s`
+      : 'n/a';
+  console.log(
+    `  Dispatcher   lag=${lagStr}  poll=${data.dispatcher.pollMs / 1000}s  in-flight=${data.dispatcher.inFlightCount}`,
+  );
+
+  const webhookLag =
+    data.webhook.recentLagMs != null
+      ? `${Math.round(data.webhook.recentLagMs)}ms`
+      : 'n/a';
+  console.log(`  Webhook      lag=${webhookLag}`);
+
+  if (data.inFlight.length > 0) {
+    console.log(`  In-flight:`);
+    for (const f of data.inFlight) {
+      const mins = Math.round(f.elapsedMs / 60_000);
+      console.log(`    ${f.subsystem}  ${mins}min`);
+    }
+  }
+
+  console.log(`  Gates:       ${data.gates.join(', ')}`);
+
+  if (data.reasons.length > 0) {
+    console.log();
+    console.log(`  ${statusColor}Reasons:${reset}`);
+    for (const r of data.reasons) {
+      console.log(`    - ${r}`);
+    }
+  }
+}
+
 // ── One-shot mode (existing behavior) ───────────────────────────────────────
 
 function main(): void {
@@ -1762,7 +1827,27 @@ function main(): void {
     );
     console.log('  deus pipeline --active               In-flight issues');
     console.log('  deus pipeline --all [--since Xh]     All events');
+    console.log('  deus pipeline --health [--json]      Pipeline health check');
     process.exit(0);
+  }
+
+  if (args[0] === '--health') {
+    const port = process.env.LINEAR_WEBHOOK_PORT || '3005';
+    fetch(`http://localhost:${port}/health/ready`)
+      .then(async (res) => {
+        const data = await res.json();
+        if (args.includes('--json')) {
+          console.log(JSON.stringify(data, null, 2));
+        } else {
+          prettyPrintHealth(data as HealthReadyResponse);
+        }
+        process.exit(res.status === 200 ? 0 : 1);
+      })
+      .catch(() => {
+        console.error(`Could not reach webhook server at localhost:${port}`);
+        process.exit(1);
+      });
+    return;
   }
 
   initDatabase();

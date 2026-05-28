@@ -2,7 +2,12 @@ import { createServer, Server } from 'http';
 import { LinearWebhookClient } from '@linear/sdk/webhooks';
 import type { EntityWebhookPayloadWithIssueData } from '@linear/sdk/webhooks';
 import { logger } from './logger.js';
-import { executeAgentRun, extractScopeBlock } from './linear-dispatcher.js';
+import {
+  executeAgentRun,
+  extractScopeBlock,
+  getDispatcherHealth,
+  withWatchdog,
+} from './linear-dispatcher.js';
 import type { LinearContext, GateLabels } from './linear-dispatcher.js';
 import type { GateSpec } from './linear-gate-specs.js';
 import type { RunContext } from './agent-runtimes/types.js';
@@ -20,7 +25,10 @@ import {
   getGateMeta,
   incrementAttemptCount,
   appendReviseHistory,
+  clearLiveness,
   computeEnrichmentHash,
+  getLiveness,
+  stampLiveness,
 } from './db.js';
 import { triggerAutoMerge } from './linear-auto-merge.js';
 import { notifyPipelineStep } from './linear-notifications.js';
@@ -29,8 +37,39 @@ import { RetryableError, UserError, FatalError } from './errors/index.js';
 import { WEBHOOK_MAX_RETRIES, WEBHOOK_BASE_DELAY_MS } from './config.js';
 
 const DEFAULT_WEBHOOK_PORT = 3005;
+const DEFAULT_GATE_WATCHDOG_MS = 30 * 60 * 1000;
+const _parsedGateWatchdog = parseInt(process.env.GATE_WATCHDOG_MS || '', 10);
+const GATE_WATCHDOG_MS =
+  isNaN(_parsedGateWatchdog) || _parsedGateWatchdog < 1000
+    ? DEFAULT_GATE_WATCHDOG_MS
+    : _parsedGateWatchdog;
 const LABEL_RETRY_MAX = 3;
 const LABEL_RETRY_BASE_MS = 5_000;
+
+function withGateWatchdog<T>(
+  label: string,
+  promise: Promise<T>,
+  issueId: string,
+  identifier: string,
+): Promise<T> {
+  return withWatchdog(
+    `gate:${label}:${identifier}`,
+    promise,
+    GATE_WATCHDOG_MS,
+    () => {
+      logPipelineEvent(
+        issueId,
+        identifier,
+        'gate_stalled',
+        `gate=${label} threshold=${GATE_WATCHDOG_MS}ms`,
+      );
+      stampLiveness(`gate_stalled:${issueId}`, {
+        gate: label,
+        thresholdMs: GATE_WATCHDOG_MS,
+      });
+    },
+  ).finally(() => clearLiveness(`gate_stalled:${issueId}`));
+}
 const WEBHOOK_MAX_DELAY_MS = 30_000;
 
 // Map<issueId, timeout> for deferred auto-merge after genuine cooldowns.
@@ -364,6 +403,10 @@ export async function runInlineCompletionCheck(
   }
 
   ctx.inFlightGate.add(issueData.id);
+  stampLiveness(`gate_in_flight:${issueData.id}`, {
+    gate: 'completion-check',
+    startedAt: new Date().toISOString(),
+  });
   try {
     let commentBlock = '';
     const comments = await fetchIssueComments(ctx, issueData.id);
@@ -392,10 +435,15 @@ export async function runInlineCompletionCheck(
       effort: completionGateSpec.effort ?? 'medium',
     };
 
-    const { text, error } = await retryWithBackoff(
-      () => executeAgentRun(ctx, runContext),
-      WEBHOOK_MAX_RETRIES,
-      WEBHOOK_BASE_DELAY_MS,
+    const { text, error } = await withGateWatchdog(
+      'completion-check',
+      retryWithBackoff(
+        () => executeAgentRun(ctx, runContext),
+        WEBHOOK_MAX_RETRIES,
+        WEBHOOK_BASE_DELAY_MS,
+      ),
+      issueData.id,
+      issueData.identifier,
     );
 
     const output = text || error || '';
@@ -424,6 +472,7 @@ export async function runInlineCompletionCheck(
     return 'REVISE';
   } finally {
     ctx.inFlightGate.delete(issueData.id);
+    clearLiveness(`gate_in_flight:${issueData.id}`);
   }
 }
 
@@ -532,8 +581,12 @@ async function handleIssueUpdate(
 
   if (action !== 'update') return;
 
+  const webhookLagMs =
+    Date.now() - new Date(payload.webhookTimestamp).getTime();
+  stampLiveness('webhook_ingest', { lagMs: webhookLagMs });
+
   logger.info(
-    { issueId: data.id, action, identifier: data.identifier },
+    { issueId: data.id, action, identifier: data.identifier, webhookLagMs },
     'linear-webhook: received event',
   );
 
@@ -761,6 +814,10 @@ async function handleIssueUpdate(
     return;
   }
   ctx.inFlightGate.add(data.id);
+  stampLiveness(`gate_in_flight:${data.id}`, {
+    gate: gateSpec.name,
+    startedAt: new Date().toISOString(),
+  });
 
   // --- Bouncer entry-path router: short-circuit on fresh enrichment hash ---
   if (gateSpec.name === 'bouncer-gate') {
@@ -801,6 +858,7 @@ async function handleIssueUpdate(
             'linear-webhook: bouncer fast-path SHIP (hash match)',
           );
           ctx.inFlightGate.delete(data.id);
+          clearLiveness(`gate_in_flight:${data.id}`);
           return;
         }
       }
@@ -896,10 +954,15 @@ async function handleIssueUpdate(
       effort: gateSpec.effort ?? 'medium',
     };
 
-    const { text, error } = await retryWithBackoff(
-      () => executeAgentRun(ctx, runContext),
-      WEBHOOK_MAX_RETRIES,
-      WEBHOOK_BASE_DELAY_MS,
+    const { text, error } = await withGateWatchdog(
+      gateSpec.name,
+      retryWithBackoff(
+        () => executeAgentRun(ctx, runContext),
+        WEBHOOK_MAX_RETRIES,
+        WEBHOOK_BASE_DELAY_MS,
+      ),
+      data.id,
+      data.identifier,
     );
 
     // Container may exit non-zero (e.g., docker kill) but still have output in either field
@@ -1071,6 +1134,7 @@ async function handleIssueUpdate(
     );
   } finally {
     ctx.inFlightGate.delete(data.id);
+    clearLiveness(`gate_in_flight:${data.id}`);
     const removeIds: string[] = [];
     const addIds: string[] = [];
     if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
@@ -1189,6 +1253,10 @@ async function runGateForIssue(
   stateName: string,
 ): Promise<void> {
   ctx.inFlightGate.add(issue.id);
+  stampLiveness(`gate_in_flight:${issue.id}`, {
+    gate: gateSpec.name,
+    startedAt: new Date().toISOString(),
+  });
   let finalVerdict: string | undefined;
   let finalEnrichment: string | undefined;
 
@@ -1236,10 +1304,15 @@ async function runGateForIssue(
       effort: gateSpec.effort ?? 'medium',
     };
 
-    const { text, error } = await retryWithBackoff(
-      () => executeAgentRun(ctx, runContext),
-      WEBHOOK_MAX_RETRIES,
-      WEBHOOK_BASE_DELAY_MS,
+    const { text, error } = await withGateWatchdog(
+      gateSpec.name,
+      retryWithBackoff(
+        () => executeAgentRun(ctx, runContext),
+        WEBHOOK_MAX_RETRIES,
+        WEBHOOK_BASE_DELAY_MS,
+      ),
+      issue.id,
+      issue.identifier,
     );
 
     const output = text || error || '';
@@ -1353,6 +1426,7 @@ async function runGateForIssue(
     finalVerdict = 'REVISE';
   } finally {
     ctx.inFlightGate.delete(issue.id);
+    clearLiveness(`gate_in_flight:${issue.id}`);
 
     const removeIds: string[] = [];
     const addIds: string[] = [];
@@ -1535,6 +1609,108 @@ export function startLinearWebhookServer(
       if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', gates: [...gateSpecs.keys()] }));
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/health/live') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ alive: true }));
+        return;
+      }
+
+      if (req.method === 'GET' && req.url === '/health/ready') {
+        const dispatcherHealth = getDispatcherHealth();
+        const liveness = getLiveness();
+        const now = Date.now();
+
+        const dispatcherLag = dispatcherHealth
+          ? now - dispatcherHealth.lastTickAt
+          : Infinity;
+        const effectivePollMs = dispatcherHealth?.pollMs ?? 30_000;
+
+        const safeParseDetail = (
+          raw: string | null,
+        ): Record<string, unknown> => {
+          if (!raw) return {};
+          try {
+            return JSON.parse(raw) as Record<string, unknown>;
+          } catch {
+            return {};
+          }
+        };
+
+        const inFlight = liveness
+          .filter((r) => r.subsystem.includes('_in_flight:'))
+          .map((r) => {
+            const detail = safeParseDetail(r.detail);
+            const startedAt = (detail.startedAt as string) ?? r.last_seen_at;
+            return {
+              subsystem: r.subsystem,
+              startedAt,
+              elapsedMs: now - new Date(startedAt).getTime(),
+            };
+          });
+
+        const webhookRow = liveness.find(
+          (r) => r.subsystem === 'webhook_ingest',
+        );
+        const webhookDetail = safeParseDetail(webhookRow?.detail ?? null);
+
+        const reasons: string[] = [];
+        const maxInFlightMs = inFlight.reduce(
+          (max, f) => Math.max(max, f.elapsedMs),
+          0,
+        );
+
+        let status: 'ok' | 'degraded' | 'stalled' = 'ok';
+        if (
+          dispatcherLag > 5 * effectivePollMs ||
+          maxInFlightMs > 120 * 60_000
+        ) {
+          status = 'stalled';
+          if (dispatcherLag > 5 * effectivePollMs)
+            reasons.push(
+              `dispatcher lag ${Math.round(dispatcherLag / 1000)}s > 5× poll`,
+            );
+          if (maxInFlightMs > 120 * 60_000)
+            reasons.push(
+              `in-flight entry stalled ${Math.round(maxInFlightMs / 60_000)}min`,
+            );
+        } else if (
+          dispatcherLag > 2 * effectivePollMs ||
+          maxInFlightMs > 60 * 60_000
+        ) {
+          status = 'degraded';
+          if (dispatcherLag > 2 * effectivePollMs)
+            reasons.push(
+              `dispatcher lag ${Math.round(dispatcherLag / 1000)}s > 2× poll`,
+            );
+          if (maxInFlightMs > 60 * 60_000)
+            reasons.push(
+              `in-flight entry ${Math.round(maxInFlightMs / 60_000)}min`,
+            );
+        }
+
+        const body = {
+          status,
+          dispatcher: {
+            lastTickAt: dispatcherHealth?.lastTickAt ?? null,
+            lagMs: dispatcherHealth ? Math.round(dispatcherLag) : null,
+            pollMs: effectivePollMs,
+            inFlightCount: ctx.inFlightDispatch.size,
+          },
+          webhook: {
+            lastIngestAt: webhookRow?.last_seen_at ?? null,
+            recentLagMs: webhookDetail?.lagMs ?? null,
+          },
+          inFlight,
+          gates: [...gateSpecs.keys()],
+          reasons,
+        };
+
+        const statusCode = status === 'ok' ? 200 : 503;
+        res.writeHead(statusCode, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
         return;
       }
 
