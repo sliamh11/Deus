@@ -1,7 +1,7 @@
 {
   "autoMemoryEnabled": false,
   "permissions": {
-    "deny": ["Agent(Explore)"]
+    "deny": ["Agent(Explore)", "Agent(general-purpose)"]
   },
   "hooks": {
     "SessionStart": [
