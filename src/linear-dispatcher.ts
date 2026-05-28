@@ -53,13 +53,7 @@ const AGENTS_DIR = path.join(PROJECT_ROOT, '.claude', 'agents');
 const GIT_TIMEOUT_MS = 30_000;
 const BUILD_TIMEOUT_MS = 120_000;
 const PUSH_TIMEOUT_MS = 120_000;
-// Two-tier path blocking for the patch applicator.
-// HARD_BLOCKED_PATHS_DEFAULT: patch is rejected entirely.
-// WARN_ONLY_PATHS: patch is applied but a warning comment is posted on Linear.
-// Shell scripts outside container/ are always hard-blocked (separate check).
-//
-// matchesPath distinguishes directory entries (trailing '/') from exact-file
-// entries to prevent false matches like '.env' matching '.envrc'.
+// Trailing '/' = prefix match; exact names match literally (prevents .env matching .envrc)
 function matchesPath(file: string, entry: string): boolean {
   if (entry.endsWith('/')) {
     return file.startsWith(entry);
@@ -75,6 +69,7 @@ const HARD_BLOCKED_PATHS_DEFAULT = [
   '.mex/',
   '.github/workflows/',
 ];
+// Intentionally not env-configurable — warn-only paths rarely change and misconfiguration risks silent bypass
 const WARN_ONLY_PATHS = ['package.json', 'tsconfig.json'];
 
 export interface LinearDispatcherDependencies {
@@ -730,9 +725,8 @@ export async function applyPatchArtifact(
         ...gitOpts,
         timeout: 30_000,
       });
-    } catch (checkErr) {
-      const checkMsg =
-        checkErr instanceof Error ? checkErr.message : String(checkErr);
+    } catch (checkErr: any) {
+      const checkMsg = checkErr?.stderr || checkErr?.message || 'Unknown error';
       await ctx.client.createComment({
         issueId,
         body: `**Patch auto-apply blocked** — patch is malformed or does not apply cleanly:\n\n\`\`\`\n${checkMsg.slice(0, 2000)}\n\`\`\`\n\nApply manually after review.`,
