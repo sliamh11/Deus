@@ -86,13 +86,26 @@ export class GCalProvider {
     this.calendar = google.calendar({ version: 'v3', auth: this.auth });
 
     // Verify connection
-    const profile = await this.calendar.calendarList.get({
-      calendarId: 'primary',
-    });
-    logger.info(
-      { calendar: profile.data.summary },
-      'Google Calendar connected',
-    );
+    try {
+      const profile = await this.calendar.calendarList.get({
+        calendarId: 'primary',
+      });
+      logger.info(
+        { calendar: profile.data.summary },
+        'Google Calendar connected',
+      );
+    } catch (err: unknown) {
+      const status =
+        (err as { code?: number })?.code ??
+        (err as { status?: number })?.status;
+      if (status === 401 || status === 403) {
+        throw new Error(
+          'Google Calendar authentication failed - OAuth tokens may need manual refresh. ' +
+            'Run: node scripts/setup-gcal-auth.mjs',
+        );
+      }
+      throw err;
+    }
   }
 
   isConnected(): boolean {
@@ -102,6 +115,25 @@ export class GCalProvider {
   private ensureConnected(): calendar_v3.Calendar {
     if (!this.calendar) throw new Error('Not connected to Google Calendar');
     return this.calendar;
+  }
+
+  async checkHealth(): Promise<{ ok: boolean; error?: string }> {
+    try {
+      const cal = this.ensureConnected();
+      await cal.calendarList.get({ calendarId: 'primary' });
+      return { ok: true };
+    } catch (err: unknown) {
+      const status =
+        (err as { code?: number })?.code ??
+        (err as { status?: number })?.status;
+      if (status === 401 || status === 403) {
+        return { ok: false, error: 'authentication_failed' };
+      }
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    }
   }
 
   async listEvents(days: number = 7): Promise<CalendarEvent[]> {
