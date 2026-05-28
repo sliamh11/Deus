@@ -105,6 +105,7 @@ const TEST_PROJECT_ROOT = path.join(os.tmpdir(), `deus-test-${process.pid}`);
 
 import {
   loadRoleSpecs,
+  checkWriteAllowlist,
   buildIssuePrompt,
   startLinearDispatcher,
   stopLinearDispatcher,
@@ -233,6 +234,124 @@ Content.`,
   it('returns empty map for nonexistent directory', () => {
     const specs = loadRoleSpecs('/nonexistent/path');
     expect(specs.size).toBe(0);
+  });
+
+  it('parses write_allowlist from frontmatter', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'allowlist-role.md'),
+      `---
+name: allowlist-role
+linear_label: "agent:allowlist-role"
+write_allowlist:
+  - "src/**/*.ts"
+  - "tests/**"
+---
+
+Role with allowlist.`,
+    );
+
+    const specs = loadRoleSpecs(tmpDir);
+    const spec = specs.get('agent:allowlist-role')!;
+    expect(spec).toBeDefined();
+    expect(spec.writeAllowlist).toEqual(['src/**/*.ts', 'tests/**']);
+  });
+
+  it('sets writeAllowlist to undefined when field is absent', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'no-allowlist-role.md'),
+      `---
+name: no-allowlist-role
+linear_label: "agent:no-allowlist-role"
+---
+
+Role without allowlist.`,
+    );
+
+    const specs = loadRoleSpecs(tmpDir);
+    const spec = specs.get('agent:no-allowlist-role')!;
+    expect(spec).toBeDefined();
+    expect(spec.writeAllowlist).toBeUndefined();
+  });
+
+  it('skips non-string entries in write_allowlist', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'mixed-allowlist-role.md'),
+      `---
+name: mixed-allowlist-role
+linear_label: "agent:mixed-allowlist-role"
+write_allowlist:
+  - "src/**"
+  - 42
+  - "tests/**"
+---
+
+Role with mixed allowlist.`,
+    );
+
+    const specs = loadRoleSpecs(tmpDir);
+    const spec = specs.get('agent:mixed-allowlist-role')!;
+    expect(spec).toBeDefined();
+    // Non-string entries are filtered out
+    expect(spec.writeAllowlist).toEqual(['src/**', 'tests/**']);
+  });
+});
+
+describe('checkWriteAllowlist', () => {
+  it('returns empty array when all changed files match a glob', async () => {
+    execFileMock.mockReturnValue({
+      stdout: 'src/foo.ts\nsrc/bar.ts\n',
+      stderr: '',
+    });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual([]);
+  });
+
+  it('returns violating files when some changed files do not match any glob', async () => {
+    execFileMock.mockReturnValue({
+      stdout: 'src/foo.ts\n.github/workflows/ci.yml\n',
+      stderr: '',
+    });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual(['.github/workflows/ci.yml']);
+  });
+
+  it('returns empty array when no files were changed', async () => {
+    execFileMock.mockReturnValue({ stdout: '', stderr: '' });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual([]);
+  });
+
+  it('returns empty array and does not throw when git diff fails', async () => {
+    execFileMock.mockReturnValue({
+      error: new Error('fatal: ambiguous argument HEAD'),
+    });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual([]);
+  });
+
+  it('matches dot files when using dot: true option', async () => {
+    execFileMock.mockReturnValue({
+      stdout: '.env\nsrc/index.ts\n',
+      stderr: '',
+    });
+
+    // .env is not covered by src/**, so it is a violation
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual(['.env']);
+  });
+
+  it('returns all changed files as violations when allowlist is empty', async () => {
+    execFileMock.mockReturnValue({
+      stdout: 'src/foo.ts\nREADME.md\n',
+      stderr: '',
+    });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', []);
+    expect(violations).toEqual(['src/foo.ts', 'README.md']);
   });
 });
 

@@ -16,6 +16,7 @@ export interface GateSpec {
   fetchComments?: boolean;
   revertTo?: string;
   maxAttempts?: number;
+  writeAllowlist?: string[]; // reserved, not enforced
 }
 
 export function loadGateSpecs(wardensDir: string): Map<string, GateSpec> {

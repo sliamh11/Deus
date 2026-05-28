@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'child_process';
+import { minimatch } from 'minimatch';
 import { createHash } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
@@ -62,6 +63,7 @@ interface RoleSpec {
   name: string;
   model?: string;
   content: string;
+  writeAllowlist?: string[];
 }
 
 export interface WorkflowState {
@@ -154,11 +156,33 @@ export function loadRoleSpecs(agentsDir: string): Map<string, RoleSpec> {
     const label =
       typeof data.linear_label === 'string' ? data.linear_label : undefined;
     if (!label) continue;
+    const rawAllowlist = data.write_allowlist;
+    let writeAllowlist: string[] | undefined;
+    if (rawAllowlist !== undefined) {
+      if (Array.isArray(rawAllowlist)) {
+        writeAllowlist = (rawAllowlist as unknown[]).filter(
+          (v): v is string => {
+            if (typeof v === 'string') return true;
+            logger.warn(
+              { file, value: v },
+              'linear-dispatcher: loadRoleSpecs: non-string entry in write_allowlist, skipping',
+            );
+            return false;
+          },
+        );
+      } else {
+        logger.warn(
+          { file },
+          'linear-dispatcher: loadRoleSpecs: write_allowlist is not an array, ignoring',
+        );
+      }
+    }
     specs.set(label, {
       label,
       name: typeof data.name === 'string' ? data.name : file.replace('.md', ''),
       model: typeof data.model === 'string' ? data.model : undefined,
       content: body.trim(),
+      writeAllowlist,
     });
   }
   return specs;
@@ -988,11 +1012,48 @@ async function cleanupWorktree(worktreePath: string): Promise<void> {
   }
 }
 
+/**
+ * Returns the list of files modified in the worktree (via `git diff --name-only HEAD`)
+ * that are NOT covered by any glob in `allowlist`. An empty array means all changed
+ * files are within scope. If git diff fails (e.g. no commits yet), returns [] and
+ * logs a warning — the check is best-effort.
+ */
+export async function checkWriteAllowlist(
+  worktreePath: string,
+  allowlist: string[],
+): Promise<string[]> {
+  let stdout: string;
+  try {
+    const result = await execFileAsync('git', ['diff', '--name-only', 'HEAD'], {
+      cwd: worktreePath,
+      timeout: GIT_TIMEOUT_MS,
+    });
+    stdout = result.stdout;
+  } catch (err) {
+    logger.warn(
+      { worktreePath, err },
+      'linear-dispatcher: checkWriteAllowlist: git diff failed (new worktree?), skipping check',
+    );
+    return [];
+  }
+
+  const changedFiles = stdout
+    .split('\n')
+    .map((f) => f.trim())
+    .filter((f) => f.length > 0);
+
+  const violations = changedFiles.filter(
+    (file) => !allowlist.some((glob) => minimatch(file, glob, { dot: true })),
+  );
+  return violations;
+}
+
 async function runIssue(
   ctx: LinearContext,
   issueId: string,
   identifier: string,
   runContext: RunContext,
+  roleSpec?: RoleSpec,
 ): Promise<void> {
   const workingState = ctx.stateByName.get('Agent Working')!;
   try {
@@ -1035,6 +1096,52 @@ async function runIssue(
   clearLiveness(`dispatch_stalled:${issueId}`);
 
   ctx.deps.queue.notifyIdle(runContext.chatJid);
+
+  // Write-allowlist check: runs after agent completes, before patch application
+  if (!error && runContext.worktreePath && roleSpec?.writeAllowlist?.length) {
+    const violations = await checkWriteAllowlist(
+      runContext.worktreePath,
+      roleSpec.writeAllowlist,
+    );
+    if (violations.length > 0) {
+      const fileList = violations.map((f) => `- \`${f}\``).join('\n');
+      const reviseBody =
+        `**Write-allowlist violation** — the agent modified files outside the role's permitted scope.\n\n` +
+        `**Violating files** (${violations.length}):\n${fileList}\n\n` +
+        `Allowed globs: ${roleSpec.writeAllowlist.map((g) => `\`${g}\``).join(', ')}\n\n` +
+        `---\n*To retry: fix the agent role spec or the implementation, then move to **Ready for Agent**.*`;
+      try {
+        await ctx.client.createComment({ issueId, body: reviseBody });
+        const reviseState =
+          ctx.stateByName.get('Needs Revision') ??
+          ctx.stateByName.get('Todo') ??
+          ctx.stateByName.get('Backlog')!;
+        await ctx.client.updateIssue(issueId, { stateId: reviseState.id });
+        notifyPipelineStep(
+          ctx,
+          issueId,
+          identifier,
+          'agent_failed',
+          `write-allowlist violation: ${violations.join(', ')}`,
+        ).catch(() => {});
+        logger.warn(
+          { issueId, violations },
+          'linear-dispatcher: write-allowlist violations detected, issue moved to revise state',
+        );
+      } catch (reviseErr) {
+        logger.warn(
+          { issueId, reviseErr },
+          'linear-dispatcher: failed to post write-allowlist violation comment',
+        );
+      }
+      ctx.inFlightDispatch.delete(issueId);
+      clearLiveness(`dispatch_in_flight:${issueId}`);
+      if (runContext.worktreePath) {
+        await cleanupWorktree(runContext.worktreePath).catch(() => {});
+      }
+      return;
+    }
+  }
 
   try {
     if (error) {
@@ -1314,7 +1421,7 @@ async function pollLinear(): Promise<void> {
     ).catch(() => {});
 
     ctx.deps.queue.enqueueTask(chatJid, issue.id, () =>
-      runIssue(ctx, issue.id, issue.identifier, runContext),
+      runIssue(ctx, issue.id, issue.identifier, runContext, roleSpec),
     );
 
     dispatched++;
