@@ -1965,7 +1965,8 @@ def run_memo_enricher(event: dict[str, Any], repo_root: Path) -> int:
         except OSError as exc:
             _debug(f"[memo-enricher] read failed: {exc}")
 
-    new_entries: list[str] = []
+    edited_file_lines: list[str] = []
+    import_graph_lines: list[str] = []
     for file_path in paths:
         try:
             rel = str(file_path.relative_to(worktree))
@@ -1978,21 +1979,31 @@ def run_memo_enricher(event: dict[str, Any], repo_root: Path) -> int:
 
         importers = _find_importers(file_path, repo_root)
 
-        entry_lines = [
-            "",
-            "## Warden Memo (auto-generated)",
-            "### Edited Files",
-            f"- `{rel}`",
-        ]
+        edited_file_lines.append(f"- `{rel}`")
         if importers:
-            entry_lines.append("### Import Graph")
             callers = ", ".join(f"`{imp}`" for imp in importers[:10])
-            entry_lines.append(f"- `{rel}` ← {callers}")
+            import_graph_lines.append(f"- `{rel}` ← {callers}")
 
-        new_entries.extend(entry_lines)
-
-    if not new_entries:
+    if not edited_file_lines:
         return 0
+
+    # Structural headings are emitted once across all calls, not per file.
+    # If the heading already exists in the memo (prior call this session), only
+    # append the list items so the section stays contiguous.
+    new_entries: list[str] = []
+    memo_is_new = "## Warden Memo (auto-generated)" not in existing_text
+    if memo_is_new:
+        new_entries.append("")
+        new_entries.append("## Warden Memo (auto-generated)")
+    if memo_is_new or "### Edited Files" not in existing_text:
+        new_entries.append("")
+        new_entries.append("### Edited Files")
+    new_entries.extend(edited_file_lines)
+    if import_graph_lines:
+        if "### Import Graph" not in existing_text:
+            new_entries.append("")
+            new_entries.append("### Import Graph")
+        new_entries.extend(import_graph_lines)
 
     try:
         with memo_path.open("a", encoding="utf-8") as f:
