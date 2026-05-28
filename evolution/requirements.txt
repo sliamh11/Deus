@@ -8,7 +8,8 @@ sqlite-vec==0.1.6          # Vector search in SQLite
 sentence-transformers>=3.0.0
 
 # MCP server (optional — for external agent integration)
-mcp==1.23.0
+mcp==1.27.1
+starlette==1.0.1                # CVE-2026-48710 fix — MCP's >=0.27 constraint is too loose
 
 # DSPy optimizer (optional — install when running `evolve optimize`)
 # dspy>=3.2.0
