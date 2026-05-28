@@ -2,9 +2,9 @@
 """
 Stale branch cleanup utility for Deus.
 
-Detects branches that have been squash-merged into main using `git cherry`.
+Detects branches that have been squash-merged into the base branch using `git cherry`.
 After a squash-merge, `git branch --merged` won't detect the branch as merged
-because the merge commit SHAs don't match. `git cherry main <branch>` will show
+because the merge commit SHAs don't match. `git cherry <base> <branch>` will show
 all commits as `-` (equivalent) when none of the branch's work remains unmerged.
 
 Exit codes:
@@ -16,6 +16,7 @@ Usage:
   python3 scripts/cleanup_stale_branches.py --delete     # actually delete stale branches
   python3 scripts/cleanup_stale_branches.py --json       # structured JSON output
   python3 scripts/cleanup_stale_branches.py --protect feat/keep-this,chore/also-keep
+  python3 scripts/cleanup_stale_branches.py --base-branch develop  # use custom base
   python3 scripts/cleanup_stale_branches.py --delete --json
 """
 
@@ -36,7 +37,19 @@ from _exit_codes import NOT_FOUND, SUCCESS
 from _agent_io import agent_output
 
 # Branches that should never be deleted, regardless of cherry status
-ALWAYS_PROTECTED: frozenset[str] = frozenset({"main", "master", "develop", "dev"})
+_STATIC_PROTECTED: frozenset[str] = frozenset({"main", "master", "develop", "dev"})
+
+
+def get_default_branch() -> str:
+    """Detect the default remote branch (e.g. main, master) via symbolic-ref."""
+    try:
+        result = subprocess.run(
+            ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "--short"],
+            capture_output=True, text=True, check=True
+        )
+        return result.stdout.strip().removeprefix("origin/")
+    except subprocess.CalledProcessError:
+        return "main"
 
 
 def _run(args: list[str], cwd: str | None = None) -> tuple[int, str, str]:
@@ -88,17 +101,17 @@ def list_local_branches() -> list[str]:
     return [b.strip() for b in stdout.splitlines() if b.strip()]
 
 
-def is_squash_merged(branch: str) -> bool | None:
-    """Return True if all commits on branch are squash-merged into main.
+def is_squash_merged(branch: str, base_branch: str = "main") -> bool | None:
+    """Return True if all commits on branch are squash-merged into base_branch.
 
-    Uses `git cherry main <branch>`:
-      - Lines starting with `-` mean the commit is equivalent to something in main.
-      - Lines starting with `+` mean the commit is NOT in main.
-      - Empty output means the branch tip equals main (no divergent commits) — treat as stale.
+    Uses `git cherry <base_branch> <branch>`:
+      - Lines starting with `-` mean the commit is equivalent to something in base_branch.
+      - Lines starting with `+` mean the commit is NOT in base_branch.
+      - Empty output means the branch tip equals base_branch (no divergent commits) — treat as stale.
 
     Returns None on git failure.
     """
-    rc, stdout, _ = _run(["git", "cherry", "main", branch])
+    rc, stdout, _ = _run(["git", "cherry", base_branch, branch])
     if rc != 0:
         return None
 
@@ -124,10 +137,12 @@ def build_skip_set(
     current_branch: str | None,
     worktree_branches: set[str],
     extra_protected: set[str],
+    base_branch: str = "main",
 ) -> dict[str, str]:
     """Build a map of branch-name -> skip-reason for all branches to never touch."""
+    always_protected = _STATIC_PROTECTED | {base_branch}
     skip: dict[str, str] = {}
-    for b in ALWAYS_PROTECTED | extra_protected:
+    for b in always_protected | extra_protected:
         skip[b] = "protected"
     if current_branch:
         skip[current_branch] = "current"
@@ -141,15 +156,18 @@ def run(
     delete: bool = False,
     use_json: bool = False,
     extra_protected: set[str] | None = None,
+    base_branch: str | None = None,
 ) -> int:
     """Core logic. Returns an exit code."""
     if extra_protected is None:
         extra_protected = set()
+    if base_branch is None:
+        base_branch = get_default_branch()
 
     current_branch = get_current_branch()
     worktree_branches = get_worktree_branches()
     all_branches = list_local_branches()
-    skip_map = build_skip_set(current_branch, worktree_branches, extra_protected)
+    skip_map = build_skip_set(current_branch, worktree_branches, extra_protected, base_branch)
 
     stale: list[str] = []
     deleted: list[str] = []
@@ -160,7 +178,7 @@ def run(
             skipped.append({"branch": branch, "reason": skip_map[branch]})
             continue
 
-        merged = is_squash_merged(branch)
+        merged = is_squash_merged(branch, base_branch)
         if merged is None:
             # git cherry failed for this branch — skip silently
             skipped.append({"branch": branch, "reason": "git-error"})
@@ -179,7 +197,6 @@ def run(
             else:
                 print(f"ERROR: could not delete {branch}: {err}", file=sys.stderr)
 
-    # ── Output ────────────────────────────────────────────────────────────────
     result = {
         "stale": stale,
         "deleted": deleted,
@@ -207,7 +224,7 @@ def run(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Detect and optionally delete branches squash-merged into main."
+        description="Detect and optionally delete branches squash-merged into the base branch."
     )
     parser.add_argument(
         "--delete",
@@ -228,11 +245,27 @@ def main() -> None:
         default="",
         help="Comma-separated list of additional branches to never delete",
     )
+    parser.add_argument(
+        "--base-branch",
+        metavar="BRANCH",
+        default=None,
+        help=(
+            "Base branch to compare against (default: auto-detected from "
+            "refs/remotes/origin/HEAD, falling back to 'main')"
+        ),
+    )
     args = parser.parse_args()
 
     extra = {b.strip() for b in args.protect.split(",") if b.strip()}
 
-    sys.exit(run(delete=args.delete, use_json=args.use_json, extra_protected=extra))
+    sys.exit(
+        run(
+            delete=args.delete,
+            use_json=args.use_json,
+            extra_protected=extra,
+            base_branch=args.base_branch,
+        )
+    )
 
 
 if __name__ == "__main__":

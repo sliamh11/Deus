@@ -1371,7 +1371,7 @@ export async function initLinearContext(
       /* best-effort */
     }
 
-    // Delete local branches that were squash-merged into main
+    // Startup: cleanup here avoids separate scheduler; failures are caught silently
     try {
       await execFileAsync(
         PYTHON_BIN,

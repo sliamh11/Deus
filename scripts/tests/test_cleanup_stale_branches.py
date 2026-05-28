@@ -157,7 +157,7 @@ class TestRun:
         monkeypatch.setattr(csb, "get_worktree_branches", lambda: worktrees)
         monkeypatch.setattr(csb, "list_local_branches", lambda: branches)
 
-        def fake_is_squash_merged(branch: str) -> bool | None:
+        def fake_is_squash_merged(branch: str, base_branch: str = "main") -> bool | None:
             output = cherry_map.get(branch, "")
             lines = [l.strip() for l in output.splitlines() if l.strip()]
             if not lines:
