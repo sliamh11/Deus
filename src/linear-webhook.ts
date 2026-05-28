@@ -2,12 +2,7 @@ import { createServer, Server } from 'http';
 import { LinearWebhookClient } from '@linear/sdk/webhooks';
 import type { EntityWebhookPayloadWithIssueData } from '@linear/sdk/webhooks';
 import { logger } from './logger.js';
-import {
-  executeAgentRun,
-  extractScopeBlock,
-  getDispatcherHealth,
-  withWatchdog,
-} from './linear-dispatcher.js';
+import { executeAgentRun, extractScopeBlock } from './linear-dispatcher.js';
 import type { LinearContext, GateLabels } from './linear-dispatcher.js';
 import type { GateSpec } from './linear-gate-specs.js';
 import type { RunContext } from './agent-runtimes/types.js';
@@ -25,51 +20,18 @@ import {
   getGateMeta,
   incrementAttemptCount,
   appendReviseHistory,
-  clearLiveness,
   computeEnrichmentHash,
-  getLiveness,
-  stampLiveness,
 } from './db.js';
 import { triggerAutoMerge } from './linear-auto-merge.js';
 import { notifyPipelineStep } from './linear-notifications.js';
 import { syncVaultPending } from './linear-vault-sync.js';
 import { RetryableError, UserError, FatalError } from './errors/index.js';
+import { fireAndForget } from './async/index.js';
 import { WEBHOOK_MAX_RETRIES, WEBHOOK_BASE_DELAY_MS } from './config.js';
 
 const DEFAULT_WEBHOOK_PORT = 3005;
-const DEFAULT_GATE_WATCHDOG_MS = 30 * 60 * 1000;
-const _parsedGateWatchdog = parseInt(process.env.GATE_WATCHDOG_MS || '', 10);
-const GATE_WATCHDOG_MS =
-  isNaN(_parsedGateWatchdog) || _parsedGateWatchdog < 1000
-    ? DEFAULT_GATE_WATCHDOG_MS
-    : _parsedGateWatchdog;
 const LABEL_RETRY_MAX = 3;
 const LABEL_RETRY_BASE_MS = 5_000;
-
-function withGateWatchdog<T>(
-  label: string,
-  promise: Promise<T>,
-  issueId: string,
-  identifier: string,
-): Promise<T> {
-  return withWatchdog(
-    `gate:${label}:${identifier}`,
-    promise,
-    GATE_WATCHDOG_MS,
-    () => {
-      logPipelineEvent(
-        issueId,
-        identifier,
-        'gate_stalled',
-        `gate=${label} threshold=${GATE_WATCHDOG_MS}ms`,
-      );
-      stampLiveness(`gate_stalled:${issueId}`, {
-        gate: label,
-        thresholdMs: GATE_WATCHDOG_MS,
-      });
-    },
-  ).finally(() => clearLiveness(`gate_stalled:${issueId}`));
-}
 const WEBHOOK_MAX_DELAY_MS = 30_000;
 
 // Map<issueId, timeout> for deferred auto-merge after genuine cooldowns.
@@ -403,10 +365,6 @@ export async function runInlineCompletionCheck(
   }
 
   ctx.inFlightGate.add(issueData.id);
-  stampLiveness(`gate_in_flight:${issueData.id}`, {
-    gate: 'completion-check',
-    startedAt: new Date().toISOString(),
-  });
   try {
     let commentBlock = '';
     const comments = await fetchIssueComments(ctx, issueData.id);
@@ -435,15 +393,10 @@ export async function runInlineCompletionCheck(
       effort: completionGateSpec.effort ?? 'medium',
     };
 
-    const { text, error } = await withGateWatchdog(
-      'completion-check',
-      retryWithBackoff(
-        () => executeAgentRun(ctx, runContext),
-        WEBHOOK_MAX_RETRIES,
-        WEBHOOK_BASE_DELAY_MS,
-      ),
-      issueData.id,
-      issueData.identifier,
+    const { text, error } = await retryWithBackoff(
+      () => executeAgentRun(ctx, runContext),
+      WEBHOOK_MAX_RETRIES,
+      WEBHOOK_BASE_DELAY_MS,
     );
 
     const output = text || error || '';
@@ -472,7 +425,6 @@ export async function runInlineCompletionCheck(
     return 'REVISE';
   } finally {
     ctx.inFlightGate.delete(issueData.id);
-    clearLiveness(`gate_in_flight:${issueData.id}`);
   }
 }
 
@@ -581,12 +533,8 @@ async function handleIssueUpdate(
 
   if (action !== 'update') return;
 
-  const webhookLagMs =
-    Date.now() - new Date(payload.webhookTimestamp).getTime();
-  stampLiveness('webhook_ingest', { lagMs: webhookLagMs });
-
   logger.info(
-    { issueId: data.id, action, identifier: data.identifier, webhookLagMs },
+    { issueId: data.id, action, identifier: data.identifier },
     'linear-webhook: received event',
   );
 
@@ -728,13 +676,23 @@ async function handleIssueUpdate(
               gateSpec.cooldownMinutes * 60_000,
           );
           const resetTime = resetAt.toISOString().slice(11, 16);
-          notifyPipelineStep(
-            ctx,
-            data.id,
-            data.identifier,
-            'gate_cooldown',
-            `${gateSpec.name}: ${remainMin}min remaining, resets at ${resetTime}`,
-          ).catch(() => {});
+          fireAndForget(
+            notifyPipelineStep(
+              ctx,
+              data.id,
+              data.identifier,
+              'gate_cooldown',
+              `${gateSpec.name}: ${remainMin}min remaining, resets at ${resetTime}`,
+            ),
+            {
+              name: 'webhook.notify.cooldown',
+              onError: (e) =>
+                logger.error(
+                  { issueId: data.id, gate: gateSpec.name, err: e },
+                  'notifyPipelineStep failed (cooldown)',
+                ),
+            },
+          );
           logger.info(
             {
               issueId: data.id,
@@ -814,10 +772,6 @@ async function handleIssueUpdate(
     return;
   }
   ctx.inFlightGate.add(data.id);
-  stampLiveness(`gate_in_flight:${data.id}`, {
-    gate: gateSpec.name,
-    startedAt: new Date().toISOString(),
-  });
 
   // --- Bouncer entry-path router: short-circuit on fresh enrichment hash ---
   if (gateSpec.name === 'bouncer-gate') {
@@ -842,13 +796,23 @@ async function handleIssueUpdate(
           );
           await postOrUpdateComment(ctx, data.id, toState.name, body);
           updateWebhookEventStatus(eventKey, 'done', { verdict: 'SHIP' });
-          notifyPipelineStep(
-            ctx,
-            data.id,
-            data.identifier,
-            'gate_ship',
-            `${gateSpec.name}: SHIP (hash fast-path)`,
-          ).catch(() => {});
+          fireAndForget(
+            notifyPipelineStep(
+              ctx,
+              data.id,
+              data.identifier,
+              'gate_ship',
+              `${gateSpec.name}: SHIP (hash fast-path)`,
+            ),
+            {
+              name: 'webhook.notify.hashFastPath',
+              onError: (e) =>
+                logger.error(
+                  { issueId: data.id, gate: gateSpec.name, err: e },
+                  'notifyPipelineStep failed (hash fast-path)',
+                ),
+            },
+          );
           logger.info(
             {
               issueId: data.id,
@@ -858,7 +822,6 @@ async function handleIssueUpdate(
             'linear-webhook: bouncer fast-path SHIP (hash match)',
           );
           ctx.inFlightGate.delete(data.id);
-          clearLiveness(`gate_in_flight:${data.id}`);
           return;
         }
       }
@@ -896,7 +859,14 @@ async function handleIssueUpdate(
       const startUpdate: Record<string, string[]> = {};
       if (startAdded.length > 0) startUpdate.addedLabelIds = startAdded;
       if (startRemoved.length > 0) startUpdate.removedLabelIds = startRemoved;
-      ctx.client.updateIssue(data.id, startUpdate).catch(() => {});
+      fireAndForget(ctx.client.updateIssue(data.id, startUpdate), {
+        name: 'webhook.updateIssue.startLabel',
+        onError: (e) =>
+          logger.error(
+            { issueId: data.id, err: e },
+            'updateIssue start-label failed',
+          ),
+      });
     }
   }
   const runningComment = formatGateComment(
@@ -954,15 +924,10 @@ async function handleIssueUpdate(
       effort: gateSpec.effort ?? 'medium',
     };
 
-    const { text, error } = await withGateWatchdog(
-      gateSpec.name,
-      retryWithBackoff(
-        () => executeAgentRun(ctx, runContext),
-        WEBHOOK_MAX_RETRIES,
-        WEBHOOK_BASE_DELAY_MS,
-      ),
-      data.id,
-      data.identifier,
+    const { text, error } = await retryWithBackoff(
+      () => executeAgentRun(ctx, runContext),
+      WEBHOOK_MAX_RETRIES,
+      WEBHOOK_BASE_DELAY_MS,
     );
 
     // Container may exit non-zero (e.g., docker kill) but still have output in either field
@@ -1049,7 +1014,7 @@ async function handleIssueUpdate(
       ? 'strict'
       : gateSpec.mode;
 
-    if (verdict !== 'SHIP') {
+    if (effectiveMode === 'strict' && verdict !== 'SHIP') {
       try {
         let revertStateId = fromStateId;
         let revertStateName = fromState.name;
@@ -1071,7 +1036,7 @@ async function handleIssueUpdate(
         }
         await ctx.client.updateIssue(data.id, {
           stateId: revertStateId,
-          ...(effectiveMode === 'strict' ? { priority: 1 } : {}),
+          priority: 1,
         });
         logger.info(
           {
@@ -1079,9 +1044,8 @@ async function handleIssueUpdate(
             gate: gateSpec.name,
             verdict,
             revertTo: revertStateName,
-            mode: effectiveMode,
           },
-          'linear-webhook: reverted transition on REVISE',
+          'linear-webhook: reverted transition (strict mode)',
         );
       } catch (err) {
         logger.warn(
@@ -1094,13 +1058,16 @@ async function handleIssueUpdate(
     finalVerdict = verdict;
     updateWebhookEventStatus(eventKey, 'done', { verdict });
     const eventType = verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
-    notifyPipelineStep(
-      ctx,
-      data.id,
-      data.identifier,
-      eventType,
-      `${gateSpec.name}: ${verdict}`,
-    ).catch(() => {});
+    fireAndForget(
+      notifyPipelineStep(
+        ctx,
+        data.id,
+        data.identifier,
+        eventType,
+        `${gateSpec.name}: ${verdict}`,
+      ),
+      { name: 'linear-webhook.notify-pipeline' },
+    );
     logger.info(
       { issueId: data.id, gate: gateSpec.name, verdict, mode: effectiveMode },
       'linear-webhook: gate evaluation complete',
@@ -1109,13 +1076,16 @@ async function handleIssueUpdate(
     gateDidError = true;
     const errorMsg = err instanceof Error ? err.message : String(err);
     updateWebhookEventStatus(eventKey, 'error', { error: errorMsg });
-    notifyPipelineStep(
-      ctx,
-      data.id,
-      data.identifier,
-      'gate_error',
-      `${gateSpec.name}: ${errorMsg}`,
-    ).catch(() => {});
+    fireAndForget(
+      notifyPipelineStep(
+        ctx,
+        data.id,
+        data.identifier,
+        'gate_error',
+        `${gateSpec.name}: ${errorMsg}`,
+      ),
+      { name: 'linear-webhook.notify-pipeline' },
+    );
     logger.error(
       { issueId: data.id, gate: gateSpec.name, err },
       'linear-webhook: gate evaluation failed',
@@ -1129,12 +1099,19 @@ async function handleIssueUpdate(
       `Gate infrastructure error (fallback: ${gateSpec.fallback}):\n\`\`\`\n${errorMsg}\n\`\`\``,
       gateSpec.mode,
     );
-    postOrUpdateComment(ctx, data.id, toState.name, errorComment).catch(
-      () => {},
+    fireAndForget(
+      postOrUpdateComment(ctx, data.id, toState.name, errorComment),
+      {
+        name: 'linear-webhook.error-comment',
+        onError: (e) =>
+          logger.error(
+            { issueId: data.id, err: e },
+            'linear-webhook: failed to post gate error comment',
+          ),
+      },
     );
   } finally {
     ctx.inFlightGate.delete(data.id);
-    clearLiveness(`gate_in_flight:${data.id}`);
     const removeIds: string[] = [];
     const addIds: string[] = [];
     if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
@@ -1253,18 +1230,24 @@ async function runGateForIssue(
   stateName: string,
 ): Promise<void> {
   ctx.inFlightGate.add(issue.id);
-  stampLiveness(`gate_in_flight:${issue.id}`, {
-    gate: gateSpec.name,
-    startedAt: new Date().toISOString(),
-  });
   let finalVerdict: string | undefined;
   let finalEnrichment: string | undefined;
 
   try {
     if (ctx.gateLabels.evaluating) {
-      ctx.client
-        .updateIssue(issue.id, { addedLabelIds: [ctx.gateLabels.evaluating] })
-        .catch(() => {});
+      fireAndForget(
+        ctx.client.updateIssue(issue.id, {
+          addedLabelIds: [ctx.gateLabels.evaluating],
+        }),
+        {
+          name: 'linear-webhook.eval-label',
+          onError: (e) =>
+            logger.error(
+              { issueId: issue.id, err: e },
+              'linear-webhook: failed to add evaluating label',
+            ),
+        },
+      );
     }
 
     const runningComment = formatGateComment(
@@ -1304,15 +1287,10 @@ async function runGateForIssue(
       effort: gateSpec.effort ?? 'medium',
     };
 
-    const { text, error } = await withGateWatchdog(
-      gateSpec.name,
-      retryWithBackoff(
-        () => executeAgentRun(ctx, runContext),
-        WEBHOOK_MAX_RETRIES,
-        WEBHOOK_BASE_DELAY_MS,
-      ),
-      issue.id,
-      issue.identifier,
+    const { text, error } = await retryWithBackoff(
+      () => executeAgentRun(ctx, runContext),
+      WEBHOOK_MAX_RETRIES,
+      WEBHOOK_BASE_DELAY_MS,
     );
 
     const output = text || error || '';
@@ -1354,9 +1332,17 @@ async function runGateForIssue(
           gateSpec.name,
           cleanedBody,
         );
-        ctx.client
-          .updateIssue(issue.id, { description: newDesc })
-          .catch(() => {});
+        fireAndForget(
+          ctx.client.updateIssue(issue.id, { description: newDesc }),
+          {
+            name: 'linear-webhook.enrichment-desc',
+            onError: (e) =>
+              logger.error(
+                { issueId: issue.id, err: e },
+                'linear-webhook: failed to update description with enrichment',
+              ),
+          },
+        );
       }
     }
 
@@ -1366,32 +1352,35 @@ async function runGateForIssue(
       ? 'strict'
       : gateSpec.mode;
 
-    if (verdict !== 'SHIP') {
+    if (effectiveMode === 'strict' && verdict !== 'SHIP') {
       if (gateSpec.revertTo) {
         const revertState = ctx.stateByName.get(gateSpec.revertTo);
         if (revertState) {
           await ctx.client.updateIssue(issue.id, {
             stateId: revertState.id,
-            ...(effectiveMode === 'strict' ? { priority: 1 } : {}),
+            priority: 1,
           });
         }
       } else {
         logger.warn(
           { issueId: issue.id, gate: gateSpec.name },
-          'startup-sweep: revert skipped — no revert_to configured',
+          'startup-sweep: strict mode revert skipped — no revert_to configured',
         );
       }
     }
 
     finalVerdict = verdict;
     const eventType = verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
-    notifyPipelineStep(
-      ctx,
-      issue.id,
-      issue.identifier,
-      eventType,
-      `${gateSpec.name}: ${verdict} (startup sweep)`,
-    ).catch(() => {});
+    fireAndForget(
+      notifyPipelineStep(
+        ctx,
+        issue.id,
+        issue.identifier,
+        eventType,
+        `${gateSpec.name}: ${verdict} (startup sweep)`,
+      ),
+      { name: 'linear-webhook.notify-pipeline' },
+    );
     logPipelineEvent(
       issue.id,
       issue.identifier,
@@ -1410,14 +1399,27 @@ async function runGateForIssue(
       `Gate infrastructure error (startup sweep):\n\`\`\`\n${errorMsg}\n\`\`\``,
       gateSpec.mode,
     );
-    postOrUpdateComment(ctx, issue.id, stateName, errorComment).catch(() => {});
-    notifyPipelineStep(
-      ctx,
-      issue.id,
-      issue.identifier,
-      'gate_error',
-      `${gateSpec.name}: ${errorMsg} (startup sweep)`,
-    ).catch(() => {});
+    fireAndForget(
+      postOrUpdateComment(ctx, issue.id, stateName, errorComment),
+      {
+        name: 'linear-webhook.startup-error-comment',
+        onError: (e) =>
+          logger.error(
+            { issueId: issue.id, err: e },
+            'linear-webhook: failed to post startup sweep error comment',
+          ),
+      },
+    );
+    fireAndForget(
+      notifyPipelineStep(
+        ctx,
+        issue.id,
+        issue.identifier,
+        'gate_error',
+        `${gateSpec.name}: ${errorMsg} (startup sweep)`,
+      ),
+      { name: 'linear-webhook.notify-pipeline' },
+    );
     logger.error(
       { issueId: issue.id, gate: gateSpec.name, err },
       'startup-sweep: gate evaluation failed',
@@ -1426,7 +1428,6 @@ async function runGateForIssue(
     finalVerdict = 'REVISE';
   } finally {
     ctx.inFlightGate.delete(issue.id);
-    clearLiveness(`gate_in_flight:${issue.id}`);
 
     const removeIds: string[] = [];
     const addIds: string[] = [];
@@ -1609,108 +1610,6 @@ export function startLinearWebhookServer(
       if (req.method === 'GET' && req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', gates: [...gateSpecs.keys()] }));
-        return;
-      }
-
-      if (req.method === 'GET' && req.url === '/health/live') {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ alive: true }));
-        return;
-      }
-
-      if (req.method === 'GET' && req.url === '/health/ready') {
-        const dispatcherHealth = getDispatcherHealth();
-        const liveness = getLiveness();
-        const now = Date.now();
-
-        const dispatcherLag = dispatcherHealth
-          ? now - dispatcherHealth.lastTickAt
-          : Infinity;
-        const effectivePollMs = dispatcherHealth?.pollMs ?? 30_000;
-
-        const safeParseDetail = (
-          raw: string | null,
-        ): Record<string, unknown> => {
-          if (!raw) return {};
-          try {
-            return JSON.parse(raw) as Record<string, unknown>;
-          } catch {
-            return {};
-          }
-        };
-
-        const inFlight = liveness
-          .filter((r) => r.subsystem.includes('_in_flight:'))
-          .map((r) => {
-            const detail = safeParseDetail(r.detail);
-            const startedAt = (detail.startedAt as string) ?? r.last_seen_at;
-            return {
-              subsystem: r.subsystem,
-              startedAt,
-              elapsedMs: now - new Date(startedAt).getTime(),
-            };
-          });
-
-        const webhookRow = liveness.find(
-          (r) => r.subsystem === 'webhook_ingest',
-        );
-        const webhookDetail = safeParseDetail(webhookRow?.detail ?? null);
-
-        const reasons: string[] = [];
-        const maxInFlightMs = inFlight.reduce(
-          (max, f) => Math.max(max, f.elapsedMs),
-          0,
-        );
-
-        let status: 'ok' | 'degraded' | 'stalled' = 'ok';
-        if (
-          dispatcherLag > 5 * effectivePollMs ||
-          maxInFlightMs > 120 * 60_000
-        ) {
-          status = 'stalled';
-          if (dispatcherLag > 5 * effectivePollMs)
-            reasons.push(
-              `dispatcher lag ${Math.round(dispatcherLag / 1000)}s > 5× poll`,
-            );
-          if (maxInFlightMs > 120 * 60_000)
-            reasons.push(
-              `in-flight entry stalled ${Math.round(maxInFlightMs / 60_000)}min`,
-            );
-        } else if (
-          dispatcherLag > 2 * effectivePollMs ||
-          maxInFlightMs > 60 * 60_000
-        ) {
-          status = 'degraded';
-          if (dispatcherLag > 2 * effectivePollMs)
-            reasons.push(
-              `dispatcher lag ${Math.round(dispatcherLag / 1000)}s > 2× poll`,
-            );
-          if (maxInFlightMs > 60 * 60_000)
-            reasons.push(
-              `in-flight entry ${Math.round(maxInFlightMs / 60_000)}min`,
-            );
-        }
-
-        const body = {
-          status,
-          dispatcher: {
-            lastTickAt: dispatcherHealth?.lastTickAt ?? null,
-            lagMs: dispatcherHealth ? Math.round(dispatcherLag) : null,
-            pollMs: effectivePollMs,
-            inFlightCount: ctx.inFlightDispatch.size,
-          },
-          webhook: {
-            lastIngestAt: webhookRow?.last_seen_at ?? null,
-            recentLagMs: webhookDetail?.lagMs ?? null,
-          },
-          inFlight,
-          gates: [...gateSpecs.keys()],
-          reasons,
-        };
-
-        const statusCode = status === 'ok' ? 200 : 503;
-        res.writeHead(statusCode, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(body));
         return;
       }
 

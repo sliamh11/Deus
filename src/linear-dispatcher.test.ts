@@ -6,6 +6,18 @@ import os from 'os';
 const execFileMock = vi.fn();
 const spawnMock = vi.fn();
 
+// Configurable LinearClient mock — only used by initLinearContext tests.
+// Default: constructor returns an object so ESM import doesn't break other tests.
+const mockLinearClientImpl = vi.hoisted(() => vi.fn());
+
+vi.mock('@linear/sdk', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('@linear/sdk')>();
+  return {
+    ...orig,
+    LinearClient: mockLinearClientImpl,
+  };
+});
+
 vi.mock('child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('child_process')>();
   const { promisify } = await import('util');
@@ -75,14 +87,11 @@ vi.mock('./config.js', async () => {
 
 vi.mock('./db.js', () => ({
   CIRCUIT_BREAKER_THRESHOLD: 3,
-  clearLiveness: vi.fn(),
   getConsecutiveFailCount: vi.fn().mockReturnValue(0),
   getIssuePr: vi.fn().mockReturnValue(null),
   getLastFailTime: vi.fn().mockReturnValue(null),
   getPipelineEvents: vi.fn().mockReturnValue([]),
   logPipelineEvent: vi.fn(),
-  stampLiveness: vi.fn(),
-  updatePrAutoMergeState: vi.fn(),
   upsertIssuePr: vi.fn(),
   getOpenPrsForActiveIssues: vi.fn().mockReturnValue([]),
 }));
@@ -111,6 +120,7 @@ import {
   truncateComments,
   extractScopeBlock,
   applyPatchArtifact,
+  initLinearContext,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
@@ -1027,5 +1037,55 @@ describe('applyPatchArtifact', () => {
     expect(buildOpts.cwd).toBe(worktreeDir);
 
     fs.rmSync(worktreeDir, { recursive: true, force: true });
+  });
+});
+
+describe('initLinearContext partial label failure', () => {
+  afterEach(() => {
+    mockLinearClientImpl.mockReset();
+  });
+
+  it('leaves remaining labels populated when one ensureLabel call fails', async () => {
+    // Build a minimal mock LinearClient where createIssueLabel throws for
+    // 'Warden: Revise' but succeeds for all other labels.
+    const mockClient = {
+      viewer: Promise.resolve({ id: 'viewer-id' }),
+      teams: () =>
+        Promise.resolve({ nodes: [{ id: 'team-id', name: 'Deus' }] }),
+      workflowStates: () =>
+        Promise.resolve({
+          nodes: [
+            { id: 'ready-id', name: 'Ready for Agent', type: 'started' },
+            { id: 'working-id', name: 'Agent Working', type: 'started' },
+            { id: 'review-id', name: 'In Review', type: 'started' },
+            { id: 'backlog-id', name: 'Backlog', type: 'backlog' },
+          ],
+        }),
+      issueLabels: () => Promise.resolve({ nodes: [] }),
+      createIssueLabel: ({ name }: { name: string; color: string; teamId: string }) => {
+        if (name === 'Warden: Revise') {
+          return Promise.reject(new Error('simulated label creation failure'));
+        }
+        return Promise.resolve({
+          issueLabel: Promise.resolve({ id: `label-${name.replace(/\s+/g, '-')}` }),
+        });
+      },
+    };
+
+    // Use a regular function (not arrow) so it works as a constructor
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockLinearClientImpl.mockImplementation(function (this: any) {
+      return mockClient;
+    });
+
+    const ctx = await initLinearContext('valid-api-key-abc123', makeMockDeps());
+    expect(ctx).not.toBeNull();
+    if (!ctx) return;
+
+    // 'evaluating', 'scoped', 'error' labels should populate; 'revise' should not
+    expect(ctx.gateLabels.evaluating).toBeDefined();
+    expect(ctx.gateLabels.scoped).toBeDefined();
+    expect(ctx.gateLabels.error).toBeDefined();
+    expect(ctx.gateLabels.revise).toBeUndefined();
   });
 });
