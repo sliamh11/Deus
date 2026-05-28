@@ -9,16 +9,18 @@ def test_xml_escaping():
     assert "<script>" not in result
 
 
-def test_trusted_true_when_no_group():
+def test_trusted_false_when_no_group():
+    # Cross-group (no folder) has widest blast radius — untrusted.
     refs = [{"category": "style", "content": "test", "group_folder": None}]
     result = format_reflections_block(refs, group_folder=None)
-    assert 'trusted="true"' in result
+    assert 'trusted="false"' in result
 
 
-def test_trusted_false_when_group():
+def test_trusted_true_when_group():
+    # Group-scoped content is more constrained — trusted.
     refs = [{"category": "style", "content": "test", "group_folder": "whatsapp_123"}]
     result = format_reflections_block(refs, group_folder="whatsapp_123")
-    assert 'trusted="false"' in result
+    assert 'trusted="true"' in result
 
 
 def test_content_capped_at_500():

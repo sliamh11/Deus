@@ -70,20 +70,17 @@ MAX_REFLECTIONS_PER_REQUEST = 10
 def format_reflections_block(reflections: list[dict], group_folder: str | None = None) -> str:
     """
     Format retrieved reflections as a sanitized, enveloped prompt block.
-    Applies XML escaping to content and caps at MAX_REFLECTIONS_PER_REQUEST entries.
     Returns empty string if list is empty (no tokens added).
-
-    The data-envelope marks the source and whether the content is trusted
-    (trusted=true only when no group_folder, i.e. cross-group system reflections).
     """
     if not reflections:
         return ""
     reflections = reflections[:MAX_REFLECTIONS_PER_REQUEST]
-    trusted = "true" if group_folder is None else "false"
+    # Group-scoped content is trusted; cross-group (no folder) has wider blast radius = untrusted.
+    trusted = "true" if group_folder else "false"
     lines = [f'<data-envelope source="evolution-reflections" trusted="{trusted}">']
     lines.append("<reflections>")
     for i, r in enumerate(reflections, 1):
-        content = html.escape(r['content'].strip())[:500]
+        content = html.escape(r['content'].strip()[:500])
         lines.append(f"[{i}] ({r['category']}) {content}")
     lines.append("</reflections>")
     lines.append("</data-envelope>")
