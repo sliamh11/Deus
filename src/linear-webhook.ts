@@ -1123,6 +1123,7 @@ async function handleIssueUpdate(
 
     // Apply fallback verdict on infrastructure errors (matching agent-error path)
     finalVerdict = gateSpec.fallback;
+    finalEnrichment = `Gate infrastructure error: ${errorMsg}`;
     const errorComment = formatGateComment(
       gateSpec.name,
       finalVerdict,
@@ -1194,7 +1195,7 @@ async function handleIssueUpdate(
       retryLabelUpdate(ctx.client, data.id, update);
     }
 
-    if (finalVerdict && finalEnrichment && !gateDidError) {
+    if (finalVerdict && finalEnrichment) {
       try {
         await trackGateMetaAndEscalate(
           ctx,
@@ -1424,6 +1425,7 @@ async function runGateForIssue(
     );
     // Never fallback-SHIP on infrastructure errors — gate didn't actually run
     finalVerdict = 'REVISE';
+    finalEnrichment = `Gate infrastructure error (startup sweep): ${errorMsg}`;
   } finally {
     ctx.inFlightGate.delete(issue.id);
     clearLiveness(`gate_in_flight:${issue.id}`);
