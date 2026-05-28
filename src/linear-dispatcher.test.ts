@@ -647,12 +647,13 @@ describe('applyPatchArtifact', () => {
       prUrl: 'https://github.com/test/repo/pull/10',
       applied: true,
     });
-    // git apply (non-stat) should NOT have been called (am succeeded)
+    // git apply (non-stat, non-check) should NOT have been called (am succeeded)
     const applyCalls = execFileMock.mock.calls.filter(
       (c: unknown[]) =>
         c[0] === 'git' &&
         (c[1] as string[])[0] === 'apply' &&
-        !(c[1] as string[]).includes('--stat'),
+        !(c[1] as string[]).includes('--stat') &&
+        !(c[1] as string[]).includes('--check'),
     );
     expect(applyCalls).toHaveLength(0);
   });
@@ -760,6 +761,8 @@ describe('applyPatchArtifact', () => {
         return {
           stdout: ' src/foo.ts | 1 +\n 1 file changed, 1 insertion(+)\n',
         };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--check'))
+        return { stdout: '' };
       if (cmd === 'git' && args[0] === 'apply')
         return { error: new Error('patch does not apply') };
       return { stdout: '' };
@@ -1027,5 +1030,182 @@ describe('applyPatchArtifact', () => {
     expect(buildOpts.cwd).toBe(worktreeDir);
 
     fs.rmSync(worktreeDir, { recursive: true, force: true });
+  });
+
+  it('rejects patch touching hard-blocked path (.claude/)', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout:
+            ' .claude/agents/foo.md | 3 +++\n src/foo.ts | 1 +\n 2 files changed\n',
+        };
+      }
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('restricted paths'),
+      }),
+    );
+  });
+
+  it('applies patch touching warn-only path and posts warning comment', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout:
+            ' package.json | 2 +-\n src/foo.ts | 5 +++++\n 2 files changed\n',
+        };
+      }
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+
+    expect(result.applied).toBe(true);
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('warning'),
+      }),
+    );
+  });
+
+  it('rejects shell script outside container/', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout:
+            ' scripts/deploy.sh | 10 ++++++++++\n src/foo.ts | 1 +\n 2 files changed\n',
+        };
+      }
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('restricted paths'),
+      }),
+    );
+  });
+
+  it('allows shell script inside container/', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout: ' container/entrypoint.sh | 5 +++++\n 1 file changed\n',
+        };
+      }
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+
+    expect(result.applied).toBe(true);
+  });
+
+  it('rejects malformed patch when git apply --check fails', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return { stdout: ' src/foo.ts | 1 +\n 1 file changed\n' };
+      }
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--check')) {
+        return { error: new Error('patch does not apply: context mismatch') };
+      }
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('malformed'),
+      }),
+    );
+  });
+
+  it('applies clean patch with no blocked files normally', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return { stdout: ' src/bar.ts | 3 +++\n 1 file changed\n' };
+      }
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+
+    expect(result.applied).toBe(true);
+    expect(createComment).not.toHaveBeenCalled();
   });
 });
