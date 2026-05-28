@@ -21,9 +21,7 @@ class JudgeResult:
     tool_economy: Optional[float] = None  # mechanical scorer, not LLM-judged
     gate_audit: Optional[float] = None    # mechanical scorer, not LLM-judged
     completion_honesty: Optional[float] = None  # mechanical scorer, not LLM-judged
-    schema_version: int = 1              # 1 = per-dim structured formats (safe/quality_level/etc.)
-                                         # informational; callers must pass schema_version=result.schema_version
-                                         # to update_score() explicitly if a v2 format is introduced.
+    schema_version: int = 1              # 1 = per-dim structured formats (safe/quality_level/…)
 
 
 class BaseJudge(ABC):
