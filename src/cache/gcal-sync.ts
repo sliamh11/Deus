@@ -246,7 +246,7 @@ async function runSync(
         });
         return;
       }
-      if (status === 401 || status === 403) {
+      if (status === 401) {
         consecutiveAuthFailures++;
         logger.error(
           {
@@ -362,5 +362,6 @@ export function stopGcalSync(): void {
     _db.close();
     _db = null;
   }
+  consecutiveAuthFailures = 0;
   logger.info('gcal-sync: daemon stopped');
 }

@@ -18,6 +18,18 @@ const logger = pino(
   pino.destination(2),
 );
 
+function extractNumericStatus(err: unknown): number | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  if (
+    'status' in err &&
+    typeof (err as { status: unknown }).status === 'number'
+  )
+    return (err as { status: number }).status;
+  if ('code' in err && typeof (err as { code: unknown }).code === 'number')
+    return (err as { code: number }).code;
+  return undefined;
+}
+
 export interface CalendarEvent {
   id: string;
   summary: string;
@@ -95,10 +107,8 @@ export class GCalProvider {
         'Google Calendar connected',
       );
     } catch (err: unknown) {
-      const status =
-        (err as { code?: number })?.code ??
-        (err as { status?: number })?.status;
-      if (status === 401 || status === 403) {
+      const status = extractNumericStatus(err);
+      if (status === 401) {
         throw new Error(
           'Google Calendar authentication failed - OAuth tokens may need manual refresh. ' +
             'Run: node scripts/setup-gcal-auth.mjs',
@@ -123,10 +133,8 @@ export class GCalProvider {
       await cal.calendarList.get({ calendarId: 'primary' });
       return { ok: true };
     } catch (err: unknown) {
-      const status =
-        (err as { code?: number })?.code ??
-        (err as { status?: number })?.status;
-      if (status === 401 || status === 403) {
+      const status = extractNumericStatus(err);
+      if (status === 401) {
         return { ok: false, error: 'authentication_failed' };
       }
       return {
