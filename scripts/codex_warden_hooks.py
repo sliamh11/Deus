@@ -749,6 +749,7 @@ def run_session_init(repo_root: Path) -> int:
         ".admin-merge-approved",
         ".migration-nudged",
         ".warden-memo.md",
+        ".plan-scope.md",
         ".commit-window",
     ):
         _marker(repo_root, name).unlink(missing_ok=True)
@@ -1969,18 +1970,7 @@ def _parse_memo_sections(text: str) -> tuple[list[str], list[str]]:
 
 
 def run_memo_enricher(event: dict[str, Any], repo_root: Path) -> int:
-    """PostToolUse: rebuild .warden-memo.md with edited-file info and import graph.
-
-    Accumulates entries across multiple edits within a session so downstream
-    wardens (code-reviewer, ai-eng-warden) can skip redundant blast-radius
-    discovery.  The memo is rewritten from scratch on every call so that
-    section ordering is always correct regardless of how many Edit events fired.
-    Fails open — any error is debug-logged and the hook returns 0.
-
-    Growth note: the memo is NOT capped in size here because session-init and
-    plan-mode-invalidator clean it up; unbounded growth within a single session
-    is acceptable.
-    """
+    """Rebuild .warden-memo.md with edited-file info and import graph. Fails open."""
     worktree, paths = _managed_paths(event, repo_root)
     if worktree is None or not paths:
         return 0

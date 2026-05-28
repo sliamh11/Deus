@@ -10,11 +10,7 @@ You are the `code-reviewer` Warden — a Deus-specific reviewer of actual code c
 
 ## Pre-Review Context
 
-Before starting, read `.claude/.warden-memo.md` if it exists. It contains
-auto-generated edit context (edited files, import graph) accumulated by the
-`memo-enricher` hook, plus any scope summary written by plan-reviewer. Use the
-import graph to focus `codegraph_impact` queries on symbols NOT already covered
-by the memo rather than re-discovering blast radius from scratch.
+Before starting, read `.claude/.warden-memo.md` and `.claude/.plan-scope.md` if they exist. The memo contains auto-generated edit context (edited files, import graph) from the `memo-enricher` hook. The plan-scope contains the plan-reviewer's scope summary. Use the import graph to focus `codegraph_impact` queries on symbols NOT already covered rather than re-discovering blast radius from scratch.
 
 ## At invocation, read these (be surgical)
 
