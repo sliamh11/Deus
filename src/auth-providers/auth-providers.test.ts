@@ -53,6 +53,7 @@ import type { AuthProvider } from './types.js';
 import { ensureDefaultProviders } from './index.js';
 import {
   AnthropicAuthProvider,
+  readCredentialsFile,
   _resetCredentialsCacheForTest,
 } from './anthropic.js';
 import { OpenAIAuthProvider, _resetCodexCacheForTest } from './openai.js';
@@ -426,7 +427,7 @@ describe('AnthropicAuthProvider', () => {
     mockReadFileSync.mockReturnValue(
       JSON.stringify({
         claudeAiOauth: {
-          accessToken: 'creds-tok',
+          accessToken: 'creds-tok-valid-test-pad',
           expiresAt: Date.now() + 3600000,
         },
       }),
@@ -465,6 +466,49 @@ describe('AnthropicAuthProvider', () => {
     const provider = new AnthropicAuthProvider();
     expect(provider.name).toBe('anthropic');
     expect(provider.priority).toBe(10);
+  });
+
+  // -------------------------------------------------------------------------
+  // Placeholder detection tests
+  // -------------------------------------------------------------------------
+  describe('readCredentialsFile placeholder detection', () => {
+    it('rejects literal "placeholder" accessToken', () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'placeholder',
+            expiresAt: Date.now() + 3600000,
+          },
+        }),
+      );
+      expect(readCredentialsFile()).toBeUndefined();
+    });
+
+    it('rejects accessToken shorter than 20 characters', () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'short-token',
+            expiresAt: Date.now() + 3600000,
+          },
+        }),
+      );
+      expect(readCredentialsFile()).toBeUndefined();
+    });
+
+    it('accepts accessToken with 20+ characters', () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'valid-token-that-is-long-enough',
+            expiresAt: Date.now() + 3600000,
+          },
+        }),
+      );
+      const result = readCredentialsFile();
+      expect(result).toBeDefined();
+      expect(result?.accessToken).toBe('valid-token-that-is-long-enough');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -553,7 +597,7 @@ describe('AnthropicAuthProvider', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'file-tok',
+            accessToken: 'file-tok-valid-test-pad',
             expiresAt: Date.now() + 7200000,
           },
         }),
@@ -564,7 +608,7 @@ describe('AnthropicAuthProvider', () => {
         authorization: 'Bearer placeholder',
       };
       provider.injectAuth(headers);
-      expect(headers['authorization']).toBe('Bearer file-tok');
+      expect(headers['authorization']).toBe('Bearer file-tok-valid-test-pad');
       // Keychain should not have been called
       expect(mockExecFileSync).not.toHaveBeenCalled();
     });
@@ -607,7 +651,7 @@ describe('AnthropicAuthProvider', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'cached-tok',
+            accessToken: 'cached-tok-valid-test-pad',
             expiresAt: Date.now() + 7200000,
           },
         }),
@@ -618,13 +662,13 @@ describe('AnthropicAuthProvider', () => {
         authorization: 'Bearer x',
       };
       provider.injectAuth(h1);
-      expect(h1['authorization']).toBe('Bearer cached-tok');
+      expect(h1['authorization']).toBe('Bearer cached-tok-valid-test-pad');
 
       // Change what the file returns — should still get cached value
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'new-tok',
+            accessToken: 'new-tok-valid-test-pad-x',
             expiresAt: Date.now() + 7200000,
           },
         }),
@@ -633,7 +677,7 @@ describe('AnthropicAuthProvider', () => {
         authorization: 'Bearer x',
       };
       provider.injectAuth(h2);
-      expect(h2['authorization']).toBe('Bearer cached-tok');
+      expect(h2['authorization']).toBe('Bearer cached-tok-valid-test-pad');
     });
 
     it('invalidates cache when token is about to expire', () => {
@@ -641,7 +685,7 @@ describe('AnthropicAuthProvider', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'expiring-tok',
+            accessToken: 'expiring-tok-valid-test',
             expiresAt: Date.now() + 10 * 60 * 1000,
           },
         }),
@@ -652,13 +696,13 @@ describe('AnthropicAuthProvider', () => {
         authorization: 'Bearer x',
       };
       provider.injectAuth(h1);
-      expect(h1['authorization']).toBe('Bearer expiring-tok');
+      expect(h1['authorization']).toBe('Bearer expiring-tok-valid-test');
 
       // Now update the file — cache should be stale due to early-expire window
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'refreshed-tok',
+            accessToken: 'refreshed-tok-valid-test',
             expiresAt: Date.now() + 7200000,
           },
         }),
@@ -667,7 +711,7 @@ describe('AnthropicAuthProvider', () => {
         authorization: 'Bearer x',
       };
       provider.injectAuth(h2);
-      expect(h2['authorization']).toBe('Bearer refreshed-tok');
+      expect(h2['authorization']).toBe('Bearer refreshed-tok-valid-test');
     });
   });
 
@@ -701,7 +745,7 @@ describe('AnthropicAuthProvider', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'old-tok',
+            accessToken: 'old-tok-valid-test-pad-x',
             refreshToken: 'old-refresh',
             expiresAt: Date.now() + 10 * 60 * 1000,
           },
@@ -738,7 +782,7 @@ describe('AnthropicAuthProvider', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'good-tok',
+            accessToken: 'good-tok-valid-test-pad',
             refreshToken: 'refresh-tok',
             expiresAt: Date.now() + 7200000, // 2 hours
           },
@@ -755,7 +799,7 @@ describe('AnthropicAuthProvider', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'no-refresh-tok',
+            accessToken: 'no-refresh-tok-valid-test',
             expiresAt: Date.now() + 10 * 60 * 1000, // expiring soon
           },
         }),
@@ -790,7 +834,7 @@ describe('AnthropicAuthProvider', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'dup-tok',
+            accessToken: 'dup-tok-valid-test-pad-x',
             refreshToken: 'dup-refresh',
             expiresAt: Date.now() + 10 * 60 * 1000,
           },
@@ -825,7 +869,7 @@ describe('AnthropicAuthProvider', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'stale-tok',
+            accessToken: 'stale-tok-valid-test-pad',
             refreshToken: 'bad-refresh',
             expiresAt: Date.now() + 10 * 60 * 1000,
           },
@@ -839,7 +883,7 @@ describe('AnthropicAuthProvider', () => {
       provider.injectAuth(headers);
 
       // Should still return the stale token
-      expect(headers['authorization']).toBe('Bearer stale-tok');
+      expect(headers['authorization']).toBe('Bearer stale-tok-valid-test-pad');
 
       // Wait for the failed refresh to complete
       await vi.waitFor(() => {
@@ -856,7 +900,7 @@ describe('AnthropicAuthProvider', () => {
       mockReadFileSync.mockReturnValue(
         JSON.stringify({
           claudeAiOauth: {
-            accessToken: 'net-err-tok',
+            accessToken: 'net-err-tok-valid-test-x',
             refreshToken: 'net-refresh',
             expiresAt: Date.now() + 10 * 60 * 1000,
           },
