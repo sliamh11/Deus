@@ -263,10 +263,21 @@ def test_ollama_caps_relationships_at_10(mi_auto):
 
 
 def test_ollama_returns_empty_on_network_error(mi_auto, capsys):
-    """_extract_relationships_ollama logs a warning and returns [] on network errors."""
+    """_extract_relationships_ollama silently returns [] when Ollama isn't running."""
     entities = [{"name": "alice", "entity_type": "person"},
                 {"name": "docker", "entity_type": "tool"}]
     with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+        result = mi_auto._extract_relationships_ollama("text", entities)
+    assert result == []
+    captured = capsys.readouterr()
+    assert captured.err == ""
+
+
+def test_ollama_warns_on_unexpected_error(mi_auto, capsys):
+    """_extract_relationships_ollama logs a warning for non-connection errors."""
+    entities = [{"name": "alice", "entity_type": "person"},
+                {"name": "docker", "entity_type": "tool"}]
+    with patch("urllib.request.urlopen", side_effect=ValueError("unexpected")):
         result = mi_auto._extract_relationships_ollama("text", entities)
     assert result == []
     captured = capsys.readouterr()

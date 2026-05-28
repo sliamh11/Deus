@@ -2061,12 +2061,10 @@ def _extract_entities_gliner(content: str) -> "dict | None":
     except ImportError:
         return None
 
-    # Map spec label "organization" to the canonical DB value "org".
     labels = ["person", "project", "tool", "concept", "org"]
     if _gliner_model is None:
         _gliner_model = GLiNER.from_pretrained("urchade/gliner_medium-v2.1")
     model = _gliner_model
-    # Use the same content-extraction helper as the Gemini path for consistency.
     text = _extract_content_for_llm(content)
     raw_entities = model.predict_entities(text[:4000], labels, threshold=0.3)
 
@@ -2076,7 +2074,6 @@ def _extract_entities_gliner(content: str) -> "dict | None":
         key = (e["text"].lower(), e["label"])
         if key not in seen:
             seen.add(key)
-            # Use "entity_type" to match the downstream schema (line 3251).
             unique.append({"name": e["text"], "entity_type": e["label"]})
         if len(unique) >= 10:
             break
@@ -2107,13 +2104,15 @@ def _extract_relationships_ollama(content: str, entities: list) -> list:
         "Output ONLY the JSON array, no markdown fencing, max 10 items.\n"
         "If no relationships, output []."
     )
+    ollama_url = os.environ.get("DEUS_OLLAMA_URL", "http://localhost:11434")
+    ollama_model = os.environ.get("DEUS_OLLAMA_REL_MODEL", "gemma3:1b")
     payload = json.dumps({
-        "model": "gemma3:1b",
+        "model": ollama_model,
         "prompt": prompt,
         "stream": False,
     }).encode()
     req = urllib.request.Request(
-        "http://localhost:11434/api/generate",
+        f"{ollama_url}/api/generate",
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -2143,6 +2142,8 @@ def _extract_relationships_ollama(content: str, entities: list) -> list:
             if len(valid) >= 10:
                 break
         return valid
+    except (ConnectionRefusedError, OSError):
+        return []  # Ollama not running — expected in auto mode
     except Exception as exc:
         print(f"  WARN: Ollama relationship extraction failed: {exc}", file=sys.stderr)
         return []
