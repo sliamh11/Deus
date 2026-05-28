@@ -1939,12 +1939,43 @@ def _find_importers(file_path: Path, repo_root: Path) -> list[str]:
     return importers
 
 
+def _parse_memo_sections(text: str) -> tuple[list[str], list[str]]:
+    """Extract existing bullet lines from each section of a warden memo.
+
+    Returns (edited_file_lines, import_graph_lines) where each element is a
+    list of raw ``- ...`` lines belonging to that section.  Lines that don't
+    start with ``- `` are ignored (headings, blank lines, etc.).
+    """
+    edited: list[str] = []
+    imports: list[str] = []
+    in_edited = False
+    in_imports = False
+    for line in text.splitlines():
+        if line.startswith("### Edited Files"):
+            in_edited = True
+            in_imports = False
+        elif line.startswith("### Import Graph"):
+            in_edited = False
+            in_imports = True
+        elif line.startswith("## ") or line.startswith("### "):
+            in_edited = False
+            in_imports = False
+        elif line.startswith("- "):
+            if in_edited:
+                edited.append(line)
+            elif in_imports:
+                imports.append(line)
+    return edited, imports
+
+
 def run_memo_enricher(event: dict[str, Any], repo_root: Path) -> int:
-    """PostToolUse: append edited-file info and import graph to .warden-memo.md.
+    """PostToolUse: rebuild .warden-memo.md with edited-file info and import graph.
 
     Accumulates entries across multiple edits within a session so downstream
     wardens (code-reviewer, ai-eng-warden) can skip redundant blast-radius
-    discovery.  Fails open — any error is debug-logged and the hook returns 0.
+    discovery.  The memo is rewritten from scratch on every call so that
+    section ordering is always correct regardless of how many Edit events fired.
+    Fails open — any error is debug-logged and the hook returns 0.
 
     Growth note: the memo is NOT capped in size here because session-init and
     plan-mode-invalidator clean it up; unbounded growth within a single session
@@ -1957,7 +1988,7 @@ def run_memo_enricher(event: dict[str, Any], repo_root: Path) -> int:
     memo_path = _marker(repo_root, ".warden-memo.md")
     memo_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Read existing memo to de-duplicate edited-file entries.
+    # Read existing memo to recover previously accumulated entries.
     existing_text = ""
     if memo_path.exists():
         try:
@@ -1965,49 +1996,61 @@ def run_memo_enricher(event: dict[str, Any], repo_root: Path) -> int:
         except OSError as exc:
             _debug(f"[memo-enricher] read failed: {exc}")
 
-    edited_file_lines: list[str] = []
-    import_graph_lines: list[str] = []
+    # Recover previously accumulated entries from the existing memo.
+    existing_file_lines, existing_import_lines = _parse_memo_sections(existing_text)
+
+    # Build sets of already-recorded paths for deduplication.  The file path
+    # backtick pattern appears in both section types, so we track at the
+    # path-string level rather than the full line level.
+    recorded_paths: set[str] = set()
+    for line in existing_file_lines:
+        # Extract `path` from "- `path`"
+        if "`" in line:
+            parts = line.split("`")
+            if len(parts) >= 2:
+                recorded_paths.add(parts[1])
+
+    new_file_lines: list[str] = []
+    new_import_lines: list[str] = []
     for file_path in paths:
         try:
             rel = str(file_path.relative_to(worktree))
         except ValueError:
             rel = str(file_path)
 
-        # Skip if this exact path already appears in the memo.
-        if f"`{rel}`" in existing_text:
+        if rel in recorded_paths:
             continue
 
         importers = _find_importers(file_path, repo_root)
 
-        edited_file_lines.append(f"- `{rel}`")
+        new_file_lines.append(f"- `{rel}`")
         if importers:
             callers = ", ".join(f"`{imp}`" for imp in importers[:10])
-            import_graph_lines.append(f"- `{rel}` ← {callers}")
+            new_import_lines.append(f"- `{rel}` ← {callers}")
 
-    if not edited_file_lines:
+    if not new_file_lines:
         return 0
 
-    # Structural headings are emitted once across all calls, not per file.
-    # If the heading already exists in the memo (prior call this session), only
-    # append the list items so the section stays contiguous.
-    new_entries: list[str] = []
-    memo_is_new = "## Warden Memo (auto-generated)" not in existing_text
-    if memo_is_new:
-        new_entries.append("")
-        new_entries.append("## Warden Memo (auto-generated)")
-    if memo_is_new or "### Edited Files" not in existing_text:
-        new_entries.append("")
-        new_entries.append("### Edited Files")
-    new_entries.extend(edited_file_lines)
-    if import_graph_lines:
-        if "### Import Graph" not in existing_text:
-            new_entries.append("")
-            new_entries.append("### Import Graph")
-        new_entries.extend(import_graph_lines)
+    # Merge new entries with existing ones and rebuild the whole memo so that
+    # ### Edited Files always precedes ### Import Graph, regardless of the
+    # order in which multiple Edit events fired during this session.
+    all_file_lines = existing_file_lines + new_file_lines
+    all_import_lines = existing_import_lines + new_import_lines
+
+    parts: list[str] = [
+        "",
+        "## Warden Memo (auto-generated)",
+        "",
+        "### Edited Files",
+    ]
+    parts.extend(all_file_lines)
+    if all_import_lines:
+        parts.append("")
+        parts.append("### Import Graph")
+        parts.extend(all_import_lines)
 
     try:
-        with memo_path.open("a", encoding="utf-8") as f:
-            f.write("\n".join(new_entries) + "\n")
+        memo_path.write_text("\n".join(parts) + "\n", encoding="utf-8")
     except OSError as exc:
         _debug(f"[memo-enricher] write failed: {exc}")
 

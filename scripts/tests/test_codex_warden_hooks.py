@@ -2951,3 +2951,54 @@ def test_memo_enricher_format_correct(tmp_path):
     assert "## Warden Memo (auto-generated)" in content
     assert "### Edited Files" in content
     assert "- `src/widget.ts`" in content
+
+
+def test_memo_enricher_section_ordering_stable_across_multi_edit(tmp_path):
+    """### Edited Files always precedes ### Import Graph after multiple Edit events.
+
+    Regression test for the bug where a second Edit (when both section headings
+    already existed) would append new Edited Files bullet lines after the
+    Import Graph section instead of before it.
+    """
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    src = repo / "src"
+    src.mkdir()
+    lib_dir = src / "lib"
+    lib_dir.mkdir()
+
+    # util.ts has an importer so it generates an Import Graph entry.
+    (lib_dir / "util.ts").write_text("export const helper = () => {};\n", encoding="utf-8")
+    (src / "caller.ts").write_text(
+        "import { helper } from './lib/util';\n", encoding="utf-8"
+    )
+    # widget.ts also has an importer.
+    (lib_dir / "widget.ts").write_text("export class Widget {}\n", encoding="utf-8")
+    (src / "page.ts").write_text(
+        "import { Widget } from './lib/widget';\n", encoding="utf-8"
+    )
+
+    # First edit: util.ts — creates both sections.
+    hooks.run_memo_enricher(edit_event(repo, "src/lib/util.ts"), repo)
+    # Second edit: widget.ts — must stay in Edited Files, not bleed after Import Graph.
+    hooks.run_memo_enricher(edit_event(repo, "src/lib/widget.ts"), repo)
+
+    memo = repo / ".claude" / ".warden-memo.md"
+    content = memo.read_text(encoding="utf-8")
+
+    edited_pos = content.index("### Edited Files")
+    import_pos = content.index("### Import Graph")
+
+    # Invariant: all Edited Files content precedes the Import Graph heading.
+    assert edited_pos < import_pos, (
+        "### Edited Files must appear before ### Import Graph"
+    )
+
+    # Both file entries must be in the Edited Files section (before Import Graph).
+    edited_section = content[edited_pos:import_pos]
+    assert "`src/lib/util.ts`" in edited_section, (
+        "util.ts entry missing from Edited Files section"
+    )
+    assert "`src/lib/widget.ts`" in edited_section, (
+        "widget.ts entry missing from Edited Files section — was appended after Import Graph"
+    )
