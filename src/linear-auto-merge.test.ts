@@ -668,3 +668,72 @@ describe('attemptAutoMerge — auto flag passed to gh pr merge', () => {
     vi.useRealTimers();
   });
 });
+
+// ---------------------------------------------------------------------------
+// sweepPendingAutoMerges — MERGED detection
+// ---------------------------------------------------------------------------
+
+describe('sweepPendingAutoMerges — detects PR already merged by GitHub', () => {
+  beforeEach(() => {
+    process.env.LINEAR_AUTO_MERGE = '1';
+  });
+  afterEach(() => {
+    delete process.env.LINEAR_AUTO_MERGE;
+  });
+
+  it('syncs to Done when GitHub auto-merge already completed the PR', async () => {
+    // Seed a pending auto-merge record
+    upsertIssuePr(
+      'sweep-issue-1',
+      'https://github.com/sliamh11/Deus/pull/200',
+      'feat/sweep',
+      'LIA-200',
+    );
+    updatePrAutoMergeState('sweep-issue-1', 'pending');
+
+    // gh pr view → MERGED
+    execFileMock.mockReturnValueOnce({
+      stdout: JSON.stringify({ state: 'MERGED' }),
+    });
+
+    const ctx = {
+      client: {
+        updateIssue: vi.fn().mockResolvedValue({}),
+        createComment: vi.fn().mockResolvedValue({}),
+        issue: vi.fn().mockResolvedValue({
+          labels: vi.fn().mockResolvedValue({ nodes: [] }),
+          comments: vi.fn().mockResolvedValue({ nodes: [] }),
+        }),
+      },
+      stateByName: new Map([
+        ['Done', { id: 'done-id', name: 'Done' }],
+        ['Ready for Agent', { id: 'ready-id', name: 'Ready for Agent' }],
+      ]),
+      gateLabels: {
+        wardenSkip: 'warden-skip-id',
+        revise: 'revise-id',
+        evaluating: 'eval-id',
+      },
+      repoSlug: 'sliamh11/Deus',
+    } as unknown as import('./linear-dispatcher.js').LinearContext;
+
+    const { sweepPendingAutoMerges } = await import('./linear-auto-merge.js');
+    await sweepPendingAutoMerges(ctx);
+
+    // Wait for the async fire-and-forget chain to settle
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should have moved issue to Done
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      'sweep-issue-1',
+      expect.objectContaining({ stateId: 'done-id' }),
+    );
+    expect(ctx.client.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ issueId: 'sweep-issue-1' }),
+    );
+
+    // DB state should be 'merged'
+    const { getIssuePr: getPr } = await import('./db.js');
+    expect(getPr('sweep-issue-1')?.auto_merge_state).toBe('merged');
+  });
+});
