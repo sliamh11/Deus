@@ -1,5 +1,5 @@
 ---
-last_verified: "2026-05-29"
+last_verified: "2026-05-29" # verified: gcal-sync auth alerting changes
 governs:
   - src/
   - evolution/
