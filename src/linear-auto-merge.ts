@@ -200,10 +200,6 @@ async function mergePr(
   }
 }
 
-/**
- * Handles a successful merge (direct or after --auto queuing completes via
- * the sweep).  Moves the issue to Done, updates labels, and logs events.
- */
 async function handleMergeSuccess(
   ctx: LinearContext,
   issueId: string,
@@ -236,10 +232,6 @@ async function handleMergeSuccess(
   logger.info({ issueId, prUrl }, 'auto-merge: merged and moved to Done');
 }
 
-/**
- * Handles a merge failure: updates DB state, fires notifications, and either
- * trips the circuit breaker or comments and re-queues the issue.
- */
 async function handleMergeFailure(
   ctx: LinearContext,
   issueId: string,

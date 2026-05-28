@@ -462,6 +462,8 @@ describe('checkConflictingPrs', () => {
 // attemptAutoMerge — GitHub auto-merge flow
 // ---------------------------------------------------------------------------
 
+const TEST_REPO = 'test-owner/test-repo';
+
 function makeAutoMergeCtx() {
   return {
     client: {
@@ -482,7 +484,7 @@ function makeAutoMergeCtx() {
       revise: 'revise-id',
       evaluating: 'eval-id',
     },
-    repoSlug: 'sliamh11/Deus',
+    repoSlug: TEST_REPO,
   } as unknown as import('./linear-dispatcher.js').LinearContext;
 }
 
@@ -505,13 +507,16 @@ describe('attemptAutoMerge — auto flag passed to gh pr merge', () => {
 
     const { attemptAutoMerge } = await import('./linear-auto-merge.js');
     const ctx = makeAutoMergeCtx();
-    upsertIssuePr('am-issue-1', 'https://github.com/sliamh11/Deus/pull/99');
+    upsertIssuePr(
+      'am-issue-1',
+      'https://github.com/test-owner/test-repo/pull/99',
+    );
     updatePrAutoMergeState('am-issue-1', 'pending');
 
     await attemptAutoMerge(
       ctx,
       'am-issue-1',
-      'https://github.com/sliamh11/Deus/pull/99',
+      'https://github.com/test-owner/test-repo/pull/99',
       'LIA-99',
     );
 
@@ -534,13 +539,16 @@ describe('attemptAutoMerge — auto flag passed to gh pr merge', () => {
 
     const { attemptAutoMerge } = await import('./linear-auto-merge.js');
     const ctx = makeAutoMergeCtx();
-    upsertIssuePr('am-issue-2', 'https://github.com/sliamh11/Deus/pull/100');
+    upsertIssuePr(
+      'am-issue-2',
+      'https://github.com/test-owner/test-repo/pull/100',
+    );
     updatePrAutoMergeState('am-issue-2', 'pending');
 
     await attemptAutoMerge(
       ctx,
       'am-issue-2',
-      'https://github.com/sliamh11/Deus/pull/100',
+      'https://github.com/test-owner/test-repo/pull/100',
       'LIA-100',
     );
 
@@ -576,13 +584,16 @@ describe('attemptAutoMerge — auto flag passed to gh pr merge', () => {
 
     const { attemptAutoMerge } = await import('./linear-auto-merge.js');
     const ctx = makeAutoMergeCtx();
-    upsertIssuePr('am-issue-3', 'https://github.com/sliamh11/Deus/pull/101');
+    upsertIssuePr(
+      'am-issue-3',
+      'https://github.com/test-owner/test-repo/pull/101',
+    );
     updatePrAutoMergeState('am-issue-3', 'pending');
 
     const promise = attemptAutoMerge(
       ctx,
       'am-issue-3',
-      'https://github.com/sliamh11/Deus/pull/101',
+      'https://github.com/test-owner/test-repo/pull/101',
       'LIA-101',
     );
     // Advance past the CI_POLL_INTERVAL_MS wait
@@ -611,7 +622,10 @@ describe('attemptAutoMerge — auto flag passed to gh pr merge', () => {
 
     const { attemptAutoMerge } = await import('./linear-auto-merge.js');
     const ctx = makeAutoMergeCtx();
-    upsertIssuePr('am-issue-4', 'https://github.com/sliamh11/Deus/pull/102');
+    upsertIssuePr(
+      'am-issue-4',
+      'https://github.com/test-owner/test-repo/pull/102',
+    );
     updatePrAutoMergeState('am-issue-4', 'pending');
 
     // Should NOT throw or fail — pending CI is allowed for --auto
@@ -619,7 +633,7 @@ describe('attemptAutoMerge — auto flag passed to gh pr merge', () => {
       attemptAutoMerge(
         ctx,
         'am-issue-4',
-        'https://github.com/sliamh11/Deus/pull/102',
+        'https://github.com/test-owner/test-repo/pull/102',
         'LIA-102',
       ),
     ).resolves.toBeUndefined();
@@ -647,13 +661,16 @@ describe('attemptAutoMerge — auto flag passed to gh pr merge', () => {
 
     const { attemptAutoMerge } = await import('./linear-auto-merge.js');
     const ctx = makeAutoMergeCtx();
-    upsertIssuePr('am-issue-5', 'https://github.com/sliamh11/Deus/pull/103');
+    upsertIssuePr(
+      'am-issue-5',
+      'https://github.com/test-owner/test-repo/pull/103',
+    );
     updatePrAutoMergeState('am-issue-5', 'pending');
 
     const promise = attemptAutoMerge(
       ctx,
       'am-issue-5',
-      'https://github.com/sliamh11/Deus/pull/103',
+      'https://github.com/test-owner/test-repo/pull/103',
       'LIA-103',
     );
     await vi.runAllTimersAsync();
@@ -685,7 +702,7 @@ describe('sweepPendingAutoMerges — detects PR already merged by GitHub', () =>
     // Seed a pending auto-merge record
     upsertIssuePr(
       'sweep-issue-1',
-      'https://github.com/sliamh11/Deus/pull/200',
+      'https://github.com/test-owner/test-repo/pull/200',
       'feat/sweep',
       'LIA-200',
     );
@@ -714,7 +731,7 @@ describe('sweepPendingAutoMerges — detects PR already merged by GitHub', () =>
         revise: 'revise-id',
         evaluating: 'eval-id',
       },
-      repoSlug: 'sliamh11/Deus',
+      repoSlug: TEST_REPO,
     } as unknown as import('./linear-dispatcher.js').LinearContext;
 
     const { sweepPendingAutoMerges } = await import('./linear-auto-merge.js');
