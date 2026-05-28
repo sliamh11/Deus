@@ -105,6 +105,8 @@ export function readKeychainCredentials(): OAuthCredentials | undefined {
     };
     const oauth = parsed?.claudeAiOauth;
     if (!oauth?.accessToken) return undefined;
+    if (oauth.accessToken === 'placeholder' || oauth.accessToken.length < 20)
+      return undefined;
     return {
       accessToken: oauth.accessToken,
       refreshToken: oauth.refreshToken,

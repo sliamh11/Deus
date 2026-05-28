@@ -509,6 +509,32 @@ describe('AnthropicAuthProvider', () => {
       expect(result).toBeDefined();
       expect(result?.accessToken).toBe('valid-token-that-is-long-enough');
     });
+
+    it('rejects accessToken of exactly 19 characters', () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: '1234567890123456789',
+            expiresAt: Date.now() + 3600000,
+          },
+        }),
+      );
+      expect(readCredentialsFile()).toBeUndefined();
+    });
+
+    it('accepts accessToken of exactly 20 characters', () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: '12345678901234567890',
+            expiresAt: Date.now() + 3600000,
+          },
+        }),
+      );
+      const result = readCredentialsFile();
+      expect(result).toBeDefined();
+      expect(result?.accessToken).toBe('12345678901234567890');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -517,7 +543,7 @@ describe('AnthropicAuthProvider', () => {
   describe('credential store fallback', () => {
     const keychainCreds = JSON.stringify({
       claudeAiOauth: {
-        accessToken: 'keychain-tok',
+        accessToken: 'keychain-tok-valid-test-pad',
         refreshToken: 'keychain-refresh',
         expiresAt: Date.now() + 7200000,
       },
@@ -580,7 +606,7 @@ describe('AnthropicAuthProvider', () => {
       provider.isAvailable(); // triggers getDynamicOAuthToken → keychain read → write
       expect(mockWriteFileSync).toHaveBeenCalledWith(
         expect.stringContaining('.credentials.json'),
-        expect.stringContaining('keychain-tok'),
+        expect.stringContaining('keychain-tok-valid-test-pad'),
         expect.objectContaining({ mode: 0o600 }),
       );
     });
@@ -621,7 +647,9 @@ describe('AnthropicAuthProvider', () => {
         authorization: 'Bearer placeholder',
       };
       provider.injectAuth(headers);
-      expect(headers['authorization']).toBe('Bearer keychain-tok');
+      expect(headers['authorization']).toBe(
+        'Bearer keychain-tok-valid-test-pad',
+      );
     });
 
     it('handles malformed JSON from credential store gracefully', () => {
