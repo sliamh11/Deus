@@ -11,7 +11,12 @@ import { PROJECT_ROOT } from './config.js';
 import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
-import { IS_MACOS, IS_LINUX, forceKillProcessGroup } from './platform.js';
+import {
+  IS_MACOS,
+  IS_LINUX,
+  forceKillProcessGroup,
+  PYTHON_BIN,
+} from './platform.js';
 import { extractPrUrl } from './pr-url-extractor.js';
 import { queryPrState, checkConflictingPrs } from './linear-auto-merge.js';
 import {
@@ -1364,6 +1369,20 @@ export async function initLinearContext(
       });
     } catch {
       /* best-effort */
+    }
+
+    // Delete local branches that were squash-merged into main
+    try {
+      await execFileAsync(
+        PYTHON_BIN,
+        ['scripts/cleanup_stale_branches.py', '--delete'],
+        {
+          cwd: PROJECT_ROOT,
+          timeout: GIT_TIMEOUT_MS,
+        },
+      );
+    } catch {
+      /* non-fatal */
     }
 
     const viewer = await client.viewer;
