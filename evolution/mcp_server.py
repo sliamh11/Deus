@@ -98,7 +98,7 @@ def _run_mcp_server() -> None:
             tools_planned=tools_planned,
             top_k=top_k,
         )
-        return format_reflections_block(refs)
+        return format_reflections_block(refs, group_folder=group_folder)
 
     @mcp.tool()
     def get_active_prompt_tool(module: str) -> Optional[str]:
