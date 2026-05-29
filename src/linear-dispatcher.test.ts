@@ -1114,11 +1114,14 @@ describe('applyPatchArtifact', () => {
       (c) => c.cmd === 'git' && c.args[0] === 'rev-parse',
     );
     expect(revParseCalls).toHaveLength(0);
-    // Should NOT have called status (no dirty check)
-    const statusCalls = gitCalls.filter(
-      (c) => c.cmd === 'git' && c.args[0] === 'status',
+    // Should NOT have called status for dirty-tree check (drift bump status is OK)
+    const dirtyCheckCalls = gitCalls.filter(
+      (c) =>
+        c.cmd === 'git' &&
+        c.args[0] === 'status' &&
+        !c.args.includes('patterns/'),
     );
-    expect(statusCalls).toHaveLength(0);
+    expect(dirtyCheckCalls).toHaveLength(0);
     // Should NOT have called checkout -B (no branch creation)
     const checkoutCalls = gitCalls.filter(
       (c) =>

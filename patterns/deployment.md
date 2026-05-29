@@ -1,8 +1,11 @@
 ---
 last_verified: "2026-05-29" # auto-bump
 governs:
-  - src/
+  - package.json
+  - tsconfig.json
   - setup/
+  - container/build.sh
+  - container/Dockerfile
   - packages/
 test_tasks:
   - "Deploy a hotfix to a running service and restart it after rebuilding dist/"
@@ -90,4 +93,4 @@ After deploying a code fix, the service may still run the old binary if `dist/` 
 
 ## Scope
 
-Any change to `src/`, `setup/`, or `packages/` requires a rebuild before the change is live.
+Any change to build config (`package.json`, `tsconfig.json`), `setup/`, `container/`, or `packages/` requires a rebuild before the change is live.

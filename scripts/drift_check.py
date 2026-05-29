@@ -333,14 +333,16 @@ def main(base_ref: str | None = None, bump: bool = False) -> int:
     elif exit_code == 1:
         if bump:
             import datetime
+            import time as _time
             today = datetime.date.today().isoformat()
+            ts = int(_time.time())
             drifted_patterns = [r for r in rows if r["status"] == "DRIFTED"]
             for r in drifted_patterns:
                 p = PROJECT_ROOT / "patterns" / r["pattern"]
                 text = p.read_text()
                 updated = re.sub(
                     r'(last_verified:\s*)"?\d{4}-\d{2}-\d{2}"?.*',
-                    rf'\g<1>"{today}" # auto-bump',
+                    rf'\g<1>"{today}" # auto-bump @{ts}',
                     text,
                 )
                 if updated != text:
@@ -2080,6 +2082,6 @@ if __name__ == "__main__":
     elif args.adr:
         sys.exit(check_adr(PROJECT_ROOT))
     elif args.bump:
-        sys.exit(main(bump=True))
+        sys.exit(main(bump=True, base_ref=args.base))
     else:
         sys.exit(main(base_ref=args.base))
