@@ -257,6 +257,31 @@ export function stripEnrichmentSection(text: string): string {
   return text.replace(/^## Enrichment\s*\n[\s\S]*?(?=^## Verdict)/m, '').trim();
 }
 
+/**
+ * LIA-125: Extract an enrichment scope block from an issue description using
+ * sentinel markers. Returns the block content if found, undefined otherwise.
+ *
+ * Used to recover enrichment when a gate container agent wrote the scope block
+ * directly via MCP (no /workspace/project codebase access) rather than in its
+ * text output. In that case parseEnrichment(output.text) returns null, but the
+ * description already contains the gate:start/end block.
+ */
+export function extractScopeBlockFromDescription(
+  description: string | null | undefined,
+  gateName: string,
+): string | undefined {
+  if (!description) return undefined;
+  const startMarker = `<!-- gate:${gateName}:start -->`;
+  const endMarker = `<!-- gate:${gateName}:end -->`;
+  const startIdx = description.indexOf(startMarker);
+  const endIdx = description.indexOf(endMarker);
+  if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) return undefined;
+  const content = description
+    .slice(startIdx + startMarker.length, endIdx)
+    .trim();
+  return content || undefined;
+}
+
 export function computeScopeLabelChanges(
   gateName: string,
   finalVerdict: string | undefined,
@@ -1010,6 +1035,39 @@ async function handleIssueUpdate(
       }
 
       finalEnrichment = enrichmentBody ?? undefined;
+
+      // LIA-125: Gate container agents without /workspace/project access write
+      // the scope block directly via mcp__linear__update_issue instead of as
+      // text output. In that case parseEnrichment returns null, leaving
+      // finalEnrichment undefined and computeScopeLabelChanges skipping Scoped.
+      // Recover by fetching the fresh description and extracting the sentinel block.
+      if (
+        finalEnrichment === undefined &&
+        verdict === 'SHIP' &&
+        (gateSpec.name === 'enrichment-gate' ||
+          gateSpec.name === 'agent-readiness-gate')
+      ) {
+        try {
+          const freshIssue = await ctx.client.issue(data.id);
+          const recovered = extractScopeBlockFromDescription(
+            freshIssue.description,
+            gateSpec.name,
+          );
+          if (recovered) {
+            finalEnrichment = recovered;
+            logger.info(
+              { issueId: data.id, gate: gateSpec.name },
+              'linear-webhook: enrichment recovered from description (agent used MCP write instead of text output)',
+            );
+          }
+        } catch (recoverErr) {
+          logger.warn(
+            { issueId: data.id, gate: gateSpec.name, err: recoverErr },
+            'linear-webhook: failed to fetch fresh description for enrichment recovery',
+          );
+        }
+      }
+
       verdictText = stripEnrichmentSection(output);
       commentBody = formatGateComment(
         gateSpec.name,
@@ -1363,6 +1421,35 @@ async function runGateForIssue(
       verdict = parsedVerdict ?? 'REVISE';
       const enrichmentBody = parseEnrichment(output);
       finalEnrichment = enrichmentBody ?? undefined;
+
+      // LIA-125: Same recovery as in handleIssueUpdate — see comment there.
+      if (
+        finalEnrichment === undefined &&
+        verdict === 'SHIP' &&
+        (gateSpec.name === 'enrichment-gate' ||
+          gateSpec.name === 'agent-readiness-gate')
+      ) {
+        try {
+          const freshIssue = await ctx.client.issue(issue.id);
+          const recovered = extractScopeBlockFromDescription(
+            freshIssue.description,
+            gateSpec.name,
+          );
+          if (recovered) {
+            finalEnrichment = recovered;
+            logger.info(
+              { issueId: issue.id, gate: gateSpec.name },
+              'linear-webhook: enrichment recovered from description (agent used MCP write instead of text output)',
+            );
+          }
+        } catch (recoverErr) {
+          logger.warn(
+            { issueId: issue.id, gate: gateSpec.name, err: recoverErr },
+            'linear-webhook: failed to fetch fresh description for enrichment recovery',
+          );
+        }
+      }
+
       verdictText = stripEnrichmentSection(output);
       commentBody = formatGateComment(
         gateSpec.name,

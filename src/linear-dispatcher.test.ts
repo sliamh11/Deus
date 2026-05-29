@@ -605,6 +605,55 @@ describe('pollLinear dispatch ordering', () => {
     );
     expect(callOrder).toEqual(['aaa', 'bbb']);
   });
+
+  // LIA-125 regression: unscoped issue in RfA must emit a visible signal
+  it('applies bouncedUnscoped label and skips dispatch when issue has no Scoped label', async () => {
+    const updateIssue = vi.fn().mockResolvedValue({});
+    const enqueueTask = vi.fn();
+    const deps = makeMockDeps({
+      queue: {
+        enqueueTask,
+        notifyIdle: vi.fn(),
+        closeStdin: vi.fn(),
+        availableSlots: vi.fn().mockReturnValue(5),
+      } as unknown as LinearDispatcherDependencies['queue'],
+    });
+
+    // Issue with no agent:* label and no Scoped label
+    const unscopedIssue = {
+      id: 'unscoped-issue-1',
+      title: 'Unscoped Issue',
+      identifier: 'LIA-999',
+      description: 'no scope block here',
+      sortOrder: 1.0,
+      labels: vi.fn().mockResolvedValue({ nodes: [] }),
+      comments: vi.fn().mockResolvedValue({ nodes: [] }),
+    };
+
+    const ctx = makeMockCtx({
+      deps,
+      gateLabels: {
+        effort: {},
+        complexity: {},
+        bouncedUnscoped: 'label-bounced-id',
+      },
+      client: {
+        issues: vi.fn().mockResolvedValue({ nodes: [unscopedIssue] }),
+        updateIssue,
+      } as unknown as LinearContext['client'],
+    });
+
+    startLinearDispatcher(ctx);
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Issue must not be dispatched
+    expect(enqueueTask).not.toHaveBeenCalled();
+
+    // bouncedUnscoped label must be applied as the observable signal
+    expect(updateIssue).toHaveBeenCalledWith('unscoped-issue-1', {
+      addedLabelIds: ['label-bounced-id'],
+    });
+  });
 });
 
 describe('deriveFetchTimeout', () => {

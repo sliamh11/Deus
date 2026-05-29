@@ -1478,10 +1478,30 @@ async function pollLinear(): Promise<void> {
         continue;
       }
     } else if (!isScoped) {
-      logger.debug(
-        { issueId: issue.id },
-        'linear-dispatcher: issue has no agent:* label and is not scoped, skipping',
+      logger.warn(
+        { issueId: issue.id, identifier: issue.identifier },
+        'linear-dispatcher: issue in Ready for Agent has no Scoped label — will not dispatch',
       );
+      // Apply bounced:unscoped label so the issue is self-diagnosing in the
+      // Linear UI. Guard against re-applying every poll cycle.
+      const bouncedId = ctx.gateLabels.bouncedUnscoped;
+      const alreadyBounced =
+        bouncedId !== undefined &&
+        labels.nodes.some(
+          (l) => (l as { id?: string }).id === bouncedId,
+        );
+      if (bouncedId && !alreadyBounced) {
+        ctx.client
+          .updateIssue(issue.id, {
+            addedLabelIds: [bouncedId],
+          })
+          .catch((err) =>
+            logger.warn(
+              { issueId: issue.id, err },
+              'linear-dispatcher: failed to apply bounced:unscoped label',
+            ),
+          );
+      }
       continue;
     }
 

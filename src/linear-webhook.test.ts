@@ -18,6 +18,7 @@ import {
   mergeEnrichment,
   stripEnrichmentSection,
   computeScopeLabelChanges,
+  extractScopeBlockFromDescription,
   retryWithBackoff,
   _setSleepFnForTests,
   runInlineCompletionCheck,
@@ -493,6 +494,70 @@ describe('computeScopeLabelChanges', () => {
     );
     expect(result.addIds).toEqual([]);
     expect(result.removeIds).toEqual([]);
+  });
+
+  // LIA-125 regression: enrichment-gate must behave like agent-readiness-gate
+  it('adds scoped label on enrichment-gate SHIP with enrichment', () => {
+    const result = computeScopeLabelChanges(
+      'enrichment-gate',
+      'SHIP',
+      '## Scope\n\n**Problem**: fix the bug',
+      gateLabels,
+    );
+    expect(result.addIds).toEqual(['label-scoped-id']);
+    expect(result.removeIds).toEqual(['label-revise-id']);
+  });
+
+  it('no scoped label on enrichment-gate SHIP without enrichment (documents the gap — recovery must happen upstream)', () => {
+    // This test documents that computeScopeLabelChanges itself requires
+    // finalEnrichment to be truthy. The recovery (fetching description) happens
+    // in handleIssueUpdate / runGateForIssue before this function is called.
+    const result = computeScopeLabelChanges(
+      'enrichment-gate',
+      'SHIP',
+      undefined,
+      gateLabels,
+    );
+    expect(result.addIds).toEqual([]);
+    expect(result.removeIds).toEqual([]);
+  });
+});
+
+// ── extractScopeBlockFromDescription tests ────────────────────────────────────
+
+describe('extractScopeBlockFromDescription', () => {
+  it('extracts scope block between sentinel markers', () => {
+    const desc =
+      'intro\n\n<!-- gate:enrichment-gate:start -->\n## Scope\n\nsome content\n<!-- gate:enrichment-gate:end -->\n\ntrailing';
+    const result = extractScopeBlockFromDescription(desc, 'enrichment-gate');
+    expect(result).toBe('## Scope\n\nsome content');
+  });
+
+  it('returns undefined when markers are absent', () => {
+    const result = extractScopeBlockFromDescription(
+      'no markers here',
+      'enrichment-gate',
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it('returns undefined for null/undefined description', () => {
+    expect(extractScopeBlockFromDescription(null, 'enrichment-gate')).toBeUndefined();
+    expect(
+      extractScopeBlockFromDescription(undefined, 'enrichment-gate'),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined when end marker precedes start marker', () => {
+    const desc =
+      '<!-- gate:enrichment-gate:end -->content<!-- gate:enrichment-gate:start -->';
+    expect(extractScopeBlockFromDescription(desc, 'enrichment-gate')).toBeUndefined();
+  });
+
+  it('returns undefined when block content is empty', () => {
+    const desc =
+      '<!-- gate:enrichment-gate:start -->   \n   <!-- gate:enrichment-gate:end -->';
+    expect(extractScopeBlockFromDescription(desc, 'enrichment-gate')).toBeUndefined();
   });
 });
 
