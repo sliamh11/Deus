@@ -2774,3 +2774,231 @@ def test_session_init_clears_commit_window(tmp_path):
     hooks.run_session_init(repo)
 
     assert not (repo / ".claude" / ".commit-window").exists()
+
+
+# ---------------------------------------------------------------------------
+# memo-enricher tests
+# ---------------------------------------------------------------------------
+
+def edit_event(repo: Path, path: str) -> dict:
+    """Construct a PostToolUse Edit event for a given file path."""
+    return {
+        "cwd": str(repo),
+        "hook_event_name": "PostToolUse",
+        "model": "gpt-test",
+        "permission_mode": "default",
+        "session_id": "s",
+        "tool_name": "Edit",
+        "tool_use_id": "tool",
+        "transcript_path": None,
+        "turn_id": "turn",
+        "tool_input": {"file_path": path},
+    }
+
+
+def test_memo_enricher_creates_memo_on_first_edit(tmp_path):
+    """First Edit creates .warden-memo.md with the edited file listed."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.ts").write_text("export const x = 1;\n", encoding="utf-8")
+
+    rc = hooks.run_memo_enricher(edit_event(repo, "src/app.ts"), repo)
+
+    assert rc == 0
+    memo = repo / ".claude" / ".warden-memo.md"
+    assert memo.exists(), "memo file should be created after an Edit"
+    content = memo.read_text(encoding="utf-8")
+    assert "`src/app.ts`" in content
+    assert "## Warden Memo (auto-generated)" in content
+    assert "### Edited Files" in content
+
+
+def test_memo_enricher_appends_not_overwrites_on_second_edit(tmp_path):
+    """Second Edit appends to the existing memo rather than replacing it."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "a.ts").write_text("export const a = 1;\n", encoding="utf-8")
+    (repo / "src" / "b.ts").write_text("export const b = 2;\n", encoding="utf-8")
+
+    hooks.run_memo_enricher(edit_event(repo, "src/a.ts"), repo)
+    hooks.run_memo_enricher(edit_event(repo, "src/b.ts"), repo)
+
+    memo = repo / ".claude" / ".warden-memo.md"
+    content = memo.read_text(encoding="utf-8")
+    # Both files must appear in the memo.
+    assert "`src/a.ts`" in content
+    assert "`src/b.ts`" in content
+
+
+def test_memo_enricher_deduplicates_same_file(tmp_path):
+    """Editing the same file twice does not produce duplicate entries."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.ts").write_text("export const x = 1;\n", encoding="utf-8")
+
+    hooks.run_memo_enricher(edit_event(repo, "src/app.ts"), repo)
+    hooks.run_memo_enricher(edit_event(repo, "src/app.ts"), repo)
+
+    memo = repo / ".claude" / ".warden-memo.md"
+    content = memo.read_text(encoding="utf-8")
+    # The path should appear exactly once in the Edited Files section.
+    assert content.count("`src/app.ts`") == 1
+
+
+def test_memo_enricher_detects_ts_importers(tmp_path):
+    """Import graph is populated for .ts files that are imported from src/."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    lib_dir = repo / "src" / "lib"
+    lib_dir.mkdir(parents=True)
+    (lib_dir / "util.ts").write_text("export const helper = () => {};\n", encoding="utf-8")
+    # caller.ts imports from the lib
+    (repo / "src" / "caller.ts").write_text(
+        "import { helper } from './lib/util';\n", encoding="utf-8"
+    )
+
+    rc = hooks.run_memo_enricher(edit_event(repo, "src/lib/util.ts"), repo)
+
+    assert rc == 0
+    memo = repo / ".claude" / ".warden-memo.md"
+    assert memo.exists()
+    content = memo.read_text(encoding="utf-8")
+    # The import graph should list caller.ts as an importer of util.ts.
+    assert "### Import Graph" in content
+    assert "caller.ts" in content
+
+
+def test_memo_enricher_detects_py_importers(tmp_path):
+    """Import graph is populated for .py files imported from evolution/ or scripts/."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    scripts_dir = repo / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "mymodule.py").write_text("def do_work(): pass\n", encoding="utf-8")
+    evolution_dir = repo / "evolution"
+    evolution_dir.mkdir(parents=True)
+    (evolution_dir / "consumer.py").write_text(
+        "from scripts import mymodule\n", encoding="utf-8"
+    )
+
+    rc = hooks.run_memo_enricher(edit_event(repo, "scripts/mymodule.py"), repo)
+
+    assert rc == 0
+    memo = repo / ".claude" / ".warden-memo.md"
+    content = memo.read_text(encoding="utf-8")
+    assert "### Import Graph" in content
+    assert "consumer.py" in content
+
+
+def test_memo_enricher_no_import_graph_for_unknown_extension(tmp_path):
+    """Files with unrecognised extensions get an Edited Files entry but no Import Graph."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "config.json").write_text("{}\n", encoding="utf-8")
+
+    rc = hooks.run_memo_enricher(edit_event(repo, "src/config.json"), repo)
+
+    assert rc == 0
+    memo = repo / ".claude" / ".warden-memo.md"
+    content = memo.read_text(encoding="utf-8")
+    assert "`src/config.json`" in content
+    assert "### Import Graph" not in content
+
+
+def test_memo_enricher_noop_outside_worktree(tmp_path):
+    """Event from a cwd outside any git worktree is silently ignored."""
+    hooks = load_hooks()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    rc = hooks.run_memo_enricher(edit_event(outside, "src/app.ts"), outside)
+
+    assert rc == 0
+    assert not (outside / ".claude" / ".warden-memo.md").exists()
+
+
+def test_memo_enricher_apply_patch_creates_memo(tmp_path):
+    """apply_patch tool input is parsed correctly to extract the edited path."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.ts").write_text("old\n", encoding="utf-8")
+
+    rc = hooks.run_memo_enricher(apply_patch_event(repo, "src/app.ts"), repo)
+
+    assert rc == 0
+    memo = repo / ".claude" / ".warden-memo.md"
+    assert memo.exists()
+    content = memo.read_text(encoding="utf-8")
+    assert "`src/app.ts`" in content
+
+
+def test_memo_enricher_format_correct(tmp_path):
+    """Memo content follows the documented format exactly."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "widget.ts").write_text("export class Widget {}\n", encoding="utf-8")
+
+    hooks.run_memo_enricher(edit_event(repo, "src/widget.ts"), repo)
+
+    memo = repo / ".claude" / ".warden-memo.md"
+    content = memo.read_text(encoding="utf-8")
+    assert "## Warden Memo (auto-generated)" in content
+    assert "### Edited Files" in content
+    assert "- `src/widget.ts`" in content
+
+
+def test_memo_enricher_section_ordering_stable_across_multi_edit(tmp_path):
+    """### Edited Files always precedes ### Import Graph after multiple Edit events.
+
+    Regression test for the bug where a second Edit (when both section headings
+    already existed) would append new Edited Files bullet lines after the
+    Import Graph section instead of before it.
+    """
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    src = repo / "src"
+    src.mkdir()
+    lib_dir = src / "lib"
+    lib_dir.mkdir()
+
+    # util.ts has an importer so it generates an Import Graph entry.
+    (lib_dir / "util.ts").write_text("export const helper = () => {};\n", encoding="utf-8")
+    (src / "caller.ts").write_text(
+        "import { helper } from './lib/util';\n", encoding="utf-8"
+    )
+    # widget.ts also has an importer.
+    (lib_dir / "widget.ts").write_text("export class Widget {}\n", encoding="utf-8")
+    (src / "page.ts").write_text(
+        "import { Widget } from './lib/widget';\n", encoding="utf-8"
+    )
+
+    # First edit: util.ts — creates both sections.
+    hooks.run_memo_enricher(edit_event(repo, "src/lib/util.ts"), repo)
+    # Second edit: widget.ts — must stay in Edited Files, not bleed after Import Graph.
+    hooks.run_memo_enricher(edit_event(repo, "src/lib/widget.ts"), repo)
+
+    memo = repo / ".claude" / ".warden-memo.md"
+    content = memo.read_text(encoding="utf-8")
+
+    edited_pos = content.index("### Edited Files")
+    import_pos = content.index("### Import Graph")
+
+    # Invariant: all Edited Files content precedes the Import Graph heading.
+    assert edited_pos < import_pos, (
+        "### Edited Files must appear before ### Import Graph"
+    )
+
+    # Both file entries must be in the Edited Files section (before Import Graph).
+    edited_section = content[edited_pos:import_pos]
+    assert "`src/lib/util.ts`" in edited_section, (
+        "util.ts entry missing from Edited Files section"
+    )
+    assert "`src/lib/widget.ts`" in edited_section, (
+        "widget.ts entry missing from Edited Files section — was appended after Import Graph"
+    )

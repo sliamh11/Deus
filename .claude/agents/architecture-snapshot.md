@@ -2,6 +2,7 @@
 name: architecture-snapshot
 description: Generates a concise current-state architecture overview with Mermaid diagrams, entry points, key abstractions, data flow, and drift observations. Catches drift between the mental model and actual code. Use on-demand or at project milestones -- NOT a code review, this is a map. <example>Context: Just merged a large refactor. user: "snapshot the architecture." assistant: "Running architecture-snapshot to map the current state." <commentary>Post-milestone, on-demand = snapshot time.</commentary></example>
 model: sonnet
+explores_code: true
 color: green
 ---
 
@@ -72,6 +73,7 @@ Accuracy > completeness. A precise map of 80% of the system beats a vague map of
 
 ## Rules of engagement
 
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
 - **Accuracy over coverage.** If you didn't read it, don't include it. Mark it in "What This Snapshot Doesn't Cover."
 - **No prescriptions.** Describe, don't prescribe. Don't write "you should refactor X."
 - **Concrete names only.** No "the service", "the handler". Use actual module and file names.

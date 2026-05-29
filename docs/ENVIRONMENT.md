@@ -86,6 +86,8 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `EVOLUTION_REFLECTION_THRESHOLD` | `0.6` | Interactions scoring below this trigger corrective reflections |
 | `EVOLUTION_POSITIVE_THRESHOLD` | `0.85` | Interactions scoring above this trigger positive pattern extraction |
 | `EVOLUTION_JUDGE_MODEL` | `models/gemini-3.1-flash-lite` | Gemini model used for judging and principle extraction |
+| `EVOLUTION_JUDGE_MAX_PROMPT_CHARS` | `2000` | Max chars of user prompt sent to Gemini judge (caps payload + PII exposure) |
+| `EVOLUTION_JUDGE_MAX_RESPONSE_CHARS` | `2000` | Max chars of agent response sent to Gemini judge |
 | `EVOLUTION_JUDGE_PROVIDER` | (auto-detect) | Force a specific judge provider: `ollama`, `gemini`, `claude`, `mock`, `llama-cpp` |
 | `EVOLUTION_GEN_PROVIDER` | (auto-detect) | Force a specific generative provider: `gemini`, `ollama`, `mock`, `llama-cpp` |
 | `DEUS_STORAGE_PROVIDER` | (auto-detect) | Force a specific storage provider: `sqlite` |

@@ -20,7 +20,7 @@ import urllib.error
 from typing import Optional
 
 from .base import BaseJudge, JudgeResult
-from .criteria import RUBRIC, compose_score
+from .criteria import RUBRIC, compose_score, _normalize_dim
 from ..config import LLAMA_CPP_BASE_URL, LLAMA_CPP_JUDGE_MODEL
 
 
@@ -54,13 +54,14 @@ def _call_llama_cpp(prompt: str, model: str = LLAMA_CPP_JUDGE_MODEL) -> str:
                 "schema": {
                     "type": "object",
                     "properties": {
-                        "quality": {"type": "number"},
-                        "safety": {"type": "number"},
-                        "tool_use": {"type": "number"},
-                        "personalization": {"type": "number"},
+                        "safe": {"type": "boolean"},
+                        "quality_level": {"type": "integer", "minimum": 1, "maximum": 5},
+                        "personalization_level": {"type": "integer", "minimum": 1, "maximum": 5},
+                        "right_tools": {"type": "boolean"},
+                        "execution_quality": {"type": "integer", "minimum": 1, "maximum": 5},
                         "rationale": {"type": "string"}
                     },
-                    "required": ["quality", "safety", "tool_use", "personalization", "rationale"]
+                    "required": ["safe", "quality_level", "personalization_level", "right_tools", "execution_quality", "rationale"]
                 }
             }
         },
@@ -154,11 +155,15 @@ def _parse_result(raw: str) -> JudgeResult:
         text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
     try:
         data = json.loads(text)
+        quality = _normalize_dim("quality", data)
+        safety = _normalize_dim("safety", data)
+        tool_use = _normalize_dim("tool_use", data)
+        personalization = _normalize_dim("personalization", data)
         dims = {
-            "quality": float(data.get("quality", 0.5)),
-            "safety": float(data.get("safety", 1.0)),
-            "tool_use": float(data.get("tool_use", 1.0)),
-            "personalization": float(data.get("personalization", 0.5)),
+            "quality": quality,
+            "safety": safety,
+            "tool_use": tool_use,
+            "personalization": personalization,
         }
         return JudgeResult(
             score=compose_score(dims),

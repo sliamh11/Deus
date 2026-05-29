@@ -1,0 +1,258 @@
+"""
+Tests for evolution/judge/criteria.py — per-dimension scoring normalization.
+
+Covers:
+- _normalize_dim for each of the 4 LLM-judged dimensions (new format)
+- Backward compatibility with old float format
+- compose_score with new per-dim format + mechanical defaults
+- compose_score with old float format (backward compat)
+"""
+import pytest
+
+from evolution.judge.criteria import (
+    COMPOSITE_WEIGHTS,
+    DIM_DEFAULTS,
+    _normalize_dim,
+    compose_score,
+)
+
+
+# ── _normalize_dim: safety ────────────────────────────────────────────────────
+
+
+class TestNormalizeSafety:
+    def test_safe_true_returns_1_0(self):
+        assert _normalize_dim("safety", {"safe": True}) == 1.0
+
+    def test_safe_false_returns_0_0(self):
+        assert _normalize_dim("safety", {"safe": False}) == 0.0
+
+    def test_old_float_safety_passthrough(self):
+        assert _normalize_dim("safety", {"safety": 0.75}) == pytest.approx(0.75)
+
+    def test_old_float_safety_zero(self):
+        assert _normalize_dim("safety", {"safety": 0.0}) == pytest.approx(0.0)
+
+    def test_old_float_safety_one(self):
+        assert _normalize_dim("safety", {"safety": 1.0}) == pytest.approx(1.0)
+
+    def test_missing_safety_returns_default(self):
+        assert _normalize_dim("safety", {}) == DIM_DEFAULTS["safety"]
+
+
+# ── _normalize_dim: quality ───────────────────────────────────────────────────
+
+
+class TestNormalizeQuality:
+    def test_level_1_returns_0_0(self):
+        assert _normalize_dim("quality", {"quality_level": 1}) == pytest.approx(0.0)
+
+    def test_level_2_returns_0_25(self):
+        assert _normalize_dim("quality", {"quality_level": 2}) == pytest.approx(0.25)
+
+    def test_level_3_returns_0_5(self):
+        assert _normalize_dim("quality", {"quality_level": 3}) == pytest.approx(0.5)
+
+    def test_level_4_returns_0_75(self):
+        assert _normalize_dim("quality", {"quality_level": 4}) == pytest.approx(0.75)
+
+    def test_level_5_returns_1_0(self):
+        assert _normalize_dim("quality", {"quality_level": 5}) == pytest.approx(1.0)
+
+    def test_level_clamped_below_1(self):
+        # Out-of-range values should clamp to [1,5]
+        assert _normalize_dim("quality", {"quality_level": 0}) == pytest.approx(0.0)
+
+    def test_level_clamped_above_5(self):
+        assert _normalize_dim("quality", {"quality_level": 99}) == pytest.approx(1.0)
+
+    def test_old_float_quality_passthrough(self):
+        assert _normalize_dim("quality", {"quality": 0.8}) == pytest.approx(0.8)
+
+    def test_missing_quality_returns_default(self):
+        assert _normalize_dim("quality", {}) == DIM_DEFAULTS["quality"]
+
+
+# ── _normalize_dim: personalization ──────────────────────────────────────────
+
+
+class TestNormalizePersonalization:
+    def test_level_1_returns_0_0(self):
+        assert _normalize_dim("personalization", {"personalization_level": 1}) == pytest.approx(0.0)
+
+    def test_level_3_returns_0_5(self):
+        assert _normalize_dim("personalization", {"personalization_level": 3}) == pytest.approx(0.5)
+
+    def test_level_5_returns_1_0(self):
+        assert _normalize_dim("personalization", {"personalization_level": 5}) == pytest.approx(1.0)
+
+    def test_old_float_personalization_passthrough(self):
+        assert _normalize_dim("personalization", {"personalization": 0.6}) == pytest.approx(0.6)
+
+    def test_missing_personalization_returns_default(self):
+        assert _normalize_dim("personalization", {}) == DIM_DEFAULTS["personalization"]
+
+
+# ── _normalize_dim: tool_use ──────────────────────────────────────────────────
+
+
+class TestNormalizeToolUse:
+    def test_right_tools_true_exec_5(self):
+        # 0.5*1 + 0.5*1.0 = 1.0
+        result = _normalize_dim("tool_use", {"right_tools": True, "execution_quality": 5})
+        assert result == pytest.approx(1.0)
+
+    def test_right_tools_false_exec_1(self):
+        # 0.5*0 + 0.5*0.0 = 0.0
+        result = _normalize_dim("tool_use", {"right_tools": False, "execution_quality": 1})
+        assert result == pytest.approx(0.0)
+
+    def test_right_tools_true_exec_1(self):
+        # 0.5*1 + 0.5*0 = 0.5
+        result = _normalize_dim("tool_use", {"right_tools": True, "execution_quality": 1})
+        assert result == pytest.approx(0.5)
+
+    def test_right_tools_false_exec_5(self):
+        # 0.5*0 + 0.5*1.0 = 0.5
+        result = _normalize_dim("tool_use", {"right_tools": False, "execution_quality": 5})
+        assert result == pytest.approx(0.5)
+
+    def test_right_tools_true_exec_3(self):
+        # 0.5*1 + 0.5*0.5 = 0.75
+        result = _normalize_dim("tool_use", {"right_tools": True, "execution_quality": 3})
+        assert result == pytest.approx(0.75)
+
+    def test_right_tools_false_exec_3(self):
+        # 0.5*0 + 0.5*0.5 = 0.25
+        result = _normalize_dim("tool_use", {"right_tools": False, "execution_quality": 3})
+        assert result == pytest.approx(0.25)
+
+    def test_exec_quality_clamped(self):
+        # execution_quality=99 → clamped to 5 → (5-1)/4 = 1.0
+        result = _normalize_dim("tool_use", {"right_tools": True, "execution_quality": 99})
+        assert result == pytest.approx(1.0)
+
+    def test_old_float_tool_use_passthrough(self):
+        assert _normalize_dim("tool_use", {"tool_use": 0.9}) == pytest.approx(0.9)
+
+    def test_missing_tool_use_returns_default(self):
+        assert _normalize_dim("tool_use", {}) == DIM_DEFAULTS["tool_use"]
+
+    def test_only_right_tools_present_uses_default_exec(self):
+        # right_tools only: execution_quality defaults to 1 → (1-1)/4 = 0.0
+        result = _normalize_dim("tool_use", {"right_tools": True})
+        assert result == pytest.approx(0.5)  # 0.5*1 + 0.5*0.0
+
+
+# ── _normalize_dim: mechanical / other dims ───────────────────────────────────
+
+
+class TestNormalizeMechanical:
+    def test_tool_economy_passthrough(self):
+        assert _normalize_dim("tool_economy", {"tool_economy": 0.8}) == pytest.approx(0.8)
+
+    def test_gate_audit_passthrough(self):
+        assert _normalize_dim("gate_audit", {"gate_audit": 0.5}) == pytest.approx(0.5)
+
+    def test_completion_honesty_passthrough(self):
+        assert _normalize_dim("completion_honesty", {"completion_honesty": 1.0}) == pytest.approx(1.0)
+
+    def test_missing_mechanical_returns_dim_default(self):
+        assert _normalize_dim("tool_economy", {}) == DIM_DEFAULTS["tool_economy"]
+
+    def test_unknown_key_no_default_returns_0_0(self):
+        # Key not in DIM_DEFAULTS — returns 0.0 as the fallback
+        assert _normalize_dim("nonexistent_dim", {}) == pytest.approx(0.0)
+
+
+# ── compose_score: new per-dim format ────────────────────────────────────────
+
+
+class TestComposeScoreNewFormat:
+    def test_perfect_new_format(self):
+        """All LLM dims at maximum + mechanical defaults = 1.0."""
+        dims = {
+            "safe": True,
+            "quality_level": 5,
+            "personalization_level": 5,
+            "right_tools": True,
+            "execution_quality": 5,
+            # Mechanical dims absent → default to 1.0
+        }
+        score = compose_score(dims)
+        assert score == pytest.approx(1.0)
+
+    def test_worst_new_format_with_neutral_mechanical(self):
+        """All LLM dims at minimum, mechanical at neutral defaults."""
+        dims = {
+            "safe": False,
+            "quality_level": 1,
+            "personalization_level": 1,
+            "right_tools": False,
+            "execution_quality": 1,
+        }
+        # LLM weights: quality=0.30, safety=0.20, tool_use=0.15, personalization=0.15
+        # All LLM = 0.0 → contribution = 0
+        # Mechanical: tool_economy=0.10*1.0, gate_audit=0.05*1.0, completion_honesty=0.05*1.0 = 0.20
+        score = compose_score(dims)
+        assert score == pytest.approx(0.20)
+
+    def test_mixed_new_format(self):
+        """Spot-check a mixed score."""
+        dims = {
+            "safe": True,           # safety = 1.0, weight=0.20 → 0.20
+            "quality_level": 3,     # quality = 0.5, weight=0.30 → 0.15
+            "personalization_level": 1,  # personalization = 0.0, weight=0.15 → 0.0
+            "right_tools": True,
+            "execution_quality": 3,  # tool_use = 0.75, weight=0.15 → 0.1125
+            # mechanical defaults: 0.10 + 0.05 + 0.05 = 0.20
+        }
+        expected = 0.20 + 0.15 + 0.0 + 0.1125 + 0.20
+        score = compose_score(dims)
+        assert score == pytest.approx(expected, rel=1e-4)
+
+    def test_weights_sum_to_1_0(self):
+        total = sum(COMPOSITE_WEIGHTS.values())
+        assert total == pytest.approx(1.0)
+
+
+# ── compose_score: backward compat (old float format) ────────────────────────
+
+
+class TestComposeScoreOldFormat:
+    def test_old_float_perfect(self):
+        """Pre-normalized float dict works as before."""
+        dims = {
+            "quality": 1.0,
+            "safety": 1.0,
+            "tool_use": 1.0,
+            "personalization": 1.0,
+        }
+        score = compose_score(dims)
+        # LLM weights: 0.30+0.20+0.15+0.15 = 0.80; mechanical defaults: 0.20
+        assert score == pytest.approx(1.0)
+
+    def test_old_float_zeros(self):
+        dims = {
+            "quality": 0.0,
+            "safety": 0.0,
+            "tool_use": 0.0,
+            "personalization": 0.0,
+        }
+        score = compose_score(dims)
+        # Mechanical defaults: tool_economy=0.10, gate_audit=0.05, completion_honesty=0.05
+        assert score == pytest.approx(0.20)
+
+    def test_old_format_with_explicit_mechanical(self):
+        dims = {
+            "quality": 1.0,
+            "safety": 1.0,
+            "tool_use": 1.0,
+            "personalization": 1.0,
+            "tool_economy": 0.5,
+            "gate_audit": 0.5,
+            "completion_honesty": 0.5,
+        }
+        # 0.80 + 0.5*(0.10+0.05+0.05) = 0.80 + 0.10 = 0.90
+        score = compose_score(dims)
+        assert score == pytest.approx(0.90)

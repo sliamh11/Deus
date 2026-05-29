@@ -11,7 +11,12 @@ import { PROJECT_ROOT } from './config.js';
 import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
 import { fireAndForget } from './async/index.js';
-import { IS_MACOS, IS_LINUX, forceKillProcessGroup } from './platform.js';
+import {
+  IS_MACOS,
+  IS_LINUX,
+  forceKillProcessGroup,
+  PYTHON_BIN,
+} from './platform.js';
 import { extractPrUrl } from './pr-url-extractor.js';
 import { queryPrState, checkConflictingPrs } from './linear-auto-merge.js';
 import {
@@ -46,7 +51,24 @@ const AGENTS_DIR = path.join(PROJECT_ROOT, '.claude', 'agents');
 const GIT_TIMEOUT_MS = 30_000;
 const BUILD_TIMEOUT_MS = 120_000;
 const PUSH_TIMEOUT_MS = 120_000;
-const BLOCKED_PATHS_DEFAULT = ['.github/workflows/'];
+// Trailing '/' = prefix match; exact names match literally (prevents .env matching .envrc)
+function matchesPath(file: string, entry: string): boolean {
+  if (entry.endsWith('/')) {
+    return file.startsWith(entry);
+  }
+  return file === entry;
+}
+
+const HARD_BLOCKED_PATHS_DEFAULT = [
+  '.claude/',
+  'CLAUDE.md',
+  'AGENTS.md',
+  '.env',
+  '.mex/',
+  '.github/workflows/',
+];
+// Intentionally not env-configurable — warn-only paths rarely change and misconfiguration risks silent bypass
+const WARN_ONLY_PATHS = ['package.json', 'tsconfig.json'];
 
 export interface LinearDispatcherDependencies {
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -607,13 +629,14 @@ export async function applyPatchArtifact(
       await execFileAsync('git', ['checkout', '-B', branchName], gitOpts);
     }
 
-    // Pre-flight: reject patches touching blocked paths
+    // Pre-flight: reject or warn on patches touching restricted paths.
+    // DEUS_PATCH_BLOCKED_PATHS overrides HARD_BLOCKED_PATHS_DEFAULT only.
     const blockedPathsRaw = (process.env.DEUS_PATCH_BLOCKED_PATHS ?? '')
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean);
-    const effectiveBlockedPaths =
-      blockedPathsRaw.length > 0 ? blockedPathsRaw : BLOCKED_PATHS_DEFAULT;
+    const effectiveHardBlockedPaths =
+      blockedPathsRaw.length > 0 ? blockedPathsRaw : HARD_BLOCKED_PATHS_DEFAULT;
     try {
       const { stdout: statOut } = await execFileAsync(
         'git',
@@ -625,13 +648,27 @@ export async function applyPatchArtifact(
         .filter((line) => line.includes(' | '))
         .map((line) => line.split(' | ')[0].trim())
         .filter(Boolean);
-      const blockedFiles = touchedFiles.filter((f) =>
-        effectiveBlockedPaths.some((prefix) => f.startsWith(prefix)),
+
+      // Hard-blocked: exact-file or directory-prefix matches
+      const hardBlockedFiles = touchedFiles.filter((f) =>
+        effectiveHardBlockedPaths.some((entry) => matchesPath(f, entry)),
       );
-      if (blockedFiles.length > 0) {
+      // Shell scripts outside container/ are always hard-blocked
+      const shellViolations = touchedFiles.filter(
+        (f) => f.endsWith('.sh') && !f.startsWith('container/'),
+      );
+      // Warn-only: patch applied but warning comment posted
+      const warnOnlyFiles = touchedFiles.filter((f) =>
+        WARN_ONLY_PATHS.some((entry) => matchesPath(f, entry)),
+      );
+
+      const allHardBlocked = [
+        ...new Set([...hardBlockedFiles, ...shellViolations]),
+      ];
+      if (allHardBlocked.length > 0) {
         await ctx.client.createComment({
           issueId,
-          body: `**Patch auto-apply blocked** — patch touches restricted paths: ${blockedFiles.map((f) => `\`${f}\``).join(', ')}.\n\nApply manually after review.`,
+          body: `**Patch auto-apply blocked** — patch touches restricted paths: ${allHardBlocked.map((f) => `\`${f}\``).join(', ')}.\n\nApply manually after review.`,
         });
         fireAndForget(
           notifyPipelineStep(
@@ -639,12 +676,19 @@ export async function applyPatchArtifact(
             issueId,
             identifier,
             'patch_failed',
-            `hash:${patchHash} blocked paths: ${blockedFiles.join(',')}`,
+            `hash:${patchHash} blocked paths: ${allHardBlocked.join(',')}`,
           ),
           { name: 'linear-dispatcher.notify-pipeline' },
         );
         await cleanup(true);
         return noResult;
+      }
+
+      if (warnOnlyFiles.length > 0) {
+        await ctx.client.createComment({
+          issueId,
+          body: `**Patch auto-apply warning** — patch touches sensitive paths: ${warnOnlyFiles.map((f) => `\`${f}\``).join(', ')}. Applying anyway — please review carefully.`,
+        });
       }
     } catch (statErr) {
       logger.warn(
@@ -661,6 +705,29 @@ export async function applyPatchArtifact(
         ),
         { name: 'linear-dispatcher.notify-pipeline' },
       );
+      await cleanup(true);
+      return noResult;
+    }
+
+    // Pre-flight: verify patch applies cleanly before attempting git am/apply
+    try {
+      await execFileAsync('git', ['apply', '--check', patchFilePath], {
+        ...gitOpts,
+        timeout: 30_000,
+      });
+    } catch (checkErr: any) {
+      const checkMsg = checkErr?.stderr || checkErr?.message || 'Unknown error';
+      await ctx.client.createComment({
+        issueId,
+        body: `**Patch auto-apply blocked** — patch is malformed or does not apply cleanly:\n\n\`\`\`\n${checkMsg.slice(0, 2000)}\n\`\`\`\n\nApply manually after review.`,
+      });
+      notifyPipelineStep(
+        ctx,
+        issueId,
+        identifier,
+        'patch_failed',
+        `hash:${patchHash} malformed patch`,
+      ).catch(() => {});
       await cleanup(true);
       return noResult;
     }
@@ -1006,10 +1073,9 @@ async function runIssue(
     );
   }
 
-  fireAndForget(
-    notifyPipelineStep(ctx, issueId, identifier, 'agent_started'),
-    { name: 'linear-dispatcher.notify-pipeline' },
-  );
+  fireAndForget(notifyPipelineStep(ctx, issueId, identifier, 'agent_started'), {
+    name: 'linear-dispatcher.notify-pipeline',
+  });
 
   const { text, error } = await executeAgentRun(ctx, runContext);
 
@@ -1280,12 +1346,7 @@ async function pollLinear(): Promise<void> {
     };
 
     fireAndForget(
-      notifyPipelineStep(
-        ctx,
-        issue.id,
-        issue.identifier,
-        'agent_dispatched',
-      ),
+      notifyPipelineStep(ctx, issue.id, issue.identifier, 'agent_dispatched'),
       { name: 'linear-dispatcher.notify-pipeline' },
     );
 
@@ -1340,6 +1401,20 @@ export async function initLinearContext(
       });
     } catch {
       /* best-effort */
+    }
+
+    // Startup: cleanup here avoids separate scheduler; failures are caught silently
+    try {
+      await execFileAsync(
+        PYTHON_BIN,
+        ['scripts/cleanup_stale_branches.py', '--delete'],
+        {
+          cwd: PROJECT_ROOT,
+          timeout: GIT_TIMEOUT_MS,
+        },
+      );
+    } catch {
+      /* non-fatal */
     }
 
     const viewer = await client.viewer;

@@ -2,6 +2,7 @@
 Reflection retriever: semantic top-k lookup keyed by query + planned tools.
 Returns a formatted <reflections> block ready to prepend to the agent prompt.
 """
+import html
 import math
 from typing import Optional
 
@@ -57,19 +58,30 @@ def get_reflections(
     for r in results:
         increment_retrieved(r["id"])
 
+    for r in results:
+        r['group_folder'] = group_folder
+
     return results
 
 
-def format_reflections_block(reflections: list[dict]) -> str:
+MAX_REFLECTIONS_PER_REQUEST = 10
+
+
+def format_reflections_block(reflections: list[dict], group_folder: str | None = None) -> str:
     """
-    Format retrieved reflections as a compact prompt block.
+    Format retrieved reflections as a sanitized, enveloped prompt block.
     Returns empty string if list is empty (no tokens added).
     """
     if not reflections:
         return ""
-
-    lines = ["<reflections>"]
+    reflections = reflections[:MAX_REFLECTIONS_PER_REQUEST]
+    # Group-scoped content is trusted; cross-group (no folder) has wider blast radius = untrusted.
+    trusted = "true" if group_folder else "false"
+    lines = [f'<data-envelope source="evolution-reflections" trusted="{trusted}">']
+    lines.append("<reflections>")
     for i, r in enumerate(reflections, 1):
-        lines.append(f"[{i}] ({r['category']}) {r['content'].strip()}")
+        content = html.escape(r['content'].strip()[:500])
+        lines.append(f"[{i}] ({r['category']}) {content}")
     lines.append("</reflections>")
+    lines.append("</data-envelope>")
     return "\n".join(lines)

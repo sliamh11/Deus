@@ -1093,6 +1093,7 @@ async function handleIssueUpdate(
 
     // Apply fallback verdict on infrastructure errors (matching agent-error path)
     finalVerdict = gateSpec.fallback;
+    finalEnrichment = `Gate infrastructure error: ${errorMsg}`;
     const errorComment = formatGateComment(
       gateSpec.name,
       finalVerdict,
@@ -1171,7 +1172,7 @@ async function handleIssueUpdate(
       retryLabelUpdate(ctx.client, data.id, update);
     }
 
-    if (finalVerdict && finalEnrichment && !gateDidError) {
+    if (finalVerdict && finalEnrichment) {
       try {
         await trackGateMetaAndEscalate(
           ctx,
@@ -1399,17 +1400,14 @@ async function runGateForIssue(
       `Gate infrastructure error (startup sweep):\n\`\`\`\n${errorMsg}\n\`\`\``,
       gateSpec.mode,
     );
-    fireAndForget(
-      postOrUpdateComment(ctx, issue.id, stateName, errorComment),
-      {
-        name: 'linear-webhook.startup-error-comment',
-        onError: (e) =>
-          logger.error(
-            { issueId: issue.id, err: e },
-            'linear-webhook: failed to post startup sweep error comment',
-          ),
-      },
-    );
+    fireAndForget(postOrUpdateComment(ctx, issue.id, stateName, errorComment), {
+      name: 'linear-webhook.startup-error-comment',
+      onError: (e) =>
+        logger.error(
+          { issueId: issue.id, err: e },
+          'linear-webhook: failed to post startup sweep error comment',
+        ),
+    });
     fireAndForget(
       notifyPipelineStep(
         ctx,
@@ -1426,6 +1424,7 @@ async function runGateForIssue(
     );
     // Never fallback-SHIP on infrastructure errors — gate didn't actually run
     finalVerdict = 'REVISE';
+    finalEnrichment = `Gate infrastructure error (startup sweep): ${errorMsg}`;
   } finally {
     ctx.inFlightGate.delete(issue.id);
 

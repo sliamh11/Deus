@@ -27,6 +27,7 @@ import { logger } from './logger.js';
 import {
   AuthProviderRegistry,
   AnthropicAuthProvider,
+  CREDENTIALS_PATH,
   _resetCredentialsCacheForTest as _resetAnthropicCache,
   ensureDefaultProviders,
 } from './auth-providers/index.js';
@@ -350,7 +351,10 @@ export function startCredentialProxy(
 
     const tryListen = () => {
       server.listen(port, host, () => {
-        logger.info({ port, host, authMode }, 'Credential proxy started');
+        logger.info(
+          { port, host, authMode, credentialsPath: CREDENTIALS_PATH },
+          'Credential proxy started',
+        );
         resolve(server);
       });
     };
