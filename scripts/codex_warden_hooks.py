@@ -63,6 +63,13 @@ HOOK_SPECS: tuple[HookSpec, ...] = (
     HookSpec(
         "PostToolUse",
         "Edit|Write|MultiEdit|apply_patch",
+        "memo-enricher",
+        3,
+        "Enriching Deus warden memo",
+    ),
+    HookSpec(
+        "PostToolUse",
+        "Edit|Write|MultiEdit|apply_patch",
         "memory-tree-hook",
         5,
         "Updating Deus memory tree",
@@ -742,6 +749,7 @@ def run_session_init(repo_root: Path) -> int:
         ".admin-merge-approved",
         ".migration-nudged",
         ".warden-memo.md",
+        ".plan-scope.md",
         ".commit-window",
     ):
         _marker(repo_root, name).unlink(missing_ok=True)
@@ -887,7 +895,7 @@ def run_code_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
         return 0
-    if _marker(repo_root, ".code-reviewed").exists():
+    if _read_verdict("code-reviewed", repo_root) == "SHIP":
         return 0
 
     mark_cmd = (
@@ -1013,7 +1021,7 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
         return 0
-    if _marker(repo_root, ".verified").exists():
+    if _read_verdict("verified", repo_root) == "SHIP":
         return 0
 
     mark_cmd = (
@@ -1051,6 +1059,13 @@ def run_verification_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     # `.claude/worktrees/<sub>/`, etc.) don't change the main-thread diff,
     # so the marker survives. The plan-review GATE fails closed on the
     # same condition — that asymmetry is intentional.
+    #
+    # git add is a staging-only operation, not a code edit — skip it so
+    # that pattern-only commits don't lose their SHIP verdict.
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else ""
+    if isinstance(command, str) and command.startswith("git add"):
+        return 0
     worktree, paths = _managed_paths(event, repo_root)
     if worktree is None:
         return 0
@@ -1063,6 +1078,7 @@ def run_verification_invalidator(event: dict[str, Any], repo_root: Path) -> int:
         )
         return 0
     _marker(repo_root, ".verified").unlink(missing_ok=True)
+    _clear_verdict("verified", repo_root)
     return 0
 
 
@@ -1156,6 +1172,13 @@ def run_memory_tree_hook(event: dict[str, Any], repo_root: Path) -> int:
 
 def run_code_review_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     # Same fail-open-on-empty-paths invariant as run_verification_invalidator.
+    #
+    # git add is a staging-only operation, not a code edit — skip it so
+    # that pattern-only commits don't lose their SHIP verdict.
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else ""
+    if isinstance(command, str) and command.startswith("git add"):
+        return 0
     worktree, paths = _managed_paths(event, repo_root)
     if worktree is None:
         return 0
@@ -1168,6 +1191,7 @@ def run_code_review_invalidator(event: dict[str, Any], repo_root: Path) -> int:
         )
         return 0
     _marker(repo_root, ".code-reviewed").unlink(missing_ok=True)
+    _clear_verdict("code-reviewed", repo_root)
     # LLM code is a subset of all code — source edits invalidate both markers
     _marker(repo_root, ".ai-eng-reviewed").unlink(missing_ok=True)
     return 0
@@ -1817,6 +1841,44 @@ def _read_verdicts(repo_root: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _read_verdict(marker_name: str, repo_root: Path) -> str | None:
+    """Return the verdict string for *marker_name* from .warden-verdicts.json.
+
+    Maps the marker name (e.g. ``"code-reviewed"``) to the warden key used in
+    the JSON (e.g. ``"code-reviewer"``) via ``MARKER_NAMES``.  Returns ``None``
+    if the file is absent, malformed, or the entry is missing.
+    """
+    warden = MARKER_NAMES.get(marker_name)
+    if not warden:
+        return None
+    data = _read_verdicts(repo_root)
+    entry = data.get(warden)
+    if not isinstance(entry, dict):
+        return None
+    v = entry.get("verdict")
+    return v if isinstance(v, str) else None
+
+
+def _clear_verdict(marker_name: str, repo_root: Path) -> None:
+    """Remove the *marker_name* entry from .warden-verdicts.json.
+
+    Maps the marker name to the warden key via ``MARKER_NAMES``.  Silently
+    skips if the file is absent or the key is not present.
+    """
+    warden = MARKER_NAMES.get(marker_name)
+    if not warden:
+        return
+    path = _verdicts_path(repo_root)
+    data = _read_verdicts(repo_root)
+    if warden not in data:
+        return
+    del data[warden]
+    try:
+        _write_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        _debug(f"_clear_verdict: failed to write {path}")
+
+
 def _write_verdict(repo_root: Path, warden: str, verdict: str, reason: str, source: str = "manual") -> None:
     path = _verdicts_path(repo_root)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1881,6 +1943,164 @@ def run_verdict_tracker(event: dict[str, Any], repo_root: Path) -> int:
     return 0
 
 
+def _find_importers(file_path: Path, repo_root: Path) -> list[str]:
+    """Return list of files that import *file_path*, relative to *repo_root*.
+
+    Searches ``src/`` for .ts files and ``evolution/`` + ``scripts/`` for .py
+    files.  Returns paths relative to repo_root, or absolute if they fall
+    outside repo_root.  Errors are swallowed so the hook stays fail-open.
+    """
+    suffix = file_path.suffix.lower()
+    importers: list[str] = []
+
+    if suffix == ".ts":
+        search_dirs = [repo_root / "src"]
+        # Match import/from/require lines that reference this module stem.
+        stem = file_path.stem
+        pattern = rf"(import|from|require).*['\"].*{re.escape(stem)}['\"]"
+    elif suffix == ".py":
+        search_dirs = [repo_root / "evolution", repo_root / "scripts"]
+        stem = file_path.stem
+        pattern = rf"(import|from).*\b{re.escape(stem)}\b"
+    else:
+        return importers
+
+    for search_dir in search_dirs:
+        if not search_dir.is_dir():
+            continue
+        try:
+            result = subprocess.run(
+                ["grep", "-rlE", pattern, str(search_dir)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=10,
+            )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                found = Path(line)
+                # Exclude the file itself
+                if found.resolve(strict=False) == file_path.resolve(strict=False):
+                    continue
+                try:
+                    importers.append(str(found.relative_to(repo_root)))
+                except ValueError:
+                    importers.append(line)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _debug(f"[memo-enricher] grep failed for {file_path}: {exc}")
+
+    return importers
+
+
+def _parse_memo_sections(text: str) -> tuple[list[str], list[str]]:
+    """Extract existing bullet lines from each section of a warden memo.
+
+    Returns (edited_file_lines, import_graph_lines) where each element is a
+    list of raw ``- ...`` lines belonging to that section.  Lines that don't
+    start with ``- `` are ignored (headings, blank lines, etc.).
+    """
+    edited: list[str] = []
+    imports: list[str] = []
+    in_edited = False
+    in_imports = False
+    for line in text.splitlines():
+        if line.startswith("### Edited Files"):
+            in_edited = True
+            in_imports = False
+        elif line.startswith("### Import Graph"):
+            in_edited = False
+            in_imports = True
+        elif line.startswith("## ") or line.startswith("### "):
+            in_edited = False
+            in_imports = False
+        elif line.startswith("- "):
+            if in_edited:
+                edited.append(line)
+            elif in_imports:
+                imports.append(line)
+    return edited, imports
+
+
+def run_memo_enricher(event: dict[str, Any], repo_root: Path) -> int:
+    """Rebuild .warden-memo.md with edited-file info and import graph. Fails open."""
+    worktree, paths = _managed_paths(event, repo_root)
+    if worktree is None or not paths:
+        return 0
+
+    memo_path = _marker(repo_root, ".warden-memo.md")
+    memo_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Read existing memo to recover previously accumulated entries.
+    existing_text = ""
+    if memo_path.exists():
+        try:
+            existing_text = memo_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            _debug(f"[memo-enricher] read failed: {exc}")
+
+    # Recover previously accumulated entries from the existing memo.
+    existing_file_lines, existing_import_lines = _parse_memo_sections(existing_text)
+
+    # Build sets of already-recorded paths for deduplication.  The file path
+    # backtick pattern appears in both section types, so we track at the
+    # path-string level rather than the full line level.
+    recorded_paths: set[str] = set()
+    for line in existing_file_lines:
+        # Extract `path` from "- `path`"
+        if "`" in line:
+            parts = line.split("`")
+            if len(parts) >= 2:
+                recorded_paths.add(parts[1])
+
+    new_file_lines: list[str] = []
+    new_import_lines: list[str] = []
+    for file_path in paths:
+        try:
+            rel = str(file_path.relative_to(worktree))
+        except ValueError:
+            rel = str(file_path)
+
+        if rel in recorded_paths:
+            continue
+
+        importers = _find_importers(file_path, repo_root)
+
+        new_file_lines.append(f"- `{rel}`")
+        if importers:
+            callers = ", ".join(f"`{imp}`" for imp in importers[:10])
+            new_import_lines.append(f"- `{rel}` ← {callers}")
+
+    if not new_file_lines:
+        return 0
+
+    # Merge new entries with existing ones and rebuild the whole memo so that
+    # ### Edited Files always precedes ### Import Graph, regardless of the
+    # order in which multiple Edit events fired during this session.
+    all_file_lines = existing_file_lines + new_file_lines
+    all_import_lines = existing_import_lines + new_import_lines
+
+    parts: list[str] = [
+        "",
+        "## Warden Memo (auto-generated)",
+        "",
+        "### Edited Files",
+    ]
+    parts.extend(all_file_lines)
+    if all_import_lines:
+        parts.append("")
+        parts.append("### Import Graph")
+        parts.extend(all_import_lines)
+
+    try:
+        memo_path.write_text("\n".join(parts) + "\n", encoding="utf-8")
+    except OSError as exc:
+        _debug(f"[memo-enricher] write failed: {exc}")
+
+    return 0
+
+
 def run_migration_nudge(event: dict[str, Any], repo_root: Path) -> int:
     """Once per session, check for pending migrations and emit a nudge."""
     marker = _marker(repo_root, ".migration-nudged")
@@ -1927,6 +2147,7 @@ RUNNERS = {
     "placement-guard": run_placement_guard,
     "catchup-freshness": run_catchup_freshness,
     "memory-retrieval": run_memory_retrieval,
+    "memo-enricher": run_memo_enricher,
     "migration-nudge": run_migration_nudge,
     "orchestrator-preflight": run_orchestrator_preflight,
     "warden-verdict-tracker": run_verdict_tracker,

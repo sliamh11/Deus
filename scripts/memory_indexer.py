@@ -54,6 +54,10 @@ DB_PATH = Path(os.environ.get("DEUS_DB", "~/.deus/memory.db")).expanduser()
 LAST_RESUME_LEARNINGS = Path("~/.deus/last_resume_learnings.txt").expanduser()
 HEALTH_LOG_PATH = Path("~/.deus/memory_health.jsonl").expanduser()
 
+# Entity extraction provider: "auto" tries Ollama (Gemma4) first, falls back to Gemini cascade.
+# "ollama" uses Ollama only.  "gemini" skips Ollama entirely.
+ENTITY_PROVIDER = os.environ.get("DEUS_ENTITY_PROVIDER", "auto")
+
 
 def _load_vault_path() -> Path:
     """Load vault path from config.json or DEUS_VAULT_PATH env var."""
@@ -2038,8 +2042,94 @@ def _ent_rel_prompt(content: str) -> str:
     )
 
 
-def extract_entities_and_relations(content: str) -> dict:
-    """Extract entities and relationships from a session log via Gemini Flash."""
+def _extract_entities_ollama(content: str) -> "dict | None":
+    """Extract entities and relationships via Ollama (Gemma4).
+
+    Returns a dict with the same schema consumed by the DB layer:
+      {"entities": [{"name": str, "entity_type": str, "summary": str}],
+       "relationships": [{"source": str, "target": str, "rel_type": str}]}
+    or None when Ollama is not reachable.
+    """
+    import urllib.request
+
+    prompt = _ent_rel_prompt(content)
+    ollama_url = os.environ.get("DEUS_OLLAMA_URL", "http://localhost:11434")
+    ollama_model = os.environ.get("DEUS_OLLAMA_ENTITY_MODEL", "gemma4:e4b")
+    body = json.dumps({
+        "model": ollama_model,
+        "prompt": prompt,
+        "stream": False,
+        "format": {
+            "type": "object",
+            "properties": {
+                "entities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "entity_type": {"type": "string"},
+                            "summary": {"type": "string"},
+                        },
+                    },
+                },
+                "relationships": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"},
+                            "target": {"type": "string"},
+                            "rel_type": {"type": "string"},
+                            "confidence": {"type": "number"},
+                        },
+                    },
+                },
+            },
+            "required": ["entities", "relationships"],
+        },
+        "options": {"temperature": 0, "seed": 42},
+    }).encode()
+    req = urllib.request.Request(
+        f"{ollama_url}/api/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode())
+        raw = data.get("response", "").strip()
+        result = json.loads(raw)
+        if isinstance(result, dict) and "entities" in result:
+            ents = [
+                e for e in result.get("entities", [])[:10]
+                if isinstance(e, dict)
+                and isinstance(e.get("name"), str) and e["name"]
+                and isinstance(e.get("entity_type"), str)
+            ]
+            rels = [
+                r for r in result.get("relationships", [])[:10]
+                if isinstance(r, dict)
+                and "source" in r and "target" in r and "rel_type" in r
+            ]
+            return {"entities": ents, "relationships": rels}
+        return {"entities": [], "relationships": []}
+    except urllib.error.HTTPError as exc:
+        print(f"  WARN: Ollama entity extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
+    except (ConnectionRefusedError, OSError):
+        return None
+    except json.JSONDecodeError as exc:
+        print(f"  WARN: Ollama entity extraction malformed JSON: {str(exc)[:120]}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
+    except Exception as exc:
+        print(f"  WARN: Ollama entity extraction failed: {exc}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
+
+
+def _extract_entities_and_relations_gemini(content: str) -> dict:
+    """Extract entities and relationships via the Gemini cascade (original path)."""
     prompt = _ent_rel_prompt(content)
     try:
         response = _generate_with_fallback(
@@ -2063,6 +2153,35 @@ def extract_entities_and_relations(content: str) -> dict:
         return {"entities": [], "relationships": []}
     except json.JSONDecodeError:
         return {"entities": [], "relationships": []}
+
+
+def extract_entities_and_relations(content: str) -> dict:
+    """Extract entities and relationships from a session log.
+
+    Routing is controlled by the DEUS_ENTITY_PROVIDER env var (default "auto"):
+      - "auto"   — try Ollama (Gemma4) first; if unavailable fall back to Gemini.
+      - "ollama" — require Ollama; return empty on failure.
+      - "gemini" — skip Ollama entirely; use the Gemini cascade.
+    """
+    provider = ENTITY_PROVIDER.lower()
+
+    if provider == "gemini":
+        return _extract_entities_and_relations_gemini(content)
+
+    # "auto" or "ollama": attempt Ollama first.
+    ollama_result = _extract_entities_ollama(content)
+
+    if ollama_result is None:
+        if provider == "ollama":
+            print(
+                "  WARN: DEUS_ENTITY_PROVIDER=ollama but Ollama not reachable.",
+                file=sys.stderr,
+            )
+            return {"entities": [], "relationships": []}
+        # auto: fall back to Gemini.
+        return _extract_entities_and_relations_gemini(content)
+
+    return ollama_result
 
 
 def _contradiction_prompt(fact_a: str, fact_b: str) -> str:

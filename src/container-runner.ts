@@ -388,8 +388,8 @@ export async function runContainerAgent(
             // so idle timers start even for "silent" query completions.
             outputChain = outputChain.then(() => onOutput(parsed));
           } catch (err) {
-            logger.warn(
-              { group: group.name, error: err },
+            logger.error(
+              { group: group.name, err },
               'Failed to parse streamed output chunk',
             );
           }
@@ -608,10 +608,10 @@ export async function runContainerAgent(
         logger.error(
           {
             group: group.name,
-            code,
+            containerId: containerName,
+            exitCode: code,
             duration,
-            stderr,
-            stdout,
+            stderr: stderr.slice(-2000),
             logFile,
           },
           'Container exited with error',
@@ -736,7 +736,13 @@ export async function runContainerAgent(
     container.on('error', (err) => {
       clearTimeout(timeout);
       logger.error(
-        { group: group.name, containerName, error: err },
+        {
+          group: group.name,
+          containerId: containerName,
+          exitCode: null,
+          stderr: stderr.slice(-500),
+          err,
+        },
         'Container spawn error',
       );
       resolve({

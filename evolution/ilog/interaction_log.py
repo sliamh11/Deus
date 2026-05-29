@@ -55,6 +55,7 @@ def update_score(
     score: float,
     dims: dict,
     parse_error: bool = False,
+    schema_version: int = 1,
 ) -> None:
     """Attach judge score and dimension breakdown to a logged interaction."""
     store = get_storage()
@@ -63,6 +64,7 @@ def update_score(
         judge_score=score,
         judge_dims=json.dumps(dims),
         parse_error=int(parse_error),
+        judge_schema_version=schema_version,
     )
 
 

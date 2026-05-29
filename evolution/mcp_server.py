@@ -98,7 +98,7 @@ def _run_mcp_server() -> None:
             tools_planned=tools_planned,
             top_k=top_k,
         )
-        return format_reflections_block(refs)
+        return format_reflections_block(refs, group_folder=group_folder)
 
     @mcp.tool()
     def get_active_prompt_tool(module: str) -> Optional[str]:
@@ -150,7 +150,7 @@ async def _async_judge_and_reflect(
             "tool_use": result.tool_use,
             "personalization": result.personalization,
         }
-        update_score(interaction_id, result.score, dims)
+        update_score(interaction_id, result.score, dims, schema_version=result.schema_version)
 
         if result.score < REFLECTION_THRESHOLD:
             generated_contents: set[str] = set()

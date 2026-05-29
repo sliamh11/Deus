@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { promisify } from 'util';
 import { _initTestDatabase } from './db.js';
 import {
@@ -455,5 +455,302 @@ describe('checkConflictingPrs', () => {
     await checkConflictingPrs(ctx);
 
     expect(ctx.client.updateIssue).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attemptAutoMerge — GitHub auto-merge flow
+// ---------------------------------------------------------------------------
+
+const TEST_REPO = 'test-owner/test-repo';
+
+function makeAutoMergeCtx() {
+  return {
+    client: {
+      updateIssue: vi.fn().mockResolvedValue({}),
+      createComment: vi.fn().mockResolvedValue({}),
+      issue: vi.fn().mockResolvedValue({
+        labels: vi.fn().mockResolvedValue({ nodes: [] }),
+        comments: vi.fn().mockResolvedValue({ nodes: [] }),
+      }),
+    },
+    stateByName: new Map([
+      ['Done', { id: 'done-id', name: 'Done' }],
+      ['Ready for Agent', { id: 'ready-id', name: 'Ready for Agent' }],
+      ['In Review', { id: 'review-id', name: 'In Review' }],
+    ]),
+    gateLabels: {
+      wardenSkip: 'warden-skip-id',
+      revise: 'revise-id',
+      evaluating: 'eval-id',
+    },
+    repoSlug: TEST_REPO,
+  } as unknown as import('./linear-dispatcher.js').LinearContext;
+}
+
+describe('attemptAutoMerge — auto flag passed to gh pr merge', () => {
+  beforeEach(() => {
+    process.env.LINEAR_AUTO_MERGE = '1';
+  });
+  afterEach(() => {
+    delete process.env.LINEAR_AUTO_MERGE;
+  });
+
+  it('passes --auto flag when queuing GitHub auto-merge', async () => {
+    // First call: gh pr checks (preCheck inside mergePr with {auto:true}) → pending
+    // Second call: gh pr merge --auto → success (autoQueued)
+    execFileMock
+      .mockReturnValueOnce({
+        stdout: JSON.stringify([{ bucket: 'pending', name: 'ci' }]),
+      })
+      .mockReturnValueOnce({ stdout: '' }); // merge --auto succeeds
+
+    const { attemptAutoMerge } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr(
+      'am-issue-1',
+      'https://github.com/test-owner/test-repo/pull/99',
+    );
+    updatePrAutoMergeState('am-issue-1', 'pending');
+
+    await attemptAutoMerge(
+      ctx,
+      'am-issue-1',
+      'https://github.com/test-owner/test-repo/pull/99',
+      'LIA-99',
+    );
+
+    // Verify --auto was in the merge call args
+    const mergeCall = execFileMock.mock.calls.find(
+      (c: unknown[]) =>
+        Array.isArray(c[1]) && (c[1] as string[]).includes('merge'),
+    );
+    expect(mergeCall).toBeDefined();
+    expect(mergeCall![1]).toContain('--auto');
+  });
+
+  it('returns immediately when GitHub auto-merge is successfully queued', async () => {
+    // preCheck → pending; merge --auto → success
+    execFileMock
+      .mockReturnValueOnce({
+        stdout: JSON.stringify([{ bucket: 'pending', name: 'ci' }]),
+      })
+      .mockReturnValueOnce({ stdout: '' });
+
+    const { attemptAutoMerge } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr(
+      'am-issue-2',
+      'https://github.com/test-owner/test-repo/pull/100',
+    );
+    updatePrAutoMergeState('am-issue-2', 'pending');
+
+    await attemptAutoMerge(
+      ctx,
+      'am-issue-2',
+      'https://github.com/test-owner/test-repo/pull/100',
+      'LIA-100',
+    );
+
+    // No issue state update yet — GitHub handles the merge asynchronously
+    expect(ctx.client.updateIssue).not.toHaveBeenCalled();
+    expect(ctx.client.createComment).not.toHaveBeenCalled();
+  });
+
+  it('falls back to direct merge when --auto fails, and merges if CI passes', async () => {
+    vi.useFakeTimers();
+
+    // Call sequence:
+    //  1. gh pr checks (preCheck for --auto) → pending
+    //  2. gh pr merge --auto → error (branch protection not set)
+    //  3. gh pr checks (fallback poll) → pass
+    //  4. gh pr checks (preCheck for direct merge) → pass
+    //  5. gh pr merge (direct) → success
+    const autoError = new Error(
+      'auto-merge not allowed: branch protection not configured',
+    );
+    execFileMock
+      .mockReturnValueOnce({
+        stdout: JSON.stringify([{ bucket: 'pending', name: 'ci' }]),
+      })
+      .mockReturnValueOnce({ error: autoError })
+      .mockReturnValueOnce({
+        stdout: JSON.stringify([{ bucket: 'pass', name: 'ci' }]),
+      })
+      .mockReturnValueOnce({
+        stdout: JSON.stringify([{ bucket: 'pass', name: 'ci' }]),
+      })
+      .mockReturnValueOnce({ stdout: '' });
+
+    const { attemptAutoMerge } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr(
+      'am-issue-3',
+      'https://github.com/test-owner/test-repo/pull/101',
+    );
+    updatePrAutoMergeState('am-issue-3', 'pending');
+
+    const promise = attemptAutoMerge(
+      ctx,
+      'am-issue-3',
+      'https://github.com/test-owner/test-repo/pull/101',
+      'LIA-101',
+    );
+    // Advance past the CI_POLL_INTERVAL_MS wait
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // Direct merge succeeded → issue moved to Done
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      'am-issue-3',
+      expect.objectContaining({ stateId: 'done-id' }),
+    );
+    expect(ctx.client.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ issueId: 'am-issue-3' }),
+    );
+
+    vi.useRealTimers();
+  });
+
+  it('allows pending CI state for --auto preCheck (does not block on pending)', async () => {
+    // preCheck → pending; merge --auto → success (autoQueued)
+    execFileMock
+      .mockReturnValueOnce({
+        stdout: JSON.stringify([{ bucket: 'pending', name: 'ci' }]),
+      })
+      .mockReturnValueOnce({ stdout: '' });
+
+    const { attemptAutoMerge } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr(
+      'am-issue-4',
+      'https://github.com/test-owner/test-repo/pull/102',
+    );
+    updatePrAutoMergeState('am-issue-4', 'pending');
+
+    // Should NOT throw or fail — pending CI is allowed for --auto
+    await expect(
+      attemptAutoMerge(
+        ctx,
+        'am-issue-4',
+        'https://github.com/test-owner/test-repo/pull/102',
+        'LIA-102',
+      ),
+    ).resolves.toBeUndefined();
+
+    // No error comment, no re-queue
+    expect(ctx.client.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it('blocks --auto when CI is already failing', async () => {
+    vi.useFakeTimers();
+
+    // preCheck for --auto → fail (blocks auto-merge attempt)
+    // fallback poll → fail (CI still failing)
+    execFileMock
+      .mockReturnValueOnce({
+        stdout: JSON.stringify([{ bucket: 'fail', name: 'ci' }]),
+      })
+      // mergePr({auto:true}) returns early, no merge call
+      // fallback: preCheck returns fail immediately in mergePr({auto:false})
+      // but we hit the "auto failed" path first — need to wait for the timer
+      // then the fallback queryPrChecks call:
+      .mockReturnValueOnce({
+        stdout: JSON.stringify([{ bucket: 'fail', name: 'ci' }]),
+      });
+
+    const { attemptAutoMerge } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr(
+      'am-issue-5',
+      'https://github.com/test-owner/test-repo/pull/103',
+    );
+    updatePrAutoMergeState('am-issue-5', 'pending');
+
+    const promise = attemptAutoMerge(
+      ctx,
+      'am-issue-5',
+      'https://github.com/test-owner/test-repo/pull/103',
+      'LIA-103',
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    // CI fail triggers re-queue to Ready for Agent
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      'am-issue-5',
+      expect.objectContaining({ stateId: 'ready-id' }),
+    );
+
+    vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sweepPendingAutoMerges — MERGED detection
+// ---------------------------------------------------------------------------
+
+describe('sweepPendingAutoMerges — detects PR already merged by GitHub', () => {
+  beforeEach(() => {
+    process.env.LINEAR_AUTO_MERGE = '1';
+  });
+  afterEach(() => {
+    delete process.env.LINEAR_AUTO_MERGE;
+  });
+
+  it('syncs to Done when GitHub auto-merge already completed the PR', async () => {
+    // Seed a pending auto-merge record
+    upsertIssuePr(
+      'sweep-issue-1',
+      'https://github.com/test-owner/test-repo/pull/200',
+      'feat/sweep',
+      'LIA-200',
+    );
+    updatePrAutoMergeState('sweep-issue-1', 'pending');
+
+    // gh pr view → MERGED
+    execFileMock.mockReturnValueOnce({
+      stdout: JSON.stringify({ state: 'MERGED' }),
+    });
+
+    const ctx = {
+      client: {
+        updateIssue: vi.fn().mockResolvedValue({}),
+        createComment: vi.fn().mockResolvedValue({}),
+        issue: vi.fn().mockResolvedValue({
+          labels: vi.fn().mockResolvedValue({ nodes: [] }),
+          comments: vi.fn().mockResolvedValue({ nodes: [] }),
+        }),
+      },
+      stateByName: new Map([
+        ['Done', { id: 'done-id', name: 'Done' }],
+        ['Ready for Agent', { id: 'ready-id', name: 'Ready for Agent' }],
+      ]),
+      gateLabels: {
+        wardenSkip: 'warden-skip-id',
+        revise: 'revise-id',
+        evaluating: 'eval-id',
+      },
+      repoSlug: TEST_REPO,
+    } as unknown as import('./linear-dispatcher.js').LinearContext;
+
+    const { sweepPendingAutoMerges } = await import('./linear-auto-merge.js');
+    await sweepPendingAutoMerges(ctx);
+
+    // Wait for the async fire-and-forget chain to settle
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Should have moved issue to Done
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      'sweep-issue-1',
+      expect.objectContaining({ stateId: 'done-id' }),
+    );
+    expect(ctx.client.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ issueId: 'sweep-issue-1' }),
+    );
+
+    // DB state should be 'merged'
+    const { getIssuePr: getPr } = await import('./db.js');
+    expect(getPr('sweep-issue-1')?.auto_merge_state).toBe('merged');
   });
 });
