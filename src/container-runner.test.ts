@@ -304,6 +304,69 @@ describe('container-runner timeout behavior', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ContainerOutputSchema Zod validation tests
+// ---------------------------------------------------------------------------
+
+import { ContainerOutputSchema } from './ipc-protocol.js';
+
+describe('ContainerOutputSchema Zod validation', () => {
+  it('accepts a valid ContainerOutput object', () => {
+    expect(() =>
+      ContainerOutputSchema.parse({ status: 'success', result: 'ok' }),
+    ).not.toThrow();
+  });
+
+  it('throws on schema-mismatched input (missing required fields)', () => {
+    expect(() =>
+      ContainerOutputSchema.parse({ notAValidField: true }),
+    ).toThrow();
+  });
+
+  it('throws when status is not a valid enum value', () => {
+    expect(() =>
+      ContainerOutputSchema.parse({ status: 'unknown', result: null }),
+    ).toThrow();
+  });
+
+  it('streaming parse: schema-mismatched output chunk logs error and does not call onOutput', async () => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // Emit a chunk that is valid JSON but does NOT match ContainerOutputSchema
+    const badJson = JSON.stringify({ notStatus: 'oops', result: null });
+    fakeProc.stdout.push(
+      `${OUTPUT_START_MARKER}\n${badJson}\n${OUTPUT_END_MARKER}\n`,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Should have logged an error (schema parse failed)
+    const mockLogger = (await import('./logger.js')).logger;
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ group: testGroup.name }),
+      'Failed to parse streamed output chunk',
+    );
+
+    // onOutput should NOT have been called with invalid data
+    expect(onOutput).not.toHaveBeenCalled();
+
+    // Clean up
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+    vi.useRealTimers();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildVolumeMounts tests
 //
 // buildVolumeMounts is not exported, so we exercise it via runContainerAgent.

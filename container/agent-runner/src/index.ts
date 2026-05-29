@@ -72,7 +72,8 @@ interface TextContentBlock {
 }
 type ContentBlock = ImageContentBlock | TextContentBlock;
 
-// SYNC-REQUIRED: Duplicated in src/container-runner.ts (host side).
+// SYNC-REQUIRED: Must match ContainerOutputSchema in src/ipc-protocol.ts (host side).
+// Cannot import from there — this package runs inside an isolated container.
 interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;

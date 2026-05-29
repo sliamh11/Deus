@@ -48,7 +48,6 @@ import {
 import { forceKillProcess } from './platform.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { buildVolumeMounts } from './container-mounter.js';
-import type { AgentEffortLevel } from './types.js';
 import { RegisteredGroup } from './types.js';
 import { detectDomainsWithFallback } from './domain-presets.js';
 import {
@@ -59,57 +58,27 @@ import {
 import { estimateTokens } from './token-counter.js';
 import { detectUserSignal } from './user-signal.js';
 import { getProjectById } from './db.js';
-
-// SYNC-REQUIRED: Duplicated in container/agent-runner/src/index.ts.
-// Cannot be shared via import — agent-runner is a separate package inside an isolated container.
-const OUTPUT_START_MARKER = '---DEUS_OUTPUT_START---';
-const OUTPUT_END_MARKER = '---DEUS_OUTPUT_END---';
+import {
+  ContainerOutputSchema,
+  OUTPUT_START_MARKER,
+  OUTPUT_END_MARKER,
+} from './ipc-protocol.js';
+import type {
+  ContainerOutput,
+  ContainerInput,
+  ContextStats,
+  CompactionEvent,
+} from './ipc-protocol.js';
+export type {
+  ContainerOutput,
+  ContainerInput,
+  ContextStats,
+  CompactionEvent,
+} from './ipc-protocol.js';
 
 function containsCodeBlock(text: string | null): boolean {
   if (!text) return false;
   return /```[\s\S]{10,}?```/.test(text);
-}
-
-export interface ContainerInput {
-  prompt: string;
-  backend?: AgentRuntimeId;
-  sessionId?: string;
-  sessionRef?: RuntimeSession;
-  groupFolder: string;
-  chatJid: string;
-  isControlGroup: boolean;
-  isScheduledTask?: boolean;
-  assistantName?: string;
-  imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
-  projectHint?: string;
-  effort?: AgentEffortLevel;
-  worktreePath?: string;
-}
-
-// SYNC-REQUIRED: Duplicated in container/agent-runner/src/index.ts.
-export interface ContainerOutput {
-  status: 'success' | 'error';
-  result: string | null;
-  newSessionRef?: RuntimeSession;
-  newSessionId?: string;
-  error?: string;
-  prUrl?: string;
-  contextStats?: ContextStats;
-  compactionEvent?: CompactionEvent;
-}
-
-export interface ContextStats {
-  tokens: number;
-  limit: number;
-  pct: number;
-  warn?: boolean;
-  autoCompact?: boolean;
-}
-
-export interface CompactionEvent {
-  trigger: 'manual' | 'auto';
-  preTokens?: number;
-  summary?: string;
 }
 
 function buildContainerArgs(
@@ -407,7 +376,7 @@ export async function runContainerAgent(
           parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
 
           try {
-            const parsed: ContainerOutput = JSON.parse(jsonStr);
+            const parsed = ContainerOutputSchema.parse(JSON.parse(jsonStr));
             if (parsed.newSessionRef) {
               newSessionRef = parsed.newSessionRef;
             }
@@ -713,7 +682,7 @@ export async function runContainerAgent(
           jsonLine = lines[lines.length - 1];
         }
 
-        const output: ContainerOutput = JSON.parse(jsonLine);
+        const output = ContainerOutputSchema.parse(JSON.parse(jsonLine));
 
         logger.info(
           {

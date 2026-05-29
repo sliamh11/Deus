@@ -23,6 +23,7 @@ import {
   parseAgentBackend,
   type AgentRuntimeId,
 } from './agent-runtimes/types.js';
+import { IpcMessageFileSchema } from './ipc-protocol.js';
 
 /**
  * Authorization helper for IPC handlers.
@@ -106,7 +107,23 @@ export function startIpcWatcher(deps: IpcDeps): void {
           for (const file of messageFiles) {
             const filePath = path.join(messagesDir, file);
             try {
-              const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              const parseResult = IpcMessageFileSchema.safeParse(
+                JSON.parse(fs.readFileSync(filePath, 'utf-8')),
+              );
+              if (!parseResult.success) {
+                logger.warn(
+                  { file, sourceGroup, error: parseResult.error },
+                  'IPC: invalid message file schema, quarantining',
+                );
+                const errorDir = path.join(ipcBaseDir, 'errors');
+                fs.mkdirSync(errorDir, { recursive: true });
+                fs.renameSync(
+                  filePath,
+                  path.join(errorDir, `${sourceGroup}-${file}`),
+                );
+                continue;
+              }
+              const data = parseResult.data;
               if (data.type === 'message' && data.chatJid && data.text) {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
