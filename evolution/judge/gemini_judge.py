@@ -9,9 +9,16 @@ import os
 import re
 from typing import Optional
 
-from ..config import GEN_MODELS, JUDGE_MODEL, JUDGE_RETRY_COUNT, load_api_key
+from ..config import (
+    GEN_MODELS,
+    JUDGE_MAX_PROMPT_CHARS,
+    JUDGE_MAX_RESPONSE_CHARS,
+    JUDGE_MODEL,
+    JUDGE_RETRY_COUNT,
+    load_api_key,
+)
 from .base import BaseJudge, JudgeResult
-from .criteria import RUBRIC, compose_score
+from .criteria import RUBRIC, compose_score, _normalize_dim
 
 _client = None
 
@@ -67,6 +74,9 @@ class GeminiRuntimeJudge(BaseJudge):
         tools_used: Optional[list[str]] = None,
         context: Optional[str] = None,
     ) -> JudgeResult:
+        # Truncate before sending to Gemini to cap payload size and PII exposure.
+        prompt = prompt[:JUDGE_MAX_PROMPT_CHARS]
+        response = (response or "")[:JUDGE_MAX_RESPONSE_CHARS]
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context)
         raw = _call_gemini(eval_prompt, self.model)
         result = _parse_result(raw)
@@ -85,6 +95,9 @@ class GeminiRuntimeJudge(BaseJudge):
         tools_used: Optional[list[str]] = None,
         context: Optional[str] = None,
     ) -> JudgeResult:
+        # Truncate before sending to Gemini to cap payload size and PII exposure.
+        prompt = prompt[:JUDGE_MAX_PROMPT_CHARS]
+        response = (response or "")[:JUDGE_MAX_RESPONSE_CHARS]
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context)
         raw = await _call_gemini_async(eval_prompt, self.model)
         result = _parse_result(raw)
@@ -165,11 +178,15 @@ def _parse_result(raw: str) -> JudgeResult:
         )
 
     try:
+        quality = _normalize_dim("quality", data)
+        safety = _normalize_dim("safety", data)
+        tool_use = _normalize_dim("tool_use", data)
+        personalization = _normalize_dim("personalization", data)
         dims = {
-            "quality": float(data.get("quality", 0.5)),
-            "safety": float(data.get("safety", 1.0)),
-            "tool_use": float(data.get("tool_use", 1.0)),
-            "personalization": float(data.get("personalization", 0.5)),
+            "quality": quality,
+            "safety": safety,
+            "tool_use": tool_use,
+            "personalization": personalization,
         }
         return JudgeResult(
             score=compose_score(dims),

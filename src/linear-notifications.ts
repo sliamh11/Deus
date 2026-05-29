@@ -96,7 +96,12 @@ export async function updateUnifiedComment(
 ): Promise<void> {
   const prev = commentLocks.get(issueId) ?? Promise.resolve();
   const current = prev.then(() => doUpdateUnifiedComment(ctx, issueId));
-  const tracked = current.catch(() => {});
+  const tracked = current.catch((err) => {
+    logger.error(
+      { issueId, err },
+      'notification: unified comment update failed',
+    );
+  });
   commentLocks.set(issueId, tracked);
   tracked.then(() => {
     if (commentLocks.get(issueId) === tracked) commentLocks.delete(issueId);
@@ -123,7 +128,7 @@ async function doUpdateUnifiedComment(
       }
     }
   } catch (err) {
-    logger.debug(
+    logger.error(
       { issueId, err },
       'notification: failed to update unified comment',
     );

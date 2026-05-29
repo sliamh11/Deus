@@ -154,9 +154,51 @@ def check_skill_inventory(project_root: Path) -> int:
     return 1
 
 
+def check_exploration_protocol(project_root: Path) -> int:
+    agents_dir = project_root / ".claude" / "agents"
+    if not agents_dir.exists():
+        return 0
+
+    missing: list[Path] = []
+    for path in sorted(agents_dir.rglob("*.md")):
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        if not text.startswith("---\n"):
+            continue
+        end = text.find("\n---", 4)
+        if end == -1:
+            continue
+        frontmatter = text[4:end]
+        if "explores_code: true" not in frontmatter:
+            continue
+        body = text[end + 4 :]
+        if "core-behavioral-rules.md \u00a7 Code Exploration" not in body:
+            missing.append(path)
+
+    if not missing:
+        print("Exploration protocol enforced.")
+        return 0
+
+    print(
+        "EXPLORATION PROTOCOL DRIFT \u2014 agents with explores_code: true "
+        "missing protocol pointer:"
+    )
+    for path in missing:
+        print(f"  {path.relative_to(project_root)}")
+    print(
+        "\nFIX: add the three-stage protocol pointer line referencing "
+        "core-behavioral-rules.md \u00a7 Code Exploration."
+    )
+    return 1
+
+
 def check_agents_tree(project_root: Path, dest_root: Path | None = None) -> int:
     """Verify that the local `.agents/` tree matches generated output."""
     inventory_status = check_skill_inventory(project_root)
+    protocol_status = check_exploration_protocol(project_root)
+    if protocol_status:
+        inventory_status = max(inventory_status, protocol_status)
     dest_root = dest_root or (project_root / ".agents")
     if not dest_root.exists():
         print("SKIP: .agents/ not present (local generated Codex compatibility tree).")

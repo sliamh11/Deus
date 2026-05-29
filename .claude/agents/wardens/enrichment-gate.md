@@ -7,6 +7,7 @@ fallback: REVISE
 cooldown_minutes: 5
 max_attempts: 3
 model: sonnet
+explores_code: true
 effort: high
 fetch_comments: false
 ---
@@ -19,21 +20,15 @@ You receive an issue title and description (may be empty or minimal). Your job i
 
 ## Step 1: Explore the codebase
 
-Before writing any scope, use the cached codebase map for efficient exploration:
+Before writing any scope, explore the codebase using internal tools first:
 
-**Primary path (map present)**:
-1. Read `.claude/codebase_map.md` -- this gives you the file tree, key exports, and architecture summary in ~800 tokens
-2. From the map, identify the 3-5 files most relevant to this issue
-3. Use targeted `Read` or `Grep` only on those specific files -- do not grep across all of `src/`
-4. Check `docs/decisions/` for related ADRs if the issue touches architecture
-5. Look for existing tests near the relevant files
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
 
-**Fallback (map absent or stale)**:
-- Grep for keywords from the issue title in `src/`, `scripts/`, `docs/`
-- Read the most relevant files to understand the current architecture
-- Check `AGENTS.md` for project structure and entrypoints
-- Check `docs/decisions/` for related ADRs or prior decisions
-- Look for existing tests that cover the area
+**Additional context sources:**
+1. Read `.claude/codebase_map.md` if present -- file tree, key exports, architecture summary in ~800 tokens
+2. Read `AGENTS.md` for project structure and entrypoints
+3. Check `docs/decisions/` for related ADRs if the issue touches architecture
+4. Look for existing tests near the relevant files
 
 Ground your scope in what you find. Reference actual file paths, function names, and patterns.
 

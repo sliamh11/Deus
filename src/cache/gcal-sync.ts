@@ -115,6 +115,14 @@ function buildAuth(credentialsPath: string, tokensPath: string): OAuth2Client {
   );
   const tokens = JSON.parse(fs.readFileSync(tokensPath, 'utf8'));
   auth.setCredentials(tokens);
+  // expiry_date is optional; when present and in the past, Google's OAuth2Client
+  // will attempt automatic refresh on the first API call
+  if (tokens.expiry_date && tokens.expiry_date < Date.now()) {
+    logger.warn(
+      { expiryDate: new Date(tokens.expiry_date).toISOString() },
+      'gcal-sync: token appears expired at startup, refresh will be attempted on first API call',
+    );
+  }
   auth.on('tokens', (newTokens) => {
     try {
       fs.writeFileSync(
@@ -175,6 +183,16 @@ const UPSERT_STATE = `
     sync_token=excluded.sync_token, last_synced_at=excluded.last_synced_at,
     total_events=excluded.total_events`;
 
+/* ── Auth failure tracking (singleton daemon — one instance per process) ── */
+
+let consecutiveAuthFailures = 0;
+const AUTH_FAILURE_THRESHOLD = 3;
+
+/** @internal exposed for testing only */
+export function _resetConsecutiveAuthFailuresForTest(): void {
+  consecutiveAuthFailures = 0;
+}
+
 /* ── Core sync ───────────────────────────────────────────────────────────── */
 
 async function runSync(
@@ -228,6 +246,20 @@ async function runSync(
         });
         return;
       }
+      if (status === 401) {
+        consecutiveAuthFailures++;
+        logger.error(
+          {
+            event: 'gcal_auth_failure',
+            consecutiveFailures: consecutiveAuthFailures,
+            status,
+          },
+          consecutiveAuthFailures >= AUTH_FAILURE_THRESHOLD
+            ? `gcal-sync: auth failure ${consecutiveAuthFailures}/${AUTH_FAILURE_THRESHOLD} — manual token refresh required (node scripts/setup-gcal-auth.mjs)`
+            : `gcal-sync: auth failure ${consecutiveAuthFailures}/${AUTH_FAILURE_THRESHOLD} — will retry next cycle`,
+        );
+        return;
+      }
       if (status === 429 || (status && status >= 500)) {
         throw new RetryableError('Google Calendar API error', {
           cause: err,
@@ -260,6 +292,7 @@ async function runSync(
     last_synced_at: syncedAt,
     total_events: Math.max(0, (state?.total_events ?? 0) + upserted - deleted),
   });
+  consecutiveAuthFailures = 0;
   logger.info(
     { calendarId, upserted, softDeleted: deleted },
     'gcal-sync: sync complete',
@@ -329,5 +362,6 @@ export function stopGcalSync(): void {
     _db.close();
     _db = null;
   }
+  consecutiveAuthFailures = 0;
   logger.info('gcal-sync: daemon stopped');
 }

@@ -19,6 +19,7 @@
 - Gate fallbacks are errors, not approvals. If a gate agent fails, the verdict must be ERROR with a visible error label — never SHIP. Fallback-SHIP silently bypasses quality gates and produces false labels on unreviewed work.
 - Never auto-advance an issue past a gate that didn't actually run. Silence is not consent.
 - REVISE handling follows core-behavioral-rules.md: re-run after fixes until SHIP, no exceptions.
+- When a pipeline loop is detected, stabilize first: move the issue to a safe state (Manual Review Required or Backlog) before investigating. Never debug a live loop.
 
 ## Agent Dispatch
 - Dispatched agents must work against the current issue state. If the issue was modified after dispatch, the agent's output is suspect — re-evaluate before accepting.

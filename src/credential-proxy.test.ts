@@ -289,7 +289,7 @@ describe('credential-proxy', () => {
     mockReadFileSync.mockReturnValue(
       JSON.stringify({
         claudeAiOauth: {
-          accessToken: 'creds-file-token',
+          accessToken: 'creds-file-token-valid-test',
           expiresAt: Date.now() + 60 * 60 * 1000,
         },
       }),
@@ -311,7 +311,7 @@ describe('credential-proxy', () => {
     );
 
     expect(lastUpstreamHeaders['authorization']).toBe(
-      'Bearer creds-file-token',
+      'Bearer creds-file-token-valid-test',
     );
   });
 
@@ -319,7 +319,7 @@ describe('credential-proxy', () => {
     mockReadFileSync.mockReturnValue(
       JSON.stringify({
         claudeAiOauth: {
-          accessToken: 'creds-file-token',
+          accessToken: 'creds-file-token-valid-test',
           expiresAt: Date.now() + 60 * 60 * 1000,
         },
       }),
@@ -344,20 +344,29 @@ describe('credential-proxy', () => {
   });
 
   it('OAuth mode: re-reads credentials file when cached token is about to expire', async () => {
-    // First call: token expiring in 2 min (within 5-min early-expire window)
+    // Constructor validation read (consumed during AnthropicAuthProvider init)
     mockReadFileSync.mockReturnValueOnce(
       JSON.stringify({
         claudeAiOauth: {
-          accessToken: 'expiring-token',
+          accessToken: 'expiring-token-valid-test',
           expiresAt: Date.now() + 2 * 60 * 1000,
         },
       }),
     );
-    // Second call: refreshed token
+    // First request: token expiring in 2 min (within 30-min early-expire window)
     mockReadFileSync.mockReturnValueOnce(
       JSON.stringify({
         claudeAiOauth: {
-          accessToken: 'refreshed-token',
+          accessToken: 'expiring-token-valid-test',
+          expiresAt: Date.now() + 2 * 60 * 1000,
+        },
+      }),
+    );
+    // Second request: refreshed token
+    mockReadFileSync.mockReturnValueOnce(
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'refreshed-token-valid-test',
           expiresAt: Date.now() + 60 * 60 * 1000,
         },
       }),
@@ -377,7 +386,9 @@ describe('credential-proxy', () => {
       }),
       '{}',
     );
-    expect(lastUpstreamHeaders['authorization']).toBe('Bearer expiring-token');
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      'Bearer expiring-token-valid-test',
+    );
 
     // Cache is stale (token about to expire) — re-read on next request
     await makeRequest(
@@ -392,7 +403,9 @@ describe('credential-proxy', () => {
       }),
       '{}',
     );
-    expect(lastUpstreamHeaders['authorization']).toBe('Bearer refreshed-token');
+    expect(lastUpstreamHeaders['authorization']).toBe(
+      'Bearer refreshed-token-valid-test',
+    );
   });
 
   it('OAuth mode replaces Bearer token on session endpoints', async () => {
