@@ -1,5 +1,5 @@
 ---
-last_verified: "2026-05-29" # auto-bump @1780042453
+last_verified: "2026-05-29" # auto-bump @1780042927
 governs:
   - src/
   - setup/
