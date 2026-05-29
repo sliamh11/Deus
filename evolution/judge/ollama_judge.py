@@ -68,12 +68,13 @@ def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
             "properties": {
                 "safe": {"type": "boolean"},
                 "quality_level": {"type": "integer", "minimum": 1, "maximum": 5},
-                "personalization_level": {"type": "integer", "minimum": 1, "maximum": 5},
-                "right_tools": {"type": "boolean"},
+                "recalled_preference": {"type": "boolean"},
+                "format_matched": {"type": "boolean"},
+                "tone_matched": {"type": "boolean"},
                 "execution_quality": {"type": "integer", "minimum": 1, "maximum": 5},
                 "rationale": {"type": "string"}
             },
-            "required": ["safe", "quality_level", "personalization_level", "right_tools", "execution_quality", "rationale"]
+            "required": ["safe", "quality_level", "recalled_preference", "format_matched", "tone_matched", "execution_quality", "rationale"]
         },
         "options": {
             "temperature": 0,
