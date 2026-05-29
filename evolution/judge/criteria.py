@@ -108,7 +108,8 @@ def _normalize_dim(key: str, raw_dict: dict) -> float:
         return DIM_DEFAULTS["quality"]
 
     if key == "personalization":
-        # New format: 3 atomic booleans
+        # Recall weighted 2x because using stored preferences is the primary
+        # personalization signal; format and tone are secondary observables.
         if "recalled_preference" in raw_dict:
             recalled = float(bool(raw_dict["recalled_preference"]))
             fmt = float(bool(raw_dict.get("format_matched", False)))
@@ -125,13 +126,13 @@ def _normalize_dim(key: str, raw_dict: dict) -> float:
         return DIM_DEFAULTS["personalization"]
 
     if key == "tool_use":
-        # New format: execution_quality only (right_tools dropped — 100% true in testing)
+        # New format: execution_quality only (full 0-1 range)
         if "execution_quality" in raw_dict and "right_tools" not in raw_dict:
             exec_quality = int(raw_dict["execution_quality"])
             exec_quality = max(1, min(5, exec_quality))
             return (exec_quality - 1) / 4.0
-        # Likert backward compat: old two-part format
-        if "right_tools" in raw_dict or ("execution_quality" in raw_dict and "right_tools" in raw_dict):
+        # Backward compat: old two-part format (right_tools bool + execution_quality)
+        if "right_tools" in raw_dict:
             right_tools = bool(raw_dict.get("right_tools", False))
             exec_quality = int(raw_dict.get("execution_quality", 1))
             exec_quality = max(1, min(5, exec_quality))
