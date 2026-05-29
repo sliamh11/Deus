@@ -736,7 +736,13 @@ export async function runContainerAgent(
     container.on('error', (err) => {
       clearTimeout(timeout);
       logger.error(
-        { group: group.name, containerId: containerName, exitCode: null, stderr: stderr.slice(-500), err },
+        {
+          group: group.name,
+          containerId: containerName,
+          exitCode: null,
+          stderr: stderr.slice(-500),
+          err,
+        },
         'Container spawn error',
       );
       resolve({

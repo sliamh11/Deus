@@ -795,7 +795,9 @@ describe('label update error callback', () => {
   it('default handler logs at error level when no onError provided', async () => {
     const { fireAndForget } = await import('./async/index.js');
     const loggerModule = await import('./logger.js');
-    const spy = vi.spyOn(loggerModule.logger, 'error').mockImplementation(() => loggerModule.logger);
+    const spy = vi
+      .spyOn(loggerModule.logger, 'error')
+      .mockImplementation(() => loggerModule.logger);
 
     const rejection = Promise.reject(new Error('default handler test'));
     fireAndForget(rejection, { name: 'test-default-handler' });

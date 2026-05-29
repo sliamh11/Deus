@@ -97,7 +97,10 @@ export async function updateUnifiedComment(
   const prev = commentLocks.get(issueId) ?? Promise.resolve();
   const current = prev.then(() => doUpdateUnifiedComment(ctx, issueId));
   const tracked = current.catch((err) => {
-    logger.error({ issueId, err }, 'notification: unified comment update failed');
+    logger.error(
+      { issueId, err },
+      'notification: unified comment update failed',
+    );
   });
   commentLocks.set(issueId, tracked);
   tracked.then(() => {
