@@ -302,6 +302,24 @@ export function computeScopeLabelChanges(
   return { addIds, removeIds };
 }
 
+/**
+ * Returns label IDs to remove when an issue enters a terminal state (Done / Cancelled).
+ * Strips all transient Warden labels regardless of whether a gate ran.
+ */
+export function computeTerminalLabelCleanup(
+  gateLabels: GateLabels,
+  issueLabelIds: string[],
+): string[] {
+  const labelSet = new Set(issueLabelIds);
+  return [
+    gateLabels.revise,
+    gateLabels.evaluating,
+    gateLabels.bouncedUnscoped,
+    gateLabels.bouncedStale,
+    gateLabels.bouncedNoContext,
+  ].filter((id): id is string => !!id && labelSet.has(id));
+}
+
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -649,14 +667,25 @@ async function handleIssueUpdate(
     return;
   }
 
-  if (
-    toState.name === 'Done' &&
-    data.labels.some((l) => l.name === 'Done: Pre-implemented')
-  ) {
-    logger.info(
-      { issueId: data.id },
-      'linear-webhook: Done: Pre-implemented label present, skipping gate',
+  // Terminal state: strip transient Warden labels and bail out — no gate fires on Done/Cancelled
+  if (toState.type === 'completed' || toState.type === 'cancelled') {
+    if (data.labels.some((l) => l.name === 'Done: Pre-implemented')) {
+      logger.info(
+        { issueId: data.id },
+        'linear-webhook: Done: Pre-implemented label present, skipping gate',
+      );
+    }
+    const removeIds = computeTerminalLabelCleanup(
+      ctx.gateLabels,
+      data.labels.map((l) => l.id),
     );
+    if (removeIds.length > 0) {
+      retryLabelUpdate(ctx.client, data.id, { removedLabelIds: removeIds });
+      logger.info(
+        { issueId: data.id, toState: toState.name, count: removeIds.length },
+        'linear-webhook: stripped transient labels on terminal state entry',
+      );
+    }
     return;
   }
 
@@ -1002,20 +1031,20 @@ async function handleIssueUpdate(
     let verdictText = '';
 
     if (!parsedVerdict && error) {
+      gateDidError = true;
       verdict = gateSpec.fallback;
       logger.warn(
         {
           issueId: data.id,
           gate: gateSpec.name,
-          fallback: gateSpec.fallback,
           error,
         },
-        'linear-webhook: gate agent error, applying fallback verdict',
+        'linear-webhook: gate agent error, applying Warden: Error label',
       );
       commentBody = formatGateComment(
         gateSpec.name,
-        verdict,
-        `Gate agent error (fallback: ${gateSpec.fallback}):\n\`\`\`\n${error}\n\`\`\``,
+        'ERROR',
+        `Gate agent error:\n\`\`\`\n${error}\n\`\`\``,
         gateSpec.mode,
       );
     } else {
@@ -1221,14 +1250,17 @@ async function handleIssueUpdate(
     const addIds: string[] = [];
     if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
     if (gateDidError && ctx.gateLabels.error) addIds.push(ctx.gateLabels.error);
-    const scopeLabels = computeScopeLabelChanges(
-      gateSpec.name,
-      finalVerdict,
-      finalEnrichment,
-      ctx.gateLabels,
-    );
-    addIds.push(...scopeLabels.addIds);
-    removeIds.push(...scopeLabels.removeIds);
+    // Only apply scope label changes when the gate ran cleanly (no infrastructure error or agent crash)
+    if (!gateDidError) {
+      const scopeLabels = computeScopeLabelChanges(
+        gateSpec.name,
+        finalVerdict,
+        finalEnrichment,
+        ctx.gateLabels,
+      );
+      addIds.push(...scopeLabels.addIds);
+      removeIds.push(...scopeLabels.removeIds);
+    }
 
     // Bouncer: apply bounced:<reason> label on REVISE, strip on SHIP
     if (gateSpec.name === 'bouncer-gate') {
@@ -1337,6 +1369,7 @@ async function runGateForIssue(
   ctx.inFlightGate.add(issue.id);
   let finalVerdict: string | undefined;
   let finalEnrichment: string | undefined;
+  let gateAgentError = false;
 
   try {
     if (ctx.gateLabels.evaluating) {
@@ -1411,6 +1444,7 @@ async function runGateForIssue(
 
     if (!parsedVerdict && error) {
       verdict = 'REVISE';
+      gateAgentError = true;
       commentBody = formatGateComment(
         gateSpec.name,
         'ERROR',
@@ -1569,6 +1603,7 @@ async function runGateForIssue(
       'startup-sweep: gate evaluation failed',
     );
     // Never fallback-SHIP on infrastructure errors — gate didn't actually run
+    gateAgentError = true;
     finalVerdict = 'REVISE';
     finalEnrichment = `Gate infrastructure error (startup sweep): ${errorMsg}`;
   } finally {
@@ -1577,14 +1612,17 @@ async function runGateForIssue(
     const removeIds: string[] = [];
     const addIds: string[] = [];
     if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
-    const scopeLabels = computeScopeLabelChanges(
-      gateSpec.name,
-      finalVerdict,
-      finalEnrichment,
-      ctx.gateLabels,
-    );
-    addIds.push(...scopeLabels.addIds);
-    removeIds.push(...scopeLabels.removeIds);
+    if (gateAgentError && ctx.gateLabels.error) addIds.push(ctx.gateLabels.error);
+    if (!gateAgentError) {
+      const scopeLabels = computeScopeLabelChanges(
+        gateSpec.name,
+        finalVerdict,
+        finalEnrichment,
+        ctx.gateLabels,
+      );
+      addIds.push(...scopeLabels.addIds);
+      removeIds.push(...scopeLabels.removeIds);
+    }
     if (finalEnrichment) {
       const ratings = parseRatings(finalEnrichment);
       if (ratings.effort || ratings.complexity) {
