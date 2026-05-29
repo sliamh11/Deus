@@ -2115,13 +2115,13 @@ def _extract_entities_ollama(content: str) -> "dict | None":
             ]
             return {"entities": ents, "relationships": rels}
         return {"entities": [], "relationships": []}
+    except urllib.error.HTTPError as exc:
+        print(f"  WARN: Ollama entity extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
     except (ConnectionRefusedError, OSError):
         return None
     except json.JSONDecodeError as exc:
         print(f"  WARN: Ollama entity extraction malformed JSON: {str(exc)[:120]}", file=sys.stderr)
-        return {"entities": [], "relationships": []}
-    except urllib.error.HTTPError as exc:
-        print(f"  WARN: Ollama entity extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
         return {"entities": [], "relationships": []}
     except Exception as exc:
         print(f"  WARN: Ollama entity extraction failed: {exc}", file=sys.stderr)
