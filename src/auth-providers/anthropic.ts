@@ -19,6 +19,7 @@ import { readFileSync, renameSync, writeFileSync } from 'fs';
 import path from 'path';
 
 import { readEnvFile } from '../env.js';
+import { logger } from '../logger.js';
 import { homeDir, IS_LINUX, IS_MACOS, IS_WINDOWS } from '../platform.js';
 import type { AuthProvider } from './types.js';
 import type { AuthMode } from '../credential-proxy.js';
@@ -71,6 +72,9 @@ export function readCredentialsFile(): OAuthCredentials | undefined {
     };
     const oauth = parsed?.claudeAiOauth;
     if (!oauth?.accessToken) return undefined;
+    // Real Claude Code OAuth tokens are 40+ chars; anything shorter is a dev stub
+    if (oauth.accessToken === 'placeholder' || oauth.accessToken.length < 20)
+      return undefined;
     return {
       accessToken: oauth.accessToken,
       refreshToken: oauth.refreshToken,
@@ -101,6 +105,8 @@ export function readKeychainCredentials(): OAuthCredentials | undefined {
     };
     const oauth = parsed?.claudeAiOauth;
     if (!oauth?.accessToken) return undefined;
+    if (oauth.accessToken === 'placeholder' || oauth.accessToken.length < 20)
+      return undefined;
     return {
       accessToken: oauth.accessToken,
       refreshToken: oauth.refreshToken,
@@ -301,6 +307,36 @@ export class AnthropicAuthProvider implements AuthProvider {
     this.authMode = this.secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
     this.envOauthToken =
       this.secrets.CLAUDE_CODE_OAUTH_TOKEN || this.secrets.ANTHROPIC_AUTH_TOKEN;
+
+    if (this.authMode === 'oauth') {
+      this.validateOAuthCredentials();
+    }
+  }
+
+  private validateOAuthCredentials(): void {
+    if (this.envOauthToken) {
+      logger.info(
+        'OAuth mode: using token from env (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN)',
+      );
+      return;
+    }
+    const fileCreds = readCredentialsFile();
+    if (fileCreds) {
+      logger.info(
+        { path: CREDENTIALS_PATH },
+        'OAuth mode: credentials loaded from file',
+      );
+      return;
+    }
+    const keychainCreds = readKeychainCredentials();
+    if (keychainCreds) {
+      logger.info('OAuth mode: credentials loaded from OS keychain');
+      return;
+    }
+    logger.warn(
+      { path: CREDENTIALS_PATH },
+      'OAuth mode: no valid credentials found — container requests will fail until credentials are provided',
+    );
   }
 
   /** Get the auth mode for external consumers (e.g. container-runner). */

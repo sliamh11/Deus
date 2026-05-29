@@ -388,7 +388,7 @@ def run_cc_backfill(
                 "completion_honesty": ch_score,
             }
             composite = compose_score(dims)
-            update_score(iid, composite, dims, parse_error=result.is_parse_error)
+            update_score(iid, composite, dims, parse_error=result.is_parse_error, schema_version=result.schema_version)
 
             if verbose:
                 print(f"  score={composite:.2f}  q={result.quality:.2f}  "

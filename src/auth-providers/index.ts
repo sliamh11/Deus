@@ -13,6 +13,7 @@ export {
 } from './types.js';
 export {
   AnthropicAuthProvider,
+  CREDENTIALS_PATH,
   _resetCredentialsCacheForTest,
 } from './anthropic.js';
 export { OpenAIAuthProvider } from './openai.js';

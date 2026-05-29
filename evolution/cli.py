@@ -118,7 +118,7 @@ def cmd_get_reflections(query_json: str) -> None:
         tools_planned=params.get("tools_planned"),
         top_k=params.get("top_k", 3),
     )
-    block = format_reflections_block(refs)
+    block = format_reflections_block(refs, group_folder=params.get("group_folder"))
     ref_ids = [r["id"] for r in refs]
     print(json.dumps({"reflections_block": block, "count": len(refs), "reflection_ids": ref_ids}))
 

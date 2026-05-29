@@ -774,3 +774,38 @@ describe('runInlineCompletionCheck', () => {
     expect(inFlightGate.has('issue-123')).toBe(false);
   });
 });
+
+describe('label update error callback', () => {
+  it('invokes onError when the wrapped promise rejects', async () => {
+    const { fireAndForget } = await import('./async/index.js');
+    const errors: unknown[] = [];
+    const onError = (e: unknown) => errors.push(e);
+
+    const rejection = Promise.reject(new Error('label update failed'));
+    fireAndForget(rejection, { name: 'test-label-update', onError });
+
+    // Flush microtask queue so the rejection handler runs
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe('label update failed');
+  });
+
+  it('default handler logs at error level when no onError provided', async () => {
+    const { fireAndForget } = await import('./async/index.js');
+    const loggerModule = await import('./logger.js');
+    const spy = vi
+      .spyOn(loggerModule.logger, 'error')
+      .mockImplementation(() => loggerModule.logger);
+
+    const rejection = Promise.reject(new Error('default handler test'));
+    fireAndForget(rejection, { name: 'test-default-handler' });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});

@@ -1,6 +1,24 @@
 """
 Shared configuration for the Deus Evolution loop.
 All values can be overridden via environment variables.
+
+Data-sharing notice
+-------------------
+When EVOLUTION_ENABLED is not '0', the following user data may reach external
+services:
+
+  - Gemini API (via GEMINI_API_KEY): full interaction prompts + responses for
+    scoring (judge), corrective lesson generation (reflexion), and optionally
+    domain classification. Truncated to JUDGE_MAX_PROMPT/RESPONSE_CHARS each.
+  - Gemini API: vault/memory file chunks for semantic embeddings, UNLESS
+    Ollama is running and EMBEDDING_PROVIDER != 'gemini'.
+
+To keep all processing local:
+  - Set EVOLUTION_ENABLED=0  (disables judge + reflexion + domain LLM fallback)
+  - Keep Ollama running with an embedding model (handles vault embeddings)
+  - Or set EMBEDDING_PROVIDER=ollama  (forces local embeddings)
+
+See docs/security/data-flows.md for the full audit.
 """
 import os
 from pathlib import Path
@@ -52,6 +70,13 @@ GEN_MODELS = [
 ]
 GEN_MODEL = os.environ.get("EVOLUTION_GEN_MODEL", GEN_MODELS[0])
 JUDGE_MODEL = os.environ.get("EVOLUTION_JUDGE_MODEL", "models/gemini-3.1-flash-lite")
+
+# Maximum characters of user prompt / agent response sent to the Gemini judge.
+# Bounds API payloads and limits inadvertent PII exposure.
+# The judge only needs enough context to assess quality — truncation at 2000
+# chars preserves scoring signal while capping outbound payload size.
+JUDGE_MAX_PROMPT_CHARS = int(os.environ.get("EVOLUTION_JUDGE_MAX_PROMPT_CHARS", "2000"))
+JUDGE_MAX_RESPONSE_CHARS = int(os.environ.get("EVOLUTION_JUDGE_MAX_RESPONSE_CHARS", "2000"))
 
 # ── Reflexion ─────────────────────────────────────────────────────────────────
 

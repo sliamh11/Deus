@@ -83,6 +83,10 @@ Agent(subagent_type="code-reviewer", prompt="review my changes in /Users/.../.cl
 - `python3 scripts/drift_check.py 2>&1 | grep -c "missing"` → `19`
 ```
 
+## Code exploration protocol
+
+Agents that explore code must set `explores_code: true` in their frontmatter and include the three-stage protocol pointer referencing `core-behavioral-rules.md § Code Exploration`. CI enforces this via `sync_agent_skills.py --check`.
+
 ## Adding or editing rules
 
 Rules files are the single source of truth — agents read them at invocation. Add a new rule by appending a section to the relevant file. Agents pick it up immediately on next invocation; no agent-file edit needed.

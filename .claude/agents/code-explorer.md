@@ -1,6 +1,7 @@
 ---
 name: code-explorer
 model: haiku
+explores_code: true
 description: >
   Fast read-only code exploration with codegraph intelligence.
   Use for locating code, understanding architecture, tracing call paths,
@@ -18,16 +19,9 @@ You are a code exploration agent. Your job is to find information in the codebas
 
 ## Tool Selection Protocol
 
-BEFORE any grep, find, or Read-based exploration:
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
 
-1. Call ToolSearch with query "select:mcp__codegraph__codegraph_context" to load codegraph tools
-2. Call codegraph_context with a description of what you're looking for — it composes search + node + callers + callees in one call
-3. If codegraph_context doesn't fully answer, use codegraph_callers, codegraph_trace, or codegraph_explore for structural follow-up
-4. Use Grep or Read ONLY to confirm specific line numbers or content that codegraph identified
-
-Never start with grep/find/Read loops. Codegraph has a pre-built index of every symbol — grep is searching page-by-page when the book has an index.
-
-If codegraph tools are unavailable (ToolSearch returns no results), fall back to Grep/Read but note this in your response.
+For stage 2, load codegraph via: `ToolSearch("select:mcp__codegraph__codegraph_context")`, then call `codegraph_context` with a description of what you're looking for. Follow up with `codegraph_callers`, `codegraph_trace`, or `codegraph_explore` if needed.
 
 ## Output
 

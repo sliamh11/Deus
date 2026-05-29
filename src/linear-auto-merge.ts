@@ -51,7 +51,6 @@ async function tripCircuitBreaker(
 }
 const CI_CHECK_TIMEOUT_MS = 30_000;
 const MERGE_TIMEOUT_MS = 120_000;
-const MAX_POLL_ATTEMPTS = 30;
 
 type CiStatus = 'pass' | 'fail' | 'pending';
 
@@ -143,7 +142,8 @@ export async function queryPrChecks(prUrl: string): Promise<PrChecksResult> {
 
 async function mergePr(
   prUrl: string,
-): Promise<{ merged: boolean; error?: string }> {
+  options: { auto: boolean } = { auto: false },
+): Promise<{ merged: boolean; autoQueued?: boolean; error?: string }> {
   const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
   const repoMatch = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull/);
   const repo = repoMatch?.[1];
@@ -152,27 +152,44 @@ async function mergePr(
     return { merged: false, error: 'Invalid PR URL' };
   }
 
+  // For direct merge (no --auto), CI must already be passing.
+  // For --auto, we only need CI to have started (pending or pass) — GitHub
+  // will wait for the required checks before completing the merge.
   const preCheck = await queryPrChecks(prUrl);
-  if (preCheck.status !== 'pass') {
-    return { merged: false, error: `CI not passing: ${preCheck.summary}` };
+  if (options.auto) {
+    if (preCheck.status === 'fail') {
+      return {
+        merged: false,
+        error: `CI already failing, not queuing auto-merge: ${preCheck.summary}`,
+      };
+    }
+  } else {
+    if (preCheck.status !== 'pass') {
+      return { merged: false, error: `CI not passing: ${preCheck.summary}` };
+    }
+  }
+
+  const args = [
+    'pr',
+    'merge',
+    prNumber,
+    '--repo',
+    repo,
+    '--squash',
+    '--delete-branch',
+    '--admin',
+  ];
+  if (options.auto) {
+    args.push('--auto');
   }
 
   try {
-    await execFileAsync(
-      'gh',
-      [
-        'pr',
-        'merge',
-        prNumber,
-        '--repo',
-        repo,
-        '--squash',
-        '--delete-branch',
-        '--admin',
-      ],
-      { timeout: MERGE_TIMEOUT_MS },
-    );
-    return { merged: true };
+    await execFileAsync('gh', args, { timeout: MERGE_TIMEOUT_MS });
+    // With --auto, gh exits 0 meaning auto-merge was successfully *queued*;
+    // GitHub will complete the merge when CI passes.
+    return options.auto
+      ? { merged: false, autoQueued: true }
+      : { merged: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('already been merged') || msg.includes('MERGED')) {
@@ -183,158 +200,61 @@ async function mergePr(
   }
 }
 
-export async function attemptAutoMerge(
+async function handleMergeSuccess(
   ctx: LinearContext,
   issueId: string,
   prUrl: string,
-  identifier?: string,
-  attempt = 0,
+  ident: string,
 ): Promise<void> {
-  if (!isAutoMergeEnabled()) return;
-  const ident = identifier ?? 'unknown';
-
-  const checks = await queryPrChecks(prUrl);
-  logger.info(
-    { issueId, prUrl, status: checks.status, attempt },
-    'auto-merge: CI status',
-  );
-
-  if (checks.status === 'pass') {
-    const result = await mergePr(prUrl);
-    if (result.merged) {
-      updatePrAutoMergeState(issueId, 'merged');
-      const doneState = ctx.stateByName.get('Done');
-      if (doneState) {
-        const labelUpdate: Record<string, unknown> = {
-          stateId: doneState.id,
-        };
-        const addIds: string[] = [];
-        const removeIds: string[] = [];
-        if (ctx.gateLabels.wardenSkip) addIds.push(ctx.gateLabels.wardenSkip);
-        if (ctx.gateLabels.revise) removeIds.push(ctx.gateLabels.revise);
-        if (ctx.gateLabels.evaluating)
-          removeIds.push(ctx.gateLabels.evaluating);
-        if (addIds.length > 0) labelUpdate.addedLabelIds = addIds;
-        if (removeIds.length > 0) labelUpdate.removedLabelIds = removeIds;
-        await ctx.client.updateIssue(issueId, labelUpdate);
-        await ctx.client.createComment({
-          issueId,
-          body: `**Auto-merged** - PR ${prUrl} merged after CI passed.`,
-        });
-      }
-      notifyPipelineStep(ctx, issueId, ident, 'automerge_done', prUrl).catch(
-        () => {},
-      );
-      logPipelineEvent(
-        issueId,
-        ident,
-        'circuit_breaker_reset',
-        'merge succeeded',
-      );
-      logger.info({ issueId, prUrl }, 'auto-merge: merged and moved to Done');
-    } else {
-      logger.warn(
-        { issueId, prUrl, error: result.error },
-        'auto-merge: merge failed despite passing CI',
-      );
-      updatePrAutoMergeState(issueId, 'failed');
-      notifyPipelineStep(
-        ctx,
-        issueId,
-        ident,
-        'automerge_failed',
-        result.error,
-      ).catch(() => {});
-      const mergeFailCount = getConsecutiveFailCount(
-        issueId,
-        'automerge_failed',
-      );
-      if (mergeFailCount >= CIRCUIT_BREAKER_THRESHOLD) {
-        await tripCircuitBreaker(
-          ctx,
-          issueId,
-          ident,
-          mergeFailCount,
-          'merge failure',
-        );
-      } else {
-        await ctx.client.createComment({
-          issueId,
-          body: `**Auto-merge failed** - ${result.error}`,
-        });
-      }
-    }
-    return;
-  }
-
-  if (checks.status === 'pending') {
-    if (attempt >= MAX_POLL_ATTEMPTS) {
-      updatePrAutoMergeState(issueId, 'failed');
-      notifyPipelineStep(
-        ctx,
-        issueId,
-        ident,
-        'automerge_failed',
-        'Timed out',
-      ).catch(() => {});
-      const timeoutFailCount = getConsecutiveFailCount(
-        issueId,
-        'automerge_failed',
-      );
-      if (timeoutFailCount >= CIRCUIT_BREAKER_THRESHOLD) {
-        await tripCircuitBreaker(
-          ctx,
-          issueId,
-          ident,
-          timeoutFailCount,
-          'timeout',
-        );
-      } else {
-        await ctx.client.createComment({
-          issueId,
-          body: `**Auto-merge timed out** - CI still pending after ${MAX_POLL_ATTEMPTS} attempts. PR: ${prUrl}\n\nMoving to Ready for Agent for re-dispatch.`,
-        });
-        const readyStateTimeout = ctx.stateByName.get('Ready for Agent');
-        if (readyStateTimeout) {
-          await ctx.client.updateIssue(issueId, {
-            stateId: readyStateTimeout.id,
-            priority: 1,
-          });
-        }
-      }
-      logger.warn({ issueId, prUrl }, 'auto-merge: timed out');
-      return;
-    }
-    setTimeout(() => {
-      attemptAutoMerge(ctx, issueId, prUrl, identifier, attempt + 1).catch(
-        (err) => {
-          logger.error({ issueId, err }, 'auto-merge: re-check failed');
-        },
-      );
-    }, CI_POLL_INTERVAL_MS);
-    return;
-  }
-
-  updatePrAutoMergeState(issueId, 'failed');
-  notifyPipelineStep(
-    ctx,
-    issueId,
-    ident,
-    'automerge_failed',
-    checks.summary,
-  ).catch(() => {});
-
-  const ciFailCount = getConsecutiveFailCount(issueId, 'automerge_failed');
-  if (ciFailCount >= CIRCUIT_BREAKER_THRESHOLD) {
-    await tripCircuitBreaker(ctx, issueId, ident, ciFailCount, 'CI failure');
-    logger.warn(
-      { issueId, prUrl, ciFailCount },
-      'auto-merge: circuit breaker tripped, parked issue',
-    );
-  } else {
+  updatePrAutoMergeState(issueId, 'merged');
+  const doneState = ctx.stateByName.get('Done');
+  if (doneState) {
+    const labelUpdate: Record<string, unknown> = {
+      stateId: doneState.id,
+    };
+    const addIds: string[] = [];
+    const removeIds: string[] = [];
+    if (ctx.gateLabels.wardenSkip) addIds.push(ctx.gateLabels.wardenSkip);
+    if (ctx.gateLabels.revise) removeIds.push(ctx.gateLabels.revise);
+    if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
+    if (addIds.length > 0) labelUpdate.addedLabelIds = addIds;
+    if (removeIds.length > 0) labelUpdate.removedLabelIds = removeIds;
+    await ctx.client.updateIssue(issueId, labelUpdate);
     await ctx.client.createComment({
       issueId,
-      body: `**Auto-merge blocked** - CI failed: ${checks.summary}\n\nPR: ${prUrl}\n\nMoving to Ready for Agent for re-dispatch.`,
+      body: `**Auto-merged** - PR ${prUrl} merged after CI passed.`,
+    });
+  }
+  notifyPipelineStep(ctx, issueId, ident, 'automerge_done', prUrl).catch(
+    () => {},
+  );
+  logPipelineEvent(issueId, ident, 'circuit_breaker_reset', 'merge succeeded');
+  logger.info({ issueId, prUrl }, 'auto-merge: merged and moved to Done');
+}
+
+async function handleMergeFailure(
+  ctx: LinearContext,
+  issueId: string,
+  prUrl: string,
+  ident: string,
+  reason: string,
+  failEvent: 'automerge_failed',
+  requeue: boolean,
+): Promise<void> {
+  updatePrAutoMergeState(issueId, 'failed');
+  notifyPipelineStep(ctx, issueId, ident, failEvent, reason).catch(() => {});
+
+  const failCount = getConsecutiveFailCount(issueId, failEvent);
+  if (failCount >= CIRCUIT_BREAKER_THRESHOLD) {
+    await tripCircuitBreaker(ctx, issueId, ident, failCount, reason);
+    logger.warn(
+      { issueId, prUrl, failCount },
+      'auto-merge: circuit breaker tripped, parked issue',
+    );
+  } else if (requeue) {
+    await ctx.client.createComment({
+      issueId,
+      body: `**Auto-merge blocked** - ${reason}\n\nPR: ${prUrl}\n\nMoving to Ready for Agent for re-dispatch.`,
     });
     const readyState = ctx.stateByName.get('Ready for Agent');
     if (readyState) {
@@ -345,7 +265,101 @@ export async function attemptAutoMerge(
     }
     logger.warn(
       { issueId, prUrl },
-      'auto-merge: CI failed, moved to Ready for Agent',
+      'auto-merge: failed, moved to Ready for Agent',
+    );
+  } else {
+    await ctx.client.createComment({
+      issueId,
+      body: `**Auto-merge failed** - ${reason}`,
+    });
+  }
+}
+
+export async function attemptAutoMerge(
+  ctx: LinearContext,
+  issueId: string,
+  prUrl: string,
+  identifier?: string,
+): Promise<void> {
+  if (!isAutoMergeEnabled()) return;
+  const ident = identifier ?? 'unknown';
+
+  // Step 1: Try to enable GitHub's native auto-merge.  --auto makes GitHub
+  // wait for all required status checks before completing the merge itself, so
+  // we don't need to poll here.
+  const autoResult = await mergePr(prUrl, { auto: true });
+  logger.info(
+    {
+      issueId,
+      prUrl,
+      autoQueued: autoResult.autoQueued,
+      error: autoResult.error,
+    },
+    'auto-merge: auto-merge attempt',
+  );
+
+  if (autoResult.merged) {
+    // Already merged (edge case: --auto succeeded immediately)
+    await handleMergeSuccess(ctx, issueId, prUrl, ident);
+    return;
+  }
+
+  if (autoResult.autoQueued) {
+    // GitHub accepted the auto-merge request — it will merge when CI passes.
+    // The sweepPendingAutoMerges cycle will detect the MERGED state later.
+    logger.info(
+      { issueId, prUrl },
+      'auto-merge: GitHub auto-merge queued, waiting for CI',
+    );
+    return;
+  }
+
+  // Step 2: --auto failed (branch protection not configured, or CI already
+  // failing).  Fall back to a single direct-merge attempt after one poll cycle.
+  logger.warn(
+    { issueId, prUrl, error: autoResult.error },
+    'auto-merge: --auto unavailable, falling back to direct merge after CI poll',
+  );
+
+  await new Promise<void>((resolve) =>
+    setTimeout(resolve, CI_POLL_INTERVAL_MS),
+  );
+
+  const checks = await queryPrChecks(prUrl);
+  logger.info(
+    { issueId, prUrl, status: checks.status },
+    'auto-merge: CI status (fallback)',
+  );
+
+  if (checks.status !== 'pass') {
+    const reason =
+      checks.status === 'pending'
+        ? `CI still pending after fallback wait: ${checks.summary}`
+        : `CI failed: ${checks.summary}`;
+    await handleMergeFailure(
+      ctx,
+      issueId,
+      prUrl,
+      ident,
+      reason,
+      'automerge_failed',
+      true,
+    );
+    return;
+  }
+
+  const directResult = await mergePr(prUrl, { auto: false });
+  if (directResult.merged) {
+    await handleMergeSuccess(ctx, issueId, prUrl, ident);
+  } else {
+    await handleMergeFailure(
+      ctx,
+      issueId,
+      prUrl,
+      ident,
+      directResult.error ?? 'unknown merge error',
+      'automerge_failed',
+      false,
     );
   }
 }
@@ -364,9 +378,24 @@ export async function sweepPendingAutoMerges(
   );
 
   for (const { issue_id, pr_url, identifier: ident } of pending) {
-    attemptAutoMerge(ctx, issue_id, pr_url, ident || 'unknown').catch((err) => {
-      logger.error({ issueId: issue_id, err }, 'auto-merge: sweep failed');
-    });
+    // Check whether GitHub's auto-merge already completed while we were down.
+    queryPrState(pr_url)
+      .then(async (state) => {
+        if (state?.state === 'MERGED') {
+          logger.info(
+            { issueId: issue_id, prUrl: pr_url },
+            'auto-merge: PR already merged by GitHub auto-merge, syncing state',
+          );
+          await handleMergeSuccess(ctx, issue_id, pr_url, ident || 'unknown');
+        } else {
+          // Not yet merged — re-run the full attempt (will queue --auto again or
+          // fall through to the direct-merge fallback).
+          await attemptAutoMerge(ctx, issue_id, pr_url, ident || 'unknown');
+        }
+      })
+      .catch((err) => {
+        logger.error({ issueId: issue_id, err }, 'auto-merge: sweep failed');
+      });
   }
 }
 

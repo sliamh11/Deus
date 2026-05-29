@@ -6,6 +6,18 @@ import os from 'os';
 const execFileMock = vi.fn();
 const spawnMock = vi.fn();
 
+// Configurable LinearClient mock — only used by initLinearContext tests.
+// Default: constructor returns an object so ESM import doesn't break other tests.
+const mockLinearClientImpl = vi.hoisted(() => vi.fn());
+
+vi.mock('@linear/sdk', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('@linear/sdk')>();
+  return {
+    ...orig,
+    LinearClient: mockLinearClientImpl,
+  };
+});
+
 vi.mock('child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('child_process')>();
   const { promisify } = await import('util');
@@ -75,14 +87,11 @@ vi.mock('./config.js', async () => {
 
 vi.mock('./db.js', () => ({
   CIRCUIT_BREAKER_THRESHOLD: 3,
-  clearLiveness: vi.fn(),
   getConsecutiveFailCount: vi.fn().mockReturnValue(0),
   getIssuePr: vi.fn().mockReturnValue(null),
   getLastFailTime: vi.fn().mockReturnValue(null),
   getPipelineEvents: vi.fn().mockReturnValue([]),
   logPipelineEvent: vi.fn(),
-  stampLiveness: vi.fn(),
-  updatePrAutoMergeState: vi.fn(),
   upsertIssuePr: vi.fn(),
   getOpenPrsForActiveIssues: vi.fn().mockReturnValue([]),
 }));
@@ -111,6 +120,7 @@ import {
   truncateComments,
   extractScopeBlock,
   applyPatchArtifact,
+  initLinearContext,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
@@ -647,12 +657,13 @@ describe('applyPatchArtifact', () => {
       prUrl: 'https://github.com/test/repo/pull/10',
       applied: true,
     });
-    // git apply (non-stat) should NOT have been called (am succeeded)
+    // git apply (non-stat, non-check) should NOT have been called (am succeeded)
     const applyCalls = execFileMock.mock.calls.filter(
       (c: unknown[]) =>
         c[0] === 'git' &&
         (c[1] as string[])[0] === 'apply' &&
-        !(c[1] as string[]).includes('--stat'),
+        !(c[1] as string[]).includes('--stat') &&
+        !(c[1] as string[]).includes('--check'),
     );
     expect(applyCalls).toHaveLength(0);
   });
@@ -760,6 +771,8 @@ describe('applyPatchArtifact', () => {
         return {
           stdout: ' src/foo.ts | 1 +\n 1 file changed, 1 insertion(+)\n',
         };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--check'))
+        return { stdout: '' };
       if (cmd === 'git' && args[0] === 'apply')
         return { error: new Error('patch does not apply') };
       return { stdout: '' };
@@ -1027,5 +1040,240 @@ describe('applyPatchArtifact', () => {
     expect(buildOpts.cwd).toBe(worktreeDir);
 
     fs.rmSync(worktreeDir, { recursive: true, force: true });
+  });
+
+  it('rejects patch touching hard-blocked path (.claude/)', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout:
+            ' .claude/agents/foo.md | 3 +++\n src/foo.ts | 1 +\n 2 files changed\n',
+        };
+      }
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('restricted paths'),
+      }),
+    );
+  });
+
+  it('applies patch touching warn-only path and posts warning comment', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout:
+            ' package.json | 2 +-\n src/foo.ts | 5 +++++\n 2 files changed\n',
+        };
+      }
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+
+    expect(result.applied).toBe(true);
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('warning'),
+      }),
+    );
+  });
+
+  it('rejects shell script outside container/', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout:
+            ' scripts/deploy.sh | 10 ++++++++++\n src/foo.ts | 1 +\n 2 files changed\n',
+        };
+      }
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('restricted paths'),
+      }),
+    );
+  });
+
+  it('allows shell script inside container/', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return {
+          stdout: ' container/entrypoint.sh | 5 +++++\n 1 file changed\n',
+        };
+      }
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+
+    expect(result.applied).toBe(true);
+  });
+
+  it('rejects malformed patch when git apply --check fails', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return { stdout: ' src/foo.ts | 1 +\n 1 file changed\n' };
+      }
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--check')) {
+        return { error: new Error('patch does not apply: context mismatch') };
+      }
+      return { stdout: '' };
+    });
+
+    const ctx = patchCtx();
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      ctx,
+    );
+
+    expect(result).toEqual({ prUrl: null, applied: false });
+    expect(createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.stringContaining('malformed'),
+      }),
+    );
+  });
+
+  it('applies clean patch with no blocked files normally', async () => {
+    fs.writeFileSync(path.join(patchGroupDir, 'LIA-99.patch'), 'diff');
+    execFileMock.mockImplementation((cmd: string, args: string[]) => {
+      if (cmd === 'git' && args[0] === 'rev-parse') return { stdout: 'main\n' };
+      if (cmd === 'git' && args[0] === 'status') return { stdout: '' };
+      if (cmd === 'git' && args[0] === 'apply' && args.includes('--stat')) {
+        return { stdout: ' src/bar.ts | 3 +++\n 1 file changed\n' };
+      }
+      if (cmd === 'git' && args[0] === 'am')
+        return { error: new Error('not mbox') };
+      if (cmd === 'gh')
+        return { stdout: 'https://github.com/test/repo/pull/1\n' };
+      return { stdout: '' };
+    });
+
+    const result = await applyPatchArtifact(
+      patchGroupDir,
+      'LIA-99',
+      'issue-id',
+      patchCtx(),
+    );
+
+    expect(result.applied).toBe(true);
+    expect(createComment).not.toHaveBeenCalled();
+  });
+});
+
+describe('initLinearContext partial label failure', () => {
+  afterEach(() => {
+    mockLinearClientImpl.mockReset();
+  });
+
+  it('leaves remaining labels populated when one ensureLabel call fails', async () => {
+    // Build a minimal mock LinearClient where createIssueLabel throws for
+    // 'Warden: Revise' but succeeds for all other labels.
+    const mockClient = {
+      viewer: Promise.resolve({ id: 'viewer-id' }),
+      teams: () =>
+        Promise.resolve({ nodes: [{ id: 'team-id', name: 'Deus' }] }),
+      workflowStates: () =>
+        Promise.resolve({
+          nodes: [
+            { id: 'ready-id', name: 'Ready for Agent', type: 'started' },
+            { id: 'working-id', name: 'Agent Working', type: 'started' },
+            { id: 'review-id', name: 'In Review', type: 'started' },
+            { id: 'backlog-id', name: 'Backlog', type: 'backlog' },
+          ],
+        }),
+      issueLabels: () => Promise.resolve({ nodes: [] }),
+      createIssueLabel: ({
+        name,
+      }: {
+        name: string;
+        color: string;
+        teamId: string;
+      }) => {
+        if (name === 'Warden: Revise') {
+          return Promise.reject(new Error('simulated label creation failure'));
+        }
+        return Promise.resolve({
+          issueLabel: Promise.resolve({
+            id: `label-${name.replace(/\s+/g, '-')}`,
+          }),
+        });
+      },
+    };
+
+    // Use a regular function (not arrow) so it works as a constructor
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockLinearClientImpl.mockImplementation(function (this: any) {
+      return mockClient;
+    });
+
+    const ctx = await initLinearContext('valid-api-key-abc123', makeMockDeps());
+    expect(ctx).not.toBeNull();
+    if (!ctx) return;
+
+    // 'evaluating', 'scoped', 'error' labels should populate; 'revise' should not
+    expect(ctx.gateLabels.evaluating).toBeDefined();
+    expect(ctx.gateLabels.scoped).toBeDefined();
+    expect(ctx.gateLabels.error).toBeDefined();
+    expect(ctx.gateLabels.revise).toBeUndefined();
   });
 });
