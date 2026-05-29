@@ -44,22 +44,22 @@ def pearson_r(xs: list[float], ys: list[float]) -> float:
 
 
 def load_old_interactions(db_path: str, n: int, seed: int = 42) -> list[dict]:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("""
-        SELECT id, prompt, response, tools_used, judge_score, judge_dims
-        FROM interactions
-        WHERE judge_dims IS NOT NULL
-          AND judge_dims != ''
-          AND judge_schema_version IS NULL
-          AND prompt IS NOT NULL
-          AND response IS NOT NULL
-          AND LENGTH(prompt) > 20
-          AND LENGTH(response) > 20
-        ORDER BY RANDOM()
-        LIMIT ?
-    """, (n * 3,)).fetchall()
-    conn.close()
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        # Over-fetch 3x to absorb filtering loss (~50% have usable judge_dims)
+        rows = conn.execute("""
+            SELECT id, prompt, response, tools_used, judge_score, judge_dims
+            FROM interactions
+            WHERE judge_dims IS NOT NULL
+              AND judge_dims != ''
+              AND judge_schema_version IS NULL
+              AND prompt IS NOT NULL
+              AND response IS NOT NULL
+              AND LENGTH(prompt) > 20
+              AND LENGTH(response) > 20
+            ORDER BY RANDOM()
+            LIMIT ?
+        """, (n * 3,)).fetchall()
 
     results = []
     for r in rows:
@@ -86,13 +86,19 @@ def load_old_interactions(db_path: str, n: int, seed: int = 42) -> list[dict]:
 def rejudge(interactions: list[dict]) -> list[dict]:
     judge = make_runtime_judge(provider="ollama")
     total = len(interactions)
+    survived = []
     for i, item in enumerate(interactions):
         t0 = time.time()
-        result = judge.evaluate(
-            prompt=item["prompt"],
-            response=item["response"],
-            tools_used=item["tools_used"],
-        )
+        try:
+            result = judge.evaluate(
+                prompt=item["prompt"],
+                response=item["response"],
+                tools_used=item["tools_used"],
+            )
+        except Exception as exc:
+            elapsed = time.time() - t0
+            print(f"  [{i+1}/{total}] ERROR: {exc} ({int(elapsed*1000)}ms)", file=sys.stderr)
+            continue
         elapsed = time.time() - t0
         item["new_score"] = result.score
         item["new_dims"] = {
@@ -104,11 +110,14 @@ def rejudge(interactions: list[dict]) -> list[dict]:
         item["new_quality"] = result.quality
         item["latency_ms"] = int(elapsed * 1000)
         item["parse_error"] = result.is_parse_error
+        tag = "[BOUNDS]" if item["at_bounds"] else "[MID]"
+        if result.is_parse_error:
+            tag += " [PARSE_ERR]"
         print(f"  [{i+1}/{total}] old={item['old_score']:.3f} new={item['new_score']:.3f} "
               f"q:{item['old_quality']:.1f}->{item['new_quality']:.2f} "
-              f"{'[BOUNDS]' if item['at_bounds'] else '[MID]'} "
-              f"({item['latency_ms']}ms)", file=sys.stderr)
-    return interactions
+              f"{tag} ({item['latency_ms']}ms)", file=sys.stderr)
+        survived.append(item)
+    return survived
 
 
 def analyze(interactions: list[dict]) -> dict:
