@@ -2102,15 +2102,30 @@ def _extract_entities_ollama(content: str) -> "dict | None":
         raw = data.get("response", "").strip()
         result = json.loads(raw)
         if isinstance(result, dict) and "entities" in result:
-            ents = result.get("entities", [])[:10]
-            rels = result.get("relationships", [])[:10]
+            ents = [
+                e for e in result.get("entities", [])[:10]
+                if isinstance(e, dict)
+                and isinstance(e.get("name"), str) and e["name"]
+                and isinstance(e.get("entity_type"), str)
+            ]
+            rels = [
+                r for r in result.get("relationships", [])[:10]
+                if isinstance(r, dict)
+                and "source" in r and "target" in r and "rel_type" in r
+            ]
             return {"entities": ents, "relationships": rels}
         return {"entities": [], "relationships": []}
     except (ConnectionRefusedError, OSError):
         return None
+    except json.JSONDecodeError as exc:
+        print(f"  WARN: Ollama entity extraction malformed JSON: {str(exc)[:120]}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
+    except urllib.error.HTTPError as exc:
+        print(f"  WARN: Ollama entity extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
     except Exception as exc:
         print(f"  WARN: Ollama entity extraction failed: {exc}", file=sys.stderr)
-        return None
+        return {"entities": [], "relationships": []}
 
 
 def _extract_entities_and_relations_gemini(content: str) -> dict:
