@@ -114,6 +114,7 @@ interface RoleSpec {
 export interface WorkflowState {
   id: string;
   name: string;
+  type?: string; // e.g. 'backlog' | 'unstarted' | 'started' | 'completed' | 'cancelled' | 'triage'
 }
 
 export interface GateLabels {
@@ -247,7 +248,7 @@ export async function discoverWorkflowStates(
   });
   const map = new Map<string, WorkflowState>();
   for (const s of states.nodes) {
-    map.set(s.name, { id: s.id, name: s.name });
+    map.set(s.name, { id: s.id, name: s.name, type: s.type });
   }
   const required = ['Ready for Agent', 'Agent Working', 'In Review', 'Backlog'];
   if (!map.has('Done')) {
