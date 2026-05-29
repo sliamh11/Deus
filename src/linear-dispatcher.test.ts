@@ -123,6 +123,7 @@ import {
   applyPatchArtifact,
   initLinearContext,
   deriveFetchTimeout,
+  validateLinearIdentifier,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
@@ -1462,5 +1463,28 @@ describe('initLinearContext partial label failure', () => {
     expect(ctx.gateLabels.scoped).toBeDefined();
     expect(ctx.gateLabels.error).toBeDefined();
     expect(ctx.gateLabels.revise).toBeUndefined();
+  });
+});
+
+describe('validateLinearIdentifier', () => {
+  it.each(['LIA-1', 'LIA-115', 'ABC123-99', 'AB-0'])(
+    'accepts valid identifier %s',
+    (id) => {
+      expect(() => validateLinearIdentifier(id)).not.toThrow();
+    },
+  );
+
+  it.each([
+    ['lowercase prefix', 'lowerCase-1'],
+    ['path traversal slash', 'LIA-1/../../x'],
+    ['shell injection', 'LIA-1; rm -rf'],
+    ['missing number', 'LIA'],
+    ['leading digit', '1-LIA'],
+    ['empty string', ''],
+    ['path traversal to passwd', 'LIA-1/../../etc/passwd'],
+  ])('rejects invalid identifier: %s', (_label, id) => {
+    expect(() => validateLinearIdentifier(id)).toThrow(
+      `Invalid Linear identifier: "${id}"`,
+    );
   });
 });

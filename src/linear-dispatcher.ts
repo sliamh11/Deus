@@ -67,6 +67,15 @@ const AGENTS_DIR = path.join(PROJECT_ROOT, '.claude', 'agents');
 const GIT_TIMEOUT_MS = 30_000;
 const BUILD_TIMEOUT_MS = 120_000;
 const PUSH_TIMEOUT_MS = 120_000;
+
+// Linear identifier format: alpha-led alphanumeric team prefix + numeric suffix (e.g. LIA-115).
+const LINEAR_ID_RE = /^[A-Z][A-Z0-9]+-[0-9]+$/;
+export function validateLinearIdentifier(id: string): void {
+  if (!LINEAR_ID_RE.test(id)) {
+    throw new Error(`Invalid Linear identifier: "${id}"`);
+  }
+}
+
 // Trailing '/' = prefix match; exact names match literally (prevents .env matching .envrc)
 function matchesPath(file: string, entry: string): boolean {
   if (entry.endsWith('/')) {
@@ -579,6 +588,8 @@ export async function applyPatchArtifact(
   const patchFileName = sorted[0].name;
   const patchFilePath = path.join(groupDir, patchFileName);
   const patchRelPath = path.relative(effectiveCwd, patchFilePath);
+  // Validate before any path/branch construction that interpolates the identifier.
+  validateLinearIdentifier(identifier);
   const commitMessage = parseCommitMessage(groupDir, identifier);
   const branchName = `feat/${identifier.toLowerCase()}-auto-patch`;
 
@@ -1089,9 +1100,16 @@ async function triageIssue(
 async function ensureIssueWorktree(
   identifier: string,
 ): Promise<{ worktreePath: string; branchName: string } | null> {
+  validateLinearIdentifier(identifier);
   if (!(IS_MACOS || IS_LINUX)) return null;
   const branchName = `feat/${identifier.toLowerCase()}-auto-patch`;
-  const worktreePath = path.join(DATA_DIR, 'worktrees', identifier);
+  const worktreePath = path.resolve(
+    path.join(DATA_DIR, 'worktrees', identifier),
+  );
+  const sandboxRoot = path.resolve(path.join(DATA_DIR, 'worktrees'));
+  if (!worktreePath.startsWith(sandboxRoot + path.sep)) {
+    throw new Error(`Worktree path escapes sandbox: ${worktreePath}`);
+  }
   if (fs.existsSync(worktreePath)) return { worktreePath, branchName };
   fs.mkdirSync(path.join(DATA_DIR, 'worktrees'), { recursive: true });
   await execFileAsync(
