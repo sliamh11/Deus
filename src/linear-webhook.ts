@@ -363,6 +363,24 @@ async function postOrUpdateComment(
   }
 }
 
+async function postNewGateComment(
+  ctx: LinearContext,
+  issueId: string,
+  body: string,
+): Promise<void> {
+  try {
+    const payload = await ctx.client.createComment({ issueId, body });
+    if (!payload?.commentId) {
+      logger.warn({ issueId }, 'linear-webhook: createComment returned no ID');
+    }
+  } catch (err) {
+    logger.warn(
+      { issueId, err },
+      'linear-webhook: failed to create gate comment',
+    );
+  }
+}
+
 async function fetchIssueComments(
   ctx: LinearContext,
   issueId: string,
@@ -457,7 +475,16 @@ export async function runInlineCompletionCheck(
       parsedVerdict ? stripEnrichmentSection(output) : output,
       'pre-merge',
     );
-    await postOrUpdateComment(ctx, issueData.id, 'Done:pre-merge', commentBody);
+    if (verdict === 'REVISE') {
+      await postNewGateComment(ctx, issueData.id, commentBody);
+    } else {
+      await postOrUpdateComment(
+        ctx,
+        issueData.id,
+        'Done:pre-merge',
+        commentBody,
+      );
+    }
 
     logger.info(
       { issueId: issueData.id, verdict },
@@ -544,7 +571,7 @@ async function trackGateMetaAndEscalate(
           '---',
           `*Gate: ${gateSpec.name} | BLOCKED after ${count} attempts | ${new Date().toISOString()}*`,
         ].join('\n');
-        await postOrUpdateComment(ctx, issueId, toStateName, guideBody);
+        await postNewGateComment(ctx, issueId, guideBody);
         try {
           const blockLabelIds = ctx.gateLabels.blocked
             ? [ctx.gateLabels.blocked]
@@ -681,7 +708,7 @@ async function handleIssueUpdate(
       `Illegal transition: **${fromState.name}** → **${toState.name}**.\n\nAllowed source states: ${gateSpec.allowedFrom.join(', ')}.`,
       gateSpec.mode,
     );
-    await postOrUpdateComment(ctx, data.id, toState.name, body);
+    await postNewGateComment(ctx, data.id, body);
 
     try {
       await ctx.client.updateIssue(data.id, { stateId: fromStateId });
@@ -971,6 +998,7 @@ async function handleIssueUpdate(
 
     let verdict: 'SHIP' | 'REVISE' | 'BLOCK';
     let commentBody: string;
+    let verdictText = '';
 
     if (!parsedVerdict && error) {
       verdict = gateSpec.fallback;
@@ -1006,7 +1034,7 @@ async function handleIssueUpdate(
       }
 
       finalEnrichment = enrichmentBody ?? undefined;
-      const verdictText = stripEnrichmentSection(output);
+      verdictText = stripEnrichmentSection(output);
       commentBody = formatGateComment(
         gateSpec.name,
         verdict,
@@ -1043,7 +1071,11 @@ async function handleIssueUpdate(
       }
     }
 
-    await postOrUpdateComment(ctx, data.id, toState.name, commentBody);
+    if (verdict === 'SHIP') {
+      await postOrUpdateComment(ctx, data.id, toState.name, commentBody);
+    } else {
+      await postNewGateComment(ctx, data.id, commentBody);
+    }
 
     const effectiveMode = data.labels.some((l) => l.name === 'warden:strict')
       ? 'strict'
@@ -1094,12 +1126,18 @@ async function handleIssueUpdate(
     finalVerdict = verdict;
     updateWebhookEventStatus(eventKey, 'done', { verdict });
     const eventType = verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
+    const reasonLine =
+      verdictText.split('\n').find((l) => l.trim()) || '(no detail)';
+    const pipelineDetail =
+      verdict !== 'SHIP'
+        ? `${gateSpec.name}: ${verdict} — ${reasonLine}`.slice(0, 120)
+        : `${gateSpec.name}: ${verdict}`;
     notifyPipelineStep(
       ctx,
       data.id,
       data.identifier,
       eventType,
-      `${gateSpec.name}: ${verdict}`,
+      pipelineDetail,
     ).catch(() => {});
     logger.info(
       { issueId: data.id, gate: gateSpec.name, verdict, mode: effectiveMode },
@@ -1130,9 +1168,7 @@ async function handleIssueUpdate(
       `Gate infrastructure error (fallback: ${gateSpec.fallback}):\n\`\`\`\n${errorMsg}\n\`\`\``,
       gateSpec.mode,
     );
-    postOrUpdateComment(ctx, data.id, toState.name, errorComment).catch(
-      () => {},
-    );
+    postNewGateComment(ctx, data.id, errorComment).catch(() => {});
   } finally {
     ctx.inFlightGate.delete(data.id);
     clearLiveness(`gate_in_flight:${data.id}`);
@@ -1320,9 +1356,9 @@ async function runGateForIssue(
     const parsedVerdict = parseVerdict(output);
     let verdict: 'SHIP' | 'REVISE' | 'BLOCK';
     let commentBody: string;
+    let verdictText = '';
 
     if (!parsedVerdict && error) {
-      // Agent returned error without a verdict — gate didn't run successfully
       verdict = 'REVISE';
       commentBody = formatGateComment(
         gateSpec.name,
@@ -1334,7 +1370,7 @@ async function runGateForIssue(
       verdict = parsedVerdict ?? 'REVISE';
       const enrichmentBody = parseEnrichment(output);
       finalEnrichment = enrichmentBody ?? undefined;
-      const verdictText = stripEnrichmentSection(output);
+      verdictText = stripEnrichmentSection(output);
       commentBody = formatGateComment(
         gateSpec.name,
         verdict,
@@ -1361,7 +1397,11 @@ async function runGateForIssue(
       }
     }
 
-    await postOrUpdateComment(ctx, issue.id, stateName, commentBody);
+    if (verdict === 'SHIP') {
+      await postOrUpdateComment(ctx, issue.id, stateName, commentBody);
+    } else {
+      await postNewGateComment(ctx, issue.id, commentBody);
+    }
 
     const effectiveMode = labels.some((l) => l.name === 'warden:strict')
       ? 'strict'
@@ -1386,19 +1426,23 @@ async function runGateForIssue(
 
     finalVerdict = verdict;
     const eventType = verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
+    const sweepReasonLine =
+      verdictText.split('\n').find((l) => l.trim()) || '(no detail)';
+    const sweepDetail =
+      verdict !== 'SHIP'
+        ? `${gateSpec.name}: ${verdict} — ${sweepReasonLine} (startup sweep)`.slice(
+            0,
+            140,
+          )
+        : `${gateSpec.name}: ${verdict} (startup sweep)`;
     notifyPipelineStep(
       ctx,
       issue.id,
       issue.identifier,
       eventType,
-      `${gateSpec.name}: ${verdict} (startup sweep)`,
+      sweepDetail,
     ).catch(() => {});
-    logPipelineEvent(
-      issue.id,
-      issue.identifier,
-      eventType,
-      `${gateSpec.name}: ${verdict} (startup sweep)`,
-    );
+    logPipelineEvent(issue.id, issue.identifier, eventType, sweepDetail);
     logger.info(
       { issueId: issue.id, gate: gateSpec.name, verdict, mode: effectiveMode },
       'startup-sweep: gate evaluation complete',
@@ -1411,7 +1455,7 @@ async function runGateForIssue(
       `Gate infrastructure error (startup sweep):\n\`\`\`\n${errorMsg}\n\`\`\``,
       gateSpec.mode,
     );
-    postOrUpdateComment(ctx, issue.id, stateName, errorComment).catch(() => {});
+    postNewGateComment(ctx, issue.id, errorComment).catch(() => {});
     notifyPipelineStep(
       ctx,
       issue.id,

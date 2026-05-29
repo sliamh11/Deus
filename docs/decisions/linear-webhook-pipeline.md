@@ -228,7 +228,9 @@ const effectiveMode = data.labels.some((l) => l.name === 'warden:strict')
   : gateSpec.mode;
 ```
 
-**Rolling comments:** The gate comment for each `(issue, gate_to)` pair is updated in-place on re-runs (via `linear_gate_comments` tracking). Re-running a gate does not spam the issue with new comments.
+**Dual-comment model:** Gate comments use two functions with distinct responsibilities:
+- `postOrUpdateComment` -- rolling state indicator. The `(issue, gate_to)` tracker in `linear_gate_comments` points at this comment. RUNNING and SHIP verdicts edit it in-place so the issue thread stays clean.
+- `postNewGateComment` -- audit trail entry. REVISE, BLOCK, and error verdicts always create a new comment so each bounce reason is independently visible and timestamped. This function does NOT update the tracker, so subsequent RUNNING/SHIP edits go to the rolling comment, not the REVISE entry.
 
 **Comment format:**
 

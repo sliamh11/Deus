@@ -1,7 +1,7 @@
 ---
 name: enrichment-gate
 gate_to: "Todo"
-allowed_from: ["Backlog"]
+allowed_from: []
 mode: advise
 fallback: REVISE
 cooldown_minutes: 5
