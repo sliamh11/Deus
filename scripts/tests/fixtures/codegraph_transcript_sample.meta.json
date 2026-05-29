@@ -1,0 +1,13 @@
+{
+  "description": "Frozen fixture of CC transcript line shapes used by the codegraph-first gate scan predicate. Captured from real session bd4d5baf (scrubbed), CC 2.1.157. Contains positives (mcp_direct, toolsearch_select) and negatives (non_codegraph_tool, user_tool_result, toolsearch_noncodegraph). If check_codegraph_transcript_format fails, re-capture from a fresh session transcript and update _line_is_codegraph_toolcall if the format changed.",
+  "cc_version": "2.1.157",
+  "capture_date": "2026-05-30",
+  "source_session": "bd4d5baf (scrubbed)",
+  "invariants": {
+    "assistant_line_has_type": "outer object has key 'type' == 'assistant'",
+    "content_is_list": "message.content is a list",
+    "tool_use_block_has_type_and_name": "tool_use blocks have 'type'=='tool_use' and a 'name' key",
+    "mcp_prefix": "mcp__codegraph__* tool names start with 'mcp__codegraph__'",
+    "toolsearch_query": "ToolSearch codegraph-select queries contain 'mcp__codegraph__' in input.query"
+  }
+}

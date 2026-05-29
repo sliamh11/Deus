@@ -3146,3 +3146,493 @@ def test_memo_enricher_section_ordering_stable_across_multi_edit(tmp_path):
     assert "`src/lib/widget.ts`" in edited_section, (
         "widget.ts entry missing from Edited Files section — was appended after Import Graph"
     )
+
+
+# ---------------------------------------------------------------------------
+# Codegraph-first gate (LIA-121 / RETRO-2026-05-29-01)
+# ---------------------------------------------------------------------------
+#
+# Implementation: transcript-scanning (replaces broken marker scheme).
+# The gate reads the agent's transcript JSONL at Grep/Glob/Bash-search hook
+# time and checks for a prior codegraph tool_use.
+# The shared predicate is _line_is_codegraph_toolcall in codex_warden_hooks.py.
+
+_MCP_CODEGRAPH_LINE = json.dumps({
+    "type": "assistant",
+    "message": {"content": [{"type": "tool_use", "id": "t", "name": "mcp__codegraph__codegraph_context", "input": {"task": "x"}}]},
+})
+_TOOLSEARCH_CODEGRAPH_LINE = json.dumps({
+    "type": "assistant",
+    "message": {"content": [{"type": "tool_use", "id": "t", "name": "ToolSearch", "input": {"query": "select:mcp__codegraph__codegraph_context"}}]},
+})
+_BASH_LINE = json.dumps({
+    "type": "assistant",
+    "message": {"content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "ls"}}]},
+})
+_USER_RESULT_LINE = json.dumps({
+    "type": "user",
+    "message": {"content": [{"type": "tool_result", "content": "codegraph gate denied"}]},
+})
+
+
+def _write_transcript(tmp_path: Path, lines: list[str]) -> Path:
+    """Write a fake transcript JSONL file and return its path."""
+    p = tmp_path / "transcript.jsonl"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+def _gate_event(repo, tool_name, tool_input=None, transcript=None):
+    if transcript is None:
+        transcript = "/nonexistent/no-transcript.jsonl"
+    event = tool_event(repo, tool_name, tool_input)
+    event["transcript_path"] = str(transcript)
+    return event
+
+
+def _deny(capsys):
+    return json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"]
+
+
+def test_codegraph_gate_blocks_grep_without_prior_call(tmp_path, capsys):
+    """Grep is denied when transcript has no prior codegraph tool_use."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # Transcript exists but contains only non-codegraph lines.
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    rc = hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo)
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+    assert "codegraph" in out["permissionDecisionReason"].lower()
+
+
+def test_codegraph_gate_blocks_glob_without_prior_call(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Glob", transcript=tr), repo) == 0
+    assert _deny(capsys) == "deny"
+
+
+def test_codegraph_gate_blocks_bash_grep(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    rc = hooks.run_codegraph_first_gate(
+        _gate_event(repo, "Bash", {"command": "grep -r foo src/"}, transcript=tr), repo
+    )
+    assert rc == 0
+    assert _deny(capsys) == "deny"
+
+
+def test_codegraph_gate_blocks_git_grep(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    rc = hooks.run_codegraph_first_gate(
+        _gate_event(repo, "Bash", {"command": "git grep foo"}, transcript=tr), repo
+    )
+    assert rc == 0
+    assert _deny(capsys) == "deny"
+
+
+def test_codegraph_gate_blocks_env_prefixed_grep(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    rc = hooks.run_codegraph_first_gate(
+        _gate_event(repo, "Bash", {"command": "FOO=bar grep -r x ."}, transcript=tr), repo
+    )
+    assert rc == 0
+    assert _deny(capsys) == "deny"
+
+
+def test_codegraph_gate_allows_piped_grep(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    rc = hooks.run_codegraph_first_gate(
+        _gate_event(repo, "Bash", {"command": "ls | grep foo"}, transcript=tr), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_codegraph_gate_allows_non_search_bash(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    rc = hooks.run_codegraph_first_gate(
+        _gate_event(repo, "Bash", {"command": "FOO=bar npm test"}, transcript=tr), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_codegraph_gate_ignores_non_search_tools(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Read", transcript=tr), repo) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_codegraph_transcript_mcp_call_unblocks_grep(tmp_path, capsys):
+    """Prior mcp__codegraph__ tool_use in transcript unblocks Grep."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_MCP_CODEGRAPH_LINE])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_codegraph_transcript_toolsearch_unblocks_grep(tmp_path, capsys):
+    """Prior ToolSearch(select:mcp__codegraph__...) in transcript unblocks Grep."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_TOOLSEARCH_CODEGRAPH_LINE])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_codegraph_user_tool_result_does_not_unblock(tmp_path, capsys):
+    """A user-type tool_result that mentions codegraph in text must NOT unblock."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # user tool_result echoing 'codegraph' — outer type is 'user', not 'assistant'
+    tr = _write_transcript(tmp_path, [_USER_RESULT_LINE])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
+    assert _deny(capsys) == "deny"
+
+
+def test_codegraph_non_codegraph_toolsearch_does_not_unblock(tmp_path, capsys):
+    """ToolSearch for a non-codegraph tool must NOT unblock."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    non_cg = json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "t", "name": "ToolSearch",
+         "input": {"query": "select:WebFetch"}}
+    ]}})
+    tr = _write_transcript(tmp_path, [non_cg])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
+    assert _deny(capsys) == "deny"
+
+
+def test_codegraph_gate_is_per_invocation(tmp_path, capsys):
+    """Agent A's codegraph in its transcript must not unblock Agent B's grep."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # Agent A transcript has a codegraph call → A's grep passes.
+    tr_a = tmp_path / "a.jsonl"
+    tr_a.write_text(_MCP_CODEGRAPH_LINE + "\n", encoding="utf-8")
+    # Agent B transcript has only a bash call → B's grep is blocked.
+    tr_b = tmp_path / "b.jsonl"
+    tr_b.write_text(_BASH_LINE + "\n", encoding="utf-8")
+
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr_a), repo) == 0
+    assert capsys.readouterr().out == ""  # A is unblocked
+
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr_b), repo) == 0
+    assert _deny(capsys) == "deny"  # B is still blocked
+
+
+def test_codegraph_gate_fail_open_on_exception(tmp_path, capsys):
+    """Non-dict event -> .get() raises -> caught -> must not block."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    assert hooks.run_codegraph_first_gate([], repo) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_codegraph_gate_fail_open_missing_transcript(tmp_path, capsys):
+    """Missing transcript path → fail open (no deny)."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    event = tool_event(repo, "Grep")
+    event["transcript_path"] = ""  # empty → no scan possible
+    assert hooks.run_codegraph_first_gate(event, repo) == 0
+    assert capsys.readouterr().out == ""  # fail open, no deny
+
+
+def test_codegraph_gate_fail_open_unreadable_transcript(tmp_path, capsys):
+    """Unreadable transcript path → fail open (no deny)."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # /nonexistent path → OSError in scan → canary logged + fail open.
+    event = _gate_event(repo, "Grep", transcript="/nonexistent/no-such-file.jsonl")
+    assert hooks.run_codegraph_first_gate(event, repo) == 0
+    # Gate fails open — no deny output.
+    assert capsys.readouterr().out == ""
+
+
+def test_codegraph_gate_canary_on_blindness(tmp_path, capsys):
+    """Rich transcript with zero tool_use blocks triggers canary + fail open."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # Build a transcript with many assistant turns but NO tool_use blocks.
+    blind_line = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "thinking..."}]}})
+    threshold = hooks._BLIND_DETECTION_THRESHOLD
+    tr = _write_transcript(tmp_path, [blind_line] * (threshold + 1))
+
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
+    assert capsys.readouterr().out == ""  # fail open, not deny
+
+    # Canary must be logged to .warden-log.
+    log = repo / ".claude" / ".warden-log"
+    assert log.exists(), "canary must write to .warden-log"
+    assert "CANARY" in log.read_text()
+
+
+def test_codegraph_gate_canary_boundary(tmp_path, capsys):
+    """Below the blindness threshold a tool-less transcript still BLOCKS (the
+    agent may simply not have called codegraph yet); AT the threshold with zero
+    tool_use blocks it flips to canary + fail-open."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    blind = json.dumps(
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "..."}]}}
+    )
+    threshold = hooks._BLIND_DETECTION_THRESHOLD
+    # threshold-1 assistant turns, 0 tool_uses → normal DENY (not yet blind).
+    tr_below = _write_transcript(tmp_path, [blind] * (threshold - 1))
+    assert (
+        hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr_below), repo)
+        == 0
+    )
+    assert _deny(capsys) == "deny"
+    # exactly threshold assistant turns, 0 tool_uses → canary + fail-open (allow).
+    tr_at = _write_transcript(tmp_path, [blind] * threshold)
+    assert (
+        hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr_at), repo)
+        == 0
+    )
+    assert capsys.readouterr().out == ""
+
+
+def test_codegraph_gate_allows_indirect_grep_by_design(tmp_path, capsys):
+    """Primary-token classification does NOT block greps wrapped in another command."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    for cmd in ("xargs grep foo", "bash -c 'grep foo .'"):
+        assert hooks.run_codegraph_first_gate(
+            _gate_event(repo, "Bash", {"command": cmd}, transcript=tr), repo
+        ) == 0
+        assert capsys.readouterr().out == "", f"unexpectedly blocked: {cmd}"
+
+
+def test_resolve_agent_transcript_derivation(tmp_path):
+    """For a Task-spawned subagent (agent_id present) the gate scans the derived
+    per-subagent file, not the parent transcript_path. Without agent_id the path
+    is used as-is."""
+    hooks = load_hooks()
+    ev_sub = {"transcript_path": "/p/sess.jsonl", "agent_id": "xyz"}
+    assert (
+        hooks._resolve_agent_transcript(ev_sub)
+        == "/p/sess/subagents/agent-xyz.jsonl"
+    )
+    assert (
+        hooks._resolve_agent_transcript({"transcript_path": "/p/sess.jsonl"})
+        == "/p/sess.jsonl"
+    )
+    assert hooks._resolve_agent_transcript({}) == ""
+
+
+def test_codegraph_gate_scans_subagent_file_not_parent(tmp_path, capsys):
+    """A codegraph call in the PARENT transcript must NOT unblock a Task-spawned
+    subagent's grep (the parent lacks the subagent's calls); the same call in the
+    derived SUBAGENT file MUST unblock it. This is the production-path fix."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    session_dir = tmp_path / "proj"
+    session_dir.mkdir()
+    parent = session_dir / "sess.jsonl"
+    # Codegraph call lives ONLY in the parent (the wrong file for a subagent).
+    parent.write_text(_MCP_CODEGRAPH_LINE + "\n", encoding="utf-8")
+    sub_dir = (session_dir / "sess") / "subagents"
+    sub_dir.mkdir(parents=True)
+    sub_file = sub_dir / "agent-abc123.jsonl"
+    sub_file.write_text(_BASH_LINE + "\n", encoding="utf-8")  # subagent: no codegraph yet
+
+    event = tool_event(repo, "Grep")
+    event["transcript_path"] = str(parent)
+    event["agent_id"] = "abc123"
+    # Gate scans the SUBAGENT file (no codegraph there) → blocked, despite the
+    # parent containing a codegraph call.
+    assert hooks.run_codegraph_first_gate(event, repo) == 0
+    assert _deny(capsys) == "deny"
+
+    # Subagent itself calls codegraph → its file now has the call → unblocked.
+    sub_file.write_text(_MCP_CODEGRAPH_LINE + "\n", encoding="utf-8")
+    assert hooks.run_codegraph_first_gate(event, repo) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_codegraph_gated_agents_have_hooks_block():
+    """Coverage: an agent has ``codegraph_gated: true`` iff it has the gate
+    hooks block. Prevents drift -- opting into the gate without the enforcement
+    block (or vice versa) fails here."""
+    agents_dir = ROOT / ".claude" / "agents"
+    for md in agents_dir.rglob("*.md"):
+        text = md.read_text(encoding="utf-8")
+        if not text.startswith("---"):
+            continue
+        front = text[3 : text.index("---", 3)]
+        gated = "codegraph_gated: true" in front
+        has_block = "run codegraph-first-gate" in front
+        assert gated == has_block, (
+            f"{md.name}: `codegraph_gated` flag and the codegraph gate hook block "
+            "are out of sync. Both must be present together or both absent."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Codegraph transcript format staleness gate (LIA-121)
+# ---------------------------------------------------------------------------
+# These tests exercise the SHARED PREDICATE (_line_is_codegraph_toolcall)
+# against the committed fixture. If CC changes its transcript format, the
+# fixture becomes stale and these tests detect the regression in the scan code.
+
+
+_FIXTURE_PATH = ROOT / "scripts" / "tests" / "fixtures" / "codegraph_transcript_sample.jsonl"
+
+
+def test_codegraph_transcript_fixture_positives():
+    """Fixture positive samples are correctly detected by the shared predicate."""
+    hooks = load_hooks()
+    assert _FIXTURE_PATH.exists(), (
+        f"Fixture not found at {_FIXTURE_PATH}. "
+        "Re-capture from a live CC transcript and commit."
+    )
+    found_any_positive = False
+    for raw in _FIXTURE_PATH.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        obj = json.loads(raw)
+        role = obj.pop("_fixture_role", None)
+        if role and role.startswith("pos_"):
+            found_any_positive = True
+            assert hooks._line_is_codegraph_toolcall(obj), (
+                f"Positive fixture sample '{role}' NOT detected by _line_is_codegraph_toolcall. "
+                "CC may have changed its transcript format, or the predicate was broken. "
+                "Re-capture the fixture from a live transcript and update the predicate in "
+                "codex_warden_hooks.py."
+            )
+    assert found_any_positive, "No positive samples found in fixture — fixture may be empty or malformed"
+
+
+def test_codegraph_transcript_fixture_negatives():
+    """Fixture negative samples are correctly rejected by the shared predicate."""
+    hooks = load_hooks()
+    assert _FIXTURE_PATH.exists(), f"Fixture not found at {_FIXTURE_PATH}"
+    for raw in _FIXTURE_PATH.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        obj = json.loads(raw)
+        role = obj.pop("_fixture_role", None)
+        if role and role.startswith("neg_"):
+            assert not hooks._line_is_codegraph_toolcall(obj), (
+                f"Negative fixture sample '{role}' wrongly detected as codegraph call. "
+                "The predicate is producing false positives — review _line_is_codegraph_toolcall."
+            )
+
+
+def test_line_is_codegraph_toolcall_direct_mcp():
+    """Direct mcp__codegraph__ call detected."""
+    hooks = load_hooks()
+    obj = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "mcp__codegraph__codegraph_context", "input": {}}
+    ]}}
+    assert hooks._line_is_codegraph_toolcall(obj)
+
+
+def test_line_is_codegraph_toolcall_toolsearch_select():
+    """ToolSearch with select:mcp__codegraph__ query detected."""
+    hooks = load_hooks()
+    obj = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "ToolSearch",
+         "input": {"query": "select:mcp__codegraph__codegraph_context"}}
+    ]}}
+    assert hooks._line_is_codegraph_toolcall(obj)
+
+
+def test_line_is_codegraph_toolcall_code_search():
+    """mcp__code-search__ prefix also detected."""
+    hooks = load_hooks()
+    obj = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "mcp__code-search__search_code", "input": {}}
+    ]}}
+    assert hooks._line_is_codegraph_toolcall(obj)
+
+
+def test_line_is_codegraph_toolcall_rejects_user_type():
+    """user-type lines are NOT matched (false-positive safety)."""
+    hooks = load_hooks()
+    obj = {"type": "user", "message": {"content": [
+        {"type": "tool_result", "content": "mcp__codegraph__ gate denied"}
+    ]}}
+    assert not hooks._line_is_codegraph_toolcall(obj)
+
+
+def test_line_is_codegraph_toolcall_rejects_text_block():
+    """text blocks mentioning mcp__codegraph__ are NOT matched."""
+    hooks = load_hooks()
+    obj = {"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "I will call mcp__codegraph__codegraph_context"}
+    ]}}
+    assert not hooks._line_is_codegraph_toolcall(obj)
+
+
+def test_line_is_codegraph_toolcall_rejects_non_codegraph_toolsearch():
+    """ToolSearch with a non-codegraph query is NOT matched."""
+    hooks = load_hooks()
+    obj = {"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "ToolSearch", "input": {"query": "select:WebFetch"}}
+    ]}}
+    assert not hooks._line_is_codegraph_toolcall(obj)
+
+
+def test_line_is_codegraph_toolcall_rejects_non_dict():
+    """Non-dict input is safely rejected (no exception)."""
+    hooks = load_hooks()
+    assert not hooks._line_is_codegraph_toolcall(None)
+    assert not hooks._line_is_codegraph_toolcall("string")
+    assert not hooks._line_is_codegraph_toolcall([])
+
+
+def test_scan_transcript_detects_mcp_call(tmp_path):
+    """_scan_transcript_for_codegraph finds a direct MCP call."""
+    hooks = load_hooks()
+    tr = _write_transcript(tmp_path, [_MCP_CODEGRAPH_LINE])
+    found, turns, tool_uses = hooks._scan_transcript_for_codegraph(str(tr))
+    assert found
+    assert turns >= 1
+    assert tool_uses >= 1
+
+
+def test_scan_transcript_detects_toolsearch(tmp_path):
+    """_scan_transcript_for_codegraph finds a ToolSearch select call."""
+    hooks = load_hooks()
+    tr = _write_transcript(tmp_path, [_TOOLSEARCH_CODEGRAPH_LINE])
+    found, turns, tool_uses = hooks._scan_transcript_for_codegraph(str(tr))
+    assert found
+    assert tool_uses >= 1
+
+
+def test_scan_transcript_returns_false_for_no_call(tmp_path):
+    """_scan_transcript_for_codegraph returns False when no codegraph call present."""
+    hooks = load_hooks()
+    tr = _write_transcript(tmp_path, [_BASH_LINE, _USER_RESULT_LINE])
+    found, turns, tool_uses = hooks._scan_transcript_for_codegraph(str(tr))
+    assert not found
+    assert tool_uses >= 1  # Bash tool_use counts
+
+
+def test_scan_transcript_missing_file():
+    """_scan_transcript_for_codegraph returns None for missing/unreadable file."""
+    hooks = load_hooks()
+    result = hooks._scan_transcript_for_codegraph("/nonexistent/x.jsonl")
+    assert result is None, "missing file must return None (fail-open sentinel)"

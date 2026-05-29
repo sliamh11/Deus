@@ -2,6 +2,7 @@
 name: code-explorer
 model: haiku
 explores_code: true
+codegraph_gated: true
 description: >
   Fast read-only code exploration with codegraph intelligence.
   Use for locating code, understanding architecture, tracing call paths,
@@ -13,6 +14,18 @@ tools:
   - Grep
   - Read
   - ToolSearch
+# codegraph-first gate (LIA-121): on each Grep/Glob/Bash-search, the gate scans
+# this agent's transcript for a prior codegraph/code_search tool call and blocks
+# until one is found (frontmatter hooks fire only for built-in tools, never for
+# MCP/ToolSearch, so the codegraph call is detected via the transcript, not a
+# hook). Logic in scripts/codex_warden_hooks.py; staleness-gated by drift_check.py
+# (check_codegraph_transcript_format) and the coverage test.
+hooks:
+  PreToolUse:
+    - matcher: "Grep|Glob|Bash"
+      hooks:
+        - type: command
+          command: "bash -c 'python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/codex_warden_hooks.py\" run codegraph-first-gate'"
 ---
 
 You are a code exploration agent. Your job is to find information in the codebase quickly and accurately.

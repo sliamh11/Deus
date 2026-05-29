@@ -354,6 +354,208 @@ def _marker(repo_root: Path, name: str) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Codegraph-first gate (LIA-121 / RETRO-2026-05-29-01)
+# ---------------------------------------------------------------------------
+
+#: Filesystem code-search commands; blocked as a primary token before a
+#: codegraph/code_search call. See ``_bash_is_code_search``.
+_CODE_SEARCH_COMMANDS = frozenset(
+    {"grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack", "find"}
+)
+
+#: Minimum number of assistant turns in a transcript before we trust that a
+#: missing codegraph call is deliberate vs. the gate being blind.  Below this
+#: threshold the gate blocks normally (agent might not have had a chance to
+#: call codegraph yet); at or above it with zero recognized tool_use blocks of
+#: any kind, the gate logs a canary and fails open.
+_BLIND_DETECTION_THRESHOLD = 5
+
+
+def _line_is_codegraph_toolcall(obj: Any) -> bool:
+    """True if *obj* (a parsed JSONL transcript line) is a codegraph/
+    code_search tool_use -- or a ToolSearch that selects one.
+
+    This is the SHARED predicate used by both the live transcript scan
+    (``_scan_transcript_for_codegraph``) and the CI fixture test
+    (``test_codegraph_transcript_fixture``).  Keep both callers in sync.
+
+    Rules:
+    * Outer ``type`` must be ``"assistant"`` (not ``"user"`` / ``"attachment"``).
+    * ``message.content`` must be a list containing a block where
+      ``type == "tool_use"`` AND either:
+      - ``name`` starts with ``"mcp__codegraph__"`` or ``"mcp__code-search__"``
+      - ``name == "ToolSearch"`` AND ``input.query`` contains
+        ``"mcp__codegraph__"`` or ``"mcp__code-search__"``
+
+    False-positive sources explicitly excluded (caller type ``"user"``
+    or non-``"tool_use"`` block types) are safe because we check outer type
+    and inner block type strictly.
+    """
+    if not isinstance(obj, dict):
+        return False
+    if obj.get("type") != "assistant":
+        return False
+    msg = obj.get("message")
+    if not isinstance(msg, dict):
+        return False
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return False
+    for blk in content:
+        if not isinstance(blk, dict) or blk.get("type") != "tool_use":
+            continue
+        name = str(blk.get("name") or "")
+        if name.startswith("mcp__codegraph__") or name.startswith("mcp__code-search__"):
+            return True
+        if name == "ToolSearch":
+            inp = blk.get("input")
+            query = str(inp.get("query") or "") if isinstance(inp, dict) else ""
+            q = query.lower()
+            if "mcp__codegraph__" in q or "mcp__code-search__" in q:
+                return True
+    return False
+
+
+def _scan_transcript_for_codegraph(
+    transcript_path: str,
+) -> tuple[bool, int, int] | None:
+    """Read the transcript JSONL at *transcript_path* and return
+    ``(found, assistant_turns, any_tool_uses)``, or ``None`` on IO error.
+
+    * ``found``: True if any line satisfies ``_line_is_codegraph_toolcall``.
+    * ``assistant_turns``: count of lines with outer ``type == "assistant"``.
+    * ``any_tool_uses``: count of tool_use blocks seen across all lines
+      (used to detect parse blindness: if assistant_turns is high but
+      any_tool_uses is zero, the format may have changed).
+    * Returns ``None`` when the file cannot be opened (missing path, permission
+      error).  The caller should treat ``None`` as a fail-open signal.
+
+    Parse errors on individual lines are silently skipped (partial writes are
+    expected on a live transcript).
+    """
+    path = Path(transcript_path)
+    found = False
+    assistant_turns = 0
+    any_tool_uses = 0
+    try:
+        with path.open(encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    obj = json.loads(raw)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if obj.get("type") == "assistant":
+                    assistant_turns += 1
+                    msg = obj.get("message")
+                    if isinstance(msg, dict):
+                        content = msg.get("content")
+                        if isinstance(content, list):
+                            for blk in content:
+                                if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                                    any_tool_uses += 1
+                if _line_is_codegraph_toolcall(obj):
+                    found = True
+                    # Answer known; the turn/tool_use counters are only consulted
+                    # by the caller's blindness branch when found is False.
+                    break
+    except OSError:
+        return None
+    return found, assistant_turns, any_tool_uses
+
+
+def _resolve_agent_transcript(event: dict[str, Any]) -> str:
+    """Return the transcript file the gate should scan for THIS agent.
+
+    For a Task-spawned subagent the hook event's ``transcript_path`` points at the
+    PARENT session file (``.../<session_id>.jsonl``), which contains only the main
+    agent's activity (its ``Agent`` delegation) -- NOT the subagent's own tool
+    calls.  Those are written to ``.../<session_id>/subagents/agent-<agent_id>.jsonl``.
+    When ``agent_id`` is present we scan that per-subagent file, which both fixes
+    the production path AND gives natural per-invocation isolation (each subagent
+    invocation has its own file, so a codegraph call by one never unblocks a
+    parallel sibling).  For the main thread / ``--agent`` runs there is no
+    ``agent_id`` and ``transcript_path`` is already the agent's own file.
+
+    We deliberately do NOT fall back to the parent file when the derived subagent
+    file is absent: the parent is the wrong file and scanning it would false-block.
+    Returning the (possibly not-yet-existing) subagent path lets
+    ``_scan_transcript_for_codegraph`` return ``None`` -> the gate fails open.
+
+    Empirically validated (LIA-121): the PreToolUse event for a Task-spawned
+    subagent carries ``agent_id`` + ``agent_type``; the derived file exists at
+    tool-call time and holds the subagent's ``tool_use`` entries.
+    """
+    tp = str(event.get("transcript_path") or "")
+    if not tp:
+        return ""
+    agent_id = str(event.get("agent_id") or "")
+    if agent_id:
+        # Path(agent_id).name strips any directory components -- defense in depth
+        # against a malformed agent_id (the scan is read-only, but make the
+        # "agent_id is a bare identifier" assumption explicit, no traversal).
+        safe_id = Path(agent_id).name
+        return str(Path(tp).with_suffix("") / "subagents" / f"agent-{safe_id}.jsonl")
+    return tp
+
+
+def _log_gate_canary(repo_root: Path, message: str) -> None:
+    """Append a LOUD canary entry to the warden audit log.
+
+    Used when the transcript-scanning gate detects a possible parse-blindness
+    condition (rich transcript, no recognized tool_use blocks).  This makes a
+    silent no-op VISIBLE in the warden log rather than invisible.
+    """
+    try:
+        log = _audit_log_path(repo_root)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} | codegraph-gate   | CANARY  | {message}\n")
+    except Exception:
+        pass
+
+
+def _bash_is_code_search(command: str) -> bool:
+    """True if *command*'s PRIMARY token is a filesystem code search.
+
+    Strips leading ``VAR=val`` assignments and ``sudo``. A search that appears
+    only after a pipe/``;``/``&&`` (an output filter, e.g. ``ls | grep x``) is
+    not the primary token and is allowed. Unparseable commands are not blocked
+    (fail-open on ambiguity).
+    """
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return False
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if (
+            "=" in tok
+            and not tok.startswith("-")
+            and tok.split("=", 1)[0].isidentifier()
+        ):
+            i += 1  # skip leading VAR=val assignment
+            continue
+        break
+    if i < len(tokens) and tokens[i] == "sudo":
+        i += 1
+    if i >= len(tokens):
+        return False
+    base = tokens[i].rsplit("/", 1)[-1]  # handle /usr/bin/grep
+    if base in _CODE_SEARCH_COMMANDS:
+        return True
+    if base == "git" and i + 1 < len(tokens) and tokens[i + 1] == "grep":
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Commit-window helpers
 # ---------------------------------------------------------------------------
 
@@ -757,6 +959,111 @@ def run_session_init(repo_root: Path) -> int:
     _INJECTED_DOCS.clear()
     _sync_atom_kinds_on_init(repo_root)
     return 0
+
+
+def run_codegraph_first_gate(event: dict[str, Any], repo_root: Path) -> int:
+    """Single PreToolUse gate enforcing codegraph-first exploration for gated
+    agents (``codegraph_gated: true``). LIA-121 / RETRO-2026-05-29-01.
+
+    IMPLEMENTATION: transcript-scanning (replaces broken marker scheme).
+
+    Empirically proven (LIA-121 Validate phase): mcp__codegraph__ hooks do NOT
+    fire in subagent sessions, so the marker can never be set from a codegraph
+    call.  The Grep/Glob/Bash-search PreToolUse hook DOES fire reliably, so:
+
+    At every Grep/Glob/Bash-search event the gate reads the agent's transcript
+    JSONL (``event["transcript_path"]``) and scans for a prior
+    ``_line_is_codegraph_toolcall`` match.  If found → allow.  If not → block.
+
+    Flush-timing guarantee (empirically confirmed): prior tool calls ARE written
+    to the transcript before the next hook fires; no race condition.
+
+    Fail-open: any internal error (IO, parse, missing path) returns 0 -- a gate
+    bug must never hard-block an agent.
+
+    Canary: when the transcript is "rich" (>= _BLIND_DETECTION_THRESHOLD
+    assistant turns) but contains zero tool_use blocks of any kind, the gate
+    logs a CANARY entry to .warden-log and fails open -- this discriminates
+    between "agent hasn't called any tools yet" (short transcript, normal deny)
+    and "gate can no longer parse the transcript format" (silent no-op, must be
+    visible).
+    """
+    try:
+        tool_name = str(event.get("tool_name") or "")
+        # Determine whether this tool call is a search command to gate on.
+        if tool_name in ("Grep", "Glob"):
+            should_block = True
+        elif tool_name == "Bash":
+            tool_input = event.get("tool_input")
+            command = ""
+            if isinstance(tool_input, dict):
+                command = str(tool_input.get("command") or "")
+            should_block = _bash_is_code_search(command)
+        else:
+            # Non-search tool: always allow.
+            return 0
+
+        if not should_block:
+            return 0
+
+        # Scan the agent's OWN transcript for a prior codegraph call. For a
+        # Task-spawned subagent this derives the per-subagent file from agent_id
+        # (the raw transcript_path is the parent session file, which lacks the
+        # subagent's tool calls). See _resolve_agent_transcript.
+        transcript_path = _resolve_agent_transcript(event)
+        if not transcript_path:
+            # No transcript path → fail open (can't scan).
+            _log_gate_canary(
+                repo_root,
+                f"transcript_path missing in hook event (tool={tool_name}); failing open",
+            )
+            return 0
+
+        try:
+            scan_result = _scan_transcript_for_codegraph(transcript_path)
+        except Exception as exc:
+            _log_gate_canary(
+                repo_root,
+                f"transcript scan raised {type(exc).__name__} for {transcript_path}; failing open",
+            )
+            return 0
+
+        if scan_result is None:
+            # IO error opening transcript (missing file, permission denied).
+            # Fail open: the gate must not deadlock an agent due to an IO issue.
+            _log_gate_canary(
+                repo_root,
+                f"transcript not readable: {transcript_path}; failing open",
+            )
+            return 0
+
+        found, assistant_turns, any_tool_uses = scan_result
+
+        if found:
+            return 0
+
+        # Blindness detection: rich transcript with zero recognized tool_uses.
+        if (
+            assistant_turns >= _BLIND_DETECTION_THRESHOLD
+            and any_tool_uses == 0
+        ):
+            _log_gate_canary(
+                repo_root,
+                f"transcript has {assistant_turns} assistant turns but 0 tool_use blocks "
+                f"of any kind ({transcript_path}); CC format may have changed -- "
+                "run `python3 scripts/drift_check.py --codegraph-format` to validate. "
+                "Failing open to avoid deadlock.",
+            )
+            return 0
+
+        _block_pre_tool(
+            "[codegraph-first-gate] Call a codegraph or code_search tool first "
+            '(ToolSearch "select:mcp__codegraph__codegraph_context"), then retry. '
+            "core-behavioral-rules.md § Code Exploration."
+        )
+        return 0
+    except Exception:
+        return 0
 
 
 def run_plan_mode_invalidator(event: dict[str, Any], repo_root: Path) -> int:
@@ -2151,6 +2458,7 @@ RUNNERS = {
     "migration-nudge": run_migration_nudge,
     "orchestrator-preflight": run_orchestrator_preflight,
     "warden-verdict-tracker": run_verdict_tracker,
+    "codegraph-first-gate": run_codegraph_first_gate,
 }
 
 
