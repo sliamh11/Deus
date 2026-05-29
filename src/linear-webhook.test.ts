@@ -245,7 +245,9 @@ All checks pass.`;
   });
 
   it('returns null when no Enrichment section', () => {
-    const output = `## Verdict: SHIP\n\nAll checks pass.`;
+    const output = `## Verdict: SHIP
+
+All checks pass.`;
     expect(parseEnrichment(output)).toBeNull();
   });
 
@@ -300,7 +302,9 @@ After.`;
   it('creates block as entire description when empty', () => {
     const result = mergeEnrichment('', 'test-gate', 'Content');
     expect(result).toBe(
-      '<!-- gate:test-gate:start -->\nContent\n<!-- gate:test-gate:end -->',
+      '<!-- gate:test-gate:start -->
+Content
+<!-- gate:test-gate:end -->',
     );
   });
 });
@@ -344,11 +348,13 @@ describe('parseRatings', () => {
 
 describe('parseVerdict', () => {
   it('extracts SHIP verdict', () => {
-    expect(parseVerdict('## Verdict: SHIP\nDone.')).toBe('SHIP');
+    expect(parseVerdict('## Verdict: SHIP
+Done.')).toBe('SHIP');
   });
 
   it('extracts REVISE verdict', () => {
-    expect(parseVerdict('## Verdict: REVISE\nNeeds work.')).toBe('REVISE');
+    expect(parseVerdict('## Verdict: REVISE
+Needs work.')).toBe('REVISE');
   });
 
   it('returns null when no verdict', () => {
@@ -446,7 +452,9 @@ describe('computeScopeLabelChanges', () => {
     const result = computeScopeLabelChanges(
       'agent-readiness-gate',
       'SHIP',
-      '## Scope\n\n**Problem**: fix the bug',
+      '## Scope
+
+**Problem**: fix the bug',
       gateLabels,
     );
     expect(result.addIds).toEqual(['label-scoped-id']);
@@ -490,7 +498,9 @@ describe('computeScopeLabelChanges', () => {
     const result = computeScopeLabelChanges(
       'output-quality-gate',
       'SHIP',
-      '## Scope\n\nsome enrichment',
+      '## Scope
+
+some enrichment',
       gateLabels,
     );
     expect(result.addIds).toEqual([]);
@@ -885,101 +895,98 @@ describe('label update error callback', () => {
 // ── computeTerminalLabelCleanup tests (LIA-126 fix 1) ────────────────────────
 
 describe('computeTerminalLabelCleanup', () => {
-  const gateLabels = {
-    scoped: 'label-scoped-id',
-    revise: 'label-revise-id',
-    evaluating: 'label-eval-id',
-    error: 'label-error-id',
-    bouncedUnscoped: 'label-bounced-unscoped-id',
-    bouncedStale: 'label-bounced-stale-id',
-    bouncedNoContext: 'label-bounced-nocontext-id',
+  const labels = {
+    scoped: 'label-scoped',
+    revise: 'label-revise',
+    evaluating: 'label-eval',
+    error: 'label-error',
+    bouncedUnscoped: 'label-bounced-u',
+    bouncedStale: 'label-bounced-s',
+    bouncedNoContext: 'label-bounced-n',
     effort: {},
     complexity: {},
   };
 
-  it('removes Warden: Revise when the issue carries it', () => {
-    const result = computeTerminalLabelCleanup(gateLabels, ['label-revise-id', 'some-other-id']);
-    expect(result).toContain('label-revise-id');
-    expect(result).not.toContain('label-scoped-id');
-    expect(result).not.toContain('label-error-id');
-  });
-
-  it('removes Evaluating label when present', () => {
-    const result = computeTerminalLabelCleanup(gateLabels, ['label-eval-id']);
-    expect(result).toContain('label-eval-id');
-  });
-
-  it('removes all bounced labels when present', () => {
-    const result = computeTerminalLabelCleanup(gateLabels, [
-      'label-bounced-unscoped-id',
-      'label-bounced-stale-id',
-      'label-bounced-nocontext-id',
+  it('strips Warden: Revise when issue carries it (Done transition)', () => {
+    const result = computeTerminalLabelCleanup(labels, [
+      'label-revise',
+      'some-other-label',
     ]);
-    expect(result).toContain('label-bounced-unscoped-id');
-    expect(result).toContain('label-bounced-stale-id');
-    expect(result).toContain('label-bounced-nocontext-id');
+    expect(result).toContain('label-revise');
+    expect(result).not.toContain('label-scoped');
+    expect(result).not.toContain('label-error');
   });
 
-  it('returns empty array when issue has none of the transient labels', () => {
-    const result = computeTerminalLabelCleanup(gateLabels, ['some-unrelated-label']);
+  it('strips Evaluating label when present', () => {
+    const result = computeTerminalLabelCleanup(labels, ['label-eval']);
+    expect(result).toContain('label-eval');
+  });
+
+  it('strips all bounced labels when present', () => {
+    const result = computeTerminalLabelCleanup(labels, [
+      'label-bounced-u',
+      'label-bounced-s',
+      'label-bounced-n',
+    ]);
+    expect(result).toContain('label-bounced-u');
+    expect(result).toContain('label-bounced-s');
+    expect(result).toContain('label-bounced-n');
+  });
+
+  it('returns empty array when issue has no transient labels', () => {
+    const result = computeTerminalLabelCleanup(labels, [
+      'unrelated-label',
+    ]);
     expect(result).toHaveLength(0);
   });
 
-  it('does not include labels not currently on the issue', () => {
-    // issue only has revise; evaluating and bounced are NOT on the issue
-    const result = computeTerminalLabelCleanup(gateLabels, ['label-revise-id']);
-    expect(result).toEqual(['label-revise-id']);
+  it('only returns labels currently on the issue', () => {
+    // issue only has revise — evaluating and bounced are not present
+    const result = computeTerminalLabelCleanup(labels, ['label-revise']);
+    expect(result).toEqual(['label-revise']);
+  });
+
+  it('does not strip Warden: Error (not a transient label)', () => {
+    const result = computeTerminalLabelCleanup(labels, [
+      'label-revise',
+      'label-error',
+    ]);
+    expect(result).toContain('label-revise'); // revise IS stripped
+    expect(result).not.toContain('label-error'); // error is NOT stripped
   });
 
   it('handles partial gateLabels (no bounced labels configured)', () => {
-    const minimalLabels = { revise: 'label-revise-id', effort: {}, complexity: {} };
-    const result = computeTerminalLabelCleanup(minimalLabels, ['label-revise-id']);
-    expect(result).toContain('label-revise-id');
-    // no bounced labels configured — should not throw
+    const minimal = { revise: 'label-revise', effort: {}, complexity: {} };
+    const result = computeTerminalLabelCleanup(minimal, ['label-revise']);
+    expect(result).toContain('label-revise');
+    // no bounced labels defined — should not throw
   });
 });
 
-// ── gate-error label behaviour (LIA-126 fix 2) ───────────────────────────────
+// ── gate-error label guard pre-condition (LIA-126 fix 2) ─────────────────────
+//
+// computeScopeLabelChanges is skipped when gateDidError / gateAgentError is
+// true in the finally blocks of handleIssueUpdate and runGateForIssue.
+// This test documents the pre-condition: without the guard, REVISE verdict
+// adds Warden: Revise even on infrastructure failures.
 
-describe('computeScopeLabelChanges – error guard', () => {
-  // Verifies the pre-condition: computeScopeLabelChanges with REVISE DOES add revise label.
-  // This is what the handleIssueUpdate finally block produced before the LIA-126 fix
-  // when gateDidError was true.
-  it('REVISE verdict adds Warden: Revise (pre-condition for guard test)', () => {
-    const gateLabels = {
-      revise: 'label-revise-id',
-      error: 'label-error-id',
-      evaluating: 'label-eval-id',
-      effort: {},
-      complexity: {},
-    };
+describe('computeScopeLabelChanges – gate-error guard', () => {
+  const gateLabels = {
+    revise: 'label-revise',
+    error: 'label-error',
+    evaluating: 'label-eval',
+    effort: {},
+    complexity: {},
+  };
+
+  it('REVISE verdict adds revise label (pre-condition for guard)', () => {
+    // Without !gateDidError guard this would fire on agent/infra errors too.
     const result = computeScopeLabelChanges(
       'agent-readiness-gate',
       'REVISE',
       undefined,
       gateLabels,
     );
-    // Without the guard, this would be added even on infrastructure errors
-    expect(result.addIds).toContain('label-revise-id');
-  });
-
-  // The LIA-126 fix guards the computeScopeLabelChanges call with !gateDidError /
-  // !gateAgentError, so the above path is never taken on errors. We verify that
-  // computeTerminalLabelCleanup (the terminal-strip path) correctly excludes
-  // the error label — error should persist, not be cleaned up on Done.
-  it('does not remove Warden: Error label on terminal cleanup (error label is not transient)', () => {
-    const gateLabels = {
-      revise: 'label-revise-id',
-      error: 'label-error-id',
-      evaluating: 'label-eval-id',
-      effort: {},
-      complexity: {},
-    };
-    const result = computeTerminalLabelCleanup(gateLabels, [
-      'label-revise-id',
-      'label-error-id',
-    ]);
-    expect(result).toContain('label-revise-id');    // revise IS stripped on terminal
-    expect(result).not.toContain('label-error-id'); // error is NOT stripped (not a transient label)
+    expect(result.addIds).toContain('label-revise');
   });
 });
