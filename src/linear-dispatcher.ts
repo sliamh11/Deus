@@ -128,6 +128,11 @@ let _roleSpecs: Map<string, RoleSpec> = new Map();
 let _ctx: LinearContext | null = null;
 // Promise-chain serializer — same pattern as commentLocks in linear-notifications.ts
 let _patchMutex: Promise<void> = Promise.resolve();
+// Stall watchdog: tracks last tick timestamp and emits logger.error when ticks stall.
+// Removed in LIA-108 and restored in LIA-123.
+let _lastTickAt: number | null = null;
+let _pollMs: number = DEFAULT_POLL_MS;
+let _watchdogTimer: ReturnType<typeof setInterval> | null = null;
 
 export function extractFrontmatter(content: string): {
   data: Record<string, unknown>;
@@ -1854,6 +1859,7 @@ export function startLinearDispatcher(ctx: LinearContext): void {
     isNaN(parsedPollMs) || parsedPollMs < 1000 ? DEFAULT_POLL_MS : parsedPollMs;
 
   _tick = () => {
+    _lastTickAt = Date.now();
     fireAndForget(() => pollLinear(), {
       name: 'linear.dispatch',
       onError: (err) => {
@@ -1872,9 +1878,11 @@ export function startLinearDispatcher(ctx: LinearContext): void {
     });
   };
 
+  _pollMs = pollMs;
   _tick();
   _timer = setInterval(_tick, pollMs);
   _timer.unref();
+  _watchdogTimer = _startWatchdog(pollMs);
   logger.info(
     { pollMs, roles: _roleSpecs.size },
     'linear-dispatcher: daemon started',
@@ -1886,19 +1894,71 @@ export function stopLinearDispatcher(): void {
     clearInterval(_timer);
     _timer = null;
   }
+  if (_watchdogTimer) {
+    clearInterval(_watchdogTimer);
+    _watchdogTimer = null;
+  }
   _tick = null;
   _ctx = null;
+  _lastTickAt = null;
 }
 
 const MIN_POLL_MS = 5_000;
 const MAX_POLL_MS = 300_000;
 
+// Internal helper: creates the stall-watchdog timer at 3× pollMs.
+// Fires logger.error when no tick has been observed within the window.
+function _startWatchdog(pollMs: number): ReturnType<typeof setInterval> {
+  const timer = setInterval(() => {
+    if (_lastTickAt !== null && Date.now() - _lastTickAt > 3 * _pollMs) {
+      logger.error(
+        {
+          lastTickAt: _lastTickAt,
+          stallMs: Date.now() - _lastTickAt,
+          pollMs: _pollMs,
+        },
+        'linear-dispatcher: tick stall detected — no tick has fired within 3× poll interval',
+      );
+    }
+  }, 3 * pollMs);
+  timer.unref();
+  return timer;
+}
+
+export interface DispatcherHealth {
+  /** Whether the dispatcher's main poll timer is currently active. */
+  running: boolean;
+  /** Unix ms timestamp of the most recent tick, or null if never ticked. */
+  lastTickAt: number | null;
+  /** Milliseconds since the last tick, or null when not running. */
+  stallMs: number | null;
+  /** Current poll interval in milliseconds. */
+  pollMs: number;
+}
+
+/**
+ * Returns a snapshot of the dispatcher's health for observability / health-check endpoints.
+ * Restored in LIA-123 after accidental removal in LIA-108.
+ */
+export function getDispatcherHealth(): DispatcherHealth {
+  const now = Date.now();
+  return {
+    running: _timer !== null,
+    lastTickAt: _lastTickAt,
+    stallMs: _lastTickAt !== null ? now - _lastTickAt : null,
+    pollMs: _pollMs,
+  };
+}
+
 export function setPollInterval(ms: number): boolean {
   if (!_tick) return false;
   const clamped = Math.max(MIN_POLL_MS, Math.min(MAX_POLL_MS, ms));
+  _pollMs = clamped;
   if (_timer) clearInterval(_timer);
   _timer = setInterval(_tick, clamped);
   _timer.unref();
+  if (_watchdogTimer) clearInterval(_watchdogTimer);
+  _watchdogTimer = _startWatchdog(clamped);
   logger.info({ pollMs: clamped }, 'linear-dispatcher: poll interval updated');
   return true;
 }

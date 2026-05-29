@@ -122,11 +122,13 @@ import {
   extractScopeBlock,
   applyPatchArtifact,
   initLinearContext,
+  getDispatcherHealth,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
   LinearDispatcherDependencies,
 } from './linear-dispatcher.js';
+import { logger } from './logger.js';
 import { RuntimeRegistry } from './agent-runtimes/registry.js';
 
 function makeMockDeps(
@@ -412,6 +414,113 @@ describe('startLinearDispatcher', () => {
     const ctx = makeMockCtx();
     startLinearDispatcher(ctx);
     // No timer started because no role specs exist
+  });
+});
+
+describe('getDispatcherHealth / stall watchdog', () => {
+  const agentsDir = path.join(TEST_PROJECT_ROOT, '.claude', 'agents');
+
+  beforeEach(() => {
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentsDir, 'test-role.md'),
+      `---\nname: test-role\nlinear_label: "agent:test"\n---\nYou are a test agent.`,
+    );
+  });
+
+  afterEach(() => {
+    stopLinearDispatcher();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+    fs.rmSync(TEST_PROJECT_ROOT, { recursive: true, force: true });
+  });
+
+  it('returns running:false and null health when dispatcher is stopped', () => {
+    const health = getDispatcherHealth();
+    expect(health.running).toBe(false);
+    expect(health.lastTickAt).toBeNull();
+    expect(health.stallMs).toBeNull();
+  });
+
+  it('returns running:true and recent lastTickAt after dispatcher starts', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('LINEAR_POLL_INTERVAL_MS', '5000');
+    const ctx = makeMockCtx({
+      client: {
+        issues: vi.fn().mockResolvedValue({ nodes: [] }),
+        updateIssue: vi.fn().mockResolvedValue({}),
+      } as unknown as LinearContext['client'],
+    });
+    startLinearDispatcher(ctx);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const health = getDispatcherHealth();
+    expect(health.running).toBe(true);
+    expect(health.lastTickAt).not.toBeNull();
+    expect(health.stallMs).not.toBeNull();
+    expect(health.stallMs!).toBeLessThan(5000);
+    expect(health.pollMs).toBe(5000);
+  });
+
+  it('watchdog emits logger.error when tick has stalled beyond 3x pollMs', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('LINEAR_POLL_INTERVAL_MS', '5000');
+
+    const errorSpy = vi.spyOn(logger, 'error');
+
+    // Intercept setInterval to capture the watchdog callback before delegating to fake timer
+    const capturedIntervals: Array<{ fn: () => void; ms: number }> = [];
+    const origSetInterval = global.setInterval;
+    (global as unknown as Record<string, unknown>)['setInterval'] = (
+      fn: (() => void) | string,
+      ms?: number,
+      ...args: unknown[]
+    ) => {
+      if (typeof fn === 'function' && typeof ms === 'number') {
+        capturedIntervals.push({ fn: fn as () => void, ms });
+      }
+      return (origSetInterval as typeof global.setInterval)(
+        fn as Parameters<typeof global.setInterval>[0],
+        ms,
+        ...args,
+      );
+    };
+
+    try {
+      const ctx = makeMockCtx({
+        client: {
+          issues: vi.fn().mockResolvedValue({ nodes: [] }),
+          updateIssue: vi.fn().mockResolvedValue({}),
+        } as unknown as LinearContext['client'],
+      });
+      startLinearDispatcher(ctx);
+
+      // Restore setInterval before advancing timers to avoid double-capturing
+      (global as unknown as Record<string, unknown>)['setInterval'] =
+        origSetInterval;
+
+      // Let the initial synchronous tick stamp _lastTickAt
+      await vi.advanceTimersByTimeAsync(10);
+
+      // Find the watchdog interval (3 x 5000 = 15000 ms)
+      const watchdogEntry = capturedIntervals.find(({ ms }) => ms === 15_000);
+      expect(watchdogEntry).toBeDefined();
+
+      // Jump system time forward beyond 3x pollMs without firing any timer callbacks
+      vi.setSystemTime(new Date(Date.now() + 4 * 5000));
+
+      // Directly invoke the watchdog callback — it should detect the stall
+      watchdogEntry!.fn();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ stallMs: expect.any(Number), pollMs: 5000 }),
+        expect.stringContaining('stall'),
+      );
+    } finally {
+      (global as unknown as Record<string, unknown>)['setInterval'] =
+        origSetInterval;
+      errorSpy.mockRestore();
+    }
   });
 });
 
