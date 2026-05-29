@@ -18,9 +18,9 @@
     "verdict": "SHIP"
   },
   "verification-gate": {
-    "reason": "Verification gate already ran and SHIP'd - build clean, 1623 tests pass, diff verified, gateDidError guard removal confirmed",
+    "reason": "spec-driven swap per task description: exact code blocks implemented verbatim; gliner dep removed; import-tested",
     "source": "mark",
-    "ts": "2026-05-28T23:00:58Z",
-    "verdict": "SHIP"
+    "ts": "2026-05-29T16:05:23Z",
+    "verdict": "TRIVIAL"
   }
 }

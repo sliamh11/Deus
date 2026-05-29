@@ -20,3 +20,4 @@
 2026-05-28T22:59:04Z | code-reviewer   | SHIP    | Gate error escalation fix SHIP'd by code-reviewer - no blocking issues, 3-line fix
 2026-05-28T23:00:46Z | ai-eng-warden   | TRIVIAL | Pipeline error tracking fix - sets a variable and removes a guard condition. No LLM prompts, context management, or AI-specific code changed.
 2026-05-28T23:00:58Z | verification-gate | SHIP    | Verification gate already ran and SHIP'd - build clean, 1623 tests pass, diff verified, gateDidError guard removal confirmed
+2026-05-29T16:05:23Z | verification-gate | TRIVIAL | spec-driven swap per task description: exact code blocks implemented verbatim; gliner dep removed; import-tested
