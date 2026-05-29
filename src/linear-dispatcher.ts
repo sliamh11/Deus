@@ -1,4 +1,5 @@
 import { execFile, spawn } from 'child_process';
+import { minimatch } from 'minimatch';
 import { createHash } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
@@ -21,13 +22,11 @@ import { extractPrUrl } from './pr-url-extractor.js';
 import { queryPrState, checkConflictingPrs } from './linear-auto-merge.js';
 import {
   CIRCUIT_BREAKER_THRESHOLD,
-  clearLiveness,
   getConsecutiveFailCount,
   getIssuePr,
   getLastFailTime,
   getPipelineEvents,
   logPipelineEvent,
-  stampLiveness,
   updatePrAutoMergeState,
   upsertIssuePr,
 } from './db.js';
@@ -84,6 +83,7 @@ interface RoleSpec {
   name: string;
   model?: string;
   content: string;
+  writeAllowlist?: string[];
 }
 
 export interface WorkflowState {
@@ -126,28 +126,8 @@ let _timer: ReturnType<typeof setInterval> | null = null;
 let _tick: (() => void) | null = null;
 let _roleSpecs: Map<string, RoleSpec> = new Map();
 let _ctx: LinearContext | null = null;
-let _lastTickAt: number = Date.now();
-let _pollMs: number = DEFAULT_POLL_MS;
 // Promise-chain serializer — same pattern as commentLocks in linear-notifications.ts
 let _patchMutex: Promise<void> = Promise.resolve();
-
-export function getDispatcherHealth(): {
-  lastTickAt: number;
-  pollMs: number;
-} | null {
-  return _ctx ? { lastTickAt: _lastTickAt, pollMs: _pollMs } : null;
-}
-
-export function withWatchdog<T>(
-  label: string,
-  promise: Promise<T>,
-  thresholdMs: number,
-  onStall: () => void,
-): Promise<T> {
-  const timer = setTimeout(() => onStall(), thresholdMs);
-  timer.unref();
-  return promise.finally(() => clearTimeout(timer));
-}
 
 export function extractFrontmatter(content: string): {
   data: Record<string, unknown>;
@@ -176,11 +156,33 @@ export function loadRoleSpecs(agentsDir: string): Map<string, RoleSpec> {
     const label =
       typeof data.linear_label === 'string' ? data.linear_label : undefined;
     if (!label) continue;
+    const rawAllowlist = data.write_allowlist;
+    let writeAllowlist: string[] | undefined;
+    if (rawAllowlist !== undefined) {
+      if (Array.isArray(rawAllowlist)) {
+        writeAllowlist = (rawAllowlist as unknown[]).filter(
+          (v): v is string => {
+            if (typeof v === 'string') return true;
+            logger.warn(
+              { file, value: v },
+              'linear-dispatcher: loadRoleSpecs: non-string entry in write_allowlist, skipping',
+            );
+            return false;
+          },
+        );
+      } else {
+        logger.warn(
+          { file },
+          'linear-dispatcher: loadRoleSpecs: write_allowlist is not an array, ignoring',
+        );
+      }
+    }
     specs.set(label, {
       label,
       name: typeof data.name === 'string' ? data.name : file.replace('.md', ''),
       model: typeof data.model === 'string' ? data.model : undefined,
       content: body.trim(),
+      writeAllowlist,
     });
   }
   return specs;
@@ -605,13 +607,16 @@ export async function applyPatchArtifact(
           issueId,
           body: `**Patch auto-apply skipped** — working tree is on branch \`${currentBranch.trim()}\`, not \`main\`.\n\nApply manually:\n\`\`\`bash\ngit apply ${patchRelPath}\n\`\`\``,
         });
-        notifyPipelineStep(
-          ctx,
-          issueId,
-          identifier,
-          'patch_failed',
-          `hash:${patchHash} not on main`,
-        ).catch(() => {});
+        fireAndForget(
+          notifyPipelineStep(
+            ctx,
+            issueId,
+            identifier,
+            'patch_failed',
+            `hash:${patchHash} not on main`,
+          ),
+          { name: 'linear-dispatcher.notify-pipeline' },
+        );
         releaseMutex();
         return noResult;
       }
@@ -627,13 +632,16 @@ export async function applyPatchArtifact(
           issueId,
           body: `**Patch auto-apply skipped** — working tree has uncommitted changes.\n\nApply manually:\n\`\`\`bash\ngit apply ${patchRelPath}\n\`\`\``,
         });
-        notifyPipelineStep(
-          ctx,
-          issueId,
-          identifier,
-          'patch_failed',
-          `hash:${patchHash} dirty tree`,
-        ).catch(() => {});
+        fireAndForget(
+          notifyPipelineStep(
+            ctx,
+            issueId,
+            identifier,
+            'patch_failed',
+            `hash:${patchHash} dirty tree`,
+          ),
+          { name: 'linear-dispatcher.notify-pipeline' },
+        );
         releaseMutex();
         return noResult;
       }
@@ -686,13 +694,16 @@ export async function applyPatchArtifact(
           issueId,
           body: `**Patch auto-apply blocked** — patch touches restricted paths: ${allHardBlocked.map((f) => `\`${f}\``).join(', ')}.\n\nApply manually after review.`,
         });
-        notifyPipelineStep(
-          ctx,
-          issueId,
-          identifier,
-          'patch_failed',
-          `hash:${patchHash} blocked paths: ${allHardBlocked.join(',')}`,
-        ).catch(() => {});
+        fireAndForget(
+          notifyPipelineStep(
+            ctx,
+            issueId,
+            identifier,
+            'patch_failed',
+            `hash:${patchHash} blocked paths: ${allHardBlocked.join(',')}`,
+          ),
+          { name: 'linear-dispatcher.notify-pipeline' },
+        );
         await cleanup(true);
         return noResult;
       }
@@ -708,13 +719,16 @@ export async function applyPatchArtifact(
         { issueId, err: statErr },
         'patch-applicator: git apply --stat failed, rejecting patch',
       );
-      notifyPipelineStep(
-        ctx,
-        issueId,
-        identifier,
-        'patch_failed',
-        `hash:${patchHash} stat pre-flight failed`,
-      ).catch(() => {});
+      fireAndForget(
+        notifyPipelineStep(
+          ctx,
+          issueId,
+          identifier,
+          'patch_failed',
+          `hash:${patchHash} stat pre-flight failed`,
+        ),
+        { name: 'linear-dispatcher.notify-pipeline' },
+      );
       await cleanup(true);
       return noResult;
     }
@@ -772,13 +786,16 @@ export async function applyPatchArtifact(
           issueId,
           body: `**Patch auto-apply failed** — \`git apply\` returned an error:\n\n\`\`\`\n${stderr.slice(0, 2000)}\n\`\`\`\n\nApply manually: \`git apply ${patchRelPath}\``,
         });
-        notifyPipelineStep(
-          ctx,
-          issueId,
-          identifier,
-          'patch_failed',
-          `hash:${patchHash} git apply failed`,
-        ).catch(() => {});
+        fireAndForget(
+          notifyPipelineStep(
+            ctx,
+            issueId,
+            identifier,
+            'patch_failed',
+            `hash:${patchHash} git apply failed`,
+          ),
+          { name: 'linear-dispatcher.notify-pipeline' },
+        );
         await cleanup(true);
         return noResult;
       }
@@ -835,13 +852,16 @@ export async function applyPatchArtifact(
         issueId,
         body: `**Patch applied but build failed** — \`npm run build\` exited with error:\n\n\`\`\`\n${stderr.slice(0, 2000)}\n\`\`\`\n\nBranch \`${branchName}\` has been deleted. Fix build errors and reapply.`,
       });
-      notifyPipelineStep(
-        ctx,
-        issueId,
-        identifier,
-        'patch_failed',
-        `hash:${patchHash} build failed`,
-      ).catch(() => {});
+      fireAndForget(
+        notifyPipelineStep(
+          ctx,
+          issueId,
+          identifier,
+          'patch_failed',
+          `hash:${patchHash} build failed`,
+        ),
+        { name: 'linear-dispatcher.notify-pipeline' },
+      );
       await cleanup(true);
       return noResult;
     }
@@ -875,13 +895,16 @@ export async function applyPatchArtifact(
         issueId,
         body: `**Patch applied and pushed** but \`gh pr create\` failed:\n\n\`\`\`\n${stderr.slice(0, 1000)}\n\`\`\`\n\nBranch \`${branchName}\` is pushed — create PR manually.`,
       });
-      notifyPipelineStep(
-        ctx,
-        issueId,
-        identifier,
-        'patch_failed',
-        `hash:${patchHash} gh pr create failed`,
-      ).catch(() => {});
+      fireAndForget(
+        notifyPipelineStep(
+          ctx,
+          issueId,
+          identifier,
+          'patch_failed',
+          `hash:${patchHash} gh pr create failed`,
+        ),
+        { name: 'linear-dispatcher.notify-pipeline' },
+      );
       await cleanup(false);
       return noResult;
     }
@@ -893,13 +916,16 @@ export async function applyPatchArtifact(
       /* best-effort */
     }
 
-    notifyPipelineStep(
-      ctx,
-      issueId,
-      identifier,
-      'patch_applied',
-      `hash:${patchHash} pr:${prUrl}`,
-    ).catch(() => {});
+    fireAndForget(
+      notifyPipelineStep(
+        ctx,
+        issueId,
+        identifier,
+        'patch_applied',
+        `hash:${patchHash} pr:${prUrl}`,
+      ),
+      { name: 'linear-dispatcher.notify-pipeline' },
+    );
     logger.info(
       { issueId, prUrl, patchFileName },
       'patch-applicator: PR created from patch artifact',
@@ -1055,11 +1081,48 @@ async function cleanupWorktree(worktreePath: string): Promise<void> {
   }
 }
 
+/**
+ * Returns the list of files modified in the worktree (via `git diff --name-only HEAD`)
+ * that are NOT covered by any glob in `allowlist`. An empty array means all changed
+ * files are within scope. If git diff fails (e.g. no commits yet), returns [] and
+ * logs a warning — the check is best-effort.
+ */
+export async function checkWriteAllowlist(
+  worktreePath: string,
+  allowlist: string[],
+): Promise<string[]> {
+  let stdout: string;
+  try {
+    const result = await execFileAsync('git', ['diff', '--name-only', 'HEAD'], {
+      cwd: worktreePath,
+      timeout: GIT_TIMEOUT_MS,
+    });
+    stdout = result.stdout;
+  } catch (err) {
+    logger.warn(
+      { worktreePath, err },
+      'linear-dispatcher: checkWriteAllowlist: git diff failed (new worktree?), skipping check',
+    );
+    return [];
+  }
+
+  const changedFiles = stdout
+    .split('\n')
+    .map((f) => f.trim())
+    .filter((f) => f.length > 0);
+
+  const violations = changedFiles.filter(
+    (file) => !allowlist.some((glob) => minimatch(file, glob, { dot: true })),
+  );
+  return violations;
+}
+
 async function runIssue(
   ctx: LinearContext,
   issueId: string,
   identifier: string,
   runContext: RunContext,
+  roleSpec?: RoleSpec,
 ): Promise<void> {
   const workingState = ctx.stateByName.get('Agent Working')!;
   try {
@@ -1071,37 +1134,58 @@ async function runIssue(
     );
   }
 
-  notifyPipelineStep(ctx, issueId, identifier, 'agent_started').catch(() => {});
+  fireAndForget(notifyPipelineStep(ctx, issueId, identifier, 'agent_started'), {
+    name: 'linear-dispatcher.notify-pipeline',
+  });
 
-  const DEFAULT_DISPATCH_WATCHDOG_MS = 90 * 60 * 1000;
-  const _parsedDispatchWatchdog = parseInt(
-    process.env.DISPATCH_WATCHDOG_MS || '',
-    10,
-  );
-  const dispatchWatchdogMs =
-    isNaN(_parsedDispatchWatchdog) || _parsedDispatchWatchdog < 1000
-      ? DEFAULT_DISPATCH_WATCHDOG_MS
-      : _parsedDispatchWatchdog;
-  const { text, error } = await withWatchdog(
-    `dispatch:${identifier}`,
-    executeAgentRun(ctx, runContext),
-    dispatchWatchdogMs,
-    () => {
-      logPipelineEvent(
-        issueId,
-        identifier,
-        'dispatch_stalled',
-        `threshold=${dispatchWatchdogMs}ms`,
-      );
-      stampLiveness(`dispatch_stalled:${issueId}`, {
-        identifier,
-        thresholdMs: dispatchWatchdogMs,
-      });
-    },
-  );
-  clearLiveness(`dispatch_stalled:${issueId}`);
+  const { text, error } = await executeAgentRun(ctx, runContext);
 
   ctx.deps.queue.notifyIdle(runContext.chatJid);
+
+  // Write-allowlist check: runs after agent completes, before patch application
+  if (!error && runContext.worktreePath && roleSpec?.writeAllowlist?.length) {
+    const violations = await checkWriteAllowlist(
+      runContext.worktreePath,
+      roleSpec.writeAllowlist,
+    );
+    if (violations.length > 0) {
+      const fileList = violations.map((f) => `- \`${f}\``).join('\n');
+      const reviseBody =
+        `**Write-allowlist violation** — the agent modified files outside the role's permitted scope.\n\n` +
+        `**Violating files** (${violations.length}):\n${fileList}\n\n` +
+        `Allowed globs: ${roleSpec.writeAllowlist.map((g) => `\`${g}\``).join(', ')}\n\n` +
+        `---\n*To retry: fix the agent role spec or the implementation, then move to **Ready for Agent**.*`;
+      try {
+        await ctx.client.createComment({ issueId, body: reviseBody });
+        const reviseState =
+          ctx.stateByName.get('Needs Revision') ??
+          ctx.stateByName.get('Todo') ??
+          ctx.stateByName.get('Backlog')!;
+        await ctx.client.updateIssue(issueId, { stateId: reviseState.id });
+        notifyPipelineStep(
+          ctx,
+          issueId,
+          identifier,
+          'agent_failed',
+          `write-allowlist violation: ${violations.join(', ')}`,
+        ).catch(() => {});
+        logger.warn(
+          { issueId, violations },
+          'linear-dispatcher: write-allowlist violations detected, issue moved to revise state',
+        );
+      } catch (reviseErr) {
+        logger.warn(
+          { issueId, reviseErr },
+          'linear-dispatcher: failed to post write-allowlist violation comment',
+        );
+      }
+      ctx.inFlightDispatch.delete(issueId);
+      if (runContext.worktreePath) {
+        await cleanupWorktree(runContext.worktreePath).catch(() => {});
+      }
+      return;
+    }
+  }
 
   try {
     if (error) {
@@ -1109,8 +1193,9 @@ async function runIssue(
         issueId,
         body: `**Agent run failed**\n\n\`\`\`\n${error}\n\`\`\`\n\n---\n*To retry: move to **Todo**, then to **Ready for Agent**.*`,
       });
-      notifyPipelineStep(ctx, issueId, identifier, 'agent_failed', error).catch(
-        () => {},
+      fireAndForget(
+        notifyPipelineStep(ctx, issueId, identifier, 'agent_failed', error),
+        { name: 'linear-dispatcher.notify-pipeline' },
       );
       const agentFailCount = getConsecutiveFailCount(issueId, 'agent_failed');
       if (agentFailCount >= CIRCUIT_BREAKER_THRESHOLD) {
@@ -1199,9 +1284,13 @@ async function runIssue(
     );
   } finally {
     ctx.inFlightDispatch.delete(issueId);
-    clearLiveness(`dispatch_in_flight:${issueId}`);
     if (runContext.worktreePath) {
-      await cleanupWorktree(runContext.worktreePath).catch(() => {});
+      await cleanupWorktree(runContext.worktreePath).catch((err) => {
+        logger.error(
+          { worktreePath: runContext.worktreePath, err },
+          'linear-dispatcher: worktree cleanup failed',
+        );
+      });
     }
   }
 }
@@ -1209,12 +1298,6 @@ async function runIssue(
 async function pollLinear(): Promise<void> {
   if (!_ctx) return;
   const ctx = _ctx;
-
-  _lastTickAt = Date.now();
-  stampLiveness('dispatcher_poll', {
-    pollMs: _pollMs,
-    inFlightCount: ctx.inFlightDispatch.size,
-  });
 
   // Conflict detection sweep — runs every poll alongside dispatch
   checkConflictingPrs(ctx).catch((err) => {
@@ -1303,10 +1386,6 @@ async function pollLinear(): Promise<void> {
 
     // Add before triage to prevent concurrent polls from double-processing the same issue
     ctx.inFlightDispatch.add(issue.id);
-    stampLiveness(`dispatch_in_flight:${issue.id}`, {
-      identifier: issue.identifier,
-      startedAt: new Date().toISOString(),
-    });
 
     const issueComments = await issue.comments();
     const comments = await Promise.all(
@@ -1327,7 +1406,6 @@ async function pollLinear(): Promise<void> {
     );
     if (triageResult === 'skip') {
       ctx.inFlightDispatch.delete(issue.id);
-      clearLiveness(`dispatch_in_flight:${issue.id}`);
       continue;
     }
 
@@ -1373,15 +1451,13 @@ async function pollLinear(): Promise<void> {
       ...(worktreePath && { worktreePath }),
     };
 
-    notifyPipelineStep(
-      ctx,
-      issue.id,
-      issue.identifier,
-      'agent_dispatched',
-    ).catch(() => {});
+    fireAndForget(
+      notifyPipelineStep(ctx, issue.id, issue.identifier, 'agent_dispatched'),
+      { name: 'linear-dispatcher.notify-pipeline' },
+    );
 
     ctx.deps.queue.enqueueTask(chatJid, issue.id, () =>
-      runIssue(ctx, issue.id, issue.identifier, runContext),
+      runIssue(ctx, issue.id, issue.identifier, runContext, roleSpec),
     );
 
     dispatched++;
@@ -1596,9 +1672,9 @@ export async function initLinearContext(
         const label = await created.issueLabel;
         return label?.id;
       } catch (err) {
-        logger.warn(
-          { err, label: name },
-          'linear: failed to create/discover label',
+        logger.error(
+          { labelName: name, err },
+          'linear: failed to create/discover label — partial label failure, remaining labels unaffected',
         );
         return undefined;
       }
@@ -1747,7 +1823,6 @@ export function startLinearDispatcher(ctx: LinearContext): void {
   );
   const pollMs =
     isNaN(parsedPollMs) || parsedPollMs < 1000 ? DEFAULT_POLL_MS : parsedPollMs;
-  _pollMs = pollMs;
 
   _tick = () => {
     fireAndForget(() => pollLinear(), {

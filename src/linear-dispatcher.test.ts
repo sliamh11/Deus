@@ -6,6 +6,18 @@ import os from 'os';
 const execFileMock = vi.fn();
 const spawnMock = vi.fn();
 
+// Configurable LinearClient mock — only used by initLinearContext tests.
+// Default: constructor returns an object so ESM import doesn't break other tests.
+const mockLinearClientImpl = vi.hoisted(() => vi.fn());
+
+vi.mock('@linear/sdk', async (importOriginal) => {
+  const orig = await importOriginal<typeof import('@linear/sdk')>();
+  return {
+    ...orig,
+    LinearClient: mockLinearClientImpl,
+  };
+});
+
 vi.mock('child_process', async (importOriginal) => {
   const orig = await importOriginal<typeof import('child_process')>();
   const { promisify } = await import('util');
@@ -75,14 +87,11 @@ vi.mock('./config.js', async () => {
 
 vi.mock('./db.js', () => ({
   CIRCUIT_BREAKER_THRESHOLD: 3,
-  clearLiveness: vi.fn(),
   getConsecutiveFailCount: vi.fn().mockReturnValue(0),
   getIssuePr: vi.fn().mockReturnValue(null),
   getLastFailTime: vi.fn().mockReturnValue(null),
   getPipelineEvents: vi.fn().mockReturnValue([]),
   logPipelineEvent: vi.fn(),
-  stampLiveness: vi.fn(),
-  updatePrAutoMergeState: vi.fn(),
   upsertIssuePr: vi.fn(),
   getOpenPrsForActiveIssues: vi.fn().mockReturnValue([]),
 }));
@@ -105,12 +114,14 @@ const TEST_PROJECT_ROOT = path.join(os.tmpdir(), `deus-test-${process.pid}`);
 
 import {
   loadRoleSpecs,
+  checkWriteAllowlist,
   buildIssuePrompt,
   startLinearDispatcher,
   stopLinearDispatcher,
   truncateComments,
   extractScopeBlock,
   applyPatchArtifact,
+  initLinearContext,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
@@ -233,6 +244,124 @@ Content.`,
   it('returns empty map for nonexistent directory', () => {
     const specs = loadRoleSpecs('/nonexistent/path');
     expect(specs.size).toBe(0);
+  });
+
+  it('parses write_allowlist from frontmatter', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'allowlist-role.md'),
+      `---
+name: allowlist-role
+linear_label: "agent:allowlist-role"
+write_allowlist:
+  - "src/**/*.ts"
+  - "tests/**"
+---
+
+Role with allowlist.`,
+    );
+
+    const specs = loadRoleSpecs(tmpDir);
+    const spec = specs.get('agent:allowlist-role')!;
+    expect(spec).toBeDefined();
+    expect(spec.writeAllowlist).toEqual(['src/**/*.ts', 'tests/**']);
+  });
+
+  it('sets writeAllowlist to undefined when field is absent', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'no-allowlist-role.md'),
+      `---
+name: no-allowlist-role
+linear_label: "agent:no-allowlist-role"
+---
+
+Role without allowlist.`,
+    );
+
+    const specs = loadRoleSpecs(tmpDir);
+    const spec = specs.get('agent:no-allowlist-role')!;
+    expect(spec).toBeDefined();
+    expect(spec.writeAllowlist).toBeUndefined();
+  });
+
+  it('skips non-string entries in write_allowlist', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'mixed-allowlist-role.md'),
+      `---
+name: mixed-allowlist-role
+linear_label: "agent:mixed-allowlist-role"
+write_allowlist:
+  - "src/**"
+  - 42
+  - "tests/**"
+---
+
+Role with mixed allowlist.`,
+    );
+
+    const specs = loadRoleSpecs(tmpDir);
+    const spec = specs.get('agent:mixed-allowlist-role')!;
+    expect(spec).toBeDefined();
+    // Non-string entries are filtered out
+    expect(spec.writeAllowlist).toEqual(['src/**', 'tests/**']);
+  });
+});
+
+describe('checkWriteAllowlist', () => {
+  it('returns empty array when all changed files match a glob', async () => {
+    execFileMock.mockReturnValue({
+      stdout: 'src/foo.ts\nsrc/bar.ts\n',
+      stderr: '',
+    });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual([]);
+  });
+
+  it('returns violating files when some changed files do not match any glob', async () => {
+    execFileMock.mockReturnValue({
+      stdout: 'src/foo.ts\n.github/workflows/ci.yml\n',
+      stderr: '',
+    });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual(['.github/workflows/ci.yml']);
+  });
+
+  it('returns empty array when no files were changed', async () => {
+    execFileMock.mockReturnValue({ stdout: '', stderr: '' });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual([]);
+  });
+
+  it('returns empty array and does not throw when git diff fails', async () => {
+    execFileMock.mockReturnValue({
+      error: new Error('fatal: ambiguous argument HEAD'),
+    });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual([]);
+  });
+
+  it('matches dot files when using dot: true option', async () => {
+    execFileMock.mockReturnValue({
+      stdout: '.env\nsrc/index.ts\n',
+      stderr: '',
+    });
+
+    // .env is not covered by src/**, so it is a violation
+    const violations = await checkWriteAllowlist('/fake/worktree', ['src/**']);
+    expect(violations).toEqual(['.env']);
+  });
+
+  it('returns all changed files as violations when allowlist is empty', async () => {
+    execFileMock.mockReturnValue({
+      stdout: 'src/foo.ts\nREADME.md\n',
+      stderr: '',
+    });
+
+    const violations = await checkWriteAllowlist('/fake/worktree', []);
+    expect(violations).toEqual(['src/foo.ts', 'README.md']);
   });
 });
 
@@ -1207,5 +1336,63 @@ describe('applyPatchArtifact', () => {
 
     expect(result.applied).toBe(true);
     expect(createComment).not.toHaveBeenCalled();
+  });
+});
+
+describe('initLinearContext partial label failure', () => {
+  afterEach(() => {
+    mockLinearClientImpl.mockReset();
+  });
+
+  it('leaves remaining labels populated when one ensureLabel call fails', async () => {
+    // Build a minimal mock LinearClient where createIssueLabel throws for
+    // 'Warden: Revise' but succeeds for all other labels.
+    const mockClient = {
+      viewer: Promise.resolve({ id: 'viewer-id' }),
+      teams: () =>
+        Promise.resolve({ nodes: [{ id: 'team-id', name: 'Deus' }] }),
+      workflowStates: () =>
+        Promise.resolve({
+          nodes: [
+            { id: 'ready-id', name: 'Ready for Agent', type: 'started' },
+            { id: 'working-id', name: 'Agent Working', type: 'started' },
+            { id: 'review-id', name: 'In Review', type: 'started' },
+            { id: 'backlog-id', name: 'Backlog', type: 'backlog' },
+          ],
+        }),
+      issueLabels: () => Promise.resolve({ nodes: [] }),
+      createIssueLabel: ({
+        name,
+      }: {
+        name: string;
+        color: string;
+        teamId: string;
+      }) => {
+        if (name === 'Warden: Revise') {
+          return Promise.reject(new Error('simulated label creation failure'));
+        }
+        return Promise.resolve({
+          issueLabel: Promise.resolve({
+            id: `label-${name.replace(/\s+/g, '-')}`,
+          }),
+        });
+      },
+    };
+
+    // Use a regular function (not arrow) so it works as a constructor
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockLinearClientImpl.mockImplementation(function (this: any) {
+      return mockClient;
+    });
+
+    const ctx = await initLinearContext('valid-api-key-abc123', makeMockDeps());
+    expect(ctx).not.toBeNull();
+    if (!ctx) return;
+
+    // 'evaluating', 'scoped', 'error' labels should populate; 'revise' should not
+    expect(ctx.gateLabels.evaluating).toBeDefined();
+    expect(ctx.gateLabels.scoped).toBeDefined();
+    expect(ctx.gateLabels.error).toBeDefined();
+    expect(ctx.gateLabels.revise).toBeUndefined();
   });
 });

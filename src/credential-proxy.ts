@@ -159,8 +159,8 @@ export function startCredentialProxy(
           const token = req.headers['x-deus-proxy-token'] as string | undefined;
           const groupFolder = token ? validateGroupToken(token) : null;
           if (!groupFolder) {
-            logger.warn(
-              { url: req.url, hasToken: !!token },
+            logger.error(
+              { statusCode: 401, url: req.url, hasToken: !!token },
               'Credential proxy rejected unauthenticated request',
             );
             res.writeHead(401);
@@ -314,6 +314,12 @@ export function startCredentialProxy(
             headers,
           } as RequestOptions,
           (upRes) => {
+            if (upRes.statusCode === 401) {
+              logger.error(
+                { statusCode: 401, provider: provider.name, url: req.url },
+                'Credential proxy received 401 from upstream — auth failure',
+              );
+            }
             res.writeHead(upRes.statusCode!, upRes.headers);
             upRes.pipe(res);
           },

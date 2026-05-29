@@ -895,7 +895,7 @@ def run_code_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
         return 0
-    if _marker(repo_root, ".code-reviewed").exists():
+    if _read_verdict("code-reviewed", repo_root) == "SHIP":
         return 0
 
     mark_cmd = (
@@ -1021,7 +1021,7 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
         return 0
-    if _marker(repo_root, ".verified").exists():
+    if _read_verdict("verified", repo_root) == "SHIP":
         return 0
 
     mark_cmd = (
@@ -1059,6 +1059,13 @@ def run_verification_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     # `.claude/worktrees/<sub>/`, etc.) don't change the main-thread diff,
     # so the marker survives. The plan-review GATE fails closed on the
     # same condition — that asymmetry is intentional.
+    #
+    # git add is a staging-only operation, not a code edit — skip it so
+    # that pattern-only commits don't lose their SHIP verdict.
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else ""
+    if isinstance(command, str) and command.startswith("git add"):
+        return 0
     worktree, paths = _managed_paths(event, repo_root)
     if worktree is None:
         return 0
@@ -1071,6 +1078,7 @@ def run_verification_invalidator(event: dict[str, Any], repo_root: Path) -> int:
         )
         return 0
     _marker(repo_root, ".verified").unlink(missing_ok=True)
+    _clear_verdict("verified", repo_root)
     return 0
 
 
@@ -1164,6 +1172,13 @@ def run_memory_tree_hook(event: dict[str, Any], repo_root: Path) -> int:
 
 def run_code_review_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     # Same fail-open-on-empty-paths invariant as run_verification_invalidator.
+    #
+    # git add is a staging-only operation, not a code edit — skip it so
+    # that pattern-only commits don't lose their SHIP verdict.
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else ""
+    if isinstance(command, str) and command.startswith("git add"):
+        return 0
     worktree, paths = _managed_paths(event, repo_root)
     if worktree is None:
         return 0
@@ -1176,6 +1191,7 @@ def run_code_review_invalidator(event: dict[str, Any], repo_root: Path) -> int:
         )
         return 0
     _marker(repo_root, ".code-reviewed").unlink(missing_ok=True)
+    _clear_verdict("code-reviewed", repo_root)
     # LLM code is a subset of all code — source edits invalidate both markers
     _marker(repo_root, ".ai-eng-reviewed").unlink(missing_ok=True)
     return 0
@@ -1823,6 +1839,44 @@ def _read_verdicts(repo_root: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _read_verdict(marker_name: str, repo_root: Path) -> str | None:
+    """Return the verdict string for *marker_name* from .warden-verdicts.json.
+
+    Maps the marker name (e.g. ``"code-reviewed"``) to the warden key used in
+    the JSON (e.g. ``"code-reviewer"``) via ``MARKER_NAMES``.  Returns ``None``
+    if the file is absent, malformed, or the entry is missing.
+    """
+    warden = MARKER_NAMES.get(marker_name)
+    if not warden:
+        return None
+    data = _read_verdicts(repo_root)
+    entry = data.get(warden)
+    if not isinstance(entry, dict):
+        return None
+    v = entry.get("verdict")
+    return v if isinstance(v, str) else None
+
+
+def _clear_verdict(marker_name: str, repo_root: Path) -> None:
+    """Remove the *marker_name* entry from .warden-verdicts.json.
+
+    Maps the marker name to the warden key via ``MARKER_NAMES``.  Silently
+    skips if the file is absent or the key is not present.
+    """
+    warden = MARKER_NAMES.get(marker_name)
+    if not warden:
+        return
+    path = _verdicts_path(repo_root)
+    data = _read_verdicts(repo_root)
+    if warden not in data:
+        return
+    del data[warden]
+    try:
+        _write_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+    except OSError:
+        _debug(f"_clear_verdict: failed to write {path}")
 
 
 def _write_verdict(repo_root: Path, warden: str, verdict: str, reason: str, source: str = "manual") -> None:

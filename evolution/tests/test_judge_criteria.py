@@ -256,3 +256,49 @@ class TestComposeScoreOldFormat:
         # 0.80 + 0.5*(0.10+0.05+0.05) = 0.80 + 0.10 = 0.90
         score = compose_score(dims)
         assert score == pytest.approx(0.90)
+
+
+# ── _normalize_dim: personalization 3-bool new format ────────────────────────
+
+
+def test_normalize_personalization_3bool():
+    assert _normalize_dim("personalization", {"recalled_preference": True, "format_matched": False, "tone_matched": True}) == 0.75
+
+
+def test_normalize_personalization_all_true():
+    assert _normalize_dim("personalization", {"recalled_preference": True, "format_matched": True, "tone_matched": True}) == 1.0
+
+
+def test_normalize_personalization_all_false():
+    assert _normalize_dim("personalization", {"recalled_preference": False, "format_matched": False, "tone_matched": False}) == 0.0
+
+
+def test_normalize_personalization_backward_compat_likert():
+    assert _normalize_dim("personalization", {"personalization_level": 4}) == 0.75
+
+
+def test_normalize_personalization_backward_compat_float():
+    assert _normalize_dim("personalization", {"personalization": 0.8}) == 0.8
+
+
+# ── _normalize_dim: tool_use exec-only new format ────────────────────────────
+
+
+def test_normalize_tool_use_exec_only():
+    assert _normalize_dim("tool_use", {"execution_quality": 3}) == 0.5
+
+
+def test_normalize_tool_use_exec_only_max():
+    assert _normalize_dim("tool_use", {"execution_quality": 5}) == 1.0
+
+
+def test_normalize_tool_use_exec_only_min():
+    assert _normalize_dim("tool_use", {"execution_quality": 1}) == 0.0
+
+
+def test_normalize_tool_use_backward_compat_two_part():
+    assert _normalize_dim("tool_use", {"right_tools": True, "execution_quality": 5}) == 1.0
+
+
+def test_normalize_tool_use_backward_compat_float():
+    assert _normalize_dim("tool_use", {"tool_use": 0.7}) == 0.7

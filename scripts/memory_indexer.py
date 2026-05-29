@@ -54,12 +54,9 @@ DB_PATH = Path(os.environ.get("DEUS_DB", "~/.deus/memory.db")).expanduser()
 LAST_RESUME_LEARNINGS = Path("~/.deus/last_resume_learnings.txt").expanduser()
 HEALTH_LOG_PATH = Path("~/.deus/memory_health.jsonl").expanduser()
 
-# Entity extraction provider: "auto" tries GLiNER first (local), falls back to Gemini cascade.
-# "gemini" skips GLiNER entirely.  "gliner" requires GLiNER installed.
+# Entity extraction provider: "auto" tries Ollama (Gemma4) first, falls back to Gemini cascade.
+# "ollama" uses Ollama only.  "gemini" skips Ollama entirely.
 ENTITY_PROVIDER = os.environ.get("DEUS_ENTITY_PROVIDER", "auto")
-
-# Module-level GLiNER model cache — loaded at most once per process.
-_gliner_model = None
 
 
 def _load_vault_path() -> Path:
@@ -2045,108 +2042,90 @@ def _ent_rel_prompt(content: str) -> str:
     )
 
 
-def _extract_entities_gliner(content: str) -> "dict | None":
-    """Extract entities locally using GLiNER.
+def _extract_entities_ollama(content: str) -> "dict | None":
+    """Extract entities and relationships via Ollama (Gemma4).
 
     Returns a dict with the same schema consumed by the DB layer:
-      {"entities": [{"name": str, "entity_type": str}], "relationships": []}
-    or None when GLiNER is not installed.
-
-    Note: GLiNER does not produce relationships; call
-    _extract_relationships_ollama() separately to fill them in.
-    """
-    global _gliner_model
-    try:
-        from gliner import GLiNER  # type: ignore[import]
-    except ImportError:
-        return None
-
-    labels = ["person", "project", "tool", "concept", "org"]
-    if _gliner_model is None:
-        _gliner_model = GLiNER.from_pretrained("urchade/gliner_medium-v2.1")
-    model = _gliner_model
-    text = _extract_content_for_llm(content)
-    raw_entities = model.predict_entities(text[:4000], labels, threshold=0.3)
-
-    seen: set[tuple[str, str]] = set()
-    unique: list[dict] = []
-    for e in raw_entities:
-        key = (e["text"].lower(), e["label"])
-        if key not in seen:
-            seen.add(key)
-            unique.append({"name": e["text"], "entity_type": e["label"]})
-        if len(unique) >= 10:
-            break
-
-    return {"entities": unique, "relationships": []}
-
-
-def _extract_relationships_ollama(content: str, entities: list) -> list:
-    """Extract relationships via Ollama (gemma3:1b) running at localhost:11434.
-
-    Returns a list of {"source": str, "target": str, "rel_type": str} dicts
-    (up to 10).  Returns [] on any error or when fewer than 2 entities exist.
+      {"entities": [{"name": str, "entity_type": str, "summary": str}],
+       "relationships": [{"source": str, "target": str, "rel_type": str}]}
+    or None when Ollama is not reachable.
     """
     import urllib.request
 
-    if not entities or len(entities) < 2:
-        return []
-
-    entity_names = [e["name"] for e in entities]
-    entity_list = ", ".join(f'"{n}"' for n in entity_names)
-    text_snippet = _extract_content_for_llm(content)[:2000]
-    prompt = (
-        "Given these entities: " + entity_list + "\n\n"
-        "And this text:\n" + text_snippet + "\n\n"
-        "List relationships between the entities as a JSON array.\n"
-        "Each item: {\"source\": \"...\", \"target\": \"...\", "
-        "\"rel_type\": \"uses|works_on|prefers|knows|depends_on|related_to\"}\n"
-        "Output ONLY the JSON array, no markdown fencing, max 10 items.\n"
-        "If no relationships, output []."
-    )
+    prompt = _ent_rel_prompt(content)
     ollama_url = os.environ.get("DEUS_OLLAMA_URL", "http://localhost:11434")
-    ollama_model = os.environ.get("DEUS_OLLAMA_REL_MODEL", "gemma3:1b")
-    payload = json.dumps({
+    ollama_model = os.environ.get("DEUS_OLLAMA_ENTITY_MODEL", "gemma4:e4b")
+    body = json.dumps({
         "model": ollama_model,
         "prompt": prompt,
         "stream": False,
+        "format": {
+            "type": "object",
+            "properties": {
+                "entities": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "entity_type": {"type": "string"},
+                            "summary": {"type": "string"},
+                        },
+                    },
+                },
+                "relationships": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source": {"type": "string"},
+                            "target": {"type": "string"},
+                            "rel_type": {"type": "string"},
+                            "confidence": {"type": "number"},
+                        },
+                    },
+                },
+            },
+            "required": ["entities", "relationships"],
+        },
+        "options": {"temperature": 0, "seed": 42},
     }).encode()
     req = urllib.request.Request(
         f"{ollama_url}/api/generate",
-        data=payload,
+        data=body,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=60) as resp:
             data = json.loads(resp.read().decode())
         raw = data.get("response", "").strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"```[a-z]*\n?", "", raw).strip()
         result = json.loads(raw)
-        if not isinstance(result, list):
-            return []
-        valid = []
-        for item in result:
-            if (
-                isinstance(item, dict)
-                and "source" in item
-                and "target" in item
-                and "rel_type" in item
-            ):
-                valid.append({
-                    "source": item["source"],
-                    "target": item["target"],
-                    "rel_type": item["rel_type"],
-                })
-            if len(valid) >= 10:
-                break
-        return valid
+        if isinstance(result, dict) and "entities" in result:
+            ents = [
+                e for e in result.get("entities", [])[:10]
+                if isinstance(e, dict)
+                and isinstance(e.get("name"), str) and e["name"]
+                and isinstance(e.get("entity_type"), str)
+            ]
+            rels = [
+                r for r in result.get("relationships", [])[:10]
+                if isinstance(r, dict)
+                and "source" in r and "target" in r and "rel_type" in r
+            ]
+            return {"entities": ents, "relationships": rels}
+        return {"entities": [], "relationships": []}
+    except urllib.error.HTTPError as exc:
+        print(f"  WARN: Ollama entity extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
     except (ConnectionRefusedError, OSError):
-        return []  # Ollama not running — expected in auto mode
+        return None
+    except json.JSONDecodeError as exc:
+        print(f"  WARN: Ollama entity extraction malformed JSON: {str(exc)[:120]}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
     except Exception as exc:
-        print(f"  WARN: Ollama relationship extraction failed: {exc}", file=sys.stderr)
-        return []
+        print(f"  WARN: Ollama entity extraction failed: {exc}", file=sys.stderr)
+        return {"entities": [], "relationships": []}
 
 
 def _extract_entities_and_relations_gemini(content: str) -> dict:
@@ -2180,34 +2159,29 @@ def extract_entities_and_relations(content: str) -> dict:
     """Extract entities and relationships from a session log.
 
     Routing is controlled by the DEUS_ENTITY_PROVIDER env var (default "auto"):
-      - "auto"   — try GLiNER locally first; if unavailable (ImportError) fall
-                   back to the Gemini cascade.  When GLiNER succeeds, also try
-                   Ollama for relationship extraction.
-      - "gliner" — require GLiNER; skip Gemini entirely (raises on ImportError).
-      - "gemini" — skip GLiNER entirely; use the Gemini cascade.
+      - "auto"   — try Ollama (Gemma4) first; if unavailable fall back to Gemini.
+      - "ollama" — require Ollama; return empty on failure.
+      - "gemini" — skip Ollama entirely; use the Gemini cascade.
     """
     provider = ENTITY_PROVIDER.lower()
 
     if provider == "gemini":
         return _extract_entities_and_relations_gemini(content)
 
-    # "auto" or "gliner": attempt GLiNER first.
-    gliner_result = _extract_entities_gliner(content)
+    # "auto" or "ollama": attempt Ollama first.
+    ollama_result = _extract_entities_ollama(content)
 
-    if gliner_result is None:
-        # GLiNER not installed.
-        if provider == "gliner":
+    if ollama_result is None:
+        if provider == "ollama":
             print(
-                "  WARN: DEUS_ENTITY_PROVIDER=gliner but gliner package not installed.",
+                "  WARN: DEUS_ENTITY_PROVIDER=ollama but Ollama not reachable.",
                 file=sys.stderr,
             )
             return {"entities": [], "relationships": []}
         # auto: fall back to Gemini.
         return _extract_entities_and_relations_gemini(content)
 
-    # GLiNER succeeded — enrich with Ollama relationships.
-    relationships = _extract_relationships_ollama(content, gliner_result["entities"])
-    return {"entities": gliner_result["entities"], "relationships": relationships}
+    return ollama_result
 
 
 def _contradiction_prompt(fact_a: str, fact_b: str) -> str:

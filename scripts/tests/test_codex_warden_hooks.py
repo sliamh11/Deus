@@ -1463,6 +1463,9 @@ def test_verification_gate_blocks_git_commit_without_marker(tmp_path, capsys):
 def test_verification_gate_allows_after_marker(tmp_path, capsys):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
+    # Gate now reads from .warden-verdicts.json; touching the file alone is
+    # not sufficient — write the JSON SHIP verdict as the mark command does.
+    hooks._write_verdict(repo, "verification-gate", "SHIP", "all good", "mark")
     (repo / ".claude" / ".verified").touch()
 
     rc = hooks.run_verification_gate(bash_event(repo, "git commit -m test"), repo)
@@ -2775,6 +2778,68 @@ def test_session_init_clears_commit_window(tmp_path):
 
     assert not (repo / ".claude" / ".commit-window").exists()
 
+# ── LIA-109: JSON-based gate reads and JSON-clearing invalidation ─────────────
+
+
+def test_gate_reads_from_json_when_file_absent(tmp_path, capsys):
+    """run_code_review_gate allows commit when JSON has SHIP verdict, even if
+    the .code-reviewed marker file does not exist."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # Write SHIP verdict to JSON — no marker file
+    hooks._write_verdict(repo, "code-reviewer", "SHIP", "all good", "mark")
+
+    rc = hooks.run_code_review_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_gate_blocks_when_json_absent(tmp_path, capsys):
+    """run_code_review_gate blocks when both JSON and marker file are absent."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_code_review_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    output = json.loads(out)
+    reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "code-reviewer" in reason
+
+
+def test_gate_blocks_when_json_verdict_is_not_ship(tmp_path, capsys):
+    """run_code_review_gate blocks when JSON verdict is REVISE (not SHIP)."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "code-reviewer", "REVISE", "issues", "agent")
+
+    rc = hooks.run_code_review_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    output = json.loads(out)
+    reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "REVISE" in reason
+
+
+def test_verification_gate_reads_from_json_when_file_absent(tmp_path, capsys):
+    """run_verification_gate allows commit when JSON has SHIP verdict, even if
+    the .verified marker file does not exist."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "verification-gate", "SHIP", "all good", "mark")
+
+    rc = hooks.run_verification_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_invalidator_clears_json_entry_code_review(tmp_path):
+    """run_code_review_invalidator removes the code-reviewer entry from
+    .warden-verdicts.json on a real source file edit."""
 
 # ---------------------------------------------------------------------------
 # memo-enricher tests
@@ -2927,6 +2992,85 @@ def test_memo_enricher_apply_patch_creates_memo(tmp_path):
     repo = git_repo(tmp_path)
     (repo / "src").mkdir()
     (repo / "src" / "app.ts").write_text("old\n", encoding="utf-8")
+    hooks._write_verdict(repo, "code-reviewer", "SHIP", "all good", "mark")
+
+    verdicts_path = repo / ".claude" / ".warden-verdicts.json"
+    assert verdicts_path.exists()
+    data = json.loads(verdicts_path.read_text())
+    assert "code-reviewer" in data
+
+    rc = hooks.run_code_review_invalidator(
+        apply_patch_event(repo, "src/app.ts"), repo
+    )
+
+    assert rc == 0
+    data_after = json.loads(verdicts_path.read_text())
+    assert "code-reviewer" not in data_after
+
+
+def test_invalidator_clears_json_entry_verification(tmp_path):
+    """run_verification_invalidator removes the verification-gate entry from
+    .warden-verdicts.json on a real source file edit."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.ts").write_text("old\n", encoding="utf-8")
+    hooks._write_verdict(repo, "verification-gate", "SHIP", "all good", "mark")
+
+    verdicts_path = repo / ".claude" / ".warden-verdicts.json"
+    data = json.loads(verdicts_path.read_text())
+    assert "verification-gate" in data
+
+    rc = hooks.run_verification_invalidator(
+        apply_patch_event(repo, "src/app.ts"), repo
+    )
+
+    assert rc == 0
+    data_after = json.loads(verdicts_path.read_text())
+    assert "verification-gate" not in data_after
+
+
+def test_git_add_does_not_trigger_invalidator(tmp_path):
+    """run_code_review_invalidator skips invalidation when the Bash command is
+    git add — staging is not a code-editing operation."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.ts").write_text("old\n", encoding="utf-8")
+    marker = repo / ".claude" / ".code-reviewed"
+    marker.touch()
+    hooks._write_verdict(repo, "code-reviewer", "SHIP", "all good", "mark")
+
+    # Simulate a bash event for "git add" — not an Edit/Write but same logic path
+    rc = hooks.run_code_review_invalidator(
+        bash_event(repo, "git add src/app.ts"), repo
+    )
+
+    assert rc == 0
+    assert marker.exists(), "marker must survive a git add event"
+    data = json.loads((repo / ".claude" / ".warden-verdicts.json").read_text())
+    assert "code-reviewer" in data, "JSON entry must survive a git add event"
+
+
+def test_git_add_does_not_trigger_verification_invalidator(tmp_path):
+    """run_verification_invalidator skips invalidation when the Bash command is
+    git add — staging is not a code-editing operation."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.ts").write_text("old\n", encoding="utf-8")
+    marker = repo / ".claude" / ".verified"
+    marker.touch()
+    hooks._write_verdict(repo, "verification-gate", "SHIP", "all good", "mark")
+
+    rc = hooks.run_verification_invalidator(
+        bash_event(repo, "git add src/app.ts"), repo
+    )
+
+    assert rc == 0
+    assert marker.exists(), "marker must survive a git add event"
+    data = json.loads((repo / ".claude" / ".warden-verdicts.json").read_text())
+    assert "verification-gate" in data, "JSON entry must survive a git add event"
 
     rc = hooks.run_memo_enricher(apply_patch_event(repo, "src/app.ts"), repo)
 
