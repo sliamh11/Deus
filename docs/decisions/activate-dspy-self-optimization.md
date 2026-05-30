@@ -2,10 +2,10 @@
 
 # Status
 
-Proposed
+Accepted
 
 **Date:** 2026-05-30
-**Scope:** The DSPy optimizer arm — its GEPA quality metric and artifact activation gate (`evolution/optimizer/dspy_optimizer.py`, `evolution/optimizer/artifacts.py`, `evolution/storage/` artifact ops, `evolution/config.py`). Phase 1 fixes the metric + adds the ship-if-better gate; prompt injection (`evolution-client.ts`, `container-runner.ts`) is Phase 2+.
+**Scope:** The DSPy optimizer arm — its GEPA quality metric and artifact activation gate (`evolution/optimizer/dspy_optimizer.py`, `evolution/optimizer/artifacts.py`, `evolution/storage/` artifact ops, `evolution/config.py`), plus the host-side prompt-injection consumer (`evolution/cli.py`, `evolution/mcp_server.py`, `evolution-client.ts`, `container-runner.ts`). Phase 1 fixed the metric + added the ship-if-better gate (PR #651, merged). Phase 2 wires the consumer dark behind `EVOLUTION_OPTIMIZED_PROMPTS` (default OFF) and lands the LIA-152 sanitization prerequisite.
 
 # Context
 
@@ -73,18 +73,71 @@ alone is safe to enable:
    loop is missing.
 
 3. **Host consumer.** Add a `getActivePrompt(module)` path in `evolution-client.ts`
-   and inject the active optimized prompt at the same site
-   (`message-orchestrator.ts`) where reflections are injected today — composing
-   with, not replacing, the reflections block.
+   and inject the active optimized prompt at the same site where reflections are
+   injected today — composing with, not replacing, the reflections block.
+
+   **Implementation note (injection site).** An earlier draft of this ADR named
+   `message-orchestrator.ts` as the reflections/injection site. That is stale:
+   the live reflexion arm prepends its block to the **user prompt** at
+   `container-runner.ts:~251` (`runContainerAgent`), not via
+   `appendToSystemPrompt` in `message-orchestrator.ts`. Phase 2 injects the
+   optimized prompt at that **same** `container-runner.ts` seam, immediately after
+   the reflections prepend. Rationale, recorded so it is not re-litigated: both
+   self-improvement arms then compose at one well-tested, fail-safe point — a
+   single place that reasons about prompt assembly, where both arms degrade to the
+   base prompt identically when their source is empty. This supersedes the
+   `message-orchestrator.ts` reference.
+
+   **Trust boundary (LIA-152).** An optimized artifact is untrusted LLM output, and
+   it is injected into the **user-prompt** channel. So the consumer never injects
+   raw artifact content: a single helper (`artifacts.get_active_prompt_block`)
+   extracts only `_predict.signature.instructions`, rejects the trivial
+   auto-generated default (no learned signal), length-caps it
+   (`OPTIMIZED_PROMPT_MAX_CHARS`), and wraps it in
+   `<stored-output source="dspy-artifact" module="…">` boundary tags that are
+   injected verbatim to demarcate stored content. Both the Node bridge and the
+   `get_active_prompt_tool` MCP surface route through this one helper, so neither
+   can leak raw, unbounded content. This sanitization is a **hard prerequisite**
+   for enabling injection.
 
 4. **Kill switch + observability.** A single env flag (`EVOLUTION_OPTIMIZED_PROMPTS`,
    default off) gates injection so the arm can be disabled instantly without a
-   deploy. Every activation logs baseline → new score, delta, sample count, and
-   artifact id. Rollback = revert to the previous active artifact.
+   deploy. The gate is checked **before** the Python subprocess spawns, so the
+   default-off path adds zero dispatch latency. Every activation logs baseline →
+   new score, delta, sample count, and artifact id. Rollback = revert to the
+   previous active artifact.
 
 Rollout: activation defaults OFF. The arm runs in shadow (produces + validates
 artifacts, logs deltas) until shadow data shows consistent positive deltas, then
 the flag is flipped per-module.
+
+**Wired ≠ validated.** Phase 2 ships the *mechanism*. The `qa` module's instruction
+is tuned by GEPA against a `dspy.Predict` signature (`query/context/reflections →
+answer`), but the container agent is a full Claude Code agent, not a DSPy Predict —
+so even a rich optimized instruction was tuned against a different harness. Shadow
+deltas validate *transfer* (does the injected instruction actually help the real
+agent), not the wiring. Do not read "wired" as "proven useful."
+
+**Pre-flip checklist** (all required before setting `EVOLUTION_OPTIMIZED_PROMPTS=1`
+for any module — the dark ship deliberately defers these):
+
+1. **Verify the key path.** Confirm `_predict.signature.instructions` against a real
+   GEPA-compiled `dump_state()` once `dspy` is installed (the consumer was verified
+   only against a non-GEPA artifact). The whole trust boundary is correct only if
+   this key reaches real content (`artifacts.py` TODO).
+2. **Move the block to a session-stable channel.** The injected block is static
+   (hardcoded `qa`, no per-query variation), so on the per-turn user prompt it
+   re-bills its ~tokens every turn of a resumed session. Move it to the
+   session-stable system-prompt channel (the same reasoning the project-hint uses
+   at `container-runner.ts`) so it is sent once.
+3. **Parallelize retrieval.** `getReflections` and `getActivePrompt` are independent;
+   `Promise.all` them so two ~3 s subprocesses don't serialize to a 6 s pre-dispatch
+   ceiling.
+4. **Make the shadow delta a live signal.** Today the logged delta is the offline
+   GEPA holdout delta from artifact metadata, not a live A/B. Join pre-injection vs
+   post-dispatch judge scores under the same `artifactId` so "does it transfer" is
+   actually falsifiable.
+5. **Fix the `tool_selection` judge objective** (LIA-151).
 
 # Consequences
 

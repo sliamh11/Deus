@@ -123,6 +123,15 @@ def cmd_get_reflections(query_json: str) -> None:
     print(json.dumps({"reflections_block": block, "count": len(refs), "reflection_ids": ref_ids}))
 
 
+def cmd_get_active_prompt(module: str) -> None:
+    """Used by the Node.js host: writes the sanitized optimized-prompt block for a
+    module to stdout as JSON. Prints '{}' when there is no safe block to inject."""
+    from .optimizer.artifacts import get_active_prompt_block
+
+    block = get_active_prompt_block(module)
+    print(json.dumps(block or {}))
+
+
 def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> None:
     """Auto-trigger principles extraction if enough new data exists."""
     from .config import PRINCIPLES_COOLDOWN_HOURS
@@ -551,6 +560,10 @@ def main() -> None:
     p_refs = sub.add_parser("get_reflections", help="Retrieve relevant reflections (JSON)")
     p_refs.add_argument("query_json", help='JSON: {"query": "...", "group_folder": "...", ...}')
 
+    # get_active_prompt
+    p_active = sub.add_parser("get_active_prompt", help="Get the sanitized active optimized-prompt block for a module (JSON)")
+    p_active.add_argument("module", help="Module name: qa | tool_selection | summarization")
+
     # log_interaction
     p_log = sub.add_parser("log_interaction", help="Log an interaction and run judge")
     p_log.add_argument("json_str", help="JSON interaction payload")
@@ -643,6 +656,8 @@ def main() -> None:
         cmd_status(group_folder=args.group, domain=args.domain, compare=args.compare, show_tokens=args.tokens)
     elif args.cmd == "get_reflections":
         cmd_get_reflections(args.query_json)
+    elif args.cmd == "get_active_prompt":
+        cmd_get_active_prompt(args.module)
     elif args.cmd == "log_interaction":
         cmd_log_interaction(args.json_str)
     elif args.cmd == "reflect":
