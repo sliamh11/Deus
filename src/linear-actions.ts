@@ -195,7 +195,11 @@ export async function moveIssueState(
 
   try {
     await ctx.client.updateIssue(issueId, { stateId: state.id });
-    logPipelineEvent(issueId, identifier, 'state_changed', `→ ${state.name}`);
+    // Done transitions emit `moved_done` (a terminal "shipped" event) so
+    // computeTodayStats counts them; automerge emits `automerge_done` on its own
+    // direct path (linear-auto-merge.ts) and never reaches here.
+    const eventType = state.name === 'Done' ? 'moved_done' : 'state_changed';
+    logPipelineEvent(issueId, identifier, eventType, `→ ${state.name}`);
     return { ok: true, message: `${identifier} → ${state.name}` };
   } catch (err) {
     return {
