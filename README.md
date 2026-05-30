@@ -123,6 +123,7 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus listen` | Record from mic, transcribe locally, copy to clipboard |
 | `deus tui` | Full-screen terminal UI for chat, wardens, services, and channels |
 | `deus pipeline` | Live pipeline monitor (default), or one-shot audit (`PROJ-123`, `--failed`, `--active`) |
+| `deus usage` | Token-efficiency + cost report across all projects (`--since`, `--project`, `--pricing`, `--json`) |
 | `deus backend` | Show active agent backend (`claude`, `codex`, `llama-cpp`) |
 | `deus backend set <name>` | Switch backend for all future sessions |
 
@@ -199,6 +200,31 @@ deus pipeline PROJ-123               # Full timeline for an issue
 deus pipeline --failed --since 24h   # Failures in the last 24 hours
 deus pipeline --active               # One-shot active view
 ```
+
+### Usage report
+
+Run `deus usage` for a per-model token-efficiency and cost report across all your
+Claude Code projects (deduped by API response):
+
+```bash
+deus usage                           # Full report, all projects, all time
+deus usage --since 2026-05-01        # Scope to a date window
+deus usage --project myrepo          # Filter to one project (by dir substring)
+deus usage --pricing none            # Efficiency ratios only, no cost column
+deus usage --rates ~/rates.json      # Override per-model rates (API-direct pricing)
+deus usage --json                    # Machine-readable output
+```
+
+The report breaks down **per project first** (heaviest first; worktrees fold into their
+repo and ephemeral temp runs bucket together), then gives the all-projects per-model
+totals. The **efficiency layer** is pricing-independent: per-model `cacheRead:output`
+(context drag per generated token), `cacheRead:cacheCreation` (cache amortization), and
+output-share. The **cost layer** prices tokens via a built-in per-model table (notional
+for subscription users; the real bill for API-direct users) and degrades gracefully to
+"—" for models it has no rate for. Absolute token totals may differ slightly from
+`ccusage` (which counts duplicated subagent messages differently); the efficiency ratios
+are unaffected. Direct background/proxy model calls that do not flow through Claude Code
+are not yet captured (tracked separately).
 
 ### Vault sync
 

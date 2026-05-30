@@ -1573,6 +1573,12 @@ $STARTUP_INSTRUCTION"
         ;;
     esac
     ;;
+  usage)
+    # Token-usage efficiency + cost report across all projects.
+    # $SCRIPT_DIR (not $HOME/deus) so it works from any install path / worktree.
+    shift
+    exec python3 "$SCRIPT_DIR/scripts/analyze_token_efficiency.py" "$@"
+    ;;
   pipeline)
     shift
     # cd required: config.ts evaluates PROJECT_ROOT from process.cwd() at import time
@@ -1811,6 +1817,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus provider   Switch proxy provider (ollama|llamacpp|gemini)"
     echo "  deus model      Switch proxy model or open dashboard (model-name|dashboard)"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
+    echo "  deus usage      Token-efficiency + cost report (--since|--project|--pricing|--json)"
     echo "  deus pipeline   Pipeline event audit (LIA-XX | --failed | --active | --all)"
     echo "  deus solution   Manage solution atoms (list|search|add)"
     echo "  deus sweep      Run threshold calibration sweep against benchmark queries"
