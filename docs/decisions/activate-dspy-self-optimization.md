@@ -5,6 +5,7 @@
 Proposed
 
 **Date:** 2026-05-30
+**Scope:** The DSPy optimizer arm — its GEPA quality metric and artifact activation gate (`evolution/optimizer/dspy_optimizer.py`, `evolution/optimizer/artifacts.py`, `evolution/storage/` artifact ops, `evolution/config.py`). Phase 1 fixes the metric + adds the ship-if-better gate; prompt injection (`evolution-client.ts`, `container-runner.ts`) is Phase 2+.
 
 # Context
 
