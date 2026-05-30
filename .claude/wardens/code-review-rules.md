@@ -91,6 +91,12 @@
 **Check:** Does the diff contain (a) unused variables renamed to `_var` to silence warnings instead of being deleted, (b) `// removed` / `// deprecated` tombstone comments, (c) re-exports of types or functions whose implementations were removed, or (d) feature-flag gates for behavior changes where rollback is trivial (one-commit revert)?
 **Rule:** Delete unused code completely. Change behavior in place when rollback is cheap. Git history preserves deletions — no shims, no tombstone comments, no flags that only exist "just in case".
 
+## connectivity-wiring
+**Severity:** warning
+**Applies when:** Diff adds (a) a new `DEUS_*` feature-flag gate, (b) a new integration or entry-point module (channel server, MCP-tool registration, orchestrator/evolution wiring), or (c) a new standalone module exporting a public symbol meant to run in production (e.g. a new file under `src/` whose export is not yet imported anywhere outside tests). NOT for ordinary helper/util exports consumed within the same change.
+**Check:** Does the diff (or PR body) show the producer→consumer edge — a non-test caller, a live registration, or the flag actually read on a runtime path — OR cite a deferred-wire Linear issue (e.g. `LIA-NNN`) for the missing wire?
+**Rule:** A new capability must be reachable in the runtime path or explicitly tracked as deferred. Green unit tests do not prove reachability — every facade in the LIA-133 audit had passing unit tests yet no live caller. Flag the unwired-and-untracked case; a cited deferral is acceptable.
+
 ## comment-discipline
 **Severity:** warning
 **Applies when:** Diff adds or modifies code comments (inline, block, or docstrings).
@@ -192,6 +198,10 @@
 
 ### backwards-compat-hacks
 **Cite:** system-prompt "Avoid backwards-compatibility hacks" rule
+
+### connectivity-wiring
+**Cite:** `docs/decisions/facade-prevention-mechanism.md`; LIA-133 facade audit (Layer 1 of 3)
+**Remediation:** Add the missing producer→consumer edge — wire the new symbol/module into a live runtime path, or set the flag on that path — and show it in the diff or PR body. If the wire is intentionally deferred, cite the tracking Linear issue in the PR body and an adjacent code comment. Do not rely on unit-test presence as evidence of reachability. The rejected blanket "zero-caller exported symbol" check (and why it floods false positives) is documented in the ADR.
 
 ### comment-discipline
 **Cite:** system-prompt "Default to writing no comments" rule
