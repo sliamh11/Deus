@@ -108,6 +108,20 @@ _MODULE_IO = {
 }
 
 
+# Modules excluded from GEPA optimization because their judge objective is
+# ill-defined (LIA-151); the value is the reason, logged on skip. Re-enable
+# tool_selection only after tool usage is logged with a per-interaction available
+# tool set (LIA-154), then score it with a tools_used ground-truth metric.
+_JUDGE_OPTIMIZATION_EXCLUDED = {
+    "tool_selection": (
+        "no usable ground truth: live tools_used unlogged + available_tools "
+        "hardcoded, so the judge objective is undefined (LIA-151)"
+    ),
+}
+# A typo in an exclusion key would silently exclude nothing — catch it at import.
+assert all(m in MODULE_REGISTRY for m in _JUDGE_OPTIMIZATION_EXCLUDED)
+
+
 def _make_judge_metric(judge, module: str):
     """Build a GEPA-protocol metric that scores a prediction with the real
     runtime judge instead of the old length heuristic.
@@ -191,6 +205,13 @@ def optimize(
     plus secondary pool (top cross-domain interactions) for generalization.
     Returns the artifact ID on success, None if insufficient samples.
     """
+    # Excluded modules (LIA-151) skip FIRST, before _require_dspy(), so the skip
+    # is testable without dspy and is the single chokepoint for every caller.
+    reason = _JUDGE_OPTIMIZATION_EXCLUDED.get(module)
+    if reason:
+        print(f"[evolution] Skipping {module}: {reason}")
+        return None
+
     _require_dspy()
     import dspy
 
