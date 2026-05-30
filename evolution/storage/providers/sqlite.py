@@ -772,20 +772,25 @@ class SQLiteStorageProvider(StorageProvider):
         baseline_score: Optional[float] = None,
         optimized_score: Optional[float] = None,
         sample_count: Optional[int] = None,
+        active: bool = True,
     ) -> str:
         db = self._connect()
-        db.execute(
-            "UPDATE prompt_artifacts SET active = 0 WHERE module = ?", [module]
-        )
+        # Only deactivate the prior active artifact when this one is being
+        # activated. A shelved artifact (active=False) is persisted for audit
+        # without disturbing whatever is currently active.
+        if active:
+            db.execute(
+                "UPDATE prompt_artifacts SET active = 0 WHERE module = ?", [module]
+            )
         db.execute(
             """
             INSERT INTO prompt_artifacts
                 (id, created_at, module, content, baseline_score,
                  optimized_score, sample_count, active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (artifact_id, created_at, module, content,
-             baseline_score, optimized_score, sample_count),
+             baseline_score, optimized_score, sample_count, 1 if active else 0),
         )
         db.commit()
         db.close()

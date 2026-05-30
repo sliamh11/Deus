@@ -13,11 +13,13 @@ from ..config import (
     DSPY_MIN_DOMAIN_SAMPLES,
     DSPY_MIN_SAMPLES,
     DSPY_OLLAMA_MODEL,
+    DSPY_SHIP_MARGIN,
     JUDGE_MODEL,
     load_api_key,
 )
 from ..ilog.interaction_log import get_recent
-from .artifacts import save_artifact
+from ..judge import NoProviderAvailableError, make_runtime_judge
+from .artifacts import get_active, save_artifact
 from .modules import MODULE_REGISTRY, _require_dspy
 
 
@@ -96,16 +98,84 @@ def _build_examples(module: str, interactions: list[dict]) -> list:
     return examples
 
 
-def _judge_metric(example, prediction, trace=None, pred_name=None, pred_trace=None):
-    """GEPA requires metrics return {"score": float, "feedback": str} (GEPAFeedbackMetric protocol)."""
-    try:
-        pred_str = str(prediction.answer if hasattr(prediction, "answer") else prediction)
-        is_good = len(pred_str.strip()) > 20
-        score = 1.0 if is_good else 0.0
-        feedback = "Good response length and content." if is_good else "Response too short or empty."
-        return {"score": score, "feedback": feedback}
-    except Exception:
-        return {"score": 0.0, "feedback": "Prediction raised an exception."}
+# Per-module IO mapping: (example prompt field, example context field,
+# prediction response field). Keep in sync with _build_examples and the module
+# signatures in modules.py — a new module needs an entry in both places.
+_MODULE_IO = {
+    "qa": ("query", "context", "answer"),
+    "tool_selection": ("query", "available_tools", "selected_tools"),
+    "summarization": ("conversation_history", "", "summary"),
+}
+
+
+def _make_judge_metric(judge, module: str):
+    """Build a GEPA-protocol metric that scores a prediction with the real
+    runtime judge instead of the old length heuristic.
+
+    The judge is captured once via closure and reused across every GEPA metric
+    call, so a candidate is never charged a fresh judge construction. Returns
+    {"score": float, "feedback": str} per the GEPAFeedbackMetric protocol.
+    """
+    prompt_field, context_field, response_field = _MODULE_IO.get(
+        module, ("query", "context", "answer")
+    )
+
+    def metric(example, prediction, trace=None, pred_name=None, pred_trace=None):
+        try:
+            prompt = str(example.get(prompt_field, "") or "")
+            context = str(example.get(context_field, "") or "") if context_field else ""
+            response = str(getattr(prediction, response_field, "") or "")
+            result = judge.evaluate(
+                prompt=prompt, response=response, context=context or None
+            )
+            # A parse-error result carries a fallback score that is not a real
+            # quality signal — treat it as failure so the gate can never mistake
+            # unparseable judge output for a good prompt.
+            if getattr(result, "is_parse_error", False):
+                return {"score": 0.0, "feedback": "judge parse error — scored 0.0"}
+            return {"score": float(result.score), "feedback": result.rationale or ""}
+        except Exception as exc:
+            return {
+                "score": 0.0,
+                "feedback": f"metric error: {type(exc).__name__}: {exc}",
+            }
+
+    return metric
+
+
+def _score_program(program, devset, metric, limit: int = 10) -> Optional[float]:
+    """Run a DSPy program over the holdout and return its mean judge score.
+    A per-example failure contributes 0.0 (consistent with the metric's own
+    exception handling) so a broken program can't outscore a working one.
+    Returns None when there is nothing to score.
+    """
+    scores = []
+    for ex in devset[:limit]:
+        try:
+            pred = program.forward(**{k: ex[k] for k in ex.inputs()})
+            scores.append(metric(ex, pred)["score"])
+        except Exception:
+            scores.append(0.0)
+    return sum(scores) / len(scores) if scores else None
+
+
+def _should_activate(
+    optimized_score: float,
+    baseline: float,
+    active_artifact: Optional[dict],
+    margin: float,
+) -> bool:
+    """Activate only when the optimized score beats the better of the
+    un-optimized baseline and the current active artifact by `margin` — this is
+    what keeps the loop from ever activating a regression. Falls back to
+    `baseline` when there is no active artifact or its recorded score is
+    missing/None, so the comparison never sees None.
+    """
+    current_active_score = baseline
+    if active_artifact:
+        current_active_score = active_artifact.get("optimized_score") or baseline
+    threshold = max(baseline, current_active_score) + margin
+    return optimized_score >= threshold
 
 
 def optimize(
@@ -123,6 +193,15 @@ def optimize(
     """
     _require_dspy()
     import dspy
+
+    # Build the judge once; the GEPA metric closes over it. Abort if no judge
+    # provider is available — silently optimizing for length is the exact bug we
+    # are removing, so there is deliberately no length fallback.
+    try:
+        judge = make_runtime_judge()
+    except NoProviderAvailableError as exc:
+        print(f"[evolution] No judge provider available — skipping {module}: {exc}")
+        return None
 
     if domain:
         min_samples = DSPY_MIN_DOMAIN_SAMPLES
@@ -180,24 +259,28 @@ def optimize(
         print(f"[evolution] Not enough usable examples for {module}: {len(examples)}")
         return None
 
-    # Split train/dev (80/20)
+    # Split train/dev (80/20). The dev split is the holdout used for both the
+    # baseline and the optimized scoring and the ship-if-better gate.
     split = max(1, int(len(examples) * 0.8))
     trainset = examples[:split]
     devset = examples[split:]
 
-    # Baseline score (average judge_score of dev set)
-    dev_scores = [
-        float(scored[i].get("judge_score", 0.5))
-        for i in range(split, min(len(scored), len(examples)))
-    ]
-    baseline = sum(dev_scores) / len(dev_scores) if dev_scores else 0.5
+    # Score candidates with the same quality signal the rest of the loop uses,
+    # replacing the old length heuristic.
+    metric = _make_judge_metric(judge, module)
 
-    # Instantiate module
+    # Instantiate the un-optimized module and score it on the holdout — this is
+    # the baseline the optimized prompt must beat. Scoring the program's own
+    # output (not the historical logged response) keeps baseline and optimized
+    # on the same population, scale, and metric.
     ModuleCls = MODULE_REGISTRY[module]
     program = ModuleCls()
+    baseline = _score_program(program, devset, metric)
+    if baseline is None:
+        baseline = 0.5  # empty holdout — neutral prior; gate stays conservative
 
     teleprompter = dspy.GEPA(
-        metric=_judge_metric,
+        metric=metric,
         auto="light",
         track_stats=True,
     )
@@ -212,31 +295,35 @@ def optimize(
     except Exception:
         prompt_content = str(optimized)
 
-    # Estimate post-optimization score on dev set
-    opt_scores = []
-    for ex in devset[:10]:
-        try:
-            pred = optimized.forward(**{k: ex[k] for k in ex.inputs()})
-            result = _judge_metric(ex, pred)
-            opt_scores.append(result["score"])
-        except Exception:
-            pass
-    optimized_score = sum(opt_scores) / len(opt_scores) if opt_scores else baseline
+    # Score the optimized program on the same holdout, same metric.
+    optimized_score = _score_program(optimized, devset, metric)
+    if optimized_score is None:
+        optimized_score = baseline
 
-    # Save artifact — domain-keyed if domain-specific optimization
+    # Activate only when the optimized score beats the better of baseline /
+    # current active artifact by DSPY_SHIP_MARGIN. Below the margin the artifact
+    # is still persisted (audit) but not activated.
     artifact_module = f"{module}:{domain}" if domain else module
+    active_artifact = get_active(artifact_module)
+    activate = _should_activate(
+        optimized_score, baseline, active_artifact, DSPY_SHIP_MARGIN
+    )
+
     aid = save_artifact(
         module=artifact_module,
         content=prompt_content,
         baseline_score=baseline,
         optimized_score=optimized_score,
         sample_count=len(examples),
+        activate=activate,
     )
 
     delta = optimized_score - baseline
+    decision = "ACTIVATED" if activate else "SHELVED (below margin)"
     print(
         f"[evolution] Optimized {artifact_module}: "
         f"baseline={baseline:.3f} → {optimized_score:.3f} "
-        f"({'+'if delta>=0 else ''}{delta:.3f}) | artifact={aid[:8]}"
+        f"({'+' if delta >= 0 else ''}{delta:.3f}) | "
+        f"n={len(examples)} | artifact={aid[:8]} | {decision}"
     )
     return aid
