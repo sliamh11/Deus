@@ -28,3 +28,20 @@ jobs:
           subjectPatternError: |
             PR title subject must start with a lowercase letter.
             Example: "feat(skills): add Gmail skill template"
+
+  flag-lint:
+    name: Facade flag-lint (net-new DEUS_* gates)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install pytest
+        run: python3 -m pip install pytest
+      - name: Unit tests
+        run: python3 -m pytest scripts/tests/test_flag_lint.py -v
+      - name: Lint net-new DEUS_* flag gates
+        run: python3 scripts/ci/flag_lint.py --base origin/${{ github.base_ref }}

@@ -37,6 +37,7 @@ One line per decision. Load the full file only when the topic is directly releva
 | [linear-webhook-pipeline.md](linear-webhook-pipeline.md) | linear / dispatch / webhooks / gates | Polling dispatcher + webhook warden gates for Linear Kanban. Enrichment gates write structured scope into issue descriptions via sentinel markers. Config-driven gate specs in `.claude/agents/wardens/` |
 | [ADR-001-hook-dispatch-service.md](ADR-001-hook-dispatch-service.md) | hooks / dispatch / observers | HookDispatchService on :3002 with PreToolUse blocking hook and fire-and-forget PostToolUse observer; gated by `HOOK_DISPATCH_ENABLED` |
 | [facade-prevention-mechanism.md](facade-prevention-mechanism.md) | facades / wiring / CI / wardens | 3 layers vs built-but-not-wired code (LIA-133): `connectivity-wiring` warden rule (commit), net-new `DEUS_*` flag-lint CI (merge), local codegraph orphan-sweep (drift, macOS-only); blanket zero-caller check **rejected** — floods false positives |
+| [live-command-freshness.md](live-command-freshness.md) | cli / install / git / freshness | The `deus` CLI runs from the primary checkout's working tree, so it ships stale when `~/deus` drifts off-main/behind `origin/main`. A throttled warn-only nudge flags drift; `deus sync` makes the install current (fetch + ff + rebuild). Pinned-detached-worktree decoupling (Option 2) **deferred** until drift recurs |
 
 ## Related documentation
 
