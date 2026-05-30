@@ -89,6 +89,51 @@ _build_and_restart() {
   fi
 }
 
+# Warn (never block) when the live tree drifts off main or behind origin/main, so
+# `deus <cmd>` doesn't silently ship stale behavior from a feature branch.
+# darwin/Linux only (date +%s, git); Windows port pending — project_windows_support.md
+_deus_freshness_check() {
+  [[ "$OSTYPE" == darwin* || "$OSTYPE" == linux* ]] || return 0
+  # Skip for sync (does its own reporting) and help/no-arg paths.
+  case "$1" in sync|""|-h|--help|help) return 0 ;; esac
+  git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+  local stamp_dir="$HOME/.config/deus" stamp now last
+  stamp="$stamp_dir/freshness-stamp"
+  now=$(date +%s 2>/dev/null) || return 0
+  mkdir -p "$stamp_dir" 2>/dev/null || {
+    [ -n "$DEUS_DEBUG" ] && echo "deus: freshness stamp dir unwritable, skipping" >&2
+    return 0
+  }
+  last=0
+  [ -f "$stamp" ] && last=$(cat "$stamp" 2>/dev/null || echo 0)
+  # Throttle: at most one real check (and one background fetch) per 600s.
+  [ $((now - last)) -lt 600 ] 2>/dev/null && return 0
+  echo "$now" > "$stamp" 2>/dev/null || {
+    [ -n "$DEUS_DEBUG" ] && echo "deus: freshness stamp unwritable" >&2
+  }
+
+  # Refresh the cached origin/main ref in the background — no hot-path network/hang.
+  # Stamp-race: concurrent calls at window-expiry may each spawn one harmless fetch.
+  ( git -C "$SCRIPT_DIR" fetch --quiet origin main >/dev/null 2>&1 & ) >/dev/null 2>&1
+
+  # Offline compare local state vs the cached origin/main ref.
+  local branch behind
+  branch=$(git -C "$SCRIPT_DIR" symbolic-ref --short -q HEAD 2>/dev/null)
+  # Detached HEAD (e.g. a future pinned-worktree install) — don't nag.
+  [ -z "$branch" ] && return 0
+  if [ "$branch" != "main" ]; then
+    echo "deus: live tree on '$branch', not main — run 'deus sync'" >&2
+    return 0
+  fi
+  git -C "$SCRIPT_DIR" rev-parse --verify -q origin/main >/dev/null 2>&1 || return 0
+  behind=$(git -C "$SCRIPT_DIR" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
+  if [ "${behind:-0}" -gt 0 ] 2>/dev/null; then
+    echo "deus: live tree $behind commit(s) behind origin/main — run 'deus sync'" >&2
+  fi
+  return 0
+}
+
 _fcc_validate_model_name() {
   if ! printf '%s' "$1" | grep -qE '^[a-zA-Z0-9_./:@-]+$'; then
     echo "Error: invalid characters in model name."
@@ -857,6 +902,9 @@ SKILLEOF
   echo "$current_version" > "$marker"
 }
 
+# Nudge if the live tree has drifted off/behind main (warn-only, throttled).
+_deus_freshness_check "$1"
+
 case "$1" in
   auth)
     # `deus auth refresh [--dry-run]` → proactive OAuth refresh CLI
@@ -1579,6 +1627,35 @@ $STARTUP_INSTRUCTION"
     shift
     exec python3 "$SCRIPT_DIR/scripts/analyze_token_efficiency.py" "$@"
     ;;
+  sync)
+    # Make the live install current with origin/main, non-destructively.
+    # See ADR: docs/decisions/live-command-freshness.md
+    sync_repo="$SCRIPT_DIR"
+    if ! git -C "$sync_repo" rev-parse --git-dir >/dev/null 2>&1; then
+      echo "deus sync: $sync_repo is not a git repository." >&2; exit 1
+    fi
+    sync_branch=$(git -C "$sync_repo" symbolic-ref --short -q HEAD 2>/dev/null || echo "DETACHED")
+    if [ "$sync_branch" != "main" ]; then
+      echo "deus sync: live tree is on '$sync_branch', not main." >&2
+      echo "  Feature work belongs in a worktree. Switch the live tree to main first:" >&2
+      echo "    git -C \"$sync_repo\" checkout main && deus sync" >&2
+      exit 1
+    fi
+    if ! git -C "$sync_repo" diff --quiet || ! git -C "$sync_repo" diff --cached --quiet; then
+      echo "deus sync: live tree has uncommitted changes — commit or stash first." >&2
+      exit 1
+    fi
+    echo "Fetching origin/main..."
+    if ! git -C "$sync_repo" fetch origin main; then
+      echo "deus sync: fetch failed." >&2; exit 1
+    fi
+    if ! git -C "$sync_repo" merge --ff-only origin/main; then
+      echo "deus sync: cannot fast-forward (live tree has diverged from origin/main)." >&2
+      exit 1
+    fi
+    _build_and_restart
+    echo "deus: synced to origin/main."
+    ;;
   pipeline)
     shift
     # cd required: config.ts evaluates PROJECT_ROOT from process.cwd() at import time
@@ -1818,6 +1895,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus model      Switch proxy model or open dashboard (model-name|dashboard)"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
     echo "  deus usage      Token-efficiency + cost report (--since|--project|--pricing|--json)"
+    echo "  deus sync       Update the live install to origin/main (fetch + ff + rebuild)"
     echo "  deus pipeline   Pipeline event audit (LIA-XX | --failed | --active | --all)"
     echo "  deus solution   Manage solution atoms (list|search|add)"
     echo "  deus sweep      Run threshold calibration sweep against benchmark queries"

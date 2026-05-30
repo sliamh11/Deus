@@ -36,6 +36,7 @@ One line per decision. Load the full file only when the topic is directly releva
 | [judge-lora-specialization.md](judge-lora-specialization.md) | eval / judge / LoRA | Negative result on Gemma-3n-E4B Q4 (Adapter mean Pearson 0.368 vs Base 0.390) — do NOT adopt run `20260518T071842Z-1614baf-dirty`; keep base Q4 as local judge. **Future judge-quality work begins with cross-stack truth bench + replace-base / logit-mean / frozen-head alternatives BEFORE any retune; retune requires regression bar mean Pearson ≥ Base + 0.05** |
 | [linear-webhook-pipeline.md](linear-webhook-pipeline.md) | linear / dispatch / webhooks / gates | Polling dispatcher + webhook warden gates for Linear Kanban. Enrichment gates write structured scope into issue descriptions via sentinel markers. Config-driven gate specs in `.claude/agents/wardens/` |
 | [ADR-001-hook-dispatch-service.md](ADR-001-hook-dispatch-service.md) | hooks / dispatch / observers | HookDispatchService on :3002 with PreToolUse blocking hook and fire-and-forget PostToolUse observer; gated by `HOOK_DISPATCH_ENABLED` |
+| [live-command-freshness.md](live-command-freshness.md) | cli / install / git / freshness | The `deus` CLI runs from the primary checkout's working tree, so it ships stale when `~/deus` drifts off-main/behind `origin/main`. A throttled warn-only nudge flags drift; `deus sync` makes the install current (fetch + ff + rebuild). Pinned-detached-worktree decoupling (Option 2) **deferred** until drift recurs |
 
 ## Related documentation
 
