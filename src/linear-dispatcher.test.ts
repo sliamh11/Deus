@@ -122,12 +122,14 @@ import {
   extractScopeBlock,
   applyPatchArtifact,
   initLinearContext,
+  deriveFetchTimeout,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
   LinearDispatcherDependencies,
 } from './linear-dispatcher.js';
 import { RuntimeRegistry } from './agent-runtimes/registry.js';
+import { logger } from './logger.js';
 
 function makeMockDeps(
   overrides: Partial<LinearDispatcherDependencies> = {},
@@ -517,6 +519,67 @@ describe('pollLinear dispatch ordering', () => {
       (call: unknown[]) => call[1] as string,
     );
     expect(callOrder).toEqual(['aaa', 'bbb']);
+  });
+});
+
+describe('deriveFetchTimeout', () => {
+  it('uses the ceiling for the default poll interval', () => {
+    expect(deriveFetchTimeout(30_000)).toBe(15_000);
+  });
+
+  it('clamps below the poll interval', () => {
+    expect(deriveFetchTimeout(5_000)).toBe(4_500);
+  });
+
+  it('stays strictly below pollMs at the small-interval edge', () => {
+    const t = deriveFetchTimeout(1_000);
+    expect(t).toBe(900);
+    expect(t).toBeLessThan(1_000);
+  });
+});
+
+describe('pollLinear fetch timeout', () => {
+  const agentsDir = path.join(TEST_PROJECT_ROOT, '.claude', 'agents');
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentsDir, 'test-role.md'),
+      `---\nname: test-role\nlinear_label: "agent:test"\n---\nYou are a test agent.`,
+    );
+  });
+
+  afterEach(() => {
+    stopLinearDispatcher();
+    vi.unstubAllEnvs();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    fs.rmSync(TEST_PROJECT_ROOT, { recursive: true, force: true });
+  });
+
+  it('logs a transient retry warning when the poll fetch hangs', async () => {
+    // pollMs=2000 -> _fetchTimeoutMs=1800 (clamped below interval).
+    vi.stubEnv('LINEAR_POLL_INTERVAL_MS', '2000');
+    const warnSpy = vi.spyOn(logger, 'warn');
+
+    const ctx = makeMockCtx({
+      client: {
+        // Never resolves — simulates a hung Linear API call.
+        issues: vi.fn(() => new Promise(() => {})),
+        updateIssue: vi.fn().mockResolvedValue({}),
+      } as unknown as LinearContext['client'],
+    });
+
+    startLinearDispatcher(ctx);
+    // Advance just past the derived fetch deadline (stays < the 2000ms next tick).
+    // Derived from deriveFetchTimeout so it tracks the constant/multiplier if they change.
+    await vi.advanceTimersByTimeAsync(deriveFetchTimeout(2_000) + 50);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.anything() }),
+      'linear-dispatcher: transient error, will retry',
+    );
   });
 });
 
