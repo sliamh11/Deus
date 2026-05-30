@@ -3607,7 +3607,7 @@ def test_scan_transcript_detects_mcp_call(tmp_path):
     """_scan_transcript_for_codegraph finds a direct MCP call."""
     hooks = load_hooks()
     tr = _write_transcript(tmp_path, [_MCP_CODEGRAPH_LINE])
-    found, turns, tool_uses = hooks._scan_transcript_for_codegraph(str(tr))
+    found, turns, tool_uses, prior_searches = hooks._scan_transcript_for_codegraph(str(tr))
     assert found
     assert turns >= 1
     assert tool_uses >= 1
@@ -3617,7 +3617,7 @@ def test_scan_transcript_detects_toolsearch(tmp_path):
     """_scan_transcript_for_codegraph finds a ToolSearch select call."""
     hooks = load_hooks()
     tr = _write_transcript(tmp_path, [_TOOLSEARCH_CODEGRAPH_LINE])
-    found, turns, tool_uses = hooks._scan_transcript_for_codegraph(str(tr))
+    found, turns, tool_uses, prior_searches = hooks._scan_transcript_for_codegraph(str(tr))
     assert found
     assert tool_uses >= 1
 
@@ -3626,7 +3626,7 @@ def test_scan_transcript_returns_false_for_no_call(tmp_path):
     """_scan_transcript_for_codegraph returns False when no codegraph call present."""
     hooks = load_hooks()
     tr = _write_transcript(tmp_path, [_BASH_LINE, _USER_RESULT_LINE])
-    found, turns, tool_uses = hooks._scan_transcript_for_codegraph(str(tr))
+    found, turns, tool_uses, prior_searches = hooks._scan_transcript_for_codegraph(str(tr))
     assert not found
     assert tool_uses >= 1  # Bash tool_use counts
 
@@ -3636,3 +3636,109 @@ def test_scan_transcript_missing_file():
     hooks = load_hooks()
     result = hooks._scan_transcript_for_codegraph("/nonexistent/x.jsonl")
     assert result is None, "missing file must return None (fail-open sentinel)"
+
+
+# ---------------------------------------------------------------------------
+# Escalating deny message tests (LIA-129)
+# ---------------------------------------------------------------------------
+
+def _grep_tool_use_line(n: int = 1) -> list[str]:
+    """Return *n* JSONL lines each containing a Grep tool_use block."""
+    lines = []
+    for i in range(n):
+        lines.append(json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": f"g{i}", "name": "Grep", "input": {"pattern": "foo", "path": "."}}]},
+        }))
+    return lines
+
+
+def _bash_search_line(n: int = 1) -> list[str]:
+    """Return *n* JSONL lines each containing a Bash grep code-search tool_use."""
+    lines = []
+    for i in range(n):
+        lines.append(json.dumps({
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": f"b{i}", "name": "Bash", "input": {"command": "grep -r foo src/"}}]},
+        }))
+    return lines
+
+
+def test_escalating_deny_tier0_no_prior_searches(tmp_path, capsys):
+    """Tier-0: transcript has no prior search attempts → polite hint."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # Transcript has a non-search Bash line only (ls), so prior_search_attempts == 0.
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo)
+    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    reason = out["permissionDecisionReason"]
+    assert out["permissionDecision"] == "deny"
+    # Tier-0 wording: polite hint, no "Blocked again"
+    assert "Call a codegraph or code_search tool first" in reason
+    assert "Blocked again" not in reason
+
+
+def test_escalating_deny_tier1_two_prior_searches(tmp_path, capsys):
+    """Tier-1: transcript has 2 prior search-tool uses → imperative two-step."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # Two prior Grep tool_use blocks in the transcript.
+    tr = _write_transcript(tmp_path, _grep_tool_use_line(2))
+    hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo)
+    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    reason = out["permissionDecisionReason"]
+    assert out["permissionDecision"] == "deny"
+    assert "Blocked again" in reason
+    assert 'ToolSearch(query="select:mcp__codegraph__codegraph_context")' in reason
+    assert "codegraph_context" in reason
+    # Tier-1 should NOT yet include the Read fallback
+    assert "If ToolSearch returns no codegraph tool" not in reason
+
+
+def test_escalating_deny_tier2_three_plus_prior_searches(tmp_path, capsys):
+    """Tier-2: transcript has >= 3 prior search-tool uses → Read fallback added."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # Three prior Grep tool_use blocks in the transcript.
+    tr = _write_transcript(tmp_path, _grep_tool_use_line(3))
+    hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo)
+    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    reason = out["permissionDecisionReason"]
+    assert out["permissionDecision"] == "deny"
+    assert "Blocked again" in reason
+    assert "If ToolSearch returns no codegraph tool" in reason
+    assert "use Read on the specific files you need instead" in reason
+
+
+def test_scan_prior_search_attempts_counts_correctly(tmp_path):
+    """_scan_transcript_for_codegraph counts prior_search_attempts accurately.
+
+    Transcript contains:
+    - 1 Grep tool_use          (counts)
+    - 1 Bash 'grep -r x' line  (counts — primary token is grep)
+    - 1 Bash 'npm test' line   (does NOT count — not a code search)
+    - 1 Bash 'ls | grep' line  (does NOT count — grep is after a pipe)
+    """
+    hooks = load_hooks()
+    grep_line = json.dumps({
+        "type": "assistant",
+        "message": {"content": [{"type": "tool_use", "id": "a", "name": "Grep", "input": {"pattern": "foo"}}]},
+    })
+    bash_grep_line = json.dumps({
+        "type": "assistant",
+        "message": {"content": [{"type": "tool_use", "id": "b", "name": "Bash", "input": {"command": "grep -r x src/"}}]},
+    })
+    bash_npm_line = json.dumps({
+        "type": "assistant",
+        "message": {"content": [{"type": "tool_use", "id": "c", "name": "Bash", "input": {"command": "npm test"}}]},
+    })
+    bash_piped_grep_line = json.dumps({
+        "type": "assistant",
+        "message": {"content": [{"type": "tool_use", "id": "d", "name": "Bash", "input": {"command": "ls | grep foo"}}]},
+    })
+    tr = _write_transcript(tmp_path, [grep_line, bash_grep_line, bash_npm_line, bash_piped_grep_line])
+    found, turns, tool_uses, prior_searches = hooks._scan_transcript_for_codegraph(str(tr))
+    assert not found
+    assert tool_uses == 4           # all 4 tool_use blocks counted
+    assert prior_searches == 2      # only Grep + Bash-grep, not npm test or piped grep

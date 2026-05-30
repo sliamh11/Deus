@@ -418,15 +418,22 @@ def _line_is_codegraph_toolcall(obj: Any) -> bool:
 
 def _scan_transcript_for_codegraph(
     transcript_path: str,
-) -> tuple[bool, int, int] | None:
+) -> tuple[bool, int, int, int] | None:
     """Read the transcript JSONL at *transcript_path* and return
-    ``(found, assistant_turns, any_tool_uses)``, or ``None`` on IO error.
+    ``(found, assistant_turns, any_tool_uses, prior_search_attempts)``,
+    or ``None`` on IO error.
 
     * ``found``: True if any line satisfies ``_line_is_codegraph_toolcall``.
     * ``assistant_turns``: count of lines with outer ``type == "assistant"``.
     * ``any_tool_uses``: count of tool_use blocks seen across all lines
       (used to detect parse blindness: if assistant_turns is high but
       any_tool_uses is zero, the format may have changed).
+    * ``prior_search_attempts``: count of tool_use blocks whose name is
+      ``"Grep"`` or ``"Glob"``, or ``"Bash"`` with a primary code-search
+      command (per ``_bash_is_code_search``).  The current hook's search
+      attempt is NOT yet in the transcript when the hook fires, so this
+      counts only PAST attempts — exactly what the escalating-deny message
+      needs.
     * Returns ``None`` when the file cannot be opened (missing path, permission
       error).  The caller should treat ``None`` as a fail-open signal.
 
@@ -437,6 +444,7 @@ def _scan_transcript_for_codegraph(
     found = False
     assistant_turns = 0
     any_tool_uses = 0
+    prior_search_attempts = 0
     try:
         with path.open(encoding="utf-8", errors="replace") as fh:
             for raw in fh:
@@ -458,6 +466,15 @@ def _scan_transcript_for_codegraph(
                             for blk in content:
                                 if isinstance(blk, dict) and blk.get("type") == "tool_use":
                                     any_tool_uses += 1
+                                    blk_name = blk.get("name", "")
+                                    if blk_name in ("Grep", "Glob"):
+                                        prior_search_attempts += 1
+                                    elif blk_name == "Bash":
+                                        blk_input = blk.get("input")
+                                        if isinstance(blk_input, dict):
+                                            cmd = blk_input.get("command", "")
+                                            if isinstance(cmd, str) and _bash_is_code_search(cmd):
+                                                prior_search_attempts += 1
                 if _line_is_codegraph_toolcall(obj):
                     found = True
                     # Answer known; the turn/tool_use counters are only consulted
@@ -465,7 +482,7 @@ def _scan_transcript_for_codegraph(
                     break
     except OSError:
         return None
-    return found, assistant_turns, any_tool_uses
+    return found, assistant_turns, any_tool_uses, prior_search_attempts
 
 
 def _resolve_agent_transcript(event: dict[str, Any]) -> str:
@@ -961,6 +978,43 @@ def run_session_init(repo_root: Path) -> int:
     return 0
 
 
+def _codegraph_deny_message(prior_searches: int) -> str:
+    """Return an escalating deny message for the codegraph-first gate.
+
+    The message tier is based on how many search-tool attempts (Grep, Glob, or
+    Bash code-search) the agent has already made in its transcript, giving a
+    repeatedly-blocked agent increasingly explicit instructions instead of
+    cycling on the same polite hint.
+
+    * prior_searches == 0  → polite hint (tier 0, preserved wording).
+    * 1 <= prior_searches <= 2 → imperative + exact two-step sequence (tier 1).
+    * prior_searches >= 3  → tier-1 text PLUS Read fallback for when the
+      codegraph MCP server is unavailable (tier 2).
+    """
+    tier0 = (
+        "[codegraph-first-gate] Call a codegraph or code_search tool first "
+        '(ToolSearch "select:mcp__codegraph__codegraph_context"), then retry. '
+        "core-behavioral-rules.md § Code Exploration."
+    )
+    tier1 = (
+        "[codegraph-first-gate] Blocked again — stop retrying search. "
+        "Run these two calls, in order, THEN retry: "
+        '(1) ToolSearch(query="select:mcp__codegraph__codegraph_context"); '
+        "(2) codegraph_context with your question. "
+        "core-behavioral-rules.md § Code Exploration."
+    )
+    tier2 = (
+        tier1
+        + " If ToolSearch returns no codegraph tool (the MCP server is down), "
+        "use Read on the specific files you need instead — do not keep retrying grep/find."
+    )
+    if prior_searches == 0:
+        return tier0
+    if prior_searches <= 2:
+        return tier1
+    return tier2
+
+
 def run_codegraph_first_gate(event: dict[str, Any], repo_root: Path) -> int:
     """Single PreToolUse gate enforcing codegraph-first exploration for gated
     agents (``codegraph_gated: true``). LIA-121 / RETRO-2026-05-29-01.
@@ -1037,7 +1091,7 @@ def run_codegraph_first_gate(event: dict[str, Any], repo_root: Path) -> int:
             )
             return 0
 
-        found, assistant_turns, any_tool_uses = scan_result
+        found, assistant_turns, any_tool_uses, prior_search_attempts = scan_result
 
         if found:
             return 0
@@ -1056,11 +1110,7 @@ def run_codegraph_first_gate(event: dict[str, Any], repo_root: Path) -> int:
             )
             return 0
 
-        _block_pre_tool(
-            "[codegraph-first-gate] Call a codegraph or code_search tool first "
-            '(ToolSearch "select:mcp__codegraph__codegraph_context"), then retry. '
-            "core-behavioral-rules.md § Code Exploration."
-        )
+        _block_pre_tool(_codegraph_deny_message(prior_search_attempts))
         return 0
     except Exception:
         return 0
