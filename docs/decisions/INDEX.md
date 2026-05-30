@@ -36,6 +36,7 @@ One line per decision. Load the full file only when the topic is directly releva
 | [judge-lora-specialization.md](judge-lora-specialization.md) | eval / judge / LoRA | Negative result on Gemma-3n-E4B Q4 (Adapter mean Pearson 0.368 vs Base 0.390) — do NOT adopt run `20260518T071842Z-1614baf-dirty`; keep base Q4 as local judge. **Future judge-quality work begins with cross-stack truth bench + replace-base / logit-mean / frozen-head alternatives BEFORE any retune; retune requires regression bar mean Pearson ≥ Base + 0.05** |
 | [linear-webhook-pipeline.md](linear-webhook-pipeline.md) | linear / dispatch / webhooks / gates | Polling dispatcher + webhook warden gates for Linear Kanban. Enrichment gates write structured scope into issue descriptions via sentinel markers. Config-driven gate specs in `.claude/agents/wardens/` |
 | [ADR-001-hook-dispatch-service.md](ADR-001-hook-dispatch-service.md) | hooks / dispatch / observers | HookDispatchService on :3002 with PreToolUse blocking hook and fire-and-forget PostToolUse observer; gated by `HOOK_DISPATCH_ENABLED` |
+| [facade-prevention-mechanism.md](facade-prevention-mechanism.md) | facades / wiring / CI / wardens | 3 layers vs built-but-not-wired code (LIA-133): `connectivity-wiring` warden rule (commit), net-new `DEUS_*` flag-lint CI (merge), local codegraph orphan-sweep (drift, macOS-only); blanket zero-caller check **rejected** — floods false positives |
 
 ## Related documentation
 
