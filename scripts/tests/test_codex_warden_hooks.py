@@ -3355,6 +3355,108 @@ def test_codegraph_gate_fail_open_missing_transcript(tmp_path, capsys):
     assert capsys.readouterr().out == ""  # fail open, no deny
 
 
+# --- _resolve_agent_transcript: workflow-spawned agents (bounded glob-fallback) ---
+# Regression for the silent fail-open bug where a workflow agent's transcript lives
+# at subagents/workflows/wf_*/agent-<id>.jsonl but the flat derivation looked under
+# subagents/agent-<id>.jsonl (3 codegraph-gate CANARY fail-opens observed live).
+
+
+def test_resolve_agent_transcript_workflow_layout(tmp_path):
+    """A workflow agent's deeper transcript is found via the bounded glob-fallback."""
+    hooks = load_hooks()
+    session_id = "sessW"
+    parent = tmp_path / f"{session_id}.jsonl"
+    parent.write_text("", encoding="utf-8")
+    agent_id = "aWorkflow01"
+    wf_dir = tmp_path / session_id / "subagents" / "workflows" / "wf_abc123"
+    wf_dir.mkdir(parents=True)
+    wf_file = wf_dir / f"agent-{agent_id}.jsonl"
+    wf_file.write_text(_BASH_LINE + "\n", encoding="utf-8")
+
+    event = {"transcript_path": str(parent), "agent_id": agent_id}
+    assert hooks._resolve_agent_transcript(event) == str(wf_file)
+
+
+def test_resolve_agent_transcript_flat_subagent_unchanged(tmp_path):
+    """The common flat Task-subagent path still resolves to subagents/agent-<id>.jsonl."""
+    hooks = load_hooks()
+    session_id = "sessF"
+    parent = tmp_path / f"{session_id}.jsonl"
+    parent.write_text("", encoding="utf-8")
+    agent_id = "aFlat02"
+    flat_dir = tmp_path / session_id / "subagents"
+    flat_dir.mkdir(parents=True)
+    flat_file = flat_dir / f"agent-{agent_id}.jsonl"
+    flat_file.write_text(_BASH_LINE + "\n", encoding="utf-8")
+
+    event = {"transcript_path": str(parent), "agent_id": agent_id}
+    assert hooks._resolve_agent_transcript(event) == str(flat_file)
+
+
+def test_resolve_agent_transcript_missing_returns_flat_path(tmp_path):
+    """Not-yet-written (neither flat nor workflow file): return the flat path so the
+    scan fails open, exactly as before the fix."""
+    hooks = load_hooks()
+    session_id = "sessM"
+    parent = tmp_path / f"{session_id}.jsonl"
+    parent.write_text("", encoding="utf-8")
+    agent_id = "aMissing03"
+    expected_flat = tmp_path / session_id / "subagents" / f"agent-{agent_id}.jsonl"
+
+    event = {"transcript_path": str(parent), "agent_id": agent_id}
+    assert hooks._resolve_agent_transcript(event) == str(expected_flat)
+
+
+def test_codegraph_gate_resolves_workflow_subagent_transcript(tmp_path, capsys):
+    """End-to-end: a workflow-spawned agent with a prior codegraph call is unblocked;
+    without one it is blocked. Before the fix the gate silently failed open here."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    session_id = "wsess"
+    parent = tmp_path / f"{session_id}.jsonl"
+    parent.write_text("", encoding="utf-8")
+    wf_dir = tmp_path / session_id / "subagents" / "workflows" / "wf_xyz"
+    wf_dir.mkdir(parents=True)
+
+    # Agent WITH a codegraph call → grep allowed.
+    aid_ok = "aWfOk"
+    (wf_dir / f"agent-{aid_ok}.jsonl").write_text(_MCP_CODEGRAPH_LINE + "\n", encoding="utf-8")
+    ev_ok = tool_event(repo, "Grep")
+    ev_ok["transcript_path"] = str(parent)
+    ev_ok["agent_id"] = aid_ok
+    assert hooks.run_codegraph_first_gate(ev_ok, repo) == 0
+    assert capsys.readouterr().out == ""  # unblocked
+
+    # Agent WITHOUT a codegraph call → grep now actually blocked (was a silent no-op).
+    aid_block = "aWfBlock"
+    (wf_dir / f"agent-{aid_block}.jsonl").write_text(_BASH_LINE + "\n", encoding="utf-8")
+    ev_block = tool_event(repo, "Grep")
+    ev_block["transcript_path"] = str(parent)
+    ev_block["agent_id"] = aid_block
+    assert hooks.run_codegraph_first_gate(ev_block, repo) == 0
+    assert _deny(capsys) == "deny"
+
+
+def test_resolve_agent_transcript_rejects_glob_metacharacter_id(tmp_path):
+    """A crafted agent_id with glob metacharacters must NOT match a sibling file
+    (gate-bypass guard) -- it fails open via the literal flat path instead."""
+    hooks = load_hooks()
+    session_id = "sessGlob"
+    parent = tmp_path / f"{session_id}.jsonl"
+    parent.write_text("", encoding="utf-8")
+    # A real sibling workflow file exists and HAS a codegraph call.
+    wf_dir = tmp_path / session_id / "subagents" / "workflows" / "wf_1"
+    wf_dir.mkdir(parents=True)
+    (wf_dir / "agent-aRealSibling.jsonl").write_text(
+        _MCP_CODEGRAPH_LINE + "\n", encoding="utf-8"
+    )
+    # Attacker-shaped id "*" would glob-match the sibling (and falsely unblock) if
+    # the metacharacter guard were missing.
+    resolved = hooks._resolve_agent_transcript({"transcript_path": str(parent), "agent_id": "*"})
+    assert resolved == str(tmp_path / session_id / "subagents" / "agent-*.jsonl")
+    assert "aRealSibling" not in resolved
+
+
 def test_codegraph_gate_fail_open_unreadable_transcript(tmp_path, capsys):
     """Unreadable transcript path → fail open (no deny)."""
     hooks = load_hooks()

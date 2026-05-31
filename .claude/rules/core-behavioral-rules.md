@@ -37,9 +37,10 @@
 - Chat responses always in English. Hebrew only inside artifacts.
 
 ## Code Exploration
-- Three-stage protocol: (1) `search_code` for semantic candidates, (2) `codegraph_callers`/`codegraph_callees`/`codegraph_impact` for structural context (what connects to the candidates), (3) grep/read for exact confirmation. Skip stages when the answer is already known.
+- Three-stage protocol: (1) `search_code` or `codegraph_context` (the composite primary) for semantic candidates, (2) `codegraph_callers`/`codegraph_callees`/`codegraph_impact` for structural context (what connects to the candidates), (3) grep/read for exact confirmation. Skip stages when the answer is already known.
 - Before modifying any function, query `codegraph_callers` to know the blast radius. A change with 2 callers is not the same risk as a change with 50.
 - Never open-code `grep -r` or `find -name` as the first move -- semantic search identifies the landscape, structural queries map the connections, exact search confirms specifics.
+- When authoring a `Workflow` (or dispatching investigation subagents) over a codegraph-indexed repo, bake the codegraph-first mandate INTO the `agent()` prompts -- `workflow-subagent` agents inherit no exploration hook and codegraph is already directly callable from them, so their prompt is the only lever.
 
 ## Memory & Context
 - Before implementing a feature, search memory (`memory_tree.py query "<topic>"`) for prior decisions and research. Cite the retrieved path.

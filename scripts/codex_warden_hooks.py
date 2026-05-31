@@ -506,17 +506,47 @@ def _resolve_agent_transcript(event: dict[str, Any]) -> str:
     Empirically validated (LIA-121): the PreToolUse event for a Task-spawned
     subagent carries ``agent_id`` + ``agent_type``; the derived file exists at
     tool-call time and holds the subagent's ``tool_use`` entries.
+
+    Workflow-spawned subagents write their transcript DEEPER, at
+    ``.../<session_id>/subagents/workflows/wf_<run>/agent-<agent_id>.jsonl``, so the
+    flat derivation misses and the gate would silently fail open (observed: 3
+    ``codegraph-gate CANARY`` fail-opens). When the flat path is absent we resolve
+    the file under this session's ``subagents/workflows/*/`` -- only on a flat-path
+    miss, so the common Task path and the "not yet written -> fail open" behavior are
+    unchanged.
     """
     tp = str(event.get("transcript_path") or "")
     if not tp:
         return ""
     agent_id = str(event.get("agent_id") or "")
     if agent_id:
-        # Path(agent_id).name strips any directory components -- defense in depth
-        # against a malformed agent_id (the scan is read-only, but make the
-        # "agent_id is a bare identifier" assumption explicit, no traversal).
+        # Path().name strips directory components; the regex below then ENFORCES the
+        # "bare identifier" assumption -- a crafted agent_id with glob metacharacters
+        # (*, ?, []) could otherwise match a SIBLING agent's file via the glob and
+        # falsely unblock a grep-first agent. On an unexpected shape we fail open via
+        # the flat path rather than glob.
         safe_id = Path(agent_id).name
-        return str(Path(tp).with_suffix("") / "subagents" / f"agent-{safe_id}.jsonl")
+        subagents_dir = Path(tp).with_suffix("") / "subagents"
+        direct = subagents_dir / f"agent-{safe_id}.jsonl"
+        if direct.exists():
+            return str(direct)
+        # Flat path absent: resolve the deeper workflow location with a precise,
+        # non-recursive glob (known layout: subagents/workflows/wf_*/). A future
+        # layout change is caught by drift_check.check_codegraph_transcript_format,
+        # not silently absorbed here.
+        if re.fullmatch(r"[A-Za-z0-9_-]+", safe_id):
+            try:
+                match = next(
+                    iter(subagents_dir.glob(f"workflows/*/agent-{safe_id}.jsonl")),
+                    None,
+                )
+            except OSError:
+                match = None
+            if match is not None:
+                return str(match)
+        # Not-yet-written, or an unexpected id shape: return the flat path so the
+        # scan fails open (unchanged prior behavior).
+        return str(direct)
     return tp
 
 

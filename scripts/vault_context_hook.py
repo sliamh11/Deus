@@ -23,7 +23,6 @@ from pathlib import Path
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 
 SEMANTIC_CACHE = Path.home() / ".deus" / "resume_semantic_cache.txt"
-INDEX_STALE_FLAG = Path.home() / ".deus" / "index_stale.flag"
 SEMANTIC_TTL = 14400  # 4 hours
 MAX_SECTION_CHARS = 12000
 
@@ -104,39 +103,14 @@ def _load_semantic_cache() -> str:
         return ""
 
 
-def _check_index_stale() -> str:
-    """Return a warning string if the claude-context index is known to be stale."""
-    try:
-        if INDEX_STALE_FLAG.exists():
-            return (
-                "⚠️ claude-context index is stale — commits have landed since the last reindex.\n"
-                "Semantic code search (`search_code`) results may be outdated.\n"
-                "To reindex now: call `index_codebase` with the repo root."
-            )
-    except OSError:
-        pass
-    return ""
-
-
 def main() -> None:
     try:
         sys.stdin.read()
     except (OSError, UnicodeDecodeError):
         pass
 
-    # Check stale flag before any guards — warn all session types (CLI + GUI)
-    stale_warning = _check_index_stale()
-
     if os.environ.get("DEUS_VAULT_PRELOADED") == "1":
-        # CLI sessions already have vault context injected; only emit stale warning if needed
-        if stale_warning:
-            output = {
-                "hookSpecificOutput": {
-                    "hookEventName": "SessionStart",
-                    "additionalContext": stale_warning,
-                }
-            }
-            json.dump(output, sys.stdout)
+        # CLI sessions already have vault context injected; nothing to add.
         return
 
     cwd = Path.cwd()
@@ -149,10 +123,6 @@ def main() -> None:
         return
 
     sections = []
-
-    # Prepend stale-index warning so it surfaces prominently at session start
-    if stale_warning:
-        sections.append(stale_warning)
 
     vault_files = _load_vault_files(vault, config)
     if vault_files:

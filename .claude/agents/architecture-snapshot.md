@@ -20,8 +20,8 @@ Accuracy > completeness. A precise map of 80% of the system beats a vague map of
    c. Read `$REPO_ROOT/CLAUDE.md` or `$REPO_ROOT/README.md` -- stated architecture (to compare against reality)
    d. `ls $REPO_ROOT/src/` (or equivalent source root) -- module structure
    e. For each top-level module under `src/`: read the `index.ts` / `mod.rs` / `__init__.py` / entry file only -- NOT the full implementation.
-   f. Find entry points: `grep -r "listen\|createServer\|app.start\|main()\|process.argv" $REPO_ROOT/src --include="*.ts" -l | head -10`
-   g. Find key data structures: `grep -r "interface \|type \|struct \|class \|schema" $REPO_ROOT/src --include="*.ts" -l | head -10` -- read the most central-looking 2-3 files
+   f. Find entry points (three-stage protocol, `core-behavioral-rules.md § Code Exploration`): FIRST `codegraph_context` for "entry points / server bootstrap / main" (load via `ToolSearch("select:mcp__codegraph__codegraph_context")` if deferred); CONFIRM only if needed with `grep -r "listen\|createServer\|app.start\|main()\|process.argv" $REPO_ROOT/src --include="*.ts" -l | head -10` (adapt the language glob to the repo)
+   g. Find key data structures: FIRST `codegraph_context` or `search_code` (load deferred tools via `ToolSearch("select:mcp__codegraph__codegraph_context")` or `ToolSearch("select:mcp__code-search__search_code")`) for the core interfaces, types, and schemas; CONFIRM with `grep -r "interface \|type \|struct \|class \|schema" $REPO_ROOT/src --include="*.ts" -l | head -10` -- read the most central-looking 2-3 files
 
 3. **Do NOT read implementation bodies.** If a file has a clear interface (exported types, function signatures), read that. Implementations are noise for a map.
 
@@ -73,7 +73,7 @@ Accuracy > completeness. A precise map of 80% of the system beats a vague map of
 
 ## Rules of engagement
 
-- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` or `codegraph_context` (the composite primary) for semantic candidates, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
 - **Accuracy over coverage.** If you didn't read it, don't include it. Mark it in "What This Snapshot Doesn't Cover."
 - **No prescriptions.** Describe, don't prescribe. Don't write "you should refactor X."
 - **Concrete names only.** No "the service", "the handler". Use actual module and file names.

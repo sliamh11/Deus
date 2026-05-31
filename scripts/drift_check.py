@@ -1539,6 +1539,44 @@ def check_codegraph_transcript_format(project_root: Path) -> int:
     else:
         print("SKIP: no subagent transcripts found — cannot verify path derivation")
 
+    # Workflow-subagent path-derivation invariant (SEPARATE from the flat check
+    # above). Workflow agents write at <session>/subagents/workflows/wf_*/agent-*.jsonl;
+    # round-trip the real resolver against a real workflow file so a CC layout change
+    # FAILs here instead of silently failing the gate open. SKIP (never FAIL) when no
+    # workflow transcripts exist (cold environment).
+    resolve = getattr(cwh, "_resolve_agent_transcript", None)
+    if resolve is None:
+        print(
+            "FAIL: _resolve_agent_transcript not found in codex_warden_hooks.py — "
+            "the workflow-path fallback was removed or renamed."
+        )
+        return 1
+    wf_files = list(projects_dir.rglob("subagents/workflows/*/agent-*.jsonl"))
+    if wf_files:
+        wf_sample = max(wf_files, key=lambda p: p.stat().st_mtime)
+        # Reconstruct <proj>/<session_id>.jsonl from the session-boundary 'subagents'.
+        # Use the LAST occurrence so a project dir literally named 'subagents' can't
+        # shift the boundary; it is guaranteed present (we globbed on it).
+        parts = wf_sample.parts
+        sidx = max(i for i, p in enumerate(parts) if p == "subagents")
+        session_dir = Path(*parts[:sidx])  # <proj>/<session_id>
+        parent_file = session_dir.parent / (session_dir.name + ".jsonl")
+        wf_agent_id = wf_sample.stem[len("agent-"):]
+        derived = resolve({"transcript_path": str(parent_file), "agent_id": wf_agent_id})
+        if Path(derived) != wf_sample:
+            print(
+                f"FAIL: workflow subagent path derivation no longer resolves the real "
+                f"file (sample {wf_sample}, derived {derived}). Update the glob-fallback "
+                "in _resolve_agent_transcript in codex_warden_hooks.py."
+            )
+            return 1
+        print(f"OK: workflow subagent path-derivation intact ({wf_sample.name})")
+    else:
+        print(
+            "SKIP: no workflow subagent transcripts found — "
+            "cannot verify workflow path derivation"
+        )
+
     return 0
 
 
