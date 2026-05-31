@@ -15,7 +15,6 @@ import os from 'os';
 import path from 'path';
 
 import { DATA_DIR, GROUPS_DIR, HOME_DIR, CONFIG_DIR } from './config.js';
-import { CACHE_GCAL_DB_PATH } from './cache/gcal-sync.js';
 import {
   resolveGroupFolderPath,
   resolveGroupIpcPath,
@@ -431,20 +430,6 @@ export function buildVolumeMounts(
       isControlGroup,
     );
     mounts.push(...validatedMounts);
-  }
-
-  // SQLite cache: gcal events DB (read-only in all containers).
-  // Skipped if the file does not yet exist (daemon starts it on first sync).
-  if (fs.existsSync(CACHE_GCAL_DB_PATH)) {
-    mounts.push({
-      hostPath: CACHE_GCAL_DB_PATH,
-      containerPath: '/workspace/cache/gcal.db',
-      readonly: true,
-    });
-    logger.debug(
-      { group: group.name, dbPath: CACHE_GCAL_DB_PATH },
-      'gcal cache DB mounted read-only',
-    );
   }
 
   return mounts;

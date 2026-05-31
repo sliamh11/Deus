@@ -107,7 +107,7 @@ data flows to Google's Gemini API:
 
 - **What**: Calendar event metadata (title, description, start/end, attendees)
   synced bidirectionally.
-- **Where**: `src/cache/gcal-sync.ts` → Google Calendar API v3.
+- **Where**: `packages/mcp-gcal/` → Google Calendar API v3.
 - **When**: Only when the `add-gcal` skill is installed.
 - **Controls**: Not applicable — syncing calendar data with Google is the
   explicit purpose of the integration. Remove the skill to stop.

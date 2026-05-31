@@ -231,8 +231,14 @@ class StorageProvider(ABC):
         baseline_score: Optional[float] = None,
         optimized_score: Optional[float] = None,
         sample_count: Optional[int] = None,
+        active: bool = True,
     ) -> str:
-        """Save a prompt artifact, deactivating previous ones for the same module."""
+        """Save a prompt artifact.
+
+        When active=True (default), deactivate previous artifacts for the same
+        module and mark this one active. When active=False, persist for audit
+        WITHOUT activating — the currently active artifact is left untouched.
+        """
         ...
 
     @abstractmethod

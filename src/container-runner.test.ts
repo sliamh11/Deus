@@ -86,6 +86,7 @@ vi.mock('./mount-security.js', () => ({
 // Mock evolution-client (spawns Python subprocess with 3s timeout — incompatible with fake timers)
 vi.mock('./evolution-client.js', () => ({
   getReflections: vi.fn(async () => ({ block: '', reflectionIds: [] })),
+  getActivePrompt: vi.fn(async () => ({ block: '' })),
   logInteraction: vi.fn(),
 }));
 
@@ -158,6 +159,7 @@ vi.mock('child_process', async () => {
 });
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import { getActivePrompt, getReflections } from './evolution-client.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -1573,3 +1575,91 @@ describe.skipIf(onWindows)('Backend parity — system-level equivalence', () => 
     expect(llamaCppEnv.get('DEUS_PROXY_TOKEN')).toBe(TEST_PROXY_TOKEN);
   });
 });
+
+describe.skipIf(onWindows)(
+  'optimized-prompt injection (LIA-131 Phase 2)',
+  () => {
+    beforeEach(() => {
+      vi.useRealTimers();
+      const fsMocked = vi.mocked((fsMod as any).default as typeof fsMod);
+      fsMocked.existsSync.mockReset();
+      fsMocked.existsSync.mockReturnValue(false);
+      fsMocked.mkdirSync.mockReset();
+      fsMocked.writeFileSync.mockReset();
+      fsMocked.readdirSync.mockReset();
+      fsMocked.readdirSync.mockReturnValue([]);
+      fsMocked.statSync.mockReset();
+      fsMocked.statSync.mockReturnValue({
+        isDirectory: () => false,
+      } as ReturnType<typeof fsMod.statSync>);
+      vi.mocked(getProjectById).mockReturnValue(undefined);
+      vi.mocked(getReflections).mockResolvedValue({
+        block: '',
+        reflectionIds: [],
+      });
+      vi.mocked(getActivePrompt).mockResolvedValue({ block: '' });
+    });
+
+    /** Run the agent and return the JSON payload written to the container stdin. */
+    async function runAndCaptureInput(): Promise<{ prompt: string }> {
+      const group: RegisteredGroup = {
+        name: 'Main',
+        folder: 'main-group',
+        trigger: '@Deus',
+        added_at: new Date().toISOString(),
+      };
+      fakeProc = createFakeProcess();
+      let written = '';
+      fakeProc.stdin.on('data', (chunk: Buffer) => {
+        written += chunk.toString();
+      });
+      setImmediate(() => fakeProc.emit('close', 0));
+      vi.mocked(childProcess.spawn).mockReturnValue(
+        fakeProc as unknown as ReturnType<typeof childProcess.spawn>,
+      );
+      await runContainerAgent(
+        group,
+        {
+          prompt: 'ORIGINAL_PROMPT',
+          groupFolder: group.folder,
+          chatJid: 'x@g.us',
+          isControlGroup: false,
+        },
+        () => {},
+      );
+      return JSON.parse(written);
+    }
+
+    it('does not alter the prompt when no optimized block is returned', async () => {
+      const input = await runAndCaptureInput();
+      expect(input.prompt).toBe('ORIGINAL_PROMPT');
+      expect(vi.mocked(getActivePrompt)).toHaveBeenCalledWith('qa');
+    });
+
+    it('prepends the optimized block, composing WITH the reflections block', async () => {
+      vi.mocked(getReflections).mockResolvedValue({
+        block: 'REFLECTIONS_BLOCK',
+        reflectionIds: ['r1'],
+      });
+      vi.mocked(getActivePrompt).mockResolvedValue({
+        block: 'OPTIMIZED_BLOCK',
+        artifactId: 'art-1',
+        baselineScore: 0.7,
+        optimizedScore: 0.88,
+        sampleCount: 42,
+      });
+      const input = await runAndCaptureInput();
+      // All three present — optimized composes WITH, does not replace, reflections.
+      expect(input.prompt).toContain('OPTIMIZED_BLOCK');
+      expect(input.prompt).toContain('REFLECTIONS_BLOCK');
+      expect(input.prompt).toContain('ORIGINAL_PROMPT');
+      // Order: optimized, then reflections, then the original prompt.
+      expect(input.prompt.indexOf('OPTIMIZED_BLOCK')).toBeLessThan(
+        input.prompt.indexOf('REFLECTIONS_BLOCK'),
+      );
+      expect(input.prompt.indexOf('REFLECTIONS_BLOCK')).toBeLessThan(
+        input.prompt.indexOf('ORIGINAL_PROMPT'),
+      );
+    });
+  },
+);

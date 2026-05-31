@@ -11,7 +11,6 @@ mod permission_bridge;
 mod platform;
 mod theme;
 mod ui;
-mod widgets;
 
 use std::io::{self, IsTerminal};
 use std::time::{Duration, Instant};

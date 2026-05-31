@@ -11,34 +11,43 @@ Covers two execution paths:
      - groups/<group_folder>/logs/tool-sizes.jsonl — per-tool-call response
        sizes. Written by the tool-size logging hook.
 
-  B) CLI (the `claude` binary launched by deus-cmd.sh — your interactive
-        sessions in this terminal)
-     - ~/.claude/projects/<encoded-cwd>/*.jsonl — Claude Code already records
-       per-turn usage on every assistant message in its transcripts. No
-       separate logger needed; the analyzer harvests those files directly.
+  B) CLI (the `claude` binary launched by deus-cmd.sh — interactive sessions)
+     - ~/.claude/projects/<encoded-cwd>/*.jsonl — Claude Code records per-turn
+       usage (incl. the model name) on every assistant message. By default we
+       aggregate across ALL projects (matching ccusage), deduped by session id.
+       --project filters by dir substring; --cli-project-dir scopes to one dir.
+
+Layered output (the `deus usage` view):
+  - Efficiency (pricing-independent): per-model cacheRead:output, amortization
+    (cacheRead:cacheCreation), output-share, input/turn. Always computed.
+  - Cost (configurable): notional $ via a built-in per-model rate table, or
+    --rates override; degrades to "—" for models without a rate. --pricing none
+    shows tokens/efficiency only.
 
 Quality signal (applies to both paths):
   - ~/.deus/evolution.db `interactions` table — OllamaJudge scores + latency.
 
 Usage:
-    # Full report across everything:
+    # Full report across ALL projects:
     python3 scripts/analyze_token_efficiency.py
 
     # Scope to a date range (inclusive):
     python3 scripts/analyze_token_efficiency.py --since 2026-04-18 --until 2026-04-25
 
-    # Scope to one channel group (CLI is always included):
-    python3 scripts/analyze_token_efficiency.py --group whatsapp_main
+    # Filter CLI to projects whose dir name contains "deus"; one channel group:
+    python3 scripts/analyze_token_efficiency.py --project deus --group whatsapp_main
 
     # Before/after comparison (splits the window at the cutoff):
     python3 scripts/analyze_token_efficiency.py \\
         --baseline-until 2026-04-22 --compare-from 2026-04-23
 
-    # Override CLI transcript dir (useful when running from a worktree):
+    # Scope to a single transcript dir (disables all-projects scan):
     python3 scripts/analyze_token_efficiency.py \\
         --cli-project-dir ~/.claude/projects/-Users-<username>-<project>
 
-    # JSON output for scripting:
+    # Efficiency-only (no $), or custom rates, or JSON:
+    python3 scripts/analyze_token_efficiency.py --pricing none
+    python3 scripts/analyze_token_efficiency.py --rates ~/my-rates.json
     python3 scripts/analyze_token_efficiency.py --json
 """
 
@@ -46,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import statistics
 import sys
@@ -63,8 +73,14 @@ EVOLUTION_DB = Path.home() / '.deus' / 'evolution.db'
 # every '/' in the absolute project path with '-' and prepends a leading '-'.
 # This is our source of truth for CLI-session token usage (no extra hook
 # needed — Claude Code already records usage on every assistant message).
-_cwd_encoded = '-' + str(PROJECT_ROOT).replace('/', '-')
-CLI_TRANSCRIPTS_DIR = Path.home() / '.claude' / 'projects' / _cwd_encoded
+#
+# By default we aggregate across ALL projects (every dir under projects/), not
+# just this repo — so `deus usage` matches ccusage's all-projects totals and
+# captures work in other repos. `--cli-project-dir` overrides to a single dir;
+# `--project <substr>` filters the all-projects glob by encoded dirname.
+CLI_PROJECTS_ROOT = Path.home() / '.claude' / 'projects'
+# Single-dir override target (set via --cli-project-dir). None = all-projects.
+CLI_TRANSCRIPTS_DIR: Path | None = None
 
 
 @dataclass
@@ -79,6 +95,9 @@ class UsageEntry:
     num_turns: int
     duration_ms: float
     total_cost_usd: float
+    # Model name (e.g. 'claude-opus-4-8'); empty when unknown. Drives the
+    # per-model breakdown.
+    model: str = ''
 
 
 @dataclass
@@ -118,6 +137,16 @@ def in_window(ts: datetime, since: datetime | None, until: datetime | None) -> b
 
 
 def load_usage(groups: list[str], since, until) -> list[UsageEntry]:
+    """Load container (channel) per-turn usage from groups/<g>/logs/usage.jsonl.
+
+    Token counts live INSIDE the ``model_usage`` map (keyed by model name) using
+    camelCase keys — ``inputTokens``, ``outputTokens``, ``cacheReadInputTokens``,
+    ``cacheCreationInputTokens``, ``costUSD`` — NOT at the top level. (The top
+    level only carries ts/session_id/num_turns/duration_ms/total_cost_usd.) We
+    emit one UsageEntry per model sub-entry so the per-model breakdown is exact;
+    record-level duration/num_turns are attributed to the first model only so
+    multi-model turns don't inflate duration stats.
+    """
     out: list[UsageEntry] = []
     for g in groups:
         p = GROUPS_DIR / g / 'logs' / 'usage.jsonl'
@@ -131,86 +160,188 @@ def load_usage(groups: list[str], since, until) -> list[UsageEntry]:
                 ts = parse_iso(d['ts'])
                 if not in_window(ts, since, until):
                     continue
-                out.append(
-                    UsageEntry(
-                        ts=ts,
-                        session_id=d.get('session_id', ''),
-                        group=g,
-                        input_tokens=int(d.get('input_tokens', 0) or 0),
-                        output_tokens=int(d.get('output_tokens', 0) or 0),
-                        cache_read=int(d.get('cache_read_input_tokens', 0) or 0),
-                        cache_create=int(
-                            d.get('cache_creation_input_tokens', 0) or 0
-                        ),
-                        num_turns=int(d.get('num_turns', 0) or 0),
-                        duration_ms=float(d.get('duration_ms', 0) or 0),
-                        total_cost_usd=float(d.get('total_cost_usd', 0) or 0),
+                model_usage = d.get('model_usage') or {}
+                session_id = d.get('session_id', '')
+                num_turns = int(d.get('num_turns', 0) or 0)
+                duration_ms = float(d.get('duration_ms', 0) or 0)
+                if not model_usage:
+                    # No per-model block (older/edge records): keep the
+                    # record-level cost/duration so totals don't regress.
+                    out.append(
+                        UsageEntry(
+                            ts=ts, session_id=session_id, group=g,
+                            input_tokens=0, output_tokens=0, cache_read=0,
+                            cache_create=0, num_turns=num_turns,
+                            duration_ms=duration_ms,
+                            total_cost_usd=float(d.get('total_cost_usd', 0) or 0),
+                        )
                     )
-                )
+                    continue
+                first = True
+                for model, mu in model_usage.items():
+                    if not isinstance(mu, dict):
+                        continue
+                    out.append(
+                        UsageEntry(
+                            ts=ts,
+                            session_id=session_id,
+                            group=g,
+                            input_tokens=int(mu.get('inputTokens', 0) or 0),
+                            output_tokens=int(mu.get('outputTokens', 0) or 0),
+                            cache_read=int(mu.get('cacheReadInputTokens', 0) or 0),
+                            cache_create=int(
+                                mu.get('cacheCreationInputTokens', 0) or 0
+                            ),
+                            # Duration/turns are per-record, not per-model:
+                            # attribute to the first model only.
+                            num_turns=num_turns if first else 0,
+                            duration_ms=duration_ms if first else 0.0,
+                            total_cost_usd=float(mu.get('costUSD', 0) or 0),
+                            model=str(model),
+                        )
+                    )
+                    first = False
             except (ValueError, KeyError) as e:
                 print(f'skipping malformed usage line in {p}: {e}', file=sys.stderr)
     return out
 
 
-def load_cli_usage(since, until) -> list[UsageEntry]:
-    """Harvest per-turn usage from Claude Code transcripts (this project only).
-    Each assistant message in the transcript carries full usage metadata
-    (input_tokens, output_tokens, cache_read_input_tokens,
-    cache_creation_input_tokens) — we don't need a separate logger.
+def _decode_project_label(encoded: str) -> str:
+    """Best-effort, display-only decode of an encoded project dir name back to a
+    readable label. The encoding ('/'→'-', leading '-') is lossy (path
+    components containing '-' are indistinguishable from separators), so we use
+    this only for display — never for filtering. Strips the home prefix
+    (Users/<user> or home/<user>) and rejoins the rest with '/', e.g.
+    '-Users-<username>-deus' → 'deus', '-Users-<u>-work-acme' → 'work/acme'.
     """
-    if not CLI_TRANSCRIPTS_DIR.exists():
+    parts = [p for p in encoded.lstrip('-').split('-') if p]
+    if len(parts) >= 2 and parts[0] in ('Users', 'home'):
+        parts = parts[2:]
+    return '/'.join(parts) if parts else encoded
+
+
+def _iter_project_dirs(project_filters: list[str] | None) -> list[Path]:
+    """Top-level project transcript dirs to scan.
+
+    - If a single-dir override (CLI_TRANSCRIPTS_DIR) is set, use only that.
+    - Otherwise scandir ~/.claude/projects/*, skipping dirs that contain no
+      transcript anywhere in their subtree (avoids ~1000 ephemeral run dirs).
+      Transcripts can be NESTED several levels deep, so the emptiness check and
+      the loader both recurse (rglob). When project_filters is given, keep dirs
+      whose name contains any filter as a case-insensitive substring.
+    """
+    if CLI_TRANSCRIPTS_DIR is not None:
+        return [CLI_TRANSCRIPTS_DIR] if CLI_TRANSCRIPTS_DIR.exists() else []
+    if not CLI_PROJECTS_ROOT.exists():
         return []
+    filters = [f.lower() for f in (project_filters or [])]
+    dirs: list[Path] = []
+    with os.scandir(CLI_PROJECTS_ROOT) as it:
+        for de in it:
+            if not de.is_dir():
+                continue
+            name = de.name
+            if filters and not any(f in name.lower() for f in filters):
+                continue
+            p = Path(de.path)
+            # Skip subtrees with no transcripts (cheap: stop at first match).
+            if not next(p.rglob('*.jsonl'), None):
+                continue
+            dirs.append(p)
+    return dirs
+
+
+def load_cli_usage(
+    since, until, project_filters: list[str] | None = None
+) -> list[UsageEntry]:
+    """Harvest per-turn usage from Claude Code transcripts across ALL projects
+    (or a single dir / filtered subset). Each assistant message carries full
+    usage metadata plus the model name.
+
+    Dedup is by the ``message.id``+``requestId`` composite GLOBALLY (first
+    occurrence wins). Claude Code logs a single API response as several chained
+    transcript nodes (distinct uuids, identical message.id/requestId/usage), and
+    resuming/forking copies prior messages into new files — so the same response
+    recurs many times (~2.9x overcount if not deduped). One API response is
+    billed once, so we count it once. Sidechain/subagent messages have their own
+    ids and ARE counted — they're real usage. Falls back to uuid (always unique,
+    so the entry is counted) when a message lacks id/requestId.
+
+    NOTE: absolute token totals can differ from ccusage (it handles these
+    DAG-duplicate subagent messages differently); the efficiency RATIOS are
+    dedup-invariant because duplication copies the whole usage block.
+    """
+    # message.id is API-assigned and globally unique, so a single global set is
+    # safe (no cross-project collisions suppress real counts) and matches
+    # ccusage's global dedup.
     out: list[UsageEntry] = []
-    for transcript in CLI_TRANSCRIPTS_DIR.glob('*.jsonl'):
-        try:
-            lines = transcript.read_text(
-                encoding='utf-8', errors='replace'
-            ).splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+    seen_msg_ids: set[str] = set()
+    for proj_dir in _iter_project_dirs(project_filters):
+        label = _decode_project_label(proj_dir.name)
+        for transcript in proj_dir.rglob('*.jsonl'):
             try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
+                lines = transcript.read_text(
+                    encoding='utf-8', errors='replace'
+                ).splitlines()
+            except OSError:
                 continue
-            if entry.get('type') != 'assistant':
-                continue
-            msg = entry.get('message')
-            if not isinstance(msg, dict):
-                continue
-            usage = msg.get('usage')
-            if not isinstance(usage, dict):
-                continue
-            ts_str = entry.get('timestamp')
-            if not ts_str:
-                continue
-            try:
-                ts = parse_iso(ts_str)
-            except ValueError:
-                continue
-            if not in_window(ts, since, until):
-                continue
-            out.append(
-                UsageEntry(
-                    ts=ts,
-                    session_id=entry.get('sessionId', transcript.stem),
-                    group='cli:deus',
-                    input_tokens=int(usage.get('input_tokens', 0) or 0),
-                    output_tokens=int(usage.get('output_tokens', 0) or 0),
-                    cache_read=int(usage.get('cache_read_input_tokens', 0) or 0),
-                    cache_create=int(
-                        usage.get('cache_creation_input_tokens', 0) or 0
-                    ),
-                    # Claude Code transcripts don't store num_turns /
-                    # duration_ms / cost per-message; leave as zeros.
-                    num_turns=0,
-                    duration_ms=0.0,
-                    total_cost_usd=0.0,
+            for lineno, line in enumerate(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get('type') != 'assistant':
+                    continue
+                msg = entry.get('message')
+                if not isinstance(msg, dict):
+                    continue
+                usage = msg.get('usage')
+                if not isinstance(usage, dict):
+                    continue
+                mid = msg.get('id')
+                # Prefer the API message id (+ requestId); fall back to the
+                # entry uuid; finally a per-file:line synthetic key so an entry
+                # with no id at all is still deduped if it recurs verbatim.
+                dedup_key = (
+                    f'{mid}:{entry.get("requestId")}' if mid
+                    else entry.get('uuid') or f'{transcript}:{lineno}'
                 )
-            )
+                if dedup_key in seen_msg_ids:
+                    continue
+                seen_msg_ids.add(dedup_key)
+                ts_str = entry.get('timestamp')
+                if not ts_str:
+                    continue
+                try:
+                    ts = parse_iso(ts_str)
+                except ValueError:
+                    continue
+                if not in_window(ts, since, until):
+                    continue
+                out.append(
+                    UsageEntry(
+                        ts=ts,
+                        session_id=entry.get('sessionId', transcript.stem),
+                        group=f'cli:{label}',
+                        input_tokens=int(usage.get('input_tokens', 0) or 0),
+                        output_tokens=int(usage.get('output_tokens', 0) or 0),
+                        cache_read=int(
+                            usage.get('cache_read_input_tokens', 0) or 0
+                        ),
+                        cache_create=int(
+                            usage.get('cache_creation_input_tokens', 0) or 0
+                        ),
+                        # Claude Code transcripts don't store num_turns /
+                        # duration_ms / cost per-message; leave as zeros.
+                        num_turns=0,
+                        duration_ms=0.0,
+                        total_cost_usd=0.0,
+                        model=str(msg.get('model', '') or ''),
+                    )
+                )
     return out
 
 
@@ -364,6 +495,210 @@ def summarize_usage(entries: list[UsageEntry]) -> dict:
         },
         'cache_hit_ratio': cache_hit_ratio,
     }
+
+
+# --------------------------------------------------------------------------
+# Cost layer (configurable, pricing-DEPENDENT) and efficiency layer
+# (pricing-INDEPENDENT). The efficiency ratios never need rates; the $ column
+# uses MODEL_RATES and degrades to "unavailable" for models it doesn't know
+# (e.g. proxied gemini/gpt-5). Rates are public Anthropic list prices (USD per
+# 1M tokens) — for a subscription user these are notional/leverage; for an
+# API-direct user they ARE the bill. Concept mirrors the private TS RATES map
+# (src/private/orchestrator/cost-tracker.ts) but is reimplemented here so this
+# public feature carries no private dependency. Override via --rates <json>.
+#
+# Matched by substring on the model name so opus-4-6/4-7/4-8 share one rule.
+# Each value: input, output, cache_write (5-min), cache_read — USD per 1M.
+MODEL_RATES: dict[str, dict[str, float]] = {
+    'opus':   {'input': 15.0, 'output': 75.0, 'cache_write': 18.75, 'cache_read': 1.50},
+    'sonnet': {'input': 3.0,  'output': 15.0, 'cache_write': 3.75,  'cache_read': 0.30},
+    'haiku':  {'input': 1.0,  'output': 5.0,  'cache_write': 1.25,  'cache_read': 0.10},
+}
+
+
+def rate_for(model: str, rates: dict[str, dict[str, float]]) -> dict | None:
+    """Resolve a model name to a rate row by case-insensitive substring match
+    (longest key first so a more specific override can win). None if unknown."""
+    m = (model or '').lower()
+    for key in sorted(rates, key=len, reverse=True):
+        if key.lower() in m:
+            return rates[key]
+    return None
+
+
+def load_rate_overrides(path: str | None) -> dict[str, dict[str, float]]:
+    """Merge a --rates JSON file over the built-in MODEL_RATES (shallow per
+    model key). The file maps model-substring -> {input, output, cache_write,
+    cache_read} (USD per 1M)."""
+    merged = {k: dict(v) for k, v in MODEL_RATES.items()}
+    if not path:
+        return merged
+    try:
+        override = json.loads(Path(path).expanduser().read_text())
+    except (OSError, ValueError) as e:
+        print(f'bad --rates file {path}: {e}', file=sys.stderr)
+        return merged
+    for k, v in (override or {}).items():
+        if isinstance(v, dict):
+            merged.setdefault(k, {}).update({kk: float(vv) for kk, vv in v.items()})
+    return merged
+
+
+def price_tokens(
+    model: str,
+    input_t: int,
+    output_t: int,
+    cache_read: int,
+    cache_create: int,
+    rates: dict[str, dict[str, float]],
+) -> float | None:
+    """Notional cost for a token bundle, or None if the model's rate is unknown
+    (graceful degradation — the efficiency layer still works without this)."""
+    r = rate_for(model, rates)
+    if r is None:
+        return None
+    return (
+        input_t / 1e6 * r['input']
+        + output_t / 1e6 * r['output']
+        + cache_read / 1e6 * r['cache_read']
+        + cache_create / 1e6 * r['cache_write']
+    )
+
+
+def efficiency_ratios(entries: list[UsageEntry]) -> dict:
+    """Pricing-independent efficiency signals over a set of entries.
+
+    - cache_read_per_output: context drag per generated token (lower better)
+    - amortization: cache_read / cache_create (how many times cached context is
+      reused; higher better)
+    - output_share: output / total tokens (signal-to-overhead; higher better)
+    - input_per_turn: mean uncached input per turn (the 1M-context tell)
+    """
+    out_t = sum(e.output_tokens for e in entries)
+    cr = sum(e.cache_read for e in entries)
+    cc = sum(e.cache_create for e in entries)
+    in_t = sum(e.input_tokens for e in entries)
+    total = in_t + out_t + cr + cc
+    return {
+        'cache_read_per_output': (cr / out_t) if out_t else None,
+        'amortization': (cr / cc) if cc else None,
+        'output_share': (out_t / total) if total else None,
+        'input_per_turn': (in_t / len(entries)) if entries else 0.0,
+        'output_tokens': out_t,
+        'cache_read_tokens': cr,
+        'cache_creation_tokens': cc,
+        'input_tokens': in_t,
+    }
+
+
+def summarize_by_model(
+    entries: list[UsageEntry], rates: dict[str, dict[str, float]], pricing: str
+) -> list[dict]:
+    """Per-model rows: tokens, efficiency ratios, and (when pricing!=none and
+    the rate is known) notional cost + cost-per-Mtok-out. Sorted by output
+    tokens descending. Entries with an empty model name bucket under '(unknown)'.
+    """
+    by_model: dict[str, list[UsageEntry]] = defaultdict(list)
+    for e in entries:
+        by_model[e.model or '(unknown)'].append(e)
+    rows: list[dict] = []
+    for model, es in by_model.items():
+        eff = efficiency_ratios(es)
+        cost = None
+        if pricing != 'none':
+            cost = price_tokens(
+                model,
+                eff['input_tokens'],
+                eff['output_tokens'],
+                eff['cache_read_tokens'],
+                eff['cache_creation_tokens'],
+                rates,
+            )
+        cost_per_mout = (
+            (cost / eff['output_tokens'] * 1e6)
+            if (cost is not None and eff['output_tokens'])
+            else None
+        )
+        rows.append({
+            'model': model,
+            'turns': len(es),
+            **eff,
+            'cost_usd': cost,
+            'cost_per_moutput': cost_per_mout,
+        })
+    rows.sort(key=lambda r: r['output_tokens'], reverse=True)
+    return rows
+
+
+def _project_key(label: str) -> str:
+    """Roll a decoded project label up to a meaningful project bucket so the
+    per-project view isn't fragmented into hundreds of worktrees / temp runs:
+    - ephemeral run dirs (var/folders, tmp) → '(ephemeral runs)'
+    - worktree paths (contain a 'worktrees' segment) → their repo (1st segment)
+    - everything else → kept as-is so distinct repos stay distinct.
+    """
+    if (
+        'var/folders' in label
+        or label in ('tmp', 'var')
+        or label.startswith(('private/var', 'private/tmp', 'tmp/', 'var/'))
+    ):
+        return '(ephemeral runs)'
+    parts = label.split('/')
+    if 'worktrees' in (p.lower() for p in parts):
+        return parts[0] or label
+    return label
+
+
+def summarize_by_project(
+    entries: list[UsageEntry], rates: dict[str, dict[str, float]], pricing: str
+) -> list[dict]:
+    """Per-project rows (CLI): sessions, efficiency ratios, top model, and
+    notional cost. Projects are rolled up via ``_project_key`` (worktrees fold
+    into their repo; temp runs bucket together). Sorted by output tokens
+    descending so the heaviest project reads first.
+    """
+    by_proj: dict[str, list[UsageEntry]] = defaultdict(list)
+    for e in entries:
+        label = e.group[4:] if e.group.startswith('cli:') else e.group
+        by_proj[_project_key(label)].append(e)
+    rows: list[dict] = []
+    for proj, es in by_proj.items():
+        eff = efficiency_ratios(es)
+        by_model = _group_by_model(es)
+        cost = 0.0 if pricing != 'none' else None
+        if pricing != 'none':
+            # Sum priced cost across the project's models (unknown models add 0
+            # but are surfaced via the per-model table).
+            for model, mes in by_model.items():
+                me = efficiency_ratios(mes)
+                c = price_tokens(
+                    model, me['input_tokens'], me['output_tokens'],
+                    me['cache_read_tokens'], me['cache_creation_tokens'], rates,
+                )
+                if c is not None:
+                    cost += c
+        # Dominant model by output for an at-a-glance "what runs here".
+        top_model = max(
+            by_model.items(),
+            key=lambda kv: sum(x.output_tokens for x in kv[1]),
+            default=('', []),
+        )[0]
+        rows.append({
+            'project': proj,
+            'sessions': len({e.session_id for e in es}),
+            **eff,
+            'top_model': top_model,
+            'cost_usd': cost,
+        })
+    rows.sort(key=lambda r: r['output_tokens'], reverse=True)
+    return rows
+
+
+def _group_by_model(entries: list[UsageEntry]) -> dict[str, list[UsageEntry]]:
+    g: dict[str, list[UsageEntry]] = defaultdict(list)
+    for e in entries:
+        g[e.model or '(unknown)'].append(e)
+    return g
 
 
 def summarize_tool_sizes(entries: list[ToolSizeEntry]) -> dict:
@@ -535,6 +870,87 @@ def format_report(
     return '\n'.join(lines)
 
 
+def _fmt_ratio(x, suffix='x', digits=0) -> str:
+    return f'{x:,.{digits}f}{suffix}' if x is not None else '—'
+
+
+def format_per_model(title: str, rows: list[dict], pricing: str) -> list[str]:
+    """Render the per-model efficiency + cost table. Pricing-independent ratios
+    always show; the $ columns show '—' when the model's rate is unknown."""
+    # Drop models that produced no output — they carry no efficiency signal
+    # (e.g. '<synthetic>' placeholders, 1-token proxy probes).
+    rows = [r for r in rows if r['output_tokens'] > 0]
+    if not rows:
+        return []
+    lines = [f'  -- {title}: per-model efficiency --']
+    header = (
+        f'    {"model":<26}{"output":>12}{"CR:out":>9}'
+        f'{"amort":>8}{"out%":>7}'
+    )
+    if pricing != 'none':
+        header += f'{"$/Mout":>9}{"cost$":>10}'
+    lines.append(header)
+    for r in rows:
+        line = (
+            f'    {r["model"][:26]:<26}'
+            f'{format_number(r["output_tokens"]):>12}'
+            f'{_fmt_ratio(r["cache_read_per_output"]):>9}'
+            f'{_fmt_ratio(r["amortization"]):>8}'
+            f'{(r["output_share"] * 100 if r["output_share"] is not None else 0):>6.1f}%'
+        )
+        if pricing != 'none':
+            cpm = r.get('cost_per_moutput')
+            cost = r.get('cost_usd')
+            line += f'{(f"${cpm:,.0f}" if cpm is not None else "—"):>9}'
+            line += f'{(f"${cost:,.2f}" if cost is not None else "—"):>10}'
+        lines.append(line)
+    if pricing != 'none' and any(r.get('cost_usd') is None for r in rows):
+        lines.append(
+            '    (— = no rate for this model; efficiency ratios still valid. '
+            'Add one via --rates.)'
+        )
+    return lines
+
+
+def format_projects(
+    rows: list[dict], pricing: str, top: int = 25
+) -> list[str]:
+    """Per-project table (CLI), heaviest first. Caps at `top` rows and states
+    how many were omitted (no silent truncation) — use --json for all."""
+    rows = [r for r in rows if r['output_tokens'] > 0]
+    if not rows:
+        return []
+    lines = ['  -- Per-project (CLI), heaviest first --']
+    header = (
+        f'    {"project":<30}{"sess":>6}{"output":>12}{"CR:out":>9}'
+        f'{"amort":>8}{"top model":>16}'
+    )
+    if pricing != 'none':
+        header += f'{"cost$":>11}'
+    lines.append(header)
+    shown = rows[:top]
+    for r in shown:
+        top_model = (r['top_model'] or '').replace('claude-', '')[:15]
+        line = (
+            f'    {r["project"][:30]:<30}{r["sessions"]:>6}'
+            f'{format_number(r["output_tokens"]):>12}'
+            f'{_fmt_ratio(r["cache_read_per_output"]):>9}'
+            f'{_fmt_ratio(r["amortization"]):>8}{top_model:>16}'
+        )
+        if pricing != 'none':
+            cost = r.get('cost_usd')
+            line += f'{(f"${cost:,.2f}" if cost is not None else "—"):>11}'
+        lines.append(line)
+    if len(rows) > top:
+        omitted = rows[len(shown):]
+        omitted_out = sum(r['output_tokens'] for r in omitted)
+        lines.append(
+            f'    … +{len(omitted)} more project(s), '
+            f'{format_number(omitted_out)} output tokens (use --json for all)'
+        )
+    return lines
+
+
 def _compare_usage_block(label: str, b_usage: dict, c_usage: dict) -> list[str]:
     if not (b_usage.get('n_turns') and c_usage.get('n_turns')):
         return [
@@ -620,15 +1036,31 @@ def discover_groups() -> list[str]:
 
 
 def analyze(
-    groups: list[str], since, until, include_cli: bool = True
+    groups: list[str],
+    since,
+    until,
+    include_cli: bool = True,
+    project_filters: list[str] | None = None,
+    rates: dict[str, dict[str, float]] | None = None,
+    pricing: str = 'notional',
 ) -> dict:
-    container_usage = load_usage(groups, since, until)
-    cli_usage = load_cli_usage(since, until) if include_cli else []
+    rates = rates if rates is not None else MODEL_RATES
+    container_entries = load_usage(groups, since, until)
+    cli_entries = (
+        load_cli_usage(since, until, project_filters) if include_cli else []
+    )
     tools = load_tool_sizes(groups, since, until)
     quality_rows = load_interactions(groups, since, until)
     return {
-        'container_usage': summarize_usage(container_usage),
-        'cli_usage': summarize_usage(cli_usage),
+        'container_usage': summarize_usage(container_entries),
+        'cli_usage': summarize_usage(cli_entries),
+        'container_per_model': summarize_by_model(
+            container_entries, rates, pricing
+        ),
+        'cli_per_model': summarize_by_model(cli_entries, rates, pricing),
+        'cli_per_project': summarize_by_project(cli_entries, rates, pricing),
+        'container_efficiency': efficiency_ratios(container_entries),
+        'cli_efficiency': efficiency_ratios(cli_entries),
         'tools': summarize_tool_sizes(tools),
         'quality': summarize_quality(quality_rows),
     }
@@ -638,26 +1070,31 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description='Analyze Deus token-usage and quality logs.'
     )
-    ap.add_argument('--group', action='append', help='Restrict to this group folder (repeatable). Default: all.')
+    ap.add_argument('--group', action='append', help='Restrict to this CONTAINER group folder (repeatable). Default: all. Orthogonal to --project.')
+    ap.add_argument('--project', action='append', help='Filter CLI transcripts to project dirs whose RAW ENCODED name (e.g. -Users-<u>-myrepo, not the short label) contains this substring (repeatable, case-insensitive). Default: all projects.')
     ap.add_argument('--since', help='Start of window (YYYY-MM-DD, inclusive).')
     ap.add_argument('--until', help='End of window (YYYY-MM-DD, inclusive).')
     ap.add_argument('--baseline-until', help='For before/after: last day of baseline period.')
     ap.add_argument('--compare-from', help='For before/after: first day of comparison period.')
+    ap.add_argument('--pricing', choices=['none', 'notional'], default='notional', help='Cost column: "notional" prices tokens via the built-in rate table (for an API-direct user this IS the bill); "none" shows tokens/efficiency only.')
+    ap.add_argument('--rates', help='Path to a JSON file overriding/extending the built-in per-model rates (USD per 1M: {input,output,cache_write,cache_read}).')
     ap.add_argument('--json', action='store_true', help='Emit JSON instead of text report.')
     ap.add_argument(
         '--cli-project-dir',
         help=(
-            'Override the Claude Code transcript project dir. '
-            'Default: ~/.claude/projects/<encoded-cwd-of-script-root>. '
-            'Set this when running the script from a worktree.'
+            'Override to a SINGLE Claude Code transcript project dir (disables '
+            'the all-projects scan). Set this when running from a worktree or '
+            'to scope to one repo.'
         ),
     )
     args = ap.parse_args()
 
-    # Allow overriding where we look for Claude Code transcripts.
+    # Allow overriding to a single transcript dir (disables all-projects scan).
     if args.cli_project_dir:
         global CLI_TRANSCRIPTS_DIR
         CLI_TRANSCRIPTS_DIR = Path(args.cli_project_dir).expanduser()
+
+    rates = load_rate_overrides(args.rates)
 
     def parse_day(s: str | None, end_of_day: bool = False) -> datetime | None:
         if not s:
@@ -672,10 +1109,9 @@ def main() -> int:
         return d.replace(tzinfo=None) if d.tzinfo is None else d
 
     groups = args.group or discover_groups()
-    # CLI data is still loaded even when no channel groups exist; the deus
-    # repo installation always has a CLI transcript dir (or not — we handle
-    # that gracefully). So we only warn about groups, not fail.
-    if not groups and not CLI_TRANSCRIPTS_DIR.exists():
+    # CLI data is still loaded even when no channel groups exist. Fail only when
+    # there is neither a channel group nor any CLI transcript dir to scan.
+    if not groups and not _iter_project_dirs(args.project):
         print(
             'no groups with logs/ and no CLI transcripts found',
             file=sys.stderr,
@@ -688,8 +1124,8 @@ def main() -> int:
         compare_from = parse_day(args.compare_from)
         since = parse_day(args.since)
         until = parse_day(args.until, end_of_day=True)
-        baseline = analyze(groups, since, baseline_until)
-        compare = analyze(groups, compare_from, until)
+        baseline = analyze(groups, since, baseline_until, project_filters=args.project, rates=rates, pricing=args.pricing)
+        compare = analyze(groups, compare_from, until, project_filters=args.project, rates=rates, pricing=args.pricing)
         if args.json:
             print(
                 json.dumps(
@@ -727,7 +1163,7 @@ def main() -> int:
     # Single-window mode
     since = parse_day(args.since)
     until = parse_day(args.until, end_of_day=True)
-    result = analyze(groups, since, until)
+    result = analyze(groups, since, until, project_filters=args.project, rates=rates, pricing=args.pricing)
     if args.json:
         print(json.dumps(result, indent=2))
         return 0
@@ -743,6 +1179,24 @@ def main() -> int:
             result['quality'],
         )
     )
+    # Per-project breakdown FIRST (understand each project), then the
+    # all-projects per-model totals (the layered view).
+    out_lines: list[str] = []
+    out_lines += format_projects(result['cli_per_project'], args.pricing)
+    pm = format_per_model('CLI total (all projects)', result['cli_per_model'], args.pricing)
+    if pm:
+        if out_lines:
+            out_lines.append('')
+        out_lines += pm
+    if result['container_per_model']:
+        cm = format_per_model('Container', result['container_per_model'], args.pricing)
+        if cm:
+            if out_lines:
+                out_lines.append('')
+            out_lines += cm
+    if out_lines:
+        print()
+        print('\n'.join(out_lines))
     return 0
 
 

@@ -23,6 +23,7 @@ Usage:
   python3 scripts/drift_check.py --bench-snapshot  # run benchmark and check against stored snapshot (local)
   python3 scripts/drift_check.py --all             # run every fast check above
   python3 scripts/drift_check.py --cache-map       # validate .claude/codebase_map.md is fresh (CI gating)
+  python3 scripts/drift_check.py --codegraph-format # validate codegraph gate scan predicate + live transcript shape
   python3 scripts/drift_check.py --validate        # LLM pattern content check (slow)
   python3 scripts/drift_check.py --validate-router # LLM router selection check (slow)
   python3 scripts/drift_check.py --contradictions  # LLM cross-pattern contradictions (slow)
@@ -1278,6 +1279,269 @@ def check_cache_map(project_root: Path) -> int:
     return 1
 
 
+def check_codegraph_transcript_format(project_root: Path) -> int:
+    """Validate that the codegraph-first gate scan predicate still works.
+
+    Two layers:
+
+    (CI) Fixture test — loads ``scripts/tests/fixtures/codegraph_transcript_sample.jsonl``
+    and asserts the shared predicate (``_line_is_codegraph_toolcall`` from
+    ``codex_warden_hooks.py``) correctly identifies positives and rejects
+    negatives.  If CC changes its transcript format this fixture will no longer
+    match reality, but the test will still pass — that's intentional.  The
+    fixture test is a regression guard on the *scan code*, not on the live format.
+
+    (Host) Live shape check — finds the most recent CC transcript under
+    ``~/.claude/projects/`` and asserts the structural invariants the predicate
+    depends on still hold in real data.  SKIPs gracefully when no transcripts
+    are found (CI, fresh installs) exactly like ``check_cache_map`` skips when
+    git is absent.
+
+    (Host) Version pin — compares current ``claude --version`` against the
+    version recorded in the fixture metadata.  A version change triggers a
+    WARNING (not a failure) prompting re-capture.  This is a cheap "go
+    re-validate" nudge; it does not block CI.
+
+    Exit codes:
+      0 — all checks passed (or host checks skipped)
+      1 — fixture test failed (CI-blocking) OR live invariant check failed
+      2 — fixture file missing
+    """
+    import importlib.util as ilu
+
+    # ------------------------------------------------------------------ #
+    # Load the shared predicate from codex_warden_hooks.py               #
+    # ------------------------------------------------------------------ #
+    hooks_path = project_root / "scripts" / "codex_warden_hooks.py"
+    if not hooks_path.exists():
+        print(f"ERROR: {hooks_path} not found")
+        return 2
+
+    spec = ilu.spec_from_file_location("_cwh", hooks_path)
+    cwh = ilu.module_from_spec(spec)
+    # Register in sys.modules BEFORE exec_module so dataclasses (Python 3.14+)
+    # can resolve the module's __module__ reference during class decoration.
+    import sys as _sys
+    _sys.modules["_cwh"] = cwh
+    try:
+        spec.loader.exec_module(cwh)
+    except Exception as exc:
+        print(f"ERROR: failed to load codex_warden_hooks.py: {exc}")
+        return 1
+
+    predicate = getattr(cwh, "_line_is_codegraph_toolcall", None)
+    if predicate is None:
+        print(
+            "FAIL: _line_is_codegraph_toolcall not found in codex_warden_hooks.py — "
+            "the shared predicate was removed or renamed. "
+            "The codegraph-first gate and the fixture test are now out of sync."
+        )
+        return 1
+
+    # ------------------------------------------------------------------ #
+    # (CI) Fixture test                                                   #
+    # ------------------------------------------------------------------ #
+    fixture_path = project_root / "scripts" / "tests" / "fixtures" / "codegraph_transcript_sample.jsonl"
+    if not fixture_path.exists():
+        print(f"FAIL: fixture not found at {fixture_path}")
+        print(
+            "  Re-capture from a real CC session: find a transcript in "
+            "~/.claude/projects/.../*.jsonl that contains mcp__codegraph__ tool_use "
+            "lines, extract representative positive and negative samples, scrub personal "
+            "data, and write to the fixture path."
+        )
+        return 2
+
+    import json as _json
+
+    fixture_failures: list[str] = []
+    for raw in fixture_path.read_text(encoding="utf-8").splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            obj = _json.loads(raw)
+        except _json.JSONDecodeError as exc:
+            fixture_failures.append(f"parse error: {exc}")
+            continue
+        role = obj.pop("_fixture_role", None)
+        if role is None:
+            fixture_failures.append(f"missing _fixture_role: {raw[:80]}")
+            continue
+        result = predicate(obj)
+        if role.startswith("pos_") and not result:
+            fixture_failures.append(
+                f"FAIL: positive sample '{role}' not detected by _line_is_codegraph_toolcall. "
+                f"CC may have changed its transcript format or the predicate was broken. "
+                f"Re-capture the fixture from a live transcript and update the predicate."
+            )
+        elif role.startswith("neg_") and result:
+            fixture_failures.append(
+                f"FAIL: negative sample '{role}' wrongly detected as codegraph call. "
+                f"The predicate is producing false positives — review _line_is_codegraph_toolcall."
+            )
+
+    if fixture_failures:
+        print("=== codegraph transcript fixture test: FAIL ===")
+        for msg in fixture_failures:
+            print(f"  {msg}")
+        return 1
+    print(f"OK: codegraph transcript fixture ({fixture_path.name}): all samples match predicate")
+
+    # ------------------------------------------------------------------ #
+    # (Host) Live shape check — SKIP when no transcripts found           #
+    # ------------------------------------------------------------------ #
+    projects_dir = Path.home() / ".claude" / "projects"
+    if not projects_dir.exists():
+        print("SKIP: ~/.claude/projects/ not found — skipping live shape check (CI/fresh install)")
+        return 0
+
+    # Find the most recently modified transcript file.
+    all_transcripts = sorted(
+        projects_dir.rglob("*.jsonl"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )
+    live_path: Path | None = None
+    for candidate in all_transcripts[:50]:  # cap scan cost
+        if candidate.stat().st_size > 0:
+            live_path = candidate
+            break
+
+    if live_path is None:
+        print("SKIP: no non-empty transcript files found — skipping live shape check")
+        return 0
+
+    # Validate invariants against real data.
+    live_failures: list[str] = []
+    assistant_turns = 0
+    tool_use_count = 0
+    parse_errors = 0
+    try:
+        for raw in live_path.read_text(encoding="utf-8", errors="replace").splitlines()[:500]:
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                obj = _json.loads(raw)
+            except _json.JSONDecodeError:
+                parse_errors += 1
+                continue
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("type") == "assistant":
+                assistant_turns += 1
+                msg = obj.get("message")
+                if not isinstance(msg, dict):
+                    live_failures.append(
+                        f"assistant line has non-dict 'message' field (key: {list(obj.keys())[:5]})"
+                    )
+                    break
+                content = msg.get("content")
+                if content is not None and not isinstance(content, list):
+                    live_failures.append(
+                        f"message.content is {type(content).__name__}, expected list"
+                    )
+                    break
+                if isinstance(content, list):
+                    for blk in content:
+                        if isinstance(blk, dict) and blk.get("type") == "tool_use":
+                            tool_use_count += 1
+                            if "name" not in blk:
+                                live_failures.append(
+                                    "tool_use block missing 'name' key: "
+                                    f"{list(blk.keys())}"
+                                )
+    except OSError as exc:
+        print(f"SKIP: could not read live transcript {live_path}: {exc}")
+        return 0
+
+    if live_failures:
+        print(f"FAIL: live transcript shape check ({live_path.name}):")
+        for msg in live_failures:
+            print(f"  {msg}")
+        print(
+            "  The CC transcript format appears to have changed. "
+            "Re-capture scripts/tests/fixtures/codegraph_transcript_sample.jsonl "
+            "from a fresh session, update _line_is_codegraph_toolcall in "
+            "codex_warden_hooks.py to match the new format, then re-run."
+        )
+        return 1
+
+    print(
+        f"OK: live transcript shape check ({live_path.name}): "
+        f"{assistant_turns} assistant turns, {tool_use_count} tool_use blocks, "
+        f"{parse_errors} parse errors"
+    )
+
+    # ------------------------------------------------------------------ #
+    # (Host) Version pin — WARNING only, not a failure                   #
+    # ------------------------------------------------------------------ #
+    meta_path = fixture_path.parent / "codegraph_transcript_sample.meta.json"
+    if meta_path.exists():
+        try:
+            meta = _json.loads(meta_path.read_text(encoding="utf-8"))
+            pinned_version = meta.get("cc_version", "")
+        except Exception:
+            pinned_version = ""
+
+        try:
+            result = subprocess.run(
+                ["claude", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            cc_line = result.stdout.strip().split("\n")[0]
+            # e.g. "2.1.157 (Claude Code)"
+            current_version = cc_line.split()[0] if cc_line else ""
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            current_version = ""
+
+        if pinned_version and current_version and current_version != pinned_version:
+            print(
+                f"WARN: CC version changed {pinned_version} → {current_version}. "
+                "Re-validate the codegraph fixture against a fresh transcript: "
+                "python3 scripts/drift_check.py --codegraph-format. "
+                "If live shape check passed, the format is still compatible. "
+                "Update meta.json cc_version to silence this warning."
+            )
+        elif current_version:
+            print(f"OK: CC version {current_version} matches pinned {pinned_version or '(none)'}")
+
+    # ------------------------------------------------------------------ #
+    # (Host) Subagent-path derivation invariant.                          #
+    # The gate resolves a Task-spawned subagent's transcript as           #
+    # <session_id>/subagents/agent-<id>.jsonl from the parent session     #
+    # path + agent_id (_resolve_agent_transcript). If CC changes that     #
+    # layout, the gate scans the wrong file and silently fails open.      #
+    # Verify the formula still round-trips against a real subagent file.  #
+    # ------------------------------------------------------------------ #
+    sub_files = list(projects_dir.rglob("subagents/agent-*.jsonl"))
+    if sub_files:
+        sample = max(sub_files, key=lambda p: p.stat().st_mtime)
+        session_dir = sample.parent.parent  # .../<session_id>
+        parent_file = session_dir.with_suffix(".jsonl")
+        agent_id = sample.stem[len("agent-"):]
+        # Mirror _resolve_agent_transcript: Path(parent).with_suffix("")/subagents/agent-<id>.jsonl
+        derived = parent_file.with_suffix("") / "subagents" / f"agent-{agent_id}.jsonl"
+        if derived != sample:
+            print(
+                f"FAIL: subagent path derivation no longer matches CC layout "
+                f"(sample {sample}, derived {derived}). Update "
+                "_resolve_agent_transcript in codex_warden_hooks.py."
+            )
+            return 1
+        print(
+            f"OK: subagent path-derivation layout intact ({sample.name}); "
+            f"parent session file {'present' if parent_file.exists() else 'absent'}"
+        )
+    else:
+        print("SKIP: no subagent transcripts found — cannot verify path derivation")
+
+    return 0
+
+
 def check_all(project_root: Path, base_ref: str | None = None) -> int:
     """Run every fast check in sequence and aggregate exit codes.
 
@@ -1309,10 +1573,12 @@ def check_all(project_root: Path, base_ref: str | None = None) -> int:
     anp_rc = check_agent_native_mcp(project_root)
     print("\n=== MCP description hints ===")
     mhint_rc = check_mcp_description_hints(project_root)
+    print("\n=== codegraph transcript format ===")
+    cg_rc = check_codegraph_transcript_format(project_root)
     print("\n=== coverage (informational) ===")
     cov_rc = check_coverage(project_root)
 
-    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, bm_rc, bench_rc, bs_rc, pp_rc, anp_rc, mhint_rc, cov_rc)
+    worst = max(drift_rc, paths_rc, idx_rc, adr_rc, tt_rc, shadow_rc, bm_rc, bench_rc, bs_rc, pp_rc, anp_rc, mhint_rc, cg_rc, cov_rc)
     print()
     if worst == 0:
         print("ALL CHECKS PASSED")
@@ -2049,9 +2315,19 @@ if __name__ == "__main__":
         help="Validate that .claude/codebase_map.md is fresh (SHA matches HEAD). "
              "Exits 0 if fresh, 1 if stale or missing. For CI gating.",
     )
+    parser.add_argument(
+        "--codegraph-format",
+        action="store_true",
+        dest="codegraph_format",
+        help="Validate codegraph-first gate scan predicate against fixture + live transcript shape. "
+             "CI: fixture test; host: live shape check + CC version pin. "
+             "Exits 0 if OK/skipped, 1 if predicate broken, 2 if fixture missing.",
+    )
     args = parser.parse_args()
 
-    if args.cache_map:
+    if args.codegraph_format:
+        sys.exit(check_codegraph_transcript_format(PROJECT_ROOT))
+    elif args.cache_map:
         sys.exit(check_cache_map(PROJECT_ROOT))
     elif args.platform_parity:
         sys.exit(check_platform_parity(PROJECT_ROOT))

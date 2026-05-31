@@ -103,13 +103,17 @@ def _run_mcp_server() -> None:
     @mcp.tool()
     def get_active_prompt_tool(module: str) -> Optional[str]:
         """
-        Return the current DSPy-optimized prompt for a module.
+        Return the current DSPy-optimized prompt block for a module, sanitized and
+        ready to inject (LIA-152): boundary-tagged, length-capped, and None unless
+        there is a non-trivial learned instruction.
         module: qa | tool_selection | summarization
-        Returns None if no artifact exists yet.
+        Returns None if no safe optimized prompt exists yet.
         """
-        from .optimizer.artifacts import get_active
-        artifact = get_active(module)
-        return artifact["content"] if artifact else None
+        # Route through the single sanitizing helper so the MCP surface can never
+        # hand a caller raw, unbounded artifact content (the trust boundary).
+        from .optimizer.artifacts import get_active_prompt_block
+        block = get_active_prompt_block(module)
+        return block["block"] if block else None
 
     @mcp.tool()
     def record_feedback_tool(interaction_id: str, positive: bool) -> dict:
