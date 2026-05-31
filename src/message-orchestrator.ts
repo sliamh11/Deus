@@ -373,7 +373,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
       }, IDLE_TIMEOUT);
     };
 
-    // TODO: wire MultiAgentOrchestrator dispatch when task-detection is ready (DEUS_MULTI_AGENT gate)
+    // FIXME(LIA-127): Wire MultiAgentOrchestrator dispatch behind DEUS_MULTI_AGENT=1 env gate. Orchestrator is built and tested (src/multi-agent/orchestrator.ts) but not connected to the message loop. See LIA-127 for implementation scope.
 
     await channel.setTyping?.(chatJid, true);
     let hadError = false;

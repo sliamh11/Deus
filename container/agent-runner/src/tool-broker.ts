@@ -12,12 +12,15 @@ import {
   StdioClientTransport,
   type StdioServerParameters,
 } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { CronExpressionParser } from 'cron-parser';
 import {
   isAuditedTool,
   writeAuditEntry,
   generateToolUseId,
 } from './tool-audit.js';
+import {
+  ScheduleInput,
+  validateSchedule,
+} from './schedule-validator.js';
 
 // Container-side mirror of the host AgentRuntimeId union. Keep in sync
 // when adding backends.
@@ -661,55 +664,10 @@ export async function createOpenAIMcpToolBridge(
   };
 }
 
-function parseScheduleType(
-  value: unknown,
-): 'cron' | 'interval' | 'once' | null {
-  return value === 'cron' || value === 'interval' || value === 'once'
-    ? value
-    : null;
-}
-
 export function normalizeTaskContextMode(value: unknown): 'group' | 'isolated' {
   return value === 'isolated' ? 'isolated' : 'group';
 }
 
-export function validateScheduleInput(
-  scheduleTypeValue: unknown,
-  scheduleValueValue: unknown,
-): string | null {
-  const scheduleType = parseScheduleType(scheduleTypeValue);
-  const scheduleValue = String(scheduleValueValue || '');
-
-  if (!scheduleType) {
-    return `Invalid schedule type: "${String(scheduleTypeValue || '')}".`;
-  }
-
-  if (scheduleType === 'cron') {
-    try {
-      CronExpressionParser.parse(scheduleValue);
-      return null;
-    } catch {
-      return `Invalid cron: "${scheduleValue}". Use format like "0 9 * * *" or "*/5 * * * *".`;
-    }
-  }
-
-  if (scheduleType === 'interval') {
-    const ms = parseInt(scheduleValue, 10);
-    if (Number.isNaN(ms) || ms <= 0) {
-      return `Invalid interval: "${scheduleValue}". Must be positive milliseconds.`;
-    }
-    return null;
-  }
-
-  if (/[Zz]$/.test(scheduleValue) || /[+-]\d{2}:\d{2}$/.test(scheduleValue)) {
-    return `Timestamp must be local time without timezone suffix. Got "${scheduleValue}".`;
-  }
-  const date = new Date(scheduleValue);
-  if (Number.isNaN(date.getTime())) {
-    return `Invalid timestamp: "${scheduleValue}". Use local time format like "2026-02-01T15:30:00".`;
-  }
-  return null;
-}
 
 function readVisibleTasks(containerInput: ToolBrokerContainerInput): unknown[] {
   const tasksFile = path.join(IPC_DIR, 'current_tasks.json');
@@ -846,11 +804,19 @@ export async function executeBrokerTool(
       return { ok: true };
     }
     case 'schedule_task': {
-      const validationError = validateScheduleInput(
-        args.schedule_type,
-        args.schedule_value,
-      );
-      if (validationError) return { ok: false, error: validationError };
+      const scheduleInputParsed = ScheduleInput.safeParse({
+        schedule_type: args.schedule_type,
+        schedule_value: String(args.schedule_value || ''),
+      });
+      if (!scheduleInputParsed.success) {
+        return {
+          ok: false,
+          error: `Invalid schedule type: "${String(args.schedule_type || '')}".`,
+        };
+      }
+      const scheduleValidation = validateSchedule(scheduleInputParsed.data);
+      if (!scheduleValidation.ok)
+        return { ok: false, error: scheduleValidation.error };
 
       const taskId = `task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       writeIpcFile(TASKS_DIR, {
@@ -888,6 +854,21 @@ export async function executeBrokerTool(
       return { ok: true };
     }
     case 'update_task': {
+      if (args.schedule_type !== undefined || args.schedule_value !== undefined) {
+        const scheduleInputParsed = ScheduleInput.safeParse({
+          schedule_type: args.schedule_type,
+          schedule_value: String(args.schedule_value || ''),
+        });
+        if (!scheduleInputParsed.success) {
+          return {
+            ok: false,
+            error: `Invalid schedule type: "${String(args.schedule_type || '')}".`,
+          };
+        }
+        const scheduleValidation = validateSchedule(scheduleInputParsed.data);
+        if (!scheduleValidation.ok)
+          return { ok: false, error: scheduleValidation.error };
+      }
       writeIpcFile(TASKS_DIR, {
         type: 'update_task',
         taskId: String(args.task_id || ''),
@@ -924,3 +905,4 @@ export async function executeBrokerTool(
       return { ok: false, error: `Unknown tool: ${name}` };
   }
 }
+

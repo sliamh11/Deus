@@ -24,6 +24,25 @@ import {
   type AgentRuntimeId,
 } from './agent-runtimes/types.js';
 
+/**
+ * Authorization helper for IPC handlers.
+ *
+ * Returns true if the requesting group (`sourceFolder`) is allowed to access
+ * a resource owned by `targetFolder`. The control group is always authorized;
+ * non-control groups may only access resources in their own folder.
+ *
+ * Centralising this logic in one place means any future change to the
+ * authorization model (e.g. adding a new privilege tier) only requires editing
+ * this function, eliminating the risk of a missed-update authorization bypass.
+ */
+export function authorizeIpcAccess(
+  isControlGroup: boolean,
+  sourceFolder: string,
+  targetFolder: string,
+): boolean {
+  return isControlGroup || targetFolder === sourceFolder;
+}
+
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
@@ -92,8 +111,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
-                  isControlGroup ||
-                  (targetGroup && targetGroup.folder === sourceGroup)
+                  authorizeIpcAccess(
+                    isControlGroup,
+                    sourceGroup,
+                    targetGroup?.folder ?? '',
+                  )
                 ) {
                   await deps.sendMessage(data.chatJid, data.text);
                   logger.info(
@@ -221,7 +243,7 @@ export async function processTaskIpc(
         const targetFolder = targetGroupEntry.folder;
 
         // Authorization: non-main groups can only schedule for themselves
-        if (!isControlGroup && targetFolder !== sourceGroup) {
+        if (!authorizeIpcAccess(isControlGroup, sourceGroup, targetFolder)) {
           logger.warn(
             { sourceGroup, targetFolder },
             'Unauthorized schedule_task attempt blocked',
@@ -299,7 +321,10 @@ export async function processTaskIpc(
     case 'pause_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isControlGroup || task.group_folder === sourceGroup)) {
+        if (
+          task &&
+          authorizeIpcAccess(isControlGroup, sourceGroup, task.group_folder)
+        ) {
           updateTask(data.taskId, { status: 'paused' });
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -318,7 +343,10 @@ export async function processTaskIpc(
     case 'resume_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isControlGroup || task.group_folder === sourceGroup)) {
+        if (
+          task &&
+          authorizeIpcAccess(isControlGroup, sourceGroup, task.group_folder)
+        ) {
           updateTask(data.taskId, { status: 'active' });
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -337,7 +365,10 @@ export async function processTaskIpc(
     case 'cancel_task':
       if (data.taskId) {
         const task = getTaskById(data.taskId);
-        if (task && (isControlGroup || task.group_folder === sourceGroup)) {
+        if (
+          task &&
+          authorizeIpcAccess(isControlGroup, sourceGroup, task.group_folder)
+        ) {
           deleteTask(data.taskId);
           logger.info(
             { taskId: data.taskId, sourceGroup },
@@ -363,7 +394,9 @@ export async function processTaskIpc(
           );
           break;
         }
-        if (!isControlGroup && task.group_folder !== sourceGroup) {
+        if (
+          !authorizeIpcAccess(isControlGroup, sourceGroup, task.group_folder)
+        ) {
           logger.warn(
             { taskId: data.taskId, sourceGroup },
             'Unauthorized task update attempt',
