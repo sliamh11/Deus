@@ -172,6 +172,15 @@ When `LINEAR_AUTO_MERGE=1`, Deus automatically merges the agent's PR once CI pas
 
 Each issue gets a single rolling **Pipeline Log** comment that tracks every event (gate verdicts, agent dispatch, PR creation, merge) -- no comment spam.
 
+### Under the hood: event-driven orchestrator
+
+The pipeline is **event-driven**. Instead of each step writing directly to Linear and the event log, the orchestrator emits typed events onto an in-process **event bus**, and independent listeners react:
+
+- one listener **acts** on Linear (e.g. moves an issue to *In Review* when an agent finishes),
+- another **records** every event to the pipeline log that backs `deus pipeline` and the rolling comment.
+
+This pub/sub seam keeps the dispatcher, webhook gates, and message path decoupled -- new behavior plugs in as a listener without touching the producers. See [Event hub architecture](docs/decisions/event-hub.md) for the bus contract, the strangler migration, and the phase roadmap.
+
 ### Setup
 
 ```
@@ -285,6 +294,7 @@ Deus goes deep on understanding you and adapting over time. Hermes goes wide on 
 | Contributing | [Contributing](CONTRIBUTING.md) |
 | Known limitations | [Limitations](docs/KNOWN_LIMITATIONS.md) |
 | Linear automation | [Setup, gates, and pipeline](docs/decisions/linear-webhook-pipeline.md) |
+| Event hub architecture | [Orchestrator Event Hub](docs/decisions/event-hub.md) |
 | Hook dispatch architecture | [Hook Dispatch System](docs/decisions/hook-dispatch-system.md) |
 
 ---
