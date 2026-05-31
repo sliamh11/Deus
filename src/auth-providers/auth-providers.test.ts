@@ -57,6 +57,7 @@ import {
   _resetCredentialsCacheForTest,
 } from './anthropic.js';
 import { OpenAIAuthProvider, _resetCodexCacheForTest } from './openai.js';
+import { logger } from '../logger.js';
 
 const mockReadFileSync = readFileSync as ReturnType<typeof vi.fn>;
 const mockWriteFileSync = writeFileSync as ReturnType<typeof vi.fn>;
@@ -944,6 +945,236 @@ describe('AnthropicAuthProvider', () => {
 
       // No crash, no write
       expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Credential freshness — prefer the freshest of {file, keychain}.
+  // Regression guard for the recurring pipeline-gate 401: at the incident the
+  // macOS keychain held a VALID token while ~/.claude/.credentials.json held an
+  // EXPIRED one, and the file-first reader served the dead token. These tests
+  // reconstruct that exact state — the honest verification for a bug whose
+  // expiry timing can't be forced end-to-end.
+  // -------------------------------------------------------------------------
+  describe('credential freshness (file vs keychain)', () => {
+    const HOUR = 60 * 60 * 1000;
+    let fetchSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      // Logger isn't reset by the parent beforeEach — clear so assertions are scoped.
+      vi.mocked(logger.info).mockClear();
+      vi.mocked(logger.warn).mockClear();
+      // Stub fetch so any background refresh a test triggers can't hit the network.
+      // Default response mimics a rotated/invalid refresh_token (the rotation signal).
+      fetchSpy = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: () => Promise.resolve({ error: 'invalid_grant' }),
+      });
+      vi.stubGlobal('fetch', fetchSpy);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('incident reconstruction: file token EXPIRED + keychain VALID → injects the keychain token', () => {
+      platformMock.IS_MACOS = true;
+      const now = Date.now();
+      // File holds the expired token (the 04:41 credentials.json state)
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'file-expired-token-padding',
+            refreshToken: 'file-refresh',
+            expiresAt: now - 60_000,
+          },
+        }),
+      );
+      // Keychain holds the valid token Claude Code refreshed (the 04:39 keychain state)
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'keychain-valid-token-padding',
+            refreshToken: 'keychain-refresh',
+            expiresAt: now + 5 * HOUR,
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      const headers: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer placeholder',
+      };
+      provider.injectAuth(headers);
+
+      // The fix: the fresher keychain token wins over the expired file token.
+      expect(headers['authorization']).toBe(
+        'Bearer keychain-valid-token-padding',
+      );
+      // Winner differs from file → synced to disk for the next read.
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining('.credentials.json'),
+        expect.stringContaining('keychain-valid-token-padding'),
+        expect.objectContaining({ mode: 0o600 }),
+      );
+    });
+
+    it('Infinity edge (a): file has no expiry + keychain valid finite → keychain wins (no-expiry treated as oldest)', () => {
+      platformMock.IS_MACOS = true;
+      const now = Date.now();
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'file-noexpiry-token-pad',
+            refreshToken: 'fr',
+          }, // no expiresAt → Infinity sentinel
+        }),
+      );
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'keychain-finite-token-pad',
+            expiresAt: now + 2 * HOUR,
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      const headers: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer placeholder',
+      };
+      provider.injectAuth(headers);
+      expect(headers['authorization']).toBe('Bearer keychain-finite-token-pad');
+    });
+
+    it('Infinity edge (b): file finite (soon-expiring) + keychain has no expiry → file wins over unknown-expiry', () => {
+      platformMock.IS_MACOS = true;
+      const now = Date.now();
+      // File finite but within the early-expire window so the keychain is consulted.
+      // No refreshToken → no background refresh fires (keeps the assertion synchronous).
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'file-finite-soon-token-pad',
+            expiresAt: now + 10 * 60 * 1000,
+          },
+        }),
+      );
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: { accessToken: 'keychain-noexpiry-token-pad' },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      const headers: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer placeholder',
+      };
+      provider.injectAuth(headers);
+      expect(headers['authorization']).toBe(
+        'Bearer file-finite-soon-token-pad',
+      );
+    });
+
+    it('Infinity edge (c): both sources have no expiry → file wins (tie-break to the stable, already-synced source)', () => {
+      platformMock.IS_MACOS = true;
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: { accessToken: 'file-both-inf-token-padding' },
+        }),
+      );
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: { accessToken: 'keychain-both-inf-token-pad' },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      const headers: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer placeholder',
+      };
+      provider.injectAuth(headers);
+      expect(headers['authorization']).toBe(
+        'Bearer file-both-inf-token-padding',
+      );
+      // Tie → file wins → no redundant sync write.
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it('both sources expired: serves the less-expired token but logs a loud warning (not silent)', () => {
+      platformMock.IS_MACOS = true;
+      const now = Date.now();
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'file-expired-2-token-padding',
+            refreshToken: 'fr',
+            expiresAt: now - 2 * 60 * 1000,
+          },
+        }),
+      );
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'keychain-expired-token-pad',
+            refreshToken: 'kr',
+            expiresAt: now - 60 * 1000, // less-expired of the two
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      const headers: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer placeholder',
+      };
+      provider.injectAuth(headers);
+
+      // Clock-skew tolerance: still returns the least-stale token...
+      expect(headers['authorization']).toBe(
+        'Bearer keychain-expired-token-pad',
+      );
+      // ...but the all-expired condition is logged loudly so it isn't silent.
+      expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+        expect.objectContaining({ expiredForSec: expect.any(Number) }),
+        expect.stringContaining('serving an EXPIRED OAuth token'),
+      );
+    });
+
+    it('refresh observability: a rejected refresh logs status + OAuth error code, never the refresh_token', async () => {
+      const now = Date.now();
+      // File expiring within the window with a refresh_token → background refresh fires.
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'file-refreshlog-token-pad',
+            refreshToken: 'secret-refresh-token-value',
+            expiresAt: now + 10 * 60 * 1000,
+          },
+        }),
+      );
+
+      const provider = new AnthropicAuthProvider();
+      const headers: Record<string, string | string[] | undefined> = {
+        authorization: 'Bearer placeholder',
+      };
+      provider.injectAuth(headers);
+
+      await vi.waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
+          expect.objectContaining({ status: 400, error: 'invalid_grant' }),
+          expect.stringContaining('rejected refresh_token'),
+        );
+      });
+
+      // No log line — info, warn, or error — may contain the refresh_token value.
+      const logged = JSON.stringify([
+        ...vi.mocked(logger.info).mock.calls,
+        ...vi.mocked(logger.warn).mock.calls,
+        ...vi.mocked(logger.error).mock.calls,
+      ]);
+      expect(logged).not.toContain('secret-refresh-token-value');
     });
   });
 });

@@ -71,7 +71,12 @@ vi.mock('fs', async () => {
 });
 
 import fs from 'fs';
-import { processTaskIpc, startIpcWatcher, IpcDeps } from './ipc.js';
+import {
+  processTaskIpc,
+  startIpcWatcher,
+  authorizeIpcAccess,
+  IpcDeps,
+} from './ipc.js';
 import { createTask, getTaskById, deleteTask, updateTask } from './db.js';
 import {
   registerProject,
@@ -738,5 +743,31 @@ describe('schedule_task cross-group authorization', () => {
     expect(mockCreateTask).toHaveBeenCalledWith(
       expect.objectContaining({ group_folder: 'other-group' }),
     );
+  });
+});
+
+// ── authorizeIpcAccess unit tests ──────────────────────────────────────────
+
+describe('authorizeIpcAccess', () => {
+  it('control group grants access to any target folder', () => {
+    expect(authorizeIpcAccess(true, 'a', 'b')).toBe(true);
+    expect(authorizeIpcAccess(true, 'a', 'a')).toBe(true);
+    expect(authorizeIpcAccess(true, 'foo', 'bar')).toBe(true);
+  });
+
+  it('non-control group is allowed when sourceFolder === targetFolder', () => {
+    expect(authorizeIpcAccess(false, 'a', 'a')).toBe(true);
+  });
+
+  it('non-control group is denied when targetFolder differs from sourceFolder', () => {
+    expect(authorizeIpcAccess(false, 'a', 'b')).toBe(false);
+  });
+
+  it('edge case: empty string folders — same empty folder is allowed for non-control', () => {
+    expect(authorizeIpcAccess(false, '', '')).toBe(true);
+  });
+
+  it('edge case: empty targetFolder does not match a non-empty sourceFolder', () => {
+    expect(authorizeIpcAccess(false, 'x', '')).toBe(false);
   });
 });

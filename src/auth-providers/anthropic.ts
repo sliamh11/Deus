@@ -209,19 +209,44 @@ export async function refreshOAuthToken(
         scope: REFRESH_SCOPES,
       }),
     });
-    if (!res.ok) return undefined;
+    if (!res.ok) {
+      // Log status + the OAuth error CODE only (e.g. "invalid_grant") — never the request
+      // body, which carries the refresh_token. An invalid_grant/400 here is the signal that
+      // the refresh_token was rotated out from under us (e.g. by Claude Code's own refresh).
+      let errorCode: string | undefined;
+      try {
+        errorCode = ((await res.json()) as { error?: string })?.error;
+      } catch {
+        /* body not JSON — the status alone is the signal */
+      }
+      logger.warn(
+        { status: res.status, error: errorCode },
+        'credential-proxy: OAuth refresh endpoint rejected refresh_token',
+      );
+      return undefined;
+    }
     const body = (await res.json()) as {
       access_token?: string;
       refresh_token?: string;
       expires_in?: number;
     };
-    if (!body.access_token) return undefined;
+    if (!body.access_token) {
+      logger.warn(
+        { status: res.status },
+        'credential-proxy: OAuth refresh response missing access_token',
+      );
+      return undefined;
+    }
     return {
       accessToken: body.access_token,
       refreshToken: body.refresh_token ?? refreshToken,
       expiresAt: Date.now() + (body.expires_in ?? 28800) * 1000,
     };
-  } catch {
+  } catch (err) {
+    logger.warn(
+      { err: String(err) },
+      'credential-proxy: OAuth refresh request threw',
+    );
     return undefined;
   }
 }
@@ -230,6 +255,7 @@ export async function refreshOAuthToken(
 function triggerRefresh(refreshToken: string): void {
   if (refreshInFlight) return;
   refreshInFlight = true;
+  logger.info('credential-proxy: OAuth token refresh started (background)');
   refreshOAuthToken(refreshToken)
     .then((newCreds) => {
       if (newCreds) {
@@ -239,11 +265,99 @@ function triggerRefresh(refreshToken: string): void {
           fetchedAt: Date.now(),
           tokenExpiresAt: newCreds.expiresAt,
         };
+        logger.info(
+          {
+            expiresInSec:
+              newCreds.expiresAt === Infinity
+                ? null
+                : Math.floor((newCreds.expiresAt - Date.now()) / 1000),
+          },
+          'credential-proxy: OAuth token refresh succeeded',
+        );
+      } else {
+        // refreshOAuthToken already logged the specific reason (status/error code).
+        logger.warn(
+          'credential-proxy: OAuth token refresh failed — token not renewed',
+        );
       }
     })
     .finally(() => {
       refreshInFlight = false;
     });
+}
+
+/**
+ * Pick the credential with the later expiry.
+ * The `Infinity` sentinel means "expiry unknown" (both readers default `expiresAt ?? Infinity`)
+ * and is treated as OLDEST (`-Infinity`) so a no-expiry token can't mask a freshly-refreshed
+ * one. Tie — equal expiry, or both unknown — resolves to `fileCreds`: it is the already-synced,
+ * stable source, so preferring it avoids a needless re-write.
+ */
+function pickFresher(
+  fileCreds: OAuthCredentials | undefined,
+  keychainCreds: OAuthCredentials | undefined,
+): OAuthCredentials | undefined {
+  if (!fileCreds) return keychainCreds;
+  if (!keychainCreds) return fileCreds;
+  const expFile =
+    fileCreds.expiresAt === Infinity ? -Infinity : fileCreds.expiresAt;
+  const expKeychain =
+    keychainCreds.expiresAt === Infinity ? -Infinity : keychainCreds.expiresAt;
+  return expKeychain > expFile ? keychainCreds : fileCreds;
+}
+
+/**
+ * Resolve the freshest OAuth credentials across the credentials file and the OS keychain.
+ *
+ * macOS-specific hazard this guards against: Claude Code refreshes the OAuth token in the
+ * **keychain**, while `~/.claude/.credentials.json` is a Deus-managed cache that only Deus
+ * writes — so the file can lag the keychain. A gate request landing on a token-expiry
+ * boundary previously read the stale (expired) file token and never consulted the still-valid
+ * keychain token → upstream 401 (the recurring pipeline-gate failure). We now read whichever
+ * source is freshest instead of blindly trusting the file.
+ *
+ * Fast path: a comfortably-valid file token returns immediately WITHOUT spawning the keychain
+ * `security`/`secret-tool` subprocess. The keychain is consulted only when the file is missing,
+ * within the early-expire window, or expired. On Linux the file is Claude-Code-authoritative
+ * and a missing keychain reader simply returns `undefined`, so the file still wins there.
+ */
+function resolveFreshestCredentials(now: number): OAuthCredentials | undefined {
+  const file = readCredentialsFile();
+
+  // Fast path: file token comfortably valid → skip the keychain subprocess entirely.
+  if (
+    file &&
+    file.expiresAt !== Infinity &&
+    file.expiresAt >= now + EARLY_EXPIRE_WINDOW_MS
+  ) {
+    return file;
+  }
+
+  // File missing / expiring / expired → consult the keychain and keep the fresher source.
+  const keychain = readKeychainCredentials();
+  const chosen = pickFresher(file, keychain);
+  if (!chosen) return undefined;
+
+  // Sync + log only when the freshest source actually differs from the file (compare by token
+  // VALUE — the readers return fresh objects each call, so identity would always differ): the
+  // keychain superseded a stale file. The steady state (file wins) stays silent. `chosen` is by
+  // construction the later-expiry source, so this can never downgrade the file to a staler token.
+  // The write is crash-safe (tmp-write + atomic rename in writeCredentialsFile).
+  if (chosen.accessToken !== file?.accessToken) {
+    writeCredentialsFile(chosen);
+    logger.info(
+      {
+        source: chosen === keychain ? 'keychain' : 'file',
+        expiresInSec:
+          chosen.expiresAt === Infinity
+            ? null
+            : Math.floor((chosen.expiresAt - now) / 1000),
+        expired: chosen.expiresAt !== Infinity && chosen.expiresAt <= now,
+      },
+      'credential-proxy: switched to fresher OAuth token source',
+    );
+  }
+  return chosen;
 }
 
 function getDynamicOAuthToken(): string | undefined {
@@ -257,12 +371,8 @@ function getDynamicOAuthToken(): string | undefined {
       return credentialsCache.token;
   }
 
-  // Try file first, then keychain fallback
-  let creds = readCredentialsFile();
-  if (!creds) {
-    creds = readKeychainCredentials();
-    if (creds) writeCredentialsFile(creds); // sync to disk
-  }
+  // Read whichever of {file, keychain} is freshest — never blindly trust a stale file.
+  const creds = resolveFreshestCredentials(now);
   if (!creds) return undefined;
 
   // Trigger background refresh if token is expiring within the window
@@ -271,6 +381,20 @@ function getDynamicOAuthToken(): string | undefined {
     creds.expiresAt < now + EARLY_EXPIRE_WINDOW_MS;
   if (aboutToExpire && creds.refreshToken) {
     triggerRefresh(creds.refreshToken);
+  }
+
+  // Don't serve a dead token silently. Reaching here with an already-expired token means BOTH
+  // sources are expired — the idle-container case the scheduled auth-refresh guard prevents.
+  // We still return it (clock-skew tolerance; the refresh triggered above renews it for the
+  // next request), but log loudly so the next intermittent 401 is diagnosable.
+  if (creds.expiresAt !== Infinity && creds.expiresAt <= now) {
+    logger.warn(
+      {
+        expiredForSec: Math.floor((now - creds.expiresAt) / 1000),
+        hasRefreshToken: !!creds.refreshToken,
+      },
+      'credential-proxy: serving an EXPIRED OAuth token — no fresher source available; refresh triggered',
+    );
   }
 
   credentialsCache = {

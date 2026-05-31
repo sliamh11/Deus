@@ -19,8 +19,8 @@ export {
   resolvePublicWebTarget,
   resolveWorkspacePath,
   splitCommandArgs,
-  validateScheduleInput,
 } from './tool-broker.js';
+export { validateSchedule } from './schedule-validator.js';
 
 export interface RuntimeSession {
   backend: AgentRuntimeId;
@@ -614,3 +614,4 @@ export async function runOpenAIConversation(ctx: OpenAIContext): Promise<void> {
     prompt = nextMessage;
   }
 }
+

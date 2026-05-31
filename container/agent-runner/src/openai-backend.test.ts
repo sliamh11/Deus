@@ -18,8 +18,8 @@ import {
   resolvePublicWebTarget,
   resolveWorkspacePath,
   splitCommandArgs,
-  validateScheduleInput,
 } from './tool-broker.js';
+import { validateSchedule } from './schedule-validator.js';
 
 describe('OpenAI backend safety helpers', () => {
   it('blocks workspace path traversal outside mounted roots', () => {
@@ -70,13 +70,34 @@ describe('OpenAI backend safety helpers', () => {
   });
 
   it('uses Claude-compatible task schedule validation', () => {
-    expect(validateScheduleInput('cron', '0 9 * * *')).toBeNull();
-    expect(validateScheduleInput('interval', '300000')).toBeNull();
-    expect(validateScheduleInput('once', '2026-02-01T15:30:00')).toBeNull();
-    expect(validateScheduleInput('once', '2026-02-01T15:30:00Z')).toMatch(
-      /local time/,
-    );
-    expect(validateScheduleInput('interval', '-1')).toMatch(/Invalid interval/);
+    expect(
+      validateSchedule({ schedule_type: 'cron', schedule_value: '0 9 * * *' })
+        .ok,
+    ).toBe(true);
+    expect(
+      validateSchedule({
+        schedule_type: 'interval',
+        schedule_value: '300000',
+      }).ok,
+    ).toBe(true);
+    expect(
+      validateSchedule({
+        schedule_type: 'once',
+        schedule_value: '2026-02-01T15:30:00',
+      }).ok,
+    ).toBe(true);
+    const tzResult = validateSchedule({
+      schedule_type: 'once',
+      schedule_value: '2026-02-01T15:30:00Z',
+    });
+    expect(tzResult.ok).toBe(false);
+    if (!tzResult.ok) expect(tzResult.error).toMatch(/local time/);
+    const intervalResult = validateSchedule({
+      schedule_type: 'interval',
+      schedule_value: '-1',
+    });
+    expect(intervalResult.ok).toBe(false);
+    if (!intervalResult.ok) expect(intervalResult.error).toMatch(/Invalid interval/);
   });
 
   it('defaults scheduled tasks to group context like Claude MCP tools', () => {
@@ -247,3 +268,4 @@ await server.connect(new StdioServerTransport());
     ).rejects.toThrow(/required MCP tools from deus/);
   });
 });
+
