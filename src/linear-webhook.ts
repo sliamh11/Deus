@@ -3,6 +3,7 @@ import { LinearWebhookClient } from '@linear/sdk/webhooks';
 import type { EntityWebhookPayloadWithIssueData } from '@linear/sdk/webhooks';
 import { logger } from './logger.js';
 import { executeAgentRun, extractScopeBlock } from './linear-dispatcher.js';
+import { escapeXmlForPrompt } from './prompt-utils.js';
 import type { LinearContext, GateLabels } from './linear-dispatcher.js';
 import type { GateSpec } from './linear-gate-specs.js';
 import type { RunContext } from './agent-runtimes/types.js';
@@ -389,7 +390,12 @@ export async function runInlineCompletionCheck(
     if (comments.length > 0) {
       commentBlock =
         '\n\n<comments>\n' +
-        comments.map((c) => `[${c.author}]: ${c.body}`).join('\n\n') +
+        comments
+          .map(
+            (c) =>
+              `[${escapeXmlForPrompt(c.author)}]: ${escapeXmlForPrompt(c.body)}`,
+          )
+          .join('\n\n') +
         '\n</comments>';
     }
 
@@ -397,7 +403,7 @@ export async function runInlineCompletionCheck(
       [
         `<gate-spec>\n${completionGateSpec.content}\n</gate-spec>`,
         `<invocation-context>pre-merge</invocation-context>`,
-        `<issue>\nTitle: ${issueData.title}\nID: ${issueData.identifier}\n\n${issueData.description ?? '(no description)'}\n</issue>`,
+        `<issue>\nTitle: ${escapeXmlForPrompt(issueData.title)}\nID: ${issueData.identifier}\n\n${escapeXmlForPrompt(issueData.description ?? '(no description)')}\n</issue>`,
         `<transition>\nFrom: In Review\nTo: Done (pre-merge check)\n</transition>`,
       ].join('\n\n') + commentBlock;
 
@@ -916,7 +922,12 @@ async function handleIssueUpdate(
       if (comments.length > 0) {
         commentBlock =
           '\n\n<comments>\n' +
-          comments.map((c) => `[${c.author}]: ${c.body}`).join('\n\n') +
+          comments
+            .map(
+              (c) =>
+                `[${escapeXmlForPrompt(c.author)}]: ${escapeXmlForPrompt(c.body)}`,
+            )
+            .join('\n\n') +
           '\n</comments>';
       }
     }
@@ -936,7 +947,7 @@ async function handleIssueUpdate(
     const prompt =
       [
         `<gate-spec>\n${gateSpec.content}\n</gate-spec>`,
-        `<issue>\nTitle: ${data.title}\nID: ${data.identifier}\n\n${data.description ?? '(no description)'}\n</issue>`,
+        `<issue>\nTitle: ${escapeXmlForPrompt(data.title)}\nID: ${data.identifier}\n\n${escapeXmlForPrompt(data.description ?? '(no description)')}\n</issue>`,
         `<transition>\nFrom: ${fromState.name}\nTo: ${toState.name}\n</transition>`,
       ].join('\n\n') +
       commentBlock +
@@ -1300,7 +1311,12 @@ async function runGateForIssue(
       if (comments.length > 0) {
         commentBlock =
           '\n\n<comments>\n' +
-          comments.map((c) => `[${c.author}]: ${c.body}`).join('\n\n') +
+          comments
+            .map(
+              (c) =>
+                `[${escapeXmlForPrompt(c.author)}]: ${escapeXmlForPrompt(c.body)}`,
+            )
+            .join('\n\n') +
           '\n</comments>';
       }
     }
@@ -1309,7 +1325,7 @@ async function runGateForIssue(
       [
         `<gate-spec>\n${gateSpec.content}\n</gate-spec>`,
         `<invocation-context>startup-sweep</invocation-context>`,
-        `<issue>\nTitle: ${issue.title}\nID: ${issue.identifier}\n\n${issue.description ?? '(no description)'}\n</issue>`,
+        `<issue>\nTitle: ${escapeXmlForPrompt(issue.title)}\nID: ${issue.identifier}\n\n${escapeXmlForPrompt(issue.description ?? '(no description)')}\n</issue>`,
         `<transition>\nFrom: (startup scan)\nTo: ${stateName}\n</transition>`,
       ].join('\n\n') + commentBlock;
 

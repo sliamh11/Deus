@@ -31,6 +31,7 @@ import {
   upsertIssuePr,
 } from './db.js';
 import { notifyPipelineStep } from './linear-notifications.js';
+import { escapeXmlForPrompt } from './prompt-utils.js';
 import { resolveVaultPath } from './solutions/store.js';
 import { defaultSession } from './agent-runtimes/types.js';
 import { getBus } from './events/bus.js';
@@ -288,12 +289,15 @@ export function buildIssuePrompt(
 ): string {
   const parts = [
     `<role>\n${role.content}\n</role>`,
-    `<issue>\nTitle: ${issueTitle}\nID: ${issueIdentifier}\n\n${issueDescription ?? '(no description)'}\n</issue>`,
+    `<issue>\nTitle: ${escapeXmlForPrompt(issueTitle)}\nID: ${issueIdentifier}\n\n${escapeXmlForPrompt(issueDescription ?? '(no description)')}\n</issue>`,
   ];
   const truncated = truncateComments(comments);
   if (truncated.length > 0) {
     const commentBlock = truncated
-      .map((c) => `[${c.author}]: ${c.body}`)
+      .map(
+        (c) =>
+          `[${escapeXmlForPrompt(c.author)}]: ${escapeXmlForPrompt(c.body)}`,
+      )
       .join('\n\n');
     parts.push(`<comments>\n${commentBlock}\n</comments>`);
   }
@@ -429,9 +433,14 @@ export function buildScopedIssuePrompt(
   comments: Array<{ author: string; body: string }>,
   failureDossier?: string | null,
 ): string {
-  const scopeContent = extractScopeBlock(issueDescription);
+  // Always escape: extractScopeBlock keys on `<!-- gate:... -->` markers that the
+  // issue author can forge directly in the description (no authenticity check, and
+  // the enrichment-hash guard lives only on the webhook path, not here). Escaping
+  // is lossless for the gate's markdown prose and closes forged-marker injection
+  // into the <task> block.
+  const scopeContent = escapeXmlForPrompt(extractScopeBlock(issueDescription));
   const parts = [
-    `<task>\nYou are an autonomous software engineer. Implement the following issue.\nTitle: ${issueTitle}\nID: ${issueIdentifier}\n\n${scopeContent}\n</task>`,
+    `<task>\nYou are an autonomous software engineer. Implement the following issue.\nTitle: ${escapeXmlForPrompt(issueTitle)}\nID: ${issueIdentifier}\n\n${scopeContent}\n</task>`,
   ];
 
   const hasReviseHistory = comments.some(
@@ -450,7 +459,10 @@ export function buildScopedIssuePrompt(
   const truncated = truncateComments(comments);
   if (truncated.length > 0) {
     const commentBlock = truncated
-      .map((c) => `[${c.author}]: ${c.body}`)
+      .map(
+        (c) =>
+          `[${escapeXmlForPrompt(c.author)}]: ${escapeXmlForPrompt(c.body)}`,
+      )
       .join('\n\n');
     parts.push(`<comments>\n${commentBlock}\n</comments>`);
   }
