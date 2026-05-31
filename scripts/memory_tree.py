@@ -110,8 +110,11 @@ COVERAGE_CONTENT_CAP = float(os.environ.get("DEUS_COVERAGE_CAP", "0.35"))
 DEFAULT_USE_COHERENCE_GATE = os.environ.get("DEUS_COHERENCE_GATE", "1") == "1"
 DEFAULT_MIN_ENTITY_OVERLAP = int(os.environ.get("DEUS_MIN_ENTITY_OVERLAP", "2"))
 
-# Optimized params: load from evolution artifact if DEUS_TREE_PARAMS=1.
-if os.environ.get("DEUS_TREE_PARAMS") == "1":
+# Optimized params: load the learned evolution artifact by default.
+# Off-switch: DEUS_TREE_PARAMS=0 (kept for debug / A-B). The producer
+# (param_optimizer.optimize_and_save) only saves an artifact when it beats
+# baseline, so consuming it by default is the self-tuning path, not a risk.
+if os.environ.get("DEUS_TREE_PARAMS", "1") != "0":
     _project_root = str(Path(__file__).resolve().parent.parent)
     _added_to_path = _project_root not in sys.path
     try:
@@ -129,8 +132,13 @@ if os.environ.get("DEUS_TREE_PARAMS") == "1":
             DEFAULT_TOP_K = int(_learned.get("top_k", DEFAULT_TOP_K))
             DEFAULT_RRF_K = int(_learned.get("rrf_k", DEFAULT_RRF_K))
             DEFAULT_MIN_ENTITY_OVERLAP = int(_learned.get("min_entity_overlap", DEFAULT_MIN_ENTITY_OVERLAP))
-    except Exception:
-        pass  # Fall back to env/hardcoded defaults
+    except Exception as e:
+        # Visible signal — a silent fallback would hide a broken optimizer
+        # wire (the exact facade class this gate exists to prevent).
+        print(
+            f"[memory_tree] optimized-param load failed; using defaults: {e}",
+            file=sys.stderr,
+        )
     finally:
         if _added_to_path and _project_root in sys.path:
             sys.path.remove(_project_root)

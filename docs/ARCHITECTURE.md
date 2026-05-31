@@ -518,7 +518,6 @@ Core modules in `src/`:
 | `multi-agent/` | Multi-agent orchestration: topological task sort, parallel read fan-out, DONE/BLOCKED result contract |
 | `guardrails/injection-scanner.ts` | Prompt injection scanner (Enforcement Layer); fires in orchestrator before container turn |
 | `doc-gardener-seed.ts` | Seeds weekly doc-gardener cron task for the control group at startup |
-| `cache/gcal-sync.ts` | Google Calendar background sync daemon; no-op when credentials absent |
 
 ---
 

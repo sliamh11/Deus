@@ -58,7 +58,6 @@ import { initRuntimeRegistry } from './agent-runtimes/registry.js';
 import { createClaudeRuntime } from './agent-runtimes/claude-backend.js';
 import { createOpenAIRuntime } from './agent-runtimes/openai-backend.js';
 import { createLlamaCppRuntime } from './agent-runtimes/llama-cpp-backend.js';
-import { startGcalSync, stopGcalSync } from './cache/gcal-sync.js';
 import {
   initLinearContext,
   startLinearDispatcher,
@@ -107,9 +106,6 @@ async function main(): Promise<void> {
     PROXY_BIND_HOST,
   );
 
-  // Start gcal sync daemon (no-op if credentials not configured)
-  startGcalSync();
-
   const channels: Channel[] = [];
   const webhookServers: Server[] = [];
   const queue = new GroupQueue();
@@ -137,7 +133,6 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
-    stopGcalSync();
     stopLinearDispatcher();
     for (const srv of webhookServers) srv.close();
     proxyServer.close();

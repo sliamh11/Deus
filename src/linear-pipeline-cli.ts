@@ -96,7 +96,6 @@ export const TERMINAL_TYPES = new Set([
   'agent_failed',
   'moved_done',
   'gate_error',
-  'bouncer_revert',
   'gate_blocked',
 ]);
 
@@ -815,16 +814,6 @@ export function formatWhyReason(issue: {
       return 'Gate pending';
     case 'state_changed':
       return 'State changed';
-    case 'gate_enrich_start':
-      return 'Enriching';
-    case 'gate_enrich_done':
-      return 'Enriched';
-    case 'gate_enrich_revise':
-      return 'Enrich revise';
-    case 'bouncer_pass':
-      return 'Bouncer pass';
-    case 'bouncer_revert':
-      return 'Bounced';
     case 'gate_blocked':
       return 'Blocked';
     default:

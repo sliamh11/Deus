@@ -51,7 +51,11 @@ import { buildVolumeMounts } from './container-mounter.js';
 import type { AgentEffortLevel } from './types.js';
 import { RegisteredGroup } from './types.js';
 import { detectDomainsWithFallback } from './domain-presets.js';
-import { getReflections, logInteraction } from './evolution-client.js';
+import {
+  getActivePrompt,
+  getReflections,
+  logInteraction,
+} from './evolution-client.js';
 import { estimateTokens } from './token-counter.js';
 import { detectUserSignal } from './user-signal.js';
 import { getProjectById } from './db.js';
@@ -251,6 +255,35 @@ export async function runContainerAgent(
   const reflections = await getReflections(input.prompt, input.groupFolder);
   if (reflections.block) {
     input = { ...input, prompt: `${reflections.block}\n\n${input.prompt}` };
+  }
+
+  // LIA-131 Phase 2: inject the active DSPy-optimized prompt, composing WITH (not
+  // replacing) the reflections block above — both self-improvement arms prepend at
+  // this one fail-safe seam. Default OFF behind EVOLUTION_OPTIMIZED_PROMPTS; the
+  // helper fails safe to '' so this is a no-op until an artifact is activated AND
+  // the flag is flipped. Shadow only: "wired" is not "validated" — the qa
+  // instruction was tuned against a DSPy Predict harness, so shadow deltas (logged
+  // below) measure whether it actually transfers to the real agent.
+  const optimizedPrompt = await getActivePrompt('qa');
+  if (optimizedPrompt.block) {
+    input = {
+      ...input,
+      prompt: `${optimizedPrompt.block}\n\n${input.prompt}`,
+    };
+    logger.info(
+      {
+        artifactId: optimizedPrompt.artifactId,
+        baselineScore: optimizedPrompt.baselineScore,
+        optimizedScore: optimizedPrompt.optimizedScore,
+        delta:
+          optimizedPrompt.optimizedScore != null &&
+          optimizedPrompt.baselineScore != null
+            ? optimizedPrompt.optimizedScore - optimizedPrompt.baselineScore
+            : undefined,
+        sampleCount: optimizedPrompt.sampleCount,
+      },
+      'evolution: injected optimized prompt (qa)',
+    );
   }
 
   // Detect domain tags for evolution loop metadata (no prompt injection).

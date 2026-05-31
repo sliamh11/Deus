@@ -19,6 +19,13 @@ import { emojiToSignal } from './reaction-signal.js';
 const EVOLUTION_CLI = path.join(process.cwd(), 'evolution', 'cli.py');
 const PYTHON_BIN = process.env.EVOLUTION_PYTHON ?? 'python3';
 const EVOLUTION_ENABLED = process.env.EVOLUTION_ENABLED !== '0';
+// Kill switch for the DSPy optimizer arm's prompt injection (LIA-131 Phase 2).
+// Default OFF — the arm ships dark until shadow deltas justify flipping it per
+// module. Checked before any subprocess spawn so default-off adds zero latency.
+// Read once at module load (like EVOLUTION_ENABLED): flipping it needs a process
+// restart, which matches how the long-running service picks up env changes.
+const OPTIMIZED_PROMPTS_ENABLED =
+  process.env.EVOLUTION_OPTIMIZED_PROMPTS === '1';
 
 export interface LogInteractionParams {
   id: string;
@@ -38,6 +45,50 @@ export interface LogInteractionParams {
 export interface ReflectionsResult {
   block: string;
   reflectionIds: string[];
+}
+
+export interface ActivePromptResult {
+  /** Sanitized, boundary-tagged optimized-prompt block, or '' when none. */
+  block: string;
+  artifactId?: string;
+  baselineScore?: number;
+  optimizedScore?: number;
+  sampleCount?: number;
+}
+
+const EMPTY_ACTIVE_PROMPT: ActivePromptResult = { block: '' };
+
+/**
+ * Retrieve the active DSPy-optimized prompt block for a module (LIA-131 Phase 2).
+ *
+ * Returns an empty block unless BOTH EVOLUTION_ENABLED and
+ * EVOLUTION_OPTIMIZED_PROMPTS are on — the gate is checked BEFORE the Python
+ * subprocess, so the default-off path costs nothing on the dispatch hot path.
+ * The Python helper sanitizes (boundary tags + length cap) and rejects the
+ * trivial default, so this returns only content that is safe to inject as-is.
+ */
+export async function getActivePrompt(
+  module: string,
+): Promise<ActivePromptResult> {
+  if (!EVOLUTION_ENABLED || !OPTIMIZED_PROMPTS_ENABLED) {
+    return EMPTY_ACTIVE_PROMPT;
+  }
+  try {
+    const result = await _runPython(['get_active_prompt', module], 3000);
+    if (!result) return EMPTY_ACTIVE_PROMPT;
+    const parsed = JSON.parse(result);
+    if (!parsed.block) return EMPTY_ACTIVE_PROMPT;
+    return {
+      block: parsed.block,
+      artifactId: parsed.artifact_id ?? undefined,
+      baselineScore: parsed.baseline_score ?? undefined,
+      optimizedScore: parsed.optimized_score ?? undefined,
+      sampleCount: parsed.sample_count ?? undefined,
+    };
+  } catch (err) {
+    logger.debug({ err }, 'evolution: get_active_prompt failed (non-fatal)');
+    return EMPTY_ACTIVE_PROMPT;
+  }
 }
 
 /**
