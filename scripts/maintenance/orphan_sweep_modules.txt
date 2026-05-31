@@ -1,0 +1,10 @@
+# Seed modules for the LIA-143 Layer 3 orphan-sweep (scripts/maintenance/orphan_sweep.py).
+# One repo-relative file path per line; blank lines and # comments ignored.
+# Curated, opt-in by module — NOT a whole-repo scan (that floods false positives).
+# Add a module here when it is an integration / entry-point surface worth watching for
+# built-but-not-wired drift. These were the facade sites from the LIA-133 audit.
+
+src/evolution-client.ts
+src/message-orchestrator.ts
+src/multi-agent/orchestrator.ts
+container/agent-runner/src/ipc-mcp-stdio.ts

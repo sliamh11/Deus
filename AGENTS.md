@@ -170,6 +170,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/customize` | Add channels, integrations, or behavior changes |
 | `/debug` | Debug containers, logs, auth, and runtime issues |
 | `/deep-research` | Multi-stage research pipeline — classifies intent (shallow/deep/creative), fans out lit-scout + brainstormer, synthesizes with citations |
+| `/handoff` | Write a structured handoff document so the next agent starts with context |
 | `/preferences` | View or modify Deus user preferences |
 | `/preserve` | Save durable memories from the current conversation |
 | `/project-settings` | View or modify external project memory settings |

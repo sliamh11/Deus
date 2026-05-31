@@ -50,3 +50,12 @@
 **Check:** Were requirements re-read and checked line-by-line against the implementation?
 **Rule:** "Tests pass" ≠ "requirements met." Re-read the spec and verify each requirement individually.
 **Cite:** Superpowers "Requirements: Re-read plan → Create checklist → Verify each → Report gaps"
+
+## wire-reachability
+**Severity:** warning
+**Applies when:** Claiming a new feature, flag-gated behavior, or integration module is "done" or "working".
+**Check:** Was the new capability exercised through its live runtime path — a non-test caller, a live registration, or the flag set on a real path — not only its unit tests? If the wire is deferred, is the tracking issue cited?
+**Rule:** "Unit tests pass" ≠ "reachable in production." Confirm the producer→consumer wire before claiming done, or state the wire is deferred and cite the tracking issue.
+**Note:** Advisory only — `verification-gate` has no `tools` binding in `config.json`, so it is not commit-enforced. The commit-time enforcement of this concern lives in `code-review-rules.md` (`connectivity-wiring`); this is its claim-time companion, not a duplicate. See `docs/decisions/facade-prevention-mechanism.md`.
+**Cite:** LIA-133 facade audit; cross-references `code-review-rules.md` `connectivity-wiring`.
+**Remediation:** Demonstrate the live wire (a caller, a registration, or a runtime flag read), or cite the deferred-wire Linear issue. Do not claim completion on unit-test evidence alone.

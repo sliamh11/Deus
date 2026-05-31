@@ -158,13 +158,6 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_pipeline_events_created
       ON linear_pipeline_events(created_at);
 
-    CREATE TABLE IF NOT EXISTS pipeline_liveness (
-      subsystem TEXT PRIMARY KEY,
-      last_seen_at TEXT NOT NULL,
-      detail TEXT,
-      cleared_at TEXT DEFAULT NULL
-    );
-
     CREATE TABLE IF NOT EXISTS linear_pipeline_comments (
       issue_id TEXT PRIMARY KEY,
       comment_id TEXT NOT NULL,
@@ -1559,50 +1552,6 @@ export function logPipelineEvent(
   } catch (err) {
     logger.debug({ issueId, eventType, err }, 'pipeline-event: insert failed');
     return undefined;
-  }
-}
-
-// --- Pipeline liveness ---
-
-export function stampLiveness(
-  subsystem: string,
-  detail?: Record<string, unknown>,
-): void {
-  try {
-    db.prepare(
-      `INSERT OR REPLACE INTO pipeline_liveness (subsystem, last_seen_at, detail, cleared_at)
-       VALUES (?, ?, ?, NULL)`,
-    ).run(
-      subsystem,
-      new Date().toISOString(),
-      detail ? JSON.stringify(detail) : null,
-    );
-  } catch (err) {
-    logger.debug({ subsystem, err }, 'pipeline-liveness: stamp failed');
-  }
-}
-
-export interface LivenessRow {
-  subsystem: string;
-  last_seen_at: string;
-  detail: string | null;
-  cleared_at: string | null;
-}
-
-export function getLiveness(activeOnly = true): LivenessRow[] {
-  const sql = activeOnly
-    ? `SELECT * FROM pipeline_liveness WHERE cleared_at IS NULL`
-    : `SELECT * FROM pipeline_liveness`;
-  return db.prepare(sql).all() as LivenessRow[];
-}
-
-export function clearLiveness(subsystem: string): void {
-  try {
-    db.prepare(
-      `UPDATE pipeline_liveness SET cleared_at = ? WHERE subsystem = ? AND cleared_at IS NULL`,
-    ).run(new Date().toISOString(), subsystem);
-  } catch (err) {
-    logger.debug({ subsystem, err }, 'pipeline-liveness: clear failed');
   }
 }
 

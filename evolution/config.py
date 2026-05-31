@@ -98,6 +98,17 @@ DSPY_OLLAMA_MODEL = os.environ.get("DSPY_OLLAMA_MODEL", OLLAMA_MODEL)
 DSPY_MIN_SAMPLES = int(os.environ.get("EVOLUTION_DSPY_MIN_SAMPLES", "20"))
 DSPY_MIN_DOMAIN_SAMPLES = int(os.environ.get("EVOLUTION_DSPY_MIN_DOMAIN_SAMPLES", "10"))
 
+# Minimum judge-score improvement a new artifact must clear (over the better of
+# the un-optimized baseline and the current active artifact) before it is
+# activated. Below this margin the artifact is persisted for audit but NOT
+# activated — the ship-if-better gate that makes the optimizer loop monotonic.
+DSPY_SHIP_MARGIN = float(os.environ.get("EVOLUTION_DSPY_SHIP_MARGIN", "0.02"))
+
+# Hard cap (chars) on an optimized-prompt instruction before it is injected into
+# the agent prompt (LIA-152). An artifact is untrusted LLM output, so its
+# extracted instruction is length-capped in addition to being boundary-tagged.
+OPTIMIZED_PROMPT_MAX_CHARS = int(os.environ.get("EVOLUTION_OPTIMIZED_PROMPT_MAX_CHARS", "2000"))
+
 # ── Auto-triggers ────────────────────────────────────────────────────────────
 
 # Auto-optimize after this many new scored interactions (0 = disabled).

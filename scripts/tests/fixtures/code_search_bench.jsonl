@@ -126,7 +126,7 @@
 {"query": "prevent compress gate from blocking repeatedly", "expected_files": ["scripts/stop_hook.py"], "tag": "git-history"}
 {"query": "detect and handle merge-conflicting PRs (LIA-90)", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/db.ts", "src/linear-auto-merge.test.ts", "src/linear-auto-merge.ts"], "tag": "git-history"}
 {"query": "rewrite_settings() for safe path substitutions (#RETRO-05)", "expected_files": ["scripts/settings_merge.py", "scripts/tests/test_settings_merge.py"], "tag": "git-history"}
-{"query": "sqlite-fts5 cache layer with gcal pilot", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "patterns/security-review.md", "src/cache/cache-query.ts", "src/cache/gcal-sync.ts"], "tag": "git-history"}
+{"query": "sqlite-fts5 cache layer with gcal pilot", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "patterns/security-review.md"], "tag": "git-history"}
 {"query": "dashboard overhaul — adaptive width, glyphs, AI status, SLA coloring", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/db.ts", "src/linear-notifications.ts", "src/linear-pipeline-cli.test.ts"], "tag": "git-history"}
 {"query": "swap reranker to multilingual bge-reranker-v2-m3", "expected_files": ["docs/benchmarks.md", "docs/decisions/atom-retrieval-pipeline.md", "patterns/documentation.md", "patterns/eval-change.md", "scripts/memory_indexer.py"], "tag": "git-history"}
 {"query": "dashboard UX - responsive width, poll, start, move autocomplete", "expected_files": ["patterns/deployment.md", "patterns/general-code.md", "src/linear-actions.test.ts", "src/linear-actions.ts", "src/linear-dispatcher.ts"], "tag": "git-history"}

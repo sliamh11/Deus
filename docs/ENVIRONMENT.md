@@ -157,6 +157,7 @@ Group/task effort overrides:
 |----------|---------|-------------|
 | `LINEAR_API_TOKEN` | -- | Personal API key (also accepted as `LINEAR_API_KEY`). Generate at Linear Settings > API > Personal API keys |
 | `LINEAR_POLL_INTERVAL_MS` | `30000` | How often the dispatcher polls for "Ready for Agent" issues (ms) |
+| `LINEAR_FETCH_TIMEOUT_MS` | `15000` | Ceiling for a single poll-fetch deadline; effective value is clamped below the poll interval so a hung Linear API call rejects (logged transient, retried next tick) instead of leaking |
 | `LINEAR_TEAM_ID` | auto-discovered | Override if the workspace has multiple teams |
 | `LINEAR_WEBHOOK_SECRET` | -- | HMAC-SHA256 secret for webhook signature verification. Required for gates |
 | `LINEAR_WEBHOOK_PORT` | `3005` | Port the webhook server binds to |

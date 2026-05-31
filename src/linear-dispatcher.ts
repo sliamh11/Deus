@@ -11,7 +11,7 @@ import { logger } from './logger.js';
 import { PROJECT_ROOT } from './config.js';
 import { getProjectByPath, registerProject } from './project-registry.js';
 import { FatalError, RetryableError } from './errors/index.js';
-import { fireAndForget } from './async/index.js';
+import { fireAndForget, withTimeout } from './async/index.js';
 import {
   IS_MACOS,
   IS_LINUX,
@@ -45,6 +45,19 @@ import type { RegisteredGroup } from './types.js';
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_POLL_MS = 30_000;
+// Deadline ceiling for a single Linear poll fetch (env-overridable). The effective
+// per-poll timeout (_fetchTimeoutMs) is derived from the active poll interval so it
+// is always < the interval — a hung fetch can never overlap the next tick.
+const LINEAR_FETCH_TIMEOUT_MS =
+  Number(process.env.LINEAR_FETCH_TIMEOUT_MS) || 15_000;
+// Effective per-poll fetch deadline. Recomputed by startLinearDispatcher and
+// setPollInterval (which co-manage _timer) so it tracks the live poll interval.
+let _fetchTimeoutMs = LINEAR_FETCH_TIMEOUT_MS;
+// Effective per-poll deadline. Callers (startLinearDispatcher, setPollInterval) only
+// pass pollMs >= 1000ms, so the 500ms floor is never reached and the result is always
+// strictly < pollMs — a hung fetch settles before the next tick fires.
+export const deriveFetchTimeout = (pollMs: number): number =>
+  Math.max(500, Math.min(LINEAR_FETCH_TIMEOUT_MS, Math.floor(pollMs * 0.9)));
 const DISPATCH_GROUP_JID = 'linear-dispatch';
 const BACKOFF_FIRST_MS = 5 * 60_000;
 const BACKOFF_REPEAT_MS = 10 * 60_000;
@@ -1335,9 +1348,20 @@ async function pollLinear(): Promise<void> {
 
   const readyState = ctx.stateByName.get('Ready for Agent')!;
 
-  const issues = await ctx.client.issues({
-    filter: { state: { id: { eq: readyState.id } } },
-  });
+  // Bound the only per-tick network call. On timeout withTimeout throws
+  // RetryableError, which _tick's onError logs as transient and the next interval
+  // retries. If this times out the dispatch loop below is never entered, so the
+  // in-loop SDK reads (labels/comments) need no wrapping. Note: this bounds the
+  // await, not the underlying socket — the @linear/sdk high-level client methods
+  // expose no per-call AbortSignal. Acceptable for a low-impact latent gap; upgrade
+  // path is a per-poll client built with AbortSignal.timeout.
+  const issues = await withTimeout(
+    ctx.client.issues({
+      filter: { state: { id: { eq: readyState.id } } },
+    }),
+    _fetchTimeoutMs,
+    { name: 'linear.poll.issues' },
+  );
 
   const sorted = [...issues.nodes].sort((a, b) => {
     // Priority first (1=urgent > 2=high > 3=medium > 4=low > 0=none)
@@ -1852,6 +1876,7 @@ export function startLinearDispatcher(ctx: LinearContext): void {
   );
   const pollMs =
     isNaN(parsedPollMs) || parsedPollMs < 1000 ? DEFAULT_POLL_MS : parsedPollMs;
+  _fetchTimeoutMs = deriveFetchTimeout(pollMs);
 
   _tick = () => {
     fireAndForget(() => pollLinear(), {
@@ -1896,6 +1921,7 @@ const MAX_POLL_MS = 300_000;
 export function setPollInterval(ms: number): boolean {
   if (!_tick) return false;
   const clamped = Math.max(MIN_POLL_MS, Math.min(MAX_POLL_MS, ms));
+  _fetchTimeoutMs = deriveFetchTimeout(clamped);
   if (_timer) clearInterval(_timer);
   _timer = setInterval(_tick, clamped);
   _timer.unref();

@@ -247,7 +247,7 @@ describe('triggerGateRerun', () => {
 });
 
 describe('moveIssueState', () => {
-  it('moves to a valid state', async () => {
+  it('moves to Done and emits moved_done (shipped event)', async () => {
     const ctx = makeCtx();
     const result = await moveIssueState(ctx, 'issue-1', 'LIA-1', 'Done');
     expect(result.ok).toBe(true);
@@ -255,7 +255,32 @@ describe('moveIssueState', () => {
     expect(ctx.client.updateIssue).toHaveBeenCalledWith('issue-1', {
       stateId: 's-done',
     });
-    expect(mockLogEvent).toHaveBeenCalled();
+    // Done transitions must emit `moved_done` (in SUCCESS_TYPES/TERMINAL_TYPES) so
+    // computeTodayStats counts non-automerge ships — not the generic state_changed.
+    expect(mockLogEvent).toHaveBeenCalledWith(
+      'issue-1',
+      'LIA-1',
+      'moved_done',
+      expect.stringContaining('Done'),
+    );
+  });
+
+  it('emits state_changed for non-Done transitions', async () => {
+    const ctx = makeCtx();
+    const result = await moveIssueState(ctx, 'issue-1', 'LIA-1', 'In Review');
+    expect(result.ok).toBe(true);
+    expect(mockLogEvent).toHaveBeenCalledWith(
+      'issue-1',
+      'LIA-1',
+      'state_changed',
+      expect.stringContaining('In Review'),
+    );
+    expect(mockLogEvent).not.toHaveBeenCalledWith(
+      'issue-1',
+      'LIA-1',
+      'moved_done',
+      expect.anything(),
+    );
   });
 
   it('returns error for unknown state', async () => {
