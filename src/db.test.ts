@@ -28,9 +28,50 @@ import {
   getIssuesFromCache,
   reconcileIssueCache,
 } from './db.js';
+import { getBus } from './events/bus.js';
+import type { EventEnvelope } from './events/types.js';
 
 beforeEach(() => {
   _initTestDatabase();
+});
+
+describe('logPipelineEvent -> pipeline.transition emit (Phase 2 strangler seam)', () => {
+  it('emits one pipeline.transition envelope on a successful insert; rowid unchanged', () => {
+    const seen: EventEnvelope[] = [];
+    const unsub = getBus().subscribe('pipeline.transition', (env) => {
+      seen.push(env);
+    });
+    try {
+      const rowid = logPipelineEvent(
+        'ISS-emit',
+        'LIA-emit',
+        'agent_completed',
+        'done',
+      );
+
+      // The added emit does not change the return contract.
+      expect(typeof rowid).toBe('number');
+
+      // The bus delivers synchronously up to its first await, so the listener
+      // has already run by the time logPipelineEvent returns — no await needed.
+      expect(seen).toHaveLength(1);
+      const env = seen[0];
+      expect(env.type).toBe('pipeline.transition');
+      expect(env.source).toBe('db.logPipelineEvent');
+      expect(env.actor).toBe('system');
+      expect(env.correlationId).toEqual({
+        kind: 'issue',
+        id: 'ISS-emit',
+        identifier: 'LIA-emit',
+      });
+      expect(env.payload).toEqual({
+        eventType: 'agent_completed',
+        detail: 'done',
+      });
+    } finally {
+      unsub();
+    }
+  });
 });
 
 // Helper to store a message using the normalized NewMessage interface

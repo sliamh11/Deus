@@ -67,6 +67,7 @@ import type { LinearContext } from './linear-dispatcher.js';
 import { loadGateSpecs } from './linear-gate-specs.js';
 import { startLinearWebhookServer } from './linear-webhook.js';
 import { registerLinearUpdater } from './events/listeners/linear-updater.js';
+import { registerObservabilitySink } from './events/listeners/observability-sink.js';
 
 export { getAvailableGroups } from './router-state.js';
 
@@ -395,6 +396,7 @@ async function main(): Promise<void> {
     if (linearCtx) {
       // Register event-hub listeners before the dispatcher can fire any event.
       registerLinearUpdater(linearCtx.bus, linearCtx);
+      registerObservabilitySink(linearCtx.bus);
       startLinearDispatcher(linearCtx);
 
       const wardensDir = path.join(

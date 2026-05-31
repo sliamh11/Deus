@@ -22,13 +22,20 @@ export type CorrelationRef =
   | { kind: 'run'; id: string };
 
 /**
- * Discriminated union of every event the hub carries. Phase 1: `agent.done`
- * only. Add a member here when a phase introduces a new event type.
+ * Discriminated union of every event the hub carries. Phase 1: `agent.done`.
+ * Phase 2 adds `pipeline.transition` (every pipeline-event log becomes an emit,
+ * reusing the existing eventType vocabulary). Add a member here when a phase
+ * introduces a new event type.
  */
-export type DeusEvent = {
-  type: 'agent.done';
-  payload: { output?: string; prUrl?: string };
-};
+export type DeusEvent =
+  | {
+      type: 'agent.done';
+      payload: { output?: string; prUrl?: string };
+    }
+  | {
+      type: 'pipeline.transition';
+      payload: { eventType: string; detail?: string };
+    };
 
 /**
  * What an emitter sends and a handler receives. `actor` is metadata for

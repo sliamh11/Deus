@@ -6,6 +6,7 @@ import path from 'path';
 import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
+import { getBus } from './events/bus.js';
 import {
   AgentRuntimeId,
   defaultSession,
@@ -1529,11 +1530,17 @@ export function getOpenPrsForActiveIssues(): Array<{
 
 // --- Pipeline event accessors ---
 
-export function logPipelineEvent(
+/**
+ * Raw INSERT of one pipeline-event row — the NON-emitting counterpart to
+ * `logPipelineEvent`, used by the ObservabilitySink for loop-safe mirroring
+ * (see `events/listeners/observability-sink.ts`). `createdAt` defaults to now.
+ */
+export function insertPipelineEventRow(
   issueId: string,
   identifier: string,
   eventType: string,
   detail?: string,
+  createdAt?: string,
 ): number | undefined {
   try {
     const result = db
@@ -1546,13 +1553,48 @@ export function logPipelineEvent(
         identifier,
         eventType,
         detail ?? null,
-        new Date().toISOString(),
+        createdAt ?? new Date().toISOString(),
       );
     return Number(result.lastInsertRowid);
   } catch (err) {
     logger.debug({ issueId, eventType, err }, 'pipeline-event: insert failed');
     return undefined;
   }
+}
+
+export function logPipelineEvent(
+  issueId: string,
+  identifier: string,
+  eventType: string,
+  detail?: string,
+): number | undefined {
+  const rowid = insertPipelineEventRow(issueId, identifier, eventType, detail);
+
+  // Strangler seam (Phase 2): the authoritative write above stays inline; we
+  // ALSO emit so the event-hub ObservabilitySink can (later) own the durable
+  // write. Best-effort + success-gated: emit only when the row landed, never
+  // block the synchronous write path, never let a bus failure surface to the
+  // 11 callers that rely on this never throwing. The outer try/catch makes the
+  // no-throw guarantee structural (covers a synchronous throw from the bus
+  // prologue); the inner .catch swallows async listener rejections.
+  if (rowid !== undefined) {
+    try {
+      void getBus()
+        .emit({
+          type: 'pipeline.transition',
+          source: 'db.logPipelineEvent',
+          actor: 'system',
+          correlationId: { kind: 'issue', id: issueId, identifier },
+          ts: new Date().toISOString(),
+          payload: { eventType, detail },
+        })
+        .catch(() => {});
+    } catch {
+      /* emit must never throw into the write path */
+    }
+  }
+
+  return rowid;
 }
 
 export function updatePipelineEventStatusSummary(

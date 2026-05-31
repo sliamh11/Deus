@@ -35,8 +35,10 @@ export class EventBus {
 
   /**
    * Catch-all subscription — receives every event regardless of type. Reserved
-   * for the Phase-2 ObservabilitySink + pipeline-events mirror; no production
-   * listener uses it yet. Returns an unsubscribe function.
+   * for a future multi-family durability mirror (Phase 4+); no production
+   * listener uses it yet. (Phase 2's ObservabilitySink uses the typed
+   * `subscribe('pipeline.transition')` instead, since it mirrors one family.)
+   * Returns an unsubscribe function.
    */
   on(handler: Handler): () => void {
     this.anyHandlers.push(handler);
