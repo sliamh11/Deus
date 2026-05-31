@@ -33,6 +33,7 @@ import {
 import { notifyPipelineStep } from './linear-notifications.js';
 import { resolveVaultPath } from './solutions/store.js';
 import { defaultSession } from './agent-runtimes/types.js';
+import { getBus } from './events/bus.js';
 import type {
   RunContext,
   RuntimeEventSink,
@@ -41,6 +42,7 @@ import type {
 import type { RuntimeRegistry } from './agent-runtimes/registry.js';
 import type { GroupQueue } from './group-queue.js';
 import type { RegisteredGroup } from './types.js';
+import type { EventBus } from './events/bus.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -121,6 +123,7 @@ export interface GateLabels {
 
 export interface LinearContext {
   client: LinearClient;
+  bus: EventBus; // app-wide event hub; same singleton at emit- and register-side
   stateByName: Map<string, WorkflowState>;
   stateById: Map<string, WorkflowState>;
   botUserId: string;
@@ -1318,6 +1321,21 @@ async function runIssue(
         'agent completed successfully',
       );
       logger.info({ issueId }, 'linear-dispatcher: issue moved to In Review');
+
+      // Event-hub Phase 1: emit `agent.done` alongside the inline write above.
+      // The LinearUpdater listener is dry-run (log-only) in Step 1, so the
+      // inline block remains authoritative and behavior is unchanged. At the
+      // Step-2 cutover the inline In-Review block (updateIssue + agent_completed
+      // + circuit_breaker_reset) is deleted and this emit becomes the sole
+      // driver via the live listener.
+      await ctx.bus.emit({
+        type: 'agent.done',
+        source: 'linear-dispatcher',
+        actor: 'bot',
+        correlationId: { kind: 'issue', id: issueId, identifier },
+        ts: new Date().toISOString(),
+        payload: { output: body, prUrl: prUrl ?? undefined },
+      });
     }
   } catch (err) {
     logger.warn(
@@ -1828,6 +1846,7 @@ export async function initLinearContext(
 
     return {
       client,
+      bus: getBus(),
       stateByName,
       stateById,
       botUserId,

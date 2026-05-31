@@ -130,6 +130,7 @@ import type {
 } from './linear-dispatcher.js';
 import { RuntimeRegistry } from './agent-runtimes/registry.js';
 import { logger } from './logger.js';
+import { EventBus } from './events/bus.js';
 
 function makeMockDeps(
   overrides: Partial<LinearDispatcherDependencies> = {},
@@ -152,6 +153,7 @@ function makeMockCtx(overrides: Partial<LinearContext> = {}): LinearContext {
   const deps = makeMockDeps();
   return {
     client: {} as LinearContext['client'],
+    bus: new EventBus(),
     stateByName: new Map([
       ['Ready for Agent', { id: 'ready-id', name: 'Ready for Agent' }],
       ['Agent Working', { id: 'working-id', name: 'Agent Working' }],
