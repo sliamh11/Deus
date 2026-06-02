@@ -302,9 +302,9 @@ After.`;
   it('creates block as entire description when empty', () => {
     const result = mergeEnrichment('', 'test-gate', 'Content');
     expect(result).toBe(
-      '<!-- gate:test-gate:start -->
+      `<!-- gate:test-gate:start -->
 Content
-<!-- gate:test-gate:end -->',
+<!-- gate:test-gate:end -->`,
     );
   });
 });
@@ -348,13 +348,17 @@ describe('parseRatings', () => {
 
 describe('parseVerdict', () => {
   it('extracts SHIP verdict', () => {
-    expect(parseVerdict('## Verdict: SHIP
-Done.')).toBe('SHIP');
+    expect(
+      parseVerdict(`## Verdict: SHIP
+Done.`),
+    ).toBe('SHIP');
   });
 
   it('extracts REVISE verdict', () => {
-    expect(parseVerdict('## Verdict: REVISE
-Needs work.')).toBe('REVISE');
+    expect(
+      parseVerdict(`## Verdict: REVISE
+Needs work.`),
+    ).toBe('REVISE');
   });
 
   it('returns null when no verdict', () => {
@@ -452,9 +456,9 @@ describe('computeScopeLabelChanges', () => {
     const result = computeScopeLabelChanges(
       'agent-readiness-gate',
       'SHIP',
-      '## Scope
+      `## Scope
 
-**Problem**: fix the bug',
+**Problem**: fix the bug`,
       gateLabels,
     );
     expect(result.addIds).toEqual(['label-scoped-id']);
@@ -498,9 +502,9 @@ describe('computeScopeLabelChanges', () => {
     const result = computeScopeLabelChanges(
       'output-quality-gate',
       'SHIP',
-      '## Scope
+      `## Scope
 
-some enrichment',
+some enrichment`,
       gateLabels,
     );
     expect(result.addIds).toEqual([]);
@@ -934,9 +938,7 @@ describe('computeTerminalLabelCleanup', () => {
   });
 
   it('returns empty array when issue has no transient labels', () => {
-    const result = computeTerminalLabelCleanup(labels, [
-      'unrelated-label',
-    ]);
+    const result = computeTerminalLabelCleanup(labels, ['unrelated-label']);
     expect(result).toHaveLength(0);
   });
 
