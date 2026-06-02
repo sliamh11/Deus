@@ -1487,9 +1487,7 @@ async function pollLinear(): Promise<void> {
       const bouncedId = ctx.gateLabels.bouncedUnscoped;
       const alreadyBounced =
         bouncedId !== undefined &&
-        labels.nodes.some(
-          (l) => (l as { id?: string }).id === bouncedId,
-        );
+        labels.nodes.some((l) => (l as { id?: string }).id === bouncedId);
       if (bouncedId && !alreadyBounced) {
         ctx.client
           .updateIssue(issue.id, {

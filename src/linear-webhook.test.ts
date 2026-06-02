@@ -542,7 +542,9 @@ describe('extractScopeBlockFromDescription', () => {
   });
 
   it('returns undefined for null/undefined description', () => {
-    expect(extractScopeBlockFromDescription(null, 'enrichment-gate')).toBeUndefined();
+    expect(
+      extractScopeBlockFromDescription(null, 'enrichment-gate'),
+    ).toBeUndefined();
     expect(
       extractScopeBlockFromDescription(undefined, 'enrichment-gate'),
     ).toBeUndefined();
@@ -551,13 +553,17 @@ describe('extractScopeBlockFromDescription', () => {
   it('returns undefined when end marker precedes start marker', () => {
     const desc =
       '<!-- gate:enrichment-gate:end -->content<!-- gate:enrichment-gate:start -->';
-    expect(extractScopeBlockFromDescription(desc, 'enrichment-gate')).toBeUndefined();
+    expect(
+      extractScopeBlockFromDescription(desc, 'enrichment-gate'),
+    ).toBeUndefined();
   });
 
   it('returns undefined when block content is empty', () => {
     const desc =
       '<!-- gate:enrichment-gate:start -->   \n   <!-- gate:enrichment-gate:end -->';
-    expect(extractScopeBlockFromDescription(desc, 'enrichment-gate')).toBeUndefined();
+    expect(
+      extractScopeBlockFromDescription(desc, 'enrichment-gate'),
+    ).toBeUndefined();
   });
 });
 
