@@ -1612,7 +1612,8 @@ async function runGateForIssue(
     const removeIds: string[] = [];
     const addIds: string[] = [];
     if (ctx.gateLabels.evaluating) removeIds.push(ctx.gateLabels.evaluating);
-    if (gateAgentError && ctx.gateLabels.error) addIds.push(ctx.gateLabels.error);
+    if (gateAgentError && ctx.gateLabels.error)
+      addIds.push(ctx.gateLabels.error);
     if (!gateAgentError) {
       const scopeLabels = computeScopeLabelChanges(
         gateSpec.name,
