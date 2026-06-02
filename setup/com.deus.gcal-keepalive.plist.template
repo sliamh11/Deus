@@ -6,25 +6,25 @@
     <string>com.deus.gcal-keepalive</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/liam10play/.local/bin/deus</string>
+        <string>__DEUS_BIN__</string>
         <string>gcal</string>
         <string>ping</string>
     </array>
     <key>StartInterval</key>
     <integer>86400</integer>
     <key>WorkingDirectory</key>
-    <string>/Users/liam10play/deus</string>
+    <string>__DEUS_HOME__</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>HOME</key>
-        <string>/Users/liam10play</string>
+        <string>__USER_HOME__</string>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/liam10play/.local/bin</string>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:__USER_HOME__/.local/bin</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/liam10play/deus/logs/gcal-keepalive.log</string>
+    <string>__DEUS_HOME__/logs/gcal-keepalive.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/liam10play/deus/logs/gcal-keepalive.log</string>
+    <string>__DEUS_HOME__/logs/gcal-keepalive.log</string>
     <key>RunAtLoad</key>
     <true/>
 </dict>

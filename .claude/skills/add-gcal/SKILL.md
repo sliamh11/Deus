@@ -123,7 +123,14 @@ No manual container configuration is needed.
 The Google OAuth refresh token expires after ~7 days of inactivity. Install a daily keep-alive to prevent this:
 
 ```bash
-cp setup/com.deus.gcal-keepalive.plist ~/Library/LaunchAgents/
+# macOS only — launchd/launchctl is macOS-specific. For Linux see the systemd section below.
+DEUS_HOME="$(pwd)"
+DEUS_BIN="$(command -v deus)"
+sed -e "s|__DEUS_BIN__|$DEUS_BIN|g" \
+    -e "s|__DEUS_HOME__|$DEUS_HOME|g" \
+    -e "s|__USER_HOME__|$HOME|g" \
+    setup/com.deus.gcal-keepalive.plist.template \
+    > ~/Library/LaunchAgents/com.deus.gcal-keepalive.plist
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.deus.gcal-keepalive.plist 2>/dev/null || launchctl kickstart gui/$(id -u)/com.deus.gcal-keepalive
 ```
 
