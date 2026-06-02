@@ -28,12 +28,24 @@ import {
   AuthProviderRegistry,
   AnthropicAuthProvider,
   CREDENTIALS_PATH,
+  triggerProactiveOAuthRefresh,
   _resetCredentialsCacheForTest as _resetAnthropicCache,
   ensureDefaultProviders,
 } from './auth-providers/index.js';
 import type { AuthProvider } from './auth-providers/types.js';
 
 export type AuthMode = 'api-key' | 'oauth';
+
+/**
+ * How often the always-on host pokes the OAuth token-read/refresh path even
+ * with no incoming container traffic. Chosen to equal the early-expire window
+ * (EARLY_EXPIRE_WINDOW_MS = 30 min): interval ≤ window guarantees a tick lands
+ * inside the refresh window before the token expires, leaving no blind spot.
+ * It also matches the launchd job's cadence (StartInterval 1800). A tick on a
+ * comfortably-valid token is just a single file read (getDynamicOAuthToken
+ * fast-paths it); the keychain/refresh only fire inside the window.
+ */
+const PROACTIVE_REFRESH_INTERVAL_MS = 30 * 60 * 1000;
 
 export interface ProxyConfig {
   authMode: AuthMode;
@@ -137,15 +149,44 @@ export function startCredentialProxy(
   ensureDefaultProviders();
   const registry = AuthProviderRegistry.default();
 
-  // Get the Anthropic provider for logging the auth mode
+  // Get the Anthropic provider for logging the auth mode + deciding whether the
+  // proactive refresh timer is worth running (only for refreshable OAuth creds).
   let authMode: AuthMode = 'oauth';
+  let usesRefreshableOAuth = false;
   try {
     const anthropic = registry.get('anthropic');
     if (anthropic instanceof AnthropicAuthProvider) {
       authMode = anthropic.getAuthMode();
+      usesRefreshableOAuth = anthropic.usesRefreshableOAuth();
     }
   } catch {
     // No Anthropic provider registered — unusual but not fatal
+  }
+
+  // Proactive OAuth refresh timer. The per-request refresh in the Anthropic
+  // provider only fires when a container makes a request; an idle host (no
+  // overnight traffic) never triggers it, so the token expires and the next
+  // morning's request 401s (issue #625). This in-process timer pokes the same
+  // token-read/refresh path on an interval so refresh happens proactively.
+  //
+  // Cross-platform defense-in-depth: the launchd job (scheduleOAuthRefresh) is
+  // macOS-only and can fail to load silently, leaving Linux/Windows hosts with
+  // no proactive refresh at all. This timer lives in the always-on host process
+  // and covers every platform. Overlap with a request-triggered refresh or the
+  // launchd CLI is already handled (in-process `refreshInFlight` flag + the
+  // CLI's file lock; credential writes are atomic).
+  let proactiveRefreshTimer: ReturnType<typeof setInterval> | undefined;
+  if (usesRefreshableOAuth) {
+    proactiveRefreshTimer = setInterval(
+      triggerProactiveOAuthRefresh,
+      PROACTIVE_REFRESH_INTERVAL_MS,
+    );
+    // Don't keep the Node process alive on the timer alone (tests/shutdown).
+    proactiveRefreshTimer.unref();
+    logger.info(
+      { intervalMs: PROACTIVE_REFRESH_INTERVAL_MS },
+      'Credential proxy: proactive OAuth refresh timer started',
+    );
   }
 
   return new Promise((resolve, reject) => {
@@ -343,6 +384,7 @@ export function startCredentialProxy(
 
     server.on('close', () => {
       clearInterval(rateLimitCleanupInterval);
+      if (proactiveRefreshTimer) clearInterval(proactiveRefreshTimer);
     });
 
     let retries = 0;

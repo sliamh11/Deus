@@ -526,4 +526,133 @@ describe('credential-proxy', () => {
 
     expect(res.statusCode).toBe(200);
   });
+
+  // -------------------------------------------------------------------------
+  // Proactive OAuth refresh timer (issue #625): an idle host with no incoming
+  // traffic must still refresh the token before it expires. The timer is only
+  // worth running for refreshable (dynamic file/keychain) OAuth credentials.
+  // -------------------------------------------------------------------------
+  describe('proactive OAuth refresh timer', () => {
+    const PROACTIVE_INTERVAL_MS = 30 * 60 * 1000;
+
+    interface IntervalCall {
+      delay: number;
+      unrefed: boolean;
+      handle: ReturnType<typeof setInterval>;
+    }
+
+    function collectIntervals(): {
+      restore: () => void;
+      calls: IntervalCall[];
+    } {
+      const calls: IntervalCall[] = [];
+      const real = global.setInterval;
+      const spy = vi
+        .spyOn(global, 'setInterval')
+        .mockImplementation(
+          (
+            handler: (...handlerArgs: unknown[]) => void,
+            timeout?: number,
+            ...args: unknown[]
+          ) => {
+            const handle = real(handler, timeout, ...args) as ReturnType<
+              typeof setInterval
+            >;
+            // Don't let the test's intervals fire — we only assert on creation.
+            handle.unref();
+            const entry: IntervalCall = {
+              delay: timeout ?? 0,
+              unrefed: false,
+              handle,
+            };
+            const origUnref = handle.unref.bind(handle);
+            handle.unref = () => {
+              entry.unrefed = true;
+              return origUnref();
+            };
+            calls.push(entry);
+            return handle;
+          },
+        );
+      return { restore: () => spy.mockRestore(), calls };
+    }
+
+    it('starts an unref-ed 30-min timer for dynamic file OAuth credentials', async () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'dynamic-creds-token-valid-test',
+            refreshToken: 'dynamic-refresh',
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          },
+        }),
+      );
+      const { restore, calls } = collectIntervals();
+      try {
+        proxyPort = await startProxy({});
+        const proactive = calls.filter(
+          (c) => c.delay === PROACTIVE_INTERVAL_MS,
+        );
+        expect(proactive).toHaveLength(1);
+        expect(proactive[0].unrefed).toBe(true);
+      } finally {
+        restore();
+      }
+    });
+
+    it('does NOT start the timer in API-key mode', async () => {
+      const { restore, calls } = collectIntervals();
+      try {
+        proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+        expect(
+          calls.filter((c) => c.delay === PROACTIVE_INTERVAL_MS),
+        ).toHaveLength(0);
+      } finally {
+        restore();
+      }
+    });
+
+    it('does NOT start the timer for a static env OAuth token (not refreshable)', async () => {
+      const { restore, calls } = collectIntervals();
+      try {
+        proxyPort = await startProxy({ CLAUDE_CODE_OAUTH_TOKEN: 'env-token' });
+        expect(
+          calls.filter((c) => c.delay === PROACTIVE_INTERVAL_MS),
+        ).toHaveLength(0);
+      } finally {
+        restore();
+      }
+    });
+
+    it('clears the timer when the proxy server closes', async () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'dynamic-creds-token-valid-test',
+            refreshToken: 'dynamic-refresh',
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          },
+        }),
+      );
+      const { restore, calls } = collectIntervals();
+      const clearSpy = vi.spyOn(global, 'clearInterval');
+      try {
+        const server = await startCredentialProxy(0);
+        proxyServer = server;
+
+        const proactive = calls.find((c) => c.delay === PROACTIVE_INTERVAL_MS);
+        expect(proactive).toBeDefined();
+
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        proxyServer = undefined;
+
+        // The proactive timer handle specifically must be cleared on close.
+        const clearedHandles = clearSpy.mock.calls.map((c) => c[0]);
+        expect(clearedHandles).toContain(proactive!.handle);
+      } finally {
+        clearSpy.mockRestore();
+        restore();
+      }
+    });
+  });
 });

@@ -14,6 +14,7 @@ export {
 export {
   AnthropicAuthProvider,
   CREDENTIALS_PATH,
+  triggerProactiveOAuthRefresh,
   _resetCredentialsCacheForTest,
 } from './anthropic.js';
 export { OpenAIAuthProvider } from './openai.js';

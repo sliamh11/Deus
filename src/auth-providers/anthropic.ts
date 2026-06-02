@@ -406,6 +406,29 @@ function getDynamicOAuthToken(): string | undefined {
 }
 
 /**
+ * Proactively run the token-read/refresh path so an idle host still renews
+ * the OAuth token before it expires.
+ *
+ * The per-request path (`injectAuth` → `getDynamicOAuthToken`) only fires when
+ * a container actually makes a request. With no overnight traffic the token
+ * silently expires and the next morning's request 401s. This wrapper lets the
+ * always-on host process tick the same path on a timer (see credential-proxy),
+ * reusing the existing 30-min early-expire window + `refreshInFlight`
+ * de-duplication rather than duplicating refresh logic.
+ *
+ * Returns nothing: the token value never leaves this module. The underlying
+ * `getDynamicOAuthToken` already logs (warn) when it serves an expired token
+ * and when a refresh starts / succeeds / fails — so this adds only a
+ * no-secret debug line marking that the proactive check ran.
+ */
+export function triggerProactiveOAuthRefresh(): void {
+  // Discard the returned token — callers must never see it. The side effect
+  // (background refresh-if-expiring inside getDynamicOAuthToken) is the point.
+  void getDynamicOAuthToken();
+  logger.debug('credential-proxy: proactive OAuth refresh check ran');
+}
+
+/**
  * Anthropic auth provider.
  *
  * Supports both API key and OAuth modes. The mode is determined at
@@ -466,6 +489,18 @@ export class AnthropicAuthProvider implements AuthProvider {
   /** Get the auth mode for external consumers (e.g. container-runner). */
   getAuthMode(): AuthMode {
     return this.authMode;
+  }
+
+  /**
+   * True only when this provider serves a *refreshable* OAuth token — i.e.
+   * dynamic credentials read from the file/keychain that flow through
+   * `getDynamicOAuthToken`. False for API-key mode and for a static env token
+   * (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_AUTH_TOKEN), neither of which the
+   * refresh path touches. Used by the proxy to decide whether the proactive
+   * refresh timer is worth running at all.
+   */
+  usesRefreshableOAuth(): boolean {
+    return this.authMode === 'oauth' && !this.envOauthToken;
   }
 
   isAvailable(): boolean {

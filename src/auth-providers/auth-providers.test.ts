@@ -54,6 +54,7 @@ import { ensureDefaultProviders } from './index.js';
 import {
   AnthropicAuthProvider,
   readCredentialsFile,
+  triggerProactiveOAuthRefresh,
   _resetCredentialsCacheForTest,
 } from './anthropic.js';
 import { OpenAIAuthProvider, _resetCodexCacheForTest } from './openai.js';
@@ -945,6 +946,111 @@ describe('AnthropicAuthProvider', () => {
 
       // No crash, no write
       expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Proactive refresh — the issue #625 path: no incoming request, the host
+  // pokes the token-read/refresh path on a timer so an idle token still
+  // refreshes before it expires.
+  // -------------------------------------------------------------------------
+  describe('proactive refresh (triggerProactiveOAuthRefresh)', () => {
+    let fetchSpy: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      fetchSpy = vi.fn();
+      vi.stubGlobal('fetch', fetchSpy);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it('triggers refresh on an expiring token WITHOUT any incoming request', async () => {
+      fetchSpy.mockResolvedValue({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            access_token: 'proactive-fresh-tok',
+            refresh_token: 'proactive-fresh-refresh',
+            expires_in: 28800,
+          }),
+      });
+
+      // Token expiring within the 30-min early-expire window, with refresh_token.
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'old-idle-tok-valid-test-pad',
+            refreshToken: 'idle-refresh',
+            expiresAt: Date.now() + 10 * 60 * 1000,
+          },
+        }),
+      );
+
+      // No provider / injectAuth / isAvailable call — the timer wrapper is the
+      // only thing that runs, exactly as it would on an idle host.
+      triggerProactiveOAuthRefresh();
+
+      await vi.waitFor(() => {
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+      });
+      expect(fetchSpy).toHaveBeenCalledWith(
+        'https://platform.claude.com/v1/oauth/token',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('idle-refresh'),
+        }),
+      );
+      await vi.waitFor(() => {
+        expect(mockWriteFileSync).toHaveBeenCalledWith(
+          expect.stringContaining('.credentials.json'),
+          expect.stringContaining('proactive-fresh-tok'),
+          expect.objectContaining({ mode: 0o600 }),
+        );
+      });
+    });
+
+    it('does not refresh a comfortably-valid token (tick is just a file read)', () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'healthy-idle-tok-valid-test',
+            refreshToken: 'healthy-refresh',
+            expiresAt: Date.now() + 7200000, // 2 hours — outside the window
+          },
+        }),
+      );
+
+      triggerProactiveOAuthRefresh();
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // usesRefreshableOAuth — gate for whether the proxy runs the proactive timer
+  // -------------------------------------------------------------------------
+  describe('usesRefreshableOAuth', () => {
+    it('false in API-key mode', () => {
+      mockEnv.ANTHROPIC_API_KEY = 'sk-ant-real-key';
+      const provider = new AnthropicAuthProvider();
+      expect(provider.usesRefreshableOAuth()).toBe(false);
+    });
+
+    it('false when a static env OAuth token is set (not refreshable)', () => {
+      mockEnv.CLAUDE_CODE_OAUTH_TOKEN = 'static-env-oauth-token';
+      const provider = new AnthropicAuthProvider();
+      expect(provider.getAuthMode()).toBe('oauth');
+      expect(provider.usesRefreshableOAuth()).toBe(false);
+    });
+
+    it('true for dynamic file/keychain OAuth credentials', () => {
+      // No API key, no env OAuth token → dynamic (refreshable) OAuth mode.
+      const provider = new AnthropicAuthProvider();
+      expect(provider.getAuthMode()).toBe('oauth');
+      expect(provider.usesRefreshableOAuth()).toBe(true);
     });
   });
 
