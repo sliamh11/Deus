@@ -1337,28 +1337,12 @@ async function runIssue(
         );
       }
 
-      const reviewState = ctx.stateByName.get('In Review')!;
-      await ctx.client.updateIssue(issueId, {
-        stateId: reviewState.id,
-        assigneeId: ctx.viewerId,
-      });
-      notifyPipelineStep(ctx, issueId, identifier, 'agent_completed').catch(
-        () => {},
-      );
-      logPipelineEvent(
-        issueId,
-        identifier,
-        'circuit_breaker_reset',
-        'agent completed successfully',
-      );
-      logger.info({ issueId }, 'linear-dispatcher: issue moved to In Review');
-
-      // Event-hub Phase 1: emit `agent.done` alongside the inline write above.
-      // The LinearUpdater listener is dry-run (log-only) in Step 1, so the
-      // inline block remains authoritative and behavior is unchanged. At the
-      // Step-2 cutover the inline In-Review block (updateIssue + agent_completed
-      // + circuit_breaker_reset) is deleted and this emit becomes the sole
-      // driver via the live listener.
+      // Event-hub Phase 1 (Step-2 cutover): `agent.done` is now the SOLE driver
+      // of the "-> In Review" transition. The live LinearUpdater listener
+      // (src/events/listeners/linear-updater.ts) performs the updateIssue +
+      // agent_completed + circuit_breaker_reset writes; the former inline copy
+      // here was deleted at cutover. Bus listeners are error-isolated, so a
+      // listener failure surfaces as a bus ERROR log, not via the catch below.
       await ctx.bus.emit({
         type: 'agent.done',
         source: 'linear-dispatcher',
@@ -1371,7 +1355,7 @@ async function runIssue(
   } catch (err) {
     logger.warn(
       { issueId, err },
-      'linear-dispatcher: failed to update Linear issue after run',
+      'linear-dispatcher: post-run Linear update failed',
     );
   } finally {
     ctx.inFlightDispatch.delete(issueId);

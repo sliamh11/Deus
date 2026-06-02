@@ -92,7 +92,9 @@ sequenceDiagram
     ART-->>PD: output text
     alt success
         PD->>LAPI: createComment(output)
-        PD->>LAPI: updateIssue → In Review
+        PD->>PD: emit agent.done (event hub)
+        Note over PD,LAPI: Event-hub Phase-1 cutover: the In-Review write (+ agent_completed,<br/>circuit_breaker_reset) is now performed by the LinearUpdater listener<br/>on agent.done, not inline in the dispatcher.
+        PD->>LAPI: updateIssue → In Review (via LinearUpdater listener)
     else error
         PD->>LAPI: createComment(error)
         PD->>LAPI: updateIssue → Backlog
