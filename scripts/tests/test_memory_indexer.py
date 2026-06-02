@@ -88,6 +88,118 @@ def test_db_path_honors_deus_db_env(tmp_path, fresh_vault, monkeypatch):
     assert mod.DB_PATH == custom_db
 
 
+# ── Per-instance vault resolution (GH #659) ───────────────────────────────
+# These tests encode the anti-corruption guarantee: a Deus instance must
+# resolve its vault from its OWN cwd-local config before falling back to the
+# shared global config, so two instances sharing ~/.config/deus/config.json
+# never read/write each other's vault.
+
+
+def test_cwd_local_config_beats_global(tmp_path, monkeypatch):
+    """./.deus/config.json (instance-local) must win over the global config."""
+    # DEUS_VAULT_PATH (tier 1) must be unset so tier 2 vs tier 3 is exercised.
+    monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+    if "memory_indexer" in sys.modules:
+        del sys.modules["memory_indexer"]
+    mod = importlib.import_module("memory_indexer")
+
+    instance_root = tmp_path / "instance"
+    (instance_root / ".deus").mkdir(parents=True)
+    local_vault = tmp_path / "local-vault"
+    (instance_root / ".deus" / "config.json").write_text(
+        json.dumps({"vault_path": str(local_vault)})
+    )
+
+    global_vault = tmp_path / "global-vault"
+    global_config = tmp_path / "global-config.json"
+    global_config.write_text(json.dumps({"vault_path": str(global_vault)}))
+    monkeypatch.setattr(mod, "CONFIG_PATH", global_config)
+
+    monkeypatch.chdir(instance_root)
+    assert mod._load_vault_path() == local_vault
+
+
+def test_env_var_beats_cwd_local_config(tmp_path, monkeypatch):
+    """DEUS_VAULT_PATH (tier 1) still wins even when a cwd-local config exists."""
+    instance_root = tmp_path / "instance"
+    (instance_root / ".deus").mkdir(parents=True)
+    (instance_root / ".deus" / "config.json").write_text(
+        json.dumps({"vault_path": str(tmp_path / "local-vault")})
+    )
+    env_vault = tmp_path / "env-vault"
+    monkeypatch.setenv("DEUS_VAULT_PATH", str(env_vault))
+    if "memory_indexer" in sys.modules:
+        del sys.modules["memory_indexer"]
+    mod = importlib.import_module("memory_indexer")
+
+    monkeypatch.chdir(instance_root)
+    assert mod._load_vault_path() == env_vault
+
+
+def test_no_cwd_local_config_falls_back_to_global(tmp_path, monkeypatch):
+    """With no cwd-local config, resolution falls back to the global config."""
+    monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+    if "memory_indexer" in sys.modules:
+        del sys.modules["memory_indexer"]
+    mod = importlib.import_module("memory_indexer")
+
+    empty_root = tmp_path / "no-local-config"
+    empty_root.mkdir()
+    global_vault = tmp_path / "global-vault"
+    global_config = tmp_path / "global-config.json"
+    global_config.write_text(json.dumps({"vault_path": str(global_vault)}))
+    monkeypatch.setattr(mod, "CONFIG_PATH", global_config)
+
+    monkeypatch.chdir(empty_root)
+    assert mod._load_vault_path() == global_vault
+
+
+def test_cwd_local_config_without_vault_path_fails_loud(tmp_path, monkeypatch):
+    """A cwd-local config missing vault_path must fail loud, NOT fall through.
+
+    Falling through to the global config is the exact cross-instance vault
+    collision this fix prevents.
+    """
+    monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+    if "memory_indexer" in sys.modules:
+        del sys.modules["memory_indexer"]
+    mod = importlib.import_module("memory_indexer")
+
+    instance_root = tmp_path / "instance"
+    (instance_root / ".deus").mkdir(parents=True)
+    # Present but no vault_path key.
+    (instance_root / ".deus" / "config.json").write_text(json.dumps({"name": "amos"}))
+
+    # A perfectly good global config exists — must NOT be used as a fallback.
+    global_config = tmp_path / "global-config.json"
+    global_config.write_text(json.dumps({"vault_path": str(tmp_path / "global-vault")}))
+    monkeypatch.setattr(mod, "CONFIG_PATH", global_config)
+
+    monkeypatch.chdir(instance_root)
+    with pytest.raises(SystemExit):
+        mod._load_vault_path()
+
+
+def test_cwd_local_config_malformed_fails_loud(tmp_path, monkeypatch):
+    """A malformed (unparseable) cwd-local config must fail loud, NOT fall through."""
+    monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+    if "memory_indexer" in sys.modules:
+        del sys.modules["memory_indexer"]
+    mod = importlib.import_module("memory_indexer")
+
+    instance_root = tmp_path / "instance"
+    (instance_root / ".deus").mkdir(parents=True)
+    (instance_root / ".deus" / "config.json").write_text("{ not valid json")
+
+    global_config = tmp_path / "global-config.json"
+    global_config.write_text(json.dumps({"vault_path": str(tmp_path / "global-vault")}))
+    monkeypatch.setattr(mod, "CONFIG_PATH", global_config)
+
+    monkeypatch.chdir(instance_root)
+    with pytest.raises(SystemExit):
+        mod._load_vault_path()
+
+
 # ── Reranker configuration defaults ──────────────────────────────────────
 
 

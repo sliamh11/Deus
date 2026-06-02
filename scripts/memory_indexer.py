@@ -60,12 +60,47 @@ ENTITY_PROVIDER = os.environ.get("DEUS_ENTITY_PROVIDER", "auto")
 
 
 def _load_vault_path() -> Path:
-    """Load vault path from config.json or DEUS_VAULT_PATH env var."""
+    """Load vault path with per-instance precedence.
+
+    Resolution order (highest priority first):
+      1. DEUS_VAULT_PATH env var
+      2. ./.deus/config.json in the current working directory (instance-local)
+      3. ~/.config/deus/config.json (global fallback)
+
+    The cwd-local config (tier 2) makes each Deus instance self-contained: when
+    several instances run on one machine and share the global config, this keeps
+    callers writing to the instance's OWN vault instead of silently resolving to
+    whichever vault the global config happens to point at (GH #659).
+    """
     # 1. Environment variable override
     env_path = os.environ.get("DEUS_VAULT_PATH")
     if env_path:
         return Path(env_path).expanduser()
-    # 2. Config file
+    # 2. Instance-local config in the current working directory.
+    #    If this file exists it is authoritative for the running instance — a
+    #    present-but-unusable file fails loud rather than falling through to the
+    #    global config, because that fall-through is exactly the cross-instance
+    #    vault collision the per-instance config is meant to prevent.
+    local_config = Path.cwd() / ".deus" / "config.json"
+    if local_config.exists():
+        try:
+            local_cfg = json.loads(local_config.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            print(
+                f"ERROR: Could not read instance-local vault config at {local_config}: {exc}\n"
+                "Fix the file or remove it so the global config is used.",
+                file=sys.stderr,
+            )
+            sys.exit(AUTH_ERROR)
+        if local_cfg.get("vault_path"):
+            return Path(local_cfg["vault_path"]).expanduser()
+        print(
+            f"ERROR: {local_config} exists but has no `vault_path`.\n"
+            "Add a vault_path or remove the file so the global config is used.",
+            file=sys.stderr,
+        )
+        sys.exit(AUTH_ERROR)
+    # 3. Global config file
     if CONFIG_PATH.exists():
         try:
             cfg = json.loads(CONFIG_PATH.read_text())
@@ -73,10 +108,11 @@ def _load_vault_path() -> Path:
                 return Path(cfg["vault_path"]).expanduser()
         except (json.JSONDecodeError, OSError):
             pass
-    # 3. Fatal — no vault configured
+    # 4. Fatal — no vault configured
     print(
         "ERROR: Memory vault not configured.\n"
-        "Set DEUS_VAULT_PATH or add vault_path to ~/.config/deus/config.json\n"
+        "Set DEUS_VAULT_PATH, add vault_path to ./.deus/config.json (per-instance),\n"
+        "or add vault_path to ~/.config/deus/config.json (global).\n"
         "Run `deus setup` or /setup in Claude Code to configure.",
         file=sys.stderr,
     )

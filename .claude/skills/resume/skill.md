@@ -16,7 +16,13 @@ Check if the current working directory is the Deus home directory (`~/deus`). If
 
 Load context from the vault before starting work.
 
-First, resolve the vault path by reading `~/.config/deus/config.json` and using the `vault_path` value. If the env var `DEUS_VAULT_PATH` is set, use that instead. All paths below use `$VAULT` to mean this resolved path.
+First, resolve the vault path using this **per-instance** order (highest priority first). `$VAULT` means the resolved path:
+
+1. `DEUS_VAULT_PATH` env var, if set.
+2. `vault_path` in `./.deus/config.json` (the current working directory's instance-local config), if that file exists. If the file exists but has no usable `vault_path`, STOP and tell the user it is present but missing `vault_path` — do **not** fall through to the global config (that fall-through is what reads from another instance's vault).
+3. `vault_path` in `~/.config/deus/config.json` (global fallback).
+
+Tiers 1 and 2 are the per-instance mechanisms: when several Deus instances run on one machine they share the global config (tier 3), so resolving from it alone can silently point this instance's `/resume` at a different instance's vault. The instance-local `./.deus/config.json` keeps each instance self-contained. The `memory_indexer.py` calls below resolve the vault by the same order, so their reads come from this instance's vault too.
 
 1. Core + contextual vault files (CLAUDE.md, STUDY.md, INFRA.md):
    Check if the current context already contains `=== VAULT: CLAUDE.md ===` (injected
