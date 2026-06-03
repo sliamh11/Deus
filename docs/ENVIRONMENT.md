@@ -76,6 +76,8 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `LLAMA_CPP_JUDGE_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the evolution-loop judge provider |
 | `LLAMA_CPP_EMBED_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for embeddings (reserved; embedding swap is ADR-gated per Phase 4) |
 | `EMBEDDING_PROVIDER` | `auto` | Embedding backend: `auto`, `gemini`, or `ollama` |
+| `DEUS_ATOM_PROVIDER` | `auto` | Atom-extraction backend: `auto` (Ollama first, Gemini fallback), `ollama`, or `gemini`. `auto` lets `--extract`/`--add` run without a Gemini key when Ollama is up |
+| `DEUS_OLLAMA_ATOM_MODEL` | `gemma4:e4b` | Ollama model used for atom extraction (auto/ollama) |
 
 ## Evolution / Eval
 

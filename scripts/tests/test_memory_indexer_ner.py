@@ -303,3 +303,68 @@ def test_provider_ollama_strict_uses_ollama_when_available(mi_ollama):
 
     assert result["entities"][0]["name"] == "torch"
     assert result["relationships"][0]["rel_type"] == "uses"
+
+
+# ── Ollama atom extraction (LIA-170) ─────────────────────────────────────────
+
+def test_ollama_extracts_atoms(mi):
+    # Ollama returns the object-wrapper {"atoms": [...]} shape.
+    result_dict = {"atoms": [
+        {"text": "Deus uses sqlite-vec for vector storage", "category": "fact"},
+        {"text": "Vitest is the monorepo test runner", "category": "decision"},
+    ]}
+    with patch("urllib.request.urlopen", return_value=_mock_ollama_response(result_dict)):
+        atoms = mi._extract_atoms_ollama("Deus uses sqlite-vec; Vitest runs tests.")
+    assert atoms is not None
+    assert len(atoms) == 2
+    assert atoms[0]["category"] == "fact"
+
+
+def test_ollama_atoms_filters_malformed(mi):
+    # Entries missing "text" or "category" are dropped (mirrors the Gemini filter).
+    result_dict = {"atoms": [
+        {"text": "valid", "category": "fact"},
+        {"text": "no category"},
+        {"category": "no text"},
+        "not a dict",
+    ]}
+    with patch("urllib.request.urlopen", return_value=_mock_ollama_response(result_dict)):
+        atoms = mi._extract_atoms_ollama("x")
+    assert atoms == [{"text": "valid", "category": "fact"}]
+
+
+def test_ollama_atoms_connection_refused_returns_none(mi):
+    # Unreachable Ollama → None, so the router can fall back to Gemini.
+    with patch("urllib.request.urlopen", side_effect=ConnectionRefusedError()):
+        assert mi._extract_atoms_ollama("x") is None
+
+
+def test_extract_atoms_auto_falls_back_to_gemini_when_ollama_down(mi, monkeypatch):
+    monkeypatch.setattr(mi, "ATOM_PROVIDER", "auto")
+    monkeypatch.setattr(mi, "_extract_atoms_ollama", lambda c: None)  # Ollama down
+    sentinel = [{"text": "from gemini", "category": "fact"}]
+    monkeypatch.setattr(mi, "_extract_atoms_gemini", lambda c: sentinel)
+    assert mi.extract_atoms("x") == sentinel
+
+
+def test_extract_atoms_gemini_provider_skips_ollama(mi, monkeypatch):
+    monkeypatch.setattr(mi, "ATOM_PROVIDER", "gemini")
+    called = {"ollama": False}
+    def _boom(c):
+        called["ollama"] = True
+        return None
+    monkeypatch.setattr(mi, "_extract_atoms_ollama", _boom)
+    monkeypatch.setattr(mi, "_extract_atoms_gemini", lambda c: [{"text": "g", "category": "fact"}])
+    result = mi.extract_atoms("x")
+    assert called["ollama"] is False
+    assert result == [{"text": "g", "category": "fact"}]
+
+
+def test_extract_atoms_ollama_provider_unreachable_returns_empty(mi, monkeypatch):
+    monkeypatch.setattr(mi, "ATOM_PROVIDER", "ollama")
+    monkeypatch.setattr(mi, "_extract_atoms_ollama", lambda c: None)
+    # ollama-only + unreachable → [] (must NOT fall back to Gemini)
+    def _fail_gemini(c):
+        raise AssertionError("ollama-only provider must not fall back to Gemini")
+    monkeypatch.setattr(mi, "_extract_atoms_gemini", _fail_gemini)
+    assert mi.extract_atoms("x") == []
