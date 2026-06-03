@@ -4467,3 +4467,39 @@ def test_promote_atoms_classifier_failure_graceful(mi, tmp_path, monkeypatch):
     content = Path(promoted[0]).read_text()
     assert "kind: knowledge" in content
     db.close()
+
+
+# ── Lazy Gemini client init (#3: key-free indexing/query) ──────────────────────
+
+def test_ensure_client_lazy_constructs_and_caches(mi, monkeypatch):
+    """_ensure_client builds the client on first call and caches it.
+
+    The key check (load_api_key) must happen only when generation is actually
+    needed, so non-generating commands (--query/--rebuild) can run key-free.
+    """
+    calls = []
+    monkeypatch.setattr(mi, "load_api_key", lambda: calls.append(1) or "fake-key")
+    monkeypatch.setattr(mi, "_client", None)
+
+    first = mi._ensure_client()
+    assert first is not None
+    assert mi._client is first          # cached on the module global
+    second = mi._ensure_client()
+    assert second is first              # idempotent — no reconstruction
+    assert len(calls) == 1              # load_api_key consulted exactly once
+
+
+def test_ensure_client_defers_missing_key_failure(mi, monkeypatch):
+    """A missing key fails through _ensure_client, not at startup.
+
+    Regression guard: the old code called load_api_key eagerly in main() and
+    killed every command (incl. --query) when the key was absent. Now the
+    failure only surfaces when generation is actually attempted.
+    """
+    def _boom():
+        raise SystemExit(mi.AUTH_ERROR)
+
+    monkeypatch.setattr(mi, "load_api_key", _boom)
+    monkeypatch.setattr(mi, "_client", None)
+    with pytest.raises(SystemExit):
+        mi._ensure_client()

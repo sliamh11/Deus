@@ -176,6 +176,8 @@ RERANKER_MODEL = os.environ.get("DEUS_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"
 RERANKER_TOP_K = int(os.environ.get("DEUS_RERANKER_CANDIDATES", "20"))
 
 _cross_encoder = None
+# Lazily constructed by _ensure_client() — its sole mutator. Tests that need a
+# client should monkeypatch this directly rather than call _ensure_client.
 _client: genai.Client | None = None
 
 
@@ -187,6 +189,20 @@ def load_api_key() -> str:
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(AUTH_ERROR)
+
+
+def _ensure_client() -> genai.Client:
+    """Lazily construct the Gemini client on first generation call.
+
+    Building the client requires GEMINI_API_KEY (load_api_key sys.exits when it
+    is absent). Deferring construction to the point where generation is actually
+    needed lets key-free commands — --query, --rebuild, --add --no-extract —
+    run on Ollama embeddings alone, instead of dying at startup on a missing key.
+    """
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=load_api_key())
+    return _client
 
 
 def embed(text: str) -> list[float]:
@@ -1814,9 +1830,7 @@ def _generate_with_fallback(
     Returns the response object on first success, or None if all models are
     quota-exhausted.
     """
-    if _client is None:
-        # Keep parity with callers that would otherwise crash on attribute access.
-        raise RuntimeError("Gemini client not initialized (call main() entry first).")
+    client = _ensure_client()
 
     kwargs = {"contents": prompt}
     if config is not None:
@@ -1825,7 +1839,7 @@ def _generate_with_fallback(
     for model in GEN_MODELS:
         for attempt in (1, 2):
             try:
-                return _client.models.generate_content(model=model, **kwargs)
+                return client.models.generate_content(model=model, **kwargs)
             except Exception as exc:
                 if _is_quota_error(exc):
                     if attempt == 1:
@@ -4305,7 +4319,6 @@ def main() -> int:
     if os.getenv("DEUS_EMBED_WARMUP") == "1":
         warmup_embedding_provider()
 
-    global _client
     # Commands that need no API key
     if args.wander is not None:
         cmd_wander(args.wander or [], steps=args.steps, top_k=args.top or 10, graph=args.graph)
@@ -4382,8 +4395,6 @@ def main() -> int:
               f"total={stats['total']}", file=sys.stderr)
         db.close()
         return
-
-    _client = genai.Client(api_key=load_api_key())
 
     if args.compile is not None:
         cmd_compile(None if args.compile == "__AUTO__" else args.compile)
