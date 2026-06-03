@@ -1442,7 +1442,8 @@ def test_rebuild_aborts_if_db_contains_evolution_tables(mi, tmp_path, fresh_vaul
 
     with pytest.raises(SystemExit) as exc_info:
         mi.cmd_rebuild()
-    assert exc_info.value.code == 1
+    # INTERNAL_ERROR, not 1 — exit codes were centralized in #421.
+    assert exc_info.value.code == mi.INTERNAL_ERROR
 
     # DB should NOT have been deleted
     assert mi.DB_PATH.exists()
