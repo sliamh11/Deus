@@ -349,7 +349,61 @@ def _warn_post_tool(message: str) -> None:
     _json({"systemMessage": message})
 
 
+# --- Per-worktree gate isolation -------------------------------------------
+# Gate state (review markers + the verdict store) is keyed per git worktree so
+# parallel gated commits across worktrees don't satisfy each other's gates.
+# Main repo (worktree == repo_root) keeps the flat .claude/ paths (back-compat).
+
+#: Markers namespaced per worktree. All six are accessed as files via _marker()
+#: by session-init and the invalidators (and plan/ai-eng/threat gates also READ
+#: their marker directly), so every one must be namespaced to isolate worktrees.
+#: The verdict store is namespaced SEPARATELY in _verdicts_path() — that is the
+#: extra read path code-review + verification gates decide on. Intentionally
+#: global (NOT here): .admin-merge-approved (one-shot, consumed immediately, run
+#: from a terminal whose cwd may not be the worktree) and .plan-scope.md
+#: (the plan-reviewer/code-reviewer agents read/write it at the flat path).
+_PER_WORKTREE_MARKERS = frozenset({
+    ".plan-reviewed", ".code-reviewed", ".ai-eng-reviewed",
+    ".threat-modeled", ".verified", ".commit-window",
+})
+
+#: Process-local cache of cwd -> worktree resolution (each hook/CLI run is a
+#: fresh, single-threaded process, so a plain dict is safe).
+_WORKTREE_CACHE: dict[tuple[str, str], Path] = {}
+
+#: CLI override: the `mark`/`mark-batch` actions run from a terminal whose cwd
+#: is not guaranteed to be the worktree, so main() sets this (try/finally) to
+#: inject the target worktree. Hooks never set it -> they auto-derive from cwd.
+_WORKTREE_OVERRIDE: Path | None = None
+
+
+def _current_worktree(repo_root: Path) -> Path:
+    """Resolve the worktree for the current process cwd (cached), or repo_root."""
+    cwd = Path(os.getcwd()).resolve(strict=False)
+    key = (str(cwd), str(repo_root))
+    if key not in _WORKTREE_CACHE:
+        _WORKTREE_CACHE[key] = _worktree_for_cwd(cwd, repo_root) or repo_root
+    return _WORKTREE_CACHE[key]
+
+
+def _claude_marker_dir(repo_root: Path) -> Path:
+    """Return the .claude state dir for the active worktree.
+
+    Main repo -> repo_root/.claude (flat, unchanged). A non-main worktree ->
+    repo_root/.claude/worktree-markers/<sha1(worktree)[:12]>. 12 hex = 48 bits;
+    with well under 100 worktrees the collision probability is effectively zero.
+    """
+    wt = _WORKTREE_OVERRIDE or _current_worktree(repo_root)
+    base = repo_root / ".claude"
+    if wt.resolve(strict=False) != repo_root.resolve(strict=False):
+        wt_id = hashlib.sha1(str(wt.resolve(strict=False)).encode()).hexdigest()[:12]
+        return base / "worktree-markers" / wt_id
+    return base
+
+
 def _marker(repo_root: Path, name: str) -> Path:
+    if name in _PER_WORKTREE_MARKERS:
+        return _claude_marker_dir(repo_root) / name
     return repo_root / ".claude" / name
 
 
@@ -2173,10 +2227,15 @@ def run_orchestrator_preflight(event: dict[str, Any], repo_root: Path) -> int:
 
 
 def _verdicts_path(repo_root: Path) -> Path:
-    return repo_root / ".claude" / ".warden-verdicts.json"
+    # Per-worktree: the code-review + verification gates decide on this store
+    # (not the marker files), so it must be isolated alongside the markers.
+    # Main repo resolves to the flat .claude/.warden-verdicts.json (back-compat).
+    return _claude_marker_dir(repo_root) / ".warden-verdicts.json"
 
 
 def _audit_log_path(repo_root: Path) -> Path:
+    # Deliberately GLOBAL (flat), not per-worktree: this is an append-only audit
+    # trail that aggregates verdicts across every worktree. Do not namespace it.
     return repo_root / ".claude" / ".warden-log"
 
 
@@ -3098,6 +3157,11 @@ def build_parser() -> argparse.ArgumentParser:
     mark_parser.add_argument("mark_verdict", choices=["SHIP", "TRIVIAL"])
     mark_parser.add_argument("mark_reason")
     mark_parser.add_argument("--repo-root", default=Path(__file__).resolve().parents[1])
+    mark_parser.add_argument(
+        "--worktree-root", default=None,
+        help="Target worktree for the marker/verdict bucket (defaults to the "
+             "worktree of the current cwd).",
+    )
 
     mark_batch_parser = subparsers.add_parser(
         "mark-batch",
@@ -3115,6 +3179,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="One or more '<marker_name>:<verdict>:<reason>' triplets.",
     )
     mark_batch_parser.add_argument("--repo-root", default=Path(__file__).resolve().parents[1])
+    mark_batch_parser.add_argument(
+        "--worktree-root", default=None,
+        help="Target worktree for the marker/verdict bucket (defaults to the "
+             "worktree of the current cwd).",
+    )
 
     for name in ("install", "check", "uninstall"):
         sub = subparsers.add_parser(name)
@@ -3131,6 +3200,32 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _with_cli_worktree(repo_root: Path, worktree_root_arg: str | None, fn):
+    """Run a CLI mark action with ``_WORKTREE_OVERRIDE`` set so marker + verdict
+    writes land in the correct per-worktree bucket regardless of the process cwd.
+    Restores the previous value on exit so direct test calls don't leak state.
+    """
+    global _WORKTREE_OVERRIDE
+    if worktree_root_arg:
+        wt = Path(worktree_root_arg).resolve(strict=False)
+    else:
+        wt = _worktree_for_cwd(Path.cwd(), repo_root)
+        if wt is None:
+            print(
+                "[warden-mark] WARNING: cwd is not inside a worktree of "
+                f"{repo_root}; markers/verdicts will use the main-repo (flat) "
+                "bucket. Pass --worktree-root to target a specific worktree.",
+                file=sys.stderr,
+            )
+            wt = repo_root
+    prev = _WORKTREE_OVERRIDE  # nested calls are safe: prev is restored on exit
+    _WORKTREE_OVERRIDE = wt
+    try:
+        return fn()
+    finally:
+        _WORKTREE_OVERRIDE = prev
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.action in {"install", "check", "uninstall"}:
@@ -3139,16 +3234,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "run":
         return run(args)
     if args.action == "mark":
-        return mark_warden(
-            args.marker_name,
-            args.mark_verdict,
-            args.mark_reason,
-            Path(args.repo_root).resolve(strict=False),
+        repo_root = Path(args.repo_root).resolve(strict=False)
+        return _with_cli_worktree(
+            repo_root,
+            args.worktree_root,
+            lambda: mark_warden(
+                args.marker_name, args.mark_verdict, args.mark_reason, repo_root,
+            ),
         )
     if args.action == "mark-batch":
-        return mark_batch_wardens(
-            args.specs,
-            Path(args.repo_root).resolve(strict=False),
+        repo_root = Path(args.repo_root).resolve(strict=False)
+        return _with_cli_worktree(
+            repo_root,
+            args.worktree_root,
+            lambda: mark_batch_wardens(args.specs, repo_root),
         )
     if args.action == "approve-admin-merge":
         return approve_admin_merge(

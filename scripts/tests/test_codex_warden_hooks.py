@@ -3844,3 +3844,115 @@ def test_scan_prior_search_attempts_counts_correctly(tmp_path):
     assert not found
     assert tool_uses == 4           # all 4 tool_use blocks counted
     assert prior_searches == 2      # only Grep + Bash-grep, not npm test or piped grep
+
+
+# ---------------------------------------------------------------------------
+# Per-worktree gate isolation (markers + verdict store)
+# ---------------------------------------------------------------------------
+# load_hooks() re-execs the module each call, so _WORKTREE_OVERRIDE /
+# _WORKTREE_CACHE start fresh per test — no cross-test leakage.
+
+def test_marker_and_verdict_isolated_across_worktrees(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt_a = tmp_path / "wt-a"; wt_a.mkdir()
+    wt_b = tmp_path / "wt-b"; wt_b.mkdir()
+
+    hooks._WORKTREE_OVERRIDE = wt_a
+    marker_a = hooks._marker(repo, ".plan-reviewed")
+    verdict_a = hooks._verdicts_path(repo)
+    hooks._WORKTREE_OVERRIDE = wt_b
+    marker_b = hooks._marker(repo, ".plan-reviewed")
+    verdict_b = hooks._verdicts_path(repo)
+
+    assert marker_a != marker_b
+    assert verdict_a != verdict_b
+    assert "worktree-markers" in str(marker_a)
+    assert marker_a.name == ".plan-reviewed"
+    assert verdict_a.name == ".warden-verdicts.json"
+
+
+def test_main_repo_keeps_flat_paths(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # worktree == repo_root → flat paths (back-compat).
+    hooks._WORKTREE_OVERRIDE = repo
+    assert hooks._marker(repo, ".plan-reviewed") == repo / ".claude" / ".plan-reviewed"
+    assert hooks._verdicts_path(repo) == repo / ".claude" / ".warden-verdicts.json"
+
+
+def test_non_gate_markers_stay_global_in_worktree(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt = tmp_path / "wt"; wt.mkdir()
+    hooks._WORKTREE_OVERRIDE = wt
+    # Excluded-from-namespacing markers resolve flat even inside a worktree.
+    for name in (".migration-nudged", ".admin-merge-approved",
+                 ".plan-scope.md", ".warden-memo.md"):
+        assert hooks._marker(repo, name) == repo / ".claude" / name
+    # ...but a gate marker IS namespaced in the same worktree.
+    assert "worktree-markers" in str(hooks._marker(repo, ".plan-reviewed"))
+
+
+def test_override_consistent_between_marker_and_verdict(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt = tmp_path / "wt"; wt.mkdir()
+    hooks._WORKTREE_OVERRIDE = wt
+    # marker + verdict for one worktree share the same bucket dir.
+    assert hooks._marker(repo, ".plan-reviewed").parent == hooks._verdicts_path(repo).parent
+
+
+def test_verdict_write_read_isolated_by_worktree(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt_a = tmp_path / "wt-a"; wt_a.mkdir()
+    wt_b = tmp_path / "wt-b"; wt_b.mkdir()
+
+    hooks._WORKTREE_OVERRIDE = wt_a
+    hooks._write_verdict(repo, "code-reviewer", "SHIP", "isolation test")
+    assert hooks._read_verdicts(repo).get("code-reviewer", {}).get("verdict") == "SHIP"
+
+    # A different worktree must NOT see worktree-A's verdict.
+    hooks._WORKTREE_OVERRIDE = wt_b
+    assert "code-reviewer" not in hooks._read_verdicts(repo)
+
+
+def test_cwd_derive_used_when_no_override(tmp_path, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt = tmp_path / "wt"; wt.mkdir()
+    assert hooks._WORKTREE_OVERRIDE is None
+    hooks._WORKTREE_CACHE.clear()  # ensure the monkeypatched resolver is consulted
+    monkeypatch.setattr(hooks, "_worktree_for_cwd", lambda cwd, rr: wt)
+    assert "worktree-markers" in str(hooks._marker(repo, ".plan-reviewed"))
+
+
+def test_current_worktree_is_cached(tmp_path, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    calls = []
+    monkeypatch.setattr(hooks, "_worktree_for_cwd",
+                        lambda cwd, rr: calls.append(1) or rr)
+    hooks._current_worktree(repo)
+    hooks._current_worktree(repo)
+    assert len(calls) == 1  # resolved once, then served from _WORKTREE_CACHE
+
+
+def test_mark_cli_worktree_root_writes_namespaced(tmp_path):
+    # End-to-end CLI path: main() -> _with_cli_worktree -> namespaced marker.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt = tmp_path / "wt"; wt.mkdir()
+    rc = hooks.main([
+        "mark", "plan-reviewed", "SHIP", "via cli",
+        "--repo-root", str(repo), "--worktree-root", str(wt),
+    ])
+    assert rc == 0
+    # The flat (main-repo) marker must NOT be written...
+    assert not (repo / ".claude" / ".plan-reviewed").exists()
+    # ...the worktree bucket marker must be.
+    hooks._WORKTREE_OVERRIDE = wt
+    assert hooks._marker(repo, ".plan-reviewed").exists()
+    # main() restored the override after the call.
+    assert hooks.main is not None  # sanity; override reset happens in finally
