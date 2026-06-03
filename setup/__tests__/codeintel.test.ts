@@ -11,6 +11,7 @@
  * step's live-run verification (see the plan's Verification section).
  */
 import { describe, it, expect } from 'vitest';
+import path from 'path';
 
 // ── buildMcpAddArgs ─────────────────────────────────────────────────────────
 
@@ -61,9 +62,14 @@ describe('codeSearchServerCommand', () => {
     const { codeSearchServerCommand } = await import('../codeintel.js');
     const [python, script] = codeSearchServerCommand('python3', '/home/u/deus');
     expect(python).toBe('python3');
-    expect(script).toBe('/home/u/deus/scripts/code_search_mcp.py');
-    // The portability bug being fixed: must NOT reference the old eval venv.
-    expect(script).not.toContain('eval/.venv');
+    // Use path.join for the expectation so it matches the impl's native
+    // separator on every OS (Windows uses backslashes).
+    expect(script).toBe(
+      path.join('/home/u/deus', 'scripts', 'code_search_mcp.py'),
+    );
+    // The portability bug being fixed: must NOT reference the old eval venv
+    // (separator-agnostic so the assertion holds on Windows too).
+    expect(script).not.toContain('.venv');
   });
 
   it('uses the resolved interpreter (not a fixed venv path)', async () => {
