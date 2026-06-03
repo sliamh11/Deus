@@ -9,6 +9,8 @@ dist/
 .claude/.code-reviewed
 .claude/.threat-modeled
 .claude/.warden-verdicts.json.bak-*
+# Per-worktree gate state (markers + verdict store, namespaced by worktree)
+.claude/worktree-markers/
 
 # Warden config (user-local toggle state and custom instructions)
 .claude/wardens/config.json
