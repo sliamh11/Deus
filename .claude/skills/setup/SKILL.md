@@ -312,6 +312,44 @@ Tell the user: "Model `{MODEL}` is already pulled — no action needed."
 Tell the user: "Model pull failed (see ERROR field). You can retry with `ollama pull {MODEL}` and set `OLLAMA_MODEL={MODEL}` in `~/.config/deus/.env` manually."
 
 
+## 7c. Code Intelligence (Optional)
+
+Run `npx tsx setup/index.ts --step codeintel` and parse the status block.
+
+This registers the two code-intelligence MCP servers Deus uses during
+development — **codegraph** (third-party npm global) and **code-search**
+(first-party semantic search) — via the official `claude mcp add --scope user`
+CLI. It is **optional and non-fatal**: each server is best-effort and skips
+cleanly if its prerequisites are missing. Run it **after** step 7b — code-search
+builds its index using Ollama embeddings.
+
+> **Note:** codegraph installs the third-party package `@colbymchenry/codegraph`
+> globally via npm (version-pinned). This is the standard Deus code-intelligence
+> tool; if you prefer not to auto-install it, skip this step and install it
+> manually later.
+
+Per-server fields are `CODEGRAPH` / `CODE_SEARCH` (`success` | `skipped` with a
+`*_REASON`), `*_MCP` (`registered` | `failed` | `skipped`), and `*_INDEX`
+(`started` | `failed` | `skipped`). The build logs live in `LOG_DIR`.
+
+**If STATUS=success or partial:**
+Tell the user which servers registered. For any `*_INDEX=started`, note the
+index is building in the background (logs in `LOG_DIR`) and will be ready
+shortly. They take effect in new Claude Code sessions.
+
+**Common skip reasons (all non-fatal — report and continue):**
+- `CODEGRAPH_REASON=npm_not_installed` → "codegraph needs Node/npm. Install Node, then re-run `npx tsx setup/index.ts --step codeintel`."
+- `CODEGRAPH_REASON=install_failed` → "codegraph install failed (often a global-npm permissions issue). Run manually: `npm install -g @colbymchenry/codegraph` and re-run this step."
+- `CODEGRAPH_REASON=binary_unverified` → "codegraph installed but didn't run. Often the npm global bin dir isn't on PATH — check `npm bin -g` and add it to your shell PATH, then re-run this step. (Also covers unsupported platforms.) Skipped cleanly — no broken MCP entry left behind."
+- `CODE_SEARCH_REASON=windows_unsupported` → "code-search is macOS/Linux only (needs sqlite_vec + Ollama). Skipped on Windows."
+- `CODE_SEARCH_REASON=sqlite_vec_missing` → "code-search needs the `sqlite_vec` Python package. Run the `memory` step first (`npx tsx setup/index.ts --step memory`), then re-run this step."
+- `CODE_SEARCH_REASON=python_not_found` → "No Python found. Install Python 3, then re-run this step."
+- `CODE_SEARCH_INDEX=skipped` with `CODE_SEARCH=success` → "code-search registered but its index isn't built (Ollama absent). After installing Ollama: `python3 scripts/code_search.py reindex .`"
+
+**Verify (optional):** `claude mcp list` should show `codegraph` and/or
+`code-search` once their background indexes finish.
+
+
 ## 8. Personality Kickstarter (Optional)
 
 AskUserQuestion: "Want to load curated behavioral defaults into your Deus config?" Options:

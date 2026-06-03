@@ -23,6 +23,7 @@ const STEPS: Record<
   cli: () => import('./cli.js'),
   verify: () => import('./verify.js'),
   ollama: () => import('./ollama.js'),
+  codeintel: () => import('./codeintel.js'),
   'smoke-test': () => import('./smoke-test.js'),
 };
 
