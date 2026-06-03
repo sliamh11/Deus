@@ -58,9 +58,9 @@ HEALTH_LOG_PATH = Path("~/.deus/memory_health.jsonl").expanduser()
 # "ollama" uses Ollama only.  "gemini" skips Ollama entirely.
 ENTITY_PROVIDER = os.environ.get("DEUS_ENTITY_PROVIDER", "auto")
 
-# Atom extraction provider: same semantics as ENTITY_PROVIDER. "auto" (default)
-# tries Ollama first so atom extraction (--extract / --add) works without a
-# Gemini key; falls back to the Gemini cascade when Ollama is unreachable.
+# Atom extraction provider (LIA-170): same semantics as ENTITY_PROVIDER. "auto"
+# (default) tries Ollama first so atom extraction (--extract / --add) works
+# without a Gemini key; falls back to the Gemini cascade when Ollama is down.
 ATOM_PROVIDER = os.environ.get("DEUS_ATOM_PROVIDER", "auto")
 
 
@@ -1913,6 +1913,7 @@ def _extract_atoms_ollama(content: str) -> "list[dict] | None":
 
     prompt = _atom_prompt(content)
     ollama_url = os.environ.get("DEUS_OLLAMA_URL", "http://localhost:11434")
+    # DEUS_OLLAMA_ATOM_MODEL: per-task Ollama model override (LIA-170).
     ollama_model = os.environ.get("DEUS_OLLAMA_ATOM_MODEL", "gemma4:e4b")
     body = json.dumps({
         "model": ollama_model,
