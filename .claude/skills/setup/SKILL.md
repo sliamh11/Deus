@@ -273,6 +273,24 @@ if failed:
 
 **After installing:** Tell the user that `/compress`, `/resume`, `/checkpoint`, `/preserve`, `/preferences`, and `/project-settings` are now available in any project directory.
 
+## 6d. Code Intelligence (codegraph + code_search)
+
+Install and register Deus's two code-intelligence MCP servers so they work in **every** project — not just the Deus repo — and reproducibly on a fresh clone. **Non-fatal:** missing prerequisites warn and continue.
+
+```bash
+bash scripts/setup_code_intel.sh
+```
+
+- **codegraph** — per-repo structural call graph (npm global `@colbymchenry/codegraph`). A global developer tool, like Node/Docker/Ollama — this is the one sanctioned public-registry install outside step 0; it is **not** channel code.
+- **code-search** — repo-native semantic search (`scripts/code_search_mcp.py`), registered against this repo's venv python.
+- Both register at **user scope** (`~/.claude.json`) → available in all projects. Idempotent — skips anything already registered.
+
+**Prerequisites (warn, not fatal):** codegraph needs Node.js; code_search needs the eval venv + Ollama. Re-run this step after installing any that were missing.
+
+**Note:** codegraph builds a **per-repo** index, so its tools only return results in a project that has been indexed (`codegraph init . && codegraph index` inside that project); code_search indexes on demand. A `deus init` command that automates per-project onboarding for both is added in a follow-up.
+
+**After registering:** restart the session (MCP servers load at session start only) and tell the user codegraph + code_search are now available in every project.
+
 ## 7. Verify
 
 Run `npx tsx setup/index.ts --step verify` and parse the status block.

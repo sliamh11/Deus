@@ -533,6 +533,8 @@ Host-side tools that give agents structural and semantic awareness of the codeba
 | **Understand-Anything** | "How does this whole project fit together?" / "Walk me through the architecture." | Claude Code plugin. Interactive knowledge graph -- `/understand` for full analysis, `/understand-chat` for Q&A, `/understand-dashboard` for visualization. | Human operator (learning/onboarding) |
 | **Mermaid** | "Show me a diagram of X." | MCP server. Diagram generation from Mermaid DSL. | architecture-snapshot, any agent producing visual output |
 
+> **Setup & reproducibility:** CodeGraph and code_search are installed and registered as **user-scope** MCP servers by `/setup` (`scripts/setup_code_intel.sh`) — so a fresh clone reproduces them in every project, not just this repo. CodeGraph keeps a **per-repo** index (`codegraph init && codegraph index`); code_search indexes on demand.
+
 ### Code exploration protocol
 
 Agents follow a three-stage pattern when exploring code. Each stage narrows the search space for the next:
