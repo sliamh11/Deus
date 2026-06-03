@@ -46,7 +46,7 @@
     "better-sqlite3": "^12.9.0",
     "cron-parser": "^5.5.0",
     "google-auth-library": "^9.15.1",
-    "googleapis": "^146.0.0",
+    "googleapis": "^173.0.0",
     "minimatch": "^10.2.5",
     "pino": "^10.3.1",
     "pino-pretty": "^13.0.0",
