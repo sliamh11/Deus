@@ -247,31 +247,32 @@ Do not leave open-ended parity gaps implied only by comments or vague prose.
   interaction.
 - Treat reflections as soft guidance learned from past misses — weigh them, don't obey blindly.
 
-### Quality gates (replaces hooks)
+### Quality gates
 
-Claude Code enforces these via hooks; in editors without hooks, follow them manually.
+Claude Code enforces plan-review, code-review, and verification mechanically through
+PreToolUse/Stop hooks. How you get the same gates depends on whether your editor has a hook
+system:
 
-**Before editing source code (replaces plan-review gate):**
-For non-trivial changes, describe your plan, then run:
+**Codex CLI (has hooks) — install the bridge once per repo.** `codex_warden_hooks.py` mirrors
+the Deus Warden gates into Codex's own `hooks.json`, so they are enforced mechanically:
 ```bash
-python3 ~/Deus/scripts/codex_warden_hooks.py plan-review "<plan summary>" --repo-root "$(pwd)"
+python3 ~/deus/scripts/codex_warden_hooks.py install --repo-root "$(pwd)"
+python3 ~/deus/scripts/codex_warden_hooks.py check   --repo-root "$(pwd)"   # confirm active
 ```
-Wait for VERDICT: SHIP before editing. On REVISE, fix and re-run. Trivial changes (typos,
-comments, single-line fixes) can bypass with stated justification.
+After this the hooks block edits/commits until the matching reviewer has approved — they prompt
+you to run the reviewer and record its verdict, exactly as Claude Code's hooks do. You do not
+invoke the gates by hand. (The `/add-codex` setup skill wires this for you.)
 
-**Before committing (replaces code-review gate):**
-```bash
-python3 ~/Deus/scripts/codex_warden_hooks.py code-review --repo-root "$(pwd)"
-```
-Reviews the staged diff. Wait for SHIP before committing.
+**Zed / other ACP editors (no hook system) — apply the gates as discipline.** Nothing enforces
+them for you, so before each step:
+- **Before non-trivial source edits:** state your plan and critique it (yourself, or via a
+  sub-agent) before touching code. Typos, comments, and single-line fixes are exempt.
+- **Before committing:** review the full staged diff for correctness, security, and scope.
+- **Before claiming work is done:** re-run the build/tests and confirm the change does what was
+  asked.
 
-**Before claiming work is done (replaces verification gate):**
-```bash
-python3 ~/Deus/scripts/codex_warden_hooks.py verify --repo-root "$(pwd)"
-```
-
-Always show the commit message and wait for user approval before committing. Never push
-directly to main — create a feature branch and PR.
+Always show the commit message and wait for user approval before committing. Never push directly
+to `main` — create a feature branch and PR.
 
 ### Editor session lifecycle
 
@@ -284,7 +285,7 @@ VAULT=$(python3 -c "import json,os; print(os.path.expanduser(json.load(open(os.p
 
 **Start of session (replaces /resume):**
 ```bash
-python3 ~/Deus/scripts/memory_indexer.py --recent 3
+python3 ~/deus/scripts/memory_indexer.py --recent 3
 ```
 Read the output plus any today's checkpoint: `ls -t "$VAULT/Checkpoints/$(date +%Y-%m-%d)"-*.md 2>/dev/null | head -1`.
 Summarize ongoing context and pending tasks before starting work.
@@ -300,8 +301,8 @@ Write a checkpoint to `$VAULT/Checkpoints/YYYY-MM-DD-HH.md` with frontmatter:
    what happened, files modified, and a pending tasks checklist.
 2. Index and extract atoms:
    ```bash
-   python3 ~/Deus/scripts/memory_indexer.py --add "<full path to log>"
-   python3 ~/Deus/scripts/memory_indexer.py --extract "<full path to log>"
+   python3 ~/deus/scripts/memory_indexer.py --add "<full path to log>"
+   python3 ~/deus/scripts/memory_indexer.py --extract "<full path to log>"
    ```
 3. Update `$VAULT/CLAUDE.md` pending tasks if any changed.
 
