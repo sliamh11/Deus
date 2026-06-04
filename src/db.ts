@@ -1648,34 +1648,27 @@ export function logPipelineEvent(
   identifier: string,
   eventType: string,
   detail?: string,
-): number | undefined {
-  const rowid = insertPipelineEventRow(issueId, identifier, eventType, detail);
-
-  // Strangler seam (Phase 2): the authoritative write above stays inline; we
-  // ALSO emit so the event-hub ObservabilitySink can (later) own the durable
-  // write. Best-effort + success-gated: emit only when the row landed, never
-  // block the synchronous write path, never let a bus failure surface to the
-  // 11 callers that rely on this never throwing. The outer try/catch makes the
-  // no-throw guarantee structural (covers a synchronous throw from the bus
-  // prologue); the inner .catch swallows async listener rejections.
-  if (rowid !== undefined) {
-    try {
-      void getBus()
-        .emit({
-          type: 'pipeline.transition',
-          source: 'db.logPipelineEvent',
-          actor: 'system',
-          correlationId: { kind: 'issue', id: issueId, identifier },
-          ts: new Date().toISOString(),
-          payload: { eventType, detail },
-        })
-        .catch(() => {});
-    } catch {
-      /* emit must never throw into the write path */
-    }
+): void {
+  // Emit-only (Phase-3 cutover, LIA-166): the ObservabilitySink owns the durable
+  // write off this `pipeline.transition`. notifyPipelineStep does NOT route here —
+  // it inserts synchronously (it needs the rowid + the row present before its
+  // updateUnifiedComment read). Emit is unconditional: the sink is the row-landing.
+  // Never-throw is load-bearing (callers rely on it): the outer try/catch is a
+  // structural no-throw guarantee; the inner .catch swallows async listener rejections.
+  try {
+    void getBus()
+      .emit({
+        type: 'pipeline.transition',
+        source: 'db.logPipelineEvent',
+        actor: 'system',
+        correlationId: { kind: 'issue', id: issueId, identifier },
+        ts: new Date().toISOString(),
+        payload: { eventType, detail },
+      })
+      .catch(() => {});
+  } catch {
+    /* emit must never throw into the write path */
   }
-
-  return rowid;
 }
 
 export function updatePipelineEventStatusSummary(

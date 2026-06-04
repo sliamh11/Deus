@@ -145,6 +145,8 @@ renaming a repo-owned skill, update this table in the same change.
 
 | Skill | When to Use |
 |---|---|
+| `/add-asana` | Add Asana project management MCP integration (read/write tasks & projects) |
+| `/add-claude-context` | Deprecated — replaced by `scripts/code_search.py`; do not use |
 | `/add-codex` | Add OpenAI/Codex as a backend |
 | `/add-compact` | Add the backend-neutral `/compact` session command |
 | `/add-discord` | Add Discord as a channel |
@@ -152,6 +154,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/add-gcal` | Add Google Calendar integration (list, create, update events) |
 | `/add-gmail` | Add Gmail as a tool or channel |
 | `/add-image-vision` | Add image attachment vision to Deus agents |
+| `/add-linear` | Add Linear project management MCP integration (read/write issues, projects, cycles) |
 | `/add-listen-hotkey` | Add a global hotkey for `deus listen` |
 | `/add-llama-cpp` | Install and verify optional local `llama.cpp` generation |
 | `/add-ollama-tool` | Add Ollama as an MCP tool for local model calls |
@@ -172,7 +175,9 @@ renaming a repo-owned skill, update this table in the same change.
 | `/customize` | Add channels, integrations, or behavior changes |
 | `/debug` | Debug containers, logs, auth, and runtime issues |
 | `/deep-research` | Multi-stage research pipeline — classifies intent (shallow/deep/creative), fans out lit-scout + brainstormer, synthesizes with citations |
+| `/design-to-dev` | Orchestrate frontend implementation from design wireframes (Linear specs + parallel worktrees) |
 | `/handoff` | Write a structured handoff document so the next agent starts with context |
+| `/onboard` | Onboard the current project into Deus code intelligence (codegraph + code_search indexing) |
 | `/preferences` | View or modify Deus user preferences |
 | `/preserve` | Save durable memories from the current conversation |
 | `/project-settings` | View or modify external project memory settings |
@@ -183,8 +188,6 @@ renaming a repo-owned skill, update this table in the same change.
 | `/use-local-whisper` | Switch voice transcription to local whisper.cpp |
 | `/wardens` | View, toggle, and configure warden quality gates |
 | `/x-integration` | Set up or use X/Twitter integration |
-| `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
-| `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
 
 ## Development Workflow
 

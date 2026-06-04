@@ -16,6 +16,8 @@ import {
   getTaskById,
   getSession,
   logPipelineEvent,
+  insertPipelineEventRow,
+  getPipelineEvents,
   setSession,
   setRegisteredGroup,
   storeChatMetadata,
@@ -35,25 +37,27 @@ beforeEach(() => {
   _initTestDatabase();
 });
 
-describe('logPipelineEvent -> pipeline.transition emit (Phase 2 strangler seam)', () => {
-  it('emits one pipeline.transition envelope on a successful insert; rowid unchanged', () => {
+describe('logPipelineEvent -> pipeline.transition emit (Phase 3 cutover: emit-only)', () => {
+  it('emits one pipeline.transition envelope and does NOT insert inline', () => {
     const seen: EventEnvelope[] = [];
     const unsub = getBus().subscribe('pipeline.transition', (env) => {
       seen.push(env);
     });
     try {
-      const rowid = logPipelineEvent(
+      // Phase 3: logPipelineEvent is emit-only and returns void. The durable
+      // write is owned by the ObservabilitySink (not registered in this test),
+      // so logPipelineEvent itself must NOT insert a row.
+      const ret = logPipelineEvent(
         'ISS-emit',
         'LIA-emit',
         'agent_completed',
         'done',
       );
+      expect(ret).toBeUndefined();
+      expect(getPipelineEvents({ issueId: 'ISS-emit' })).toHaveLength(0);
 
-      // The added emit does not change the return contract.
-      expect(typeof rowid).toBe('number');
-
-      // The bus delivers synchronously up to its first await, so the listener
-      // has already run by the time logPipelineEvent returns — no await needed.
+      // Emit is unconditional now (no rowid gate). The bus delivers synchronously
+      // up to its first await, so the listener has already run — no await needed.
       expect(seen).toHaveLength(1);
       const env = seen[0];
       expect(env.type).toBe('pipeline.transition');
@@ -817,14 +821,23 @@ describe('linear_issue_cache', () => {
 });
 
 describe('circuit breaker', () => {
+  // Post-Phase-3 (LIA-166): rows are written by insertPipelineEventRow (the sink's
+  // and notifyPipelineStep's writer); logPipelineEvent is emit-only. These tests
+  // seed rows via the actual writer so they exercise getConsecutiveFailCount /
+  // getLastFailTime against real rows (independent of any registered sink).
   describe('getConsecutiveFailCount', () => {
     it('returns 0 when no events exist', () => {
       expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(0);
     });
 
     it('counts consecutive failures', () => {
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'CI failed');
-      logPipelineEvent(
+      insertPipelineEventRow(
+        'issue-1',
+        'LIA-1',
+        'automerge_failed',
+        'CI failed',
+      );
+      insertPipelineEventRow(
         'issue-1',
         'LIA-1',
         'automerge_failed',
@@ -834,10 +847,10 @@ describe('circuit breaker', () => {
     });
 
     it('resets count after agent_completed', () => {
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 2');
-      logPipelineEvent('issue-1', 'LIA-1', 'agent_completed');
-      logPipelineEvent(
+      insertPipelineEventRow('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'automerge_failed', 'fail 2');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'agent_completed');
+      insertPipelineEventRow(
         'issue-1',
         'LIA-1',
         'automerge_failed',
@@ -847,24 +860,34 @@ describe('circuit breaker', () => {
     });
 
     it('resets count after circuit_breaker_reset', () => {
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 2');
-      logPipelineEvent('issue-1', 'LIA-1', 'circuit_breaker_reset', 'manual');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'automerge_failed', 'fail 2');
+      insertPipelineEventRow(
+        'issue-1',
+        'LIA-1',
+        'circuit_breaker_reset',
+        'manual',
+      );
       expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(0);
     });
 
     it('counts agent failures separately from automerge failures', () => {
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'CI fail');
-      logPipelineEvent('issue-1', 'LIA-1', 'agent_failed', 'agent crash');
-      logPipelineEvent('issue-1', 'LIA-1', 'agent_failed', 'agent crash 2');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'automerge_failed', 'CI fail');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'agent_failed', 'agent crash');
+      insertPipelineEventRow(
+        'issue-1',
+        'LIA-1',
+        'agent_failed',
+        'agent crash 2',
+      );
       expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(1);
       expect(getConsecutiveFailCount('issue-1', 'agent_failed')).toBe(2);
     });
 
     it('isolates counts between different issues', () => {
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail');
-      logPipelineEvent('issue-2', 'LIA-2', 'automerge_failed', 'fail');
-      logPipelineEvent('issue-2', 'LIA-2', 'automerge_failed', 'fail 2');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'automerge_failed', 'fail');
+      insertPipelineEventRow('issue-2', 'LIA-2', 'automerge_failed', 'fail');
+      insertPipelineEventRow('issue-2', 'LIA-2', 'automerge_failed', 'fail 2');
       expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(1);
       expect(getConsecutiveFailCount('issue-2', 'automerge_failed')).toBe(2);
     });
@@ -876,29 +899,44 @@ describe('circuit breaker', () => {
     });
 
     it('returns the most recent event time', () => {
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 2');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'automerge_failed', 'fail 2');
       const lastTime = getLastFailTime('issue-1', 'automerge_failed');
       expect(lastTime).not.toBeNull();
       expect(typeof lastTime).toBe('string');
     });
 
     it('returns time for correct event type only', () => {
-      logPipelineEvent('issue-1', 'LIA-1', 'agent_failed', 'crash');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'agent_failed', 'crash');
       expect(getLastFailTime('issue-1', 'automerge_failed')).toBeNull();
       expect(getLastFailTime('issue-1', 'agent_failed')).not.toBeNull();
     });
 
     it('returns null after reset clears the window', () => {
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
-      logPipelineEvent('issue-1', 'LIA-1', 'circuit_breaker_reset', 'manual');
+      insertPipelineEventRow('issue-1', 'LIA-1', 'automerge_failed', 'fail 1');
+      insertPipelineEventRow(
+        'issue-1',
+        'LIA-1',
+        'circuit_breaker_reset',
+        'manual',
+      );
       expect(getLastFailTime('issue-1', 'automerge_failed')).toBeNull();
     });
 
     it('returns time only from current failure epoch', () => {
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'old fail');
-      logPipelineEvent('issue-1', 'LIA-1', 'agent_completed');
-      logPipelineEvent('issue-1', 'LIA-1', 'automerge_failed', 'new fail');
+      insertPipelineEventRow(
+        'issue-1',
+        'LIA-1',
+        'automerge_failed',
+        'old fail',
+      );
+      insertPipelineEventRow('issue-1', 'LIA-1', 'agent_completed');
+      insertPipelineEventRow(
+        'issue-1',
+        'LIA-1',
+        'automerge_failed',
+        'new fail',
+      );
       const lastTime = getLastFailTime('issue-1', 'automerge_failed');
       expect(lastTime).not.toBeNull();
       expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(1);
