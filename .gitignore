@@ -8,6 +8,9 @@ dist/
 .claude/.plan-reviewed
 .claude/.code-reviewed
 .claude/.threat-modeled
+# Admin-merge gate markers (host-local; contain absolute worktree paths)
+.claude/.admin-merge-approved
+.claude/.admin-merge-standing
 .claude/.warden-verdicts.json.bak-*
 # Per-worktree gate state (markers + verdict store, namespaced by worktree)
 .claude/worktree-markers/
