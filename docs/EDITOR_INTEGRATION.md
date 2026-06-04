@@ -46,6 +46,10 @@ but with Deus's brain."
 
 ## Zed setup
 
+> **Automate this:** run `/add-editor` to perform the steps below interactively (path
+> resolution, precondition checks, config merge, and the employer-machine containment branch).
+> The manual steps follow for reference.
+
 Add the Claude ACP agent and forward Deus's two servers via `context_servers`.
 `claude-acp` is Zed's built-in ACP registry entry; the adapter auto-installs on
 first use (one-time network fetch). Use absolute paths — some MCP clients do not
