@@ -125,6 +125,7 @@ import {
   initLinearContext,
   deriveFetchTimeout,
   validateLinearIdentifier,
+  classifyRunFailure,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
@@ -1617,5 +1618,27 @@ describe('validateLinearIdentifier', () => {
     expect(() => validateLinearIdentifier(id)).toThrow(
       `Invalid Linear identifier: "${id}"`,
     );
+  });
+});
+
+describe('classifyRunFailure (LIA-168)', () => {
+  // A container hard-timeout is infra, not an agent failure → route to Manual
+  // Review, never increment the circuit breaker.
+  it.each([
+    'Container timed out after 1800000ms',
+    'Container timed out after 30000ms',
+  ])('classifies the timeout error as infra-timeout: %s', (err) => {
+    expect(classifyRunFailure(err)).toBe('infra-timeout');
+  });
+
+  // Everything else is a genuine agent failure (keeps existing handling).
+  it.each([
+    ['linear API error', 'linear 500'],
+    ['empty error', ''],
+    ['non-zero exit', 'Container exited with code 1'],
+    ['bare phrase without prefix', 'the request timed out'],
+    ['unknown error', 'Unknown error'],
+  ])('classifies %s as agent-failure', (_label, err) => {
+    expect(classifyRunFailure(err)).toBe('agent-failure');
   });
 });

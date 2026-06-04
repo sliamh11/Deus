@@ -407,6 +407,25 @@ def _marker(repo_root: Path, name: str) -> Path:
     return repo_root / ".claude" / name
 
 
+def _marker_dir_for_worktree(repo_root: Path, worktree_root: Path) -> Path:
+    """Like _claude_marker_dir but for an EXPLICIT worktree (no cwd derivation).
+
+    Mirrors _claude_marker_dir's namespacing exactly so callers resolve the
+    SAME per-worktree bucket the code-review/verification gates write to: the
+    main repo -> flat .claude; any other worktree ->
+    .claude/worktree-markers/<sha1(worktree)[:12]>. The admin-merge standing
+    gate uses this to read the verdict store of the worktree being merged
+    deterministically, instead of relying on _current_worktree()'s os.getcwd().
+    """
+    base = repo_root / ".claude"
+    if worktree_root.resolve(strict=False) != repo_root.resolve(strict=False):
+        wt_id = hashlib.sha1(
+            str(worktree_root.resolve(strict=False)).encode()
+        ).hexdigest()[:12]
+        return base / "worktree-markers" / wt_id
+    return base
+
+
 # ---------------------------------------------------------------------------
 # Codegraph-first gate (LIA-121 / RETRO-2026-05-29-01)
 # ---------------------------------------------------------------------------
@@ -898,6 +917,16 @@ def _admin_merge_marker(repo_root: Path) -> Path:
     return _marker(repo_root, ".admin-merge-approved")
 
 
+def _admin_merge_standing_marker(repo_root: Path) -> Path:
+    """Path to the global/flat standing-grant marker.
+
+    NOT per-worktree: a standing autonomy grant is host-wide and time-boxed
+    (records the activating worktree for audit only). Intentionally absent from
+    _PER_WORKTREE_MARKERS and the session-init clear list -- bounded by expiry.
+    """
+    return repo_root / ".claude" / ".admin-merge-standing"
+
+
 def _active_script_path(repo_root: Path) -> Path:
     configured = os.environ.get("DEUS_CODEX_HOOK_SCRIPT_PATH")
     if configured:
@@ -931,6 +960,99 @@ def approve_admin_merge(command: str, repo_root: Path) -> int:
         encoding="utf-8",
     )
     print(f"Approved one admin merge command for {repo_root}")
+    return 0
+
+
+#: Standing-grant expiry defaults. The grant is a HARD time box; expiry_hours is
+#: clamped to [0, MAX] so a config typo (e.g. 100000) cannot grant effectively
+#: permanent autonomy, and <= 0 makes every grant immediately expired.
+_STANDING_GRANT_DEFAULT_EXPIRY_HOURS = 24.0
+_STANDING_GRANT_MAX_EXPIRY_HOURS = 168.0
+
+
+def _standing_grant_config(repo_root: Path) -> tuple[bool, float]:
+    """Read .claude/wardens/config.json admin-merge-gate.standing_grant.
+
+    Returns (enabled, expiry_hours).  Fail-safe: an absent/non-dict/malformed
+    config yields (False, default) so the gate falls back to strict one-shot.
+    ``enabled`` is honoured only when it is exactly ``True``.
+    """
+    config = _wardens_config(repo_root)
+    gate = config.get("admin-merge-gate")
+    sg = gate.get("standing_grant") if isinstance(gate, dict) else None
+    if not isinstance(sg, dict):
+        return (False, _STANDING_GRANT_DEFAULT_EXPIRY_HOURS)
+    enabled = sg.get("enabled") is True
+    raw = sg.get("expiry_hours", _STANDING_GRANT_DEFAULT_EXPIRY_HOURS)
+    # bool is a subclass of int -- reject it so `expiry_hours: true` is not 1h.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raw = _STANDING_GRANT_DEFAULT_EXPIRY_HOURS
+    expiry = max(0.0, min(float(raw), _STANDING_GRANT_MAX_EXPIRY_HOURS))
+    return (enabled, expiry)
+
+
+def _standing_grant_config_stanza(repo_root: Path) -> str:
+    cfg = repo_root / ".claude" / "wardens" / "config.json"
+    return (
+        "[admin-merge-gate] Standing autonomy is OFF. To enable it, set this in\n"
+        f"{cfg} (gitignored, host-local) and retry:\n\n"
+        "  {\n"
+        '    "admin-merge-gate": {\n'
+        '      "standing_grant": { "enabled": true, "expiry_hours": 24 }\n'
+        "    }\n"
+        "  }\n\n"
+        "While enabled, `gh pr merge --admin` runs without per-command approval "
+        "for a PR whose branch matches the current worktree and whose "
+        "code-review + verification verdicts are SHIP (CI must be green). The "
+        f"grant expires after expiry_hours (max {int(_STANDING_GRANT_MAX_EXPIRY_HOURS)})."
+    )
+
+
+def approve_admin_merge_standing(repo_root: Path, worktree_root: Path) -> int:
+    """Activate a time-boxed standing admin-merge autonomy grant.
+
+    Requires the admin-merge-gate.standing_grant toggle to already be enabled in
+    wardens/config.json (the durable opt-in); this records the activation time
+    (the expiry anchor) and the activating worktree (audit only). No CI check
+    here -- a standing grant spans multiple PRs, so CI is enforced per-merge at
+    the gate, against the actual PR being merged.
+    """
+    enabled, expiry_hours = _standing_grant_config(repo_root)
+    if not enabled:
+        print(_standing_grant_config_stanza(repo_root), file=sys.stderr)
+        return 1
+
+    marker = _admin_merge_standing_marker(repo_root)
+    reactivated = marker.exists()
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    # Plain write (mirrors the one-shot .admin-merge-approved sibling) rather
+    # than _write_atomic: the marker is tiny ephemeral state, a torn write is
+    # fail-closed by the gate's guarded parse, and _write_atomic would leave
+    # .bak-* files containing the prior absolute worktree_root.
+    marker.write_text(
+        json.dumps(
+            {
+                "worktree_root": str(worktree_root),
+                "created_at": dt.datetime.now(dt.UTC).isoformat(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if reactivated:
+        print(
+            "[admin-merge-gate] NOTE: a standing grant was already active; "
+            "its expiry clock has been reset to now.",
+            file=sys.stderr,
+        )
+    print(
+        f"Standing admin-merge grant active for ~{expiry_hours:g}h "
+        f"(activated from {worktree_root}). Each merge still requires green CI, "
+        "a branch match to its worktree, and SHIP code-review + verification "
+        "verdicts."
+    )
     return 0
 
 
@@ -1043,6 +1165,7 @@ def regenerate_codebase_map(repo_root: Path) -> int:
 
 def run_session_init(repo_root: Path) -> int:
     global _PATTERN_ROUTES_CACHE
+    # .admin-merge-standing is intentionally absent -- it is bounded by expiry, not session lifetime.
     for name in (
         ".plan-reviewed",
         ".code-reviewed",
@@ -1523,9 +1646,179 @@ def run_verification_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     return 0
 
 
+#: Standing-grant action outcomes returned by _evaluate_standing_grant.
+_GRANT_ALLOW = "allow"
+_GRANT_BLOCK = "block"
+_GRANT_FALL_THROUGH = "fall_through"
+
+#: Mandatory wardens (must be present AND SHIP) vs conditional (if present must
+#: be SHIP; absence is fine -- a non-LLM / non-plan change legitimately never
+#: ran ai-eng / threat-model / plan-review). Marker names map to warden keys via
+#: MARKER_NAMES.
+_STANDING_MANDATORY_MARKERS = ("code-reviewed", "verified")
+_STANDING_CONDITIONAL_MARKERS = ("plan-reviewed", "ai-eng-reviewed", "threat-modeled")
+
+
+def _parse_iso_utc(raw: Any) -> dt.datetime | None:
+    """Parse an ISO-8601 timestamp into a tz-aware UTC datetime, or None.
+
+    A naive timestamp is assumed UTC. Guards against the classic naive-vs-aware
+    comparison TypeError -- the caller compares against ``dt.datetime.now(dt.UTC)``.
+    """
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.UTC)
+    return parsed.astimezone(dt.UTC)
+
+
+def _verdict_in(verdicts: dict[str, Any], marker_name: str) -> str | None:
+    """Return the verdict string for *marker_name* from a verdicts dict."""
+    warden = MARKER_NAMES.get(marker_name)
+    entry = verdicts.get(warden) if warden else None
+    if isinstance(entry, dict):
+        v = entry.get("verdict")
+        return v if isinstance(v, str) else None
+    return None
+
+
+def _gh_pr_head_branch(ref: str, timeout: int = 3) -> str | None:
+    """Resolve a PR ref (number or URL) to its head branch via ``gh pr view``.
+
+    Returns None on any failure so the caller fails safe (treats it as an
+    unverifiable match and falls through to the one-shot approval path).
+    """
+    try:
+        result = subprocess.run(
+            ["gh", "pr", "view", ref, "--json", "headRefName"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    head = data.get("headRefName") if isinstance(data, dict) else None
+    return head if isinstance(head, str) and head else None
+
+
+def _pr_matches_worktree(command: str, wt: Path) -> tuple[bool, str]:
+    """True iff the PR referenced by *command* has head branch == *wt*'s branch.
+
+    A no-ref ``gh pr merge --admin`` targets the current branch (inherently
+    *wt*'s PR). An explicit branch name is compared directly; a PR number/URL is
+    resolved via ``gh pr view``. Anything unverifiable returns (False, reason).
+    This binds the verdicts we read (this worktree's) to the PR being merged.
+    """
+    wt_branch = _git(wt, "rev-parse", "--abbrev-ref", "HEAD")
+    if not wt_branch:
+        return (False, "[admin-merge-gate] could not resolve the worktree branch")
+    wt_branch = wt_branch.strip()
+    ref = _extract_pr_ref(command)
+    if ref is None or ref == wt_branch:
+        return (True, "")
+    head = _gh_pr_head_branch(ref)
+    if head is None:
+        return (
+            False,
+            f"[admin-merge-gate] could not verify PR '{ref}' belongs to this worktree",
+        )
+    if head == wt_branch:
+        return (True, "")
+    return (
+        False,
+        f"[admin-merge-gate] PR head branch '{head}' != worktree branch '{wt_branch}'",
+    )
+
+
+def _evaluate_standing_grant(
+    repo_root: Path, wt: Path, command: str, expiry_hours: float
+) -> tuple[str, str]:
+    """Decide a standing admin-merge grant; return (action, reason).
+
+    action is one of _GRANT_ALLOW / _GRANT_BLOCK / _GRANT_FALL_THROUGH. Pure
+    except for the deliberate unlink of an expired/corrupt marker. Fail-closed:
+    an unparseable marker, malformed timestamp, expiry, or any missing/non-SHIP
+    mandatory verdict blocks -- never silently allows.
+    """
+    marker = _admin_merge_standing_marker(repo_root)
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        marker.unlink(missing_ok=True)
+        return (
+            _GRANT_BLOCK,
+            "[admin-merge-gate] standing grant marker is unreadable/corrupt and "
+            "was cleared. Re-activate with `approve-admin-merge --standing`.",
+        )
+    if not isinstance(data, dict):
+        marker.unlink(missing_ok=True)
+        return (
+            _GRANT_BLOCK,
+            "[admin-merge-gate] standing grant marker is malformed and was "
+            "cleared. Re-activate with `approve-admin-merge --standing`.",
+        )
+
+    created = _parse_iso_utc(data.get("created_at"))
+    if created is None:
+        marker.unlink(missing_ok=True)
+        return (
+            _GRANT_BLOCK,
+            "[admin-merge-gate] standing grant has no valid created_at and was "
+            "cleared. Re-activate with `approve-admin-merge --standing`.",
+        )
+    age_hours = (dt.datetime.now(dt.UTC) - created).total_seconds() / 3600.0
+    if age_hours >= expiry_hours:
+        marker.unlink(missing_ok=True)
+        return (
+            _GRANT_BLOCK,
+            f"[admin-merge-gate] standing grant expired (age {age_hours:.1f}h >= "
+            f"{expiry_hours:g}h limit) and was cleared. Re-activate with "
+            "`approve-admin-merge --standing`.",
+        )
+
+    matched, why = _pr_matches_worktree(command, wt)
+    if not matched:
+        return (_GRANT_FALL_THROUGH, why)
+
+    verdicts = _read_verdicts_at(_verdicts_path_for_worktree(repo_root, wt))
+    for name in _STANDING_MANDATORY_MARKERS:
+        v = _verdict_in(verdicts, name)
+        if v != "SHIP":
+            warden = MARKER_NAMES.get(name, name)
+            return (
+                _GRANT_BLOCK,
+                f"[admin-merge-gate] standing grant requires a SHIP {warden} "
+                f"verdict for this worktree; found {v or 'none'}. Run the "
+                f"{warden} warden to SHIP, then retry.",
+            )
+    for name in _STANDING_CONDITIONAL_MARKERS:
+        v = _verdict_in(verdicts, name)
+        if v is not None and v != "SHIP":
+            warden = MARKER_NAMES.get(name, name)
+            return (
+                _GRANT_BLOCK,
+                f"[admin-merge-gate] standing grant blocked: {warden} verdict is "
+                f"{v} (must be SHIP or absent). Re-run {warden}, then retry.",
+            )
+    return (_GRANT_ALLOW, "")
+
+
 def run_admin_merge_gate(event: dict[str, Any], repo_root: Path) -> int:
     cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
-    if _worktree_for_cwd(cwd, repo_root) is None:
+    wt = _worktree_for_cwd(cwd, repo_root)
+    if wt is None:
         return 0
 
     tool_input = event.get("tool_input")
@@ -1540,6 +1833,23 @@ def run_admin_merge_gate(event: dict[str, Any], repo_root: Path) -> int:
     if ci_block:
         _block_pre_tool(ci_block)
         return 0
+
+    # Standing autonomy grant (opt-in via wardens/config.json). CI-green is
+    # already enforced above. When the toggle is on and an unexpired standing
+    # marker exists, allow the merge WITHOUT per-command approval iff the PR's
+    # branch matches this worktree and its mandatory verdicts (code-review +
+    # verification) are SHIP. Verdicts are read from the worktree being merged,
+    # so the grant can never authorise an unreviewed PR. A branch mismatch falls
+    # through to the one-shot path; an unmet/expired condition blocks.
+    enabled, expiry_hours = _standing_grant_config(repo_root)
+    if enabled and _admin_merge_standing_marker(repo_root).exists():
+        action, reason = _evaluate_standing_grant(repo_root, wt, command, expiry_hours)
+        if action == _GRANT_ALLOW:
+            return 0
+        if action == _GRANT_BLOCK:
+            _block_pre_tool(reason)
+            return 0
+        # _GRANT_FALL_THROUGH -> require the one-shot approval below.
 
     marker = _admin_merge_marker(repo_root)
     command_hash = _command_hash(command)
@@ -2233,6 +2543,13 @@ def _verdicts_path(repo_root: Path) -> Path:
     return _claude_marker_dir(repo_root) / ".warden-verdicts.json"
 
 
+def _verdicts_path_for_worktree(repo_root: Path, worktree_root: Path) -> Path:
+    # Deterministic verdict store for an EXPLICIT worktree (the admin-merge
+    # standing gate resolves the cwd worktree itself rather than relying on
+    # _current_worktree()'s os.getcwd() derivation). Mirrors _verdicts_path.
+    return _marker_dir_for_worktree(repo_root, worktree_root) / ".warden-verdicts.json"
+
+
 def _audit_log_path(repo_root: Path) -> Path:
     # Deliberately GLOBAL (flat), not per-worktree: this is an append-only audit
     # trail that aggregates verdicts across every worktree. Do not namespace it.
@@ -2276,8 +2593,8 @@ def _is_bg_session() -> bool:
     return bool(os.environ.get("CLAUDE_JOB_DIR"))
 
 
-def _read_verdicts(repo_root: Path) -> dict[str, Any]:
-    path = _verdicts_path(repo_root)
+def _read_verdicts_at(path: Path) -> dict[str, Any]:
+    """Read a .warden-verdicts.json at an EXPLICIT path (no cwd derivation)."""
     if not path.exists():
         return {}
     try:
@@ -2285,6 +2602,10 @@ def _read_verdicts(repo_root: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def _read_verdicts(repo_root: Path) -> dict[str, Any]:
+    return _read_verdicts_at(_verdicts_path(repo_root))
 
 
 def _read_verdict(marker_name: str, repo_root: Path) -> str | None:
@@ -3150,7 +3471,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     approve_parser = subparsers.add_parser("approve-admin-merge")
     approve_parser.add_argument("--repo-root", default=Path(__file__).resolve().parents[1])
-    approve_parser.add_argument("--command", dest="admin_command", required=True)
+    approve_parser.add_argument(
+        "--command", dest="admin_command", required=False, default=None,
+        help="The exact `gh pr merge --admin ...` command to approve (one-shot). "
+             "Required unless --standing is given.",
+    )
+    approve_parser.add_argument(
+        "--standing", action="store_true",
+        help="Activate a time-boxed standing autonomy grant instead of approving "
+             "a single command. Requires the admin-merge-gate.standing_grant "
+             "toggle in .claude/wardens/config.json. While active, admin merges "
+             "run without per-command approval for a PR whose branch matches its "
+             "worktree and whose code-review + verification verdicts are SHIP.",
+    )
+    approve_parser.add_argument(
+        "--worktree-root", default=None,
+        help="Worktree recorded on the standing grant (audit only; defaults to "
+             "the worktree of the current cwd). Only used with --standing.",
+    )
 
     mark_parser = subparsers.add_parser("mark")
     mark_parser.add_argument("marker_name", choices=sorted(MARKER_NAMES))
@@ -3250,9 +3588,28 @@ def main(argv: list[str] | None = None) -> int:
             lambda: mark_batch_wardens(args.specs, repo_root),
         )
     if args.action == "approve-admin-merge":
-        return approve_admin_merge(
-            args.admin_command, Path(args.repo_root).resolve(strict=False)
-        )
+        repo_root = Path(args.repo_root).resolve(strict=False)
+        if args.standing:
+            if args.worktree_root:
+                wt = Path(args.worktree_root).resolve(strict=False)
+            else:
+                wt = _worktree_for_cwd(Path.cwd(), repo_root)
+                if wt is None:
+                    print(
+                        "[admin-merge-gate] WARNING: cwd is not inside a worktree "
+                        f"of {repo_root}; recording the main repo as the activating "
+                        "worktree. Pass --worktree-root to be explicit.",
+                        file=sys.stderr,
+                    )
+                    wt = repo_root
+            return approve_admin_merge_standing(repo_root, wt)
+        if not args.admin_command:
+            print(
+                "[admin-merge-gate] --command is required unless --standing is given.",
+                file=sys.stderr,
+            )
+            return 2
+        return approve_admin_merge(args.admin_command, repo_root)
     if args.action == "install":
         return install(args)
     if args.action == "check":

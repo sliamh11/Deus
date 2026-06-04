@@ -219,6 +219,30 @@ export function parseVerdict(
   return match ? (match[1] as 'SHIP' | 'REVISE' | 'BLOCK') : null;
 }
 
+/**
+ * LIA-169: An errored gate halts regardless of mode/verdict — its fallback
+ * 'REVISE' would otherwise drive the strict revert and re-dispatch loop.
+ * 'halt' = park (quiescent state); 'revert' = legit strict non-SHIP; 'none' = leave.
+ */
+export function gateTransitionAction(
+  effectiveMode: 'advise' | 'strict',
+  verdict: 'SHIP' | 'REVISE' | 'BLOCK',
+  gateErrored: boolean,
+): 'halt' | 'revert' | 'none' {
+  if (gateErrored) return 'halt';
+  if (effectiveMode === 'strict' && verdict !== 'SHIP') return 'revert';
+  return 'none';
+}
+
+/** LIA-169: an errored gate logs `gate_error`, not the misleading `gate_revise`. */
+export function gateOutcomeEventType(
+  verdict: 'SHIP' | 'REVISE' | 'BLOCK',
+  gateErrored: boolean,
+): 'gate_ship' | 'gate_revise' | 'gate_error' {
+  if (gateErrored) return 'gate_error';
+  return verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
+}
+
 export function parseEnrichment(output: string): string | null {
   const match = output.match(/^## Enrichment\s*\n([\s\S]*?)(?=^## Verdict)/m);
   return match ? match[1].trim() : null;
@@ -1144,7 +1168,37 @@ async function handleIssueUpdate(
       ? 'strict'
       : gateSpec.mode;
 
-    if (effectiveMode === 'strict' && verdict !== 'SHIP') {
+    const transitionAction = gateTransitionAction(
+      effectiveMode,
+      verdict,
+      gateDidError,
+    );
+    if (transitionAction === 'halt') {
+      // LIA-169: gate errored — park in a quiescent state so no poller re-picks
+      // it (leaving it in "In Review" exposes it to sweepStaleInReview; "Manual
+      // Review Required" is polled by nothing). Warden: Error label is applied
+      // in the finally block.
+      try {
+        const manualState = ctx.stateByName.get('Manual Review Required');
+        if (manualState) {
+          await ctx.client.updateIssue(data.id, { stateId: manualState.id });
+          logger.info(
+            { issueId: data.id, gate: gateSpec.name },
+            'linear-webhook: gate errored — moved to Manual Review Required (halt)',
+          );
+        } else {
+          logger.warn(
+            { issueId: data.id, gate: gateSpec.name },
+            'linear-webhook: Manual Review Required state not found — leaving issue in place',
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { issueId: data.id, err },
+          'linear-webhook: failed to park errored gate issue in Manual Review Required',
+        );
+      }
+    } else if (transitionAction === 'revert') {
       try {
         let revertStateId = fromStateId;
         let revertStateName = fromState.name;
@@ -1187,7 +1241,7 @@ async function handleIssueUpdate(
 
     finalVerdict = verdict;
     updateWebhookEventStatus(eventKey, 'done', { verdict });
-    const eventType = verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
+    const eventType = gateOutcomeEventType(verdict, gateDidError);
     const reasonLine =
       verdictText.split('\n').find((l) => l.trim()) || '(no detail)';
     const pipelineDetail =
@@ -1262,8 +1316,10 @@ async function handleIssueUpdate(
       removeIds.push(...scopeLabels.removeIds);
     }
 
-    // Bouncer: apply bounced:<reason> label on REVISE, strip on SHIP
-    if (gateSpec.name === 'bouncer-gate') {
+    // Bouncer: apply bounced:<reason> label on REVISE, strip on SHIP.
+    // LIA-169: skip on gate error — an errored bouncer's REVISE is a fallback,
+    // not a real "unscoped" verdict, so don't stamp a misleading bounced label.
+    if (gateSpec.name === 'bouncer-gate' && !gateDidError) {
       const allBouncedIds = [
         ctx.gateLabels.bouncedUnscoped,
         ctx.gateLabels.bouncedStale,
@@ -1308,7 +1364,10 @@ async function handleIssueUpdate(
       retryLabelUpdate(ctx.client, data.id, update);
     }
 
-    if (finalVerdict && finalEnrichment) {
+    // LIA-169: skip on gate error — the outer catch sets finalVerdict=REVISE +
+    // finalEnrichment, which would otherwise increment the REVISE attempt count
+    // on an infra failure (the gate never actually ran).
+    if (finalVerdict && finalEnrichment && !gateDidError) {
       try {
         await trackGateMetaAndEscalate(
           ctx,
@@ -1529,7 +1588,35 @@ async function runGateForIssue(
       ? 'strict'
       : gateSpec.mode;
 
-    if (effectiveMode === 'strict' && verdict !== 'SHIP') {
+    const transitionAction = gateTransitionAction(
+      effectiveMode,
+      verdict,
+      gateAgentError,
+    );
+    if (transitionAction === 'halt') {
+      // LIA-169: gate errored — park in Manual Review Required (quiescent; no
+      // poller re-picks it). Warden: Error label is applied in the finally block.
+      try {
+        const manualState = ctx.stateByName.get('Manual Review Required');
+        if (manualState) {
+          await ctx.client.updateIssue(issue.id, { stateId: manualState.id });
+          logger.info(
+            { issueId: issue.id, gate: gateSpec.name },
+            'startup-sweep: gate errored — moved to Manual Review Required (halt)',
+          );
+        } else {
+          logger.warn(
+            { issueId: issue.id, gate: gateSpec.name },
+            'startup-sweep: Manual Review Required state not found — leaving issue in place',
+          );
+        }
+      } catch (err) {
+        logger.warn(
+          { issueId: issue.id, err },
+          'startup-sweep: failed to park errored gate issue in Manual Review Required',
+        );
+      }
+    } else if (transitionAction === 'revert') {
       if (gateSpec.revertTo) {
         const revertState = ctx.stateByName.get(gateSpec.revertTo);
         if (revertState) {
@@ -1547,7 +1634,7 @@ async function runGateForIssue(
     }
 
     finalVerdict = verdict;
-    const eventType = verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
+    const eventType = gateOutcomeEventType(verdict, gateAgentError);
     const sweepReasonLine =
       verdictText.split('\n').find((l) => l.trim()) || '(no detail)';
     const sweepDetail =
@@ -1602,9 +1689,11 @@ async function runGateForIssue(
       { issueId: issue.id, gate: gateSpec.name, err },
       'startup-sweep: gate evaluation failed',
     );
-    // Never fallback-SHIP on infrastructure errors — gate didn't actually run
+    // Never fallback-SHIP on infrastructure errors — gate didn't actually run.
+    // Use gateSpec.fallback for symmetry with handleIssueUpdate (1285); the
+    // !gateAgentError guard below keeps this value out of real behavior anyway.
     gateAgentError = true;
-    finalVerdict = 'REVISE';
+    finalVerdict = gateSpec.fallback;
     finalEnrichment = `Gate infrastructure error (startup sweep): ${errorMsg}`;
   } finally {
     ctx.inFlightGate.delete(issue.id);
@@ -1653,7 +1742,9 @@ async function runGateForIssue(
       retryLabelUpdate(ctx.client, issue.id, update);
     }
 
-    if (finalVerdict && finalEnrichment) {
+    // LIA-169: skip on gate error — see handleIssueUpdate; the outer catch sets
+    // finalVerdict=REVISE + finalEnrichment, which would pollute the attempt count.
+    if (finalVerdict && finalEnrichment && !gateAgentError) {
       try {
         await trackGateMetaAndEscalate(
           ctx,
