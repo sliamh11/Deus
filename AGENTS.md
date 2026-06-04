@@ -232,6 +232,87 @@ record it in [docs/agent-agnostic-debt.md](docs/agent-agnostic-debt.md) with:
 
 Do not leave open-ended parity gaps implied only by comments or vague prose.
 
+## Working with Deus's memory + evolution (editor agents)
+
+> Deus brain is wired into this editor via MCP (`deus-memory`, `deus-evolution`).
+> Use it so Deus learns across projects.
+
+- **Start of a coding task:** call `get_reflections` (omit `group_folder` — global lessons) to
+  load prior learnings. If the task touches past decisions, conventions, or research, also call
+  `memory_recall`.
+- **End of a task, or after a clear success/failure:** call `log_interaction` with a short
+  summary of what was asked and what you did. Omit `group_folder` so the lesson is global and
+  carries to other projects.
+- **When the user gives feedback** ("that was wrong" / "good"): call `record_feedback` for that
+  interaction.
+- Treat reflections as soft guidance learned from past misses — weigh them, don't obey blindly.
+
+### Quality gates (replaces hooks)
+
+Claude Code enforces these via hooks; in editors without hooks, follow them manually.
+
+**Before editing source code (replaces plan-review gate):**
+For non-trivial changes, describe your plan, then run:
+```bash
+python3 ~/Deus/scripts/codex_warden_hooks.py plan-review "<plan summary>" --repo-root "$(pwd)"
+```
+Wait for VERDICT: SHIP before editing. On REVISE, fix and re-run. Trivial changes (typos,
+comments, single-line fixes) can bypass with stated justification.
+
+**Before committing (replaces code-review gate):**
+```bash
+python3 ~/Deus/scripts/codex_warden_hooks.py code-review --repo-root "$(pwd)"
+```
+Reviews the staged diff. Wait for SHIP before committing.
+
+**Before claiming work is done (replaces verification gate):**
+```bash
+python3 ~/Deus/scripts/codex_warden_hooks.py verify --repo-root "$(pwd)"
+```
+
+Always show the commit message and wait for user approval before committing. Never push
+directly to main — create a feature branch and PR.
+
+### Editor session lifecycle
+
+These replace the `/resume`, `/checkpoint`, `/compress`, `/preserve`, and `/handoff` skills
+which are not available outside Claude Code. Resolve the vault path once per session:
+
+```bash
+VAULT=$(python3 -c "import json,os; print(os.path.expanduser(json.load(open(os.path.expanduser('~/.config/deus/config.json')))['vault_path']))")
+```
+
+**Start of session (replaces /resume):**
+```bash
+python3 ~/Deus/scripts/memory_indexer.py --recent 3
+```
+Read the output plus any today's checkpoint: `ls -t "$VAULT/Checkpoints/$(date +%Y-%m-%d)"-*.md 2>/dev/null | head -1`.
+Summarize ongoing context and pending tasks before starting work.
+
+**Mid-session save (replaces /checkpoint):**
+Write a checkpoint to `$VAULT/Checkpoints/YYYY-MM-DD-HH.md` with frontmatter:
+`type: checkpoint`, `created`, `session_topic`, `project_path`, `decisions`, `in_progress`,
+`next_action`, `context_refs`. Keep under 25 lines.
+
+**End of session (replaces /compress):**
+1. Write a session log to `$VAULT/Session-Logs/YYYY-MM-DD/<topic-slug>.md` with frontmatter:
+   `type: session`, `date`, `topics`, `project_path`, `tldr`, `decisions`. Include a body with
+   what happened, files modified, and a pending tasks checklist.
+2. Index and extract atoms:
+   ```bash
+   python3 ~/Deus/scripts/memory_indexer.py --add "<full path to log>"
+   python3 ~/Deus/scripts/memory_indexer.py --extract "<full path to log>"
+   ```
+3. Update `$VAULT/CLAUDE.md` pending tasks if any changed.
+
+**Preserve durable knowledge (replaces /preserve):**
+If the session produced lasting insights (preferences, decisions, corrections), append them to
+`$VAULT/CLAUDE.md` as compact `key: value` lines. Skip for routine sessions.
+
+**Handoff (replaces /handoff):**
+When stopping mid-task, write a structured handoff to `$VAULT/Handoffs/YYYY-MM-DD-<slug>.md`
+summarizing: what was done, what remains, key files, and the exact next step.
+
 ## Update Rule
 
 Do not make the next agent rediscover this map. If you add or change a backend,
