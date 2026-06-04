@@ -148,6 +148,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/add-codex` | Add OpenAI/Codex as a backend |
 | `/add-compact` | Add the backend-neutral `/compact` session command |
 | `/add-discord` | Add Discord as a channel |
+| `/add-editor` | Wire Deus's memory + evolution into an external editor (Zed, ACP/MCP) |
 | `/add-gcal` | Add Google Calendar integration (list, create, update events) |
 | `/add-gmail` | Add Gmail as a tool or channel |
 | `/add-image-vision` | Add image attachment vision to Deus agents |
@@ -230,6 +231,88 @@ record it in [docs/agent-agnostic-debt.md](docs/agent-agnostic-debt.md) with:
 - explicit exit criteria.
 
 Do not leave open-ended parity gaps implied only by comments or vague prose.
+
+## Working with Deus's memory + evolution (editor agents)
+
+> Deus brain is wired into this editor via MCP (`deus-memory`, `deus-evolution`).
+> Use it so Deus learns across projects.
+
+- **Start of a coding task:** call `get_reflections` (omit `group_folder` — global lessons) to
+  load prior learnings. If the task touches past decisions, conventions, or research, also call
+  `memory_recall`.
+- **End of a task, or after a clear success/failure:** call `log_interaction` with a short
+  summary of what was asked and what you did. Omit `group_folder` so the lesson is global and
+  carries to other projects.
+- **When the user gives feedback** ("that was wrong" / "good"): call `record_feedback` for that
+  interaction.
+- Treat reflections as soft guidance learned from past misses — weigh them, don't obey blindly.
+
+### Quality gates
+
+Claude Code enforces plan-review, code-review, and verification mechanically through
+PreToolUse/Stop hooks. How you get the same gates depends on whether your editor has a hook
+system:
+
+**Codex CLI (has hooks) — install the bridge once per repo.** `codex_warden_hooks.py` mirrors
+the Deus Warden gates into Codex's own `hooks.json`, so they are enforced mechanically:
+```bash
+python3 ~/deus/scripts/codex_warden_hooks.py install --repo-root "$(pwd)"
+python3 ~/deus/scripts/codex_warden_hooks.py check   --repo-root "$(pwd)"   # confirm active
+```
+After this the hooks block edits/commits until the matching reviewer has approved — they prompt
+you to run the reviewer and record its verdict, exactly as Claude Code's hooks do. You do not
+invoke the gates by hand. (The `/add-codex` setup skill wires this for you.)
+
+**Zed / other ACP editors (no hook system) — apply the gates as discipline.** Nothing enforces
+them for you, so before each step:
+- **Before non-trivial source edits:** state your plan and critique it (yourself, or via a
+  sub-agent) before touching code. Typos, comments, and single-line fixes are exempt.
+- **Before committing:** review the full staged diff for correctness, security, and scope.
+- **Before claiming work is done:** re-run the build/tests and confirm the change does what was
+  asked.
+
+Always show the commit message and wait for user approval before committing. Never push directly
+to `main` — create a feature branch and PR.
+
+### Editor session lifecycle
+
+These replace the `/resume`, `/checkpoint`, `/compress`, `/preserve`, and `/handoff` skills
+which are not available outside Claude Code. Resolve the vault path once per session:
+
+```bash
+VAULT=$(python3 -c "import json,os; print(os.path.expanduser(json.load(open(os.path.expanduser('~/.config/deus/config.json')))['vault_path']))")
+```
+
+**Start of session (replaces /resume):**
+```bash
+python3 ~/deus/scripts/memory_indexer.py --recent 3
+```
+Read the output plus any today's checkpoint: `ls -t "$VAULT/Checkpoints/$(date +%Y-%m-%d)"-*.md 2>/dev/null | head -1`.
+Summarize ongoing context and pending tasks before starting work.
+
+**Mid-session save (replaces /checkpoint):**
+Write a checkpoint to `$VAULT/Checkpoints/YYYY-MM-DD-HH.md` with frontmatter:
+`type: checkpoint`, `created`, `session_topic`, `project_path`, `decisions`, `in_progress`,
+`next_action`, `context_refs`. Keep under 25 lines.
+
+**End of session (replaces /compress):**
+1. Write a session log to `$VAULT/Session-Logs/YYYY-MM-DD/<topic-slug>.md` with frontmatter:
+   `type: session`, `date`, `topics`, `project_path`, `tldr`, `decisions`. Include a body with
+   what happened, files modified, and a pending tasks checklist.
+2. Index and extract atoms:
+   ```bash
+   python3 ~/deus/scripts/memory_indexer.py --add "<full path to log>"
+   python3 ~/deus/scripts/memory_indexer.py --extract "<full path to log>"
+   ```
+3. Update `$VAULT/CLAUDE.md` pending tasks if any changed.
+
+**Preserve durable knowledge (replaces /preserve):**
+If the session produced lasting insights (preferences, decisions, corrections), append them to
+`$VAULT/CLAUDE.md` as compact `key: value` lines. Skip for routine sessions.
+
+**Handoff (replaces /handoff):**
+When stopping mid-task, write a structured handoff to `$VAULT/Handoffs/YYYY-MM-DD-<slug>.md`
+summarizing: what was done, what remains, key files, and the exact next step.
 
 ## Update Rule
 

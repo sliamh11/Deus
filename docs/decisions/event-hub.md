@@ -144,6 +144,12 @@ A listener ships `DRY_RUN_DEFAULT = true`: it receives events and logs what it
 the emit path on real traffic with **zero behavior change**, then a later cutover
 PR flips it live and deletes the inline write.
 
+Phase 1's LinearUpdater has completed this cutover (Step 2): the listener is now
+the sole writer of the "→ In Review" transition and the dispatcher's inline copy
+was deleted — the "confirm parity → delete inline write" strangler step, done
+after the dry-run line was deliberately observed co-firing with the inline write
+on a real dispatch.
+
 > **Warning:** the dry-run swallows failures and logs at `debug`, so a healthy
 > service is **not** proof the wire fires. Before any cutover, *deliberately*
 > observe the dry-run line on a real event (raise the log level or add a
@@ -156,7 +162,7 @@ Two interleaved tracks. Status as of this ADR:
 
 | Track | Phase | Status |
 |-------|-------|--------|
-| Event hub | 1 -- EventBus + `agent.done` -> dry-run LinearUpdater | **Shipped** (#657) |
+| Event hub | 1 -- EventBus + `agent.done` -> LinearUpdater (Step-2 cutover: listener live, inline In-Review write deleted) | **Shipped** (#657 + cutover) |
 | Event hub | 2 -- `pipeline.transition` emit + dry-run ObservabilitySink | **Shipped** (#660) |
 | Event hub | 3 -- cutover: flip sink live, delete inline `logPipelineEvent` INSERT | Planned |
 | Event hub | 4-6 -- unified-comment, high-value Linear writes, design-to-dev convergence | Planned |
