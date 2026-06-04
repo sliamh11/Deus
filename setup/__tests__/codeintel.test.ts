@@ -79,6 +79,21 @@ describe('codeSearchServerCommand', () => {
   });
 });
 
+// ── CODE_SEARCH_DEP_CHECK ───────────────────────────────────────────────────
+
+describe('CODE_SEARCH_DEP_CHECK', () => {
+  it('gates on BOTH sqlite_vec and the mcp server import', async () => {
+    // Regression guard: the server needs `mcp` (code_search_mcp.py:40), not just
+    // sqlite_vec — probing only sqlite_vec let a python3 without mcp register a
+    // server that fails to connect. Lock both into the probe.
+    const { CODE_SEARCH_DEP_CHECK } = await import('../codeintel.js');
+    expect(CODE_SEARCH_DEP_CHECK).toContain('sqlite_vec');
+    expect(CODE_SEARCH_DEP_CHECK).toContain('mcp');
+    // Mirrors the server's actual import line so the probe and server agree.
+    expect(CODE_SEARCH_DEP_CHECK).toContain('FastMCP');
+  });
+});
+
 // ── overallStatus roll-up ───────────────────────────────────────────────────
 
 describe('overallStatus', () => {

@@ -35,6 +35,16 @@ import { emitStatus } from './status.js';
  */
 export const CODEGRAPH_PACKAGE = '@colbymchenry/codegraph@0.9.9';
 
+/**
+ * Python imports the code-search MCP **server** needs to actually start —
+ * mirrors `scripts/code_search_mcp.py:40`. `mcp` is the hard requirement (the
+ * server can't be an MCP endpoint without it); `sqlite_vec` backs vector search.
+ * We probe both before registering so we never register a server that can't run
+ * (a `import sqlite_vec`-only check let a `python3` without `mcp` slip through).
+ */
+export const CODE_SEARCH_DEP_CHECK =
+  'import sqlite_vec; from mcp.server.fastmcp import FastMCP';
+
 /** Background build logs (mirrors ollama's ~/.config/deus/ollama-downloads/). */
 const LOG_DIR = path.join(CONFIG_DIR, 'codeintel');
 
@@ -213,14 +223,21 @@ function setupCodeSearch(repoRoot: string): SubResult {
     return { status: 'skipped', reason: 'python_not_found' };
   }
 
+  // Probe the server's real imports BEFORE any registration. This stays ahead
+  // of registerMcpServer (remove-then-add) on purpose: a deps_missing skip must
+  // be a no-op on an existing registration, never clobbering a working entry.
+  // NOTE(LIA-174): resolvePython() is not guaranteed to point at an MCP-capable
+  // interpreter — the `memory` step installs sqlite_vec but not `mcp`, so on a
+  // fresh machine this probe skips (deps_missing) rather than registering a
+  // broken server. Reliably provisioning `mcp` (or targeting a venv that has it)
+  // is tracked separately.
   try {
-    execFileSync(python, ['-c', 'import sqlite_vec'], {
+    execFileSync(python, ['-c', CODE_SEARCH_DEP_CHECK], {
       stdio: 'ignore',
       timeout: 10000,
     });
   } catch {
-    // The `memory` setup step installs sqlite_vec — direct the user there.
-    return { status: 'skipped', reason: 'sqlite_vec_missing' };
+    return { status: 'skipped', reason: 'deps_missing' };
   }
 
   const mcp: McpStatus = commandExists('claude')
@@ -258,9 +275,9 @@ export async function run(_args: string[]): Promise<void> {
       `codegraph install failed — run manually: npm install -g ${CODEGRAPH_PACKAGE}`,
     );
   }
-  if (codeSearch.reason === 'sqlite_vec_missing') {
+  if (codeSearch.reason === 'deps_missing') {
     notes.push(
-      'code-search needs sqlite_vec — run the `memory` setup step first, then re-run `--step codeintel`.',
+      'code-search needs the `mcp` and `sqlite_vec` Python packages — install them (`pip install mcp sqlite_vec`), then re-run `--step codeintel`.',
     );
   }
   if (codeSearch.status === 'success' && codeSearch.indexBuild === 'skipped') {
