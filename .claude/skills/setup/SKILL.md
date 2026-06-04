@@ -229,7 +229,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc  # or ~/.bashrc
 
 ## 6c. Install Core Skills
 
-Install Deus's 6 core memory skills to `~/.claude/skills/` so they work in any directory (home mode AND external project mode).
+Install Deus's core skills to `~/.claude/skills/` so they work in any directory (home mode AND external project mode). This is the 6 memory skills plus `onboard` (project code-intelligence onboarding).
 
 Run using Python (cross-platform — macOS, Linux, Windows):
 ```bash
@@ -240,7 +240,7 @@ from pathlib import Path
 repo = Path.cwd()
 src_base = repo / '.claude' / 'skills'
 dest_base = Path.home() / '.claude' / 'skills'
-skills = ['compress', 'resume', 'checkpoint', 'preserve', 'preferences', 'project-settings']
+skills = ['compress', 'resume', 'checkpoint', 'preserve', 'preferences', 'project-settings', 'onboard']
 failed = []
 
 for skill in skills:
@@ -271,7 +271,7 @@ if failed:
 
 **If any skill fails:** warn the user and continue — the other skills still install. The commands at `.claude/commands/` (home-mode-only) remain as fallback.
 
-**After installing:** Tell the user that `/compress`, `/resume`, `/checkpoint`, `/preserve`, `/preferences`, and `/project-settings` are now available in any project directory.
+**After installing:** Tell the user that `/compress`, `/resume`, `/checkpoint`, `/preserve`, `/preferences`, `/project-settings`, and `/onboard` are now available in any project directory.
 
 ## 7. Verify
 

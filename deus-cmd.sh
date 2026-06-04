@@ -5,8 +5,13 @@ DEUS_SKILLS_DIR="$HOME/.claude/skills"
 
 # Resolve symlinks so SCRIPT_DIR always points to the repo, even when
 # called via /usr/local/bin/deus → ~/deus/deus-cmd.sh symlink.
+# Seed from $ZSH_ARGZERO, not $0: inside a zsh function $0 is the function name
+# (FUNCTION_ARGZERO, on by default), so $0 here would be "_resolve_script_dir"
+# and SCRIPT_DIR would collapse to cwd from any foreign directory — breaking
+# subcommands like `deus init` that run from inside another project.
+# $ZSH_ARGZERO holds the real argv[0] (the path/symlink used to invoke).
 _resolve_script_dir() {
-  local src="$0"
+  local src="${ZSH_ARGZERO:-$0}"
   while [ -L "$src" ]; do
     local dir="$(cd "$(dirname "$src")" && pwd)"
     src="$(readlink "$src")"
@@ -918,6 +923,48 @@ SKILLEOF
 _deus_freshness_check "$1"
 
 case "$1" in
+  init|onboard)
+    # Onboard a project into Deus code intelligence (codegraph + code_search)
+    # and register it. scripts/deus_init.sh owns the safety gate + indexing;
+    # registration stays here so it can use _write_project_config (single
+    # source of truth — the script can't reach it without sourcing this file's
+    # top-level dispatch). The realpath is resolved ONCE here and passed to the
+    # script, so the DB md5 (computed by code_search from the same dir) and the
+    # config md5 (computed below) are guaranteed equal. macOS/Linux only.
+    shift
+    init_force=""
+    init_target=""
+    for a in "$@"; do
+      case "$a" in
+        --force) init_force="--force" ;;
+        -h|--help) exec "$SCRIPT_DIR/scripts/deus_init.sh" --help ;;
+        -*) ;;  # ignore unknown flags (forward-compat)
+        *) [ -z "$init_target" ] && init_target="$a" ;;
+      esac
+    done
+    init_base="${init_target:-$PWD}"
+    if [ ! -d "$init_base" ]; then
+      echo "deus init: not a directory: $init_base" >&2; exit 1
+    fi
+    init_root="$(cd "$init_base" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || init_root=""
+    [ -z "$init_root" ] && init_root="$init_base"
+    init_root="$(cd "$init_root" 2>/dev/null && pwd -P)" || { echo "deus init: cannot resolve: $init_base" >&2; exit 1; }
+    # Index + safety gate. The script exits non-zero iff the gate refuses; only
+    # then do we skip registration (do not register an un-onboarded dir).
+    if "$SCRIPT_DIR/scripts/deus_init.sh" "$init_root" $init_force; then
+      # Register — merge, never clobber: preserve any existing memory settings.
+      if [ -z "$(_read_project_config "$init_root")" ]; then
+        _write_project_config "$init_root" "standard" "true"
+        echo "  ✓ registered (memory=standard, summaries=on) — change with /project-settings"
+      else
+        _update_project_access "$init_root"
+        echo "  ✓ already registered — existing settings preserved"
+      fi
+      echo "Done. Deus code intelligence is active for $(basename "$init_root")."
+    else
+      exit $?
+    fi
+    ;;
   auth)
     # `deus auth refresh [--dry-run]` → proactive OAuth refresh CLI
     # (keeps idle containers from hitting /login after 8h token expiry).
@@ -1890,12 +1937,14 @@ $STARTUP_INSTRUCTION"
     esac
     ;;
   *)
-    echo "Usage: deus [claude|codex] [home|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|solution|sweep|tui] [--agents]"
+    echo "Usage: deus [claude|codex] [home|init|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|solution|sweep|tui] [--agents]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
     echo "  deus fcc        Launch with proxy model (see: deus provider, deus model)"
     echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
+    echo "  deus init       Onboard the current project: index it for code intelligence"
+    echo "                    (codegraph + code_search) and register it (alias: onboard, --force)"
     echo "  deus auth       Validate credentials and rebuild+restart"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
     echo "  deus build      Compile TypeScript and restart the service (--no-restart, --quiet)"
