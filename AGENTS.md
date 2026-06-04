@@ -161,6 +161,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/add-slack` | Add Slack as a channel |
 | `/add-telegram` | Add Telegram as a channel |
 | `/add-telegram-swarm` | Add Agent Swarm support to Telegram |
+| `/add-understand-anything` | Install the Understand-Anything plugin (codebase knowledge graphs, `/understand*`) |
 | `/add-voice-transcription` | Add OpenAI Whisper voice transcription |
 | `/add-whatsapp` | Add WhatsApp as a channel |
 | `/add-youtube-transcript` | Add YouTube transcript extraction |
