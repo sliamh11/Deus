@@ -81,6 +81,14 @@ function containsCodeBlock(text: string | null): boolean {
   return /```[\s\S]{10,}?```/.test(text);
 }
 
+/**
+ * Prefix of the error string produced when a container is reaped by the hard
+ * timeout (the resolve site below). Exported so downstream routing can tell an
+ * infrastructure timeout apart from a genuine agent failure (LIA-168) without
+ * brittle ad-hoc string matching.
+ */
+export const CONTAINER_TIMEOUT_ERROR_PREFIX = 'Container timed out after';
+
 function buildContainerArgs(
   mounts: ReturnType<typeof buildVolumeMounts>,
   containerName: string,
@@ -512,7 +520,7 @@ export async function runContainerAgent(
         resolve({
           status: 'error',
           result: null,
-          error: `Container timed out after ${configTimeout}ms`,
+          error: `${CONTAINER_TIMEOUT_ERROR_PREFIX} ${configTimeout}ms`,
         });
         return;
       }

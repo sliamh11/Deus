@@ -34,6 +34,7 @@ import { notifyPipelineStep } from './linear-notifications.js';
 import { escapeXmlForPrompt } from './prompt-utils.js';
 import { resolveVaultPath } from './solutions/store.js';
 import { defaultSession } from './agent-runtimes/types.js';
+import { CONTAINER_TIMEOUT_ERROR_PREFIX } from './container-runner.js';
 import { getBus } from './events/bus.js';
 import type {
   RunContext,
@@ -75,6 +76,21 @@ export function validateLinearIdentifier(id: string): void {
   if (!LINEAR_ID_RE.test(id)) {
     throw new Error(`Invalid Linear identifier: "${id}"`);
   }
+}
+
+/**
+ * LIA-168: classify an agent-run error. A container hard-timeout is an
+ * INFRASTRUCTURE failure, not an agent failure — it must not wear "Agent run
+ * failed", land in Backlog, or count toward the circuit breaker. Everything
+ * else (non-zero exit, parse failure, spawn error, etc.) is a genuine agent
+ * failure and keeps the existing handling.
+ */
+export function classifyRunFailure(
+  error: string,
+): 'infra-timeout' | 'agent-failure' {
+  return error.startsWith(CONTAINER_TIMEOUT_ERROR_PREFIX)
+    ? 'infra-timeout'
+    : 'agent-failure';
 }
 
 // Trailing '/' = prefix match; exact names match literally (prevents .env matching .envrc)
@@ -1264,7 +1280,37 @@ async function runIssue(
   }
 
   try {
-    if (error) {
+    if (error && classifyRunFailure(error) === 'infra-timeout') {
+      // LIA-168: a container hard-timeout is an INFRASTRUCTURE failure, not an
+      // agent failure. The agent may well have completed — any work it produced
+      // persists in its branch/PR; only the Linear transition + text summary were
+      // lost. Park for human inspection in Manual Review Required WITHOUT a
+      // "failed" verdict and WITHOUT touching the circuit-breaker count: we emit a
+      // neutral `agent_timeout` event, never `agent_failed` (which is what
+      // getConsecutiveFailCount keys on).
+      // No early-return here — the finally below handles worktree cleanup for all
+      // paths through this branch.
+      const manualReviewState = ctx.stateByName.get('Manual Review Required');
+      const parkState = manualReviewState ?? ctx.stateByName.get('Backlog')!;
+      await ctx.client.updateIssue(issueId, { stateId: parkState.id });
+      await ctx.client.createComment({
+        issueId,
+        body:
+          `**Container timed out** (infrastructure timeout) — the run was reaped after exceeding the container time limit.\n\n` +
+          `The agent may have completed; any work it produced will be in its branch/PR (if one exists). This is **not** counted as an agent failure. Moved to **${parkState.name}** for inspection.\n\n` +
+          `\`\`\`\n${error}\n\`\`\`\n\n---\n*To retry: investigate (check the container logs), then move back to **Ready for Agent**.*`,
+      });
+      // notifyPipelineStep (not a bare logPipelineEvent) so the pinned Pipeline
+      // Log comment reflects the timeout like every other terminal state.
+      fireAndForget(
+        notifyPipelineStep(ctx, issueId, identifier, 'agent_timeout', error),
+        { name: 'linear-dispatcher.notify-pipeline' },
+      );
+      logger.warn(
+        { issueId, error },
+        'linear-dispatcher: container timed out (infra) — parked in Manual Review Required, not counted as agent failure',
+      );
+    } else if (error) {
       await ctx.client.createComment({
         issueId,
         body: `**Agent run failed**\n\n\`\`\`\n${error}\n\`\`\`\n\n---\n*To retry: move to **Todo**, then to **Ready for Agent**.*`,
