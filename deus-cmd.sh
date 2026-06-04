@@ -933,10 +933,12 @@ case "$1" in
     # config md5 (computed below) are guaranteed equal. macOS/Linux only.
     shift
     init_force=""
+    init_seed=""
     init_target=""
     for a in "$@"; do
       case "$a" in
         --force) init_force="--force" ;;
+        --seed) init_seed="--seed" ;;  # explicit: the -*) catch-all below would eat it
         -h|--help) exec "$SCRIPT_DIR/scripts/deus_init.sh" --help ;;
         -*) ;;  # ignore unknown flags (forward-compat)
         *) [ -z "$init_target" ] && init_target="$a" ;;
@@ -951,7 +953,7 @@ case "$1" in
     init_root="$(cd "$init_root" 2>/dev/null && pwd -P)" || { echo "deus init: cannot resolve: $init_base" >&2; exit 1; }
     # Index + safety gate. The script exits non-zero iff the gate refuses; only
     # then do we skip registration (do not register an un-onboarded dir).
-    if "$SCRIPT_DIR/scripts/deus_init.sh" "$init_root" $init_force; then
+    if "$SCRIPT_DIR/scripts/deus_init.sh" "$init_root" $init_force $init_seed; then
       # Register — merge, never clobber: preserve any existing memory settings.
       if [ -z "$(_read_project_config "$init_root")" ]; then
         _write_project_config "$init_root" "standard" "true"
@@ -1944,7 +1946,8 @@ $STARTUP_INSTRUCTION"
     echo "  deus fcc        Launch with proxy model (see: deus provider, deus model)"
     echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
     echo "  deus init       Onboard the current project: index it for code intelligence"
-    echo "                    (codegraph + code_search) and register it (alias: onboard, --force)"
+    echo "                    (codegraph + code_search) and register it (alias: onboard)"
+    echo "                    flags: --force (skip safety gate), --seed (add a memory note)"
     echo "  deus auth       Validate credentials and rebuild+restart"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
     echo "  deus build      Compile TypeScript and restart the service (--no-restart, --quiet)"

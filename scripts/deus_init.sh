@@ -16,10 +16,13 @@
 # Cross-platform: macOS/Linux only (bash + git + codegraph), consistent with the
 # Windows-pending markers in deus-cmd.sh.
 #
-# Usage: deus_init.sh [project-dir] [--force]
+# Usage: deus_init.sh [project-dir] [--force] [--seed]
 #   project-dir  Defaults to $PWD. From the `deus init` arm this is the already
 #                realpath-resolved git toplevel; re-resolving it here is a no-op.
 #   --force      Bypass the safety gate (non-git dirs, or >5000 tracked files).
+#   --seed       Also write a project-onboarding note into Deus memory (home
+#                vault + resume index) so a cold resume / memory_tree query
+#                surfaces this project. Opt-in; warn-not-fatal; never overwrites.
 #
 # Exit codes: 0 = onboarded (indexing attempted; a missing engine warns, does
 #                 not fail). 1 = safety gate refused / invalid directory — the
@@ -28,11 +31,13 @@
 set -u
 
 FORCE=0
+SEED=0
 TARGET=""
 for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
-    -h|--help) sed -n '2,26p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
+    --seed) SEED=1 ;;
+    -h|--help) sed -n '2,29p' "$0" | sed 's/^#\{1,\} \{0,1\}//'; exit 0 ;;
     -*) echo "deus init: unknown flag: $arg" >&2; exit 1 ;;
     *) [ -z "$TARGET" ] && TARGET="$arg" ;;
   esac
@@ -126,4 +131,124 @@ else
 fi
 
 echo "  ✓ indexing complete"
+
+# ─── memory seed (--seed; opt-in, warn-not-fatal) ───
+# Indexes a project note into BOTH memory stores via ADDITIVE primitives only —
+# tree: memory_tree.discover_node (no orphan sweep), resume: memory_indexer --add
+# (soft-delete-then-readd). Neither can lose or downgrade existing memory.
+if [ "$SEED" -eq 1 ]; then
+  echo "  • seeding project memory…"
+  # Detect the stack deterministically (no agent); concatenate for monorepos.
+  seed_stack=""
+  _stack_add() { if [ -n "$seed_stack" ]; then seed_stack="$seed_stack + $1"; else seed_stack="$1"; fi; }
+  [ -f "$root/package.json" ] && _stack_add "Node.js"
+  [ -f "$root/go.mod" ] && _stack_add "Go"
+  [ -f "$root/Cargo.toml" ] && _stack_add "Rust"
+  { [ -f "$root/pyproject.toml" ] || [ -f "$root/requirements.txt" ] || [ -f "$root/setup.py" ]; } && _stack_add "Python"
+  [ -f "$root/Gemfile" ] && _stack_add "Ruby"
+  { [ -f "$root/pom.xml" ] || [ -f "$root/build.gradle" ]; } && _stack_add "Java/JVM"
+  [ -f "$root/composer.json" ] && _stack_add "PHP"
+  [ -z "$seed_stack" ] && seed_stack="unknown stack"
+
+  # Heredoc redirected to a temp file, NOT nested in $(...): macOS bash 3.2
+  # mis-parses heredocs inside command substitution. Python prints the note path
+  # on stdout; non-zero exit signals a non-fatal skip (no vault / import error).
+  seed_note=""
+  seed_tmp="$(mktemp "${TMPDIR:-/tmp}/deus_seed.XXXXXX" 2>/dev/null)" || seed_tmp=""
+  if [ -n "$seed_tmp" ] && \
+     SEED_ROOT="$root" SEED_NAME="$name" SEED_STACK="$seed_stack" SEED_DEUS_REPO="$DEUS_REPO" \
+     python3 - <<'PY' >"$seed_tmp"
+import os, sys, re, json, hashlib, datetime
+
+sys.path.insert(0, os.path.join(os.environ["SEED_DEUS_REPO"], "scripts"))
+try:
+    import memory_tree as mt
+except Exception as exc:  # import failure → non-fatal skip
+    print(f"cannot import memory_tree: {exc}", file=sys.stderr)
+    sys.exit(3)
+
+root = os.environ["SEED_ROOT"]
+name = os.environ["SEED_NAME"]
+stack = os.environ.get("SEED_STACK", "unknown stack")
+
+try:
+    vault = mt.resolve_vault_path()
+    if not vault.exists():
+        print(f"vault not found ({vault})", file=sys.stderr)
+        sys.exit(3)
+    md5 = hashlib.md5(root.encode("utf-8")).hexdigest()
+    safe = re.sub(r"[^A-Za-z0-9._-]", "-", name) or "project"
+    projects = vault / "Projects"
+    projects.mkdir(parents=True, exist_ok=True)
+    note = projects / f"deus-project-{safe}-{md5}.md"
+    rel = f"Projects/{note.name}"
+
+    # Idempotent id: reuse the existing note id; never regenerate on re-run.
+    node_id = None
+    if note.exists():
+        try:
+            node_id = mt.parse_frontmatter(note.read_text(encoding="utf-8")).get("id")
+        except Exception:
+            node_id = None
+    if not node_id:
+        node_id = mt.make_id()
+
+    today = datetime.date.today().isoformat()
+    desc = f"{name}: {stack}; onboarded into Deus code intelligence on {today}."
+    fm = (
+        "---\n"
+        f"id: {node_id}\n"
+        f"title: {json.dumps(name)}\n"
+        "type: project\n"
+        "atom_kind: knowledge\n"
+        f"description: {json.dumps(desc)}\n"
+        f"onboarded: {today}\n"
+        f"project_path: {json.dumps(root)}\n"
+        "---\n\n"
+    )
+    body = (
+        f"# {name}\n\n"
+        f"- Stack: {stack}\n"
+        f"- Onboarded into Deus code intelligence on {today}.\n"
+        "- Code intelligence: codegraph (.codegraph/ graph) + per-project code_search DB.\n"
+        f"- Project root: `{root}`\n"
+    )
+    note.write_text(fm + body, encoding="utf-8")
+except SystemExit:
+    raise
+except Exception as exc:
+    print(f"note write failed: {exc}", file=sys.stderr)
+    sys.exit(3)
+
+# Tree: additive single-node add (no orphan sweep). reembed on re-run.
+try:
+    db = mt.open_db()
+    status = mt.discover_node(vault, rel, db)
+    if status == "already_tracked":
+        status = mt.reembed_file(vault, rel, db)
+except Exception as exc:
+    status = f"tree_error:{exc}"
+print(f"tree: {status}", file=sys.stderr)
+print(str(note))  # stdout: note path for the indexer step
+PY
+  then
+    seed_note="$(tail -n1 "$seed_tmp")"
+  else
+    echo "  ! memory seed skipped (non-fatal — no vault or memory unavailable)" >&2
+  fi
+  [ -n "$seed_tmp" ] && rm -f "$seed_tmp"
+
+  if [ -n "$seed_note" ]; then
+    echo "  • seed note: $seed_note"
+    mi="$DEUS_REPO/scripts/memory_indexer.py"
+    if command -v python3 >/dev/null 2>&1 && [ -f "$mi" ]; then
+      if python3 "$mi" --add "$seed_note" --no-extract >/dev/null 2>&1; then
+        echo "  • resume index updated"
+      else
+        echo "  ! resume index update failed (non-fatal)" >&2
+      fi
+    fi
+  fi
+fi
+
 exit 0
