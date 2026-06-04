@@ -1644,6 +1644,8 @@ async function runGateForIssue(
             140,
           )
         : `${gateSpec.name}: ${verdict} (startup sweep)`;
+    // notifyPipelineStep is the authoritative writer (row + status_summary +
+    // comment); a bare logPipelineEvent here would double-write via the sink.
     fireAndForget(
       notifyPipelineStep(
         ctx,
@@ -1654,7 +1656,6 @@ async function runGateForIssue(
       ),
       { name: 'linear-webhook.notify-pipeline' },
     );
-    logPipelineEvent(issue.id, issue.identifier, eventType, sweepDetail);
     logger.info(
       { issueId: issue.id, gate: gateSpec.name, verdict, mode: effectiveMode },
       'startup-sweep: gate evaluation complete',

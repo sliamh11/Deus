@@ -11,7 +11,7 @@ import { execFile } from 'child_process';
 import { logger } from './logger.js';
 import { fireAndForget } from './async/index.js';
 import {
-  logPipelineEvent,
+  insertPipelineEventRow,
   getPipelineEvents,
   upsertPipelineComment,
   getPipelineCommentId,
@@ -188,7 +188,13 @@ export async function notifyPipelineStep(
   eventType: string,
   detail?: string,
 ): Promise<void> {
-  const rowId = logPipelineEvent(issueId, identifier, eventType, detail);
+  // Phase-3 cutover (LIA-166): insert SYNCHRONOUSLY here, not via logPipelineEvent
+  // (which is now emit-only → the live ObservabilitySink inserts). This path must
+  // stay synchronous because it needs (a) the rowid for the status_summary UPDATE
+  // below and (b) the row present before updateUnifiedComment's getPipelineEvents
+  // read at the end. It deliberately does NOT emit, so the sink never double-writes
+  // this row.
+  const rowId = insertPipelineEventRow(issueId, identifier, eventType, detail);
 
   const label = EVENT_LABELS[eventType] || eventType;
   macosNotify('Deus', `${identifier}: ${label}`);

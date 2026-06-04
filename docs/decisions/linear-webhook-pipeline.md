@@ -291,6 +291,13 @@ Gate agents and dispatch agents run through the same agent runtime as all other 
 
 Every significant pipeline event is logged to the `linear_pipeline_events` table and surfaced in two ways:
 
+> **Event-hub Phase-3 cutover (LIA-166):** the durable write to `linear_pipeline_events`
+> for the fire-and-forget `logPipelineEvent` callers now originates from the event-hub
+> **ObservabilitySink** listener (on `pipeline.transition`), not inline. The
+> `notifyPipelineStep` path keeps a synchronous inline write (it needs the rowid for the
+> status-summary update and the row present before it reads the table to rebuild the
+> comment below). See [Orchestrator Event Hub](event-hub.md#phase-3-cutover-amendment-lia-166-partial-not-literal-sole-writer).
+
 ### Unified pipeline comment
 
 Each issue gets a single rolling **Pipeline Log** comment that updates as events occur. The comment body is rebuilt (materialized view pattern) from the event log on each update. A per-issue promise-chain mutex prevents duplicate comment creation under concurrent events. The comment caps at 50 events with a truncation notice for older entries.
