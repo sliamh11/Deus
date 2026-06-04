@@ -2122,11 +2122,23 @@ def check_bench_labels(project_root: Path) -> int:
         print(f"Benchmark fixture not found: {_BENCH_FIXTURE} (skipped)")
         return 0
 
-    # Resolve vault path (same logic as memory_tree.py)
+    # Resolve vault path: env var → config.json → legacy fallback
     vault_env = os.environ.get("DEUS_VAULT_PATH")
-    vault = Path(vault_env).expanduser() if vault_env else Path(
-        "~/Desktop/אישי/Brain Dump/Second Brain/Deus"
-    ).expanduser()
+    if vault_env:
+        vault = Path(vault_env).expanduser()
+    else:
+        cfg_path = Path("~/.config/deus/config.json").expanduser()
+        vault = None
+        if cfg_path.exists():
+            try:
+                cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+                vp = cfg.get("vault_path")
+                if isinstance(vp, str) and vp:
+                    vault = Path(vp).expanduser()
+            except (OSError, json.JSONDecodeError):
+                pass
+        if vault is None:
+            vault = Path("~/Desktop/אישי/Brain Dump/Second Brain/Deus").expanduser()
 
     vault_paths = _collect_vault_paths(vault) if vault.is_dir() else set()
     auto_paths = _collect_auto_memory_paths()
