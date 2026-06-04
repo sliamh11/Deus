@@ -5,8 +5,13 @@ DEUS_SKILLS_DIR="$HOME/.claude/skills"
 
 # Resolve symlinks so SCRIPT_DIR always points to the repo, even when
 # called via /usr/local/bin/deus → ~/deus/deus-cmd.sh symlink.
+# Seed from $ZSH_ARGZERO, not $0: inside a zsh function $0 is the function name
+# (FUNCTION_ARGZERO, on by default), so $0 here would be "_resolve_script_dir"
+# and SCRIPT_DIR would collapse to cwd from any foreign directory — breaking
+# subcommands like `deus init` that run from inside another project.
+# $ZSH_ARGZERO holds the real argv[0] (the path/symlink used to invoke).
 _resolve_script_dir() {
-  local src="$0"
+  local src="${ZSH_ARGZERO:-$0}"
   while [ -L "$src" ]; do
     local dir="$(cd "$(dirname "$src")" && pwd)"
     src="$(readlink "$src")"
