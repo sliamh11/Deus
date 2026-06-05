@@ -3,7 +3,7 @@ governs:
   - evolution/
   - eval/
   - scripts/memory_indexer.py
-last_verified: "2026-06-03" # auto-bump @1780483263
+last_verified: "2026-06-06" # re-verified for gemma4-12b-local-model-evaluation ADR
 test_tasks:
   - "Add a new DeepEval metric under eval/ for the core_qa test suite"
   - "Add a new judge backend to evolution/judge/ using the provider registry"
