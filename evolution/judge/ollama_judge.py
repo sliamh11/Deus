@@ -56,10 +56,15 @@ def _check_model_pulled(model: str) -> None:
 
 def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
     """Synchronous Ollama generate call."""
-    # Qwen is no longer the default, but keep the /no_think suffix in case a
-    # user sets OLLAMA_MODEL=qwen*: without it the thinking mode returns empty.
+    # Suppress model "thinking" for structured output — otherwise the thinking
+    # preamble slows the call and can corrupt the JSON-grammar response. The
+    # mechanism is family-specific: Qwen uses the /no_think prompt suffix; Gemma4
+    # (the default OLLAMA_MODEL) uses the "think": false request-body key. Prior
+    # to this fix the default judge ran with thinking ON and no suppression.
+    # Scoped to gemma4 specifically — the only Gemma we run — rather than all
+    # "gemma*" so earlier variants aren't sent a key they may not support.
     full_prompt = f"{prompt}\n/no_think" if "qwen" in model.lower() else prompt
-    body = json.dumps({
+    payload = {
         "model": model,
         "prompt": full_prompt,
         "stream": False,
@@ -80,7 +85,10 @@ def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
             "temperature": 0,
             "seed": 42,
         },
-    }).encode()
+    }
+    if "gemma4" in model.lower():
+        payload["think"] = False
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         _ollama_url("/api/generate"),
         data=body,
