@@ -40,6 +40,7 @@ import datetime
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -158,15 +159,36 @@ def _wait_required_ci(pr: int, interval: int) -> tuple[bool, str]:
     return False, f"required CI not green (exit {result.returncode}): {_tail(result)}"
 
 
-def _verify_mergeable(pr: int) -> tuple[bool, str]:
-    data = _gh_json(["pr", "view", str(pr), "--json", "mergeable,reviewDecision,state"])
-    if not isinstance(data, dict):
-        return False, "could not read PR state"
-    if data.get("state") != "OPEN":
-        return False, f"PR is {data.get('state')}, not OPEN"
-    if data.get("mergeable") != "MERGEABLE":
-        return False, f"mergeable={data.get('mergeable')} (need MERGEABLE)"
-    return True, f"MERGEABLE (review={data.get('reviewDecision')})"
+def _verify_mergeable(pr: int, *, retries: int = 6, delay: int = 3) -> tuple[bool, str]:
+    """Confirm the PR is MERGEABLE, polling through GitHub's async recompute.
+
+    After a push GitHub recomputes `mergeable` asynchronously, reporting UNKNOWN
+    (computed independently of, and often slower than, the CI checks) until it
+    settles. Both UNKNOWN and a transient `gh` read failure are treated as
+    retryable — they share the same just-pushed window; only a definitive
+    CONFLICTING or non-OPEN state fails fast.
+
+    Defaults (6 × 3s = 18s) give generous headroom over GitHub's typical
+    few-second post-push settle without stalling the train; `retries`/`delay`
+    are injectable so a caller can tune or disable the wait.
+    """
+    last_detail = "could not read PR state"
+    for attempt in range(retries):
+        data = _gh_json(["pr", "view", str(pr), "--json", "mergeable,reviewDecision,state"])
+        if isinstance(data, dict):
+            if data.get("state") != "OPEN":
+                return False, f"PR is {data.get('state')}, not OPEN"
+            mergeable = str(data.get("mergeable"))
+            if mergeable == "MERGEABLE":
+                return True, f"MERGEABLE (review={data.get('reviewDecision')})"
+            if mergeable == "CONFLICTING":
+                return False, "mergeable=CONFLICTING — rebase/resolve before merging"
+            last_detail = f"mergeable={mergeable}"  # UNKNOWN → still computing
+        else:
+            last_detail = "could not read PR state (transient gh failure)"
+        if attempt < retries - 1:
+            time.sleep(delay)
+    return False, f"{last_detail} after {retries} polls — GitHub did not settle"
 
 
 def _audit(repo_root: Path, message: str) -> bool:

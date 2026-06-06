@@ -253,6 +253,51 @@ def test_rebase_and_push_full_path_with_bump_and_repush(mt, monkeypatch):
     assert "re-push" in detail
 
 
+def test_verify_mergeable_polls_through_unknown(mt, monkeypatch):
+    # GitHub reports UNKNOWN right after a push, then settles to MERGEABLE.
+    seq = iter([
+        {"state": "OPEN", "mergeable": "UNKNOWN", "reviewDecision": "REVIEW_REQUIRED"},
+        {"state": "OPEN", "mergeable": "UNKNOWN", "reviewDecision": "REVIEW_REQUIRED"},
+        {"state": "OPEN", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED"},
+    ])
+    monkeypatch.setattr(mt, "_gh_json", lambda *a, **k: next(seq))
+    monkeypatch.setattr(mt.time, "sleep", lambda s: None)
+    ok, detail = mt._verify_mergeable(709, retries=3, delay=0)
+    assert ok is True
+    assert "MERGEABLE" in detail
+
+
+def test_verify_mergeable_retries_transient_gh_failure(mt, monkeypatch):
+    # A transient gh read failure (non-dict) is retried, same as UNKNOWN.
+    seq = iter([
+        None,  # gh read failed
+        {"state": "OPEN", "mergeable": "MERGEABLE", "reviewDecision": "REVIEW_REQUIRED"},
+    ])
+    monkeypatch.setattr(mt, "_gh_json", lambda *a, **k: next(seq))
+    monkeypatch.setattr(mt.time, "sleep", lambda s: None)
+    ok, detail = mt._verify_mergeable(709, retries=3, delay=0)
+    assert ok is True
+    assert "MERGEABLE" in detail
+
+
+def test_verify_mergeable_conflicting_fails_fast(mt, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(mt, "_gh_json", lambda *a, **k: {"state": "OPEN", "mergeable": "CONFLICTING"})
+    monkeypatch.setattr(mt.time, "sleep", lambda s: sleeps.append(s))
+    ok, detail = mt._verify_mergeable(709)
+    assert ok is False
+    assert "CONFLICTING" in detail
+    assert sleeps == []  # definitive state → no polling
+
+
+def test_verify_mergeable_gives_up_after_persistent_unknown(mt, monkeypatch):
+    monkeypatch.setattr(mt, "_gh_json", lambda *a, **k: {"state": "OPEN", "mergeable": "UNKNOWN"})
+    monkeypatch.setattr(mt.time, "sleep", lambda s: None)
+    ok, detail = mt._verify_mergeable(709, retries=3, delay=0)
+    assert ok is False
+    assert "did not settle" in detail
+
+
 def test_wait_required_ci_uses_required_and_watch(mt, monkeypatch):
     captured = {}
 
