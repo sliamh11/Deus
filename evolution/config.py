@@ -131,6 +131,7 @@ EVOLUTION_SKIP_GROUPS: str = os.environ.get("EVOLUTION_SKIP_GROUPS", "")
 # prompt — but the host persona is the PRIMARY user's, so it is injected only for
 # this group. Other groups score personalization ungraded (no cross-user leakage).
 # Empty (default) = opt-in off: no persona is injected for any group until set.
+# Wired into both live judge callers (mcp_server + maintenance) in PR #710.
 JUDGE_PERSONA_GROUP: str = os.environ.get("DEUS_JUDGE_PERSONA_GROUP", "")
 
 # Hard cap (chars) on the injected persona digest. Bounds outbound payload and —
