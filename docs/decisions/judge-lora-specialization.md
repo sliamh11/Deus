@@ -223,3 +223,89 @@ p-hacking. Future runs use the canonical final-iter adapter.
 - Original motivating ADR: none — the LoRA work proceeded on session-log
   evidence + bench numbers, not on a pre-existing ADR. This ADR closes
   the loop.
+
+## Addendum — 2026-06-06: Evidence-Backing Pass + Two Refinements
+
+**Status unchanged** (Accepted; keep base Gemma-3n-E4B, do not adopt the adapter). This
+addendum records a `/research` verification of the training concepts behind this ADR against
+primary literature, and adds two refinements the original did not capture. It does **not** alter
+the Decision, the retune conditions, or any text above.
+
+A 2026-06-06 deep-research pass verified the foundational fine-tuning concepts (LoRA, QLoRA,
+SFT/DPO/RLHF, GRPO, distillation, QAT, reward-modeling, MoE) against their primary papers, then
+applied the verified literature back to this ADR. **Verdict: the literature validates this ADR's
+alternatives #1/#3/#4 as the textbook-correct moves** — it does not overturn the decision. Full
+note + evidence map: `Second Brain/Deus/Research/2026-06-06-finetuning-training-concepts-evidence-and-judge-lora-analysis.md` (vault).
+
+### Refinement 1 — The failed run was a category error, not only an overshoot
+
+The ADR above attributes the adapter's regression to LR overshoot (5e-5 × 5 epochs) over-fitting
+658 records. That is a contributing cause, but the deeper issue is an **objective mismatch**: we
+used a **generation method** — SFT-LoRA minimizing next-token cross-entropy over the JSON answer
+tokens — to solve a **regression target**: predict a scalar score. The loss optimized (token
+likelihood) is not the metric evaluated (score Pearson / MAE).
+
+The reward-model literature confirms a scoring objective's *native* formulation is a **scalar head
++ a ranking/regression loss** trained on comparisons — architecturally distinct from
+autoregressive generation:
+
+- Ouyang et al. 2022, *InstructGPT* ([arXiv:2203.02155](https://arxiv.org/abs/2203.02155)) — the
+  reward model is the base transformer + a **scalar linear head**, trained with a Bradley-Terry
+  pairwise loss.
+- Stiennon et al. 2020, *Learning to summarize from human feedback*
+  ([arXiv:2009.01325](https://arxiv.org/abs/2009.01325)) — established the scalar-reward-model-
+  from-comparisons pattern for text.
+
+**Consequence for this ADR (reinforces, does not change, the "Preferred Over Retune" ordering):**
+alternative **#4 (frozen-base + trained regression head)** is not merely a safety net to reach for
+*if* #1–#3 fail — it is the **objective-correct first-line approach** for a scoring task. A
+frozen-base head **mathematically cannot regress base quality** (base weights never change), which
+is precisely the failure mode the LoRA run exhibited (regression on every measured dimension). The
+documented retune path (Conditions For A Retune Attempt) remains valid but stays *last* — an
+SFT-LoRA retune on the scoring objective should be attempted only if both the regression-head (#4)
+and decoding-level (#3) reformulations are shown insufficient on the deployment stack.
+
+The safety zero-variance failure (retune precondition #2) is the same lesson in miniature: a
+regression (MSE) loss produces **no gradient signal when all training labels are identical** —
+here the degenerate ground-truth `safety = 1.0` on every record, not the method, is the cause —
+so the dimension was unlearnable by construction, independent of method or hyperparameters.
+
+### Refinement 2 — GRPO: now enumerated, but dominated here and CUDA-gated
+
+The "Explicitly NOT pursued (anti-patterns)" list rejected DPO (needs paired preference data; we
+have pointwise scores) but did not enumerate **GRPO** (Shao et al. 2024, *DeepSeekMath*,
+[arXiv:2402.03300](https://arxiv.org/abs/2402.03300); DeepSeek-AI 2025, *R1*,
+[arXiv:2501.12948](https://arxiv.org/abs/2501.12948)). GRPO optimizes against a
+**programmable / verifiable reward** using a group-relative advantage, with **no critic network
+and no paired preference data** — so, unlike DPO, it *would* accept our pointwise Gemini score as
+a reward (`reward = −|judge − gemini|`), sidestepping the paired-data wall.
+
+It is nonetheless **not pursued**, for two precise reasons:
+
+1. **Dominated for this objective.** RL earns its keep when the output **cannot be directly
+   supervised** (e.g. math reasoning: the final answer is verifiable, the reasoning path is not).
+   For our judge we **can** directly supervise — we hold the target Gemini score — so **direct
+   regression (#4) is more sample-efficient and strictly dominates** GRPO for pure pointwise
+   scoring. GRPO becomes relevant only if the judge moves to a **reasoning-heavy** formulation
+   (score verifiable, rationale not).
+2. **Not runnable locally.** The GRPO tooling (TRL / Unsloth) is CUDA/Triton-bound and does not
+   run on the M3 Pro deployment hardware (per the 2026-06-06 Unsloth platform evaluation). It
+   would require a cloud/CUDA GPU regardless.
+
+**Keep GRPO on the radar** for a future reasoning-judge formulation on cloud hardware; it is not a
+candidate for the current local pointwise-scoring task.
+
+### References added by this addendum
+
+- Vault research note: `Second Brain/Deus/Research/2026-06-06-finetuning-training-concepts-evidence-and-judge-lora-analysis.md`
+- Ouyang et al. 2022 ([arXiv:2203.02155](https://arxiv.org/abs/2203.02155)); Stiennon et al. 2020
+  ([arXiv:2009.01325](https://arxiv.org/abs/2009.01325)) — reward model = scalar regressor.
+- Shao et al. 2024 ([arXiv:2402.03300](https://arxiv.org/abs/2402.03300)); DeepSeek-AI 2025
+  ([arXiv:2501.12948](https://arxiv.org/abs/2501.12948)) — GRPO.
+- 2026-06-06 session log: `Session-Logs/2026-06-06/unsloth-training-platforms-and-gemma4-adr.md`
+  (Unsloth / MLX platform finding).
+
+**Cite hygiene:** this addendum adds only the four arXiv-verified citations above. It does **not**
+reproduce the G-Eval / Alves 2025 citations from alternative #3 (out of scope — not re-verified in
+this pass), nor the Arize Spearman 0.51→0.66 figure (explicitly flagged unverified in the
+original).
