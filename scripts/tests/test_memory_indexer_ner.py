@@ -339,6 +339,51 @@ def test_ollama_atoms_connection_refused_returns_none(mi):
         assert mi._extract_atoms_ollama("x") is None
 
 
+def test_ollama_atoms_request_body_shape(mi):
+    """Guard the Gemma4 fixes: think:false must be sent TOP-LEVEL (not under
+    options), and the items schema must require both text+category — otherwise
+    Gemma4 constrained decoding omits category and the post-parse filter drops
+    100% of atoms (LIA-185 / LIA-187)."""
+    captured = {}
+    result_dict = {"atoms": [{"text": "x", "category": "fact"}]}
+
+    def _capture(req, *args, **kwargs):
+        captured["body"] = json.loads(req.data.decode())
+        return _mock_ollama_response(result_dict)
+
+    with patch("urllib.request.urlopen", side_effect=_capture):
+        mi._extract_atoms_ollama("some session content")
+
+    body = captured["body"]
+    # LIA-185: thinking suppressed at the request top level, not under "options".
+    assert body.get("think") is False
+    assert "think" not in body.get("options", {})
+    # Structured-output parsing depends on a non-streamed response.
+    assert body.get("stream") is False
+    # LIA-187: items schema forces both fields so category is always emitted.
+    items = body["format"]["properties"]["atoms"]["items"]
+    assert set(items["required"]) == {"text", "category"}
+
+
+def test_ollama_entities_request_suppresses_thinking(mi_auto):
+    """The entity path shares the Gemma4 think:false fix (top-level, not under
+    options). It deliberately does NOT force `required` on items — Gemma4 emits
+    all entity fields without it (verified), so that would be unproven hardening."""
+    captured = {}
+    result_dict = {"entities": [], "relationships": []}
+
+    def _capture(req, *args, **kwargs):
+        captured["body"] = json.loads(req.data.decode())
+        return _mock_ollama_response(result_dict)
+
+    with patch("urllib.request.urlopen", side_effect=_capture):
+        mi_auto._extract_entities_ollama("Deus uses Ollama.")
+
+    body = captured["body"]
+    assert body.get("think") is False
+    assert "think" not in body.get("options", {})
+
+
 def test_extract_atoms_auto_falls_back_to_gemini_when_ollama_down(mi, monkeypatch):
     monkeypatch.setattr(mi, "ATOM_PROVIDER", "auto")
     monkeypatch.setattr(mi, "_extract_atoms_ollama", lambda c: None)  # Ollama down

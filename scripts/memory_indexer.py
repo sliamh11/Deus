@@ -1919,6 +1919,10 @@ def _extract_atoms_ollama(content: str) -> "list[dict] | None":
         "model": ollama_model,
         "prompt": prompt,
         "stream": False,
+        # Gemma4 has thinking ON by default; suppress it for structured output.
+        # ~2x faster (16s -> 8s on a real session log) and avoids a thinking
+        # preamble that can corrupt the response under a JSON grammar.
+        "think": False,
         # Object-wrapper schema (Ollama structured output; top-level array is
         # undefined — mirror the entity path's object form).
         "format": {
@@ -1932,6 +1936,10 @@ def _extract_atoms_ollama(content: str) -> "list[dict] | None":
                             "text": {"type": "string"},
                             "category": {"type": "string"},
                         },
+                        # Force both fields: without this, Gemma4 constrained
+                        # decoding omits "category" on every atom, so the
+                        # post-parse filter below drops 100% of them (LIA-187).
+                        "required": ["text", "category"],
                     },
                 },
             },
@@ -2213,6 +2221,12 @@ def _extract_entities_ollama(content: str) -> "dict | None":
         "model": ollama_model,
         "prompt": prompt,
         "stream": False,
+        # Suppress Gemma4 thinking for structured output (same ~2x speedup as the
+        # atom path). Items are intentionally NOT marked "required" here: unlike
+        # the atom "category" field, Gemma4 reliably emits all entity/relationship
+        # fields without it (verified on gemma4:e4b, 2026-06), so adding it would
+        # be unproven hardening.
+        "think": False,
         "format": {
             "type": "object",
             "properties": {
