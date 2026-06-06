@@ -1763,6 +1763,169 @@ def _make_gh_run(checks: list[dict] | None = None, returncode: int = 0, stderr: 
     return fake_run
 
 
+def _make_gh_run_split(required_checks, all_checks, *, required_rc=0, all_rc=0):
+    """Fake ``subprocess.run`` returning different ``gh pr checks`` results for
+    the ``--required`` query vs the unfiltered query (LIA-144 fail-closed path).
+    """
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            if "--required" in cmd:
+                payload, rc = required_checks, required_rc
+            else:
+                payload, rc = all_checks, all_rc
+            stdout = json.dumps(payload) if payload is not None else ""
+            return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    return fake_run
+
+
+def test_check_ci_status_uses_required_flag(monkeypatch):
+    # LIA-144: the gate must query only branch-protection-required checks.
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    status, _ = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_GREEN
+    # Strict positional assertion — --required must be passed (not just present
+    # somewhere by accident), scoping the query to required checks only.
+    assert captured["cmd"] == [
+        "gh", "pr", "checks", "123", "--json", "bucket,name", "--required",
+    ]
+
+
+def test_check_ci_status_advisory_pending_does_not_block(monkeypatch):
+    # Required checks all pass; advisory checks (TrueCourse etc.) still pending in
+    # the unfiltered set. The gate sees only required → GREEN (no block).
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=[{"bucket": "pass", "name": "ci"}],
+            all_checks=[
+                {"bucket": "pass", "name": "ci"},
+                {"bucket": "pending", "name": "TrueCourse --diff vs main"},
+            ],
+        ),
+    )
+    status, _ = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_GREEN
+
+
+def test_check_ci_status_required_pending_blocks(monkeypatch):
+    # A pending REQUIRED check still blocks.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=[{"bucket": "pending", "name": "ci"}],
+            all_checks=[{"bucket": "pending", "name": "ci"}],
+            required_rc=8,
+            all_rc=8,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_PENDING
+    assert "ci" in detail
+
+
+def test_check_ci_status_no_required_but_checks_present_fails_closed(monkeypatch):
+    # --required returns nothing, but the PR has (advisory) checks → ambiguous →
+    # NO_REQUIRED, which must block (fail closed).
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "pass", "name": "advisory-only"}],
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_NO_REQUIRED
+    assert "none are branch-protection-required" in detail
+    assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_check_ci_status_no_checks_anywhere_does_not_block(monkeypatch):
+    # Genuinely zero checks (required AND unfiltered empty) → NO_CHECKS, no block
+    # (unchanged pre-LIA-144 behaviour).
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(required_checks=None, all_checks=None),
+    )
+    status, _ = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_NO_CHECKS
+    assert hooks._ci_block_reason("123", status, "") is None
+
+
+def test_ci_block_reason_no_required_is_distinct_and_blocking():
+    hooks = load_hooks()
+    reason = hooks._ci_block_reason(
+        "123",
+        hooks._CI_STATUS_NO_REQUIRED,
+        "2 check(s) present but none are branch-protection-required",
+    )
+    assert reason is not None
+    assert "fail-closed" in reason
+    assert "no required checks" in reason.lower()
+
+
+def test_admin_merge_gate_ci_check_uses_required_scoping(tmp_path, monkeypatch):
+    # The PreToolUse hook path (run_admin_merge_gate) must also scope its CI
+    # check to required-only — verified by capturing the gh argv it issues.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    command = "gh pr merge 294 --squash --admin"
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    assert hooks.approve_admin_merge(command, repo) == 0
+    rc = hooks.run_admin_merge_gate(bash_event(repo, command), repo)
+    assert rc == 0
+    assert "--required" in captured["cmd"]
+
+
 def test_check_ci_status_green(monkeypatch):
     hooks = load_hooks()
     monkeypatch.setattr(
