@@ -124,6 +124,21 @@ JUDGE_RETRY_COUNT = int(os.environ.get("EVOLUTION_JUDGE_RETRY_COUNT", "1"))
 # Interactions from these groups are skipped in cmd_log_interaction without being stored.
 EVOLUTION_SKIP_GROUPS: str = os.environ.get("EVOLUTION_SKIP_GROUPS", "")
 
+# ── Persona injection (judge personalization) ─────────────────────────────────
+
+# group_folder of the primary host user. The judge's `personalization` dimension
+# is gradable only when the user's stored preferences (vault Persona/) are in the
+# prompt — but the host persona is the PRIMARY user's, so it is injected only for
+# this group. Other groups score personalization ungraded (no cross-user leakage).
+# Empty (default) = opt-in off: no persona is injected for any group until set.
+JUDGE_PERSONA_GROUP: str = os.environ.get("DEUS_JUDGE_PERSONA_GROUP", "")
+
+# Hard cap (chars) on the injected persona digest. Bounds outbound payload and —
+# critically — limits PII reaching the external Gemini judge, mirroring
+# JUDGE_MAX_PROMPT/RESPONSE_CHARS. The digest is already scoped to work-style
+# preferences (no names/household/career); this is defense-in-depth.
+JUDGE_MAX_PERSONA_CHARS = int(os.environ.get("EVOLUTION_JUDGE_MAX_PERSONA_CHARS", "500"))
+
 # ── Compaction & Batch Judging ───────────────────────────────────────────────
 
 # Compact scored interactions older than N days (replace with summary, NULL response).

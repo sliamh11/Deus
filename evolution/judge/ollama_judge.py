@@ -124,8 +124,9 @@ class OllamaRuntimeJudge(BaseJudge):
         response: str,
         tools_used: Optional[list[str]] = None,
         context: Optional[str] = None,
+        user_profile: Optional[str] = None,
     ) -> JudgeResult:
-        eval_prompt = _build_eval_prompt(prompt, response, tools_used, context)
+        eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
         raw = _call_ollama(eval_prompt, self.model)
         return _parse_result(raw)
 
@@ -135,8 +136,9 @@ class OllamaRuntimeJudge(BaseJudge):
         response: str,
         tools_used: Optional[list[str]] = None,
         context: Optional[str] = None,
+        user_profile: Optional[str] = None,
     ) -> JudgeResult:
-        eval_prompt = _build_eval_prompt(prompt, response, tools_used, context)
+        eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
         raw = await _call_ollama_async(eval_prompt, self.model)
         return _parse_result(raw)
 
@@ -146,10 +148,13 @@ def _build_eval_prompt(
     response: str,
     tools_used: Optional[list[str]],
     context: Optional[str],
+    user_profile: Optional[str] = None,
 ) -> str:
     parts = [RUBRIC, "\n## Interaction to evaluate\n"]
     if context:
         parts.append(f"**Context:** {context}\n")
+    if user_profile:
+        parts.append(f"**Known user preferences (stored profile):**\n{user_profile}\n")
     parts.append(f"**User prompt:**\n{prompt}\n")
     if tools_used:
         parts.append(f"**Tools used:** {', '.join(tools_used)}\n")
