@@ -341,7 +341,8 @@ and these are almost entirely the `runtime` surface — so the gradable pool is 
 
 (Latency: 26b being *faster* than 12b is not a typo — it reproduced across two independent runs
 on this M3 Pro. Cause unconfirmed, likely Metal/quantization scheduling; it drives no decision
-since 26b is rejected on agreement. 12b's 9.2 s/call is the cost that keeps it off the hot path.)
+since 26b is rejected on agreement. 12b's 9.2 s/call is moot for UX: the hot-path judge is
+fire-and-forget (`mcp_server.py` `asyncio.create_task`), so judge latency is off the user's path.)
 
 Paired bootstrap (same rows): **12b − e4b = +0.088, CI [+0.026, +0.151], P=1.00** (significantly
 better); **26b − e4b = −0.076, CI [−0.156, −0.003], P=0.02** (significantly **worse**).
@@ -361,7 +362,13 @@ better); **26b − e4b = −0.076, CI [−0.156, −0.003], P=0.02** (significan
    would (high precision ≥0.91 — they rarely false-flag). Improving reflexion *recall* is a rubric/
    prompt lever, not a model-size lever.
 
-**Decision:** prefer **gemma4:12b** for the latency-tolerant **batch/maintenance** judge via a new
-`EVOLUTION_OLLAMA_JUDGE_MODEL` override (the +0.088 gain is significant and well-powered); keep
-**e4b** on the real-time hot path (`mcp_server`) given 12b's 9.2 s/call. **Do not adopt 26b.** The
-override is a small separate change, gated on this measurement — not part of this fixture branch.
+**Decision:** prefer **gemma4:12b** as the judge model, opt-in via a new `EVOLUTION_OLLAMA_JUDGE_MODEL`
+override (the +0.088 gain is significant and well-powered). Because the hot-path judge is
+**fire-and-forget** (`mcp_server.py` `asyncio.create_task`), 12b's 9.2 s/call carries **no UX cost** —
+so the override applies to **both** the hot and batch judges; running 12b everywhere keeps stored
+labels **consistent** (mixing models would contaminate agreement comparisons). **The default stays
+e4b** (the override is a true no-op until set), reconciling with the 2026-06-05 ADR
+([gemma4-12b-local-model-evaluation.md](gemma4-12b-local-model-evaluation.md)), which keeps e4b as
+default and sanctions this per-surface override *mechanism* (the ADR exemplified it for reflexion;
+#713's evidence is what justifies the judge surface). **Do not adopt 26b.** The override ships
+separately as the opt-in knob in **PR #718**, gated on this measurement.
