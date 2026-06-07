@@ -1575,13 +1575,16 @@ describe.skipIf(onWindows)('Backend parity — system-level equivalence', () => 
       'DEUS_OPENAI_MODEL',
     ]);
 
-    // All non-auth env vars must be identical
-    const claudeNonAuth = new Map(
-      [...claudeEnv].filter(([k]) => !authKeys.has(k)),
-    );
-    const openaiNonAuth = new Map(
-      [...openaiEnv].filter(([k]) => !authKeys.has(k)),
-    );
+    // Per-dispatch, non-deterministic env (value is `${group}-${Date.now()}`).
+    // Shared identically across backends by construction, but its VALUE differs
+    // between two separate dispatches, so exclude it from the value-parity check
+    // (LIA-154 DEUS_INTERACTION_ID).
+    const perDispatchKeys = new Set(['DEUS_INTERACTION_ID']);
+    const excluded = (k: string) => authKeys.has(k) || perDispatchKeys.has(k);
+
+    // All non-auth, non-per-dispatch env vars must be identical
+    const claudeNonAuth = new Map([...claudeEnv].filter(([k]) => !excluded(k)));
+    const openaiNonAuth = new Map([...openaiEnv].filter(([k]) => !excluded(k)));
     expect(claudeNonAuth).toEqual(openaiNonAuth);
   });
 
