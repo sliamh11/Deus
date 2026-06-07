@@ -38,7 +38,7 @@ def _default_share_dir() -> Path | None:
     Prefer an explicit env var; otherwise ask Deus's memory_tree for the vault
     root. Returns None if neither is available (caller errors out with help).
     """
-    env = os.environ.get("DEUS_VAULT_SHARE_PATH")
+    env = os.environ.get("DEUS_VAULT_SHARE_PATH")  # config path, tracked in PR #715
     if env:
         return Path(env).expanduser()
     try:
@@ -166,6 +166,7 @@ def main() -> None:
     ap.add_argument(
         "--db",
         type=Path,
+        # DEUS_SHARE_DB_PATH: config path, tracked in PR #715
         default=Path(
             os.environ.get("DEUS_SHARE_DB_PATH", "~/.deus/odysseus-share.db")
         ).expanduser(),

@@ -32,6 +32,7 @@ from mcp.server.fastmcp import FastMCP
 
 import _embed
 
+# Sidecar config flags (runtime config, not feature gates; tracked in PR #715).
 DB_PATH = Path(os.environ.get("DEUS_SHARE_DB_PATH", "/data/share.db"))
 RECALL_LOG = Path(os.environ.get("DEUS_RECALL_LOG", "/data/recall.log"))
 # Default to loopback for safety: if someone runs this directly on the host
@@ -39,12 +40,12 @@ RECALL_LOG = Path(os.environ.get("DEUS_RECALL_LOG", "/data/recall.log"))
 # DEUS_MCP_HOST=0.0.0.0 explicitly so the container is reachable on its network.
 BIND_HOST = os.environ.get("DEUS_MCP_HOST", "127.0.0.1")
 BIND_PORT = int(os.environ.get("DEUS_MCP_PORT", "8200"))
-# Clamp to >=1 so a stray 0/negative value can't blank every result silently.
+# Clamp to >=1 so a stray 0/negative value can't blank every result silently. (PR #715)
 MAX_CHARS = max(1, int(os.environ.get("DEUS_RECALL_MAX_CHARS", "4000")))
 # Optional L2-distance cutoff. Unset (default) = return all top-k, matching the
 # approved plan's behavior. When set, off-topic queries that only match weakly
 # return nothing instead of the least-bad curated note. See .env.example for
-# calibration guidance (the canonical home for the threshold values).
+# calibration guidance (the canonical home for the threshold values). (PR #715)
 _max_dist_env = os.environ.get("DEUS_RECALL_MAX_DISTANCE", "").strip()
 MAX_DISTANCE = float(_max_dist_env) if _max_dist_env else None
 
