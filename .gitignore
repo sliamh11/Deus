@@ -128,6 +128,8 @@ finetune/data/
 finetune/adapters/
 finetune/gemma4-tool-fused/
 finetune/judge-lora-gemma3n/
+# Judge benchmark: real-interaction fixture + run results contain user prompts/responses (PII) — local only
+finetune/judge-bench/
 
 # Developer tools (local indexes)
 .codegraph/
