@@ -31,9 +31,13 @@ export const RuntimeSessionSchema = z.object({
 });
 
 export const ContextStatsSchema = z.object({
-  tokens: z.number(),
+  // tokens/pct nullable (LIA-194): SDK-omitted usage → container NaN →
+  // JSON `null` on the wire; a strict z.number() dropped the whole output marker
+  // → broke dispatch logging + caused retries. Do NOT re-sync to non-null to
+  // match the container's `number` interface. `limit` stays required.
+  tokens: z.number().nullable(),
   limit: z.number(),
-  pct: z.number(),
+  pct: z.number().nullable(),
   warn: z.boolean().optional(),
   autoCompact: z.boolean().optional(),
 });

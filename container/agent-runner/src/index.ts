@@ -86,6 +86,10 @@ interface ContainerOutput {
   compactionEvent?: CompactionEvent;
 }
 
+// SYNC-REQUIRED with host ContextStatsSchema (src/ipc-protocol.ts), with ONE
+// intentional asymmetry: host types tokens/pct `number|null` (we emit NaN→null
+// when the SDK omits usage, LIA-194). Keep `number` here; do NOT make the host
+// non-null — that drops the output marker and breaks dispatch logging.
 interface ContextStats {
   tokens: number;
   limit: number;
