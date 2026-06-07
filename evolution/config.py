@@ -38,6 +38,14 @@ _ENV_SEARCH_PATHS: list[Path] = [CONFIG_ENV, USER_CONFIG_ENV]
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
 
+# Judge-specific Ollama model override (per-surface A/B knob, mirrors LLAMA_CPP_JUDGE_MODEL).
+# Defaults to OLLAMA_MODEL → a true no-op until EVOLUTION_OLLAMA_JUDGE_MODEL is set (production
+# scoring stays byte-identical); applies to the judge only, not extraction/generative. Rationale,
+# benchmark, and costs live in docs/decisions/gemma4-12b-local-model-evaluation.md (2026-06-07
+# addendum) — default stays e4b. NOTE: the override model must be pulled in Ollama, else judge
+# construction raises (and the exception is swallowed on the fire-and-forget hot path).
+OLLAMA_JUDGE_MODEL = os.environ.get("EVOLUTION_OLLAMA_JUDGE_MODEL", OLLAMA_MODEL)
+
 # ── llama.cpp ────────────────────────────────────────────────────────────────
 
 # Base URL for the local llama-server (OpenAI-compatible /v1 prefix).

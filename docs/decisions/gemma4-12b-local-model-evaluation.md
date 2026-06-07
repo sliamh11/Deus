@@ -129,3 +129,39 @@ These surfaced during the evaluation and stand regardless of the Gemma 4 decisio
   - `Research/2026-06-04-local-model-runtime-selection-m3pro.md` (vault) — "the task is the bottleneck, not the model."
 - Parked generation pipeline: `Session-Logs/2026-04-09/gemma4-finetune-pipeline.md` (vault).
 - Full session write-up: `Session-Logs/2026-06-05/gemma4-benchmark-scoping.md` (vault).
+
+---
+
+## Addendum (2026-06-07): PR #713 — judge-surface agreement benchmark + opt-in per-surface override
+
+**New evidence, judge surface only.** Decision item 1 (keep `e4b` for the judge) rested on the
+ranking probe above, which **ceiled** (e4b 100% / 12b 93% on 15 cases; the ADR's own caveat:
+"absence of evidence… N small, no statistical test"). PR #713 built a clean **n=200** Gemini-labeled
+benchmark (current rubric + persona digest, graded digest-symmetric on the deployed Ollama path) — a
+*finer agreement task* the ranking probe could not resolve. Result (paired bootstrap, same rows):
+
+| model | composite agreement | 95% CI | paired vs e4b |
+|---|---|---|---|
+| `gemma4:e4b` (default) | 0.655 | [0.576, 0.726] | — |
+| `gemma4:12b` | **0.742** | [0.680, 0.795] | **+0.088, CI [+0.026, +0.151], P=1.00** |
+| `gemma4:26b` | 0.575 | [0.492, 0.649] | −0.076, P=0.02 (regresses) |
+
+On the judge surface, 12b **does** out-agree e4b by a statistically clear margin, and 26b *regresses*.
+This refines — does not refute — item 2: the finer task surfaced a benefit the coarse, ceiled probe hid.
+
+**What changed in code (default unchanged).** Added `EVOLUTION_OLLAMA_JUDGE_MODEL`
+(`config.OLLAMA_JUDGE_MODEL`, defaulting to `OLLAMA_MODEL`) and pointed `OllamaProvider.default_model`
+at it — a per-surface A/B knob mirroring the `LLAMA_CPP_JUDGE_MODEL` precedent. **The default stays
+`gemma4:e4b`**: env unset → true no-op (production scoring byte-identical). This is the
+per-surface-override *mechanism* that item 3(b) sanctioned — note item 3(b) exemplified it for
+**reflexion**, not the judge; here it is applied to the **judge** surface on the strength of #713's
+new evidence. It is not a global default switch and not a claim the ADR pre-authorized the judge
+surface. Measured costs stand (12b ~2.25× latency, ~2.3× resident RAM, requires `think:false` — now
+shipped per Consequence #2); the hot-path judge is fire-and-forget (`mcp_server.py` async) so judge
+latency is off the user's path, and the knob drives **both** hot + batch judges so stored labels stay
+consistent (mixed models contaminated the DB in #713). The chosen override model must be pulled in
+Ollama or judge construction raises (swallowed on the async hot path).
+
+**Decision: unchanged default, new opt-in lever.** Item 1 holds (e4b default). Operators may A/B
+`gemma4:12b` on the judge via `EVOLUTION_OLLAMA_JUDGE_MODEL=gemma4:12b`, weighed against the documented
+costs. Do not use 26b (regresses). Evidence: PR #713; `Research/2026-06-07-*` (vault).
