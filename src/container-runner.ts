@@ -54,6 +54,7 @@ import {
   getActivePrompt,
   getReflections,
   logInteraction,
+  type ToolCall,
 } from './evolution-client.js';
 import { estimateTokens } from './token-counter.js';
 import { detectUserSignal } from './user-signal.js';
@@ -93,6 +94,7 @@ function buildContainerArgs(
   mounts: ReturnType<typeof buildVolumeMounts>,
   containerName: string,
   backend: AgentRuntimeId,
+  interactionId: string,
   group?: RegisteredGroup,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
@@ -100,6 +102,9 @@ function buildContainerArgs(
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
   args.push('-e', `DEUS_PROXY_TOKEN=${getOrCreateGroupToken(group?.folder)}`);
+  // LIA-154: exact per-dispatch join key for the in-container tool-call capture
+  // hook → tool-calls/<id>.jsonl → readToolCalls() back on the host.
+  args.push('-e', `DEUS_INTERACTION_ID=${interactionId}`);
   // Tool proxy URL — containers call host CLIs through this endpoint.
   // Uses CONTAINER_HOST_GATEWAY so the URL resolves to the host from inside the container.
   args.push(
@@ -214,6 +219,41 @@ function buildContainerArgs(
   return args;
 }
 
+/**
+ * Read this dispatch's structured tool calls from the in-container capture log
+ * (LIA-154). The hook writes one PER-INTERACTION file at
+ * `<logsDir>/tool-calls/<interactionId>.jsonl`, so each read is bounded to this
+ * dispatch (no unbounded single-file scan). Best-effort: a missing file (no
+ * tools used) or a torn/partial line is skipped, never thrown — capture must
+ * not affect the response pipeline.
+ */
+export function readToolCalls(
+  logsDir: string,
+  interactionId: string,
+): ToolCall[] {
+  const out: ToolCall[] = [];
+  // MUST stay byte-identical to the container hook's safeInteractionId()
+  // (tool-call-log.ts) so both resolve the same per-interaction file.
+  const safeId = interactionId.replace(/[^A-Za-z0-9._-]/g, '_');
+  try {
+    const raw = fs.readFileSync(
+      path.join(logsDir, 'tool-calls', `${safeId}.jsonl`),
+      'utf8',
+    );
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue;
+      try {
+        out.push(JSON.parse(line) as ToolCall);
+      } catch {
+        // skip a malformed/torn line, keep the rest
+      }
+    }
+  } catch {
+    // no file = no tools used this dispatch
+  }
+  return out;
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -221,6 +261,10 @@ export async function runContainerAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
+  // Interaction ID for evolution logging (stable per container run). Computed
+  // here (not just before logging) so it can be threaded into the container env
+  // for the LIA-154 tool-call capture join.
+  const interactionId = `${group.folder}-${startTime}`;
 
   // Detect user signal BEFORE reflections prepend — reflections inflate prompt
   // length past MAX_SIGNAL_LENGTH, causing false-null on short feedback messages.
@@ -302,6 +346,7 @@ export async function runContainerAgent(
     mounts,
     containerName,
     input.backend || 'claude',
+    interactionId,
     group,
   );
 
@@ -465,9 +510,6 @@ export async function runContainerAgent(
       clearTimeout(timeout);
       timeout = setTimeout(killOnTimeout, timeoutMs);
     };
-
-    // Interaction ID for evolution logging (stable per container run)
-    const interactionId = `${group.folder}-${startTime}`;
 
     container.on('close', (code) => {
       clearTimeout(timeout);
@@ -658,6 +700,7 @@ export async function runContainerAgent(
                 : undefined,
             contextTokens: estimateTokens(input.prompt),
             hasCode: false,
+            toolCalls: readToolCalls(logsDir, interactionId),
           });
           resolve({
             status: 'success',
@@ -721,6 +764,7 @@ export async function runContainerAgent(
               : undefined,
           contextTokens: estimateTokens(input.prompt),
           hasCode: containsCodeBlock(output.result),
+          toolCalls: readToolCalls(logsDir, interactionId),
         });
 
         resolve(output);
