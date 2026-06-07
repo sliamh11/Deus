@@ -744,3 +744,51 @@ class TestLegacyMigration:
         provider = SQLiteStorageProvider()
         # Should create a fresh evolution.db (via _migrate), not copy from legacy
         assert provider.count_interactions() == 0
+
+
+# ── LIA-154: tool_calls column (observability only, not scored) ───────────────
+
+
+class TestToolCallsColumn:
+    def test_log_interaction_with_tool_calls_round_trips(self, sqlite_provider):
+        tc = '[{"name": "Bash", "command": "git status", "is_error": false}]'
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="tc1",
+            tool_calls=tc,
+        )
+        row = sqlite_provider.get_interaction("tc1")
+        assert row is not None
+        assert row["tool_calls"] == tc
+
+    def test_log_interaction_without_tool_calls_defaults_null(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="tc2",
+            tools_used='["Read"]', context_tokens=11, has_code=1,
+        )
+        row = sqlite_provider.get_interaction("tc2")
+        assert row is not None
+        assert row["tool_calls"] is None
+        # the new column does not regress neighbouring fields
+        assert row["tools_used"] == '["Read"]'
+        assert row["context_tokens"] == 11
+        assert row["has_code"] == 1
+
+    def test_migrate_adds_tool_calls_column_idempotently(self, sqlite_provider):
+        from evolution.storage.providers import sqlite as sqlite_mod
+
+        db = sqlite_provider._connect()
+        cols = [r[1] for r in db.execute("PRAGMA table_info(interactions)")]
+        db.close()
+        assert "tool_calls" in cols
+
+        # Force a second migrate on the same DB: the ALTER must be caught
+        # (column already exists), not raise — i.e. migration is idempotent.
+        sqlite_mod._migrated_paths.clear()
+        SQLiteStorageProvider()._connect().close()
+
+        db2 = sqlite_provider._connect()
+        cols2 = [r[1] for r in db2.execute("PRAGMA table_info(interactions)")]
+        db2.close()
+        assert cols2.count("tool_calls") == 1

@@ -233,6 +233,11 @@ def cmd_log_interaction(json_str: str) -> None:
 
     session_id = params.get("session_id")
 
+    # LIA-154: structured tool-call records (observability only; not yet scored).
+    tool_calls = params.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        tool_calls = None
+
     iid = log_interaction(
         prompt=params.get("prompt", ""),
         response=params.get("response"),
@@ -245,6 +250,7 @@ def cmd_log_interaction(json_str: str) -> None:
         user_signal=user_signal,
         context_tokens=context_tokens,
         has_code=has_code,
+        tool_calls=tool_calls,
     )
 
     # Batch judge: check if we've accumulated enough unjudged interactions

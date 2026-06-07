@@ -27,6 +27,22 @@ const EVOLUTION_ENABLED = process.env.EVOLUTION_ENABLED !== '0';
 const OPTIMIZED_PROMPTS_ENABLED =
   process.env.EVOLUTION_OPTIMIZED_PROMPTS === '1';
 
+/**
+ * One structured tool call captured in-container (LIA-154). Mirrors the fields
+ * the offline mechanical scorers consume (evolution/judge/mechanical.py).
+ * Observability only — not read by the live scoring path yet.
+ */
+export interface ToolCall {
+  name: string;
+  file_path?: string;
+  command?: string;
+  subagent_type?: string;
+  is_error?: boolean;
+  tool_use_id?: string;
+  session_id?: string | null;
+  ts?: string;
+}
+
 export interface LogInteractionParams {
   id: string;
   prompt: string;
@@ -34,6 +50,8 @@ export interface LogInteractionParams {
   groupFolder: string;
   latencyMs?: number;
   toolsUsed?: string[];
+  /** Structured per-call records (LIA-154 observability; not yet scored). */
+  toolCalls?: ToolCall[];
   sessionId?: string;
   domainPresets?: string[];
   userSignal?: string;
@@ -135,6 +153,7 @@ export function logInteraction(params: LogInteractionParams): void {
     group_folder: params.groupFolder,
     latency_ms: params.latencyMs,
     tools_used: params.toolsUsed ?? [],
+    tool_calls: params.toolCalls ?? [],
     session_id: params.sessionId,
     domain_presets: params.domainPresets ?? [],
     user_signal: params.userSignal ?? null,

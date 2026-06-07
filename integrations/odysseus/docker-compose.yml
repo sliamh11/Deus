@@ -1,0 +1,46 @@
+# Deus curated-memory MCP sidecar for Odysseus.
+#
+# Joins Odysseus's existing Docker network (odysseus_default) so the Odysseus
+# agent can reach this server by name at http://deus-memory:8200/mcp. There is
+# NO `ports:` stanza on purpose: the sidecar is reachable only from inside that
+# network, never from the host LAN.
+#
+# All host paths come from a gitignored .env (see .env.example) so no personal
+# path is ever committed. Copy .env.example -> .env and fill it in first.
+#
+# Explicit project name so this stack NEVER collides with Odysseus's own compose
+# project (whose default name is also "odysseus" by directory). Without this, a
+# `docker compose down --remove-orphans` here could touch Odysseus's containers.
+name: deus-memory-bridge
+
+services:
+  deus-memory:
+    build: .
+    container_name: deus-memory
+    restart: unless-stopped
+    # Reach the host's Ollama from inside the container on macOS/Linux.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      # Bind all interfaces INSIDE the container so the service is reachable on
+      # the Docker network. There is no host `ports:` mapping, so this is not
+      # exposed to the host LAN. (The code defaults to 127.0.0.1 for safety when
+      # run directly on a host outside Docker.)
+      - DEUS_MCP_HOST=0.0.0.0
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL:-embeddinggemma}
+      - DEUS_SHARE_DB_PATH=/data/share.db
+      - DEUS_RECALL_LOG=/data/recall.log
+    volumes:
+      # Curated index: read-only. The sidecar can never see the vault itself.
+      - "${DEUS_SHARE_DB_PATH}:/data/share.db:ro"
+      # Audit log: read-write, on a HOST path so it survives container restarts.
+      - "${DEUS_RECALL_LOG}:/data/recall.log"
+    networks:
+      - odysseus
+
+networks:
+  # Attach to the pre-existing network created by Odysseus's own compose stack.
+  odysseus:
+    external: true
+    name: odysseus_default
