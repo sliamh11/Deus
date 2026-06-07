@@ -124,15 +124,14 @@ code that should exist there.
    unbuilt design from `hook-dispatch-system.md`. Largest effort; the only path
    that gives real gates on a non-Claude backend.
 2. **Path (a) for Odysseus-as-GUI.** Odysseus Chat → a new Deus
-   `/v1/chat/completions` web channel → **headless Claude Code** (hooks fire
-   because Claude Code is still the runtime). Medium effort. Full feasibility +
-   trade-offs in the research report and handoff cited under References. Carries
-   a hard constraint discovered this session: Odysseus's frontend imposes a
-   wall-clock abort of **2 min (chat mode) / 6 min (agent mode)** that clears on
-   first SSE event and does **not** reset per chunk
-   (`~/dev/odysseus/static/js/chat.js:27-28,868-883`); the backend httpx read
-   timeout is a survivable 300 s *idle* timeout. Multi-minute Deus turns will be
-   killed in plain chat mode without a workaround.
+   `/v1/chat/completions` web channel → **headless Claude Code**. Hooks survive
+   *only if* headless Claude Code actually loads and fires the
+   `.claude/settings.json` deny gates — **to be verified before committing**;
+   this is the load-bearing assumption for the entire path. Medium effort. The
+   Odysseus client-timeout analysis (it is a time-to-first-token limit, not a
+   total-completion cap — satisfiable by an early-delta + keepalive shim) and the
+   remaining de-risks live in the handoff + research report under References.
+   Implementation-volatile detail is kept out of this ADR deliberately.
 3. **Accept + document only (this ADR).** Build nothing until a non-Claude-gate
    need is real.
 
