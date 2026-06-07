@@ -51,12 +51,45 @@ EMBED_DIM = 768
 DB_PATH = Path("~/.deus/code_search.db").expanduser()
 
 
+def _main_worktree_root(root: Path) -> Path:
+    """Map a linked git worktree (``.git`` is a *file*) to its canonical main-repo
+    root, so the code-search DB keys to a stable path instead of the ephemeral
+    worktree that strands the index on cleanup (LIA-189). No-op for the main
+    worktree, a non-git dir, a submodule, or any git failure.
+    """
+    if not (root / ".git").is_file():
+        return root  # main worktree (.git dir) or non-git — nothing to normalize
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return root
+    out = proc.stdout.strip()
+    if proc.returncode != 0 or not out:
+        return root
+    common = Path(out)
+    common = common.resolve() if common.is_absolute() else (root / common).resolve()
+    # A worktree's common dir is "<main>/.git" → its parent is the canonical
+    # root. Exclude submodules (common dir basename != ".git").
+    if common.name != ".git":
+        return root
+    main_root = common.parent
+    return main_root if main_root.is_dir() else root
+
+
 def _project_root(start: Path | str | None = None) -> Path | None:
-    """Nearest .git/.deus ancestor of ``start`` (default cwd); None if neither."""
+    """Nearest .git/.deus ancestor of ``start`` (default cwd); None if neither.
+
+    A linked git worktree ancestor is normalized to its canonical main-repo root
+    (:func:`_main_worktree_root`) so every consumer — :func:`_resolve_db_path`
+    and :func:`_migrate_legacy_if_match` — keys to one stable per-project DB
+    regardless of which worktree the call ran in (LIA-189)."""
     p = Path(start).resolve() if start is not None else Path.cwd().resolve()
     for candidate in (p, *p.parents):
         if (candidate / ".git").exists() or (candidate / ".deus").exists():
-            return candidate
+            return _main_worktree_root(candidate)
     return None
 
 
@@ -452,6 +485,10 @@ def _init_db(db_path: Path | None = None) -> sqlite3.Connection:
     path = db_path or DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(path))
+    # busy_timeout before WAL so create-time writes are covered: post-LIA-189 all
+    # worktrees share one canonical DB, so concurrent post-commit reindexes can
+    # collide — wait for the lock instead of failing (default 0 → SQLITE_BUSY).
+    db.execute("PRAGMA busy_timeout=30000")
     db.execute("PRAGMA journal_mode=WAL")
     db.execute("PRAGMA synchronous=NORMAL")
     if sqlite_vec is not None:
@@ -677,9 +714,12 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
         "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
         ("last_indexed_at", time.strftime("%Y-%m-%dT%H:%M:%S")),
     )
+    # Label with the canonical project root (LIA-189), not the literal walked
+    # dir: it must agree with the DB key (also canonical) and never become a
+    # dead worktree pointer. base stays the discovery/--diff source.
     db.execute(
         "INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)",
-        ("indexed_directory", str(base)),
+        ("indexed_directory", str(_project_root(base) or base)),
     )
 
     # Auto-populate calibration distribution if missing (needed for retrieval_confidence)
@@ -917,15 +957,28 @@ def status() -> dict[str, Any]:
     db_size = dbp.stat().st_size
     db.close()
 
-    return {
+    directory_val = directory[0] if directory else None
+    # A stored indexed_directory that no longer exists signals a stale/broken
+    # index (e.g. a pre-fix index keyed to a since-deleted worktree, LIA-189) —
+    # surface it loudly instead of silently degrading callers to grep.
+    stale = bool(directory_val) and not Path(directory_val).expanduser().exists()
+
+    result: dict[str, Any] = {
         "indexed": True,
         "total_chunks": total,
         "embedded_chunks": embedded,
         "files": files,
         "last_indexed": last[0] if last else "never",
-        "directory": directory[0] if directory else "unknown",
+        "directory": directory_val or "unknown",
         "db_size_mb": round(db_size / 1024 / 1024, 2),
+        "stale": stale,
     }
+    if stale:
+        result["message"] = (
+            f"indexed_directory {directory_val!r} no longer exists — "
+            "index may be stale; re-run reindex"
+        )
+    return result
 
 
 # ── Fixture Generation ────────────────────────────────────────────────────────
