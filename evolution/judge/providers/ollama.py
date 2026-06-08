@@ -18,8 +18,10 @@ class OllamaProvider(JudgeProvider):
 
     @property
     def default_model(self) -> str:
-        from ...config import OLLAMA_MODEL
-        return OLLAMA_MODEL
+        # Judge-specific override; defaults to OLLAMA_MODEL (no-op until set). Sole
+        # default-model source for all production judges (hot + batch). See config.py.
+        from ...config import OLLAMA_JUDGE_MODEL
+        return OLLAMA_JUDGE_MODEL
 
     def is_available(self) -> bool:
         from ..ollama_judge import is_ollama_available

@@ -23,6 +23,7 @@ import { createServer, Server } from 'http';
 import { execFile } from 'child_process';
 
 import { DEUS_PROXY_AUTH_ENABLED } from './config.js';
+import { getProjectById, getRegisteredGroupByFolder } from './db.js';
 import { validateGroupToken } from './group-tokens.js';
 import { logger } from './logger.js';
 import { loadRegistry, isAllowed, getToolConfig } from './tool-registry.js';
@@ -48,6 +49,61 @@ function validateArg(arg: string): string | null {
   return null;
 }
 
+/** `gh` global flags that consume the following token as their value. */
+const GH_FLAGS_WITH_VALUE = new Set(['-R', '--repo', '--hostname']);
+
+/**
+ * True if this tool invocation pushes to / publishes on a remote (git push, or
+ * `gh pr merge`/`gh pr create`/`gh merge`). Detection is by SUBCOMMAND POSITION,
+ * not substring — so `gh pr merge --help` or a branch literally named "push"
+ * does not false-trip. Platform-neutral (tool names + arg tokens only).
+ *
+ * Note: `gh pr close` is NOT a merge (it closes without merging) and is allowed.
+ */
+export function isPushOrMergeTool(toolName: string, args: string[]): boolean {
+  // The dedicated push tool is always a push.
+  if (toolName === 'deus-git-push') return true;
+  if (toolName === 'gh') {
+    // Collect the first two positional (non-flag) tokens, skipping global flags
+    // and their values, to read the subcommand path.
+    const positional: string[] = [];
+    for (let i = 0; i < args.length && positional.length < 2; i++) {
+      const a = args[i];
+      if (a.startsWith('-')) {
+        if (GH_FLAGS_WITH_VALUE.has(a)) i++; // skip the flag's value token
+        continue;
+      }
+      positional.push(a);
+    }
+    const [c0, c1] = positional;
+    if (c0 === 'merge') return true; // `gh merge` top-level alias
+    if (c0 === 'pr' && (c1 === 'merge' || c1 === 'create')) return true;
+  }
+  return false;
+}
+
+/**
+ * Returns a denial message if a push/merge from *groupFolder* must be blocked,
+ * or null if allowed. Allowed = the home/control project (no projectId) or an
+ * external project with `allow_external_push`. Fail-closed: an unresolvable
+ * group or unregistered folder is denied (we cannot prove it is internal).
+ */
+export function externalPushDenialReason(
+  groupFolder: string | null,
+): string | null {
+  if (!groupFolder) {
+    return 'External-project git push/merge is blocked: caller group could not be resolved (no proxy token).';
+  }
+  const group = getRegisteredGroupByFolder(groupFolder);
+  if (!group) {
+    return `External-project git push/merge is blocked: group "${groupFolder}" is not registered.`;
+  }
+  if (!group.projectId) return null; // home/control project — allowed
+  const project = getProjectById(group.projectId);
+  if (project?.allow_external_push === true) return null; // allowlisted external
+  return `External-project git push/merge is blocked for project "${group.projectId}". Allowlist this project to enable push/merge (operator action — see LIA-180).`;
+}
+
 export function startToolProxy(
   port: number,
   host = '127.0.0.1',
@@ -60,19 +116,20 @@ export function startToolProxy(
       const chunks: Buffer[] = [];
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
-        // ── Auth gate (same as credential-proxy) ──────────────────────────
-        if (DEUS_PROXY_AUTH_ENABLED) {
-          const token = req.headers['x-deus-proxy-token'] as string | undefined;
-          const groupFolder = token ? validateGroupToken(token) : null;
-          if (!groupFolder) {
-            logger.warn(
-              { url: req.url, hasToken: !!token },
-              'Tool proxy rejected unauthenticated request',
-            );
-            res.writeHead(401);
-            res.end('Unauthorized');
-            return;
-          }
+        // ── Resolve caller's group folder ─────────────────────────────────
+        // Resolved ALWAYS (independent of auth enforcement) because the
+        // push/merge gate below needs it even when DEUS_PROXY_AUTH is disabled
+        // (dev). Auth ENFORCEMENT (401) stays gated on DEUS_PROXY_AUTH_ENABLED.
+        const token = req.headers['x-deus-proxy-token'] as string | undefined;
+        const groupFolder = token ? validateGroupToken(token) : null;
+        if (DEUS_PROXY_AUTH_ENABLED && !groupFolder) {
+          logger.warn(
+            { url: req.url, hasToken: !!token },
+            'Tool proxy rejected unauthenticated request',
+          );
+          res.writeHead(401);
+          res.end('Unauthorized');
+          return;
         }
 
         // ── Route: POST /tool/:name ────────────────────────────────────────
@@ -138,6 +195,24 @@ export function startToolProxy(
         }
 
         const safeArgs = args as string[];
+
+        // ── Push/merge gate ────────────────────────────────────────────────
+        // External projects cannot git push/merge by default. Allowed only for
+        // the home/control project or an allowlisted external project (and
+        // fail-closed when the caller group is unresolvable). Default-block
+        // applies to everyone, independent of the auth-enforcement flag.
+        if (isPushOrMergeTool(rawName, safeArgs)) {
+          const denial = externalPushDenialReason(groupFolder);
+          if (denial) {
+            logger.warn(
+              { tool: rawName, groupFolder },
+              'Tool proxy blocked external push/merge',
+            );
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: denial }));
+            return;
+          }
+        }
 
         // Resolve tool config (binary path + injected env)
         const toolConfig = getToolConfig(rawName);

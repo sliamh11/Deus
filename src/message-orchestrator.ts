@@ -322,9 +322,11 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           const lastCompactedAt = getLastCompactedAt(group.folder, backend);
           return {
             backend,
-            tokens: stats?.tokens,
+            // null (SDK omitted usage, LIA-194) → undefined for the ContextInfo
+            // contract; session-commands already treats absent as "unknown".
+            tokens: stats?.tokens ?? undefined,
             limit: stats?.limit,
-            pct: stats?.pct,
+            pct: stats?.pct ?? undefined,
             lastCompactedAt,
           };
         },
@@ -407,8 +409,12 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         }
 
         if (CONTEXT_NOTIFY && result.status === 'success' && result.result) {
-          if (result.contextStats?.warn) {
-            const s = result.contextStats;
+          // tokens/pct can be null when the SDK omits usage (LIA-194). The
+          // container won't set `warn` in that case, but guard defensively so a
+          // null never reaches `.toLocaleString()`. Bind `s` first so TS narrows
+          // s.tokens/s.pct from the null checks.
+          const s = result.contextStats;
+          if (s?.warn && s.tokens != null && s.pct != null) {
             await channel.sendMessage(
               chatJid,
               `Context at ${s.pct}% (${s.tokens.toLocaleString()} / ${s.limit.toLocaleString()} tokens). Use /compact to free space.`,

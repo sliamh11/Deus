@@ -24,6 +24,7 @@ def log_interaction(
     user_signal: Optional[str] = None,
     context_tokens: Optional[int] = None,
     has_code: Optional[int] = None,
+    tool_calls: Optional[list[dict]] = None,
 ) -> str:
     """
     Persist one agent interaction.  Returns the interaction ID.
@@ -46,6 +47,8 @@ def log_interaction(
         user_signal=user_signal,
         context_tokens=context_tokens,
         has_code=has_code,
+        # LIA-154: structured tool-call records (observability only, not scored).
+        tool_calls=json.dumps(tool_calls or []),
     )
     return iid
 

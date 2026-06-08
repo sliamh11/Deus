@@ -44,20 +44,10 @@ beforeEach(() => {
 });
 
 describe('registerLinearUpdater', () => {
-  it('dry-run (default): logs only, performs no write or bookkeeping', async () => {
+  it('moves the issue to In Review and fires both follow-ups', async () => {
     const bus = new EventBus();
     const updateIssue = vi.fn().mockResolvedValue(undefined);
-    registerLinearUpdater(bus, mkCtx(updateIssue)); // default dryRun = true
-    await bus.emit(mkDone());
-    expect(updateIssue).not.toHaveBeenCalled();
-    expect(notifyPipelineStep).not.toHaveBeenCalled();
-    expect(logPipelineEvent).not.toHaveBeenCalled();
-  });
-
-  it('live: moves the issue to In Review and fires both follow-ups', async () => {
-    const bus = new EventBus();
-    const updateIssue = vi.fn().mockResolvedValue(undefined);
-    registerLinearUpdater(bus, mkCtx(updateIssue), { dryRun: false });
+    registerLinearUpdater(bus, mkCtx(updateIssue));
     await bus.emit(mkDone());
     expect(updateIssue).toHaveBeenCalledTimes(1);
     expect(updateIssue).toHaveBeenCalledWith('ISS-1', {
@@ -78,10 +68,10 @@ describe('registerLinearUpdater', () => {
     );
   });
 
-  it('live + write fails: emit resolves (isolated) and NEITHER follow-up fires', async () => {
+  it('write fails: emit resolves (isolated) and NEITHER follow-up fires', async () => {
     const bus = new EventBus();
     const updateIssue = vi.fn().mockRejectedValue(new Error('linear 500'));
-    registerLinearUpdater(bus, mkCtx(updateIssue), { dryRun: false });
+    registerLinearUpdater(bus, mkCtx(updateIssue));
     await expect(bus.emit(mkDone())).resolves.toBeUndefined();
     expect(updateIssue).toHaveBeenCalledTimes(1);
     // Load-bearing: a failed transition must NOT fire circuit_breaker_reset
@@ -94,7 +84,7 @@ describe('registerLinearUpdater', () => {
   it('ignores non-issue correlations', async () => {
     const bus = new EventBus();
     const updateIssue = vi.fn().mockResolvedValue(undefined);
-    registerLinearUpdater(bus, mkCtx(updateIssue), { dryRun: false });
+    registerLinearUpdater(bus, mkCtx(updateIssue));
     await bus.emit(mkDone({ correlationId: { kind: 'run', id: 'run-1' } }));
     expect(updateIssue).not.toHaveBeenCalled();
   });

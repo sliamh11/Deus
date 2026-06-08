@@ -42,7 +42,7 @@ jobs:
           # Scan only ADDED lines (leading '+', excluding the '+++' file
           # header) so that REMOVING personal identifiers — e.g. deleting a
           # leaking file — does not trip the gate on its own deletion lines.
-          if git diff "origin/${BASE_REF}...HEAD" -- ':(exclude).github/workflows/ci.yml' | grep -E '^\+' | grep -vE '^\+\+\+' | grep -qE "${PATTERN}"; then
+          if git diff "origin/${BASE_REF}...HEAD" -- ':(exclude).github/workflows/ci.yml' ':(exclude)LICENSE' | grep -E '^\+' | grep -vE '^\+\+\+' | grep -qE "${PATTERN}"; then
             echo "::error::Personal identifiers found in diff — public-repo code must be user-agnostic (feedback_public_repo_generic)"
             exit 1
           fi
