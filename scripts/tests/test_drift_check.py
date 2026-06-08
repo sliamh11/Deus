@@ -6,6 +6,7 @@ backtick-quoted path references in its body, and verifies every referenced
 path exists on disk. These tests exercise both sources of references in
 isolation using a temporary project tree.
 """
+import json
 import sys
 from pathlib import Path
 
@@ -644,6 +645,78 @@ class TestFileInChangedSet:
 
     def test_empty_changed_set(self, tmp_path):
         assert not drift_check._file_in_changed_set("src/", set(), tmp_path)
+
+
+# ── _is_dependency_only_bump ─────────────────────────────────────────────────
+
+
+class TestDependencyOnlyBump:
+    """`_is_dependency_only_bump` — exempt pure dependabot/release-please
+    package.json bumps from triggering a false deployment.md drift."""
+
+    def _setup(self, monkeypatch, tmp_path, base_obj, head_obj):
+        """Write the head package.json into tmp_path and stub `git show` of base."""
+        (tmp_path / "package.json").write_text(json.dumps(head_obj), encoding="utf-8")
+        monkeypatch.setattr(
+            drift_check,
+            "_git_show_blob",
+            lambda ref, rel_path, root: json.dumps(base_obj),
+        )
+
+    def test_dependency_pin_bump_is_exempt(self, tmp_path, monkeypatch):
+        base = {"name": "deus", "version": "1.0.0", "dependencies": {"yaml": "2.8.4"}}
+        head = {"name": "deus", "version": "1.0.0", "dependencies": {"yaml": "2.9.0"}}
+        self._setup(monkeypatch, tmp_path, base, head)
+        assert drift_check._is_dependency_only_bump("origin/main", tmp_path) is True
+
+    def test_version_only_bump_is_exempt(self, tmp_path, monkeypatch):
+        """release-please bumps only `version`."""
+        base = {"name": "deus", "version": "1.16.0", "scripts": {"build": "tsc"}}
+        head = {"name": "deus", "version": "1.17.0", "scripts": {"build": "tsc"}}
+        self._setup(monkeypatch, tmp_path, base, head)
+        assert drift_check._is_dependency_only_bump("origin/main", tmp_path) is True
+
+    def test_devdeps_plus_version_is_exempt(self, tmp_path, monkeypatch):
+        base = {"version": "1.0.0", "devDependencies": {"vitest": "4.1.7"}}
+        head = {"version": "1.0.1", "devDependencies": {"vitest": "4.1.8"}}
+        self._setup(monkeypatch, tmp_path, base, head)
+        assert drift_check._is_dependency_only_bump("origin/main", tmp_path) is True
+
+    def test_scripts_change_is_not_exempt(self, tmp_path, monkeypatch):
+        """A real deployment-relevant change (scripts) must still drift."""
+        base = {"version": "1.0.0", "scripts": {"build": "tsc"}, "dependencies": {"yaml": "2.8.4"}}
+        head = {"version": "1.0.0", "scripts": {"build": "tsc -p ."}, "dependencies": {"yaml": "2.9.0"}}
+        self._setup(monkeypatch, tmp_path, base, head)
+        assert drift_check._is_dependency_only_bump("origin/main", tmp_path) is False
+
+    def test_new_nonexempt_key_is_not_exempt(self, tmp_path, monkeypatch):
+        base = {"version": "1.0.0", "dependencies": {"yaml": "2.8.4"}}
+        head = {"version": "1.0.0", "dependencies": {"yaml": "2.9.0"}, "engines": {"node": ">=20"}}
+        self._setup(monkeypatch, tmp_path, base, head)
+        assert drift_check._is_dependency_only_bump("origin/main", tmp_path) is False
+
+    def test_malformed_head_json_fails_safe(self, tmp_path, monkeypatch):
+        (tmp_path / "package.json").write_text("{ not valid json ", encoding="utf-8")
+        monkeypatch.setattr(
+            drift_check,
+            "_git_show_blob",
+            lambda ref, rel_path, root: json.dumps({"version": "1.0.0"}),
+        )
+        assert drift_check._is_dependency_only_bump("origin/main", tmp_path) is False
+
+    def test_missing_base_blob_fails_safe(self, tmp_path, monkeypatch):
+        (tmp_path / "package.json").write_text(
+            json.dumps({"version": "1.0.0"}), encoding="utf-8"
+        )
+        monkeypatch.setattr(drift_check, "_git_show_blob", lambda ref, rel_path, root: None)
+        assert drift_check._is_dependency_only_bump("origin/main", tmp_path) is False
+
+    def test_identity_no_diff_is_exempt(self, tmp_path, monkeypatch):
+        """base == head (whitespace/key-order normalized away) → no non-exempt
+        key differs → exempt."""
+        obj = {"name": "deus", "version": "1.0.0", "scripts": {"build": "tsc"}}
+        self._setup(monkeypatch, tmp_path, obj, dict(obj))
+        assert drift_check._is_dependency_only_bump("origin/main", tmp_path) is True
 
 
 # ── check_shadow ─────────────────────────────────────────────────────────────

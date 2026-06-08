@@ -43,7 +43,7 @@ Return a single markdown report. No preamble, no "I'll review...".
 
 ## Rules of engagement
 
-- **Don't invent problems.** If the plan is fine, say "Verdict: SHIP" with empty sections. That's a valid output.
+- **Don't manufacture problems, but don't lazy-SHIP either.** SHIP with empty sections is valid only after a genuine adversarial pass comes up empty; a real-but-unconfirmed risk is REVISE + a flagged question, not SHIP. See standards.md § Adversarial stance for the evidence-bound requirement and the once-per-distinct-risk termination rule — both apply to plan-review.
 - **Cite rule ids verbatim.** "Violates `public-repo-generic`" beats "has scoping issues." For blocking issues, append **Fix:** from the rule's `Remediation:` field. Reference the rule's `Cite:` field so findings are verifiable against memory/docs.
 - **Skip rules with no match.** Mechanical: if a rule's `Applies when` doesn't match this plan, don't mention it. Only list the ones that fired.
 - **Flag unknowns, don't guess.** If a memory file is stale (>14 days for project memories, >60 for reference) or repo state contradicts it, say so rather than asserting.

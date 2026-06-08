@@ -58,6 +58,11 @@ HEALTH_LOG_PATH = Path("~/.deus/memory_health.jsonl").expanduser()
 # "ollama" uses Ollama only.  "gemini" skips Ollama entirely.
 ENTITY_PROVIDER = os.environ.get("DEUS_ENTITY_PROVIDER", "auto")
 
+# Atom extraction provider (LIA-170): same semantics as ENTITY_PROVIDER. "auto"
+# (default) tries Ollama first so atom extraction (--extract / --add) works
+# without a Gemini key; falls back to the Gemini cascade when Ollama is down.
+ATOM_PROVIDER = os.environ.get("DEUS_ATOM_PROVIDER", "auto")
+
 
 def _load_vault_path() -> Path:
     """Load vault path with per-instance precedence.
@@ -176,6 +181,8 @@ RERANKER_MODEL = os.environ.get("DEUS_RERANKER_MODEL", "BAAI/bge-reranker-v2-m3"
 RERANKER_TOP_K = int(os.environ.get("DEUS_RERANKER_CANDIDATES", "20"))
 
 _cross_encoder = None
+# Lazily constructed by _ensure_client() — its sole mutator. Tests that need a
+# client should monkeypatch this directly rather than call _ensure_client.
 _client: genai.Client | None = None
 
 
@@ -187,6 +194,20 @@ def load_api_key() -> str:
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(AUTH_ERROR)
+
+
+def _ensure_client() -> genai.Client:
+    """Lazily construct the Gemini client on first generation call.
+
+    Building the client requires GEMINI_API_KEY (load_api_key sys.exits when it
+    is absent). Deferring construction to the point where generation is actually
+    needed lets key-free commands — --query, --rebuild, --add --no-extract —
+    run on Ollama embeddings alone, instead of dying at startup on a missing key.
+    """
+    global _client
+    if _client is None:
+        _client = genai.Client(api_key=load_api_key())
+    return _client
 
 
 def embed(text: str) -> list[float]:
@@ -1814,9 +1835,7 @@ def _generate_with_fallback(
     Returns the response object on first success, or None if all models are
     quota-exhausted.
     """
-    if _client is None:
-        # Keep parity with callers that would otherwise crash on attribute access.
-        raise RuntimeError("Gemini client not initialized (call main() entry first).")
+    client = _ensure_client()
 
     kwargs = {"contents": prompt}
     if config is not None:
@@ -1825,7 +1844,7 @@ def _generate_with_fallback(
     for model in GEN_MODELS:
         for attempt in (1, 2):
             try:
-                return _client.models.generate_content(model=model, **kwargs)
+                return client.models.generate_content(model=model, **kwargs)
             except Exception as exc:
                 if _is_quota_error(exc):
                     if attempt == 1:
@@ -1855,9 +1874,9 @@ def _generate_with_fallback(
     return None
 
 
-def extract_atoms(content: str) -> list[dict]:
-    """Call Gemini Flash to extract 2-5 atomic facts from a session log."""
-    prompt = (
+def _atom_prompt(content: str) -> str:
+    """Build the atom-extraction prompt (shared by the Ollama + Gemini paths)."""
+    return (
         "You are an atomic fact extractor for a personal knowledge system.\n\n"
         "Given a session log, extract 2-5 atomic facts worth remembering across future sessions. "
         "Each fact must be:\n"
@@ -1881,9 +1900,86 @@ def extract_atoms(content: str) -> list[dict]:
         "If nothing is worth extracting (casual/social session with no stable decisions), respond with: []\n\n"
         f"SESSION LOG:\n{_extract_content_for_llm(content)}"
     )
+
+
+def _extract_atoms_ollama(content: str) -> "list[dict] | None":
+    """Extract atoms via Ollama (Gemma4). Mirrors _extract_entities_ollama.
+
+    Returns the parsed atom list, or None when Ollama is unreachable (so the
+    caller can fall back to Gemini). Other failures return [] (skip extraction).
+    Keyless — this is the path that lets --extract/--add run without a Gemini key.
+    """
+    import urllib.request  # lazy: only needed when the Ollama path is taken
+
+    prompt = _atom_prompt(content)
+    ollama_url = os.environ.get("DEUS_OLLAMA_URL", "http://localhost:11434")
+    # DEUS_OLLAMA_ATOM_MODEL: per-task Ollama model override (LIA-170).
+    ollama_model = os.environ.get("DEUS_OLLAMA_ATOM_MODEL", "gemma4:e4b")
+    body = json.dumps({
+        "model": ollama_model,
+        "prompt": prompt,
+        "stream": False,
+        # Gemma4 has thinking ON by default; suppress it for structured output.
+        # ~2x faster (16s -> 8s on a real session log) and avoids a thinking
+        # preamble that can corrupt the response under a JSON grammar.
+        "think": False,
+        # Object-wrapper schema (Ollama structured output; top-level array is
+        # undefined — mirror the entity path's object form).
+        "format": {
+            "type": "object",
+            "properties": {
+                "atoms": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string"},
+                            "category": {"type": "string"},
+                        },
+                        # Force both fields: without this, Gemma4 constrained
+                        # decoding omits "category" on every atom, so the
+                        # post-parse filter below drops 100% of them (LIA-187).
+                        "required": ["text", "category"],
+                    },
+                },
+            },
+            "required": ["atoms"],
+        },
+        # temperature=0.1 for parity with _extract_atoms_gemini; seed for repro.
+        "options": {"temperature": 0.1, "seed": 42},
+    }).encode()
+    req = urllib.request.Request(
+        f"{ollama_url}/api/generate",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read().decode())
+        raw = data.get("response", "").strip()
+        result = json.loads(raw)
+        # Cap defensively (prompt asks for 2-5), mirroring the entity path's ceiling.
+        atoms = (result.get("atoms", []) if isinstance(result, dict) else [])[:10]
+        return [a for a in atoms if isinstance(a, dict) and "text" in a and "category" in a]
+    except urllib.error.HTTPError as exc:
+        print(f"  WARN: Ollama atom extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
+        return []
+    except (ConnectionRefusedError, OSError):
+        return None
+    except json.JSONDecodeError as exc:
+        print(f"  WARN: Ollama atom extraction malformed JSON: {str(exc)[:120]}", file=sys.stderr)
+        return []
+    except Exception as exc:
+        print(f"  WARN: Ollama atom extraction failed: {exc}", file=sys.stderr)
+        return []
+
+
+def _extract_atoms_gemini(content: str) -> list[dict]:
+    """Extract atoms via the Gemini cascade (original path)."""
     try:
         response = _generate_with_fallback(
-            prompt,
+            _atom_prompt(content),
             config=genai_types.GenerateContentConfig(temperature=0.1, max_output_tokens=1024),
             label="extract_atoms",
         )
@@ -1903,6 +1999,36 @@ def extract_atoms(content: str) -> list[dict]:
         return [a for a in atoms if isinstance(a, dict) and "text" in a and "category" in a]
     except json.JSONDecodeError:
         return []
+
+
+def extract_atoms(content: str) -> list[dict]:
+    """Extract 2-5 atomic facts from a session log.
+
+    Strategy routing via DEUS_ATOM_PROVIDER (default "auto"), mirroring
+    extract_entities_and_relations:
+      - "auto"   — try Ollama (keyless) first; fall back to Gemini if Ollama down.
+      - "ollama" — require Ollama; return [] if unreachable.
+      - "gemini" — use the Gemini cascade only (original behavior).
+    """
+    provider = ATOM_PROVIDER.lower()
+
+    if provider == "gemini":
+        return _extract_atoms_gemini(content)
+
+    # "auto" or "ollama": attempt Ollama first (keyless).
+    ollama_result = _extract_atoms_ollama(content)
+
+    if ollama_result is None:
+        if provider == "ollama":
+            print(
+                "  WARN: DEUS_ATOM_PROVIDER=ollama but Ollama not reachable.",
+                file=sys.stderr,
+            )
+            return []
+        # auto: fall back to Gemini.
+        return _extract_atoms_gemini(content)
+
+    return ollama_result
 
 
 def find_duplicate_atom(db: sqlite3.Connection, vec: list[float]) -> int | None:
@@ -2095,6 +2221,12 @@ def _extract_entities_ollama(content: str) -> "dict | None":
         "model": ollama_model,
         "prompt": prompt,
         "stream": False,
+        # Suppress Gemma4 thinking for structured output (same ~2x speedup as the
+        # atom path). Items are intentionally NOT marked "required" here: unlike
+        # the atom "category" field, Gemma4 reliably emits all entity/relationship
+        # fields without it (verified on gemma4:e4b, 2026-06), so adding it would
+        # be unproven hardening.
+        "think": False,
         "format": {
             "type": "object",
             "properties": {
@@ -4305,7 +4437,6 @@ def main() -> int:
     if os.getenv("DEUS_EMBED_WARMUP") == "1":
         warmup_embedding_provider()
 
-    global _client
     # Commands that need no API key
     if args.wander is not None:
         cmd_wander(args.wander or [], steps=args.steps, top_k=args.top or 10, graph=args.graph)
@@ -4382,8 +4513,6 @@ def main() -> int:
               f"total={stats['total']}", file=sys.stderr)
         db.close()
         return
-
-    _client = genai.Client(api_key=load_api_key())
 
     if args.compile is not None:
         cmd_compile(None if args.compile == "__AUTO__" else args.compile)

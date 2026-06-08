@@ -126,6 +126,19 @@ data flows to Google's Gemini API:
 
 ---
 
+## 6. Asana API — task/project management (optional skill)
+
+- **What**: Task and project titles, descriptions, notes, and comments. When the
+  agent reads or writes Asana on your behalf, the relevant task/project content
+  is sent to Asana's API. No raw conversation content is intentionally forwarded.
+- **Where**: `@roychri/mcp-server-asana` (host-side stdio MCP) → Asana REST API.
+- **When**: Only when the `add-asana` skill is installed and the agent is asked to
+  read or modify Asana.
+- **Controls**: Opt-in — remove the skill to stop. Set `READ_ONLY_MODE=true` in
+  `~/deus/.env` to allow reads but block all writes.
+
+---
+
 ## Opt-out summary
 
 | Data type | Destination | How to opt out |
@@ -138,6 +151,7 @@ data flows to Google's Gemini API:
 | Voice audio | OpenAI Whisper | Run `/use-local-whisper` |
 | Calendar events | Google Calendar | Remove `add-gcal` skill |
 | Issue summaries | Linear | Remove `add-linear` skill |
+| Task summaries | Asana | Remove `add-asana` skill |
 
 ---
 

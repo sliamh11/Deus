@@ -1,6 +1,14 @@
 # ADR: Model-Agnostic Hook Dispatch System
 
-**Status:** Accepted
+> **⚠️ CORRECTION (2026-06-07): Accepted but NOT IMPLEMENTED — facade.**
+> The host-side Enforcement Layer and `HookPipeline` interface described below
+> were never built — `grep` confirms zero `HookPipeline` / `enforce()` /
+> `observe()` refs in `src/`, and `message-orchestrator.ts` fires no hooks.
+> Hooks/wardens fire ONLY via the Claude Code CLI today; non-Claude backends run
+> unguarded. Retained as the **reference design**, not shipped architecture. See
+> [hook-dispatch-facade-correction.md](hook-dispatch-facade-correction.md).
+
+**Status:** Accepted but Not Implemented (facade) — see [hook-dispatch-facade-correction.md](hook-dispatch-facade-correction.md)
 **Date:** 2026-05-14
 **Scope:** `src/message-orchestrator.ts`, `.claude/hooks/`, `scripts/codex_warden_hooks.py`, CLI (asymmetric by model)
 **Wardens consulted:** Brainstormer (2 rounds), Architecture Snapshot, Threat Modeler (BLOCK resolved), Plan Agent, Advisor

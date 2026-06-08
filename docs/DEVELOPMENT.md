@@ -52,6 +52,51 @@ Different components read config from different locations. Getting these wrong c
 
 **Common mistake:** Putting a key in `~/.config/deus/.env` but expecting the evolution layer or main process to find it — both read from the project root `.env`. Check the source column above before adding config.
 
+## Code-Intelligence MCP Servers (host-side)
+
+Two **host-side** MCP servers power code search and the codegraph-first
+exploration gate (`scripts/codex_warden_hooks.py`, `run_codegraph_first_gate`).
+They are *not* the channel MCP servers (WhatsApp, Telegram, …) — they run on the
+host for Claude Code sessions and are registered at **user scope** so every
+project sees them. A fresh machine / migration that skips them leaves the gate
+with no real codegraph tool to call, quietly degrading the exploration workflow
+required by `core-behavioral-rules.md`. See `docs/ARCHITECTURE.md` for what each
+server does and how they compose.
+
+| Server | Provides | Source |
+|--------|----------|--------|
+| `codegraph` | SQLite call graph — callers/callees/impact, dependency chains (`codegraph_context`, `codegraph_callers`, `codegraph_trace`, …) | npm `@colbymchenry/codegraph` → `codegraph` binary |
+| `code-search` | Semantic + lexical code search, sqlite-vec + FTS5 with RRF fusion (`search_code`) | in-repo `scripts/code_search_mcp.py` (runs in `eval/.venv`) |
+
+**Restore after migration** (run from the repo root, in one shell so `$PATH`
+and `$(pwd)` resolve correctly):
+
+```bash
+# codegraph — install the binary, then register at user scope.
+# If `codegraph` isn't on $PATH yet after install, open a new shell first.
+npm install -g @colbymchenry/codegraph
+claude mcp add codegraph --scope user -- codegraph serve --mcp
+
+# code-search — needs eval/.venv, which is gitignored (absent on a fresh
+# machine). Create it first if missing (see docs/EDITOR_INTEGRATION.md):
+#   python3 -m venv eval/.venv && eval/.venv/bin/pip install -r eval/requirements.txt
+claude mcp add code-search --scope user -- \
+  "$(pwd)/eval/.venv/bin/python3" "$(pwd)/scripts/code_search_mcp.py"
+```
+
+**Verify** (check each separately — a combined `grep` would pass if only one matched):
+
+```bash
+claude mcp list | grep codegraph     # → ✓ Connected
+claude mcp list | grep code-search   # → ✓ Connected
+python3 -m pytest scripts/tests/ -k codegraph -q   # gate-detection fixtures pass
+```
+
+The gate recognizes a real call when a transcript line is an `assistant`
+`tool_use` whose `name` starts with `mcp__codegraph__` or `mcp__code-search__`
+(see `_line_is_codegraph_toolcall`). If `claude mcp list` shows neither server,
+re-register with the commands above.
+
 ## Message Pipeline
 
 Messages flow through these stages. Each stage can silently drop messages if misconfigured.

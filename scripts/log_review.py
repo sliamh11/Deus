@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import sys
 import urllib.error
 import urllib.request
@@ -56,6 +57,20 @@ CONTAINER_LOG_RETENTION_DAYS = int(os.environ.get('LOG_CONTAINER_RETENTION_DAYS'
 MAIN_LOG_MAX_MB = int(os.environ.get('LOG_MAIN_MAX_MB', '20'))
 ARCHIVE_RETENTION_DAYS = int(os.environ.get('LOG_ARCHIVE_RETENTION_DAYS', '30'))
 MAX_ENTRIES_PER_REVIEW = 150   # cap to avoid huge Ollama prompts
+
+# ── Evolution logging heartbeat (LIA-195) ──────────────────────────────────────
+# Detect a silent evolution-logging outage (like LIA-194, dead ~5 days unnoticed):
+# dispatches are happening but no interactions are being logged. Same DEUS_EVOLUTION_DB
+# env var evolution/config.py uses (NOT net-new). STALE_H defaults to 48h = the
+# activity window: a healthy low-traffic day still logs within the window, so it only
+# fires on a sustained >=48h of dispatch activity with zero logged interactions.
+EVOLUTION_DB = Path(
+    os.environ.get('DEUS_EVOLUTION_DB', '~/.deus/evolution.db')
+).expanduser()
+HEARTBEAT_ACTIVITY_WINDOW_H = float(
+    os.environ.get('EVOLUTION_HEARTBEAT_ACTIVITY_WINDOW_H', '48')
+)
+HEARTBEAT_STALE_H = float(os.environ.get('EVOLUTION_HEARTBEAT_STALE_H', '48'))
 
 # ── Parsing ───────────────────────────────────────────────────────────────────
 
@@ -255,6 +270,116 @@ def _save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+# ── Evolution logging heartbeat (LIA-195) ──────────────────────────────────────
+
+def _heartbeat_verdict(
+    last_dispatch_ts: Optional[float],
+    last_log_ts: Optional[float],
+    now_ts: float,
+    activity_window_h: float,
+    stale_h: float,
+) -> tuple[bool, Optional[str]]:
+    """Pure decision: is evolution logging stale despite active dispatches?
+
+    STALE when a dispatch ran within ``activity_window_h`` but the most recent
+    logged interaction is older than ``stale_h`` (or there are none). An idle
+    system (no recent dispatch) never alarms. No IO — unit-tested exhaustively.
+    """
+    if last_dispatch_ts is None:
+        return False, None  # no activity proxy — can't judge
+    dispatch_age_h = (now_ts - last_dispatch_ts) / 3600.0
+    if dispatch_age_h > activity_window_h:
+        return False, None  # system idle — not an outage
+    if last_log_ts is None:
+        return True, (
+            f'dispatch ran {dispatch_age_h:.0f}h ago but evolution.db has no '
+            'logged interactions at all'
+        )
+    log_age_h = (now_ts - last_log_ts) / 3600.0
+    if log_age_h > stale_h:
+        return True, (
+            f'last interaction {log_age_h:.0f}h ago but a dispatch ran '
+            f'{dispatch_age_h:.0f}h ago (stale threshold {stale_h:.0f}h)'
+        )
+    return False, None
+
+
+def _skip_groups() -> set:
+    raw = os.environ.get('EVOLUTION_SKIP_GROUPS', '')
+    return {g.strip() for g in raw.split(',') if g.strip()}
+
+
+def _last_dispatch_activity() -> Optional[float]:
+    """Most-recent mtime (epoch) of per-turn dispatch artifacts, EXCLUDING
+    EVOLUTION_SKIP_GROUPS (those never log to evolution.db, so their activity
+    must not count). Counts ALL dispatch activity — success, timeout AND error —
+    because a LIA-194-class outage reaps successful dispatches as TIMEOUTs, so a
+    success-only proxy would miss the exact thing this detects."""
+    if not GROUPS_DIR.exists():
+        return None
+    skip = _skip_groups()
+    latest = 0.0
+    for group_dir in GROUPS_DIR.iterdir():
+        if not group_dir.is_dir() or group_dir.name in skip:
+            continue
+        logs = group_dir / 'logs'
+        candidates = list(logs.glob('container-*.log'))
+        usage = logs / 'usage.jsonl'
+        if usage.exists():
+            candidates.append(usage)
+        for p in candidates:
+            try:
+                latest = max(latest, p.stat().st_mtime)
+            except OSError:
+                continue
+    return latest or None
+
+
+def _last_interaction_ts() -> Optional[float]:
+    """Most-recent ``interactions.timestamp`` as epoch, or None (missing DB / no
+    rows / unparseable). Read-only; never throws."""
+    if not EVOLUTION_DB.exists():
+        return None
+    try:
+        db = sqlite3.connect(f'file:{EVOLUTION_DB}?mode=ro', uri=True)
+        try:
+            row = db.execute(
+                'SELECT MAX(timestamp) FROM interactions'
+            ).fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return None
+    if not row or not row[0]:
+        return None
+    try:
+        ts = datetime.fromisoformat(row[0])
+        # evolution writes tz-aware UTC (ilog/interaction_log.py:34,
+        # datetime.now(timezone.utc).isoformat()); defensively treat any future
+        # naive value as UTC so .timestamp() can't apply a silent local-time skew.
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def check_evolution_heartbeat() -> tuple[bool, Optional[str]]:
+    """Live heartbeat: ``(is_stale, reason)``. Wraps the IO + thresholds around
+    the pure verdict. Fail-safe — any unexpected error returns ``(False, None)``
+    (the heartbeat must never break the log review)."""
+    try:
+        return _heartbeat_verdict(
+            _last_dispatch_activity(),
+            _last_interaction_ts(),
+            utc_now().timestamp(),
+            HEARTBEAT_ACTIVITY_WINDOW_H,
+            HEARTBEAT_STALE_H,
+        )
+    except Exception:
+        return False, None
+
+
 def run_review() -> Optional[Path]:
     """
     Collect new warnings/errors from all log sources since last run,
@@ -293,8 +418,13 @@ def run_review() -> Optional[Path]:
     state['last_review_ts'] = utc_now().timestamp()
     _save_state(state)
 
+    # ── Evolution logging heartbeat (LIA-195) ──────────────────────────────
+    # A SILENT outage (like LIA-194) produces no log errors, so this runs
+    # independent of the entry count and gates the "healthy" early-return below.
+    hb_stale, hb_reason = check_evolution_heartbeat()
+
     total = len(all_entries) + sum(len(c['errors']) for c in container_errors)
-    if total == 0 and not container_errors:
+    if total == 0 and not container_errors and not hb_stale:
         print('No warnings or errors since last review — system healthy.')
         return None
 
@@ -308,31 +438,32 @@ def run_review() -> Optional[Path]:
             unique_entries.append(e)
     unique_entries = unique_entries[:MAX_ENTRIES_PER_REVIEW]
 
-    # ── Build Ollama prompt ───────────────────────────────────────────────
-    sections: list[str] = []
+    # ── Build analysis ────────────────────────────────────────────────────
+    if unique_entries or container_errors:
+        sections: list[str] = []
 
-    if unique_entries:
-        lines = '\n'.join(
-            f"[{e['level']}] {e['message']}" for e in unique_entries
-        )
-        sections.append(f'## Main service logs\n{lines}')
-
-    if container_errors:
-        c_lines: list[str] = []
-        for c in container_errors[:20]:
-            meta_str = (
-                f"group={c.get('group', '?')} "
-                f"exit={c.get('exit_code', '?')} "
-                f"duration={c.get('duration', '?')}"
+        if unique_entries:
+            lines = '\n'.join(
+                f"[{e['level']}] {e['message']}" for e in unique_entries
             )
-            c_lines.append(f'  [{meta_str}]')
-            for err in c['errors'][:5]:
-                c_lines.append(f'    {err}')
-        sections.append(f'## Container session logs\n' + '\n'.join(c_lines))
+            sections.append(f'## Main service logs\n{lines}')
 
-    log_block = '\n\n'.join(sections)
+        if container_errors:
+            c_lines: list[str] = []
+            for c in container_errors[:20]:
+                meta_str = (
+                    f"group={c.get('group', '?')} "
+                    f"exit={c.get('exit_code', '?')} "
+                    f"duration={c.get('duration', '?')}"
+                )
+                c_lines.append(f'  [{meta_str}]')
+                for err in c['errors'][:5]:
+                    c_lines.append(f'    {err}')
+            sections.append(f'## Container session logs\n' + '\n'.join(c_lines))
 
-    prompt = f"""You are a system health analyst for Deus — a personal AI assistant running locally.
+        log_block = '\n\n'.join(sections)
+
+        prompt = f"""You are a system health analyst for Deus — a personal AI assistant running locally.
 
 Analyze these log entries and write a concise health report. Deus runs on Node.js (pino logger) with a Python evolution pipeline. Container sessions are isolated Docker runs for each user message.
 
@@ -354,19 +485,52 @@ Respond in EXACTLY this format (no extra text before or after):
 ### Pinned
 <YES if health is DEGRADED or CRITICAL, NO otherwise>"""
 
-    if _ollama_available():
-        analysis = _call_ollama(prompt)
+        if _ollama_available():
+            analysis = _call_ollama(prompt)
+        else:
+            # Fallback: plain summary without Ollama
+            issue_list = '\n'.join(f'- {e["message"][:100]}' for e in unique_entries[:10])
+            health = 'CRITICAL' if any(e['level'] == 'FATAL' for e in unique_entries) else 'DEGRADED'
+            analysis = (
+                f'## Health: {health}\n\n'
+                f'### Issues Found\n{issue_list or "- (see raw entries)"}\n\n'
+                f'### Root Causes\n- Ollama unavailable — automated analysis skipped\n\n'
+                f'### Action Required\n- Review log entries manually\n\n'
+                f'### Pinned\nYES'
+            )
     else:
-        # Fallback: plain summary without Ollama
-        issue_list = '\n'.join(f'- {e["message"][:100]}' for e in unique_entries[:10])
-        health = 'CRITICAL' if any(e['level'] == 'FATAL' for e in unique_entries) else 'DEGRADED'
+        # Pure-silence heartbeat alarm — no log entries to analyze, so synthesize
+        # a DEGRADED report in the exact shape _pin_issue's regexes expect.
         analysis = (
-            f'## Health: {health}\n\n'
-            f'### Issues Found\n{issue_list or "- (see raw entries)"}\n\n'
-            f'### Root Causes\n- Ollama unavailable — automated analysis skipped\n\n'
-            f'### Action Required\n- Review log entries manually\n\n'
-            f'### Pinned\nYES'
+            '## Health: DEGRADED\n\n'
+            f'### Issues Found\n- Evolution logging heartbeat STALE: {hb_reason}\n\n'
+            '### Root Causes\n- Dispatches active but the interactions table is not '
+            'advancing (LIA-194 class: host->python logging path or output-marker parse)\n\n'
+            '### Action Required\n- Run `python3 scripts/log_review.py --heartbeat`; check '
+            'logInteraction -> evolution/cli.py and recent ipc-protocol/container-runner changes\n\n'
+            '### Pinned\nYES'
         )
+
+    # ── Heartbeat overlay (LIA-195): a hard signal, independent of Ollama ───
+    heartbeat_banner = ''
+    if hb_stale:
+        heartbeat_banner = (
+            f'> \U0001f534 **Evolution logging heartbeat: STALE** — {hb_reason}\n'
+            '> Dispatches are happening but no interactions are being logged.\n\n'
+        )
+        if '## Health: OK' in analysis:
+            analysis = analysis.replace('## Health: OK', '## Health: DEGRADED', 1)
+        # Keep the report artifact self-consistent: it IS pinned (should_pin below
+        # forces it on hb_stale), so flip the Ollama "Pinned: NO" marker too.
+        analysis = analysis.replace('### Pinned\nNO', '### Pinned\nYES', 1)
+        analysis = analysis.replace('Pinned: NO', 'Pinned: YES', 1)
+        marker = '### Issues Found\n'
+        if marker in analysis and 'heartbeat' not in analysis.lower():
+            analysis = analysis.replace(
+                marker,
+                marker + f'- Evolution logging heartbeat STALE: {hb_reason}\n',
+                1,
+            )
 
     # ── Save report ───────────────────────────────────────────────────────
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -378,14 +542,16 @@ Respond in EXACTLY this format (no extra text before or after):
         f'unique: {len(unique_entries)}\n'
         f'container_sessions_with_errors: {len(container_errors)}\n'
         f'model: {OLLAMA_MODEL}\n---\n\n'
+        f'{heartbeat_banner}'
         f'{analysis}\n\n'
         f'---\n*{len(all_entries)} log entries · '
         f'{len(container_errors)} container sessions with errors*\n'
     )
     report_path.write_text(report_content)
 
-    # ── Pin if critical ───────────────────────────────────────────────────
-    if 'Pinned\nYES' in analysis or 'Pinned: YES' in analysis:
+    # ── Pin if critical (single pin/notify — heartbeat folds into this one) ─
+    should_pin = hb_stale or 'Pinned\nYES' in analysis or 'Pinned: YES' in analysis
+    if should_pin:
         _pin_issue(today, analysis, report_path)
 
     print(report_content)
@@ -439,7 +605,18 @@ def main() -> None:
                         help='Print the last saved daily report')
     parser.add_argument('--pinned', action='store_true',
                         help='Print all pinned issues')
+    parser.add_argument('--heartbeat', action='store_true',
+                        help='Check evolution-logging staleness only; exit 1 if stale '
+                             '(LIA-195 — use as a fast post-deploy smoke)')
     args = parser.parse_args()
+
+    if args.heartbeat:
+        stale, reason = check_evolution_heartbeat()
+        if stale:
+            print(f'EVOLUTION LOGGING STALE: {reason}')
+            sys.exit(1)
+        print('Evolution logging heartbeat OK (or system idle).')
+        return
 
     if args.summary:
         reports = sorted(REPORTS_DIR.glob('[0-9]*.md')) if REPORTS_DIR.exists() else []
