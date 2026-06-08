@@ -67,7 +67,8 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `gemma4:e4b` | Ollama judge model |
+| `OLLAMA_MODEL` | `gemma4:e4b` | Default Ollama judge model (override per-surface with `EVOLUTION_OLLAMA_JUDGE_MODEL`) |
+| `EVOLUTION_OLLAMA_JUDGE_MODEL` | (falls back to `OLLAMA_MODEL`) | Per-surface override for the evolution-loop Ollama judge model (mirrors `LLAMA_CPP_JUDGE_MODEL`). The override model must be pulled in Ollama or judge construction fails |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma` | Ollama embedding model |
 | `LLAMA_CPP_BASE_URL` | `http://localhost:8080/v1` | llama.cpp HTTP base URL (OpenAI-compatible `/v1` prefix); consumed by evolution-loop providers |
 | `LLAMA_CPP_MODEL` | (empty — server default) | Catch-all model override. Empty = use whatever llama-server has loaded (single-model) OR auto-pick (router mode) |
