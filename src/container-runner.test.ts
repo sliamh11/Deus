@@ -320,6 +320,17 @@ describe('ContainerOutputSchema Zod validation', () => {
     ).not.toThrow();
   });
 
+  it('accepts contextStats with null tokens/pct (SDK omits usage → NaN→null, LIA-194)', () => {
+    const parsed = ContainerOutputSchema.parse({
+      status: 'success',
+      result: 'ok',
+      contextStats: { tokens: null, limit: 200000, pct: null },
+    });
+    expect(parsed.contextStats?.tokens).toBeNull();
+    expect(parsed.contextStats?.pct).toBeNull();
+    expect(parsed.contextStats?.limit).toBe(200000);
+  });
+
   it('throws on schema-mismatched input (missing required fields)', () => {
     expect(() =>
       ContainerOutputSchema.parse({ notAValidField: true }),
@@ -363,6 +374,41 @@ describe('ContainerOutputSchema Zod validation', () => {
     expect(onOutput).not.toHaveBeenCalled();
 
     // Clean up
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+    vi.useRealTimers();
+  });
+
+  it('streaming parse: marker with null tokens/pct is NOT dropped → onOutput called (LIA-194 regression)', async () => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // The real-world failing marker: SDK omitted usage → tokens/pct null on wire.
+    const nullStatsJson = JSON.stringify({
+      status: 'success',
+      result: 'hello',
+      contextStats: { tokens: null, limit: 200000, pct: null },
+    });
+    fakeProc.stdout.push(
+      `${OUTPUT_START_MARKER}\n${nullStatsJson}\n${OUTPUT_END_MARKER}\n`,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Marker must parse (not be dropped) → onOutput called with the real result.
+    expect(onOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'success', result: 'hello' }),
+    );
+
     fakeProc.emit('close', 0);
     await vi.advanceTimersByTimeAsync(10);
     await resultPromise;
