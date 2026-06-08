@@ -159,6 +159,12 @@ export const SENSITIVE_FILE_PATTERNS = [
   '.env.production',
   '.env.staging',
   '.env.test',
+  // Git credential stores — shadowed so a container cannot read them to push
+  // with the host's credentials, closing the direct-Bash bypass of the
+  // tool-proxy push/merge gate. (`.netrc` is also blocked at the mount layer in
+  // mount-security.ts — a SEPARATE enforcement layer, intentionally not removed.)
+  '.git-credentials',
+  '.netrc',
 ];
 
 /**

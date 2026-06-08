@@ -108,6 +108,7 @@ function createSchema(database: Database.Database): void {
       path TEXT NOT NULL UNIQUE,
       type TEXT,
       readonly INTEGER DEFAULT 0,
+      allow_external_push INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     );
 
@@ -274,9 +275,20 @@ function createSchema(database: Database.Database): void {
       path TEXT NOT NULL UNIQUE,
       type TEXT,
       readonly INTEGER DEFAULT 0,
+      allow_external_push INTEGER DEFAULT 0,
       created_at TEXT NOT NULL
     );
   `);
+
+  // Add allow_external_push column to projects (migration for existing DBs).
+  // Default 0 = external projects cannot push/merge unless explicitly allowlisted.
+  try {
+    database.exec(
+      `ALTER TABLE projects ADD COLUMN allow_external_push INTEGER DEFAULT 0`,
+    );
+  } catch {
+    /* column already exists */
+  }
 
   // Add channel and is_group columns if they don't exist (migration for existing DBs)
   try {
@@ -1082,6 +1094,51 @@ export function getRegisteredGroup(
   };
 }
 
+export function getRegisteredGroupByFolder(
+  folder: string,
+): (RegisteredGroup & { jid: string }) | undefined {
+  // registered_groups.folder is UNIQUE, so this resolves at most one row.
+  // Used by the tool-proxy push/merge gate to map a request's group folder
+  // (from validateGroupToken) to its project association.
+  const row = db
+    .prepare('SELECT * FROM registered_groups WHERE folder = ?')
+    .get(folder) as
+    | {
+        jid: string;
+        name: string;
+        folder: string;
+        trigger_pattern: string;
+        added_at: string;
+        container_config: string | null;
+        requires_trigger: number | null;
+        is_main: number | null;
+        project_id: string | null;
+      }
+    | undefined;
+  if (!row) return undefined;
+  if (!isValidGroupFolder(row.folder)) {
+    logger.warn(
+      { jid: row.jid, folder: row.folder },
+      'Skipping registered group with invalid folder',
+    );
+    return undefined;
+  }
+  return {
+    jid: row.jid,
+    name: row.name,
+    folder: row.folder,
+    trigger: row.trigger_pattern,
+    added_at: row.added_at,
+    containerConfig: row.container_config
+      ? JSON.parse(row.container_config)
+      : undefined,
+    requiresTrigger:
+      row.requires_trigger === null ? undefined : row.requires_trigger === 1,
+    isControlGroup: row.is_main === 1 ? true : undefined,
+    projectId: row.project_id ?? undefined,
+  };
+}
+
 export function setRegisteredGroup(jid: string, group: RegisteredGroup): void {
   if (!isValidGroupFolder(group.folder)) {
     throw new Error(`Invalid group folder "${group.folder}" for JID ${jid}`);
@@ -1144,15 +1201,33 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
 
 export function createProject(project: ProjectConfig): void {
   db.prepare(
-    `INSERT INTO projects (id, name, path, type, readonly, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO projects (id, name, path, type, readonly, allow_external_push, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     project.id,
     project.name,
     project.path,
     project.type ? JSON.stringify(project.type) : null,
     project.readonly ? 1 : 0,
+    project.allow_external_push ? 1 : 0,
     project.created_at,
+  );
+}
+
+/**
+ * Allowlist (or revoke) an external project for git push/merge through the
+ * tool-proxy. Default is blocked; flip to true to let a trusted external
+ * project push/merge. (No general updateProject exists; this is the dedicated
+ * writer for the one mutable policy flag.) The operator-facing command/skill
+ * that wraps this is deferred to LIA-180; until then flip it via this writer.
+ */
+export function setProjectAllowExternalPush(
+  id: string,
+  allowed: boolean,
+): void {
+  db.prepare(`UPDATE projects SET allow_external_push = ? WHERE id = ?`).run(
+    allowed ? 1 : 0,
+    id,
   );
 }
 
@@ -1164,6 +1239,7 @@ export function getProjectById(id: string): ProjectConfig | undefined {
         path: string;
         type: string | null;
         readonly: number;
+        allow_external_push: number;
         created_at: string;
       }
     | undefined;
@@ -1174,6 +1250,7 @@ export function getProjectById(id: string): ProjectConfig | undefined {
     path: row.path,
     type: row.type ? JSON.parse(row.type) : null,
     readonly: row.readonly === 1,
+    allow_external_push: row.allow_external_push === 1,
     created_at: row.created_at,
   };
 }
@@ -1188,6 +1265,7 @@ export function getProjectByPath(hostPath: string): ProjectConfig | undefined {
         path: string;
         type: string | null;
         readonly: number;
+        allow_external_push: number;
         created_at: string;
       }
     | undefined;
@@ -1198,6 +1276,7 @@ export function getProjectByPath(hostPath: string): ProjectConfig | undefined {
     path: row.path,
     type: row.type ? JSON.parse(row.type) : null,
     readonly: row.readonly === 1,
+    allow_external_push: row.allow_external_push === 1,
     created_at: row.created_at,
   };
 }
@@ -1211,6 +1290,7 @@ export function getAllProjects(): ProjectConfig[] {
     path: string;
     type: string | null;
     readonly: number;
+    allow_external_push: number;
     created_at: string;
   }>;
   return rows.map((row) => ({
@@ -1219,6 +1299,7 @@ export function getAllProjects(): ProjectConfig[] {
     path: row.path,
     type: row.type ? JSON.parse(row.type) : null,
     readonly: row.readonly === 1,
+    allow_external_push: row.allow_external_push === 1,
     created_at: row.created_at,
   }));
 }
@@ -1567,34 +1648,27 @@ export function logPipelineEvent(
   identifier: string,
   eventType: string,
   detail?: string,
-): number | undefined {
-  const rowid = insertPipelineEventRow(issueId, identifier, eventType, detail);
-
-  // Strangler seam (Phase 2): the authoritative write above stays inline; we
-  // ALSO emit so the event-hub ObservabilitySink can (later) own the durable
-  // write. Best-effort + success-gated: emit only when the row landed, never
-  // block the synchronous write path, never let a bus failure surface to the
-  // 11 callers that rely on this never throwing. The outer try/catch makes the
-  // no-throw guarantee structural (covers a synchronous throw from the bus
-  // prologue); the inner .catch swallows async listener rejections.
-  if (rowid !== undefined) {
-    try {
-      void getBus()
-        .emit({
-          type: 'pipeline.transition',
-          source: 'db.logPipelineEvent',
-          actor: 'system',
-          correlationId: { kind: 'issue', id: issueId, identifier },
-          ts: new Date().toISOString(),
-          payload: { eventType, detail },
-        })
-        .catch(() => {});
-    } catch {
-      /* emit must never throw into the write path */
-    }
+): void {
+  // Emit-only (Phase-3 cutover, LIA-166): the ObservabilitySink owns the durable
+  // write off this `pipeline.transition`. notifyPipelineStep does NOT route here —
+  // it inserts synchronously (it needs the rowid + the row present before its
+  // updateUnifiedComment read). Emit is unconditional: the sink is the row-landing.
+  // Never-throw is load-bearing (callers rely on it): the outer try/catch is a
+  // structural no-throw guarantee; the inner .catch swallows async listener rejections.
+  try {
+    void getBus()
+      .emit({
+        type: 'pipeline.transition',
+        source: 'db.logPipelineEvent',
+        actor: 'system',
+        correlationId: { kind: 'issue', id: issueId, identifier },
+        ts: new Date().toISOString(),
+        payload: { eventType, detail },
+      })
+      .catch(() => {});
+  } catch {
+    /* emit must never throw into the write path */
   }
-
-  return rowid;
 }
 
 export function updatePipelineEventStatusSummary(

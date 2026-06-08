@@ -1,0 +1,6 @@
+# Local config with absolute host paths — never commit.
+.env
+
+# Local build artifacts, if any are produced here.
+*.db
+__pycache__/

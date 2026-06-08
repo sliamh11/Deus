@@ -18,6 +18,7 @@ class MockRuntimeJudge(BaseJudge):
         response: str,
         tools_used: Optional[list[str]] = None,
         context: Optional[str] = None,
+        user_profile: Optional[str] = None,  # accepted for interface parity; unused
     ) -> JudgeResult:
         return JudgeResult(
             score=self._score,

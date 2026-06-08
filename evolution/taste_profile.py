@@ -7,11 +7,8 @@ approach (arxiv:2505.00038): abductive LLM inference over behavioral evidence.
 
 Functional pipeline pattern: gather -> infer -> detect_conflicts -> write.
 """
-import json
 import logging
-import os
 import re
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -20,6 +17,7 @@ from .config import GEN_MODEL
 from .generative import generate
 from .ilog.interaction_log import get_recent
 from .storage import get_storage
+from .vault import load_vault_path as _load_vault_path
 
 log = logging.getLogger(__name__)
 
@@ -76,34 +74,6 @@ Example format:
 - Prefers flat file structure over deeply nested directories
 - Values explicit error messages over silent failures
 """
-
-
-def _load_vault_path() -> Path:
-    """Resolve vault path from config or env var. Anchored to home or /tmp."""
-    env_path = os.environ.get("DEUS_VAULT_PATH")
-    if env_path:
-        resolved = Path(env_path).expanduser().resolve()
-    elif (Path.home() / ".config" / "deus" / "config.json").exists():
-        config_path = Path.home() / ".config" / "deus" / "config.json"
-        try:
-            with config_path.open() as f:
-                config = json.load(f)
-            resolved = Path(config["vault_path"]).expanduser().resolve()
-        except (json.JSONDecodeError, KeyError) as exc:
-            raise RuntimeError(
-                f"Failed to read vault_path from config.json: {exc}"
-            ) from exc
-    else:
-        raise RuntimeError(
-            "Cannot resolve vault path. Set DEUS_VAULT_PATH or configure vault_path in ~/.config/deus/config.json"
-        )
-
-    allowed = (Path.home(), Path("/tmp").resolve(), Path(tempfile.gettempdir()).resolve())
-    if not any(resolved == a or resolved.is_relative_to(a) for a in allowed):
-        raise ValueError(
-            f"Vault path {resolved} is outside allowed prefixes ({Path.home()}, /tmp)"
-        )
-    return resolved
 
 
 def _profile_path() -> Path:

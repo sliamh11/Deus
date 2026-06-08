@@ -618,8 +618,8 @@ export async function checkConflictingPrs(ctx: LinearContext): Promise<void> {
         continue;
       }
 
-      // Log the conflict event
-      logPipelineEvent(issue_id, ident, 'merge_conflict', pr_url);
+      // notifyPipelineStep is the authoritative writer (row + status_summary +
+      // comment); a bare logPipelineEvent here would double-write via the sink.
       notifyPipelineStep(ctx, issue_id, ident, 'merge_conflict', pr_url).catch(
         () => {},
       );

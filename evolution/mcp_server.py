@@ -141,12 +141,14 @@ async def _async_judge_and_reflect(
 ) -> None:
     """Judge the interaction and generate reflections if score is low."""
     from .config import REFLECTION_THRESHOLD, MAX_REFLECTIONS_TO_GENERATE
+    from .persona import digest_for_group
     try:
         judge = make_runtime_judge()
         result = await judge.a_evaluate(
             prompt=prompt,
             response=response,
             tools_used=tools_used,
+            user_profile=digest_for_group(group_folder),
         )
         dims = {
             "quality": result.quality,

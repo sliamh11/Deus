@@ -34,6 +34,7 @@ class BaseJudge(ABC):
         response: str,
         tools_used: Optional[list[str]] = None,
         context: Optional[str] = None,
+        user_profile: Optional[str] = None,
     ) -> JudgeResult:
         ...
 
@@ -43,6 +44,7 @@ class BaseJudge(ABC):
         response: str,
         tools_used: Optional[list[str]] = None,
         context: Optional[str] = None,
+        user_profile: Optional[str] = None,
     ) -> JudgeResult:
         """Async variant — default falls back to sync evaluate."""
-        return self.evaluate(prompt, response, tools_used, context)
+        return self.evaluate(prompt, response, tools_used, context, user_profile)

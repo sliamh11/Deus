@@ -26,13 +26,16 @@ Scoring guide:
   - "quality_level": 2 = significant errors or incomplete
   - "quality_level": 1 = wrong or off-topic
 
-**personalization**: Did the response adapt to the user's known preferences?
-  - "recalled_preference": true  (referenced or applied a stored user preference)
-  - "recalled_preference": false (no evidence of using stored preferences)
-  - "format_matched": true  (structural choices — bullets vs prose, length, code vs explanation — match user's observed pattern)
-  - "format_matched": false (used generic formatting, didn't match user's pattern)
-  - "tone_matched": true  (register, directness, formality consistent with user's prior interactions)
-  - "tone_matched": false (generic or mismatched tone)
+**personalization**: Did the response adapt to the user's stored preferences? Grade ONLY
+against a "**Known user preferences (stored profile)**" section if one is provided above —
+never against assumptions. If no such section is provided, set all three sub-fields to false.
+  - "recalled_preference": true ONLY if the response demonstrably applied a SPECIFIC preference
+    listed in the stored profile (name which one in your analysis); false otherwise.
+  - "recalled_preference": false (no profile provided, or no specific listed preference applied)
+  - "format_matched": true  (structural choices — bullets vs prose, length, code vs explanation — match a format preference in the stored profile)
+  - "format_matched": false (generic formatting, or no profile to match against)
+  - "tone_matched": true  (register, directness, formality match a tone preference in the stored profile)
+  - "tone_matched": false (generic/mismatched tone, or no profile to match against)
 
 **tool_use**: How well did the agent execute tool calls?
   - "execution_quality": 5 = perfect args + response fully addresses the task

@@ -223,3 +223,152 @@ p-hacking. Future runs use the canonical final-iter adapter.
 - Original motivating ADR: none — the LoRA work proceeded on session-log
   evidence + bench numbers, not on a pre-existing ADR. This ADR closes
   the loop.
+
+## Addendum — 2026-06-06: Evidence-Backing Pass + Two Refinements
+
+**Status unchanged** (Accepted; keep base Gemma-3n-E4B, do not adopt the adapter). This
+addendum records a `/research` verification of the training concepts behind this ADR against
+primary literature, and adds two refinements the original did not capture. It does **not** alter
+the Decision, the retune conditions, or any text above.
+
+A 2026-06-06 deep-research pass verified the foundational fine-tuning concepts (LoRA, QLoRA,
+SFT/DPO/RLHF, GRPO, distillation, QAT, reward-modeling, MoE) against their primary papers, then
+applied the verified literature back to this ADR. **Verdict: the literature validates this ADR's
+alternatives #1/#3/#4 as the textbook-correct moves** — it does not overturn the decision. Full
+note + evidence map: `Second Brain/Deus/Research/2026-06-06-finetuning-training-concepts-evidence-and-judge-lora-analysis.md` (vault).
+
+### Refinement 1 — The failed run was a category error, not only an overshoot
+
+The ADR above attributes the adapter's regression to LR overshoot (5e-5 × 5 epochs) over-fitting
+658 records. That is a contributing cause, but the deeper issue is an **objective mismatch**: we
+used a **generation method** — SFT-LoRA minimizing next-token cross-entropy over the JSON answer
+tokens — to solve a **regression target**: predict a scalar score. The loss optimized (token
+likelihood) is not the metric evaluated (score Pearson / MAE).
+
+The reward-model literature confirms a scoring objective's *native* formulation is a **scalar head
++ a ranking/regression loss** trained on comparisons — architecturally distinct from
+autoregressive generation:
+
+- Ouyang et al. 2022, *InstructGPT* ([arXiv:2203.02155](https://arxiv.org/abs/2203.02155)) — the
+  reward model is the base transformer + a **scalar linear head**, trained with a Bradley-Terry
+  pairwise loss.
+- Stiennon et al. 2020, *Learning to summarize from human feedback*
+  ([arXiv:2009.01325](https://arxiv.org/abs/2009.01325)) — established the scalar-reward-model-
+  from-comparisons pattern for text.
+
+**Consequence for this ADR (reinforces, does not change, the "Preferred Over Retune" ordering):**
+alternative **#4 (frozen-base + trained regression head)** is not merely a safety net to reach for
+*if* #1–#3 fail — it is the **objective-correct first-line approach** for a scoring task. A
+frozen-base head **mathematically cannot regress base quality** (base weights never change), which
+is precisely the failure mode the LoRA run exhibited (regression on every measured dimension). The
+documented retune path (Conditions For A Retune Attempt) remains valid but stays *last* — an
+SFT-LoRA retune on the scoring objective should be attempted only if both the regression-head (#4)
+and decoding-level (#3) reformulations are shown insufficient on the deployment stack.
+
+The safety zero-variance failure (retune precondition #2) is the same lesson in miniature: a
+regression (MSE) loss produces **no gradient signal when all training labels are identical** —
+here the degenerate ground-truth `safety = 1.0` on every record, not the method, is the cause —
+so the dimension was unlearnable by construction, independent of method or hyperparameters.
+
+### Refinement 2 — GRPO: now enumerated, but dominated here and CUDA-gated
+
+The "Explicitly NOT pursued (anti-patterns)" list rejected DPO (needs paired preference data; we
+have pointwise scores) but did not enumerate **GRPO** (Shao et al. 2024, *DeepSeekMath*,
+[arXiv:2402.03300](https://arxiv.org/abs/2402.03300); DeepSeek-AI 2025, *R1*,
+[arXiv:2501.12948](https://arxiv.org/abs/2501.12948)). GRPO optimizes against a
+**programmable / verifiable reward** using a group-relative advantage, with **no critic network
+and no paired preference data** — so, unlike DPO, it *would* accept our pointwise Gemini score as
+a reward (`reward = −|judge − gemini|`), sidestepping the paired-data wall.
+
+It is nonetheless **not pursued**, for two precise reasons:
+
+1. **Dominated for this objective.** RL earns its keep when the output **cannot be directly
+   supervised** (e.g. math reasoning: the final answer is verifiable, the reasoning path is not).
+   For our judge we **can** directly supervise — we hold the target Gemini score — so **direct
+   regression (#4) is more sample-efficient and strictly dominates** GRPO for pure pointwise
+   scoring. GRPO becomes relevant only if the judge moves to a **reasoning-heavy** formulation
+   (score verifiable, rationale not).
+2. **Not runnable locally.** The GRPO tooling (TRL / Unsloth) is CUDA/Triton-bound and does not
+   run on the M3 Pro deployment hardware (per the 2026-06-06 Unsloth platform evaluation). It
+   would require a cloud/CUDA GPU regardless.
+
+**Keep GRPO on the radar** for a future reasoning-judge formulation on cloud hardware; it is not a
+candidate for the current local pointwise-scoring task.
+
+### References added by this addendum
+
+- Vault research note: `Second Brain/Deus/Research/2026-06-06-finetuning-training-concepts-evidence-and-judge-lora-analysis.md`
+- Ouyang et al. 2022 ([arXiv:2203.02155](https://arxiv.org/abs/2203.02155)); Stiennon et al. 2020
+  ([arXiv:2009.01325](https://arxiv.org/abs/2009.01325)) — reward model = scalar regressor.
+- Shao et al. 2024 ([arXiv:2402.03300](https://arxiv.org/abs/2402.03300)); DeepSeek-AI 2025
+  ([arXiv:2501.12948](https://arxiv.org/abs/2501.12948)) — GRPO.
+- 2026-06-06 session log: `Session-Logs/2026-06-06/unsloth-training-platforms-and-gemma4-adr.md`
+  (Unsloth / MLX platform finding).
+
+**Cite hygiene:** this addendum adds only the four arXiv-verified citations above. It does **not**
+reproduce the G-Eval / Alves 2025 citations from alternative #3 (out of scope — not re-verified in
+this pass), nor the Arize Spearman 0.51→0.66 figure (explicitly flagged unverified in the
+original).
+
+## Addendum — 2026-06-07: Clean-fixture model ladder (executes alternative #2)
+
+Built the missing clean benchmark and ran the **model-size ladder** (alternative **#2**,
+"replace the base model, don't tune it") on the **Ollama deployment stack**. Tooling:
+`evolution/build_judge_benchmark.py` (sampler + fresh Gemini labeler) →
+`evolution/benchmark_judge.py --fixture` (per-dim + composite + threshold P/R + bootstrap CIs).
+
+**Not comparable to the tables above.** This is a fresh baseline on a *new* fixture (n=200,
+current structured rubric, Ollama path), NOT the 2026-05-18 numbers (n=40, old rubric, mlx_lm Q4).
+It does **not** execute alternative #1 (cross-*inference-stack* bench across mlx_lm/Ollama/llama.cpp);
+`benchmark_judge.py` is Ollama-only.
+
+**Fixture (local, gitignored — contains real prompts/responses):** 200 interactions sampled
+stratified across composite bands, **freshly labeled by the production Gemini judge** under the
+current rubric **with the persona digest injected** (so personalization is grounded, not
+hallucinated — see #710), then
+graded **digest-symmetric** on the local Ollama judge. Data-quality finding: ~60% of stored
+interactions have an **empty response** (ungradable; the source of the all-0.0 composite cluster),
+and these are almost entirely the `runtime` surface — so the gradable pool is effectively all
+`claude_code`. Empty responses on the runtime/chat surface are a possible separate data-capture gap.
+
+**Result (composite agreement vs Gemini, 200 rows, bootstrap 95% CI):**
+
+| Model | Composite r | 95% CI | Threshold@0.6 P/R/F1 | Latency |
+|-------|-------------|--------|----------------------|---------|
+| gemma4:e4b (deployed) | 0.655 | [0.576, 0.726] | 0.91 / 0.50 / 0.64 | 3.5 s |
+| **gemma4:12b** | **0.742** | [0.680, 0.795] | 0.98 / 0.53 / 0.69 | 9.2 s |
+| gemma4:26b | 0.575 | [0.492, 0.649] | 0.92 / 0.45 / 0.60 | 4.5 s |
+
+(Latency: 26b being *faster* than 12b is not a typo — it reproduced across two independent runs
+on this M3 Pro. Cause unconfirmed, likely Metal/quantization scheduling; it drives no decision
+since 26b is rejected on agreement. 12b's 9.2 s/call is moot for UX: the hot-path judge is
+fire-and-forget (`mcp_server.py` `asyncio.create_task`), so judge latency is off the user's path.)
+
+Paired bootstrap (same rows): **12b − e4b = +0.088, CI [+0.026, +0.151], P=1.00** (significantly
+better); **26b − e4b = −0.076, CI [−0.156, −0.003], P=0.02** (significantly **worse**).
+
+**Findings:**
+1. **12b is the best local judge; 26b regresses below e4b.** Bigger ≠ better for judge agreement —
+   the larger model agrees *less* with the Gemini reference on composite, quality, and tool_use.
+2. **A prior n=37 pilot was overturned.** On the small set 26b looked best (quality 0.782); at
+   n=200 that was underpowered noise. This is the concrete payoff of building a powered fixture
+   before acting — and a standing caution against deciding judge changes on <50 examples.
+3. **Safety is now tested.** The committed synthetic probe set (`evolution/fixtures/judge_safety_probes.jsonl`,
+   n=13 smoke) is detected perfectly by all three models (P/R/F1 = 1.00). The main fixture itself
+   remains near-constant on safety (real interactions are overwhelmingly safe).
+4. **Personalization is now gradable** (digest-symmetric labeling+grading, validating #710):
+   per-dim Pearson e4b 0.22 / 12b 0.37 / 26b 0.42 — modest but real, no longer a hallucination artifact.
+5. **Shared limitation: threshold recall ≈ 0.5.** All models flag only ~half the interactions Gemini
+   would (high precision ≥0.91 — they rarely false-flag). Improving reflexion *recall* is a rubric/
+   prompt lever, not a model-size lever.
+
+**Decision:** prefer **gemma4:12b** as the judge model, opt-in via a new `EVOLUTION_OLLAMA_JUDGE_MODEL`
+override (the +0.088 gain is significant and well-powered). Because the hot-path judge is
+**fire-and-forget** (`mcp_server.py` `asyncio.create_task`), 12b's 9.2 s/call carries **no UX cost** —
+so the override applies to **both** the hot and batch judges; running 12b everywhere keeps stored
+labels **consistent** (mixing models would contaminate agreement comparisons). **The default stays
+e4b** (the override is a true no-op until set), reconciling with the 2026-06-05 ADR
+([gemma4-12b-local-model-evaluation.md](gemma4-12b-local-model-evaluation.md)), which keeps e4b as
+default and sanctions this per-surface override *mechanism* (the ADR exemplified it for reflexion;
+#713's evidence is what justifies the judge surface). **Do not adopt 26b.** The override ships
+separately as the opt-in knob in **PR #718**, gated on this measurement.
