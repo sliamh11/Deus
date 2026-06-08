@@ -11,35 +11,47 @@ The LLM contradiction check is mocked; only the persistence path is exercised.
 ``google-genai`` is import-only here (the real client is never constructed), so
 it must be installed in CI — see the evolution-deps step in
 ``.github/workflows/ci.yml``.
+
+Import note: ``memory_indexer`` resolves the memory vault AT IMPORT TIME
+(``_vault_root = _load_vault_path()`` at module scope) and ``sys.exit``s with
+AUTH_ERROR when no vault is configured. CI has no vault, so the import is
+deferred into the test and ``DEUS_VAULT_PATH`` (resolution tier 1) is set via
+``monkeypatch.setenv`` first — otherwise pytest crashes at COLLECTION time,
+before any fixture can run. The vault path is never used: the test redirects
+``DB_PATH`` and ``detect_contradictions`` only touches the DB connection.
+``import_module`` returns the cached module on a second import, so if a future
+test adds a module-level ``memory_indexer`` import this becomes order-sensitive;
+today this is the only importer.
 """
 
 from __future__ import annotations
 
+import importlib
 import sys
 import types
 from pathlib import Path
 
-# Import the scripts/ module without permanently polluting sys.path — otherwise
-# scripts/ would shadow names while OTHER evolution tests are collected. The
-# sibling helpers (_time, _exit_codes, _agent_io) get cached during this import.
 _SCRIPTS = str(Path(__file__).resolve().parents[2] / "scripts")
-_added = _SCRIPTS not in sys.path
-if _added:
-    sys.path.insert(0, _SCRIPTS)
-try:
-    import memory_indexer as mi  # noqa: E402
-finally:
-    if _added:
-        sys.path.remove(_SCRIPTS)
 
 
-def _unit_vec() -> list[float]:
-    vec = [0.0] * mi.EMBED_DIM
-    vec[0] = 1.0
-    return vec
+def _import_memory_indexer():
+    """Import scripts/memory_indexer.py without leaving scripts/ on sys.path
+    (it would shadow names while OTHER evolution tests are collected)."""
+    added = _SCRIPTS not in sys.path
+    if added:
+        sys.path.insert(0, _SCRIPTS)
+    try:
+        return importlib.import_module("memory_indexer")
+    finally:
+        if added:
+            sys.path.remove(_SCRIPTS)
 
 
 def test_detected_conflict_persists_across_connection_close(tmp_path, monkeypatch):
+    # Satisfy import-time vault resolution (tier 1) BEFORE importing — the path
+    # is never touched; the test redirects DB_PATH below. setenv auto-reverts.
+    monkeypatch.setenv("DEUS_VAULT_PATH", str(tmp_path / "vault"))
+    mi = _import_memory_indexer()
     monkeypatch.setattr(mi, "DB_PATH", tmp_path / "mem.db")
 
     # Force a CONTRADICT verdict without any network call.
@@ -49,7 +61,8 @@ def test_detected_conflict_persists_across_connection_close(tmp_path, monkeypatc
         lambda *a, **k: types.SimpleNamespace(text="CONTRADICT"),
     )
 
-    vec = _unit_vec()
+    vec = [0.0] * mi.EMBED_DIM
+    vec[0] = 1.0
 
     # Seed one existing atom + its embedding so the KNN MATCH returns a candidate.
     db = mi.open_db()
