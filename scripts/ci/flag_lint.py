@@ -46,7 +46,9 @@ CODE_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".sh", ".bash"
 SHELL_EXTS = (".sh", ".bash", ".zsh")
 
 # Ops/framework DEUS_* vars that gate nothing and need no citation; extend as needed.
-ALLOWLIST: frozenset[str] = frozenset()
+# DEUS_REPO: internal computed repo-root path (scripts/deus_init.sh) — never read as
+# an env gate, gates nothing; resolved from the script's own location.
+ALLOWLIST: frozenset[str] = frozenset({"DEUS_REPO"})
 
 # Env-gate forms across TS/JS and Python. The flag name is the capture group.
 _GENERAL_GATE_PATTERNS = (

@@ -145,9 +145,9 @@ def test_vault_path_traversal(monkeypatch):
     """Vault path outside home/tmp is rejected."""
     monkeypatch.setenv("DEUS_VAULT_PATH", "/evil")
 
-    from evolution.taste_profile import _load_vault_path
+    from evolution.vault import load_vault_path
     with pytest.raises(ValueError, match="outside allowed prefixes"):
-        _load_vault_path()
+        load_vault_path()
 
 
 def test_vault_path_prefix_collision(monkeypatch):
@@ -155,9 +155,9 @@ def test_vault_path_prefix_collision(monkeypatch):
     home = str(Path.home())
     monkeypatch.setenv("DEUS_VAULT_PATH", home + "-evil/vault")
 
-    from evolution.taste_profile import _load_vault_path
+    from evolution.vault import load_vault_path
     with pytest.raises(ValueError, match="outside allowed prefixes"):
-        _load_vault_path()
+        load_vault_path()
 
 
 def test_consolidation_sentinel_guard(vault_dir, monkeypatch):

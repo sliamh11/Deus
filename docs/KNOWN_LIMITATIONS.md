@@ -17,7 +17,7 @@ Deus now has a backend-neutral host runtime with per-group and per-task backend 
 **What IS swappable:**
 - **Container agent backend** — `claude` or `openai`, selected globally or overridden per group/task
 - **Eval/evolution judges** — can use Ollama (local, free), Gemini, or Claude
-- **Embedding model** — pluggable via `EMBEDDING_PROVIDER` env var (default: Gemini). See `evolution/providers/embeddings.py` to add providers
+- **Embedding model** — pluggable via `EMBEDDING_PROVIDER` env var (default: `auto` → Ollama first, Gemini fallback). See `evolution/providers/embeddings.py` to add providers
 - **Memory indexer** — uses the pluggable embedding provider
 - **Transcription** — local Whisper, independent of any API
 

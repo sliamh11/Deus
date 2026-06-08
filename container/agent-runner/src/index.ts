@@ -34,6 +34,7 @@ import { runOpenAIConversation } from './openai-backend.js';
 import { runLlamaCppConversation } from './llama-cpp-backend.js';
 import { DoomLoopDetector, createDoomLoopHook } from './doom-loop-detector.js';
 import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
+import { createToolCallLogHook } from './tool-call-log.js';
 import type { AgentRuntimeId } from './tool-broker.js';
 import { HookDispatchService } from './hook-dispatch-service.js';
 import { createPreToolUseHook } from './pre-tool-use-hook.js';
@@ -85,6 +86,10 @@ interface ContainerOutput {
   compactionEvent?: CompactionEvent;
 }
 
+// SYNC-REQUIRED with host ContextStatsSchema (src/ipc-protocol.ts), with ONE
+// intentional asymmetry: host types tokens/pct `number|null` (we emit NaN→null
+// when the SDK omits usage, LIA-194). Keep `number` here; do NOT make the host
+// non-null — that drops the output marker and breaks dispatch logging.
 interface ContextStats {
   tokens: number;
   limit: number;
@@ -931,6 +936,9 @@ async function runQuery(
           hooks.push(createDoomLoopHook(doomDetector));
           if (process.env.DEUS_TOOL_SIZE_LOG !== '0')
             hooks.push(createToolSizeLogHook());
+          // LIA-154: structured per-call capture for evolution tool observability
+          if (process.env.DEUS_TOOL_CALL_LOG !== '0')
+            hooks.push(createToolCallLogHook());
           if (process.env.DEUS_TOOL_AUDIT_LOG !== '0')
             hooks.push(createToolAuditHook());
           if (process.env.HOOK_DISPATCH_ENABLED === 'true')

@@ -854,9 +854,16 @@ def resolve_vault_path() -> Path:
     vault = os.environ.get(VAULT_PATH_ENV)
     if vault:
         return Path(vault).expanduser()
-    # Fallback: the Deus default used elsewhere.
-    default = Path("~/Desktop/אישי/Brain Dump/Second Brain/Deus").expanduser()
-    return default
+    cfg_path = Path("~/.config/deus/config.json").expanduser()
+    if cfg_path.exists():
+        try:
+            cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+            vp = cfg.get("vault_path")
+            if isinstance(vp, str) and vp:
+                return Path(vp).expanduser()
+        except (OSError, json.JSONDecodeError):
+            pass
+    return Path("~/Desktop/אישי/Brain Dump/Second Brain/Deus").expanduser()
 
 
 def iter_tree_files(vault: Path) -> list[Path]:

@@ -14,6 +14,8 @@ import { extractFrontmatter } from './linear-dispatcher.js';
 import {
   parseEnrichment,
   parseVerdict,
+  gateTransitionAction,
+  gateOutcomeEventType,
   parseRatings,
   mergeEnrichment,
   stripEnrichmentSection,
@@ -363,6 +365,47 @@ Needs work.`),
 
   it('returns null when no verdict', () => {
     expect(parseVerdict('No verdict here.')).toBeNull();
+  });
+});
+
+describe('gateTransitionAction (LIA-169)', () => {
+  // The fix: an errored gate HALTS (parked in a quiescent state), never reverts.
+  it('errored gate halts regardless of mode or verdict', () => {
+    expect(gateTransitionAction('strict', 'REVISE', true)).toBe('halt');
+    expect(gateTransitionAction('advise', 'REVISE', true)).toBe('halt');
+    expect(gateTransitionAction('strict', 'SHIP', true)).toBe('halt');
+    expect(gateTransitionAction('advise', 'BLOCK', true)).toBe('halt');
+  });
+
+  // Regression boundary: a LEGITIMATE strict non-SHIP verdict must STILL revert
+  // (this is the behavior the loop fix must NOT break).
+  it('legitimate strict non-SHIP verdict reverts', () => {
+    expect(gateTransitionAction('strict', 'REVISE', false)).toBe('revert');
+    expect(gateTransitionAction('strict', 'BLOCK', false)).toBe('revert');
+  });
+
+  it('SHIP never reverts', () => {
+    expect(gateTransitionAction('strict', 'SHIP', false)).toBe('none');
+    expect(gateTransitionAction('advise', 'SHIP', false)).toBe('none');
+  });
+
+  it('advise-mode non-SHIP does not revert (advise gates only comment)', () => {
+    expect(gateTransitionAction('advise', 'REVISE', false)).toBe('none');
+    expect(gateTransitionAction('advise', 'BLOCK', false)).toBe('none');
+  });
+});
+
+describe('gateOutcomeEventType (LIA-169)', () => {
+  it('errored gate logs gate_error for any verdict', () => {
+    expect(gateOutcomeEventType('REVISE', true)).toBe('gate_error');
+    expect(gateOutcomeEventType('SHIP', true)).toBe('gate_error');
+    expect(gateOutcomeEventType('BLOCK', true)).toBe('gate_error');
+  });
+
+  it('non-errored gate logs gate_ship / gate_revise by verdict', () => {
+    expect(gateOutcomeEventType('SHIP', false)).toBe('gate_ship');
+    expect(gateOutcomeEventType('REVISE', false)).toBe('gate_revise');
+    expect(gateOutcomeEventType('BLOCK', false)).toBe('gate_revise');
   });
 });
 

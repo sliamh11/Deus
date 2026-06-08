@@ -134,6 +134,9 @@ recall as an MCP tool through the repo launcher:
 codex mcp add deus-memory -- /path/to/deus/scripts/deus-memory-mcp
 ```
 
+To use Deus's memory and evolution layers from a code editor (Zed and other
+ACP/MCP clients), see [Editor integration](docs/EDITOR_INTEGRATION.md).
+
 To mirror the repo's Warden gates in direct Codex CLI sessions, install the
 local Codex hooks:
 
@@ -289,6 +292,7 @@ Deus goes deep on understanding you and adapting over time. Hermes goes wide on 
 | Environment variables | [Environment](docs/ENVIRONMENT.md) |
 | Using different AI backends | [Multi-backend](docs/MULTI_BACKEND.md) |
 | Local backend (llama.cpp) | [Multi-backend — llama.cpp](docs/MULTI_BACKEND.md#llamacpp-local-backend) |
+| Use Deus in your editor (Zed, ACP/MCP) | [Editor integration](docs/EDITOR_INTEGRATION.md) |
 | Backend quality benchmark | [Claude vs Codex parity report](docs/research/backend-quality-benchmark-2026-04-26.md) |
 | Development setup | [Development](docs/DEVELOPMENT.md) |
 | Contributing | [Contributing](CONTRIBUTING.md) |

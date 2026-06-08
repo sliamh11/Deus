@@ -14,7 +14,7 @@ from typing import Optional
 
 from .base import BaseJudge, JudgeResult
 from .criteria import RUBRIC, compose_score, _normalize_dim
-from ..config import OLLAMA_HOST, OLLAMA_MODEL
+from ..config import OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_JUDGE_MODEL
 
 
 def _ollama_url(path: str) -> str:
@@ -56,10 +56,15 @@ def _check_model_pulled(model: str) -> None:
 
 def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
     """Synchronous Ollama generate call."""
-    # Qwen is no longer the default, but keep the /no_think suffix in case a
-    # user sets OLLAMA_MODEL=qwen*: without it the thinking mode returns empty.
+    # Suppress model "thinking" for structured output — otherwise the thinking
+    # preamble slows the call and can corrupt the JSON-grammar response. The
+    # mechanism is family-specific: Qwen uses the /no_think prompt suffix; Gemma4
+    # (the default OLLAMA_MODEL) uses the "think": false request-body key. Prior
+    # to this fix the default judge ran with thinking ON and no suppression.
+    # Scoped to gemma4 specifically — the only Gemma we run — rather than all
+    # "gemma*" so earlier variants aren't sent a key they may not support.
     full_prompt = f"{prompt}\n/no_think" if "qwen" in model.lower() else prompt
-    body = json.dumps({
+    payload = {
         "model": model,
         "prompt": full_prompt,
         "stream": False,
@@ -80,7 +85,10 @@ def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
             "temperature": 0,
             "seed": 42,
         },
-    }).encode()
+    }
+    if "gemma4" in model.lower():
+        payload["think"] = False
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         _ollama_url("/api/generate"),
         data=body,
@@ -116,8 +124,9 @@ class OllamaRuntimeJudge(BaseJudge):
         response: str,
         tools_used: Optional[list[str]] = None,
         context: Optional[str] = None,
+        user_profile: Optional[str] = None,
     ) -> JudgeResult:
-        eval_prompt = _build_eval_prompt(prompt, response, tools_used, context)
+        eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
         raw = _call_ollama(eval_prompt, self.model)
         return _parse_result(raw)
 
@@ -127,8 +136,9 @@ class OllamaRuntimeJudge(BaseJudge):
         response: str,
         tools_used: Optional[list[str]] = None,
         context: Optional[str] = None,
+        user_profile: Optional[str] = None,
     ) -> JudgeResult:
-        eval_prompt = _build_eval_prompt(prompt, response, tools_used, context)
+        eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
         raw = await _call_ollama_async(eval_prompt, self.model)
         return _parse_result(raw)
 
@@ -138,10 +148,13 @@ def _build_eval_prompt(
     response: str,
     tools_used: Optional[list[str]],
     context: Optional[str],
+    user_profile: Optional[str] = None,
 ) -> str:
     parts = [RUBRIC, "\n## Interaction to evaluate\n"]
     if context:
         parts.append(f"**Context:** {context}\n")
+    if user_profile:
+        parts.append(f"**Known user preferences (stored profile):**\n{user_profile}\n")
     parts.append(f"**User prompt:**\n{prompt}\n")
     if tools_used:
         parts.append(f"**Tools used:** {', '.join(tools_used)}\n")
@@ -220,6 +233,11 @@ def _parse_result(raw: str) -> JudgeResult:
 
 
 
-def make_runtime_judge(model: str = OLLAMA_MODEL) -> OllamaRuntimeJudge:
-    """Return an OllamaRuntimeJudge for scoring production interactions."""
+def make_runtime_judge(model: str = OLLAMA_JUDGE_MODEL) -> OllamaRuntimeJudge:
+    """Return an OllamaRuntimeJudge for scoring production interactions.
+
+    Default honors the judge-specific override (OLLAMA_JUDGE_MODEL, which itself
+    defaults to OLLAMA_MODEL). Production callers go through the provider registry,
+    not this helper; the default is kept consistent for direct/script/test callers.
+    """
     return OllamaRuntimeJudge(model=model)
