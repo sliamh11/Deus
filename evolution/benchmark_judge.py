@@ -11,14 +11,15 @@ Usage:
 """
 import argparse
 import json
-import os
+import random
 import statistics
 import sys
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
+from typing import Callable, Optional
 
 from .hardware import MODEL_SIZES as _MODEL_SIZES, detect_hardware as _detect_hardware
 from .storage import get_storage
@@ -30,6 +31,13 @@ from .judge.ollama_judge import (
     _ollama_url,
     is_ollama_available,
 )
+
+DIMS = ("quality", "safety", "tool_use", "personalization")
+# Interactions scoring below this composite trigger reflexion (EVOLUTION_REFLECTION_THRESHOLD
+# default). The judge's operationally-relevant ability is catching these correctly.
+REFLECTION_TRIGGER = 0.6
+# Default safety-probe fixture (committed, synthetic). See evolution/fixtures/.
+SAFETY_PROBES_PATH = Path(__file__).resolve().parent / "fixtures" / "judge_safety_probes.jsonl"
 
 
 @dataclass
@@ -55,6 +63,10 @@ class ModelResult:
     total: int = 0
     latencies: list[float] = field(default_factory=list)
     details: list[EvalDetail] = field(default_factory=list)
+    # Per-dimension aligned pred/truth arrays (populated in --fixture mode, which
+    # carries per-dim Gemini ground truth). Empty in legacy DB/composite-only mode.
+    dim_scores: dict[str, list[float]] = field(default_factory=lambda: {d: [] for d in DIMS})
+    dim_truth: dict[str, list[float]] = field(default_factory=lambda: {d: [] for d in DIMS})
 
     @property
     def mae(self) -> float:
@@ -74,35 +86,135 @@ class ModelResult:
 
     @property
     def pearson(self) -> float:
-        if len(self.scores) < 3:
-            return 0.0
-        n = len(self.scores)
-        mean_s = statistics.mean(self.scores)
-        mean_g = statistics.mean(self.ground_truth)
-        num = sum((s - mean_s) * (g - mean_g) for s, g in zip(self.scores, self.ground_truth))
-        den_s = sum((s - mean_s) ** 2 for s in self.scores) ** 0.5
-        den_g = sum((g - mean_g) ** 2 for g in self.ground_truth) ** 0.5
-        if den_s == 0 or den_g == 0:
-            return 0.0
-        return num / (den_s * den_g)
+        # Delegate to the standalone (single source of truth); legacy callers/table
+        # expect a float, so coerce the standalone's None (degenerate) to 0.0.
+        r = _pearson(self.scores, self.ground_truth)
+        return r if r is not None else 0.0
 
     @property
     def spearman(self) -> float:
-        if len(self.scores) < 3:
-            return 0.0
-        n = len(self.scores)
+        r = _spearman(self.scores, self.ground_truth)
+        return r if r is not None else 0.0
 
-        def _rank(vals):
-            indexed = sorted(enumerate(vals), key=lambda x: x[1])
-            ranks = [0.0] * n
-            for rank, (orig_idx, _) in enumerate(indexed, 1):
-                ranks[orig_idx] = float(rank)
-            return ranks
 
-        r_s = _rank(self.scores)
-        r_g = _rank(self.ground_truth)
-        d_sq = sum((a - b) ** 2 for a, b in zip(r_s, r_g))
-        return 1 - (6 * d_sq) / (n * (n ** 2 - 1))
+# ── Standalone metrics (per-dimension; mirror ModelResult's composite props) ───
+
+def _pearson(a: list[float], b: list[float]) -> Optional[float]:
+    """Pearson r, or None when undefined (n<3 or a constant array — e.g. all-safe)."""
+    n = len(a)
+    if n < 3:
+        return None
+    ma, mb = statistics.mean(a), statistics.mean(b)
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((y - mb) ** 2 for y in b)
+    if va == 0 or vb == 0:
+        return None
+    cov = sum((a[i] - ma) * (b[i] - mb) for i in range(n))
+    return cov / (va ** 0.5 * vb ** 0.5)
+
+
+def _ranks(xs: list[float]) -> list[float]:
+    """Average ranks (ties shared) — needed for a correct Spearman on bucketed dims."""
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    ranks = [0.0] * len(xs)
+    i = 0
+    while i < len(xs):
+        j = i
+        while j + 1 < len(xs) and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        avg = (i + j) / 2.0
+        for k in range(i, j + 1):
+            ranks[order[k]] = avg
+        i = j + 1
+    return ranks
+
+
+def _spearman(a: list[float], b: list[float]) -> Optional[float]:
+    if len(a) < 3:
+        return None
+    return _pearson(_ranks(a), _ranks(b))
+
+
+def _mae(a: list[float], b: list[float]) -> Optional[float]:
+    if not a:
+        return None
+    return statistics.mean(abs(a[i] - b[i]) for i in range(len(a)))
+
+
+def _prf(tp: int, fp: int, fn: int) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """Precision / recall / F1 from a confusion count. None when undefined (no
+    predicted-positives / no actual-positives); a defined-but-zero F1 stays 0.0
+    (not None) — e.g. tp=0 with fp>0 and fn>0."""
+    prec = tp / (tp + fp) if (tp + fp) else None
+    rec = tp / (tp + fn) if (tp + fn) else None
+    if prec is None or rec is None:
+        f1 = None
+    elif prec + rec == 0:
+        f1 = 0.0
+    else:
+        f1 = 2 * prec * rec / (prec + rec)
+    return prec, rec, f1
+
+
+def _threshold_pr(pred: list[float], truth: list[float], thresh: float = REFLECTION_TRIGGER) -> dict:
+    """Binary detection of 'should trigger' (score < thresh): precision/recall/F1.
+
+    This is the operationally-relevant metric — reflexion fires on composite < thresh,
+    so what matters is whether the judge flags the same interactions Gemini would.
+    """
+    tp = sum(1 for i in range(len(pred)) if truth[i] < thresh and pred[i] < thresh)
+    fp = sum(1 for i in range(len(pred)) if truth[i] >= thresh and pred[i] < thresh)
+    fn = sum(1 for i in range(len(pred)) if truth[i] < thresh and pred[i] >= thresh)
+    tn = sum(1 for i in range(len(pred)) if truth[i] >= thresh and pred[i] >= thresh)
+    prec, rec, f1 = _prf(tp, fp, fn)
+    return {"tp": tp, "fp": fp, "fn": fn, "tn": tn, "precision": prec, "recall": rec,
+            "f1": f1, "n_flagged": tp + fn}
+
+
+def _bootstrap_ci(pred: list[float], truth: list[float],
+                  stat_fn: Callable[[list[float], list[float]], Optional[float]],
+                  seed: int = 1234, n_resamples: int = 1000) -> Optional[tuple[float, float]]:
+    """95% CI for a paired statistic via case resampling. Deterministic (local RNG)."""
+    n = len(pred)
+    if n < 3:
+        return None
+    rng = random.Random(seed)
+    boots = []
+    for _ in range(n_resamples):
+        idx = [rng.randrange(n) for _ in range(n)]
+        s = stat_fn([pred[i] for i in idx], [truth[i] for i in idx])
+        if s is not None:
+            boots.append(s)
+    if len(boots) < n_resamples * 0.5:
+        return None  # too many degenerate resamples to trust the interval
+    boots.sort()
+    return boots[int(0.025 * len(boots))], boots[int(0.975 * len(boots))]
+
+
+def _paired_delta_ci(pred_a: list[float], pred_b: list[float], truth: list[float],
+                     stat_fn: Callable[[list[float], list[float]], Optional[float]],
+                     seed: int = 4242, n_resamples: int = 1000) -> Optional[dict]:
+    """95% CI for stat(B)−stat(A) on the SAME resampled rows (paired). pred_a/pred_b/truth
+    must be row-aligned. Returns median delta + CI + P(B>A)."""
+    n = len(truth)
+    if n < 3 or len(pred_a) != n or len(pred_b) != n:
+        return None
+    rng = random.Random(seed)
+    deltas, wins = [], 0
+    for _ in range(n_resamples):
+        idx = [rng.randrange(n) for _ in range(n)]
+        sa = stat_fn([pred_a[i] for i in idx], [truth[i] for i in idx])
+        sb = stat_fn([pred_b[i] for i in idx], [truth[i] for i in idx])
+        if sa is not None and sb is not None:
+            deltas.append(sb - sa)
+            wins += sb > sa
+    if not deltas:
+        return None
+    deltas.sort()
+    return {"median": deltas[len(deltas) // 2],
+            "lo": deltas[int(0.025 * len(deltas))],
+            "hi": deltas[int(0.975 * len(deltas))],
+            "p_b_gt_a": wins / len(deltas)}
 
 
 def _is_noise(prompt: str, response: str) -> bool:
@@ -154,6 +266,62 @@ def _get_scored_interactions(limit: int, clean: bool = False) -> list[dict]:
     return results
 
 
+def _load_fixture(path: Path) -> list[dict]:
+    """Load a clean, freshly-Gemini-labeled fixture (built by build_judge_benchmark).
+
+    Unlike `_get_scored_interactions` (which trusts the DB's mixed-provenance stored
+    scores), this carries per-dim Gemini ground truth + the digest text used at label
+    time. Records where Gemini itself failed to parse are dropped (not ground truth).
+    """
+    if not path.exists():
+        raise FileNotFoundError(f"fixture not found: {path}")
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rec = json.loads(line)
+        if "prompt" not in rec or "gemini_dims" not in rec:
+            continue  # skip _meta / malformed
+        if rec.get("is_parse_error"):
+            continue
+        out.append({
+            "id": rec["id"],
+            "prompt": rec["prompt"],
+            "response": rec.get("response", "") or "",
+            "tools_used": rec.get("tools_used"),
+            "ground_truth_score": rec["gemini_composite"],
+            "ground_truth_dims": rec["gemini_dims"],
+            "digest_text": rec.get("digest_text") or None,
+        })
+    if not out:
+        raise ValueError(f"{path} contained zero usable records")
+    return out
+
+
+def _load_safety_probes(path: Path) -> list[dict]:
+    """Load synthetic safety probes (hand-labeled gold safety). Smoke test, not calibration."""
+    if not path.exists():
+        return []
+    probes = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rec = json.loads(line)
+        if "prompt" not in rec or "gold_safety" not in rec:
+            continue  # skip _meta
+        probes.append({
+            "id": rec["id"],
+            "prompt": rec["prompt"],
+            "response": rec.get("response", "") or "",
+            "tools_used": rec.get("tools_used"),
+            "gold_safety": float(rec["gold_safety"]),
+            "category": rec.get("category", "?"),
+        })
+    return probes
+
+
 def _list_ollama_models() -> list[str]:
     """List all models available in local Ollama."""
     try:
@@ -194,10 +362,15 @@ def benchmark(models: list[str], interactions: list[dict], verbose: bool = True)
             t0 = time.monotonic()
 
             try:
+                # Digest symmetry: in --fixture mode the Gemini labels were produced
+                # WITH the persona digest, so the local judge must be graded WITH the
+                # same digest — else personalization is rigged low by construction.
+                # DB mode has no digest_text → None → digest-blind (legacy behavior).
                 result = judge.evaluate(
                     prompt=interaction["prompt"],
                     response=interaction["response"],
                     tools_used=interaction["tools_used"],
+                    user_profile=interaction.get("digest_text"),
                 )
             except Exception as e:
                 if verbose:
@@ -213,6 +386,12 @@ def benchmark(models: list[str], interactions: list[dict], verbose: bool = True)
 
             mr.scores.append(result.score)
             mr.ground_truth.append(interaction["ground_truth_score"])
+            # Per-dimension arrays (only when the interaction carries per-dim truth).
+            gt_dims = interaction.get("ground_truth_dims") or {}
+            for d in DIMS:
+                if d in gt_dims:
+                    mr.dim_scores[d].append(getattr(result, d))
+                    mr.dim_truth[d].append(float(gt_dims[d]))
             mr.details.append(EvalDetail(
                 interaction_id=interaction["id"],
                 prompt_preview=interaction["prompt"][:80].replace("\n", " "),
@@ -343,6 +522,121 @@ def print_conflicts(results: list[ModelResult], threshold: float = 0.2) -> None:
         print()
 
 
+def print_dimension_report(results: list[ModelResult], baseline_idx: int = 0) -> None:
+    """Per-dimension agreement + composite + threshold P/R + bootstrap CIs (fixture mode)."""
+    have_dims = any(r.dim_scores.get("quality") for r in results)
+    if not have_dims:
+        return  # DB/composite-only mode: nothing per-dim to report
+
+    print(f"\n{'='*84}")
+    print("PER-DIMENSION AGREEMENT vs Gemini reference  (agreement, not correctness)")
+    print(f"{'='*84}")
+    print(f"{'model':<16}{'dim':<16}{'Pearson':>9}{'Spearman':>10}{'MAE':>8}{'predStd':>9}")
+    print("-" * 68)
+    for r in results:
+        for d in DIMS:
+            pred, truth = r.dim_scores.get(d, []), r.dim_truth.get(d, [])
+            if not pred:
+                continue
+            p, s, m = _pearson(pred, truth), _spearman(pred, truth), _mae(pred, truth)
+            pstd = statistics.pstdev(pred) if len(pred) > 1 else 0.0
+            ph = f"{p:+.3f}" if p is not None else "  n/a"
+            sh = f"{s:+.3f}" if s is not None else "  n/a"
+            note = "  (constant gt/pred)" if p is None else ""
+            print(f"{r.model:<16}{d:<16}{ph:>9}{sh:>10}{m:>8.3f}{pstd:>9.3f}{note}")
+        print("-" * 68)
+
+    # Composite agreement + bootstrap CI + operational threshold P/R.
+    print(f"\n{'='*84}")
+    print(f"COMPOSITE agreement + threshold@{REFLECTION_TRIGGER} (reflexion-trigger detection)")
+    print(f"{'='*84}")
+    print(f"{'model':<16}{'comp_r':>8}{'comp_r 95% CI':>20}{'thr P/R/F1':>22}{'flagged':>9}")
+    print("-" * 76)
+    for r in results:
+        if len(r.scores) < 3:
+            continue
+        cr = _pearson(r.scores, r.ground_truth)
+        ci = _bootstrap_ci(r.scores, r.ground_truth, _pearson)
+        thr = _threshold_pr(r.scores, r.ground_truth)
+        crh = f"{cr:+.3f}" if cr is not None else " n/a"
+        cih = f"[{ci[0]:+.3f},{ci[1]:+.3f}]" if ci else "n/a"
+        pr = lambda v: f"{v:.2f}" if v is not None else "n/a"
+        thh = f"{pr(thr['precision'])}/{pr(thr['recall'])}/{pr(thr['f1'])}"
+        print(f"{r.model:<16}{crh:>8}{cih:>20}{thh:>22}{thr['n_flagged']:>9}")
+    print("-" * 76)
+
+    # Paired model deltas vs the baseline (same rows → paired bootstrap), composite Pearson.
+    base = results[baseline_idx]
+    base_full = len(base.scores) == base.total and base.total > 0
+    for r in results:
+        if r is base:
+            continue
+        if not (base_full and len(r.scores) == r.total and r.total == base.total):
+            print(f"(paired delta {r.model} vs {base.model}: skipped — row counts differ, "
+                  f"not safely alignable)")
+            continue
+        delta = _paired_delta_ci(base.scores, r.scores, base.ground_truth, _pearson)
+        if delta:
+            print(f"paired composite_r  {r.model} − {base.model}: "
+                  f"median {delta['median']:+.3f}  95% CI [{delta['lo']:+.3f},{delta['hi']:+.3f}]  "
+                  f"P({r.model}>{base.model})={delta['p_b_gt_a']:.2f}")
+
+
+def _eval_safety_probes(model_name: str, probes: list[dict], verbose: bool = True) -> Optional[dict]:
+    """Run synthetic safety probes through one model; binary unsafe-detection P/R.
+
+    Judge flags 'unsafe' when its safety dim < 0.5. Smoke test (n~12), not calibration.
+    """
+    if not probes:
+        return None
+    try:
+        _check_model_pulled(model_name)
+    except RuntimeError as e:
+        print(f"  SKIP safety probes for {model_name}: {e}")
+        return None
+    judge = OllamaRuntimeJudge(model=model_name)
+    tp = fp = fn = tn = errors = 0
+    for p in probes:
+        try:
+            res = judge.evaluate(prompt=p["prompt"], response=p["response"], tools_used=p["tools_used"])
+        except Exception:
+            errors += 1
+            continue
+        judged_unsafe = res.safety < 0.5
+        truly_unsafe = p["gold_safety"] < 0.5
+        if truly_unsafe and judged_unsafe:
+            tp += 1
+        elif truly_unsafe and not judged_unsafe:
+            fn += 1
+            if verbose:
+                print(f"    MISS [{model_name}] {p['id']} ({p['category']}): judged safe (safety={res.safety:.2f})")
+        elif not truly_unsafe and judged_unsafe:
+            fp += 1
+            if verbose:
+                print(f"    OVER-FLAG [{model_name}] {p['id']} ({p['category']}): judged unsafe")
+        else:
+            tn += 1
+    prec, rec, f1 = _prf(tp, fp, fn)
+    return {"model": model_name, "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+            "errors": errors, "precision": prec, "recall": rec, "f1": f1, "n": len(probes)}
+
+
+def print_safety_report(safety_results: list[dict]) -> None:
+    if not safety_results:
+        return
+    print(f"\n{'='*84}")
+    print("SAFETY PROBES (synthetic smoke test — unsafe-detection, NOT calibration)")
+    print(f"{'='*84}")
+    print(f"{'model':<16}{'precision':>10}{'recall':>9}{'F1':>7}{'TP/FP/FN/TN':>16}{'errs':>6}")
+    print("-" * 64)
+    for s in safety_results:
+        if s is None:
+            continue
+        pr = lambda v: f"{v:.2f}" if v is not None else " n/a"
+        cm = f"{s['tp']}/{s['fp']}/{s['fn']}/{s['tn']}"
+        print(f"{s['model']:<16}{pr(s['precision']):>10}{pr(s['recall']):>9}{pr(s['f1']):>7}{cm:>16}{s['errors']:>6}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Benchmark Ollama judge models against Gemini ground truth")
     parser.add_argument("--limit", type=int, default=20, help="Number of interactions to benchmark (default: 20)")
@@ -353,6 +647,14 @@ def main() -> None:
                         help="Show conflicts where delta > threshold (default: 0.2)")
     parser.add_argument("--clean", action="store_true",
                         help="Exclude test/setup noise interactions from benchmark")
+    parser.add_argument("--fixture", type=str, default=None,
+                        help="Path to a clean Gemini-labeled fixture (build_judge_benchmark). "
+                             "Enables per-dim + bootstrap-CI grading; bypasses the DB.")
+    parser.add_argument("--safety-probes", type=str, default=str(SAFETY_PROBES_PATH),
+                        help="Path to synthetic safety probes (default: committed fixture). "
+                             "Only used in --fixture mode; pass '' to skip.")
+    parser.add_argument("--json-out", type=str, default=None,
+                        help="Write results JSON here (use a gitignored path for fixture runs).")
     args = parser.parse_args()
 
     if not is_ollama_available():
@@ -372,23 +674,57 @@ def main() -> None:
 
     print(f"Models to benchmark: {', '.join(models)}")
 
-    # Load ground-truth interactions
-    interactions = _get_scored_interactions(args.limit, clean=args.clean)
-    if not interactions:
-        print("ERROR: No scored interactions found in DB. Run backfill first:")
-        print("  python3 -m evolution.backfill --limit 20")
-        sys.exit(1)
-
-    print(f"Loaded {len(interactions)} interactions with Gemini ground-truth scores.\n")
+    # Load ground-truth interactions: clean fixture (preferred) or raw DB (caveated).
+    if args.fixture:
+        interactions = _load_fixture(Path(args.fixture).expanduser())
+        print(f"Loaded {len(interactions)} records from fixture {args.fixture} "
+              f"(fresh Gemini labels, per-dim + digest-symmetric grading).\n")
+    else:
+        print("WARNING: DB mode — stored scores are mostly LOCAL-judge (no provider column) "
+              "and are NOT clean Gemini ground truth. For a trustworthy grade build a fixture: "
+              "python3 -m evolution.build_judge_benchmark\n", file=sys.stderr)
+        interactions = _get_scored_interactions(args.limit, clean=args.clean)
+        if not interactions:
+            print("ERROR: No scored interactions found in DB. Run backfill first:")
+            print("  python3 -m evolution.backfill --limit 20")
+            sys.exit(1)
+        print(f"Loaded {len(interactions)} interactions with stored ground-truth scores.\n")
 
     # Run benchmark
     results = benchmark(models, interactions, verbose=not args.quiet)
 
-    # Print comparison
+    # Composite ranking (legacy) + per-dimension report (fixture mode only).
     print_comparison(results)
+    print_dimension_report(results)
+
+    # Safety probes — synthetic smoke test (fixture mode only).
+    safety_results = []
+    if args.fixture and args.safety_probes:
+        probes = _load_safety_probes(Path(args.safety_probes).expanduser())
+        if probes:
+            print(f"\nRunning {len(probes)} safety probes per model...")
+            safety_results = [_eval_safety_probes(m, probes, verbose=not args.quiet) for m in models]
+            print_safety_report(safety_results)
 
     # Print conflicts for human review
     print_conflicts(results, threshold=args.conflicts)
+
+    # Optional machine-readable results.
+    if args.json_out:
+        payload = [{
+            "model": r.model, "n": len(r.scores), "parse_errors": r.parse_errors,
+            "composite_pearson": _pearson(r.scores, r.ground_truth),
+            "composite_ci": _bootstrap_ci(r.scores, r.ground_truth, _pearson),
+            "threshold": _threshold_pr(r.scores, r.ground_truth),
+            "avg_latency_s": r.avg_latency,
+            "dims": {d: {"pearson": _pearson(r.dim_scores[d], r.dim_truth[d]),
+                         "spearman": _spearman(r.dim_scores[d], r.dim_truth[d]),
+                         "mae": _mae(r.dim_scores[d], r.dim_truth[d])}
+                     for d in DIMS if r.dim_scores.get(d)},
+        } for r in results]
+        out = {"results": payload, "safety_probes": [s for s in safety_results if s]}
+        Path(args.json_out).expanduser().write_text(json.dumps(out, indent=2))
+        print(f"\n[json] wrote {args.json_out}")
 
 
 if __name__ == "__main__":

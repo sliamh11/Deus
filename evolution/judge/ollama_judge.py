@@ -14,7 +14,7 @@ from typing import Optional
 
 from .base import BaseJudge, JudgeResult
 from .criteria import RUBRIC, compose_score, _normalize_dim
-from ..config import OLLAMA_HOST, OLLAMA_MODEL
+from ..config import OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_JUDGE_MODEL
 
 
 def _ollama_url(path: str) -> str:
@@ -233,6 +233,11 @@ def _parse_result(raw: str) -> JudgeResult:
 
 
 
-def make_runtime_judge(model: str = OLLAMA_MODEL) -> OllamaRuntimeJudge:
-    """Return an OllamaRuntimeJudge for scoring production interactions."""
+def make_runtime_judge(model: str = OLLAMA_JUDGE_MODEL) -> OllamaRuntimeJudge:
+    """Return an OllamaRuntimeJudge for scoring production interactions.
+
+    Default honors the judge-specific override (OLLAMA_JUDGE_MODEL, which itself
+    defaults to OLLAMA_MODEL). Production callers go through the provider registry,
+    not this helper; the default is kept consistent for direct/script/test callers.
+    """
     return OllamaRuntimeJudge(model=model)

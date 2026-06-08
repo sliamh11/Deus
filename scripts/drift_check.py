@@ -30,6 +30,7 @@ Usage:
   npm run drift-check
 """
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -232,6 +233,76 @@ def _file_in_changed_set(rel_path: str, changed: set[str], project_root: Path) -
     return False
 
 
+# Top-level package.json keys that describe dependency pins or the package
+# version. A change confined to these does not alter deployment *procedure*
+# (the semantic scope of patterns/deployment.md), so a pure dependabot or
+# release-please bump should not flag deployment.md as drifted. Note: `version`
+# is exempt because no pattern governs package.json for version-tracking policy
+# today — deployment.md is about how to deploy, not when to cut a release.
+_PACKAGE_JSON_DRIFT_EXEMPT_KEYS = frozenset({
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+    "version",
+})
+
+
+def _git_show_blob(ref: str, rel_path: str, project_root: Path) -> str | None:
+    """Return the contents of `rel_path` at git `ref`, or None if it does not
+    exist there or git is unavailable. Matches the subprocess style used by
+    `_git_commit_time` / `_changed_files_since`."""
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{ref}:{rel_path}"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return None
+
+
+def _is_dependency_only_bump(base_ref: str, project_root: Path) -> bool:
+    """True iff package.json's base_ref..working-tree change touches ONLY
+    dependency pins and/or the package version field.
+
+    Compares package.json at `base_ref` (via `git show`) against the working-tree
+    copy (parallels `_git_commit_time`'s working-tree-first behaviour, so a local
+    uncommitted bump is handled too). Returns True when every top-level key that
+    differs — added, removed, or changed — is in `_PACKAGE_JSON_DRIFT_EXEMPT_KEYS`.
+
+    Fail-safe: returns False (i.e. treat as real drift) on any missing blob, OS
+    error, JSON parse error, or non-object JSON, so a genuine structural change
+    is never silently exempted.
+    """
+    base_text = _git_show_blob(base_ref, "package.json", project_root)
+    if base_text is None:
+        return False
+    try:
+        head_text = (project_root / "package.json").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    try:
+        base_obj = json.loads(base_text)
+        head_obj = json.loads(head_text)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    if not isinstance(base_obj, dict) or not isinstance(head_obj, dict):
+        return False
+    for key in set(base_obj) | set(head_obj):
+        if key in _PACKAGE_JSON_DRIFT_EXEMPT_KEYS:
+            continue
+        if base_obj.get(key) != head_obj.get(key):
+            return False
+    return True
+
+
 def main(base_ref: str | None = None, bump: bool = False) -> int:
     patterns = discover_patterns()
     if not patterns:
@@ -291,6 +362,18 @@ def main(base_ref: str | None = None, bump: bool = False) -> int:
 
             # In --base mode: skip governed files not changed in this PR.
             if changed_files is not None and not _file_in_changed_set(rel_path, changed_files, PROJECT_ROOT):
+                continue
+
+            # A package.json change confined to dependency pins / version does
+            # not affect deployment guidance — don't flag deployment.md as
+            # drifted for a pure dependabot/release-please bump. Scoped to
+            # package.json only; every other governed path is unaffected.
+            # (changed_files is not None ⟹ base_ref is a non-empty str.)
+            if (
+                changed_files is not None
+                and rel_path == "package.json"
+                and _is_dependency_only_bump(base_ref, PROJECT_ROOT)
+            ):
                 continue
 
             if governed.is_dir():
