@@ -1587,7 +1587,11 @@ def check_codegraph_transcript_format(project_root: Path) -> int:
                 "Re-validate the codegraph fixture against a fresh transcript: "
                 "python3 scripts/drift_check.py --codegraph-format. "
                 "If live shape check passed, the format is still compatible. "
-                "Update meta.json cc_version to silence this warning."
+                "Update meta.json cc_version to silence this warning. "
+                # LIA-196: SDK version bumps can also change the DEUS_OUTPUT marker
+                # shape (LIA-194 was exactly this). Re-run the output contract too.
+                "Also re-validate the container-output contract: "
+                "npx vitest run src/container-runner.test.ts -t 'output contract'."
             )
         elif current_version:
             print(f"OK: CC version {current_version} matches pinned {pinned_version or '(none)'}")

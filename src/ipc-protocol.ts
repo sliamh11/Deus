@@ -14,6 +14,8 @@
 
 import { z } from 'zod';
 
+import { logger } from './logger.js';
+
 // ── IPC marker constants ────────────────────────────────────────────────────
 // Previously defined in container-runner.ts with a SYNC-REQUIRED comment.
 // Canonical definition lives here; container/agent-runner/src/index.ts
@@ -51,14 +53,28 @@ export const CompactionEventSchema = z.object({
 // ── ContainerOutput ─────────────────────────────────────────────────────────
 
 export const ContainerOutputSchema = z.object({
+  // Load-bearing fields stay strict — a marker missing these is genuinely unusable.
   status: z.enum(['success', 'error']),
   result: z.string().nullable(),
   newSessionRef: RuntimeSessionSchema.optional(),
   newSessionId: z.string().optional(),
   error: z.string().optional(),
   prUrl: z.string().optional(),
-  contextStats: ContextStatsSchema.optional(),
-  compactionEvent: CompactionEventSchema.optional(),
+  // Optional sub-blocks degrade to `undefined` rather than failing the WHOLE
+  // marker parse (LIA-196) — be liberal in optional extras. The warn keeps the
+  // degradation observable; a silent .catch would hide future wire drift.
+  contextStats: ContextStatsSchema.optional().catch(() => {
+    logger.warn(
+      'ContainerOutput: malformed contextStats dropped to undefined (LIA-196)',
+    );
+    return undefined;
+  }),
+  compactionEvent: CompactionEventSchema.optional().catch(() => {
+    logger.warn(
+      'ContainerOutput: malformed compactionEvent dropped to undefined (LIA-196)',
+    );
+    return undefined;
+  }),
 });
 
 /** Derived TypeScript type — single source of truth. */

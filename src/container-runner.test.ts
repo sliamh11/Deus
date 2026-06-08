@@ -163,7 +163,11 @@ import {
   ContainerOutput,
   readToolCalls,
 } from './container-runner.js';
-import { getActivePrompt, getReflections } from './evolution-client.js';
+import {
+  getActivePrompt,
+  getReflections,
+  logInteraction,
+} from './evolution-client.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -308,6 +312,152 @@ describe('container-runner timeout behavior', () => {
 });
 
 // ---------------------------------------------------------------------------
+// logInteraction fires on EVERY output-producing completion path (LIA-196).
+// Before LIA-196 the idle-after-output and non-zero-after-output paths resolved
+// success but never logged. These tests pin logInteraction to all four close
+// paths and guard the per-site hasCode derivation + the reaped-latency anchor.
+// ---------------------------------------------------------------------------
+
+describe('logInteraction on all output-producing paths (LIA-196)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+    vi.mocked(logInteraction).mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('idle timeout after output still logs the interaction (reaped path)', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'streamed answer',
+      newSessionId: 'session-idle',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Idle period elapses → the hard timeout reaps the container after output.
+    await vi.advanceTimersByTimeAsync(1830000);
+    fakeProc.emit('close', 137);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    expect(vi.mocked(logInteraction)).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(logInteraction).mock.calls[0][0];
+    expect(call.response).toBeNull();
+    expect(call.hasCode).toBe(false);
+    expect(call.groupFolder).toBe('test-group');
+    // Latency anchors to the last output, NOT the ~30min reaped lifetime.
+    expect(call.latencyMs).toBeLessThan(60000);
+  });
+
+  it('non-zero exit after output still logs the interaction (reaped path)', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'streamed answer',
+      newSessionId: 'session-nonzero',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Container killed externally (non-zero) AFTER producing output — no timeout.
+    fakeProc.emit('close', 137);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    expect(vi.mocked(logInteraction)).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(logInteraction).mock.calls[0][0];
+    expect(call.response).toBeNull();
+    expect(call.hasCode).toBe(false);
+  });
+
+  it('streaming success logs exactly once (no double-log on a single close)', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'streamed answer',
+      newSessionId: 'session-clean',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await resultPromise;
+    expect(vi.mocked(logInteraction)).toHaveBeenCalledTimes(1);
+  });
+
+  it('legacy path derives hasCode=true from a code-bearing result', async () => {
+    // No onOutput → legacy (accumulate stdout + parse-on-close) path.
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Here you go:\n```js\nconsole.log("hi there");\n```',
+      newSessionId: 'session-legacy-code',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+
+    expect(vi.mocked(logInteraction)).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(logInteraction).mock.calls[0][0];
+    expect(call.hasCode).toBe(true);
+    expect(call.response).toContain('console.log');
+  });
+
+  it('legacy path derives hasCode=false from a plain result', async () => {
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'just a plain text answer, nothing fenced here',
+      newSessionId: 'session-legacy-plain',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await resultPromise;
+    expect(vi.mocked(logInteraction)).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(logInteraction).mock.calls[0][0];
+    expect(call.hasCode).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ContainerOutputSchema Zod validation tests
 // ---------------------------------------------------------------------------
 
@@ -341,6 +491,54 @@ describe('ContainerOutputSchema Zod validation', () => {
     expect(() =>
       ContainerOutputSchema.parse({ status: 'unknown', result: null }),
     ).toThrow();
+  });
+
+  // ── Output contract + optional-block resilience (LIA-196) ──────────────────
+
+  it('output contract: parses a real CC-2.1.168 DEUS_OUTPUT shape', () => {
+    // captured from a live dispatch (docker logs), incl. the null-token usage shape
+    const real = {
+      status: 'success',
+      result: 'Hey! What is up?',
+      newSessionRef: {
+        backend: 'claude',
+        session_id: 'a4258741-addf-4f66-bbd4-3c966bbafb96',
+      },
+      newSessionId: 'a4258741-addf-4f66-bbd4-3c966bbafb96',
+      contextStats: { tokens: null, limit: 200000, pct: null },
+    };
+    const parsed = ContainerOutputSchema.parse(real);
+    expect(parsed.status).toBe('success');
+    expect(parsed.result).toBe('Hey! What is up?');
+    expect(parsed.newSessionId).toBe('a4258741-addf-4f66-bbd4-3c966bbafb96');
+  });
+
+  it('output contract: a malformed OPTIONAL contextStats degrades to undefined, marker still parses', () => {
+    const parsed = ContainerOutputSchema.parse({
+      status: 'success',
+      result: 'ok',
+      newSessionId: 's1',
+      contextStats: { tokens: 'not-a-number', limit: 'bad' }, // garbage
+    });
+    // core fields preserved; the bad optional block dropped to undefined (LIA-196)
+    expect(parsed.status).toBe('success');
+    expect(parsed.result).toBe('ok');
+    expect(parsed.newSessionId).toBe('s1');
+    expect(parsed.contextStats).toBeUndefined();
+  });
+
+  it('output contract: a malformed OPTIONAL compactionEvent degrades to undefined', () => {
+    const parsed = ContainerOutputSchema.parse({
+      status: 'success',
+      result: 'ok',
+      compactionEvent: { trigger: 'not-a-valid-trigger' }, // garbage enum
+    });
+    expect(parsed.result).toBe('ok');
+    expect(parsed.compactionEvent).toBeUndefined();
+  });
+
+  it('output contract: load-bearing fields stay strict (missing status still throws)', () => {
+    expect(() => ContainerOutputSchema.parse({ result: 'ok' })).toThrow();
   });
 
   it('streaming parse: schema-mismatched output chunk logs error and does not call onOutput', async () => {
@@ -405,6 +603,47 @@ describe('ContainerOutputSchema Zod validation', () => {
     await vi.advanceTimersByTimeAsync(10);
 
     // Marker must parse (not be dropped) → onOutput called with the real result.
+    expect(onOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'success', result: 'hello' }),
+    );
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+    vi.useRealTimers();
+  });
+
+  it('streaming parse: a garbage OPTIONAL contextStats does NOT drop the marker → onOutput fires (LIA-194 recurrence guard)', async () => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // The LIA-194 vector, generalized: a malformed OPTIONAL sub-block on the wire.
+    // Before the schema .catch (LIA-196) the strict parse threw, the marker was
+    // discarded, hadStreamingOutput stayed false, and the dispatch was
+    // mis-classified as "timed out with no output" → no onOutput, no logging.
+    // Raw push: garbage contextStats can't satisfy the ContainerOutput type, so
+    // emitOutputMarker is unusable here.
+    const garbageStatsJson = JSON.stringify({
+      status: 'success',
+      result: 'hello',
+      contextStats: { tokens: 'not-a-number', limit: 'bad' },
+    });
+    fakeProc.stdout.push(
+      `${OUTPUT_START_MARKER}\n${garbageStatsJson}\n${OUTPUT_END_MARKER}\n`,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Marker still parses (bad block degraded to undefined) → onOutput fires.
+    expect(onOutput).toHaveBeenCalledTimes(1);
     expect(onOutput).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'success', result: 'hello' }),
     );

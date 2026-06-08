@@ -437,6 +437,7 @@ export async function runContainerAgent(
               newSessionId = parsed.newSessionId;
             }
             hadStreamingOutput = true;
+            lastOutputAt = Date.now();
             // Activity detected — reset the hard timeout
             resetTimeout();
             // Call onOutput for all markers (including null results)
@@ -476,6 +477,10 @@ export async function runContainerAgent(
 
     let timedOut = false;
     let hadStreamingOutput = false;
+    // Epoch of the last real output marker — used as the latency anchor on the
+    // reaped completion paths so an idle-then-reaped dispatch records its response
+    // time, not the full (up to IDLE_TIMEOUT) container lifetime (LIA-196).
+    let lastOutputAt = 0;
     const configTimeout = group.containerConfig?.timeout || CONTAINER_TIMEOUT;
     // Grace period: hard timeout must be at least IDLE_TIMEOUT + 30s so the
     // graceful _close sentinel has time to trigger before the hard kill fires.
@@ -515,6 +520,37 @@ export async function runContainerAgent(
       clearTimeout(timeout);
       const duration = Date.now() - startTime;
 
+      // Single logInteraction seam (LIA-196): every output-producing completion
+      // path logs through this, so a malformed marker / unusual exit can no
+      // longer silently drop the interaction.
+      const logDispatch = (
+        response: string | null,
+        sessionId: string | undefined,
+        latencyMs: number,
+      ): void => {
+        logInteraction({
+          id: interactionId,
+          prompt: input.prompt,
+          response,
+          groupFolder: group.folder,
+          latencyMs,
+          sessionId,
+          domainPresets: domains.length > 0 ? domains : undefined,
+          userSignal: userSignal ?? undefined,
+          retrievedReflectionIds:
+            reflections.reflectionIds.length > 0
+              ? reflections.reflectionIds
+              : undefined,
+          contextTokens: estimateTokens(input.prompt),
+          hasCode: containsCodeBlock(response),
+          toolCalls: readToolCalls(logsDir, interactionId),
+        });
+      };
+      // Reaped paths (idle-after-output, non-zero-after-output) resolve long after
+      // the response; anchor latency to the last output, not the container lifetime.
+      const reapedLatencyMs = () =>
+        (lastOutputAt > 0 ? lastOutputAt : Date.now()) - startTime;
+
       if (timedOut) {
         const ts = new Date().toISOString().replace(/[:.]/g, '-');
         const timeoutLog = path.join(logsDir, `container-${ts}.log`);
@@ -540,6 +576,8 @@ export async function runContainerAgent(
             'Container timed out after output (idle cleanup)',
           );
           outputChain.then(() => {
+            // Produced output -> still log for the evolution loop (LIA-196).
+            logDispatch(null, input.sessionRef?.session_id, reapedLatencyMs());
             resolve({
               status: 'success',
               result: null,
@@ -643,6 +681,8 @@ export async function runContainerAgent(
             'Container exited non-zero after output (treating as success)',
           );
           outputChain.then(() => {
+            // Produced output -> still log for the evolution loop (LIA-196).
+            logDispatch(null, input.sessionRef?.session_id, reapedLatencyMs());
             resolve({
               status: 'success',
               result: null,
@@ -685,23 +725,7 @@ export async function runContainerAgent(
             'Container completed (streaming mode)',
           );
           // Post-dispatch: log interaction for evolution loop (fire-and-forget)
-          logInteraction({
-            id: interactionId,
-            prompt: input.prompt,
-            response: null,
-            groupFolder: group.folder,
-            latencyMs: duration,
-            sessionId: input.sessionRef?.session_id,
-            domainPresets: domains.length > 0 ? domains : undefined,
-            userSignal: userSignal ?? undefined,
-            retrievedReflectionIds:
-              reflections.reflectionIds.length > 0
-                ? reflections.reflectionIds
-                : undefined,
-            contextTokens: estimateTokens(input.prompt),
-            hasCode: false,
-            toolCalls: readToolCalls(logsDir, interactionId),
-          });
+          logDispatch(null, input.sessionRef?.session_id, duration);
           resolve({
             status: 'success',
             result: null,
@@ -746,26 +770,13 @@ export async function runContainerAgent(
         );
 
         // Post-dispatch: log interaction for evolution loop (fire-and-forget)
-        logInteraction({
-          id: interactionId,
-          prompt: input.prompt,
-          response: output.result,
-          groupFolder: group.folder,
-          latencyMs: duration,
-          sessionId:
-            input.sessionRef?.session_id ??
+        logDispatch(
+          output.result,
+          input.sessionRef?.session_id ??
             output.newSessionRef?.session_id ??
             output.newSessionId,
-          domainPresets: domains.length > 0 ? domains : undefined,
-          userSignal: userSignal ?? undefined,
-          retrievedReflectionIds:
-            reflections.reflectionIds.length > 0
-              ? reflections.reflectionIds
-              : undefined,
-          contextTokens: estimateTokens(input.prompt),
-          hasCode: containsCodeBlock(output.result),
-          toolCalls: readToolCalls(logsDir, interactionId),
-        });
+          duration,
+        );
 
         resolve(output);
       } catch (err) {
