@@ -6,7 +6,7 @@ server (Claude Code, OpenClaw, NemoClaw) can log interactions and retrieve
 reflections without Python knowledge.
 
 Usage:
-    python -m evolution mcp_server   # stdio (for Claude Code settings.json)
+    python -m evolution.mcp_server   # stdio (for Claude Code settings.json)
     python evolution/mcp_server.py   # direct
 
 Register in ~/.claude/settings.json:

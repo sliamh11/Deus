@@ -23,22 +23,48 @@ jobs:
         run: |
           npm install
           npm run build
-          npm publish --access public || echo "::warning::channel-core already published at this version"
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          # Publish only if this exact version isn't on npm yet. A real 404 (E404 = not
+          # published) means publish; a transient registry error must NOT be mistaken for a
+          # 404, so it hard-fails rather than trigger a publish-over-existing on re-runs.
+          # Any real publish error (auth/build/registry) still hard-fails — never swallowed.
+          if view_err=$(npm view "$name@$version" version 2>&1); then
+            echo "::notice::$name@$version already on npm — skipping publish"
+          elif [[ "$view_err" == *E404* ]]; then
+            npm publish --access public
+          else
+            echo "::error::npm view failed for $name@$version (not a 404): $view_err"
+            exit 1
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Build and publish channel packages
         run: |
+          # channel-core version is identical for every package — read it once, up front.
+          cc_ver=$(node -p "require('./packages/mcp-channel-core/package.json').version")
           for pkg in packages/mcp-*/; do
             [ "$pkg" = "packages/mcp-channel-core/" ] && continue
             name=$(node -p "require('./$pkg/package.json').name")
-            echo "::group::Publishing $name"
+            version=$(node -p "require('./$pkg/package.json').version")
+            echo "::group::Publishing $name@$version"
             cd "$pkg"
-            # Point to published @deus-ai/channel-core instead of local file path
-            npm pkg set 'dependencies.@deus-ai/channel-core=^1.0.0'
+            # Build against the LOCAL channel-core (file: dep, carries current exports), then
+            # rewrite the dep to the published range for the published metadata only
+            # (runner-only mutation; never committed).
             npm install
             npm run build
-            npm publish --access public || echo "::warning::Failed to publish $name (may already exist)"
+            npm pkg set "dependencies.@deus-ai/channel-core=^$cc_ver"
+            # Same guarded publish as channel-core above (E404 = publish; other view error = fail).
+            if view_err=$(npm view "$name@$version" version 2>&1); then
+              echo "::notice::$name@$version already on npm — skipping publish"
+            elif [[ "$view_err" == *E404* ]]; then
+              npm publish --access public
+            else
+              echo "::error::npm view failed for $name@$version (not a 404): $view_err"
+              exit 1
+            fi
             cd ../..
             echo "::endgroup::"
           done

@@ -1,6 +1,6 @@
 {
   "name": "@deus-ai/gcal-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Google Calendar MCP server \u2014 exposes calendar tools for any MCP client",
   "type": "module",
   "main": "dist/index.js",
