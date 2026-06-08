@@ -86,12 +86,14 @@ def is_maintenance_due(*, interaction_count: Optional[int] = None) -> bool:
 def _score_single(row: dict, judge) -> dict | None:
     """Score a single interaction. Returns score info dict or None on failure."""
     from .ilog.interaction_log import update_score
+    from .persona import digest_for_group
 
     try:
         result = judge.evaluate(
             prompt=row["prompt"],
             response=row.get("response") or "",
             tools_used=row.get("tools_used"),
+            user_profile=digest_for_group(row.get("group_folder")),
         )
         dims = {
             "quality": result.quality,

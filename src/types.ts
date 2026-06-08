@@ -60,6 +60,9 @@ export interface ProjectConfig {
   path: string; // Absolute host path
   type: ProjectType | null; // Detected project type, null if unknown
   readonly: boolean; // Whether the mount is read-only (default: false)
+  // Whether this external project may git push/merge through the tool-proxy.
+  // Optional/undefined ⇒ blocked (the gate fail-closes on `!== true`).
+  allow_external_push?: boolean;
   created_at: string;
 }
 

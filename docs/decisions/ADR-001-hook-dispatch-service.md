@@ -1,5 +1,14 @@
 # ADR-001: Hook Dispatch Service — Port :3002 + Observer Layer
 
+> **⚠️ SCOPE CLARIFICATION (2026-06-07).** This `:3002` service is real but
+> narrower than it reads: **container-only, `HOOK_DISPATCH_ENABLED` default-false,
+> still triggered by Claude Code's own hooks** — not the host-side model-agnostic
+> pipeline that `hook-dispatch-system.md` envisioned (that pipeline is unbuilt).
+> Contradiction to flag: `hook-dispatch-system.md` says the Observer Layer
+> `PreToolUse` cannot `deny`, but the shipped `pre-tool-use-hook.ts` (L54–63)
+> DOES forward `decision: "block"` — the implementation chose blocking. See
+> [hook-dispatch-facade-correction.md](hook-dispatch-facade-correction.md).
+
 **Status:** Accepted
 **Date:** 2026-05-23
 **Scope:** `container/agent-runner/src/hook-dispatch-service.ts`, `container/agent-runner/src/pre-tool-use-hook.ts`, `container/agent-runner/src/post-tool-use-observer.ts`, `container/agent-runner/src/index.ts`

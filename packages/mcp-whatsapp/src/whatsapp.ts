@@ -39,6 +39,8 @@ import type {
 } from '@deus-ai/channel-core';
 import { resizeAndEncode } from '@deus-ai/channel-core';
 
+import { ReconnectController } from './reconnect-backoff.js';
+
 // ── Config from env vars ──────────────────────────────────────────────────────
 
 const AUTH_DIR =
@@ -76,6 +78,12 @@ export class WhatsAppProvider implements ChannelProvider {
   private saveChatsTimer: ReturnType<typeof setTimeout> | null = null;
   private readyPromise: Promise<void> | null = null;
   private readyResolve: (() => void) | null = null;
+  // Exponential-backoff reconnect scheduler (single-flight). Prevents the
+  // zero-delay reason-408 reconnect storm; see reconnect-backoff.ts.
+  private reconnect = new ReconnectController();
+  // True while an intentional disconnect() is in progress, so the resulting
+  // 'close' event does not re-arm a reconnect.
+  private intentionalDisconnect = false;
 
   // Set by server-base.ts — called for every incoming message
   onMessage: (msg: IncomingMessage) => void = () => {};
@@ -84,6 +92,7 @@ export class WhatsAppProvider implements ChannelProvider {
   onReaction?: (reaction: IncomingReaction) => void;
 
   async connect(): Promise<void> {
+    this.intentionalDisconnect = false;
     this.readyPromise = new Promise<void>((resolve) => {
       this.readyResolve = resolve;
     });
@@ -147,25 +156,35 @@ export class WhatsAppProvider implements ChannelProvider {
         const reason = (
           lastDisconnect?.error as { output?: { statusCode?: number } }
         )?.output?.statusCode;
-        const shouldReconnect = reason !== DisconnectReason.loggedOut;
+        const shouldReconnect =
+          reason !== DisconnectReason.loggedOut && !this.intentionalDisconnect;
         logger.info({ reason, shouldReconnect }, 'Connection closed');
 
         if (shouldReconnect) {
-          logger.info('Reconnecting...');
-          this.connectInternal().catch((err) => {
-            logger.error({ err }, 'Failed to reconnect, retrying in 5s');
-            setTimeout(() => {
-              this.connectInternal().catch((err2) => {
-                logger.error({ err: err2 }, 'Reconnection retry failed');
-              });
-            }, 5000);
+          // The connection didn't prove stable — let the backoff keep growing.
+          this.reconnect.markDisconnected();
+          // Single-flight + exponential backoff. Replaces the old zero-delay
+          // reconnect that turned a sustained reason-408 into a storm (#305).
+          const delay = this.reconnect.schedule(() => {
+            this.connectInternal().catch((err) => {
+              logger.error({ err }, 'Reconnect attempt failed');
+            });
           });
+          if (delay !== null) {
+            logger.info(
+              { delayMs: delay, attempt: this.reconnect.attempts },
+              'Reconnecting...',
+            );
+          }
         } else {
           logger.info('Logged out. Re-authenticate to continue.');
         }
       } else if (connection === 'open') {
         this.connected = true;
         this.connectTime = Date.now();
+        // Begin a stability window; the backoff resets only if the connection
+        // survives it (a brief flap keeps backing off).
+        this.reconnect.markConnected();
         logger.info('Connected to WhatsApp');
 
         this.sock.sendPresenceUpdate('available').catch(() => {});
@@ -436,6 +455,10 @@ export class WhatsAppProvider implements ChannelProvider {
   }
 
   async disconnect(): Promise<void> {
+    // Intentional teardown: cancel any pending/armed reconnect and flag so the
+    // 'close' event from end() does not re-arm one.
+    this.intentionalDisconnect = true;
+    this.reconnect.reset();
     this.connected = false;
     this.sock?.end(undefined);
   }

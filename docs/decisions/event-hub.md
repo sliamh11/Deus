@@ -144,11 +144,53 @@ A listener ships `DRY_RUN_DEFAULT = true`: it receives events and logs what it
 the emit path on real traffic with **zero behavior change**, then a later cutover
 PR flips it live and deletes the inline write.
 
+Phase 1's LinearUpdater has completed this cutover (Step 2): the listener is now
+the sole writer of the "→ In Review" transition and the dispatcher's inline copy
+was deleted — the "confirm parity → delete inline write" strangler step, done
+after the dry-run line was deliberately observed co-firing with the inline write
+on a real dispatch.
+
 > **Warning:** the dry-run swallows failures and logs at `debug`, so a healthy
 > service is **not** proof the wire fires. Before any cutover, *deliberately*
 > observe the dry-run line on a real event (raise the log level or add a
 > temporary heartbeat) -- "no errors in prod" is consistent with the listener
 > receiving zero events.
+
+## Phase-3 cutover amendment (LIA-166): PARTIAL, not literal sole-writer
+
+The Phase-3 ObservabilitySink cutover shipped as a **partial** cutover. The literal
+roadmap goal — "the ObservabilitySink becomes the **sole** writer of
+`linear_pipeline_events`" — is **not cleanly achievable**, so we deviate deliberately:
+
+- **Why notifyPipelineStep stays inline.** `notifyPipelineStep`
+  (`linear-notifications.ts`) needs `logPipelineEvent`'s **synchronous rowid** to chain
+  `updatePipelineEventStatusSummary`, **and** it ends with `await updateUnifiedComment`
+  whose `doUpdateUnifiedComment` does a `getPipelineEvents(...)` **DB read** right after.
+  Moving that insert to the async sink would race the comment read — the just-logged
+  event silently dropping from the pinned Pipeline Log comment — a microtask-ordering
+  landmine the day any `await`-ing catch-all `on()` subscriber is added. So
+  `notifyPipelineStep` keeps a **synchronous `insertPipelineEventRow`** and is a
+  **deliberate second writer**.
+- **What the sink owns.** The fire-and-forget `logPipelineEvent` callers (now emit-only)
+  → the live sink performs their single durable write.
+- **No double-write invariant.** `notifyPipelineStep` deliberately does **not** emit, so
+  the sink never double-writes its rows. The two call sites that previously called BOTH
+  `logPipelineEvent` AND `notifyPipelineStep` for the same event (`linear-auto-merge`
+  `merge_conflict`, the startup-sweep gate event) had their **redundant bare
+  `logPipelineEvent` deleted** (they were already producing duplicate rows).
+- **Emit-coverage gap (recorded decision).** `notifyPipelineStep` events (the high-value
+  `gate_*`, `agent_*`, `pr_created`, `automerge_*`) are **no longer emitted** on the bus.
+  Acceptable under "don't build for consumers that don't exist": the only subscriber is
+  the sink (which would double-write them) and the catch-all `on()` has zero handlers. A
+  future `on()` durability mirror will get **incomplete coverage** unless `notifyPipelineStep`
+  is first re-homed (re-home its synchronous comment-read + status_summary rowid).
+- **Best-effort durability.** For the fire-and-forget callers the durable write is now
+  best-effort via the async sink (a silent sink-insert failure loses the row) — consistent
+  with the best-effort-observer contract; these were already best-effort inline writes.
+- **Known cosmetic limitation.** `getPipelineEvents` orders by `id ASC`; fire-and-forget
+  rows now insert via the async sink while `notifyPipelineStep` rows insert synchronously,
+  so rare same-tick interleaving can reorder ids cosmetically in the comment. Display-only,
+  never data loss; not worth changing the shared query's ordering.
 
 ## Phased roadmap (strangler)
 
@@ -156,9 +198,9 @@ Two interleaved tracks. Status as of this ADR:
 
 | Track | Phase | Status |
 |-------|-------|--------|
-| Event hub | 1 -- EventBus + `agent.done` -> dry-run LinearUpdater | **Shipped** (#657) |
+| Event hub | 1 -- EventBus + `agent.done` -> LinearUpdater (Step-2 cutover: listener live, inline In-Review write deleted) | **Shipped** (#657 + cutover) |
 | Event hub | 2 -- `pipeline.transition` emit + dry-run ObservabilitySink | **Shipped** (#660) |
-| Event hub | 3 -- cutover: flip sink live, delete inline `logPipelineEvent` INSERT | Planned |
+| Event hub | 3 -- cutover: flip sink live, delete inline `logPipelineEvent` INSERT (**partial** -- see below) | **Shipped** (LIA-166) |
 | Event hub | 4-6 -- unified-comment, high-value Linear writes, design-to-dev convergence | Planned |
 | CFLL (parallel) | 7-13 -- coding-failure capture -> keyed retrieval -> apply -> graduation | Planned |
 | Observability | 14 -- `agent.action` per-tool events | Planned |

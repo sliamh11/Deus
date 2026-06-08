@@ -158,7 +158,11 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import {
+  runContainerAgent,
+  ContainerOutput,
+  readToolCalls,
+} from './container-runner.js';
 import { getActivePrompt, getReflections } from './evolution-client.js';
 import type { RegisteredGroup } from './types.js';
 
@@ -316,6 +320,17 @@ describe('ContainerOutputSchema Zod validation', () => {
     ).not.toThrow();
   });
 
+  it('accepts contextStats with null tokens/pct (SDK omits usage → NaN→null, LIA-194)', () => {
+    const parsed = ContainerOutputSchema.parse({
+      status: 'success',
+      result: 'ok',
+      contextStats: { tokens: null, limit: 200000, pct: null },
+    });
+    expect(parsed.contextStats?.tokens).toBeNull();
+    expect(parsed.contextStats?.pct).toBeNull();
+    expect(parsed.contextStats?.limit).toBe(200000);
+  });
+
   it('throws on schema-mismatched input (missing required fields)', () => {
     expect(() =>
       ContainerOutputSchema.parse({ notAValidField: true }),
@@ -359,6 +374,41 @@ describe('ContainerOutputSchema Zod validation', () => {
     expect(onOutput).not.toHaveBeenCalled();
 
     // Clean up
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+    vi.useRealTimers();
+  });
+
+  it('streaming parse: marker with null tokens/pct is NOT dropped → onOutput called (LIA-194 regression)', async () => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // The real-world failing marker: SDK omitted usage → tokens/pct null on wire.
+    const nullStatsJson = JSON.stringify({
+      status: 'success',
+      result: 'hello',
+      contextStats: { tokens: null, limit: 200000, pct: null },
+    });
+    fakeProc.stdout.push(
+      `${OUTPUT_START_MARKER}\n${nullStatsJson}\n${OUTPUT_END_MARKER}\n`,
+    );
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Marker must parse (not be dropped) → onOutput called with the real result.
+    expect(onOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'success', result: 'hello' }),
+    );
+
     fakeProc.emit('close', 0);
     await vi.advanceTimersByTimeAsync(10);
     await resultPromise;
@@ -1571,13 +1621,16 @@ describe.skipIf(onWindows)('Backend parity — system-level equivalence', () => 
       'DEUS_OPENAI_MODEL',
     ]);
 
-    // All non-auth env vars must be identical
-    const claudeNonAuth = new Map(
-      [...claudeEnv].filter(([k]) => !authKeys.has(k)),
-    );
-    const openaiNonAuth = new Map(
-      [...openaiEnv].filter(([k]) => !authKeys.has(k)),
-    );
+    // Per-dispatch, non-deterministic env (value is `${group}-${Date.now()}`).
+    // Shared identically across backends by construction, but its VALUE differs
+    // between two separate dispatches, so exclude it from the value-parity check
+    // (LIA-154 DEUS_INTERACTION_ID).
+    const perDispatchKeys = new Set(['DEUS_INTERACTION_ID']);
+    const excluded = (k: string) => authKeys.has(k) || perDispatchKeys.has(k);
+
+    // All non-auth, non-per-dispatch env vars must be identical
+    const claudeNonAuth = new Map([...claudeEnv].filter(([k]) => !excluded(k)));
+    const openaiNonAuth = new Map([...openaiEnv].filter(([k]) => !excluded(k)));
     expect(claudeNonAuth).toEqual(openaiNonAuth);
   });
 
@@ -1726,3 +1779,70 @@ describe.skipIf(onWindows)(
     });
   },
 );
+
+// ---------------------------------------------------------------------------
+// readToolCalls — LIA-154 per-interaction structured tool-call read-back
+// (fs is mocked in this file; drive readFileSync to exercise parse/skip)
+// ---------------------------------------------------------------------------
+describe('readToolCalls (LIA-154)', () => {
+  const fsMocked = vi.mocked(
+    (fsMod as unknown as { default: typeof fsMod }).default,
+  );
+  const logsDir = '/group/logs';
+
+  afterEach(() => {
+    fsMocked.readFileSync.mockReset();
+    fsMocked.readFileSync.mockReturnValue('');
+  });
+
+  it('reads the per-interaction file path (logsDir/tool-calls/<safeId>.jsonl)', () => {
+    fsMocked.readFileSync.mockClear();
+    fsMocked.readFileSync.mockReturnValue('');
+    readToolCalls(logsDir, 'grp/main-123');
+    const calledPath = String(fsMocked.readFileSync.mock.calls[0][0]);
+    // path separators in the id are sanitized so the filename is one segment
+    expect(calledPath).toContain('tool-calls');
+    expect(calledPath).toContain('grp_main-123.jsonl');
+  });
+
+  it('returns [] when the file does not exist', () => {
+    fsMocked.readFileSync.mockImplementation(() => {
+      const e = new Error('ENOENT') as NodeJS.ErrnoException;
+      e.code = 'ENOENT';
+      throw e;
+    });
+    expect(readToolCalls(logsDir, 'g-1')).toEqual([]);
+  });
+
+  it('returns every record in the interaction file (no cross-interaction filter needed)', () => {
+    fsMocked.readFileSync.mockReturnValue(
+      [
+        JSON.stringify({ name: 'Read', file_path: '/a.ts', is_error: false }),
+        JSON.stringify({
+          name: 'Bash',
+          command: 'git status',
+          is_error: false,
+        }),
+      ].join('\n'),
+    );
+    expect(readToolCalls(logsDir, 'g-1')).toEqual([
+      { name: 'Read', file_path: '/a.ts', is_error: false },
+      { name: 'Bash', command: 'git status', is_error: false },
+    ]);
+  });
+
+  it('skips malformed/torn lines but keeps valid ones', () => {
+    fsMocked.readFileSync.mockReturnValue(
+      [
+        JSON.stringify({ name: 'Read', file_path: '/a.ts' }),
+        '{"name":"Bash","command":"git', // torn line
+        '',
+        JSON.stringify({ name: 'Edit', file_path: '/b.ts' }),
+      ].join('\n'),
+    );
+    expect(readToolCalls(logsDir, 'g-1')).toEqual([
+      { name: 'Read', file_path: '/a.ts' },
+      { name: 'Edit', file_path: '/b.ts' },
+    ]);
+  });
+});

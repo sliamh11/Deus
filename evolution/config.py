@@ -38,6 +38,14 @@ _ENV_SEARCH_PATHS: list[Path] = [CONFIG_ENV, USER_CONFIG_ENV]
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
 
+# Judge-specific Ollama model override (per-surface A/B knob, mirrors LLAMA_CPP_JUDGE_MODEL).
+# Defaults to OLLAMA_MODEL → a true no-op until EVOLUTION_OLLAMA_JUDGE_MODEL is set (production
+# scoring stays byte-identical); applies to the judge only, not extraction/generative. Rationale,
+# benchmark, and costs live in docs/decisions/gemma4-12b-local-model-evaluation.md (2026-06-07
+# addendum) — default stays e4b. NOTE: the override model must be pulled in Ollama, else judge
+# construction raises (and the exception is swallowed on the fire-and-forget hot path).
+OLLAMA_JUDGE_MODEL = os.environ.get("EVOLUTION_OLLAMA_JUDGE_MODEL", OLLAMA_MODEL)
+
 # ── llama.cpp ────────────────────────────────────────────────────────────────
 
 # Base URL for the local llama-server (OpenAI-compatible /v1 prefix).
@@ -123,6 +131,22 @@ JUDGE_RETRY_COUNT = int(os.environ.get("EVOLUTION_JUDGE_RETRY_COUNT", "1"))
 # Comma-separated group folder names that are excluded from evolution tracking.
 # Interactions from these groups are skipped in cmd_log_interaction without being stored.
 EVOLUTION_SKIP_GROUPS: str = os.environ.get("EVOLUTION_SKIP_GROUPS", "")
+
+# ── Persona injection (judge personalization) ─────────────────────────────────
+
+# group_folder of the primary host user. The judge's `personalization` dimension
+# is gradable only when the user's stored preferences (vault Persona/) are in the
+# prompt — but the host persona is the PRIMARY user's, so it is injected only for
+# this group. Other groups score personalization ungraded (no cross-user leakage).
+# Empty (default) = opt-in off: no persona is injected for any group until set.
+# Wired into both live judge callers (mcp_server + maintenance) in PR #710.
+JUDGE_PERSONA_GROUP: str = os.environ.get("DEUS_JUDGE_PERSONA_GROUP", "")
+
+# Hard cap (chars) on the injected persona digest. Bounds outbound payload and —
+# critically — limits PII reaching the external Gemini judge, mirroring
+# JUDGE_MAX_PROMPT/RESPONSE_CHARS. The digest is already scoped to work-style
+# preferences (no names/household/career); this is defense-in-depth.
+JUDGE_MAX_PERSONA_CHARS = int(os.environ.get("EVOLUTION_JUDGE_MAX_PERSONA_CHARS", "500"))
 
 # ── Compaction & Batch Judging ───────────────────────────────────────────────
 

@@ -1763,6 +1763,169 @@ def _make_gh_run(checks: list[dict] | None = None, returncode: int = 0, stderr: 
     return fake_run
 
 
+def _make_gh_run_split(required_checks, all_checks, *, required_rc=0, all_rc=0):
+    """Fake ``subprocess.run`` returning different ``gh pr checks`` results for
+    the ``--required`` query vs the unfiltered query (LIA-144 fail-closed path).
+    """
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            if "--required" in cmd:
+                payload, rc = required_checks, required_rc
+            else:
+                payload, rc = all_checks, all_rc
+            stdout = json.dumps(payload) if payload is not None else ""
+            return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    return fake_run
+
+
+def test_check_ci_status_uses_required_flag(monkeypatch):
+    # LIA-144: the gate must query only branch-protection-required checks.
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    status, _ = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_GREEN
+    # Strict positional assertion — --required must be passed (not just present
+    # somewhere by accident), scoping the query to required checks only.
+    assert captured["cmd"] == [
+        "gh", "pr", "checks", "123", "--json", "bucket,name", "--required",
+    ]
+
+
+def test_check_ci_status_advisory_pending_does_not_block(monkeypatch):
+    # Required checks all pass; advisory checks (TrueCourse etc.) still pending in
+    # the unfiltered set. The gate sees only required → GREEN (no block).
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=[{"bucket": "pass", "name": "ci"}],
+            all_checks=[
+                {"bucket": "pass", "name": "ci"},
+                {"bucket": "pending", "name": "TrueCourse --diff vs main"},
+            ],
+        ),
+    )
+    status, _ = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_GREEN
+
+
+def test_check_ci_status_required_pending_blocks(monkeypatch):
+    # A pending REQUIRED check still blocks.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=[{"bucket": "pending", "name": "ci"}],
+            all_checks=[{"bucket": "pending", "name": "ci"}],
+            required_rc=8,
+            all_rc=8,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_PENDING
+    assert "ci" in detail
+
+
+def test_check_ci_status_no_required_but_checks_present_fails_closed(monkeypatch):
+    # --required returns nothing, but the PR has (advisory) checks → ambiguous →
+    # NO_REQUIRED, which must block (fail closed).
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "pass", "name": "advisory-only"}],
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_NO_REQUIRED
+    assert "none are branch-protection-required" in detail
+    assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_check_ci_status_no_checks_anywhere_does_not_block(monkeypatch):
+    # Genuinely zero checks (required AND unfiltered empty) → NO_CHECKS, no block
+    # (unchanged pre-LIA-144 behaviour).
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(required_checks=None, all_checks=None),
+    )
+    status, _ = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_NO_CHECKS
+    assert hooks._ci_block_reason("123", status, "") is None
+
+
+def test_ci_block_reason_no_required_is_distinct_and_blocking():
+    hooks = load_hooks()
+    reason = hooks._ci_block_reason(
+        "123",
+        hooks._CI_STATUS_NO_REQUIRED,
+        "2 check(s) present but none are branch-protection-required",
+    )
+    assert reason is not None
+    assert "fail-closed" in reason
+    assert "no required checks" in reason.lower()
+
+
+def test_admin_merge_gate_ci_check_uses_required_scoping(tmp_path, monkeypatch):
+    # The PreToolUse hook path (run_admin_merge_gate) must also scope its CI
+    # check to required-only — verified by capturing the gh argv it issues.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    command = "gh pr merge 294 --squash --admin"
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    assert hooks.approve_admin_merge(command, repo) == 0
+    rc = hooks.run_admin_merge_gate(bash_event(repo, command), repo)
+    assert rc == 0
+    assert "--required" in captured["cmd"]
+
+
 def test_check_ci_status_green(monkeypatch):
     hooks = load_hooks()
     monkeypatch.setattr(
@@ -3844,3 +4007,385 @@ def test_scan_prior_search_attempts_counts_correctly(tmp_path):
     assert not found
     assert tool_uses == 4           # all 4 tool_use blocks counted
     assert prior_searches == 2      # only Grep + Bash-grep, not npm test or piped grep
+
+
+# ---------------------------------------------------------------------------
+# Per-worktree gate isolation (markers + verdict store)
+# ---------------------------------------------------------------------------
+# load_hooks() re-execs the module each call, so _WORKTREE_OVERRIDE /
+# _WORKTREE_CACHE start fresh per test — no cross-test leakage.
+
+def test_marker_and_verdict_isolated_across_worktrees(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt_a = tmp_path / "wt-a"; wt_a.mkdir()
+    wt_b = tmp_path / "wt-b"; wt_b.mkdir()
+
+    hooks._WORKTREE_OVERRIDE = wt_a
+    marker_a = hooks._marker(repo, ".plan-reviewed")
+    verdict_a = hooks._verdicts_path(repo)
+    hooks._WORKTREE_OVERRIDE = wt_b
+    marker_b = hooks._marker(repo, ".plan-reviewed")
+    verdict_b = hooks._verdicts_path(repo)
+
+    assert marker_a != marker_b
+    assert verdict_a != verdict_b
+    assert "worktree-markers" in str(marker_a)
+    assert marker_a.name == ".plan-reviewed"
+    assert verdict_a.name == ".warden-verdicts.json"
+
+
+def test_main_repo_keeps_flat_paths(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # worktree == repo_root → flat paths (back-compat).
+    hooks._WORKTREE_OVERRIDE = repo
+    assert hooks._marker(repo, ".plan-reviewed") == repo / ".claude" / ".plan-reviewed"
+    assert hooks._verdicts_path(repo) == repo / ".claude" / ".warden-verdicts.json"
+
+
+def test_non_gate_markers_stay_global_in_worktree(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt = tmp_path / "wt"; wt.mkdir()
+    hooks._WORKTREE_OVERRIDE = wt
+    # Excluded-from-namespacing markers resolve flat even inside a worktree.
+    for name in (".migration-nudged", ".admin-merge-approved",
+                 ".plan-scope.md", ".warden-memo.md"):
+        assert hooks._marker(repo, name) == repo / ".claude" / name
+    # ...but a gate marker IS namespaced in the same worktree.
+    assert "worktree-markers" in str(hooks._marker(repo, ".plan-reviewed"))
+
+
+def test_override_consistent_between_marker_and_verdict(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt = tmp_path / "wt"; wt.mkdir()
+    hooks._WORKTREE_OVERRIDE = wt
+    # marker + verdict for one worktree share the same bucket dir.
+    assert hooks._marker(repo, ".plan-reviewed").parent == hooks._verdicts_path(repo).parent
+
+
+def test_verdict_write_read_isolated_by_worktree(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt_a = tmp_path / "wt-a"; wt_a.mkdir()
+    wt_b = tmp_path / "wt-b"; wt_b.mkdir()
+
+    hooks._WORKTREE_OVERRIDE = wt_a
+    hooks._write_verdict(repo, "code-reviewer", "SHIP", "isolation test")
+    assert hooks._read_verdicts(repo).get("code-reviewer", {}).get("verdict") == "SHIP"
+
+    # A different worktree must NOT see worktree-A's verdict.
+    hooks._WORKTREE_OVERRIDE = wt_b
+    assert "code-reviewer" not in hooks._read_verdicts(repo)
+
+
+def test_cwd_derive_used_when_no_override(tmp_path, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt = tmp_path / "wt"; wt.mkdir()
+    assert hooks._WORKTREE_OVERRIDE is None
+    hooks._WORKTREE_CACHE.clear()  # ensure the monkeypatched resolver is consulted
+    monkeypatch.setattr(hooks, "_worktree_for_cwd", lambda cwd, rr: wt)
+    assert "worktree-markers" in str(hooks._marker(repo, ".plan-reviewed"))
+
+
+def test_current_worktree_is_cached(tmp_path, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    calls = []
+    monkeypatch.setattr(hooks, "_worktree_for_cwd",
+                        lambda cwd, rr: calls.append(1) or rr)
+    hooks._current_worktree(repo)
+    hooks._current_worktree(repo)
+    assert len(calls) == 1  # resolved once, then served from _WORKTREE_CACHE
+
+
+def test_mark_cli_worktree_root_writes_namespaced(tmp_path):
+    # End-to-end CLI path: main() -> _with_cli_worktree -> namespaced marker.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    wt = tmp_path / "wt"; wt.mkdir()
+    rc = hooks.main([
+        "mark", "plan-reviewed", "SHIP", "via cli",
+        "--repo-root", str(repo), "--worktree-root", str(wt),
+    ])
+    assert rc == 0
+    # The flat (main-repo) marker must NOT be written...
+    assert not (repo / ".claude" / ".plan-reviewed").exists()
+    # ...the worktree bucket marker must be.
+    hooks._WORKTREE_OVERRIDE = wt
+    assert hooks._marker(repo, ".plan-reviewed").exists()
+    # main() restored the override after the call.
+    assert hooks.main is not None  # sanity; override reset happens in finally
+
+
+# ── Admin-merge standing autonomy grant (#9a) ───────────────────────────────
+
+import datetime as _dt  # noqa: E402  (section-local; mirrors hook's dt usage)
+
+
+def _commit_repo(repo: Path) -> None:
+    """Give the repo a born HEAD so `rev-parse --abbrev-ref HEAD` resolves."""
+    (repo / "README.md").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(
+        ["git", "commit", "-m", "init"],
+        cwd=repo, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _enable_standing(repo: Path, expiry_hours=24) -> None:
+    wardens = repo / ".claude" / "wardens"
+    wardens.mkdir(parents=True, exist_ok=True)
+    (wardens / "config.json").write_text(
+        json.dumps(
+            {"admin-merge-gate": {"standing_grant": {"enabled": True, "expiry_hours": expiry_hours}}}
+        ),
+        encoding="utf-8",
+    )
+
+
+def _utc_iso(offset_hours: float = 0.0) -> str:
+    return (
+        _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(hours=offset_hours)
+    ).isoformat()
+
+
+def _write_standing_marker(repo: Path, created_at: str, worktree_root: Path | None = None) -> Path:
+    marker = repo / ".claude" / ".admin-merge-standing"
+    marker.write_text(
+        json.dumps({"worktree_root": str(worktree_root or repo), "created_at": created_at}),
+        encoding="utf-8",
+    )
+    return marker
+
+
+def _write_verdicts(repo: Path, verdicts: dict) -> None:
+    data = {k: {"verdict": v, "ts": "t", "reason": "r", "source": "test"} for k, v in verdicts.items()}
+    (repo / ".claude" / ".warden-verdicts.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def _green_ci(hooks, monkeypatch) -> None:
+    monkeypatch.setattr(hooks, "_check_ci_status", lambda *a, **k: (hooks._CI_STATUS_GREEN, "ok"))
+
+
+def test_standing_grant_allows_when_ci_green_branch_match_verdicts_ship(
+    tmp_path, capsys, monkeypatch
+):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)
+    _green_ci(hooks, monkeypatch)
+    _enable_standing(repo)
+    marker = _write_standing_marker(repo, _utc_iso())
+    _write_verdicts(repo, {"code-reviewer": "SHIP", "verification-gate": "SHIP"})
+
+    rc = hooks.run_admin_merge_gate(bash_event(repo, "gh pr merge --admin"), repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""  # allowed: no deny JSON, no approval prompt
+    assert marker.exists()  # standing grant is NOT consumed on use
+
+
+def test_standing_grant_blocks_on_conditional_revise(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)
+    _green_ci(hooks, monkeypatch)
+    _enable_standing(repo)
+    marker = _write_standing_marker(repo, _utc_iso())
+    _write_verdicts(
+        repo,
+        {"code-reviewer": "SHIP", "verification-gate": "SHIP", "ai-eng-warden": "REVISE"},
+    )
+
+    rc = hooks.run_admin_merge_gate(bash_event(repo, "gh pr merge --admin"), repo)
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "ai-eng-warden" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert marker.exists()  # not consumed — fix the warden and retry within the window
+
+
+def test_standing_grant_blocks_on_missing_mandatory_verdict(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)
+    _green_ci(hooks, monkeypatch)
+    _enable_standing(repo)
+    _write_standing_marker(repo, _utc_iso())
+    _write_verdicts(repo, {"code-reviewer": "SHIP"})  # verification-gate absent
+
+    rc = hooks.run_admin_merge_gate(bash_event(repo, "gh pr merge --admin"), repo)
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "verification-gate" in out["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_standing_grant_blocks_and_consumes_when_expired(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)
+    _green_ci(hooks, monkeypatch)
+    _enable_standing(repo, expiry_hours=24)
+    marker = _write_standing_marker(repo, _utc_iso(offset_hours=-48))
+    _write_verdicts(repo, {"code-reviewer": "SHIP", "verification-gate": "SHIP"})
+
+    rc = hooks.run_admin_merge_gate(bash_event(repo, "gh pr merge --admin"), repo)
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "expired" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert not marker.exists()  # expired marker is consumed
+
+
+def test_standing_grant_ci_red_blocks_before_grant(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)
+    monkeypatch.setattr(hooks, "_check_ci_status", lambda *a, **k: (hooks._CI_STATUS_RED, "boom"))
+    _enable_standing(repo)
+    marker = _write_standing_marker(repo, _utc_iso())
+    _write_verdicts(repo, {"code-reviewer": "SHIP", "verification-gate": "SHIP"})
+
+    rc = hooks.run_admin_merge_gate(bash_event(repo, "gh pr merge --admin"), repo)
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "CI is red" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert marker.exists()  # CI gate fires before the standing block; marker untouched
+
+
+def test_standing_grant_toggle_off_falls_through_to_one_shot(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)
+    _green_ci(hooks, monkeypatch)
+    # No config => toggle off. A leftover standing marker must be ignored.
+    marker = _write_standing_marker(repo, _utc_iso())
+    _write_verdicts(repo, {"code-reviewer": "SHIP", "verification-gate": "SHIP"})
+
+    rc = hooks.run_admin_merge_gate(bash_event(repo, "gh pr merge --admin"), repo)
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "fresh explicit approval" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert marker.exists()  # toggle off => standing logic skipped, marker untouched
+
+
+def test_standing_grant_branch_mismatch_falls_through(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)
+    _green_ci(hooks, monkeypatch)
+    monkeypatch.setattr(hooks, "_gh_pr_head_branch", lambda *a, **k: "some-other-branch")
+    _enable_standing(repo)
+    marker = _write_standing_marker(repo, _utc_iso())
+    _write_verdicts(repo, {"code-reviewer": "SHIP", "verification-gate": "SHIP"})
+
+    # Explicit foreign PR ref => resolves to a branch != this worktree's branch.
+    rc = hooks.run_admin_merge_gate(bash_event(repo, "gh pr merge 999 --admin"), repo)
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "fresh explicit approval" in out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert marker.exists()  # mismatch => one-shot path, standing marker preserved
+
+
+def test_approve_standing_without_toggle_prints_stanza(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.approve_admin_merge_standing(repo, repo)
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "standing_grant" in err and "enabled" in err
+    assert not (repo / ".claude" / ".admin-merge-standing").exists()
+
+
+def test_approve_standing_with_toggle_writes_marker(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _enable_standing(repo)
+
+    rc = hooks.approve_admin_merge_standing(repo, repo)
+
+    assert rc == 0
+    marker = repo / ".claude" / ".admin-merge-standing"
+    assert marker.exists()
+    data = json.loads(marker.read_text(encoding="utf-8"))
+    assert data["worktree_root"] == str(repo)
+    assert hooks._parse_iso_utc(data["created_at"]) is not None
+
+
+def test_approve_admin_merge_requires_command_without_standing(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.main(["approve-admin-merge", "--repo-root", str(repo)])
+
+    assert rc == 2
+    assert "--command is required" in capsys.readouterr().err
+
+
+def test_standing_grant_config_clamps_and_guards(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # Absent config => fail-safe disabled.
+    assert hooks._standing_grant_config(repo) == (False, 24.0)
+
+    wardens = repo / ".claude" / "wardens"
+    wardens.mkdir(parents=True)
+
+    def cfg(val):
+        (wardens / "config.json").write_text(
+            json.dumps(
+                {"admin-merge-gate": {"standing_grant": {"enabled": True, "expiry_hours": val}}}
+            ),
+            encoding="utf-8",
+        )
+        return hooks._standing_grant_config(repo)
+
+    assert cfg(100000) == (True, 168.0)  # clamped to max
+    assert cfg(-5) == (True, 0.0)  # clamped to 0 (always-expired)
+    assert cfg(True) == (True, 24.0)  # bool rejected -> default
+    assert cfg("nope") == (True, 24.0)  # non-numeric rejected -> default
+
+
+def test_standing_marker_not_cleared_by_session_init(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    marker = _write_standing_marker(repo, _utc_iso())
+
+    assert hooks.run_session_init(repo) == 0
+
+    assert marker.exists()  # bounded by expiry, not session lifetime
+
+
+def test_pr_matches_worktree_fails_safe_on_unborn_head(tmp_path):
+    # git_repo has no commits -> `git rev-parse --abbrev-ref HEAD` errors ->
+    # _git returns None -> the guard must NOT silently report a match.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)  # no _commit_repo: HEAD is unborn
+
+    matched, reason = hooks._pr_matches_worktree("gh pr merge --admin", repo)
+
+    assert matched is False
+    assert "worktree branch" in reason
+
+
+def test_pr_matches_worktree_no_ref_matches_current_branch(tmp_path):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)  # born HEAD
+
+    matched, _ = hooks._pr_matches_worktree("gh pr merge --admin", repo)
+
+    assert matched is True  # no explicit ref => current branch => this worktree's PR
