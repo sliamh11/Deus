@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { loadRegisteredContextFiles } from './context-registry.js';
 import { fetchMemoryContext } from './memory-retrieval-hook.js';
 import { DoomLoopDetector, normalizeArgs } from './doom-loop-detector.js';
+import { dispatchPreToolUseGate } from './pre-tool-use-hook.js';
 import {
   type AgentRuntimeId,
   createOpenAIMcpToolBridge,
@@ -355,7 +356,9 @@ async function createResponse(
   return assertOpenAIResponse(await res.json());
 }
 
-async function runSingleTurn(
+// Exported for unit tests (PreToolUse gate seam). Internal to the conversation
+// driver otherwise.
+export async function runSingleTurn(
   prompt: string,
   containerInput: ContainerInput,
   previousResponseId: string | undefined,
@@ -408,6 +411,31 @@ async function runSingleTurn(
         } catch {
           parsedArgs = {};
         }
+
+        // PreToolUse gate (default-off via HOOK_DISPATCH_ENABLED, fail-open) —
+        // mirrors the Claude SDK's PreToolUse hook. On a block the tool is NOT
+        // executed; the refusal is fed back as the tool result, exactly how the
+        // Claude SDK surfaces a block reason to the model. No doomDetector
+        // record on a block — the detector tracks repeated *execution*, and a
+        // blocked call never ran.
+        const gate = await dispatchPreToolUseGate({
+          toolName: call.name,
+          toolInput: parsedArgs,
+          toolUseId: call.call_id,
+          sessionId: responseId,
+        });
+        if (gate.block) {
+          input.push({
+            type: 'function_call_output',
+            call_id: call.call_id,
+            output: JSON.stringify({
+              ok: false,
+              error: gate.reason ?? 'Blocked by PreToolUse gate',
+            }),
+          });
+          continue;
+        }
+
         let toolResult =
           (await mcpBridge.execute(call.name, parsedArgs)) ?? undefined;
         if (!toolResult) {
@@ -614,4 +642,3 @@ export async function runOpenAIConversation(ctx: OpenAIContext): Promise<void> {
     prompt = nextMessage;
   }
 }
-
