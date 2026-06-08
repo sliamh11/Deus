@@ -75,7 +75,10 @@ jobs:
         run: scripts/token_bench/ci_coverage_gate.sh origin/${{ github.base_ref }}
 
       - name: Install evolution test dependencies
-        run: python3 -m pip install sqlite-vec==0.1.6
+        # google-genai is import-only for memory_indexer (the network client is
+        # never built in tests); required so test_memory_indexer_contradiction_commit
+        # can import the module. See that test's module docstring.
+        run: python3 -m pip install sqlite-vec==0.1.6 google-genai
 
       - name: Evolution tests
         run: python3 -m pytest evolution/tests/ -v

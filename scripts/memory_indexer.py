@@ -2421,6 +2421,11 @@ def detect_contradictions(db: sqlite3.Connection, new_atom_id: int,
                         "VALUES (?, ?, ?, ?, ?)",
                         [existing_id, new_atom_id, existing_text, new_atom_text, today],
                     )
+                    # Commit at the write site: the only caller (cmd_extract) does
+                    # its last commit BEFORE contradiction detection, so without this
+                    # the deferred transaction rolls back on connection close and the
+                    # conflict is lost — making --resolve-conflicts permanently empty.
+                    db.commit()
                 except Exception:
                     pass
                 print(f"  CONFLICT DETECTED (pending review): atom {existing_id} "
