@@ -1,6 +1,6 @@
 {
   "name": "@deus-ai/whatsapp-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "WhatsApp MCP server — standalone WhatsApp Web integration for any MCP client",
   "type": "module",
   "main": "dist/index.js",
