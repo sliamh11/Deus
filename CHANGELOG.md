@@ -4,6 +4,20 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.20.0](https://github.com/sliamh11/Deus/compare/v1.19.0...v1.20.0) (2026-06-09)
+
+
+### Features
+
+* **channels:** odysseus /v1/chat/completions web channel (path-a GUI) (LIA-197) ([#732](https://github.com/sliamh11/Deus/issues/732)) ([446594e](https://github.com/sliamh11/Deus/commit/446594eb3e98a2d19b53ea53ddc6354af71dca0b))
+* **evolution:** capture available_tools manifest per dispatch (LIA-154) ([#754](https://github.com/sliamh11/Deus/issues/754)) ([812be78](https://github.com/sliamh11/Deus/commit/812be78adc32cdda19af00703722e139da231b42))
+
+
+### Bug Fixes
+
+* **agent-runner:** harden HookDispatchService listener — loopback bind + token check (LIA-199) ([#752](https://github.com/sliamh11/Deus/issues/752)) ([f6f7557](https://github.com/sliamh11/Deus/commit/f6f7557f47b958dc058ca6dd7a3a710657c6fdd2))
+* **pipeline:** render timestamps in machine-local time, not UTC (LIA-124) ([#756](https://github.com/sliamh11/Deus/issues/756)) ([ae3fe13](https://github.com/sliamh11/Deus/commit/ae3fe136c2e8b8a9bf621439278c598aad55255e))
+
 ## [1.19.0](https://github.com/sliamh11/Deus/compare/v1.18.0...v1.19.0) (2026-06-09)
 
 
