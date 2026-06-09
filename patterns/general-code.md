@@ -1,5 +1,5 @@
 ---
-last_verified: "2026-06-09" # auto-bump @1781032993
+last_verified: "2026-06-09" # auto-bump @1781032993 (re-verified: LIA-197 odysseus channel)
 governs:
   - src/
   - evolution/

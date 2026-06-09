@@ -3,7 +3,7 @@ governs:
   - src/platform.ts
   - src/cross-platform.test.ts
   - src/config.ts
-last_verified: "2026-05-27" # auto-bump
+last_verified: "2026-06-09" # auto-bump (re-verified: LIA-197 odysseus channel)
 test_tasks:
   - "Add a new HOME directory lookup in src/ that must go through src/platform.ts"
   - "Add a shell command helper under src/ that works on macOS, Linux, and Windows"
