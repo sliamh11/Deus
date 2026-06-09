@@ -22,6 +22,7 @@ import {
 } from './db.js';
 import { readEnvFile } from './env.js';
 import { EVENT_LABELS } from './linear-notifications.js';
+import { formatLocalDateTime } from './timezone.js';
 import {
   initActionContext,
   handleOpenInBrowser,
@@ -535,7 +536,7 @@ function printEvents(
   const detailWidth = Math.max(10, cols - 46);
 
   for (const e of events) {
-    const time = e.created_at.slice(0, 16).replace('T', ' ');
+    const time = formatLocalDateTime(e.created_at);
     const color = colorFor(e.event_type);
     const detail = e.detail
       ? ` ${DIM}— ${truncate(e.detail, detailWidth)}${RESET}`
@@ -1194,7 +1195,7 @@ async function startWatchMode(): Promise<void> {
         );
       }
       for (const e of visible) {
-        const time = e.created_at.slice(0, 16).replace('T', ' ');
+        const time = formatLocalDateTime(e.created_at);
         const color = colorFor(e.event_type);
         const label = EVENT_LABELS[e.event_type] || e.event_type;
         const detailWidth = Math.max(10, cols - 46);

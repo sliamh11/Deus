@@ -18,6 +18,7 @@ import {
   updatePipelineEventStatusSummary,
 } from './db.js';
 import type { LinearContext } from './linear-dispatcher.js';
+import { formatLocalHHMM } from './timezone.js';
 
 export function macosNotify(title: string, message: string): void {
   try {
@@ -80,7 +81,7 @@ export function buildPipelineCommentBody(
     );
   }
   for (const e of visible) {
-    const time = e.created_at.slice(11, 16); // HH:MM
+    const time = formatLocalHHMM(e.created_at);
     const label = EVENT_LABELS[e.event_type] || e.event_type;
     const detail = e.detail ? ` — ${e.detail}` : '';
     lines.push(`${time} — ${label}${detail}`);

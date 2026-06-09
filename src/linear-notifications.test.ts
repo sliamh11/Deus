@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildPipelineCommentBody } from './linear-notifications.js';
+import { formatLocalHHMM } from './timezone.js';
 
 describe('buildPipelineCommentBody', () => {
   it('renders empty state', () => {
@@ -27,7 +28,10 @@ describe('buildPipelineCommentBody', () => {
     ];
     const body = buildPipelineCommentBody(events);
     expect(body).toContain('**Pipeline Log**');
-    expect(body).toContain('00:18');
+    // Timestamps now render in machine-local time (LIA-124). Assert against the
+    // same formatter so the test is deterministic across timezones (CI=UTC,
+    // dev=local) rather than hardcoding the old UTC slice ('00:18').
+    expect(body).toContain(formatLocalHHMM('2026-05-23T00:18:00.000Z'));
     expect(body).toContain('Gate → SHIP');
     expect(body).toContain('Agent dispatched');
     expect(body).toContain('PR created');

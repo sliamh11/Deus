@@ -4,6 +4,7 @@ import type { EntityWebhookPayloadWithIssueData } from '@linear/sdk/webhooks';
 import { logger } from './logger.js';
 import { executeAgentRun, extractScopeBlock } from './linear-dispatcher.js';
 import { escapeXmlForPrompt } from './prompt-utils.js';
+import { formatLocalHHMM } from './timezone.js';
 import type { LinearContext, GateLabels } from './linear-dispatcher.js';
 import type { GateSpec } from './linear-gate-specs.js';
 import type { RunContext } from './agent-runtimes/types.js';
@@ -786,7 +787,7 @@ async function handleIssueUpdate(
             new Date(lastRun.finished_at).getTime() +
               gateSpec.cooldownMinutes * 60_000,
           );
-          const resetTime = resetAt.toISOString().slice(11, 16);
+          const resetTime = formatLocalHHMM(resetAt.toISOString());
           fireAndForget(
             notifyPipelineStep(
               ctx,
