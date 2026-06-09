@@ -857,6 +857,7 @@ async function runQuery(
     ...(hasGcalMcp ? ['mcp__gcal__*'] : []),
     ...(hasLinearMcp ? ['mcp__linear__*'] : []),
   ];
+  // LIA-154: capture the offered manifest (default-on; DEUS_AVAILABLE_TOOLS_LOG=0 opts out).
   if (process.env.DEUS_AVAILABLE_TOOLS_LOG !== '0') {
     writeAvailableTools(process.env.DEUS_INTERACTION_ID, allowedTools);
   }
