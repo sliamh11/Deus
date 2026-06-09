@@ -102,6 +102,60 @@ def _git_commit_time(path: Path, project_root: Path) -> float:
     return path.stat().st_mtime if path.exists() else 0.0
 
 
+def _git_output(cmd: list[str], project_root: Path) -> str | None:
+    """Run a read-only git command, return stripped stdout or None on failure.
+
+    A thin, monkeypatchable wrapper so the worktree-detection helpers below can
+    have their git interactions faked in tests.
+    """
+    try:
+        r = subprocess.run(
+            ["git", *cmd], cwd=project_root,
+            capture_output=True, text=True, timeout=10,
+        )
+        return r.stdout.strip() if r.returncode == 0 else None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+def _in_linked_worktree(project_root: Path) -> bool:
+    """True iff project_root is a LINKED git worktree (git-dir != git-common-dir).
+
+    The main checkout has git-dir == git-common-dir. git may return relative
+    (".git" in the main checkout) or absolute (linked worktree) paths, so anchor
+    BOTH to project_root — `project_root / "/abs"` == "/abs" (pathlib drops the
+    left side when the right is absolute) — which is correct for both forms and
+    removes any dependence on the process CWD.
+    """
+    common = _git_output(["rev-parse", "--git-common-dir"], project_root)
+    gitdir = _git_output(["rev-parse", "--git-dir"], project_root)
+    if not common or not gitdir:
+        return False
+    return (project_root / common).resolve(strict=False) != \
+           (project_root / gitdir).resolve(strict=False)
+
+
+def _worktree_auto_base(project_root: Path) -> str | None:
+    """Interactive default base for a linked worktree: the merge-base with
+    origin/main (authoritative changed-files mode, which kills the mtime
+    false-flags that checkout/symlinked-node_modules cause in a worktree).
+
+    Returns None — i.e. fall back to mtime mode — outside a worktree OR when the
+    merge-base can't be resolved (e.g. origin/main not fetched), so a missing ref
+    NEVER silently masks real drift. Mirrors .husky/pre-push.
+    """
+    if not _in_linked_worktree(project_root):
+        return None
+    base = _git_output(["merge-base", "HEAD", "origin/main"], project_root)
+    if not base:
+        print(
+            "[drift_check] worktree detected but merge-base with origin/main "
+            "unresolved; falling back to mtime mode (pass --base to override).",
+            file=sys.stderr,
+        )
+    return base or None
+
+
 def _dir_commit_time(dir_path: Path, project_root: Path) -> float:
     """Return the commit timestamp of the most recently committed file
     inside `dir_path`, falling back to an mtime walk if the directory has
@@ -2462,6 +2516,10 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
+    # Interactive runs inside a linked worktree default to merge-base mode (kills
+    # mtime false-flags); an explicit --base always wins, None elsewhere → mtime.
+    drift_base = args.base or _worktree_auto_base(PROJECT_ROOT)
+
     if args.codegraph_format:
         sys.exit(check_codegraph_transcript_format(PROJECT_ROOT))
     elif args.cache_map:
@@ -2487,7 +2545,7 @@ if __name__ == "__main__":
     elif args.validate is not None:
         sys.exit(check_validate(PROJECT_ROOT, args.validate or None))
     elif args.all:
-        sys.exit(check_all(PROJECT_ROOT, base_ref=args.base))
+        sys.exit(check_all(PROJECT_ROOT, base_ref=drift_base))
     elif args.coverage:
         sys.exit(check_coverage(PROJECT_ROOT))
     elif args.paths:
@@ -2495,6 +2553,6 @@ if __name__ == "__main__":
     elif args.adr:
         sys.exit(check_adr(PROJECT_ROOT))
     elif args.bump:
-        sys.exit(main(bump=True, base_ref=args.base))
+        sys.exit(main(bump=True, base_ref=drift_base))
     else:
-        sys.exit(main(base_ref=args.base))
+        sys.exit(main(base_ref=drift_base))

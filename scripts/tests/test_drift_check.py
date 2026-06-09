@@ -1113,3 +1113,70 @@ class TestCheckBenchLabels:
             pytest.skip("benchmark fixture not in repo")
         rc = drift_check.check_bench_labels(repo_root)
         assert rc == 0, "Benchmark labels have drifted from vault — run drift_check.py --bench-labels"
+
+
+# ── worktree merge-base auto-default (LIA-146) ──────────────────────────────────
+
+class TestWorktreeAutoBase:
+    """drift_check defaults to merge-base mode inside a LINKED worktree, killing
+    the mtime false-flags that checkout/symlinked-node_modules cause there — while
+    leaving the main checkout on mtime mode. Hermetic: ``_git_output`` is mocked,
+    so no real git is invoked."""
+
+    @staticmethod
+    def _patch_git(monkeypatch, responses):
+        # responses: {(cmd, tuple): output_str_or_None}
+        monkeypatch.setattr(
+            drift_check, "_git_output",
+            lambda cmd, project_root: responses.get(tuple(cmd)),
+        )
+
+    def test_in_linked_worktree_false_in_main_checkout(self, monkeypatch, tmp_path):
+        # Main checkout: git returns the same dir for both (".git").
+        self._patch_git(monkeypatch, {
+            ("rev-parse", "--git-common-dir"): ".git",
+            ("rev-parse", "--git-dir"): ".git",
+        })
+        assert drift_check._in_linked_worktree(tmp_path) is False
+
+    def test_in_linked_worktree_true_when_dirs_differ(self, monkeypatch, tmp_path):
+        # Linked worktree: git-dir points into .git/worktrees/<name>.
+        self._patch_git(monkeypatch, {
+            ("rev-parse", "--git-common-dir"): "/main/.git",
+            ("rev-parse", "--git-dir"): "/main/.git/worktrees/feat",
+        })
+        assert drift_check._in_linked_worktree(tmp_path) is True
+
+    def test_in_linked_worktree_false_when_git_unavailable(self, monkeypatch, tmp_path):
+        # git failure (None) must not be misread as a worktree.
+        self._patch_git(monkeypatch, {})
+        assert drift_check._in_linked_worktree(tmp_path) is False
+
+    def test_auto_base_none_outside_worktree(self, monkeypatch, tmp_path):
+        # THE main-repo-unchanged guard: outside a worktree -> None -> mtime mode,
+        # even though a merge-base is resolvable (it must NOT be consulted/used).
+        self._patch_git(monkeypatch, {
+            ("rev-parse", "--git-common-dir"): ".git",
+            ("rev-parse", "--git-dir"): ".git",
+            ("merge-base", "HEAD", "origin/main"): "deadbeef",
+        })
+        assert drift_check._worktree_auto_base(tmp_path) is None
+
+    def test_auto_base_merge_base_inside_worktree(self, monkeypatch, tmp_path):
+        self._patch_git(monkeypatch, {
+            ("rev-parse", "--git-common-dir"): "/main/.git",
+            ("rev-parse", "--git-dir"): "/main/.git/worktrees/feat",
+            ("merge-base", "HEAD", "origin/main"): "abc123",
+        })
+        assert drift_check._worktree_auto_base(tmp_path) == "abc123"
+
+    def test_auto_base_none_when_merge_base_unresolved(self, monkeypatch, tmp_path, capsys):
+        # In a worktree but origin/main not fetched -> merge-base None -> fall back
+        # to mtime (None), NEVER silently masking drift; emits a stderr note.
+        self._patch_git(monkeypatch, {
+            ("rev-parse", "--git-common-dir"): "/main/.git",
+            ("rev-parse", "--git-dir"): "/main/.git/worktrees/feat",
+            ("merge-base", "HEAD", "origin/main"): None,
+        })
+        assert drift_check._worktree_auto_base(tmp_path) is None
+        assert "falling back to mtime mode" in capsys.readouterr().err
