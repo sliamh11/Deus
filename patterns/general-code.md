@@ -1,5 +1,5 @@
 ---
-last_verified: "2026-06-09" # auto-bump @1780997087 (re-verified: LIA-154 available_tools)
+last_verified: "2026-06-09" # auto-bump @1781032993
 governs:
   - src/
   - evolution/
