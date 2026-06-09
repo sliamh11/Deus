@@ -66,7 +66,7 @@ jobs:
         run: python3 scripts/drift_check.py --all --base origin/${{ github.base_ref }}
 
       - name: Pattern tests (Python)
-        run: python3 -m pytest scripts/tests/test_drift_check.py -v
+        run: python3 -m pytest scripts/tests/test_drift_check.py scripts/tests/test_prune_warden_backups.py -v
 
       - name: Session type contract tests
         run: python3 -m pytest tests/test_session_type_contract.py -v

@@ -83,6 +83,11 @@ def main():
     results["decay"] = run_task("decay", [indexer, "--decay"], dry_run)
     results["health"] = run_task("health", [indexer, "--health"], dry_run)
 
+    prune_baks = str(SCRIPTS_DIR / "maintenance" / "prune_warden_backups.py")
+    results["prune_warden_baks"] = run_task(
+        "prune_warden_baks", [prune_baks, "--keep", "10"], dry_run
+    )
+
     # ── Weekly tasks (Sunday or --weekly) ────────────────────────────────────
 
     if run_weekly:
