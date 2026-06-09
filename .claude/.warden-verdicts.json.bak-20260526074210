@@ -1,8 +1,0 @@
-{
-  "plan-reviewer": {
-    "reason": "code-reviewer fixes within SHIPed plan scope",
-    "source": "mark",
-    "ts": "2026-05-26T07:41:02Z",
-    "verdict": "SHIP"
-  }
-}

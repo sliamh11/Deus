@@ -1,8 +1,0 @@
-{
-  "plan-reviewer": {
-    "reason": "Phase 4-7 plan SHIPed after 4 rounds; fixes are code-reviewer remediation within approved scope",
-    "source": "mark",
-    "ts": "2026-05-26T07:40:51Z",
-    "verdict": "SHIP"
-  }
-}

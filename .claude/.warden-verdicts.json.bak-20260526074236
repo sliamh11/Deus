@@ -1,8 +1,0 @@
-{
-  "plan-reviewer": {
-    "reason": "Phases 4-7 plan SHIPed; current edits are code-reviewer remediations",
-    "source": "mark",
-    "ts": "2026-05-26T07:42:10Z",
-    "verdict": "SHIP"
-  }
-}
