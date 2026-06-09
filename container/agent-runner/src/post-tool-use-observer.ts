@@ -12,9 +12,13 @@ import type {
   HookCallback,
   PostToolUseHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
+import { dispatchHost } from './pre-tool-use-hook.js';
 
 export function createPostToolUseObserverHook(
-  host: string = process.env.DEUS_PROXY_HOST ?? 'host.docker.internal',
+  // The :3002 HookDispatchService is co-located in THIS container, so the
+  // consult targets localhost via dispatchHost() — NOT DEUS_PROXY_HOST, which
+  // addresses HOST-side services and fails-to-reach here (see LIA-199 / #744).
+  host: string = dispatchHost(),
   port: number = parseInt(process.env.HOOK_DISPATCH_PORT ?? '3002', 10),
   token: string | undefined = process.env.DEUS_PROXY_TOKEN,
 ): HookCallback {

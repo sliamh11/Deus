@@ -8,6 +8,8 @@
  * positively classified as out-of-`/workspace` is allowed, malformed payload → {}.
  */
 
+import path from 'node:path';
+
 import type { ObserverCallback } from './hook-dispatch-service.js';
 
 /**
@@ -49,7 +51,12 @@ export function isRecursiveForceRmOutsideWorkspace(command: string): boolean {
 }
 
 function isInsideWorkspace(absPath: string): boolean {
-  return absPath === '/workspace' || absPath.startsWith('/workspace/');
+  // Normalize FIRST so embedded `..` can't escape via a textual prefix match:
+  // `/workspace/../etc` startsWith('/workspace/') but resolves to `/etc` (outside).
+  // `path.posix` is deliberate — the container is always Linux, so a POSIX-path
+  // normalize is correct regardless of the host OS this code is compiled on.
+  const normalized = path.posix.normalize(absPath);
+  return normalized === '/workspace' || normalized.startsWith('/workspace/');
 }
 
 /**

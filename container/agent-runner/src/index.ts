@@ -946,8 +946,10 @@ async function runQuery(
             hooks.push(createToolAuditHook());
           if (process.env.HOOK_DISPATCH_ENABLED === 'true')
             hooks.push(
+              // host defaults to dispatchHost() (127.0.0.1) — see the WHY on the
+              // createPostToolUseObserverHook default param + dispatchHost() docstring.
               createPostToolUseObserverHook(
-                process.env.DEUS_PROXY_HOST ?? 'host.docker.internal',
+                dispatchHost(),
                 parseInt(process.env.HOOK_DISPATCH_PORT ?? '3002', 10),
                 process.env.DEUS_PROXY_TOKEN,
               ),
