@@ -12,16 +12,14 @@ The LLM contradiction check is mocked; only the persistence path is exercised.
 it must be installed in CI — see the evolution-deps step in
 ``.github/workflows/ci.yml``.
 
-Import note: ``memory_indexer`` resolves the memory vault AT IMPORT TIME
-(``_vault_root = _load_vault_path()`` at module scope) and ``sys.exit``s with
-AUTH_ERROR when no vault is configured. CI has no vault, so the import is
-deferred into the test and ``DEUS_VAULT_PATH`` (resolution tier 1) is set via
-``monkeypatch.setenv`` first — otherwise pytest crashes at COLLECTION time,
-before any fixture can run. The vault path is never used: the test redirects
-``DB_PATH`` and ``detect_contradictions`` only touches the DB connection.
-``import_module`` returns the cached module on a second import, so if a future
-test adds a module-level ``memory_indexer`` import this becomes order-sensitive;
-today this is the only importer.
+Import note: ``memory_indexer`` resolves the memory vault LAZILY (first
+``_vault_root()`` call), so importing it needs no vault — CI has none. The
+import is still deferred into the test only to keep ``scripts/`` off
+``sys.path`` during collection of sibling tests. The vault is never touched: the
+test redirects ``DB_PATH`` and ``detect_contradictions`` only uses the DB
+connection. ``import_module`` returns the cached module on a second import, so
+if a future test adds a module-level ``memory_indexer`` import this becomes
+order-sensitive; today this is the only importer.
 """
 
 from __future__ import annotations
@@ -48,9 +46,8 @@ def _import_memory_indexer():
 
 
 def test_detected_conflict_persists_across_connection_close(tmp_path, monkeypatch):
-    # Satisfy import-time vault resolution (tier 1) BEFORE importing — the path
-    # is never touched; the test redirects DB_PATH below. setenv auto-reverts.
-    monkeypatch.setenv("DEUS_VAULT_PATH", str(tmp_path / "vault"))
+    # Vault resolution is lazy and never triggered here (the test redirects
+    # DB_PATH and only touches the DB connection), so no DEUS_VAULT_PATH needed.
     mi = _import_memory_indexer()
     monkeypatch.setattr(mi, "DB_PATH", tmp_path / "mem.db")
 

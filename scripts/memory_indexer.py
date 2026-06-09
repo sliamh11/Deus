@@ -124,10 +124,34 @@ def _load_vault_path() -> Path:
     sys.exit(AUTH_ERROR)
 
 
-_vault_root = _load_vault_path()
-VAULT_SESSION_LOGS = _vault_root / "Session-Logs"
-VAULT_ATOMS = _vault_root / "Atoms"
-VAULT_ENTITIES = _vault_root / "Entities"
+# Lazily resolved by _vault_root() — its sole resolver. Import no longer exits
+# when no vault is configured; resolution (and its sys.exit on a missing vault)
+# is deferred to first actual vault access. Lets vault-free commands (--query is
+# DB-only) and vault-less envs (CI, fresh checkout) import and run. Mirrors the
+# lazy Gemini client (_ensure_client, PR #677). Tests that change the vault env
+# mid-run reset the cache via `memory_indexer._vault_root_cache = None`.
+_vault_root_cache: Path | None = None
+
+
+def _vault_root() -> Path:
+    global _vault_root_cache
+    if _vault_root_cache is None:
+        _vault_root_cache = _load_vault_path()
+    return _vault_root_cache
+
+
+def _vault_session_logs() -> Path:
+    return _vault_root() / "Session-Logs"
+
+
+def _vault_atoms() -> Path:
+    return _vault_root() / "Atoms"
+
+
+def _vault_entities() -> Path:
+    return _vault_root() / "Entities"
+
+
 DEDUP_L2_THRESHOLD = 0.55  # ≈ cosine similarity 0.85 for unit-normalized vectors
 # Recency boost for --query --recency-boost (subtracted from L2 distance).
 RECENCY_BOOST_7D = 0.3    # last 7 days — strong boost
@@ -845,11 +869,11 @@ def cmd_recent(n: int = 3, days: bool = False, compact: bool = False):
     --compact flag): truncates decisions to 60 chars, strips full vault paths,
     collapses cluster children to a count-only header.
     """
-    if not VAULT_SESSION_LOGS.exists():
-        print(f"ERROR: session logs not found at {VAULT_SESSION_LOGS}", file=sys.stderr)
+    if not _vault_session_logs().exists():
+        print(f"ERROR: session logs not found at {_vault_session_logs()}", file=sys.stderr)
         sys.exit(NOT_FOUND)
 
-    log_files = [f for f in VAULT_SESSION_LOGS.rglob("*.md") if ".obsidian" not in str(f)]
+    log_files = [f for f in _vault_session_logs().rglob("*.md") if ".obsidian" not in str(f)]
 
     # Parse date: prefer parent folder name (YYYY-MM-DD), fallback to frontmatter
     def get_date(p: Path) -> str:
@@ -966,8 +990,8 @@ def cmd_recent(n: int = 3, days: bool = False, compact: bool = False):
                 lines.append(fmt_path(path))
 
     # Continuity indicator
-    total_sessions = len(list(VAULT_SESSION_LOGS.rglob("*.md"))) if VAULT_SESSION_LOGS.exists() else 0
-    total_atoms = len(list(VAULT_ATOMS.glob("*.md"))) if VAULT_ATOMS.exists() else 0
+    total_sessions = len(list(_vault_session_logs().rglob("*.md"))) if _vault_session_logs().exists() else 0
+    total_atoms = len(list(_vault_atoms().glob("*.md"))) if _vault_atoms().exists() else 0
     total_days = len(by_date)
     parts = [f"{len(selected)} sessions across {total_days} day{'s' if total_days != 1 else ''}"]
     if total_atoms > 0:
@@ -996,7 +1020,7 @@ def cmd_learnings(since_days: int = 7, max_items: int = 3):
     Delta tracking: compares against ~/.deus/last_resume_learnings.txt to avoid
     showing the same learnings twice. Outputs nothing if no new learnings exist.
     """
-    atom_count = len(list(VAULT_ATOMS.glob("*.md"))) if VAULT_ATOMS.exists() else 0
+    atom_count = len(list(_vault_atoms().glob("*.md"))) if _vault_atoms().exists() else 0
     if atom_count == 0:
         print("## What's Emerging\n- Your learnings will appear here as you use Deus. "
               "Each session extracts atomic facts that grow stronger through corroboration.")
@@ -1013,7 +1037,7 @@ def cmd_learnings(since_days: int = 7, max_items: int = 3):
 
     # Scan all atoms
     candidates: list[dict] = []
-    for atom_path in VAULT_ATOMS.glob("*.md"):
+    for atom_path in _vault_atoms().glob("*.md"):
         content = atom_path.read_text(encoding="utf-8")
         fm = extract_frontmatter(content)
         if not fm:
@@ -1675,8 +1699,8 @@ def cmd_wander(seeds: list[str], steps: int = 3, top_k: int = 10, graph: bool = 
         return
     from collections import defaultdict
 
-    if not VAULT_SESSION_LOGS.exists():
-        print(f"ERROR: session logs not found at {VAULT_SESSION_LOGS}", file=sys.stderr)
+    if not _vault_session_logs().exists():
+        print(f"ERROR: session logs not found at {_vault_session_logs()}", file=sys.stderr)
         sys.exit(NOT_FOUND)
 
     today = local_now().date()
@@ -1685,7 +1709,7 @@ def cmd_wander(seeds: list[str], steps: int = 3, top_k: int = 10, graph: bool = 
     edge_weight: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
     topic_sessions: dict[str, list[str]] = defaultdict(list)
 
-    log_files = sorted(VAULT_SESSION_LOGS.rglob("*.md"))
+    log_files = sorted(_vault_session_logs().rglob("*.md"))
     log_files = [f for f in log_files if ".obsidian" not in str(f)]
 
     for log_file in log_files:
@@ -2591,7 +2615,7 @@ def _entity_article_prompt(entity: dict, relationships: list[dict], atoms: list[
 
 def generate_entity_article(db: sqlite3.Connection, entity_id: int) -> Path:
     """Generate a markdown article for an entity from its graph context."""
-    VAULT_ENTITIES.mkdir(parents=True, exist_ok=True)
+    _vault_entities().mkdir(parents=True, exist_ok=True)
 
     entity_row = db.execute(
         "SELECT name, entity_type, domain, summary FROM entities WHERE id = ?", [entity_id]
@@ -2644,7 +2668,7 @@ def generate_entity_article(db: sqlite3.Connection, entity_id: int) -> Path:
         return Path()
 
     slug = slugify(entity["name"])
-    path = VAULT_ENTITIES / f"{slug}.md"
+    path = _vault_entities() / f"{slug}.md"
     today = local_now().strftime("%Y-%m-%d")
     source_hash = _compute_entity_source_hash(db, entity_id)
 
@@ -3070,9 +3094,9 @@ def cmd_blind_spots(top: int = 10):
     gaps: list[tuple[str, str, int]] = []  # (name, source, score)
 
     # 1. Topic-based gaps (from cmd_gaps logic)
-    if VAULT_SESSION_LOGS.exists():
+    if _vault_session_logs().exists():
         session_topic_count: dict[str, int] = {}
-        for log_file in VAULT_SESSION_LOGS.rglob("*.md"):
+        for log_file in _vault_session_logs().rglob("*.md"):
             if ".obsidian" in str(log_file):
                 continue
             fm = extract_frontmatter(log_file.read_text(encoding="utf-8"))
@@ -3084,8 +3108,8 @@ def cmd_blind_spots(top: int = 10):
                     session_topic_count[t] = session_topic_count.get(t, 0) + 1
 
         atom_coverage: dict[str, int] = {}
-        if VAULT_ATOMS.exists():
-            for atom_file in VAULT_ATOMS.glob("*.md"):
+        if _vault_atoms().exists():
+            for atom_file in _vault_atoms().glob("*.md"):
                 body = atom_file.read_text(encoding="utf-8").lower()
                 for topic in session_topic_count:
                     if topic in body:
@@ -3219,17 +3243,17 @@ def write_atom_file(atom: dict, source_path: str, today: str,
                     privacy: str = "internal", kind: str = "knowledge",
                     triggers: list[str] | None = None) -> Path:
     """Write an atom to the vault Atoms/ directory and return its path."""
-    VAULT_ATOMS.mkdir(parents=True, exist_ok=True)
+    _vault_atoms().mkdir(parents=True, exist_ok=True)
     cat = atom["category"]
     conf = CONFIDENCE_PRIOR.get(cat, 0.50)
     ttl_map = {"fact": None, "decision": None, "preference": 365, "constraint": 365, "belief": 90}
     ttl = ttl_map.get(cat, 365)
     ttl_line = f"ttl_days: {ttl}" if ttl is not None else "ttl_days: null"
     slug = slugify(atom["text"])
-    path = VAULT_ATOMS / f"{cat}-{slug}.md"
+    path = _vault_atoms() / f"{cat}-{slug}.md"
     counter = 2
     while path.exists():
-        path = VAULT_ATOMS / f"{cat}-{slug}-{counter}.md"
+        path = _vault_atoms() / f"{cat}-{slug}-{counter}.md"
         counter += 1
     # Build source_excerpt block for frontmatter (truncated to cap file size)
     excerpt_lines = ""
@@ -3581,8 +3605,8 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
 
 
 def cmd_rebuild():
-    if not VAULT_SESSION_LOGS.exists():
-        print(f"ERROR: session logs not found at {VAULT_SESSION_LOGS}", file=sys.stderr)
+    if not _vault_session_logs().exists():
+        print(f"ERROR: session logs not found at {_vault_session_logs()}", file=sys.stderr)
         sys.exit(NOT_FOUND)
 
     # Tables that CAN be rebuilt from disk (session logs + atom .md files):
@@ -3632,7 +3656,7 @@ def cmd_rebuild():
     db = open_db()
     db.close()
 
-    log_files = sorted(VAULT_SESSION_LOGS.rglob("*.md"))
+    log_files = sorted(_vault_session_logs().rglob("*.md"))
     log_files = [f for f in log_files if ".obsidian" not in str(f)]
     print(f"Found {len(log_files)} session logs. Indexing...")
 
@@ -3646,8 +3670,8 @@ def cmd_rebuild():
 
     # Re-index atoms (skip files already in DB with matching updated_at — mtime guard)
     atom_ok = 0
-    if VAULT_ATOMS.exists():
-        atom_files = sorted(VAULT_ATOMS.glob("*.md"))
+    if _vault_atoms().exists():
+        atom_files = sorted(_vault_atoms().glob("*.md"))
         print(f"\nFound {len(atom_files)} atoms. Re-indexing...")
         db = open_db()
         for af in atom_files:
@@ -3779,8 +3803,8 @@ def _collect_health_metrics(db: sqlite3.Connection) -> dict:
             "source_chunk_coverage": 0.0, "categories": {}, "expired": 0, "domains": {},
         })
     snapshot["sessions"] = (
-        len([f for f in VAULT_SESSION_LOGS.rglob("*.md") if ".obsidian" not in str(f)])
-        if VAULT_SESSION_LOGS.exists() else 0
+        len([f for f in _vault_session_logs().rglob("*.md") if ".obsidian" not in str(f)])
+        if _vault_session_logs().exists() else 0
     )
     # Phase 2: graph metrics
     try:
@@ -4101,13 +4125,13 @@ def cmd_invalidate(path_str: str, reason: str):
 
 def cmd_gaps(top: int = 10):
     """Identify knowledge gaps: high-frequency session topics with low atom coverage."""
-    if not VAULT_SESSION_LOGS.exists():
-        print(f"ERROR: session logs not found at {VAULT_SESSION_LOGS}", file=sys.stderr)
+    if not _vault_session_logs().exists():
+        print(f"ERROR: session logs not found at {_vault_session_logs()}", file=sys.stderr)
         sys.exit(ABSTAIN)
 
     # 1. Count topic frequency across sessions
     session_topic_count: dict[str, int] = {}
-    log_files = [f for f in VAULT_SESSION_LOGS.rglob("*.md") if ".obsidian" not in str(f)]
+    log_files = [f for f in _vault_session_logs().rglob("*.md") if ".obsidian" not in str(f)]
     for log_file in log_files:
         fm = extract_frontmatter(log_file.read_text(encoding="utf-8"))
         if not fm.get("topics"):
@@ -4119,8 +4143,8 @@ def cmd_gaps(top: int = 10):
 
     # 2. Count atom coverage per topic
     atom_topic_coverage: dict[str, int] = {}
-    if VAULT_ATOMS.exists():
-        for atom_file in VAULT_ATOMS.glob("*.md"):
+    if _vault_atoms().exists():
+        for atom_file in _vault_atoms().glob("*.md"):
             body = atom_file.read_text(encoding="utf-8").lower()
             for topic in session_topic_count:
                 if topic in body:

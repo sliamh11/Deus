@@ -3890,7 +3890,7 @@ def test_invalidate_conflict_expires_atom(mi):
     """--invalidate-conflict should expire the older atom after user confirmation."""
     db = mi.open_db()
     # Create atom + conflict
-    atom_path = mi.VAULT_ATOMS
+    atom_path = mi._vault_atoms()
     atom_path.mkdir(parents=True, exist_ok=True)
     af = atom_path / "fact-conflict-test.md"
     af.write_text("---\ntype: atom\n---\nOld fact\n")
