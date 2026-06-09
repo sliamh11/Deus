@@ -13,12 +13,33 @@
  * additionalContext strings from all non-empty responses are concatenated.
  */
 
+import crypto from 'crypto';
 import http from 'http';
 
 export type ObserverCallback = (
   event: string,
   payload: unknown,
 ) => Promise<Record<string, unknown>>;
+
+/**
+ * Constant-time check of the `x-deus-proxy-token` header against
+ * `DEUS_PROXY_TOKEN`. Defense-in-depth behind the loopback bind (an in-container
+ * attacker can read the token from its own env; the real value is cross-container
+ * if the bind were ever widened). When DEUS_PROXY_TOKEN is unset, the check is
+ * a no-op (accept) so tests and local runs without a token still work.
+ */
+function isAuthorized(header: string | string[] | undefined): boolean {
+  const expected = process.env.DEUS_PROXY_TOKEN;
+  if (!expected) return true; // no token configured → nothing to enforce
+  const provided = Array.isArray(header) ? header[0] : header;
+  if (typeof provided !== 'string') return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  // timingSafeEqual throws on length mismatch — guard it, and the length check
+  // is itself a (non-secret) early-out since the token length is not sensitive.
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
 
 export class HookDispatchService {
   private readonly observers = new Map<string, ObserverCallback[]>();
@@ -40,7 +61,10 @@ export class HookDispatchService {
    * Aggregation: concatenates additionalContext strings; last-writer-wins
    * for other top-level keys.
    */
-  async fanOut(event: string, payload: unknown): Promise<Record<string, unknown>> {
+  async fanOut(
+    event: string,
+    payload: unknown,
+  ): Promise<Record<string, unknown>> {
     const callbacks = this.observers.get(event) ?? [];
     if (callbacks.length === 0) return {};
 
@@ -93,7 +117,13 @@ export class HookDispatchService {
       });
       this.server = server;
       server.on('error', reject);
-      server.listen(port, () => resolve());
+      // Bind LOOPBACK only. The service is co-located in the same container as
+      // the agent and must never be reachable from other containers on the
+      // Docker bridge. Without the explicit host, `listen(port, cb)` binds
+      // 0.0.0.0 (all interfaces) — contradicting every docstring that claims
+      // loopback and exposing this no-auth decision endpoint cross-container
+      // (LIA-199 threat-model). The host arg makes the bind match the design.
+      server.listen(port, '127.0.0.1', () => resolve());
     });
   }
 
@@ -101,11 +131,19 @@ export class HookDispatchService {
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
-    const match =
-      req.method === 'POST' && req.url?.match(/^\/hooks\/(\w+)$/);
+    const match = req.method === 'POST' && req.url?.match(/^\/hooks\/(\w+)$/);
     if (!match) {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'not found' }));
+      return;
+    }
+
+    // Defense-in-depth: reject callers without the proxy token (no-op when
+    // DEUS_PROXY_TOKEN is unset). Loopback bind is the primary control; this
+    // backstops it (LIA-199 threat-model).
+    if (!isAuthorized(req.headers['x-deus-proxy-token'])) {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unauthorized' }));
       return;
     }
 
@@ -131,10 +169,10 @@ export class HookDispatchService {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify(result));
     } catch (err) {
-      console.warn(
-        '[HookDispatchService] fanOut error',
-        { event, err: err instanceof Error ? err.message : String(err) },
-      );
+      console.warn('[HookDispatchService] fanOut error', {
+        event,
+        err: err instanceof Error ? err.message : String(err),
+      });
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{}');
     }

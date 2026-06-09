@@ -1,3 +1,5 @@
+import http from 'http';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HookDispatchService } from './hook-dispatch-service.js';
@@ -202,5 +204,123 @@ describe('HookDispatchService — HTTP server', () => {
     expect(res.ok).toBe(true);
     const body = await res.json();
     expect(body).toEqual({});
+  });
+});
+
+// LIA-199 listener hardening (threat-model REVISE): the service must bind
+// LOOPBACK only and reject callers without the proxy token.
+describe('HookDispatchService — listener hardening', () => {
+  let service: HookDispatchService;
+  const BASE_PORT = 19300;
+
+  beforeEach(() => {
+    service = new HookDispatchService();
+  });
+
+  afterEach(async () => {
+    await service.stop();
+    vi.restoreAllMocks();
+  });
+
+  it('binds 127.0.0.1 (loopback), never 0.0.0.0', async () => {
+    // Reachability on 127.0.0.1 does NOT prove an exclusive loopback bind (it is
+    // reachable on a 0.0.0.0 listener too). The only valid assertion is the host
+    // argument actually passed to listen(). Stub listen so the test asserts the
+    // bind host without occupying a real port (deterministic in CI).
+    const listenSpy = vi
+      .spyOn(http.Server.prototype, 'listen')
+      .mockImplementation(function (this: http.Server, ...args: unknown[]) {
+        const cb = args[args.length - 1];
+        if (typeof cb === 'function') cb();
+        return this;
+      });
+    await service.start(BASE_PORT);
+    expect(listenSpy).toHaveBeenCalledWith(
+      BASE_PORT,
+      '127.0.0.1',
+      expect.any(Function),
+    );
+  });
+
+  describe('proxy-token validation', () => {
+    const ORIGINAL = process.env.DEUS_PROXY_TOKEN;
+    afterEach(() => {
+      if (ORIGINAL === undefined) delete process.env.DEUS_PROXY_TOKEN;
+      else process.env.DEUS_PROXY_TOKEN = ORIGINAL;
+    });
+
+    it('accepts a request with the correct token and runs the observer', async () => {
+      process.env.DEUS_PROXY_TOKEN = 'secret-token';
+      const port = BASE_PORT + 1;
+      await service.start(port);
+      const cb = vi.fn().mockResolvedValue({ decision: 'approve' });
+      service.registerObserver('PreToolUse', cb);
+
+      const res = await fetch(`http://127.0.0.1:${port}/hooks/PreToolUse`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-deus-proxy-token': 'secret-token',
+        },
+        body: JSON.stringify({ tool_name: 'Bash' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(cb).toHaveBeenCalledOnce();
+    });
+
+    it('rejects (401) a wrong token and does NOT run the observer', async () => {
+      process.env.DEUS_PROXY_TOKEN = 'secret-token';
+      const port = BASE_PORT + 2;
+      await service.start(port);
+      const cb = vi.fn().mockResolvedValue({});
+      service.registerObserver('PreToolUse', cb);
+
+      const res = await fetch(`http://127.0.0.1:${port}/hooks/PreToolUse`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-deus-proxy-token': 'wrong-token',
+        },
+        body: JSON.stringify({ tool_name: 'Bash' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('rejects (401) a missing token header when a token is configured', async () => {
+      process.env.DEUS_PROXY_TOKEN = 'secret-token';
+      const port = BASE_PORT + 3;
+      await service.start(port);
+      const cb = vi.fn().mockResolvedValue({});
+      service.registerObserver('PreToolUse', cb);
+
+      const res = await fetch(`http://127.0.0.1:${port}/hooks/PreToolUse`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tool_name: 'Bash' }),
+      });
+
+      expect(res.status).toBe(401);
+      expect(cb).not.toHaveBeenCalled();
+    });
+
+    it('accepts any caller when DEUS_PROXY_TOKEN is unset (back-compat)', async () => {
+      delete process.env.DEUS_PROXY_TOKEN;
+      const port = BASE_PORT + 4;
+      await service.start(port);
+      const cb = vi.fn().mockResolvedValue({ decision: 'approve' });
+      service.registerObserver('PreToolUse', cb);
+
+      const res = await fetch(`http://127.0.0.1:${port}/hooks/PreToolUse`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ tool_name: 'Bash' }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(cb).toHaveBeenCalledOnce();
+    });
   });
 });
