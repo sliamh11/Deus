@@ -4,6 +4,23 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.18.0](https://github.com/sliamh11/Deus/compare/v1.17.0...v1.18.0) (2026-06-09)
+
+
+### Features
+
+* **agent-runner:** add blocking PreToolUse observer + fix consult host (LIA-197) ([#744](https://github.com/sliamh11/Deus/issues/744)) ([f5bf7ab](https://github.com/sliamh11/Deus/commit/f5bf7ab917fb83127fd51b3f8c71fa5be4a60867))
+* **agent-runner:** add PreToolUse gate seam to non-Claude tool loops (LIA-197) ([#740](https://github.com/sliamh11/Deus/issues/740)) ([a8d2490](https://github.com/sliamh11/Deus/commit/a8d24901613092eb17db4580eef5a33dd13b79b6))
+* **review:** local cross-family code-review advisory (Gemma 4 12B, never a gate) (LIA-179) ([#733](https://github.com/sliamh11/Deus/issues/733)) ([5197f7a](https://github.com/sliamh11/Deus/commit/5197f7a789a5663cbd3018cc306f7147a866c83c))
+
+
+### Bug Fixes
+
+* **ci:** repair [@deus-ai](https://github.com/deus-ai) MCP package publish pipeline ([#734](https://github.com/sliamh11/Deus/issues/734)) ([4af574a](https://github.com/sliamh11/Deus/commit/4af574a00274e969d8bfa54a72df06080f86e593))
+* **memory:** lazy-resolve vault path so memory_indexer imports without a vault ([#745](https://github.com/sliamh11/Deus/issues/745)) ([2896e64](https://github.com/sliamh11/Deus/commit/2896e644de15882c4347fb761a157d6d79bb23af))
+* **memory:** persist detected contradictions to pending_conflicts ([#741](https://github.com/sliamh11/Deus/issues/741)) ([458aa93](https://github.com/sliamh11/Deus/commit/458aa93ed2a025fb286f9106a97426d87df64da7))
+* **telemetry:** decouple logInteraction from the output-marker parse (LIA-196) ([#729](https://github.com/sliamh11/Deus/issues/729)) ([6aadb87](https://github.com/sliamh11/Deus/commit/6aadb878f23b4d2f6c8ea9d73a3bc68f25cfcc75))
+
 ## [1.17.0](https://github.com/sliamh11/Deus/compare/v1.16.0...v1.17.0) (2026-06-08)
 
 
