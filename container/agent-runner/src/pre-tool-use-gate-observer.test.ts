@@ -24,6 +24,15 @@ describe('createBlockingPreToolUseObserver', () => {
     expect(result).toEqual({});
   });
 
+  it('blocks `..` traversal that escapes /workspace via a /workspace/ prefix', async () => {
+    const result = await observer('PreToolUse', {
+      tool_name: 'Bash',
+      tool_input: { command: 'rm -rf /workspace/../etc' },
+    });
+    expect(result.decision).toBe('block');
+    expect(String(result.reason)).toMatch(/outside \/workspace/);
+  });
+
   it('allows non-Bash tools even with a matching command string', async () => {
     const result = await observer('PreToolUse', {
       tool_name: 'Write',
@@ -51,9 +60,16 @@ describe('isRecursiveForceRmOutsideWorkspace', () => {
     ['rm --recursive --force /opt/x', true],
     ['rm -rf /', true],
     ['rm -rf /workspaces/x', true], // sibling dir is genuinely outside /workspace
+    // `..` traversal: textually startsWith('/workspace/') but resolves outside → block
+    ['rm -rf /workspace/../etc', true],
+    ['rm -rf /workspace/../../etc', true],
+    ['rm -rf /workspace/..', true], // resolves to '/'
     // in-workspace → allow
     ['rm -rf /workspace', false],
+    ['rm -rf /workspace/', false], // trailing slash normalizes to '/workspace'
     ['rm -rf /workspace/tmp/x', false],
+    ['rm -rf /workspace/./tmp', false], // dot-segment normalizes back inside
+    ['rm -rf /workspace/../workspace/foo', false], // detour that resolves back inside
     ['rm -rf relative/path', false], // relative → in-workspace assumption
     // not both flags → allow
     ['rm -r /tmp/x', false],
