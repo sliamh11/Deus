@@ -4,6 +4,20 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.19.0](https://github.com/sliamh11/Deus/compare/v1.18.0...v1.19.0) (2026-06-09)
+
+
+### Features
+
+* **warden:** codegraph-first gate on all threads + fresh-instance grep fallback (LIA-121) ([#753](https://github.com/sliamh11/Deus/issues/753)) ([ebb7005](https://github.com/sliamh11/Deus/commit/ebb7005fa19c23b3af3a7a9033b5783bdb4748c9))
+* **wardens:** add keystone depth-warden spec (advisory, never-gate) ([#743](https://github.com/sliamh11/Deus/issues/743)) ([13c4bcc](https://github.com/sliamh11/Deus/commit/13c4bcc972b50520ddb8f12135b59ee3125d9a8d))
+
+
+### Bug Fixes
+
+* **agent-runner:** route PostToolUse consult to dispatchHost + harden deny-rule traversal (LIA-199) ([#747](https://github.com/sliamh11/Deus/issues/747)) ([9a73d32](https://github.com/sliamh11/Deus/commit/9a73d323bdff358e97e5a6ca0abe3169038858f1))
+* **drift:** default to merge-base mode inside worktrees (LIA-146) ([#750](https://github.com/sliamh11/Deus/issues/750)) ([5872b31](https://github.com/sliamh11/Deus/commit/5872b3180f87ecdcd57017bf22267360a362c599))
+
 ## [1.18.0](https://github.com/sliamh11/Deus/compare/v1.17.0...v1.18.0) (2026-06-09)
 
 
