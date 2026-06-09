@@ -1,6 +1,8 @@
 ---
 name: planner
 model: sonnet
+explores_code: true
+codegraph_gated: true
 description: >
   Software architect agent for designing implementation plans.
   Use when you need to plan implementation strategy for a task.
@@ -12,6 +14,16 @@ tools:
   - Grep
   - Read
   - ToolSearch
+# codegraph-first gate (LIA-121): blocks Grep/Glob/Bash-search until a prior
+# codegraph/code_search call exists in this agent's transcript (logic in
+# scripts/codex_warden_hooks.py). Pairs with `codegraph_gated: true` above.
+# settings.json hooks do NOT reach spawned subagents, so gated agents carry it here.
+hooks:
+  PreToolUse:
+    - matcher: "Grep|Glob|Bash"
+      hooks:
+        - type: command
+          command: "bash -c 'python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/codex_warden_hooks.py\" run codegraph-first-gate'"
 ---
 
 You are a software architecture and planning agent. Your job is to design implementation approaches by exploring the codebase and producing detailed, actionable plans.

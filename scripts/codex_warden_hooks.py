@@ -583,7 +583,11 @@ def _resolve_agent_transcript(event: dict[str, Any]) -> str:
     Workflow-spawned subagents write their transcript DEEPER, at
     ``.../<session_id>/subagents/workflows/wf_<run>/agent-<agent_id>.jsonl``, so the
     flat derivation misses and the gate would silently fail open (observed: 3
-    ``codegraph-gate CANARY`` fail-opens). When the flat path is absent we resolve
+    ``codegraph-gate CANARY`` fail-opens). Those fires came from a GATED agent (e.g.
+    code-explorer) invoked AS a workflow subagent, carrying its OWN frontmatter hook
+    -- a workflow subagent with no frontmatter hook is not gated at all (settings.json
+    hooks reach only the main thread), which is why ``core-behavioral-rules`` makes the
+    prompt the lever for those. When the flat path is absent we resolve
     the file under this session's ``subagents/workflows/*/`` -- only on a flat-path
     miss, so the common Task path and the "not yet written -> fail open" behavior are
     unchanged.
@@ -623,21 +627,28 @@ def _resolve_agent_transcript(event: dict[str, Any]) -> str:
     return tp
 
 
-def _log_gate_canary(repo_root: Path, message: str) -> None:
-    """Append a LOUD canary entry to the warden audit log.
+def _log_gate_line(repo_root: Path, label: str, message: str) -> None:
+    """Append a labelled codegraph-gate entry to the warden audit log.
 
-    Used when the transcript-scanning gate detects a possible parse-blindness
-    condition (rich transcript, no recognized tool_use blocks).  This makes a
-    silent no-op VISIBLE in the warden log rather than invisible.
+    Shared writer for the gate's out-of-band signals (CANARY parse-blindness,
+    FAILOPEN availability fallback) so a silent no-op is VISIBLE in the warden
+    log rather than invisible.
     """
     try:
         log = _audit_log_path(repo_root)
         log.parent.mkdir(parents=True, exist_ok=True)
         stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         with log.open("a", encoding="utf-8") as fh:
-            fh.write(f"{stamp} | codegraph-gate   | CANARY  | {message}\n")
+            fh.write(f"{stamp} | codegraph-gate   | {label:<8}| {message}\n")
     except Exception:
         pass
+
+
+def _log_gate_canary(repo_root: Path, message: str) -> None:
+    """Log a parse-blindness canary: the transcript-scanning gate detected a
+    rich transcript with zero recognized tool_use blocks, so it may have gone
+    blind to a changed transcript format. Makes the silent no-op visible."""
+    _log_gate_line(repo_root, "CANARY", message)
 
 
 def _bash_is_code_search(command: str) -> bool:
@@ -1278,9 +1289,115 @@ def _codegraph_deny_message(prior_searches: int) -> str:
     return tier2
 
 
+#: Server names that satisfy the codegraph-first gate — mirrors the
+#: ``mcp__codegraph__`` / ``mcp__code-search__`` tool prefixes detected by
+#: ``_line_is_codegraph_toolcall``.
+_CODEGRAPH_SERVER_NAMES = ("codegraph", "code-search")
+
+
+def _codegraph_config_paths(repo_root: Path) -> list[Path]:
+    """Claude Code config files that may register the codegraph/code-search MCP
+    servers. All are read and their server names unioned (order irrelevant).
+    A separate function so tests can monkeypatch the lookup deterministically."""
+    paths: list[Path] = []
+    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if cfg_dir:
+        paths.append(Path(cfg_dir).expanduser() / ".claude.json")
+    paths.append(Path.home() / ".claude.json")
+    paths.append(repo_root / ".mcp.json")
+    # De-dup (CLAUDE_CONFIG_DIR may alias ~/.claude.json) so we never read a file twice.
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for p in paths:
+        try:
+            key = p.resolve()
+        except OSError:
+            key = p
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
+def _codegraph_mcp_available(repo_root: Path) -> tuple[bool, str]:
+    """Return ``(available, reason)``: is a codegraph/code-search MCP server
+    registered? Reads the configs in ``_codegraph_config_paths`` and unions
+    ``mcpServers`` + ``projects[repo].mcpServers``.
+
+    ``available`` is True ONLY when such a server is found. Every other outcome
+    (not registered, corrupt config, no config at all) returns False so the gate
+    falls back to grep — an agent cannot satisfy a gate for a server it cannot
+    call, so blocking would brick it. ``reason`` distinguishes the cases for the
+    FAILOPEN log. (A real fresh instance has a ``~/.claude.json`` without the
+    server → the "not registered" branch; tests force availability via the
+    autouse fixture's ``CLAUDE_CONFIG_DIR``.)
+    """
+    server_names: set[str] = set()
+    any_file_present = False
+    any_parsed = False
+    for path in _codegraph_config_paths(repo_root):
+        try:
+            if not path.exists():
+                continue
+            any_file_present = True
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        any_parsed = True
+        if not isinstance(data, dict):
+            continue
+        top = data.get("mcpServers")
+        if isinstance(top, dict):
+            server_names.update(top.keys())
+        projects = data.get("projects")
+        if isinstance(projects, dict):
+            proj = projects.get(str(repo_root))
+            if isinstance(proj, dict) and isinstance(proj.get("mcpServers"), dict):
+                server_names.update(proj["mcpServers"].keys())
+    if any(name in server_names for name in _CODEGRAPH_SERVER_NAMES):
+        return True, ""
+    if any_parsed:
+        return False, "no codegraph/code-search MCP server registered — grep allowed (fresh instance?)"
+    if any_file_present:
+        return False, "Claude MCP config unreadable — grep allowed"
+    return False, "no Claude MCP config found — grep allowed"
+
+
+def _log_codegraph_availability_failopen(
+    repo_root: Path, event: dict[str, Any], reason: str
+) -> None:
+    """Record an availability fail-open to the warden log, ONCE per session.
+
+    Dedup marker is session-keyed (from ``transcript_path``) and lives under the
+    state dir (``~/.deus``), not the repo. A legitimately-fresh instance logs once
+    per session (no per-grep spam); a *misread* on an instance that should enforce
+    resurfaces every new session instead of being permanently silenced.
+    """
+    try:
+        tp = str(event.get("transcript_path") or "")
+        session_id = Path(tp).stem if tp else "unknown"
+        if not session_id:
+            session_id = "unknown"
+        state_dir = Path(os.environ.get("DEUS_STATE_DIR", Path.home() / ".deus"))
+        marker = state_dir / f".codegraph-avail-logged-{session_id}"
+        if marker.exists():
+            return
+        state_dir.mkdir(parents=True, exist_ok=True)
+        marker.write_text("", encoding="utf-8")
+    except OSError:
+        pass  # marker unmanageable — fall through and log (best-effort)
+    _log_gate_line(repo_root, "FAILOPEN", reason)
+
+
 def run_codegraph_first_gate(event: dict[str, Any], repo_root: Path) -> int:
-    """Single PreToolUse gate enforcing codegraph-first exploration for gated
-    agents (``codegraph_gated: true``). LIA-121 / RETRO-2026-05-29-01.
+    """Single PreToolUse gate enforcing codegraph-first exploration on every
+    thread where it is wired. LIA-121 / RETRO-2026-05-29-01.
+
+    Wiring (the gate body does NOT read ``codegraph_gated`` — that flag is only a
+    coverage-test marker): the MAIN thread via ``.claude/settings.json`` (the
+    ``Bash`` block + a ``Grep|Glob`` block); gated Task/workflow subagents via
+    their OWN frontmatter ``hooks`` block (settings.json hooks do not reach a
+    spawned subagent), e.g. code-explorer / general / planner / keystone.
 
     IMPLEMENTATION: transcript-scanning (replaces broken marker scheme).
 
@@ -1371,6 +1488,16 @@ def run_codegraph_first_gate(event: dict[str, Any], repo_root: Path) -> int:
                 "run `python3 scripts/drift_check.py --codegraph-format` to validate. "
                 "Failing open to avoid deadlock.",
             )
+            return 0
+
+        # About to block. But if no codegraph/code-search MCP server is
+        # registered (a fresh instance that never ran /setup), the agent CANNOT
+        # satisfy the gate — fall back to grep instead of bricking it. Checked
+        # here (not earlier) so the config read is paid only when we would
+        # otherwise block, i.e. before the first codegraph call of a thread.
+        available, reason = _codegraph_mcp_available(repo_root)
+        if not available:
+            _log_codegraph_availability_failopen(repo_root, event, reason)
             return 0
 
         _block_pre_tool(_codegraph_deny_message(prior_search_attempts))

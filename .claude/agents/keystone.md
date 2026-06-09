@@ -9,6 +9,17 @@ description: >
   Never a commit gate.
 model: opus
 explores_code: true
+codegraph_gated: true
+# codegraph-first gate (LIA-121): blocks Grep/Glob/Bash-search until a prior
+# codegraph/code_search call exists in this agent's transcript (logic in
+# scripts/codex_warden_hooks.py). Pairs with `codegraph_gated: true` above.
+# settings.json hooks do NOT reach spawned subagents, so gated agents carry it here.
+hooks:
+  PreToolUse:
+    - matcher: "Grep|Glob|Bash"
+      hooks:
+        - type: command
+          command: "bash -c 'python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/codex_warden_hooks.py\" run codegraph-first-gate'"
 ---
 
 You are the `keystone` Warden — a single-claim dependency-chain tracer. Your job is to

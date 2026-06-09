@@ -7,6 +7,8 @@ import sys
 from argparse import Namespace
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "codex_warden_hooks.py"
@@ -3750,6 +3752,122 @@ def test_codegraph_gated_agents_have_hooks_block():
             f"{md.name}: `codegraph_gated` flag and the codegraph gate hook block "
             "are out of sync. Both must be present together or both absent."
         )
+
+
+# ---------------------------------------------------------------------------
+# Availability fail-open: a fresh instance without codegraph falls back to grep
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _codegraph_registered_by_default(tmp_path_factory, monkeypatch):
+    """Gate block-tests now require codegraph to look "registered" (the
+    availability probe). Provide a codegraph-registered config via
+    CLAUDE_CONFIG_DIR so the probe always finds it (its union of config paths
+    short-circuits to available regardless of the host's real ~/.claude.json or
+    CI's absence of one). Availability-specific tests override the whole lookup
+    by monkeypatching _codegraph_config_paths."""
+    cfg_dir = tmp_path_factory.mktemp("ccfg")
+    (cfg_dir / ".claude.json").write_text(
+        json.dumps({"mcpServers": {"codegraph": {}, "code-search": {}}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
+
+
+def _config_with(tmp_path: Path, servers: dict) -> Path:
+    cfg = tmp_path / "claude_config.json"
+    cfg.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+    return cfg
+
+
+def test_availability_codegraph_registered_enforces(tmp_path, capsys, monkeypatch):
+    """codegraph registered → gate still BLOCKS grep with no prior codegraph call."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    cfg = _config_with(tmp_path, {"codegraph": {}})
+    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [cfg])
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
+    assert _deny(capsys) == "deny"
+
+
+def test_availability_not_registered_allows_grep(tmp_path, capsys, monkeypatch):
+    """Fresh instance (config readable, no codegraph/code-search) → grep ALLOWED,
+    fail-open logged to .warden-log."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    cfg = _config_with(tmp_path, {"linear": {}})  # some other server, not codegraph
+    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [cfg])
+    monkeypatch.setenv("DEUS_STATE_DIR", str(tmp_path / "state"))
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
+    assert capsys.readouterr().out == ""  # no deny printed
+    assert "FAILOPEN" in (repo / ".claude" / ".warden-log").read_text()
+
+
+def test_availability_corrupt_config_allows_grep(tmp_path, capsys, monkeypatch):
+    """Present-but-unparseable config → grep ALLOWED (cannot confirm codegraph)."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [bad])
+    monkeypatch.setenv("DEUS_STATE_DIR", str(tmp_path / "state"))
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_availability_no_config_files_allows_grep(tmp_path, capsys, monkeypatch):
+    """No config file at all (cannot confirm codegraph) → grep ALLOWED. Blocking
+    when codegraph can't be confirmed would brick a session that can't satisfy
+    the gate; existing block-tests stay deterministic via the autouse fixture."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [tmp_path / "nope.json"])
+    monkeypatch.setenv("DEUS_STATE_DIR", str(tmp_path / "state"))
+    tr = _write_transcript(tmp_path, [_BASH_LINE])
+    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
+    assert capsys.readouterr().out == ""  # allowed, no deny
+
+
+def test_availability_failopen_logged_once_per_session(tmp_path, capsys, monkeypatch):
+    """Two fail-opens in one session → ONE log line; a new session logs again."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    cfg = _config_with(tmp_path, {"linear": {}})
+    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [cfg])
+    monkeypatch.setenv("DEUS_STATE_DIR", str(tmp_path / "state"))
+
+    def fire(session_name: str):
+        sess = tmp_path / f"{session_name}.jsonl"
+        sess.write_text(_BASH_LINE + "\n", encoding="utf-8")
+        hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=sess), repo)
+        capsys.readouterr()
+
+    fire("sessionA")
+    fire("sessionA")  # same session id → marker exists → no 2nd log
+    log_path = repo / ".claude" / ".warden-log"
+    assert log_path.read_text().count("FAILOPEN") == 1
+    fire("sessionB")  # different session → logs again
+    assert log_path.read_text().count("FAILOPEN") == 2
+
+
+def test_settings_json_wires_codegraph_first_gate():
+    """Shipped settings.json wires codegraph-first-gate for the MAIN thread on
+    BOTH the Bash block and a Grep|Glob block. Subagents carry it via their own
+    frontmatter (see test_codegraph_gated_agents_have_hooks_block)."""
+    settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
+    pretooluse = settings["hooks"]["PreToolUse"]
+
+    def cmds_for(matcher: str) -> str:
+        block = next((b for b in pretooluse if b.get("matcher") == matcher), None)
+        assert block is not None, f"no PreToolUse block for matcher {matcher!r}"
+        return " ".join(h["command"] for h in block["hooks"])
+
+    assert "codegraph-first-gate" in cmds_for("Bash"), "Bash block must run codegraph-first-gate"
+    assert "codegraph-first-gate" in cmds_for("Grep|Glob"), "Grep|Glob block must run codegraph-first-gate"
 
 
 # ---------------------------------------------------------------------------
