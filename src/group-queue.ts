@@ -287,6 +287,11 @@ export class GroupQueue {
     return Math.max(0, MAX_CONCURRENT_CONTAINERS - this.activeCount);
   }
 
+  /** True once shutdown() has been called — enqueued work is silently dropped. */
+  isShuttingDown(): boolean {
+    return this.shuttingDown;
+  }
+
   private drainGroup(groupJid: string): void {
     if (this.shuttingDown) return;
 

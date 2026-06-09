@@ -72,6 +72,16 @@ export const TOOL_PROXY_PORT = parseInt(
   process.env.TOOL_PROXY_PORT || '3003',
   10,
 );
+// Odysseus `/v1/chat/completions` web channel (path-(a) GUI). Off by default.
+// The secret ODYSSEUS_HTTP_TOKEN is NOT read here — it is loaded by
+// odysseus-server.ts (readEnvFile), matching the "secrets not in config.ts" rule.
+export const ODYSSEUS_HTTP_ENABLED =
+  process.env.ODYSSEUS_HTTP_ENABLED === '1' ||
+  process.env.ODYSSEUS_HTTP_ENABLED === 'true';
+export const ODYSSEUS_HTTP_PORT = parseInt(
+  process.env.ODYSSEUS_HTTP_PORT || '3005',
+  10,
+);
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
 // Sessions older than this many hours are reset to a fresh start.

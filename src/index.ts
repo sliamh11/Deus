@@ -31,6 +31,7 @@ import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
 import { loadSkillIpcHandlers } from './skills/index.js';
 import { createMessageOrchestrator } from './message-orchestrator.js';
+import { startOdysseusServer } from './odysseus-server.js';
 import { findChannel, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -362,6 +363,21 @@ async function main(): Promise<void> {
       if (text) await channel.sendMessage(jid, text);
     },
   });
+
+  // Start the Odysseus /v1 web channel (no-op unless ODYSSEUS_HTTP_ENABLED=1).
+  // Shares the main session; serializes through GroupQueue like the scheduler.
+  const odysseusServer = await startOdysseusServer({
+    queue,
+    registry,
+    registeredGroups: () => state.registeredGroups,
+    getSession: (groupFolder, backend) =>
+      state.getSession(groupFolder, backend),
+    setSession: (groupFolder, sessionRef) => {
+      state.setSession(groupFolder, sessionRef);
+      persistSession(groupFolder, sessionRef);
+    },
+  });
+  if (odysseusServer) webhookServers.push(odysseusServer);
 
   // Start Linear subsystems (no-op if LINEAR_API_KEY not configured)
   const linearEnv = readEnvFile([
