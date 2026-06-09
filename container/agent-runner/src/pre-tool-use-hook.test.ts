@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createPreToolUseHook,
+  dispatchHost,
   dispatchPreToolUseGate,
 } from './pre-tool-use-hook.js';
 
@@ -206,5 +207,45 @@ describe('createPreToolUseHook (Claude SDK adapter, no regression)', () => {
     const out = await hook(input as any, undefined as any, {} as any);
 
     expect(out).toEqual({});
+  });
+});
+
+describe('dispatchHost (consult targets the container-local :3002 service)', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+    vi.restoreAllMocks();
+  });
+
+  it('defaults to 127.0.0.1, NOT DEUS_PROXY_HOST (which addresses host services)', () => {
+    delete process.env.HOOK_DISPATCH_HOST;
+    process.env.DEUS_PROXY_HOST = 'host.docker.internal';
+    expect(dispatchHost()).toBe('127.0.0.1');
+  });
+
+  it('honors a HOOK_DISPATCH_HOST override', () => {
+    process.env.HOOK_DISPATCH_HOST = '10.0.0.5';
+    expect(dispatchHost()).toBe('10.0.0.5');
+  });
+
+  it('dispatchPreToolUseGate POSTs to dispatchHost(), ignoring DEUS_PROXY_HOST', async () => {
+    process.env.HOOK_DISPATCH_ENABLED = 'true';
+    process.env.HOOK_DISPATCH_PORT = '3002';
+    process.env.DEUS_PROXY_HOST = 'host.docker.internal'; // must be ignored now
+    delete process.env.HOOK_DISPATCH_HOST;
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(okResponse({}));
+
+    await dispatchPreToolUseGate({
+      toolName: 'Bash',
+      toolInput: { command: 'ls' },
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://127.0.0.1:3002/hooks/PreToolUse',
+      expect.anything(),
+    );
   });
 });

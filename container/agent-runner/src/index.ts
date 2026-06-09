@@ -37,7 +37,8 @@ import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 import { createToolCallLogHook } from './tool-call-log.js';
 import type { AgentRuntimeId } from './tool-broker.js';
 import { HookDispatchService } from './hook-dispatch-service.js';
-import { createPreToolUseHook } from './pre-tool-use-hook.js';
+import { createPreToolUseHook, dispatchHost } from './pre-tool-use-hook.js';
+import { createBlockingPreToolUseObserver } from './pre-tool-use-gate-observer.js';
 import { createPostToolUseObserverHook } from './post-tool-use-observer.js';
 
 interface RuntimeSession {
@@ -914,7 +915,9 @@ async function runQuery(
                 {
                   hooks: [
                     createPreToolUseHook(
-                      process.env.DEUS_PROXY_HOST ?? 'host.docker.internal',
+                      // The :3002 service is co-located in THIS container, so the
+                      // consult targets localhost — not DEUS_PROXY_HOST (host services).
+                      dispatchHost(),
                       parseInt(process.env.HOOK_DISPATCH_PORT ?? '3002', 10),
                       process.env.DEUS_PROXY_TOKEN,
                     ),
@@ -1065,6 +1068,15 @@ async function main(): Promise<void> {
     const dispatchSvc = new HookDispatchService();
     try {
       await dispatchSvc.start(dispatchPort);
+      // Register the single blocking PreToolUse observer. Inside the try on
+      // purpose: if start() throws, the catch keeps fail-open and the observer
+      // is simply never registered. With one deny-capable observer, fanOut's
+      // last-writer-wins merge is correct; revisit block-precedence if a second
+      // (allow-capable) observer is ever added.
+      dispatchSvc.registerObserver(
+        'PreToolUse',
+        createBlockingPreToolUseObserver(),
+      );
       log(`HookDispatchService started on :${dispatchPort}`);
     } catch (err) {
       console.warn(

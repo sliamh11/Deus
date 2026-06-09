@@ -26,12 +26,20 @@ import type {
 
 const DISPATCH_TIMEOUT_MS = 4000;
 
+/**
+ * Host for the container-local HookDispatchService (:3002) consult: localhost,
+ * NOT DEUS_PROXY_HOST (which addresses host-side services). Override: HOOK_DISPATCH_HOST.
+ */
+export function dispatchHost(): string {
+  return process.env.HOOK_DISPATCH_HOST ?? '127.0.0.1';
+}
+
 export interface PreToolUseGateArgs {
   toolName: string;
   toolInput: unknown;
   toolUseId?: string;
   sessionId?: string;
-  /** Defaults to DEUS_PROXY_HOST ?? 'host.docker.internal'. */
+  /** Defaults to `dispatchHost()` (HOOK_DISPATCH_HOST ?? '127.0.0.1'). */
   host?: string;
   /** Defaults to HOOK_DISPATCH_PORT ?? 3002. */
   port?: number;
@@ -60,8 +68,7 @@ export async function dispatchPreToolUseGate(
 ): Promise<PreToolUseGateResult> {
   if (process.env.HOOK_DISPATCH_ENABLED !== 'true') return { block: false };
 
-  const host =
-    args.host ?? process.env.DEUS_PROXY_HOST ?? 'host.docker.internal';
+  const host = args.host ?? dispatchHost();
   const port =
     args.port ?? parseInt(process.env.HOOK_DISPATCH_PORT ?? '3002', 10);
   const token = args.token ?? process.env.DEUS_PROXY_TOKEN;
@@ -123,7 +130,7 @@ export async function dispatchPreToolUseGate(
  * dispatch response forwarded on a non-block success, `{}` otherwise.
  */
 export function createPreToolUseHook(
-  host: string = process.env.DEUS_PROXY_HOST ?? 'host.docker.internal',
+  host: string = dispatchHost(),
   port: number = parseInt(process.env.HOOK_DISPATCH_PORT ?? '3002', 10),
   token: string | undefined = process.env.DEUS_PROXY_TOKEN,
 ): HookCallback {
