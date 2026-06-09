@@ -92,6 +92,9 @@ def _score_single(row: dict, judge) -> dict | None:
         result = judge.evaluate(
             prompt=row["prompt"],
             response=row.get("response") or "",
+            # Deliberately NOT passing available_tools (LIA-154) — it is
+            # observability-only; feeding it to the judge prompt would move live
+            # scores. Tool-aware scoring is LIA-151's scope.
             tools_used=row.get("tools_used"),
             user_profile=digest_for_group(row.get("group_folder")),
         )

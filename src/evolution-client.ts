@@ -52,6 +52,8 @@ export interface LogInteractionParams {
   toolsUsed?: string[];
   /** Structured per-call records (LIA-154 observability; not yet scored). */
   toolCalls?: ToolCall[];
+  /** Offered tool manifest for this dispatch (LIA-154; unblocks LIA-151). */
+  availableTools?: string[];
   sessionId?: string;
   domainPresets?: string[];
   userSignal?: string;
@@ -154,6 +156,7 @@ export function logInteraction(params: LogInteractionParams): void {
     latency_ms: params.latencyMs,
     tools_used: params.toolsUsed ?? [],
     tool_calls: params.toolCalls ?? [],
+    available_tools: params.availableTools ?? [],
     session_id: params.sessionId,
     domain_presets: params.domainPresets ?? [],
     user_signal: params.userSignal ?? null,

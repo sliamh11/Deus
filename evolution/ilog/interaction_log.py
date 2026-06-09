@@ -25,6 +25,7 @@ def log_interaction(
     context_tokens: Optional[int] = None,
     has_code: Optional[int] = None,
     tool_calls: Optional[list[dict]] = None,
+    available_tools: Optional[list[str]] = None,
 ) -> str:
     """
     Persist one agent interaction.  Returns the interaction ID.
@@ -49,6 +50,8 @@ def log_interaction(
         has_code=has_code,
         # LIA-154: structured tool-call records (observability only, not scored).
         tool_calls=json.dumps(tool_calls or []),
+        # LIA-154: offered tool manifest (observability only; unblocks LIA-151).
+        available_tools=json.dumps(available_tools or []),
     )
     return iid
 

@@ -21,16 +21,9 @@ import type {
   PostToolUseHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 
-const LOG_DIR = '/workspace/group/logs/tool-calls';
+import { safeInteractionId } from './safe-interaction-id.js';
 
-/**
- * Filename-safe interaction id. MUST stay byte-identical to the host's
- * transform in container-runner.ts `readToolCalls` so both resolve the same
- * per-interaction file (LIA-154).
- */
-function safeInteractionId(id: string): string {
-  return id.replace(/[^A-Za-z0-9._-]/g, '_');
-}
+const LOG_DIR = '/workspace/group/logs/tool-calls';
 
 // Cap free-text args so each JSONL line stays well under PIPE_BUF (4096B) —
 // keeps concurrent appendFileSync writes atomic (no torn/interleaved lines) and

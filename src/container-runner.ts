@@ -254,6 +254,32 @@ export function readToolCalls(
   return out;
 }
 
+/**
+ * Read this dispatch's offered tool manifest from the in-container capture file
+ * (LIA-154). Best-effort: missing/malformed → []. The safeId transform MUST stay
+ * byte-identical to the container's safe-interaction-id.ts (else they resolve
+ * different files and capture silently drops).
+ */
+export function readAvailableTools(
+  logsDir: string,
+  interactionId: string,
+): string[] {
+  const safeId = interactionId.replace(/[^A-Za-z0-9._-]/g, '_');
+  try {
+    const raw = fs.readFileSync(
+      path.join(logsDir, 'available-tools', `${safeId}.json`),
+      'utf8',
+    );
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((t): t is string => typeof t === 'string');
+    }
+  } catch {
+    // no file / malformed = no manifest captured this dispatch
+  }
+  return [];
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -544,6 +570,7 @@ export async function runContainerAgent(
           contextTokens: estimateTokens(input.prompt),
           hasCode: containsCodeBlock(response),
           toolCalls: readToolCalls(logsDir, interactionId),
+          availableTools: readAvailableTools(logsDir, interactionId),
         });
       };
       // Reaped paths (idle-after-output, non-zero-after-output) resolve long after

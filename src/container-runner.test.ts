@@ -162,6 +162,7 @@ import {
   runContainerAgent,
   ContainerOutput,
   readToolCalls,
+  readAvailableTools,
 } from './container-runner.js';
 import {
   getActivePrompt,
@@ -2083,5 +2084,67 @@ describe('readToolCalls (LIA-154)', () => {
       { name: 'Read', file_path: '/a.ts' },
       { name: 'Edit', file_path: '/b.ts' },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readAvailableTools — LIA-154 per-interaction offered-tool manifest read-back
+// ---------------------------------------------------------------------------
+describe('readAvailableTools (LIA-154)', () => {
+  const fsMocked = vi.mocked(
+    (fsMod as unknown as { default: typeof fsMod }).default,
+  );
+  const logsDir = '/group/logs';
+
+  afterEach(() => {
+    fsMocked.readFileSync.mockReset();
+    fsMocked.readFileSync.mockReturnValue('');
+  });
+
+  it('reads the per-interaction file (logsDir/available-tools/<safeId>.json)', () => {
+    fsMocked.readFileSync.mockClear();
+    fsMocked.readFileSync.mockReturnValue('[]');
+    readAvailableTools(logsDir, 'grp/main-123');
+    const calledPath = String(fsMocked.readFileSync.mock.calls[0][0]);
+    expect(calledPath).toContain('available-tools');
+    // path separators in the id are sanitized so the filename is one segment
+    expect(calledPath).toContain('grp_main-123.json');
+  });
+
+  it('returns the parsed string array', () => {
+    fsMocked.readFileSync.mockReturnValue(
+      JSON.stringify(['Bash', 'Read', 'mcp__deus__*']),
+    );
+    expect(readAvailableTools(logsDir, 'g-1')).toEqual([
+      'Bash',
+      'Read',
+      'mcp__deus__*',
+    ]);
+  });
+
+  it('returns [] when the file does not exist', () => {
+    fsMocked.readFileSync.mockImplementation(() => {
+      const e = new Error('ENOENT') as NodeJS.ErrnoException;
+      e.code = 'ENOENT';
+      throw e;
+    });
+    expect(readAvailableTools(logsDir, 'g-1')).toEqual([]);
+  });
+
+  it('returns [] on malformed JSON', () => {
+    fsMocked.readFileSync.mockReturnValue('not json [');
+    expect(readAvailableTools(logsDir, 'g-1')).toEqual([]);
+  });
+
+  it('filters out non-string entries (defensive)', () => {
+    fsMocked.readFileSync.mockReturnValue(
+      JSON.stringify(['Bash', 42, null, 'Read']),
+    );
+    expect(readAvailableTools(logsDir, 'g-1')).toEqual(['Bash', 'Read']);
+  });
+
+  it('returns [] when the JSON is not an array', () => {
+    fsMocked.readFileSync.mockReturnValue(JSON.stringify({ tools: ['Bash'] }));
+    expect(readAvailableTools(logsDir, 'g-1')).toEqual([]);
   });
 });

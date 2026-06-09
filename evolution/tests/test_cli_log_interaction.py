@@ -192,6 +192,76 @@ def test_cmd_log_interaction_stores_domain_presets(mock_judge, mock_embed, mock_
     assert "engineering" in parsed
 
 
+def test_cmd_log_interaction_stores_available_tools(mock_judge, mock_embed, mock_reflection_generator):
+    """LIA-154: the offered tool manifest should round-trip into available_tools."""
+    from evolution.cli import cmd_log_interaction
+
+    iid = "test-iid-avail-tools"
+    manifest = ["Bash", "Read", "Edit", "mcp__deus__*", "mcp__linear__*"]
+    payload = json.dumps({
+        "id": iid,
+        "prompt": "Do a thing",
+        "response": "Done",
+        "group_folder": "g",
+        "available_tools": manifest,
+    })
+    cmd_log_interaction(payload)
+
+    conn = open_db()
+    row = conn.execute(
+        "SELECT available_tools FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert json.loads(row["available_tools"]) == manifest
+
+
+def test_cmd_log_interaction_available_tools_defaults_empty(mock_judge, mock_embed, mock_reflection_generator):
+    """Omitting available_tools persists an empty JSON array, never crashes."""
+    from evolution.cli import cmd_log_interaction
+
+    iid = "test-iid-avail-empty"
+    payload = json.dumps({
+        "id": iid,
+        "prompt": "No tools offered case",
+        "response": "ok",
+        "group_folder": "g",
+    })
+    cmd_log_interaction(payload)
+
+    conn = open_db()
+    row = conn.execute(
+        "SELECT available_tools FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    # ilog wrapper serializes None → "[]" (consistent with tool_calls).
+    assert json.loads(row["available_tools"]) == []
+
+
+def test_cmd_log_interaction_available_tools_non_list_ignored(mock_judge, mock_embed, mock_reflection_generator):
+    """A non-list available_tools payload is coerced to None (→ "[]"), not stored raw."""
+    from evolution.cli import cmd_log_interaction
+
+    iid = "test-iid-avail-bad"
+    payload = json.dumps({
+        "id": iid,
+        "prompt": "bad type",
+        "response": "ok",
+        "group_folder": "g",
+        "available_tools": "Bash,Read",  # string, not a list
+    })
+    cmd_log_interaction(payload)
+
+    conn = open_db()
+    row = conn.execute(
+        "SELECT available_tools FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert json.loads(row["available_tools"]) == []
+
+
 def test_cmd_log_interaction_with_explicit_interaction_id(mock_judge, mock_embed, mock_reflection_generator):
     """Explicit interaction ID should be preserved."""
     from evolution.cli import cmd_log_interaction

@@ -267,6 +267,9 @@ class SQLiteStorageProvider(StorageProvider):
             # JSON array of structured tool-call records (LIA-154 observability;
             # captured live but not yet scored — activation deferred).
             ("tool_calls", "TEXT"),
+            # JSON array of the OFFERED tool manifest per dispatch (LIA-154
+            # observability; no live consumer — unblocks LIA-151 ground truth).
+            ("available_tools", "TEXT"),
         ]:
             try:
                 # safe: col + coltype come from the literal tuple-list
@@ -329,6 +332,7 @@ class SQLiteStorageProvider(StorageProvider):
         context_tokens: Optional[int] = None,
         has_code: Optional[int] = None,
         tool_calls: Optional[str] = None,
+        available_tools: Optional[str] = None,
     ) -> str:
         db = self._connect()
         db.execute(
@@ -336,14 +340,14 @@ class SQLiteStorageProvider(StorageProvider):
             INSERT OR REPLACE INTO interactions
                 (id, timestamp, group_folder, prompt, response, tools_used,
                  latency_ms, eval_suite, session_id, domain_presets, user_signal,
-                 context_tokens, has_code, tool_calls)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 context_tokens, has_code, tool_calls, available_tools)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 interaction_id, timestamp, group_folder, prompt, response,
                 tools_used, latency_ms, eval_suite, session_id,
                 domain_presets, user_signal, context_tokens, has_code,
-                tool_calls,
+                tool_calls, available_tools,
             ),
         )
         db.commit()

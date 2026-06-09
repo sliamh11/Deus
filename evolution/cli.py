@@ -238,6 +238,11 @@ def cmd_log_interaction(json_str: str) -> None:
     if not isinstance(tool_calls, list):
         tool_calls = None
 
+    # LIA-154: offered tool manifest (observability only; unblocks LIA-151).
+    available_tools = params.get("available_tools")
+    if not isinstance(available_tools, list):
+        available_tools = None
+
     iid = log_interaction(
         prompt=params.get("prompt", ""),
         response=params.get("response"),
@@ -251,6 +256,7 @@ def cmd_log_interaction(json_str: str) -> None:
         context_tokens=context_tokens,
         has_code=has_code,
         tool_calls=tool_calls,
+        available_tools=available_tools,
     )
 
     # Batch judge: check if we've accumulated enough unjudged interactions

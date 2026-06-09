@@ -35,6 +35,7 @@ import { runLlamaCppConversation } from './llama-cpp-backend.js';
 import { DoomLoopDetector, createDoomLoopHook } from './doom-loop-detector.js';
 import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 import { createToolCallLogHook } from './tool-call-log.js';
+import { writeAvailableTools } from './available-tools-log.js';
 import type { AgentRuntimeId } from './tool-broker.js';
 import { HookDispatchService } from './hook-dispatch-service.js';
 import { createPreToolUseHook, dispatchHost } from './pre-tool-use-hook.js';
@@ -829,6 +830,37 @@ async function runQuery(
 
   const doomDetector = new DoomLoopDetector();
 
+  // The OFFERED tool manifest for this dispatch (Claude backend). Hoisted to a
+  // const so it can be both passed to query() AND captured for evolution
+  // observability (LIA-154) — the "menu" the agent chose from, which unblocks
+  // LIA-151's tool_selection ground truth. The openai/llama-cpp backends branch
+  // out earlier (index.ts ~1104/1119) and never reach here, so available_tools
+  // is intentionally empty for them in v1.
+  const allowedTools = [
+    'Bash',
+    'Read',
+    'Write',
+    'Edit',
+    'Glob',
+    'Grep',
+    'WebSearch',
+    'WebFetch',
+    'Task',
+    'TaskOutput',
+    'TaskStop',
+    ...(teamsNeeded ? ['TeamCreate', 'TeamDelete', 'SendMessage'] : []),
+    'TodoWrite',
+    'ToolSearch',
+    'Skill',
+    'NotebookEdit',
+    'mcp__deus__*',
+    ...(hasGcalMcp ? ['mcp__gcal__*'] : []),
+    ...(hasLinearMcp ? ['mcp__linear__*'] : []),
+  ];
+  if (process.env.DEUS_AVAILABLE_TOOLS_LOG !== '0') {
+    writeAvailableTools(process.env.DEUS_INTERACTION_ID, allowedTools);
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -844,27 +876,7 @@ async function runQuery(
             append: systemAppend,
           }
         : undefined,
-      allowedTools: [
-        'Bash',
-        'Read',
-        'Write',
-        'Edit',
-        'Glob',
-        'Grep',
-        'WebSearch',
-        'WebFetch',
-        'Task',
-        'TaskOutput',
-        'TaskStop',
-        ...(teamsNeeded ? ['TeamCreate', 'TeamDelete', 'SendMessage'] : []),
-        'TodoWrite',
-        'ToolSearch',
-        'Skill',
-        'NotebookEdit',
-        'mcp__deus__*',
-        ...(hasGcalMcp ? ['mcp__gcal__*'] : []),
-        ...(hasLinearMcp ? ['mcp__linear__*'] : []),
-      ],
+      allowedTools,
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
