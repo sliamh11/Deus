@@ -120,10 +120,12 @@ def _score_single(row: dict, judge) -> dict | None:
 def _reflect_single(scored: dict, config: dict) -> bool:
     """Generate reflection(s) for a scored interaction. Returns True on success."""
     from .config import MAX_REFLECTIONS_TO_GENERATE
+    from .metrics import parse_metrics
     from .reflexion.generator import generate_reflection, generate_positive_reflection
     from .reflexion.store import save_reflection
 
     row = scored["row"]
+    metrics = parse_metrics(row.get("metrics"))
     try:
         if scored["score"] < config["reflection_threshold"]:
             generated_contents: set[str] = set()
@@ -135,6 +137,7 @@ def _reflect_single(scored: dict, config: dict) -> bool:
                     dims=scored["dims"],
                     rationale=scored["rationale"],
                     tools_used=row.get("tools_used"),
+                    metrics=metrics,
                 )
                 if content in generated_contents:
                     break  # LLM returned identical text; stop early
@@ -156,6 +159,7 @@ def _reflect_single(scored: dict, config: dict) -> bool:
                     dims=scored["dims"],
                     rationale=scored["rationale"],
                     tools_used=row.get("tools_used"),
+                    metrics=metrics,
                 )
                 if content in generated_contents:
                     break  # LLM returned identical text; stop early

@@ -52,3 +52,46 @@ def test_extract_category(text: str, expected: str) -> None:
 )
 def test_extract_positive_category(text: str, expected: str) -> None:
     assert _extract_positive_category(text) == expected
+
+
+# ── Metrics in the prompt template ────────────────────────────────────────────
+
+
+@pytest.fixture
+def capture_prompt(monkeypatch):
+    """Replace the LLM call with a capture that returns a fixed reflection."""
+    captured = []
+
+    def fake_generate(prompt, **kwargs):
+        captured.append(prompt)
+        return "- What went wrong: x\n- Next time: y\n- Category: reasoning"
+
+    monkeypatch.setattr("evolution.reflexion.generator.generate", fake_generate)
+    return captured
+
+
+def test_generate_reflection_includes_metrics(capture_prompt):
+    from evolution.reflexion.generator import generate_reflection
+
+    generate_reflection(
+        prompt="p", response="r", score=0.3,
+        metrics={"tests_failed": 2, "breaks": ["regression"]},
+    )
+    assert 'Task metrics: {"tests_failed": 2, "breaks": ["regression"]}' in capture_prompt[0]
+
+
+def test_generate_reflection_without_metrics_has_no_section(capture_prompt):
+    from evolution.reflexion.generator import generate_reflection
+
+    generate_reflection(prompt="p", response="r", score=0.3)
+    assert "Task metrics" not in capture_prompt[0]
+
+
+def test_generate_positive_reflection_includes_metrics(capture_prompt):
+    from evolution.reflexion.generator import generate_positive_reflection
+
+    generate_positive_reflection(
+        prompt="p", response="r", score=0.9,
+        metrics={"tests_passed": 12},
+    )
+    assert 'Task metrics: {"tests_passed": 12}' in capture_prompt[0]

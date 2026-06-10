@@ -15,6 +15,7 @@ import {
   parseEnrichment,
   parseVerdict,
   gateTransitionAction,
+  parkErroredGateIssue,
   gateOutcomeEventType,
   parseRatings,
   mergeEnrichment,
@@ -365,6 +366,63 @@ Needs work.`),
 
   it('returns null when no verdict', () => {
     expect(parseVerdict('No verdict here.')).toBeNull();
+  });
+});
+
+describe('parkErroredGateIssue (LIA-175)', () => {
+  // Minimal LinearContext mock — the helper only touches stateByName + client.updateIssue.
+  function makeCtx(
+    updateIssue: ReturnType<typeof vi.fn>,
+    hasManualState = true,
+  ): Parameters<typeof parkErroredGateIssue>[0] {
+    const stateByName = new Map<string, { id: string; name: string }>();
+    if (hasManualState) {
+      stateByName.set('Manual Review Required', {
+        id: 'mrr-state-id',
+        name: 'Manual Review Required',
+      });
+    }
+    return {
+      stateByName,
+      client: { updateIssue },
+    } as unknown as Parameters<typeof parkErroredGateIssue>[0];
+  }
+
+  it('parks the issue in Manual Review Required when the state exists', async () => {
+    const updateIssue = vi.fn().mockResolvedValue(undefined);
+    await parkErroredGateIssue(
+      makeCtx(updateIssue),
+      'issue-1',
+      'bouncer-gate',
+      'test',
+    );
+    expect(updateIssue).toHaveBeenCalledWith('issue-1', {
+      stateId: 'mrr-state-id',
+    });
+  });
+
+  it('does NOT call updateIssue when the Manual Review Required state is absent', async () => {
+    const updateIssue = vi.fn().mockResolvedValue(undefined);
+    await parkErroredGateIssue(
+      makeCtx(updateIssue, false),
+      'issue-1',
+      'bouncer-gate',
+      'test',
+    );
+    expect(updateIssue).not.toHaveBeenCalled();
+  });
+
+  it('swallows an updateIssue rejection without throwing (never masks the gate error)', async () => {
+    const updateIssue = vi.fn().mockRejectedValue(new Error('Linear 500'));
+    await expect(
+      parkErroredGateIssue(
+        makeCtx(updateIssue),
+        'issue-1',
+        'bouncer-gate',
+        'test',
+      ),
+    ).resolves.toBeUndefined();
+    expect(updateIssue).toHaveBeenCalledTimes(1);
   });
 });
 

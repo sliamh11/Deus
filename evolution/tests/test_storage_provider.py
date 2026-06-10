@@ -1,6 +1,7 @@
 """Tests for the StorageProvider / StorageRegistry pattern and SQLite implementation."""
 import os
 import struct
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from unittest.mock import patch
 
@@ -43,6 +44,7 @@ class FakeStorageProvider(StorageProvider):
     def update_interaction(self, *a, **kw): ...
     def get_interaction(self, *a): ...
     def get_recent_interactions(self, **kw): return []
+    def get_metrics_rows(self, **kw): return []
     def get_previous_in_session(self, *a): ...
     def count_interactions(self, **kw): return 0
     def score_trend(self, **kw): return []
@@ -321,6 +323,123 @@ class TestSQLiteInteractionCRUD:
         )
         assert sqlite_provider.count_interactions(eval_suite="runtime") == 1
         assert sqlite_provider.count_interactions(eval_suite="backfill") == 0
+
+
+class TestSQLiteMetrics:
+    @staticmethod
+    def _ts(days_ago: int = 0) -> str:
+        return (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+
+    def test_log_interaction_persists_metrics(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="m1",
+            metrics='{"tests_passed": 12}',
+        )
+        row = sqlite_provider.get_interaction("m1")
+        assert row["metrics"] == '{"tests_passed": 12}'
+
+    def test_relog_without_metrics_preserves_existing(self, sqlite_provider):
+        """COALESCE upsert: a None re-log must not clobber post-hoc metrics."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="m2",
+            metrics='{"breaks": 2}',
+        )
+        sqlite_provider.log_interaction(
+            prompt="p2", response="r2", group_folder="g",
+            timestamp=self._ts(), interaction_id="m2",
+        )
+        row = sqlite_provider.get_interaction("m2")
+        assert row["metrics"] == '{"breaks": 2}'
+        assert row["prompt"] == "p2"  # non-metrics columns still overwritten
+
+    def test_relog_with_metrics_overwrites(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="m3",
+            metrics='{"v": 1}',
+        )
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="m3",
+            metrics='{"v": 2}',
+        )
+        row = sqlite_provider.get_interaction("m3")
+        assert row["metrics"] == '{"v": 2}'
+
+    def test_relog_preserves_judge_score(self, sqlite_provider):
+        """DO UPDATE (unlike INSERT OR REPLACE) keeps columns absent from the upsert."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="m4",
+        )
+        sqlite_provider.update_interaction("m4", judge_score=0.9)
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="m4",
+        )
+        row = sqlite_provider.get_interaction("m4")
+        assert row["judge_score"] is not None
+        assert abs(row["judge_score"] - 0.9) < 1e-5
+
+    def test_update_interaction_accepts_metrics(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="m5",
+        )
+        sqlite_provider.update_interaction("m5", metrics='{"confidence": 0.8}')
+        row = sqlite_provider.get_interaction("m5")
+        assert row["metrics"] == '{"confidence": 0.8}'
+
+    def test_get_metrics_rows_skips_null_metrics(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="m6",
+            metrics='{"x": 1}',
+        )
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="m7",
+        )
+        rows = sqlite_provider.get_metrics_rows()
+        assert [r["id"] for r in rows] == ["m6"]
+        assert set(rows[0]) == {"id", "timestamp", "group_folder", "metrics", "judge_score"}
+
+    def test_get_metrics_rows_filters_group_and_days(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="a",
+            timestamp=self._ts(), interaction_id="m8",
+            metrics='{"x": 1}',
+        )
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="b",
+            timestamp=self._ts(), interaction_id="m9",
+            metrics='{"x": 2}',
+        )
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="a",
+            timestamp=self._ts(days_ago=60), interaction_id="m10",
+            metrics='{"x": 3}',
+        )
+        rows = sqlite_provider.get_metrics_rows(group_folder="a", days=30)
+        assert [r["id"] for r in rows] == ["m8"]
+
+    def test_get_metrics_rows_ordered_ascending(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(days_ago=2), interaction_id="m11",
+            metrics='{"x": 1}',
+        )
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(days_ago=1), interaction_id="m12",
+            metrics='{"x": 2}',
+        )
+        rows = sqlite_provider.get_metrics_rows(days=7)
+        assert [r["id"] for r in rows] == ["m11", "m12"]
 
 
 class TestSQLiteReflectionCRUD:
