@@ -1,5 +1,10 @@
 # Data Quality Warden Rules
 
+> **Status: not yet wired to any agent or hook — rules retained for future activation.**
+> There is no `.claude/agents/data-quality.md` and no hook invokes this warden, so
+> it is intentionally absent from `config.json(.example)`, `scripts/wardens.py`, and
+> `packages/tui/src/wardens-config.ts`. Wire an agent + invocation before re-listing it.
+
 Review auto-memory files for retrieval quality. A file's `description:` frontmatter is the primary embedding source for semantic search — weak descriptions cause retrieval misses.
 
 ## Rules

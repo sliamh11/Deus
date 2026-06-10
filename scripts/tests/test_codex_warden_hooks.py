@@ -3326,11 +3326,11 @@ def test_memo_enricher_section_ordering_stable_across_multi_edit(tmp_path):
 
 _MCP_CODEGRAPH_LINE = json.dumps({
     "type": "assistant",
-    "message": {"content": [{"type": "tool_use", "id": "t", "name": "mcp__codegraph__codegraph_context", "input": {"task": "x"}}]},
+    "message": {"content": [{"type": "tool_use", "id": "t", "name": "mcp__codegraph__codegraph_explore", "input": {"task": "x"}}]},
 })
 _TOOLSEARCH_CODEGRAPH_LINE = json.dumps({
     "type": "assistant",
-    "message": {"content": [{"type": "tool_use", "id": "t", "name": "ToolSearch", "input": {"query": "select:mcp__codegraph__codegraph_context"}}]},
+    "message": {"content": [{"type": "tool_use", "id": "t", "name": "ToolSearch", "input": {"query": "select:mcp__codegraph__codegraph_explore"}}]},
 })
 _BASH_LINE = json.dumps({
     "type": "assistant",
@@ -3813,7 +3813,7 @@ def test_line_is_codegraph_toolcall_direct_mcp():
     """Direct mcp__codegraph__ call detected."""
     hooks = load_hooks()
     obj = {"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "name": "mcp__codegraph__codegraph_context", "input": {}}
+        {"type": "tool_use", "name": "mcp__codegraph__codegraph_explore", "input": {}}
     ]}}
     assert hooks._line_is_codegraph_toolcall(obj)
 
@@ -3823,7 +3823,7 @@ def test_line_is_codegraph_toolcall_toolsearch_select():
     hooks = load_hooks()
     obj = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "ToolSearch",
-         "input": {"query": "select:mcp__codegraph__codegraph_context"}}
+         "input": {"query": "select:mcp__codegraph__codegraph_explore"}}
     ]}}
     assert hooks._line_is_codegraph_toolcall(obj)
 
@@ -3850,7 +3850,7 @@ def test_line_is_codegraph_toolcall_rejects_text_block():
     """text blocks mentioning mcp__codegraph__ are NOT matched."""
     hooks = load_hooks()
     obj = {"type": "assistant", "message": {"content": [
-        {"type": "text", "text": "I will call mcp__codegraph__codegraph_context"}
+        {"type": "text", "text": "I will call mcp__codegraph__codegraph_explore"}
     ]}}
     assert not hooks._line_is_codegraph_toolcall(obj)
 
@@ -3959,8 +3959,8 @@ def test_escalating_deny_tier1_two_prior_searches(tmp_path, capsys):
     reason = out["permissionDecisionReason"]
     assert out["permissionDecision"] == "deny"
     assert "Blocked again" in reason
-    assert 'ToolSearch(query="select:mcp__codegraph__codegraph_context")' in reason
-    assert "codegraph_context" in reason
+    assert 'ToolSearch(query="select:mcp__codegraph__codegraph_explore")' in reason
+    assert "codegraph_explore" in reason
     # Tier-1 should NOT yet include the Read fallback
     assert "If ToolSearch returns no codegraph tool" not in reason
 

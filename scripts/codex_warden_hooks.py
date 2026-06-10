@@ -1376,14 +1376,14 @@ def _codegraph_deny_message(prior_searches: int) -> str:
     """
     tier0 = (
         "[codegraph-first-gate] Call a codegraph or code_search tool first "
-        '(ToolSearch "select:mcp__codegraph__codegraph_context"), then retry. '
+        '(ToolSearch "select:mcp__codegraph__codegraph_explore"), then retry. '
         "core-behavioral-rules.md § Code Exploration."
     )
     tier1 = (
         "[codegraph-first-gate] Blocked again — stop retrying search. "
         "Run these two calls, in order, THEN retry: "
-        '(1) ToolSearch(query="select:mcp__codegraph__codegraph_context"); '
-        "(2) codegraph_context with your question. "
+        '(1) ToolSearch(query="select:mcp__codegraph__codegraph_explore"); '
+        "(2) codegraph_explore with your question. "
         "core-behavioral-rules.md § Code Exploration."
     )
     tier2 = (

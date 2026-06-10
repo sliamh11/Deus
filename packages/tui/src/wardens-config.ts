@@ -40,7 +40,15 @@ export const WARDEN_DESCRIPTIONS: Record<string, string> = {
     'Generates architecture overview with Mermaid diagrams',
   'session-retrospective':
     'Cross-session pattern analysis and retrospective reports',
-  'data-quality': 'Reviews auto-memory files for retrieval quality',
+  'ai-eng-warden':
+    'AI engineering review of LLM interactions, prompts, context, and AI security',
+  'verification-gate':
+    'Evidence-before-claims gate before completion/commit claims',
+  'qa-tester': 'Test coverage and edge-case gap reviewer (advisory)',
+  'copy-writer':
+    'Reviews user-facing text for clarity, tone, and actionability (advisory)',
+  'ux-reviewer':
+    'Post-implementation UX audit of user-facing changes (advisory)',
 };
 
 export const WARDEN_TYPES: Record<string, string> = {
@@ -49,10 +57,19 @@ export const WARDEN_TYPES: Record<string, string> = {
   'threat-modeler': 'Validator (warning)',
   'architecture-snapshot': 'Generator',
   'session-retrospective': 'Generator',
-  'data-quality': 'Validator (manual)',
+  'ai-eng-warden': 'Validator (blocking)',
+  'verification-gate': 'Validator (blocking)',
+  'qa-tester': 'Validator (manual)',
+  'copy-writer': 'Validator (manual)',
+  'ux-reviewer': 'Validator (manual)',
 };
 
-export const BLOCKING_WARDENS = new Set(['plan-reviewer', 'code-reviewer']);
+export const BLOCKING_WARDENS = new Set([
+  'plan-reviewer',
+  'code-reviewer',
+  'ai-eng-warden',
+  'verification-gate',
+]);
 
 export function loadWardensConfig(): WardensConfig {
   if (!existsSync(CONFIG_PATH)) {

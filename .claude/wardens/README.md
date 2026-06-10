@@ -4,14 +4,14 @@ Specialized review agents that guard the codebase. Validator wardens check corre
 
 | Warden | Type | Model | Rules/Schema file | Invocation |
 |--------|------|-------|-------------------|------------|
-| **plan-reviewer** | Validator | Opus | `plan-review-rules.md` | Gated by PreToolUse hook (auto-required for Edit/Write in `~/deus/`) |
+| **plan-reviewer** | Validator | Sonnet | `plan-review-rules.md` | Gated by PreToolUse hook (auto-required for Edit/Write in `~/deus/`) |
 | **qa-tester** | Validator | Sonnet | `qa-test-rules.md` | Manual: invoke after implementation to evaluate test coverage and identify untested edge cases |
 | **code-reviewer** | Validator | Sonnet | `code-review-rules.md` | Gated by PreToolUse hook (auto-required for `git commit` in `~/deus/`) |
 | **copy-writer** | Validator | Sonnet | `copy-rules.md` | Manual: invoke after changes that add or modify user-facing strings, error messages, help text, or status indicators |
 | **threat-modeler** | Validator | Opus | `threat-modeling-rules.md` | Manual: invoke when plan touches auth, credentials, external APIs, or trust boundaries |
 | **architecture-snapshot** | Generator | Sonnet | `architecture-schema.md` | Manual: `Agent(subagent_type="architecture-snapshot", prompt="snapshot the architecture")` |
 | **ux-reviewer** | Validator | Sonnet | `ux-review-rules.md` | Manual: invoke after user-facing changes to TUI, chat formatting, CLI output, or channel templates |
-| **verification-gate** | Validator | Haiku | `verification-rules.md` | Manual: invoke before claiming work complete, before commits/PRs. Fast evidence-before-claims gate. |
+| **verification-gate** | Validator | Sonnet | `verification-rules.md` | Gate: PreToolUse on Bash blocks commit/PR commands until evidence-before-claims passes (`warden-shim.sh verification-gate`) |
 | **session-retrospective** | Generator | Opus | `retrospective-schema.md` | Manual (also auto-triggered by /compress when opt-in gate passes): `Agent(subagent_type="session-retrospective", prompt="retrospective for last 20 sessions")` |
 
 ## Directory
