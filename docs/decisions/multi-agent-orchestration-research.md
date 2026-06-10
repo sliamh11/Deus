@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-05-06
-**Scope:** `src/agent-backends/`, `src/message-orchestrator.ts`, `container/agent-runner/`, `.claude/wardens/`, memory atoms
+**Scope:** `src/agent-runtimes/`, `src/message-orchestrator.ts`, `container/agent-runner/`, `.claude/wardens/`, memory atoms
 **Related:**
 - `backend-neutral-agent-runtime.md` — defines the backend interface contract this ADR proposes renaming; that ADR already deferred agents-js adoption ("Full OpenAI Agents SDK sessions, handoffs, and tracing remain parity work") — this ADR formalizes that deferral as a skip with architectural justification
 - `parallel-agent-orchestration.md` — covers TUI-level parallel agent sessions (independent CLI sessions). This ADR covers container-level multi-agent coordination (subagents within a single request), a different scope

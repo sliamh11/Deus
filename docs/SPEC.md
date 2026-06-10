@@ -71,10 +71,10 @@ graph LR
 
 Channels self-register using a barrel-import pattern:
 
-1. Each channel skill adds a file to `src/channels/` (e.g. `whatsapp.ts`, `telegram.ts`) that calls `registerChannel()` at module load time:
+1. Each channel skill adds a file to `src/channels/` (e.g. `mcp-whatsapp.ts`, `mcp-telegram.ts`) that calls `registerChannel()` at module load time:
 
    ```typescript
-   // src/channels/whatsapp.ts
+   // src/channels/mcp-whatsapp.ts
    import { registerChannel, ChannelOpts } from './registry.js';
 
    export class WhatsAppChannel implements Channel { /* ... */ }
@@ -89,8 +89,8 @@ Channels self-register using a barrel-import pattern:
 2. The barrel file `src/channels/index.ts` imports all channel modules, triggering registration:
 
    ```typescript
-   import './whatsapp.js';
-   import './telegram.js';
+   import './mcp-whatsapp.js';
+   import './mcp-telegram.js';
    // ... each skill adds its import here
    ```
 
@@ -138,7 +138,7 @@ interface Channel {
 
 To add a new channel, contribute a skill to `.claude/skills/add-<name>/` that:
 
-1. Adds a `src/channels/<name>.ts` file implementing the `Channel` interface
+1. Adds a `src/channels/mcp-<name>.ts` file implementing the `Channel` interface
 2. Calls `registerChannel(name, factory)` at module load
 3. Returns `null` from the factory if credentials are missing
 4. Adds an import line to `src/channels/index.ts`
