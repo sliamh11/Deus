@@ -679,6 +679,165 @@ def test_cmd_log_interaction_outputs_error_json_on_invalid_input(capsys):
     assert "error" in output
 
 
+# ── Metrics commands ──────────────────────────────────────────────────────────
+
+
+def test_cmd_log_interaction_stores_metrics(mock_judge, mock_embed, mock_reflection_generator):
+    """A metrics dict in the payload should be persisted as JSON."""
+    from evolution.cli import cmd_log_interaction
+
+    iid = "test-iid-metrics"
+    payload = json.dumps({
+        "id": iid,
+        "prompt": "Run tests",
+        "response": "12 passed",
+        "group_folder": "g",
+        "metrics": {"tests_passed": 12, "breaks": ["expected"]},
+    })
+    cmd_log_interaction(payload)
+
+    conn = open_db()
+    row = conn.execute("SELECT metrics FROM interactions WHERE id = ?", [iid]).fetchone()
+    conn.close()
+    assert json.loads(row["metrics"]) == {"tests_passed": 12, "breaks": ["expected"]}
+
+
+def test_cmd_log_interaction_invalid_metrics_dropped_not_fatal(
+    mock_judge, mock_embed, mock_reflection_generator
+):
+    """Malformed metrics must not lose the interaction (fire-and-forget path)."""
+    from evolution.cli import cmd_log_interaction
+
+    iid = "test-iid-bad-metrics"
+    payload = json.dumps({
+        "id": iid,
+        "prompt": "p",
+        "response": "r",
+        "group_folder": "g",
+        "metrics": {"nested": {"a": 1}},
+    })
+    cmd_log_interaction(payload)
+
+    conn = open_db()
+    row = conn.execute(
+        "SELECT id, metrics FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert row is not None, "interaction must survive an invalid metrics payload"
+    assert row["metrics"] is None
+
+
+def test_cmd_log_metrics_posthoc_merge(mock_judge, mock_embed, mock_reflection_generator, capsys):
+    """cmd_log_metrics merges over previously stored metrics."""
+    from evolution.cli import cmd_log_interaction, cmd_log_metrics
+
+    iid = "test-iid-posthoc"
+    cmd_log_interaction(json.dumps({
+        "id": iid, "prompt": "p", "response": "r", "group_folder": "g",
+        "metrics": {"tests_passed": 3},
+    }))
+    capsys.readouterr()  # discard log_interaction output
+
+    cmd_log_metrics(json.dumps({
+        "interaction_id": iid,
+        "metrics": {"warden_rounds": 2},
+    }))
+    output = json.loads(capsys.readouterr().out.strip().split("\n")[-1])
+    assert output["status"] == "ok"
+    assert output["metrics"] == {"tests_passed": 3, "warden_rounds": 2}
+
+
+def test_cmd_log_metrics_missing_interaction_errors(capsys):
+    from evolution.cli import cmd_log_metrics
+
+    cmd_log_metrics(json.dumps({"interaction_id": "nope", "metrics": {"tests_passed": 1}}))
+    output = json.loads(capsys.readouterr().out.strip())
+    assert "error" in output
+
+
+def test_cmd_log_metrics_invalid_json_errors(capsys):
+    from evolution.cli import cmd_log_metrics
+
+    cmd_log_metrics("{broken")
+    output = json.loads(capsys.readouterr().out.strip())
+    assert output["error"] == "Invalid JSON"
+
+
+def _seed_metrics_interaction(iid, metrics, judge_score=None, group_folder="g"):
+    """Insert a metrics-bearing interaction with a current timestamp."""
+    from datetime import datetime, timezone
+    from evolution.storage import get_storage
+
+    store = get_storage()
+    store.log_interaction(
+        prompt="p", response="r", group_folder=group_folder,
+        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        interaction_id=iid, metrics=json.dumps(metrics),
+    )
+    if judge_score is not None:
+        store.update_interaction(iid, judge_score=judge_score)
+
+
+def test_cmd_metrics_summary_json(capsys):
+    from evolution.cli import cmd_metrics
+
+    _seed_metrics_interaction("ms1", {"tests_passed": 2})
+    _seed_metrics_interaction("ms2", {"tests_passed": 4})
+    cmd_metrics("summary", as_json=True)
+    result = json.loads(capsys.readouterr().out)
+    assert result["interactions"] == 2
+    assert result["keys"]["tests_passed"]["mean"] == 3
+
+
+def test_cmd_metrics_trend_requires_key(capsys):
+    from evolution.cli import cmd_metrics
+
+    with pytest.raises(SystemExit):
+        cmd_metrics("trend")
+    output = json.loads(capsys.readouterr().out.strip())
+    assert "error" in output
+
+
+def test_cmd_metrics_trend_json(capsys):
+    from evolution.cli import cmd_metrics
+
+    _seed_metrics_interaction("mt1", {"tests_passed": 6})
+    cmd_metrics("trend", key="tests_passed", as_json=True)
+    result = json.loads(capsys.readouterr().out)
+    assert len(result) == 1
+    assert result[0]["avg"] == 6
+
+
+def test_cmd_metrics_calibration_json(capsys):
+    from evolution.cli import cmd_metrics
+
+    _seed_metrics_interaction("mc1", {"confidence": 0.9}, judge_score=0.7)
+    cmd_metrics("calibration", as_json=True)
+    result = json.loads(capsys.readouterr().out)
+    assert result["n"] == 1
+    assert result["buckets"][0]["band"] == "high"
+
+
+def test_cmd_metrics_breaks_json(capsys):
+    from evolution.cli import cmd_metrics
+
+    _seed_metrics_interaction("mb1", {"breaks": ["regression", "expected"]})
+    cmd_metrics("breaks", as_json=True)
+    result = json.loads(capsys.readouterr().out)
+    assert result["by_category"] == {"regression": 1, "expected": 1}
+
+
+def test_cmd_metrics_human_readable_output(capsys):
+    from evolution.cli import cmd_metrics
+
+    _seed_metrics_interaction("mh1", {"tests_passed": 5, "task_type": "feature"})
+    cmd_metrics("summary")
+    out = capsys.readouterr().out
+    assert "Metrics Summary" in out
+    assert "tests_passed" in out
+    assert "feature" in out
+
+
 # ── main() dispatch tests ─────────────────────────────────────────────────────
 
 

@@ -96,6 +96,39 @@ def test_log_interaction_stores_user_signal():
     assert row["user_signal"] == "positive"
 
 
+def test_log_interaction_stores_metrics():
+    iid = log_interaction(
+        prompt="Run the tests",
+        response="12 passed",
+        group_folder="g",
+        metrics={"tests_passed": 12, "breaks": ["expected"]},
+    )
+    conn = open_db()
+    row = conn.execute(
+        "SELECT metrics FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert json.loads(row["metrics"]) == {"tests_passed": 12, "breaks": ["expected"]}
+
+
+def test_log_interaction_without_metrics_stores_null():
+    iid = log_interaction(prompt="p", response="r", group_folder="g")
+    conn = open_db()
+    row = conn.execute(
+        "SELECT metrics FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert row["metrics"] is None
+
+
+def test_log_interaction_rejects_invalid_metrics():
+    with pytest.raises(ValueError, match="scalar"):
+        log_interaction(
+            prompt="p", response="r", group_folder="g",
+            metrics={"nested": {"a": 1}},
+        )
+
+
 def test_update_score_writes_score_and_dims():
     iid = log_interaction(prompt="Test", response="Resp", group_folder="g")
     dims = {"quality": 0.9, "safety": 1.0, "tool_use": 0.8, "personalization": 0.7}

@@ -17,7 +17,7 @@ User: {prompt}
 Assistant: {response}
 Tools: {tools}
 Score: {score:.2f}/1.0 | Breakdown: {dims} | Rationale: {rationale}
-
+{metrics_section}
 Style issues to look for: naming conventions (camelCase vs snake_case), import ordering, \
 library/framework preferences, function structure (flat vs nested, early returns), \
 comment verbosity, error handling patterns, type annotation density, response formatting.
@@ -30,6 +30,17 @@ Reply in this exact format (under 100 words, agent-fixable issues only):
 """
 
 
+def _format_metrics_section(metrics: Optional[dict]) -> str:
+    """One-line metrics anchor for the reflection prompts; empty when absent."""
+    if not metrics:
+        return ""
+    return (
+        f"Task metrics: {json.dumps(metrics)}\n"
+        "Use measured outcomes (tests, breaks, confidence, review rounds) "
+        "as evidence for the lesson.\n"
+    )
+
+
 def generate_reflection(
     prompt: str,
     response: str,
@@ -38,6 +49,7 @@ def generate_reflection(
     rationale: str = "",
     tools_used: Optional[list[str]] = None,
     model: str = JUDGE_MODEL,
+    metrics: Optional[dict] = None,
 ) -> tuple[str, str]:
     """
     Generate a reflection for a low-scoring interaction.
@@ -50,6 +62,7 @@ def generate_reflection(
         score=score,
         dims=json.dumps(dims or {}),
         rationale=rationale or "no rationale provided",
+        metrics_section=_format_metrics_section(metrics),
     )
 
     text = generate(formatted, model=model)
@@ -63,7 +76,7 @@ User: {prompt}
 Assistant: {response}
 Tools: {tools}
 Score: {score:.2f}/1.0 | Breakdown: {dims} | Rationale: {rationale}
-
+{metrics_section}
 Style patterns to look for: naming conventions, code structure preferences, \
 library/framework choices, response formatting and tone, comment style, \
 error handling approach, type usage patterns.
@@ -84,6 +97,7 @@ def generate_positive_reflection(
     rationale: str = "",
     tools_used: Optional[list[str]] = None,
     model: str = JUDGE_MODEL,
+    metrics: Optional[dict] = None,
 ) -> tuple[str, str]:
     """
     Generate a positive pattern reflection for a high-scoring interaction.
@@ -96,6 +110,7 @@ def generate_positive_reflection(
         score=score,
         dims=json.dumps(dims or {}),
         rationale=rationale or "no rationale provided",
+        metrics_section=_format_metrics_section(metrics),
     )
 
     text = generate(formatted, model=model)

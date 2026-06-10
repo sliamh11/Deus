@@ -243,6 +243,17 @@ def cmd_log_interaction(json_str: str) -> None:
     if not isinstance(available_tools, list):
         available_tools = None
 
+    # Fire-and-forget path: a malformed metrics payload must not lose the
+    # interaction itself — warn and drop the metrics instead of raising.
+    metrics = params.get("metrics")
+    if metrics is not None:
+        from .metrics import validate_metrics
+        try:
+            validate_metrics(metrics)
+        except ValueError as exc:
+            log.warning('evolution: invalid metrics dropped — %s', exc)
+            metrics = None
+
     iid = log_interaction(
         prompt=params.get("prompt", ""),
         response=params.get("response"),
@@ -257,6 +268,7 @@ def cmd_log_interaction(json_str: str) -> None:
         has_code=has_code,
         tool_calls=tool_calls,
         available_tools=available_tools,
+        metrics=metrics,
     )
 
     # Batch judge: check if we've accumulated enough unjudged interactions
@@ -363,6 +375,104 @@ def _handle_retrieved_reflections(
 
     for rid in retrieved_reflection_ids:
         increment_helpful(rid)
+
+
+def cmd_log_metrics(json_str: str) -> None:
+    """Attach metrics to an existing interaction (post-hoc path)."""
+    try:
+        params = json.loads(json_str)
+    except json.JSONDecodeError:
+        print(json.dumps({"error": "Invalid JSON"}))
+        return
+
+    from .metrics import update_metrics
+    try:
+        final = update_metrics(
+            params.get("interaction_id", ""),
+            params.get("metrics") or {},
+            merge=bool(params.get("merge", True)),
+        )
+    except ValueError as exc:
+        print(json.dumps({"error": str(exc)}))
+        return
+    print(json.dumps({"status": "ok", "metrics": final}))
+
+
+def cmd_metrics(
+    action: str,
+    group: Optional[str] = None,
+    days: int = 30,
+    key: Optional[str] = None,
+    as_json: bool = False,
+) -> None:
+    """Analyze task metrics: summary | trend | calibration | breaks."""
+    from .metrics import (
+        break_report,
+        confidence_calibration,
+        fetch_metrics_rows,
+        metric_trend,
+        summarize_metrics,
+    )
+
+    if action == "trend" and not key:
+        print(json.dumps({"error": "trend requires --key"}))
+        sys.exit(1)
+
+    rows = fetch_metrics_rows(group_folder=group, days=days)
+    if action == "summary":
+        result = summarize_metrics(rows, key=key)
+    elif action == "trend":
+        result = metric_trend(rows, key)
+    elif action == "calibration":
+        result = confidence_calibration(rows)
+    else:  # breaks
+        result = break_report(rows)
+
+    if as_json:
+        print(json.dumps(result, indent=2))
+        return
+
+    scope = f"group: {group}" if group else "all groups"
+    if action == "summary":
+        print(f"\n=== Metrics Summary (last {days} days, {scope}) ===")
+        if not result["keys"]:
+            print("  No metrics logged yet.")
+        for k, entry in sorted(result["keys"].items()):
+            if entry["type"] == "numeric":
+                print(
+                    f"  {k}: n={entry['count']} mean={entry['mean']:.2f} "
+                    f"min={entry['min']} max={entry['max']} sum={entry['sum']}"
+                )
+            else:
+                values = ", ".join(f"{v}={n}" for v, n in entry["values"].items())
+                print(f"  {k}: n={entry['count']} ({values})")
+        print(f"  ({result['interactions']} interactions)")
+    elif action == "trend":
+        print(f"\n=== Trend: {key} (last {days} days, {scope}) ===")
+        if not result:
+            print("  No numeric data for this key.")
+        for row in result:
+            print(f"  {row['day']}  avg={row['avg']:.2f}  ({row['count']} interactions)")
+    elif action == "calibration":
+        print(f"\n=== Confidence Calibration (last {days} days, {scope}) ===")
+        if not result["buckets"]:
+            print("  No rows with both confidence and judge_score.")
+        for b in result["buckets"]:
+            print(
+                f"  {b['band']:<7} n={b['n']:<4} confidence={b['avg_confidence']:.2f} "
+                f"judge={b['avg_judge_score']:.2f} gap={b['gap']:+.2f}"
+            )
+        if result["overall_gap"] is not None:
+            print(f"  Overall gap: {result['overall_gap']:+.3f} (positive = overconfident)")
+    else:  # breaks
+        print(f"\n=== Break Report (last {days} days, {scope}) ===")
+        print(
+            f"  {result['interactions_with_breaks']}/{result['interactions']} "
+            f"interactions with breaks, {result['total_breaks']} total"
+        )
+        for cat, n in result["by_category"].items():
+            print(f"  {cat}: {n}")
+    print()
 
 
 def cmd_reflect(interaction_id: str) -> None:
@@ -580,6 +690,18 @@ def main() -> None:
     p_log = sub.add_parser("log_interaction", help="Log an interaction and run judge")
     p_log.add_argument("json_str", help="JSON interaction payload")
 
+    # log_metrics
+    p_logm = sub.add_parser("log_metrics", help="Attach metrics to an existing interaction")
+    p_logm.add_argument("json_str", help='JSON: {"interaction_id": "...", "metrics": {...}, "merge": true}')
+
+    # metrics
+    p_metrics = sub.add_parser("metrics", help="Analyze task metrics")
+    p_metrics.add_argument("action", choices=["summary", "trend", "calibration", "breaks"])
+    p_metrics.add_argument("--group", help="Filter by group folder")
+    p_metrics.add_argument("--days", type=int, default=30, help="Window in days (default: 30)")
+    p_metrics.add_argument("--key", help="Metric key (required for trend, optional filter for summary)")
+    p_metrics.add_argument("--json", action="store_true", dest="as_json", help="Output raw JSON")
+
     # reflect
     p_reflect = sub.add_parser("reflect", help="Manually generate reflection for interaction")
     p_reflect.add_argument("interaction_id")
@@ -672,6 +794,13 @@ def main() -> None:
         cmd_get_active_prompt(args.module)
     elif args.cmd == "log_interaction":
         cmd_log_interaction(args.json_str)
+    elif args.cmd == "log_metrics":
+        cmd_log_metrics(args.json_str)
+    elif args.cmd == "metrics":
+        cmd_metrics(
+            args.action, group=args.group, days=args.days,
+            key=args.key, as_json=args.as_json,
+        )
     elif args.cmd == "reflect":
         cmd_reflect(args.interaction_id)
     elif args.cmd == "optimize":
