@@ -2222,3 +2222,151 @@ class TestStandardsPack:
         assert pos_a < pos_b < pos_c, (
             f"expected alphabetical order; positions: A={pos_a} B={pos_b} C={pos_c}"
         )
+
+
+# ── Provider detection (_IS_GEMINI) ───────────────────────────────────────────
+
+class TestProviderDetection:
+    """Regression for the _IS_GEMINI truthiness bug: the detection expression
+    used to evaluate to the GEMINI_API_KEY string or None instead of a bool,
+    which could leak the key into anything serializing the flag."""
+
+    def _eval(self, **env):
+        """Re-evaluate the module-level _IS_GEMINI expression under given env."""
+        provider = env.get("EMBEDDING_PROVIDER", "auto").lower()
+        return bool(
+            provider == "gemini" or (
+                provider == "auto" and not env.get("OLLAMA_HOST")
+                and env.get("GEMINI_API_KEY")
+            )
+        )
+
+    def test_module_flag_is_bool(self):
+        # Whatever the live env, the module constant must be a real bool.
+        assert isinstance(mt._IS_GEMINI, bool)
+
+    def test_auto_with_gemini_key_no_ollama_is_true(self):
+        assert self._eval(EMBEDDING_PROVIDER="auto", GEMINI_API_KEY="secret") is True
+
+    def test_auto_without_gemini_key_is_false_not_none(self):
+        result = self._eval(EMBEDDING_PROVIDER="auto")
+        assert result is False
+        assert result is not None
+
+    def test_auto_with_ollama_host_is_false(self):
+        # Ollama present → not Gemini, even with a key set.
+        assert self._eval(
+            EMBEDDING_PROVIDER="auto", OLLAMA_HOST="http://x", GEMINI_API_KEY="k"
+        ) is False
+
+    def test_explicit_gemini_is_true(self):
+        assert self._eval(EMBEDDING_PROVIDER="gemini") is True
+
+    def test_explicit_ollama_is_false(self):
+        assert self._eval(EMBEDDING_PROVIDER="ollama", GEMINI_API_KEY="k") is False
+
+
+# ── Root scaffold (scaffold-root) ─────────────────────────────────────────────
+
+class TestScaffoldRoot:
+    def _vault_without_root(self, tmp_path):
+        """A vault with id-frontmatter nodes but no MEMORY_TREE.md."""
+        v = tmp_path / "vault"
+        (v / "Persona").mkdir(parents=True)
+        (v / "Persona" / "INDEX.md").write_text(
+            "---\nid: idx00000000000000000000000000001\n"
+            "description: Index for personal facts.\n---\n",
+            encoding="utf-8",
+        )
+        (v / "auto.md").write_text(
+            "---\nid: auto0000000000000000000000000002\n"
+            "summary: Auto-memory note about learning style.\n---\n",
+            encoding="utf-8",
+        )
+        return v
+
+    def test_generates_valid_parseable_root(self, tmp_path):
+        v = self._vault_without_root(tmp_path)
+        text = mt.generate_root_scaffold(v)
+        fm = mt.parse_frontmatter(text)
+        assert fm["type"] == "memory-tree-root"
+        assert fm["id"]
+        assert fm["description"]
+        # Children are vault-relative paths, sorted, both nodes present.
+        assert fm["children"] == ["Persona/INDEX.md", "auto.md"]
+        # Body carries the per-child one-liners (summary falls back to desc).
+        assert "Index for personal facts." in text
+        assert "Auto-memory note about learning style." in text
+
+    def test_under_token_budget(self, tmp_path):
+        v = self._vault_without_root(tmp_path)
+        text = mt.generate_root_scaffold(v)
+        assert mt.token_estimate(text) <= mt.ROOT_TOKEN_BUDGET
+
+    def test_skips_existing_root_node_file(self, tmp_path):
+        """An already-present MEMORY_TREE.md must not become its own child."""
+        v = self._vault_without_root(tmp_path)
+        (v / "MEMORY_TREE.md").write_text(
+            "---\nid: oldroot000000000000000000000003\n"
+            "type: memory-tree-root\ndescription: stale root.\n---\n",
+            encoding="utf-8",
+        )
+        text = mt.generate_root_scaffold(v)
+        assert "MEMORY_TREE.md" not in mt.parse_frontmatter(text)["children"]
+
+    def test_respects_token_cap_with_truncation_line(self, tmp_path):
+        # Many verbose nodes → must truncate with an explicit omitted notice and
+        # never exceed a tight budget.
+        v = tmp_path / "vault"
+        v.mkdir()
+        for i in range(40):
+            (v / f"node{i:02d}.md").write_text(
+                f"---\nid: node{i:02d}00000000000000000000000000\n"
+                f"description: Node {i} covers a fairly long descriptive sentence "
+                f"about some specific topic area number {i} in the vault.\n---\n",
+                encoding="utf-8",
+            )
+        text = mt.generate_root_scaffold(v, token_budget=200)
+        assert mt.token_estimate(text) <= 200
+        assert "more nodes omitted — add manually" in text
+        # At least one node made it in; not all 40 did.
+        children = mt.parse_frontmatter(text)["children"]
+        assert 0 < len(children) < 40
+
+    def test_refuses_overwrite_via_cli(self, tmp_path, tmp_db, monkeypatch, capsys):
+        v = self._vault_without_root(tmp_path)
+        (v / "MEMORY_TREE.md").write_text("existing\n", encoding="utf-8")
+        monkeypatch.setattr(mt, "resolve_vault_path", lambda: v)
+        monkeypatch.setattr(mt, "open_db", lambda *a, **k: tmp_db)
+        rc = mt.main(["scaffold-root"])
+        assert rc == mt.USAGE_ERROR
+        assert "refusing to overwrite" in capsys.readouterr().err
+        # File untouched.
+        assert (v / "MEMORY_TREE.md").read_text(encoding="utf-8") == "existing\n"
+
+    def test_empty_vault_helpful_error(self, tmp_path):
+        v = tmp_path / "empty"
+        v.mkdir()
+        with pytest.raises(ValueError, match="no id-frontmatter nodes"):
+            mt.generate_root_scaffold(v)
+
+    def test_cli_writes_file(self, tmp_path, tmp_db, monkeypatch, capsys):
+        v = self._vault_without_root(tmp_path)
+        monkeypatch.setattr(mt, "resolve_vault_path", lambda: v)
+        monkeypatch.setattr(mt, "open_db", lambda *a, **k: tmp_db)
+        rc = mt.main(["scaffold-root"])
+        assert rc == mt.SUCCESS
+        root = v / "MEMORY_TREE.md"
+        assert root.exists()
+        fm = mt.parse_frontmatter(root.read_text(encoding="utf-8"))
+        assert fm["type"] == "memory-tree-root"
+        assert "wrote" in capsys.readouterr().out
+
+    def test_cli_dry_run_does_not_write(self, tmp_path, tmp_db, monkeypatch, capsys):
+        v = self._vault_without_root(tmp_path)
+        monkeypatch.setattr(mt, "resolve_vault_path", lambda: v)
+        monkeypatch.setattr(mt, "open_db", lambda *a, **k: tmp_db)
+        rc = mt.main(["scaffold-root", "--dry-run"])
+        assert rc == mt.SUCCESS
+        assert not (v / "MEMORY_TREE.md").exists()
+        assert "memory-tree-root" in capsys.readouterr().out
