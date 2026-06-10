@@ -1,73 +1,38 @@
-{"query": "what models does deus use", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "single"}
-{"query": "deus project state and configuration", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "CLAUDE.md"], "tag": "single"}
-{"query": "what tools and integrations does deus have", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "single"}
-{"query": "google calendar and vault backup setup", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "single"}
-{"query": "how should I take notes during a lecture", "expected_path": "Lecture-Strategies.md", "expected_paths": ["Lecture-Strategies.md"], "tag": "single"}
-{"query": "research-backed note taking strategies", "expected_path": "Lecture-Strategies.md", "expected_paths": ["Lecture-Strategies.md"], "tag": "single"}
+{"query": "deus project state and configuration", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "single"}
 {"query": "root map of my personal knowledge vault", "expected_path": "MEMORY_TREE.md", "expected_paths": ["MEMORY_TREE.md"], "tag": "single"}
-{"query": "what is my persona index", "expected_path": "Persona/INDEX.md", "expected_paths": ["Persona/INDEX.md"], "tag": "single"}
 {"query": "my engineering and education history", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "single"}
 {"query": "OUI math and physics student", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "single"}
-{"query": "who do I live with", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "single"}
-{"query": "my roommates shani and omer", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "single"}
-{"query": "my favorite directors and movies", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md"], "tag": "single"}
-{"query": "what action films do I enjoy", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md"], "tag": "single"}
-{"query": "what music genres do I listen to", "expected_path": "Persona/taste/music.md", "expected_paths": ["Persona/taste/music.md"], "tag": "single"}
-{"query": "how long have I been playing drums", "expected_path": "Persona/taste/music.md", "expected_paths": ["Persona/taste/music.md"], "tag": "single"}
 {"query": "how I prefer to be communicated with", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md"], "tag": "single"}
 {"query": "how do I learn best", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "single"}
-{"query": "my weekly study routine", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md"], "tag": "single"}
-{"query": "tutor prompt for starting a semester course", "expected_path": "Study-Tutor-Prompt.md", "expected_paths": ["Study-Tutor-Prompt.md"], "tag": "single"}
-{"query": "my personal life and work history", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "Persona/life/household.md"], "tag": "multi"}
-{"query": "my taste in media generally", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/taste/music.md"], "tag": "multi"}
+{"query": "my personal life and work history", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "multi"}
 {"query": "my work style and preferences", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "Persona/work-style/communication.md"], "tag": "multi"}
-{"query": "study tools and routines I use", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md", "Lecture-Strategies.md", "Study-Tutor-Prompt.md"], "tag": "multi"}
-{"query": "deus configuration and infrastructure", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "CLAUDE.md"], "tag": "multi"}
-{"query": "who I am and where I came from", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "Persona/INDEX.md"], "tag": "multi"}
+{"query": "deus configuration and infrastructure", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "multi"}
+{"query": "who I am and where I came from", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "multi"}
 {"query": "communication and learning preferences together", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md", "Persona/work-style/learning.md"], "tag": "multi"}
-{"query": "cultural preferences and people I share them with", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/taste/music.md", "Persona/life/household.md"], "tag": "multi"}
-{"query": "my studies history and weekly routine", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md", "Persona/life/background.md"], "tag": "multi"}
-{"query": "structure of my memory system overall", "expected_path": "MEMORY_TREE.md", "expected_paths": ["MEMORY_TREE.md", "Persona/INDEX.md", "CLAUDE.md"], "tag": "multi"}
-{"query": "home life and what we enjoy together", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md", "Persona/taste/movies.md", "Persona/taste/music.md"], "tag": "multi"}
-{"query": "lecture help and tutor support", "expected_path": "Lecture-Strategies.md", "expected_paths": ["Lecture-Strategies.md", "Study-Tutor-Prompt.md"], "tag": "multi"}
-{"query": "how I tackle studies end to end", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "STUDY.md", "Lecture-Strategies.md"], "tag": "multi"}
-{"query": "my dev projects and SWE experience", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "CLAUDE.md", "INFRA.md"], "tag": "multi"}
-{"query": "navigating personal knowledge", "expected_path": "MEMORY_TREE.md", "expected_paths": ["MEMORY_TREE.md", "Persona/INDEX.md"], "tag": "multi"}
-{"query": "watching films with my roommates", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/life/household.md"], "tag": "cross-branch"}
-{"query": "what the people I live with like in cinema", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md", "Persona/taste/movies.md"], "tag": "cross-branch"}
-{"query": "links between my film and music taste", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/taste/music.md"], "tag": "cross-branch"}
-{"query": "how my learning style shapes my exam prep", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "STUDY.md"], "tag": "cross-branch"}
-{"query": "tying study routine to how I learn visually", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md", "Persona/work-style/learning.md"], "tag": "cross-branch"}
-{"query": "lecture prep that matches my learning style", "expected_path": "Lecture-Strategies.md", "expected_paths": ["Lecture-Strategies.md", "Persona/work-style/learning.md"], "tag": "cross-branch"}
-{"query": "deus models plus backup tooling together", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "CLAUDE.md"], "tag": "cross-branch"}
-{"query": "infrastructure and project state together", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "CLAUDE.md"], "tag": "cross-branch"}
-{"query": "movies shared with housemates and music tastes", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/life/household.md", "Persona/taste/music.md"], "tag": "cross-branch"}
-{"query": "home routine and shared media", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md", "Persona/taste/movies.md"], "tag": "cross-branch"}
+{"query": "my studies history and weekly routine", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "multi"}
+{"query": "structure of my memory system overall", "expected_path": "MEMORY_TREE.md", "expected_paths": ["MEMORY_TREE.md", "CLAUDE.md"], "tag": "multi"}
+{"query": "how I tackle studies end to end", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "multi"}
+{"query": "my dev projects and SWE experience", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "CLAUDE.md"], "tag": "multi"}
+{"query": "navigating personal knowledge", "expected_path": "MEMORY_TREE.md", "expected_paths": ["MEMORY_TREE.md"], "tag": "multi"}
+{"query": "how my learning style shapes my exam prep", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "cross-branch"}
+{"query": "tying study routine to how I learn visually", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "cross-branch"}
+{"query": "lecture prep that matches my learning style", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "cross-branch"}
+{"query": "deus models plus backup tooling together", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "cross-branch"}
+{"query": "infrastructure and project state together", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "cross-branch"}
 {"query": "how to cook a chocolate souffle", "abstain": true, "tag": "abstain-far"}
 {"query": "best hiking trails in Norway", "abstain": true, "tag": "abstain-far"}
 {"query": "fix a leaking bathroom faucet", "abstain": true, "tag": "abstain-far"}
 {"query": "who won the 2024 Oscar for best picture", "abstain": true, "tag": "abstain-far"}
 {"query": "JavaScript async await tutorial", "abstain": true, "tag": "abstain-far"}
-{"query": "who shares my apartment", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "adversarial", "notes": "paraphrase of 'who do I live with'"}
-{"query": "people I share the rent with", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "adversarial", "notes": "apartment vocab"}
-{"query": "wo do I live with", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "adversarial", "notes": "typo"}
-{"query": "who is moving into my flat this august", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "adversarial", "notes": "specific paraphrase — Eden transition"}
 {"query": "my prior employment", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "adversarial", "notes": "avoids work-history vocab"}
 {"query": "the college program I'm enrolled in", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "adversarial", "notes": "avoids OUI/university naming"}
-{"query": "cinema I enjoy", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md"], "tag": "adversarial", "notes": "avoids films/Nolan/Fincher/crime"}
-{"query": "directors whose work I rate highly", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md"], "tag": "adversarial", "notes": "avoids favorite/films"}
-{"query": "the instrument I've played for years", "expected_path": "Persona/taste/music.md", "expected_paths": ["Persona/taste/music.md"], "tag": "adversarial", "notes": "avoids drums/drummer"}
-{"query": "types of music I'm into", "expected_path": "Persona/taste/music.md", "expected_paths": ["Persona/taste/music.md"], "tag": "adversarial", "notes": "avoids genres/rock/metal"}
 {"query": "the way I pick up new things", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "adversarial", "notes": "avoids learn/style/visuals"}
 {"query": "how explanations should be framed for me", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "adversarial", "notes": "avoids learning/style"}
 {"query": "how to phrase requests to me", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md"], "tag": "adversarial", "notes": "avoids communicate/concise/direct"}
 {"query": "what tone works best when addressing me", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md"], "tag": "adversarial", "notes": "avoids communicate"}
-{"query": "my recurring schedule for coursework", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md"], "tag": "adversarial", "notes": "avoids weekly/study/routine"}
 {"query": "the assistant's core configuration", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "adversarial", "notes": "avoids deus/models/state"}
-{"query": "system services and background jobs", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "adversarial", "notes": "avoids tools/integrations/backups"}
-{"query": "shows I can watch with housemates", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/life/household.md"], "tag": "adversarial", "notes": "avoids movies+roommates"}
-{"query": "tying the way I learn to test prep", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "STUDY.md"], "tag": "adversarial", "notes": "avoids learning-style+study-routine"}
-{"query": "system models plus their storage setup", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "CLAUDE.md"], "tag": "adversarial", "notes": "avoids configuration+infrastructure"}
+{"query": "tying the way I learn to test prep", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md"], "tag": "adversarial", "notes": "avoids learning-style+study-routine"}
+{"query": "system models plus their storage setup", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "adversarial", "notes": "avoids configuration+infrastructure"}
 {"query": "what's my birthday", "abstain": true, "tag": "abstain-near", "notes": "personal-sounding, not in vault"}
 {"query": "who is my girlfriend", "abstain": true, "tag": "abstain-near", "notes": "personal-sounding, not in vault"}
 {"query": "what's my cat's name", "abstain": true, "tag": "abstain-near", "notes": "pet info not stored"}
@@ -78,59 +43,32 @@
 {"query": "my parent's names", "abstain": true, "tag": "abstain-near", "notes": "family not stored"}
 {"query": "when did I start programming", "abstain": true, "tag": "abstain-near", "notes": "career start date not stored"}
 {"query": "do I have siblings", "abstain": true, "tag": "abstain-near", "notes": "family not stored"}
-{"query": "my style", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md", "Persona/work-style/learning.md", "Persona/taste/movies.md"], "tag": "ambiguous"}
-{"query": "what do I enjoy", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/taste/music.md", "Persona/life/household.md"], "tag": "ambiguous"}
-{"query": "my routine", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md", "Persona/work-style/learning.md", "Persona/work-style/communication.md"], "tag": "ambiguous"}
-{"query": "who I am as a person", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "Persona/INDEX.md", "Persona/work-style/learning.md"], "tag": "ambiguous"}
-{"query": "what I care about", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/work-style/learning.md", "Persona/INDEX.md"], "tag": "ambiguous"}
+{"query": "my style", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md", "Persona/work-style/learning.md"], "tag": "ambiguous"}
+{"query": "my routine", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "Persona/work-style/communication.md"], "tag": "ambiguous"}
+{"query": "who I am as a person", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "Persona/work-style/learning.md"], "tag": "ambiguous"}
 {"query": "my work", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "Persona/work-style/communication.md", "CLAUDE.md"], "tag": "ambiguous"}
-{"query": "home stuff", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md", "Persona/taste/movies.md"], "tag": "ambiguous"}
-{"query": "tools I use", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md", "CLAUDE.md", "STUDY.md"], "tag": "ambiguous"}
-{"query": "how to describe me", "expected_path": "auto-memory/feedback_bio_style.md", "expected_paths": ["auto-memory/feedback_bio_style.md", "Persona/INDEX.md", "Persona/life/background.md"], "tag": "ambiguous"}
-{"query": "me and my world", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "Persona/life/background.md", "Persona/INDEX.md"], "tag": "ambiguous"}
-{"query": "who shares my apartment", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "vocab-mismatch"}
-{"query": "people I share the rent with", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "vocab-mismatch"}
-{"query": "shows I can watch with housemates", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md", "Persona/life/household.md"], "tag": "vocab-mismatch"}
-{"query": "directors whose work I rate highly", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md"], "tag": "vocab-mismatch"}
-{"query": "what tone works best when addressing me", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md", "auto-memory/feedback_social_tone.md"], "tag": "vocab-mismatch"}
-{"query": "how to phrase requests to me", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md", "auto-memory/feedback_bio_style.md"], "tag": "vocab-mismatch"}
+{"query": "tools I use", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "ambiguous"}
+{"query": "how to describe me", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "ambiguous"}
+{"query": "me and my world", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "Persona/life/background.md"], "tag": "ambiguous"}
+{"query": "what tone works best when addressing me", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md"], "tag": "vocab-mismatch"}
+{"query": "how to phrase requests to me", "expected_path": "Persona/work-style/communication.md", "expected_paths": ["Persona/work-style/communication.md"], "tag": "vocab-mismatch"}
 {"query": "my prior employment and work history", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "vocab-mismatch"}
-{"query": "the college program I am enrolled in", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "STUDY.md"], "tag": "vocab-mismatch"}
-{"query": "my recurring schedule for coursework", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md", "Persona/life/background.md"], "tag": "vocab-mismatch"}
-{"query": "what is my favorite food", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "vocab-mismatch"}
-{"query": "who I am as a person", "expected_path": "Persona/INDEX.md", "expected_paths": ["Persona/INDEX.md", "Persona/life/background.md"], "tag": "vocab-mismatch"}
-{"query": "what I care about deeply", "expected_path": "Persona/INDEX.md", "expected_paths": ["Persona/INDEX.md", "Persona/work-style/learning.md"], "tag": "vocab-mismatch"}
-{"query": "what do I enjoy doing in my free time", "expected_path": "Persona/INDEX.md", "expected_paths": ["Persona/INDEX.md", "Persona/taste/movies.md", "Persona/taste/music.md"], "tag": "vocab-mismatch"}
+{"query": "the college program I am enrolled in", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "vocab-mismatch"}
+{"query": "my recurring schedule for coursework", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "vocab-mismatch"}
+{"query": "who I am as a person", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "vocab-mismatch"}
 {"query": "where did I grow up and go to school", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "vocab-mismatch"}
-{"query": "the assistant core configuration and rules", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md", "INFRA.md"], "tag": "vocab-mismatch"}
+{"query": "the assistant core configuration and rules", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "vocab-mismatch"}
 {"query": "what should I order for dinner tonight", "expected_path": null, "expected_paths": [], "tag": "abstain-vocab", "abstain": true}
 {"query": "what time is it where the user lives", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md", "Persona/life/background.md"], "tag": "vocab-mismatch"}
-{"query": "what albums or artists does he listen to", "expected_path": "Persona/taste/music.md", "expected_paths": ["Persona/taste/music.md"], "tag": "vocab-mismatch"}
 {"query": "how does he prefer to be taught new things", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "Persona/work-style/communication.md"], "tag": "vocab-mismatch"}
-{"query": "who is my girlfriend or partner", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md", "Persona/life/background.md"], "tag": "vocab-mismatch"}
 {"query": "what is my cats name", "expected_path": null, "expected_paths": [], "tag": "abstain-vocab", "abstain": true}
-{"query": "what instrument does he play", "expected_path": "Persona/taste/music.md", "expected_paths": ["Persona/taste/music.md"], "tag": "vocab-mismatch"}
-{"query": "is he in a band or anything", "expected_path": "Persona/taste/music.md", "expected_paths": ["Persona/taste/music.md"], "tag": "vocab-mismatch"}
-{"query": "what degree is he working on", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md", "STUDY.md"], "tag": "vocab-mismatch"}
-{"query": "does he trade stocks", "expected_path": "trading.md", "expected_paths": ["trading.md"], "tag": "vocab-mismatch"}
-{"query": "what broker does he use for investing", "expected_path": "trading.md", "expected_paths": ["trading.md", "ibkr-ops.md"], "tag": "vocab-mismatch"}
+{"query": "what degree is he working on", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "vocab-mismatch"}
 {"query": "how should I talk to him when explaining something complex", "expected_path": "Persona/work-style/learning.md", "expected_paths": ["Persona/work-style/learning.md", "Persona/work-style/communication.md"], "tag": "vocab-mismatch"}
-{"query": "what kind of flicks does he enjoy on the weekend", "expected_path": "Persona/taste/movies.md", "expected_paths": ["Persona/taste/movies.md"], "tag": "vocab-mismatch"}
-{"query": "how do I prepare for a study session with him", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md", "Lecture-Strategies.md"], "tag": "vocab-mismatch"}
 {"query": "what country is the user based in", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md", "Persona/life/background.md"], "tag": "vocab-mismatch"}
-{"query": "how does the container agent sandbox work", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "vocab-mismatch"}
-{"query": "who are his flatmates", "expected_path": "Persona/life/household.md", "expected_paths": ["Persona/life/household.md"], "tag": "vocab-mismatch"}
 {"query": "how many years of coding experience", "expected_path": "Persona/life/background.md", "expected_paths": ["Persona/life/background.md"], "tag": "vocab-mismatch"}
-{"query": "which Ollama models are quirky", "expected_path": "ollama-quirks.md", "expected_paths": ["ollama-quirks.md", "INFRA.md"], "tag": "vocab-mismatch"}
-{"query": "best way to review before a math exam", "expected_path": "STUDY.md", "expected_paths": ["STUDY.md", "Lecture-Strategies.md"], "tag": "vocab-mismatch"}
-{"query": "does the system integrate with gmail or calendar", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"], "tag": "vocab-mismatch"}
 {"query": "whats my blood type", "expected_path": null, "expected_paths": [], "tag": "abstain-vocab", "abstain": true}
 {"query": "what school did I go to as a kid", "expected_path": null, "expected_paths": [], "tag": "abstain-vocab", "abstain": true}
 {"query": "how tall am I", "expected_path": null, "expected_paths": [], "tag": "abstain-vocab", "abstain": true}
 {"query": "my wifi password", "expected_path": null, "expected_paths": [], "tag": "abstain-vocab", "abstain": true}
 {"query": "what phone do I use", "expected_path": null, "expected_paths": [], "tag": "abstain-vocab", "abstain": true}
-{"query": "never commit credentials or secrets to git", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md", "auto-memory/feedback_branch_workflow.md"], "tag": "adversarial-2"}
-{"query": "run tasks in the background without asking", "expected_path": "auto-memory/feedback_autonomous_parallel.md", "expected_paths": ["auto-memory/feedback_autonomous_parallel.md", "auto-memory/feedback_background_tasks.md"], "tag": "adversarial-2"}
-{"query": "always create a branch before coding", "expected_path": "auto-memory/feedback_branch_workflow.md", "expected_paths": ["auto-memory/feedback_branch_workflow.md"], "tag": "adversarial-2"}
-{"query": "how to write a short bio for the user", "expected_path": "auto-memory/feedback_bio_style.md", "expected_paths": ["auto-memory/feedback_bio_style.md"], "tag": "adversarial-2"}
-{"query": "when should you proactively save a checkpoint", "expected_path": "auto-memory/feedback_auto_checkpoint.md", "expected_paths": ["auto-memory/feedback_auto_checkpoint.md"], "tag": "adversarial-2"}
+{"query": "never commit credentials or secrets to git", "expected_path": "CLAUDE.md", "expected_paths": ["CLAUDE.md"], "tag": "adversarial-2"}

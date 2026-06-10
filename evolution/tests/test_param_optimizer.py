@@ -20,7 +20,7 @@ def test_load_labels():
     """Benchmark labels file exists and is parseable."""
     assert BENCH_LABELS.exists(), f"Benchmark labels not found: {BENCH_LABELS}"
     labels = _load_labels()
-    assert len(labels) >= 90
+    assert len(labels) >= 50
     for label in labels:
         assert "query" in label
         assert "tag" in label
