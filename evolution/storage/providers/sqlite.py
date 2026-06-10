@@ -44,6 +44,7 @@ _UPDATABLE_INTERACTION_COLS = frozenset({
     "user_signal",
     "correction_mined_at",
     "judge_schema_version",
+    "metrics",
 })
 
 # Guard against concurrent schema migrations from multiple threads
@@ -264,6 +265,7 @@ class SQLiteStorageProvider(StorageProvider):
             ("has_code", "INTEGER DEFAULT 0"),
             ("correction_mined_at", "TEXT"),
             ("judge_schema_version", "INTEGER DEFAULT NULL"),
+            ("metrics", "TEXT"),  # JSON: generic per-task metrics (added in v1.7)
         ]:
             try:
                 # safe: col + coltype come from the literal tuple-list
@@ -325,20 +327,39 @@ class SQLiteStorageProvider(StorageProvider):
         user_signal: Optional[str] = None,
         context_tokens: Optional[int] = None,
         has_code: Optional[int] = None,
+        metrics: Optional[str] = None,
     ) -> str:
         db = self._connect()
+        # Upsert instead of INSERT OR REPLACE: REPLACE deletes the existing row
+        # (clobbering judge_score/judge_dims and firing ON DELETE CASCADE on
+        # reflections). DO UPDATE keeps unlisted columns intact, and metrics
+        # uses COALESCE so a None re-log preserves post-hoc metric updates.
         db.execute(
             """
-            INSERT OR REPLACE INTO interactions
+            INSERT INTO interactions
                 (id, timestamp, group_folder, prompt, response, tools_used,
                  latency_ms, eval_suite, session_id, domain_presets, user_signal,
-                 context_tokens, has_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 context_tokens, has_code, metrics)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                timestamp      = excluded.timestamp,
+                group_folder   = excluded.group_folder,
+                prompt         = excluded.prompt,
+                response       = excluded.response,
+                tools_used     = excluded.tools_used,
+                latency_ms     = excluded.latency_ms,
+                eval_suite     = excluded.eval_suite,
+                session_id     = excluded.session_id,
+                domain_presets = excluded.domain_presets,
+                user_signal    = excluded.user_signal,
+                context_tokens = excluded.context_tokens,
+                has_code       = excluded.has_code,
+                metrics        = COALESCE(excluded.metrics, interactions.metrics)
             """,
             (
                 interaction_id, timestamp, group_folder, prompt, response,
                 tools_used, latency_ms, eval_suite, session_id,
-                domain_presets, user_signal, context_tokens, has_code,
+                domain_presets, user_signal, context_tokens, has_code, metrics,
             ),
         )
         db.commit()
@@ -454,6 +475,38 @@ class SQLiteStorageProvider(StorageProvider):
         ).fetchone()[0]
         db.close()
         return count
+
+    def get_metrics_rows(
+        self,
+        *,
+        group_folder: Optional[str] = None,
+        days: int = 30,
+        limit: int = 1000,
+    ) -> list[dict]:
+        db = self._connect()
+        params: list = []
+        extra_clauses = ""
+        if group_folder:
+            extra_clauses += " AND group_folder = ?"
+            params.append(group_folder)
+        # See score_trend for the same int-coerce + clamp rationale.
+        days_clamped = max(1, int(days))
+        # safe: days_clamped is a clamped int; extra_clauses built from
+        # local literal strings above. User values bound via params.
+        rows = db.execute(
+            f"""
+            SELECT id, timestamp, group_folder, metrics, judge_score
+            FROM interactions
+            WHERE metrics IS NOT NULL
+              AND timestamp >= DATETIME('now', '-{days_clamped} days')
+              {extra_clauses}
+            ORDER BY timestamp ASC
+            LIMIT ?
+            """,
+            params + [limit],
+        ).fetchall()
+        db.close()
+        return [dict(r) for r in rows]
 
     # ── Score trend ──────────────────────────────────────────────────────────
 

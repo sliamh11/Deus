@@ -61,11 +61,19 @@ def _run_mcp_server() -> None:
         tools_used: Optional[list[str]] = None,
         session_id: Optional[str] = None,
         interaction_id: Optional[str] = None,
+        metrics: Optional[dict] = None,
     ) -> dict:
         """
         Log one agent interaction.  Triggers async judge evaluation.
         Returns the interaction ID for follow-up feedback.
+
+        metrics: optional flat dict of task outcomes (e.g. tests_passed,
+        breaks, confidence, warden_rounds). Values must be scalars or lists
+        of scalars. Seen by reflection generation, never by the judge.
         """
+        # Invalid metrics raise ValueError out of log_interaction on purpose:
+        # MCP callers get a real error signal (unlike the CLI fire-and-forget
+        # path, which drops bad metrics and keeps the interaction).
         iid = log_interaction(
             prompt=prompt,
             response=response,
@@ -74,12 +82,46 @@ def _run_mcp_server() -> None:
             tools_used=tools_used,
             session_id=session_id,
             interaction_id=interaction_id,
+            metrics=metrics,
         )
         # Fire-and-forget async judge eval
         asyncio.create_task(_async_judge_and_reflect(
-            iid, prompt, response, tools_used, group_folder
+            iid, prompt, response, tools_used, group_folder, metrics=metrics,
         ))
         return {"id": iid, "status": "logged"}
+
+    @mcp.tool()
+    def log_metrics_tool(
+        interaction_id: str,
+        metrics: dict,
+        merge: bool = True,
+    ) -> dict:
+        """
+        Attach metrics to an already-logged interaction (post-hoc path).
+        With merge=True (default), new keys are merged over stored metrics;
+        merge=False replaces the payload wholesale. Returns the final dict.
+        """
+        from .metrics import update_metrics
+        try:
+            final = update_metrics(interaction_id, metrics, merge=merge)
+        except ValueError as exc:
+            return {"status": "error", "error": str(exc)}
+        return {"status": "ok", "metrics": final}
+
+    @mcp.tool()
+    def get_metrics_summary_tool(
+        group_folder: Optional[str] = None,
+        days: int = 30,
+        key: Optional[str] = None,
+    ) -> dict:
+        """
+        Summarize task metrics over the last N days, optionally filtered by
+        group_folder and/or restricted to one metric key. Returns per-key
+        numeric stats (count/mean/min/max/sum) or categorical value counts.
+        """
+        from .metrics import fetch_metrics_rows, summarize_metrics
+        rows = fetch_metrics_rows(group_folder=group_folder, days=days)
+        return summarize_metrics(rows, key=key)
 
     @mcp.tool()
     def get_reflections_tool(
@@ -138,8 +180,13 @@ async def _async_judge_and_reflect(
     response: str,
     tools_used: Optional[list[str]],
     group_folder: str,
+    metrics: Optional[dict] = None,
 ) -> None:
-    """Judge the interaction and generate reflections if score is low."""
+    """Judge the interaction and generate reflections if score is low.
+
+    metrics are passed to reflection generation only — the judge stays blind
+    to them so self-reported numbers can't inflate scores (anti-gaming).
+    """
     from .config import REFLECTION_THRESHOLD, MAX_REFLECTIONS_TO_GENERATE
     from .persona import digest_for_group
     try:
@@ -168,6 +215,7 @@ async def _async_judge_and_reflect(
                     dims=dims,
                     rationale=result.rationale,
                     tools_used=tools_used,
+                    metrics=metrics,
                 )
                 if content in generated_contents:
                     break  # LLM returned identical text; stop early

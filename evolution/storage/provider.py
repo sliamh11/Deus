@@ -57,8 +57,14 @@ class StorageProvider(ABC):
         user_signal: Optional[str] = None,
         context_tokens: Optional[int] = None,
         has_code: Optional[int] = None,
+        metrics: Optional[str] = None,
     ) -> str:
-        """Persist one agent interaction. Returns the interaction ID."""
+        """Persist one agent interaction. Returns the interaction ID.
+
+        When a row with the same ID already exists, all fields are overwritten
+        EXCEPT metrics: a None metrics value preserves any previously stored
+        metrics (COALESCE upsert), so post-hoc metric updates survive re-logging.
+        """
         ...
 
     @abstractmethod
@@ -95,6 +101,22 @@ class StorageProvider(ABC):
     @abstractmethod
     def count_interactions(self, **filters) -> int:
         """Count interactions matching the given filters."""
+        ...
+
+    @abstractmethod
+    def get_metrics_rows(
+        self,
+        *,
+        group_folder: Optional[str] = None,
+        days: int = 30,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Fetch interactions that have non-null metrics within the last N days.
+
+        Returns rows with keys: id, timestamp, group_folder, metrics (raw JSON
+        string), judge_score. Ordered by timestamp ascending so trend consumers
+        can iterate chronologically.
+        """
         ...
 
     # ── Score trend ──────────────────────────────────────────────────────────

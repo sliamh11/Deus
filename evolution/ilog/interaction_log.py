@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+from ..metrics import validate_metrics
 from ..storage import get_storage
 
 
@@ -24,11 +25,21 @@ def log_interaction(
     user_signal: Optional[str] = None,
     context_tokens: Optional[int] = None,
     has_code: Optional[int] = None,
+    metrics: Optional[dict] = None,
 ) -> str:
     """
     Persist one agent interaction.  Returns the interaction ID.
     Judge score is written later by update_score().
+
+    metrics is a flat dict of task metrics (see evolution.metrics) — validated
+    here so a malformed payload fails loudly at log time, not at analysis time.
     """
+    # Canonical validation gate: the MCP path calls this directly with no
+    # other check (errors propagate to the caller by design). cli.py
+    # pre-validates only to add drop-on-error semantics for its
+    # fire-and-forget path — that duplication is intentional.
+    if metrics is not None:
+        validate_metrics(metrics)
     iid = interaction_id or str(uuid.uuid4())
     ts = datetime.now(timezone.utc).isoformat()
     store = get_storage()
@@ -46,6 +57,7 @@ def log_interaction(
         user_signal=user_signal,
         context_tokens=context_tokens,
         has_code=has_code,
+        metrics=json.dumps(metrics) if metrics is not None else None,
     )
     return iid
 
