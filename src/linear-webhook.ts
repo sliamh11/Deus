@@ -244,6 +244,40 @@ export function gateOutcomeEventType(
   return verdict === 'SHIP' ? 'gate_ship' : 'gate_revise';
 }
 
+/**
+ * Park an errored gate's issue in "Manual Review Required" (quiescent; nothing
+ * polls it). Must be called from a finally, not the try, so a thrown exception
+ * doesn't bypass it (LIA-175). Swallows its own errors — never rethrows over the
+ * original gate error.
+ */
+export async function parkErroredGateIssue(
+  ctx: LinearContext,
+  issueId: string,
+  gateName: string,
+  logPrefix: string,
+): Promise<void> {
+  try {
+    const manualState = ctx.stateByName.get('Manual Review Required');
+    if (manualState) {
+      await ctx.client.updateIssue(issueId, { stateId: manualState.id });
+      logger.info(
+        { issueId, gate: gateName },
+        `${logPrefix}: gate errored — moved to Manual Review Required`,
+      );
+    } else {
+      logger.warn(
+        { issueId, gate: gateName },
+        `${logPrefix}: Manual Review Required state not found — leaving issue in place`,
+      );
+    }
+  } catch (err) {
+    logger.warn(
+      { issueId, err },
+      `${logPrefix}: failed to park errored gate issue in Manual Review Required`,
+    );
+  }
+}
+
 export function parseEnrichment(output: string): string | null {
   const match = output.match(/^## Enrichment\s*\n([\s\S]*?)(?=^## Verdict)/m);
   return match ? match[1].trim() : null;
@@ -1174,32 +1208,11 @@ async function handleIssueUpdate(
       verdict,
       gateDidError,
     );
-    if (transitionAction === 'halt') {
-      // LIA-169: gate errored — park in a quiescent state so no poller re-picks
-      // it (leaving it in "In Review" exposes it to sweepStaleInReview; "Manual
-      // Review Required" is polled by nothing). Warden: Error label is applied
-      // in the finally block.
-      try {
-        const manualState = ctx.stateByName.get('Manual Review Required');
-        if (manualState) {
-          await ctx.client.updateIssue(data.id, { stateId: manualState.id });
-          logger.info(
-            { issueId: data.id, gate: gateSpec.name },
-            'linear-webhook: gate errored — moved to Manual Review Required (halt)',
-          );
-        } else {
-          logger.warn(
-            { issueId: data.id, gate: gateSpec.name },
-            'linear-webhook: Manual Review Required state not found — leaving issue in place',
-          );
-        }
-      } catch (err) {
-        logger.warn(
-          { issueId: data.id, err },
-          'linear-webhook: failed to park errored gate issue in Manual Review Required',
-        );
-      }
-    } else if (transitionAction === 'revert') {
+    // LIA-175: the 'halt' (gate-errored) park now lives in the finally block,
+    // keyed on gateDidError, so it ALSO fires when an exception is caught below
+    // (gateTransitionAction returns 'halt' iff gateErrored, so this is
+    // behaviorally equivalent for the verdict-error case).
+    if (transitionAction === 'revert') {
       try {
         let revertStateId = fromStateId;
         let revertStateName = fromState.name;
@@ -1363,6 +1376,15 @@ async function handleIssueUpdate(
       if (safeRemoveIds.length > 0) update.removedLabelIds = safeRemoveIds;
       if (addIds.length > 0) update.addedLabelIds = addIds;
       retryLabelUpdate(ctx.client, data.id, update);
+    }
+
+    // LIA-175: park an errored gate's issue in a quiescent state. The inline
+    // halt-park only ran for verdict-errors inside the try; an EXCEPTION caught
+    // above skipped it, leaving the issue in "In Review" exposed to
+    // sweepStaleInReview. Runs concurrently with the fire-and-forget label
+    // update above — independent Linear calls, no ordering requirement.
+    if (gateDidError) {
+      await parkErroredGateIssue(ctx, data.id, gateSpec.name, 'linear-webhook');
     }
 
     // LIA-169: skip on gate error — the outer catch sets finalVerdict=REVISE +
@@ -1594,30 +1616,10 @@ async function runGateForIssue(
       verdict,
       gateAgentError,
     );
-    if (transitionAction === 'halt') {
-      // LIA-169: gate errored — park in Manual Review Required (quiescent; no
-      // poller re-picks it). Warden: Error label is applied in the finally block.
-      try {
-        const manualState = ctx.stateByName.get('Manual Review Required');
-        if (manualState) {
-          await ctx.client.updateIssue(issue.id, { stateId: manualState.id });
-          logger.info(
-            { issueId: issue.id, gate: gateSpec.name },
-            'startup-sweep: gate errored — moved to Manual Review Required (halt)',
-          );
-        } else {
-          logger.warn(
-            { issueId: issue.id, gate: gateSpec.name },
-            'startup-sweep: Manual Review Required state not found — leaving issue in place',
-          );
-        }
-      } catch (err) {
-        logger.warn(
-          { issueId: issue.id, err },
-          'startup-sweep: failed to park errored gate issue in Manual Review Required',
-        );
-      }
-    } else if (transitionAction === 'revert') {
+    // LIA-175: the 'halt' (gate-errored) park now lives in the finally block,
+    // keyed on gateAgentError, so it also covers the exception path. See
+    // handleIssueUpdate for the rationale.
+    if (transitionAction === 'revert') {
       if (gateSpec.revertTo) {
         const revertState = ctx.stateByName.get(gateSpec.revertTo);
         if (revertState) {
@@ -1742,6 +1744,12 @@ async function runGateForIssue(
       if (safeRemoveIds.length > 0) update.removedLabelIds = safeRemoveIds;
       if (addIds.length > 0) update.addedLabelIds = addIds;
       retryLabelUpdate(ctx.client, issue.id, update);
+    }
+
+    // LIA-175: park an errored gate's issue so an exception caught above doesn't
+    // leave it in "In Review". See handleIssueUpdate for the rationale.
+    if (gateAgentError) {
+      await parkErroredGateIssue(ctx, issue.id, gateSpec.name, 'startup-sweep');
     }
 
     // LIA-169: skip on gate error — see handleIssueUpdate; the outer catch sets
