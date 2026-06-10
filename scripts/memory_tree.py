@@ -6,7 +6,7 @@ plus 1-hop graph expansion via see_also/alias_of edges. Storage is sqlite-vec at
 ~/.deus/memory_tree.db (override via DEUS_MEMORY_TREE_DB). Embeddings reuse the
 evolution provider (Ollama embeddinggemma by default, Gemini fallback).
 
-Subcommands: build | query | reembed | reindex-external | check | graph | calibrate | benchmark
+Subcommands: build | query | reembed | reindex-external | check | scaffold-root | graph | calibrate | benchmark
 
 See docs/decisions/no-db-deletion.md (soft-delete only) and
 docs/decisions/evolution-db-split.md (separate DB file per subsystem).
@@ -63,9 +63,15 @@ VAULT_PATH_ENV = "DEUS_VAULT_PATH"
 # cosine scores (~0.55-0.73 in-domain, ~0.45-0.53 OOD) vs Ollama embeddinggemma
 # (~0.30-0.66 in-domain, ~0.25-0.39 OOD). Env vars always override.
 _EMBED_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "auto").lower()
-_IS_GEMINI = _EMBED_PROVIDER == "gemini" or (
-    _EMBED_PROVIDER == "auto" and not os.environ.get("OLLAMA_HOST")
-    and os.environ.get("GEMINI_API_KEY")
+# bool() guard: the `and os.environ.get("GEMINI_API_KEY")` arm evaluates to the
+# key string (truthy str) or None (when unset) rather than a real bool, which
+# can leak the API key into anything that serializes _IS_GEMINI or compares it
+# with `is True`. Coerce to a plain bool.
+_IS_GEMINI = bool(
+    _EMBED_PROVIDER == "gemini" or (
+        _EMBED_PROVIDER == "auto" and not os.environ.get("OLLAMA_HOST")
+        and os.environ.get("GEMINI_API_KEY")
+    )
 )
 
 _THRESHOLD_DEFAULTS = {
@@ -888,6 +894,106 @@ def iter_tree_files(vault: Path) -> list[Path]:
         if fm.get("id"):
             files.append(p)
     return files
+
+
+# ── Root scaffold ───────────────────────────────────────────────────────────
+
+# Per-child line budget: a generous one-liner ceiling so a verbose description:
+# can't blow the whole root over ROOT_TOKEN_BUDGET by itself.
+SCAFFOLD_CHILD_DESC_WORDS = 25
+
+SCAFFOLD_ROOT_DESCRIPTION = (
+    "Navigation root for this Deus vault — a map of personal + project memory. "
+    "For factual personal questions, call "
+    "`python3 scripts/memory_tree.py query \"<text>\"` and fall back to the "
+    "child files below on low confidence."
+)
+
+
+def _truncate_words(text: str, max_words: int) -> str:
+    """Collapse whitespace and clip to max_words, no trailing ellipsis."""
+    words = text.split()
+    if len(words) <= max_words:
+        return " ".join(words)
+    return " ".join(words[:max_words])
+
+
+def generate_root_scaffold(
+    vault: Path,
+    *,
+    root_description: str = SCAFFOLD_ROOT_DESCRIPTION,
+    token_budget: int = ROOT_TOKEN_BUDGET,
+) -> str:
+    """Generate starter MEMORY_TREE.md content from existing vault nodes.
+
+    The token budget is a hard constraint: an over-budget child list is
+    truncated with an explicit "N more nodes omitted" line, never an error.
+    Raises ValueError when no id-frontmatter nodes exist (nothing to map).
+    """
+    root_file = vault / "MEMORY_TREE.md"
+    children: list[tuple[str, str]] = []  # (rel_path, one-line description)
+    for p in iter_tree_files(vault):
+        if p == root_file:
+            continue
+        try:
+            content = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        fm = parse_frontmatter(content)
+        if not fm.get("id"):
+            continue
+        rel_path = str(p.relative_to(vault))
+        desc = _truncate_words(
+            fm.get("description") or fm.get("title") or rel_path,
+            SCAFFOLD_CHILD_DESC_WORDS,
+        )
+        children.append((rel_path, desc))
+
+    if not children:
+        raise ValueError(
+            "no id-frontmatter nodes found in vault — nothing to map. "
+            "Add nodes with `id:` frontmatter (or run `build`) first."
+        )
+
+    children.sort(key=lambda c: c[0])
+
+    # Emit incrementally and stop adding children once the budget is hit, so the
+    # root never overruns. We reserve room for the truncation notice up front.
+    root_id = make_id()
+    omitted_notice_template = "\n- _{n} more nodes omitted — add manually_\n"
+
+    def _render(included: list[tuple[str, str]], omitted: int) -> str:
+        fm_children = "\n".join(f"  - {rel}" for rel, _ in included)
+        body_children = "\n".join(f"- `{rel}` — {desc}" for rel, desc in included)
+        notice = omitted_notice_template.format(n=omitted) if omitted else ""
+        return (
+            "---\n"
+            f"id: {root_id}\n"
+            "type: memory-tree-root\n"
+            "title: Memory Navigation Tree\n"
+            f"description: {root_description}\n"
+            "level: 0\n"
+            "children:\n"
+            f"{fm_children}\n"
+            "---\n"
+            "# Memory Navigation Tree\n\n"
+            f"{root_description}\n\n"
+            "## Map\n\n"
+            f"{body_children}\n"
+            f"{notice}"
+        )
+
+    # Greedy fill: include as many children as fit under the budget.
+    included: list[tuple[str, str]] = []
+    for i, child in enumerate(children):
+        candidate = included + [child]
+        omitted = len(children) - len(candidate)
+        if token_estimate(_render(candidate, omitted)) > token_budget and included:
+            break
+        included.append(child)
+
+    omitted = len(children) - len(included)
+    return _render(included, omitted)
 
 
 # ── Build ─────────────────────────────────────────────────────────────────────
@@ -2955,6 +3061,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Discover new files, orphan missing files, re-embed stale files (idempotent)",
     )
 
+    p_scaffold = sub.add_parser(
+        "scaffold-root",
+        help="Generate a starter MEMORY_TREE.md from existing id-frontmatter nodes",
+    )
+    p_scaffold.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the generated root to stdout instead of writing it to disk",
+    )
+
     p_graph = sub.add_parser("graph", help="Emit GraphViz dot of the tree")
     p_graph.add_argument("--highlight", help="Relative path to highlight")
     p_graph.add_argument("-o", "--output", help="Write to file instead of stdout")
@@ -3098,6 +3214,33 @@ def main(argv: list[str] | None = None) -> int:
             for issue in report["issues"]:
                 print(f"  - {issue}")
         return SUCCESS if report["ok"] else ABSTAIN
+
+    if args.cmd == "scaffold-root":
+        root_file = vault / "MEMORY_TREE.md"
+        if root_file.exists() and not args.dry_run:
+            print(
+                f"ABORT: {root_file} already exists — refusing to overwrite. "
+                "Delete it manually first if you want to regenerate.",
+                file=sys.stderr,
+            )
+            return USAGE_ERROR
+        try:
+            text = generate_root_scaffold(vault)
+        except ValueError as exc:
+            print(f"ABORT: {exc}", file=sys.stderr)
+            return USAGE_ERROR
+        if args.dry_run:
+            print(text)
+        else:
+            root_file.parent.mkdir(parents=True, exist_ok=True)
+            root_file.write_text(text, encoding="utf-8")
+            print(
+                f"wrote {root_file} ({token_estimate(text)} tokens, "
+                f"budget {ROOT_TOKEN_BUDGET}). "
+                "Personalize the root description, then run "
+                "`build` + `check`."
+            )
+        return SUCCESS
 
     if args.cmd == "graph":
         dot = render_graph(db, highlight=args.highlight)
