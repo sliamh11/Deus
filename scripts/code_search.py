@@ -141,6 +141,51 @@ def _migrate_legacy_if_match(root: Path | None, dbp: Path) -> None:
 DEFAULT_TOP_K = 10
 DEFAULT_RRF_K = int(os.environ.get("DEUS_CODE_SEARCH_RRF_K", "60"))
 
+# Calibration query set for retrieval_confidence (GH #717).
+# Built from NL-shaped queries, not symbol-name self-lookups: querying
+# `chunk_name.replace("_"," ")` matches its own chunk at artificially tight
+# distances (~0.19-0.53), so real NL queries (~0.44-0.56 even for a correct
+# match) were pinned to ~0 confidence. These domain-agnostic questions span the
+# real NL-query regime while out-of-domain queries still rank far. English-only;
+# the >=20-chunk guard at the call site bounds small-codebase over-confidence.
+_GENERIC_NL_CALIBRATION_QUERIES: tuple[str, ...] = (
+    "how is authentication handled",
+    "where is configuration loaded",
+    "what validates user input",
+    "how are errors logged and handled",
+    "how is the database connection initialized",
+    "where are routes or endpoints defined",
+    "how does caching work",
+    "what handles retries and timeouts",
+    "how is data serialized to json",
+    "where is the main entry point",
+    "how are background jobs scheduled",
+    "what parses command line arguments",
+    "how is logging configured",
+    "where are environment variables read",
+    "how is the http server started",
+    "what sends notifications or messages",
+    "how are files read and written",
+    "how is application state persisted",
+    "what manages user sessions",
+    "how are tests structured",
+    "how is the response formatted",
+    "where is rate limiting enforced",
+    "how are secrets and credentials managed",
+    "what handles pagination",
+    "how is the cache invalidated",
+    "where is input sanitized",
+    "how does the retry backoff work",
+    "what computes the final score",
+    "how are webhook events processed",
+    "where is the schema migration logic",
+    "how is concurrency controlled",
+    "what dispatches incoming events",
+    "how is the work queue consumed",
+    "where are access permissions checked",
+    "how is the embedding generated",
+)
+
 TYPE_WEIGHT: dict[str, float] = {
     "function": 1.0, "method": 1.0, "class": 0.9,
     "interface": 0.85, "impl": 0.85, "block": 0.6, "module": 0.4,
@@ -722,7 +767,11 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
         ("indexed_directory", str(_project_root(base) or base)),
     )
 
-    # Auto-populate calibration distribution if missing (needed for retrieval_confidence)
+    # Auto-populate calibration distribution if missing (needed for retrieval_confidence).
+    # Built from generic natural-language queries (GH #717) rather than symbol-name
+    # self-lookups, so the distribution reflects the real NL-query distance regime.
+    # Guarded by `not cal_row` so a higher-quality fixture-generated calibration
+    # (generate-fixture) is never overwritten here.
     cal_row = db.execute(
         "SELECT value FROM index_meta WHERE key = 'calibration_distances'"
     ).fetchone()
@@ -732,18 +781,8 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
             "SELECT COUNT(*) FROM chunks WHERE orphaned_at IS NULL AND embedded_at IS NOT NULL"
         ).fetchone()[0]
         if chunk_count >= 20:
-            sample_rows = db.execute(
-                "SELECT chunk_name FROM chunks "
-                "WHERE orphaned_at IS NULL AND embedded_at IS NOT NULL "
-                "AND chunk_name IS NOT NULL AND length(chunk_name) > 3 "
-                "AND chunk_type IN ('function', 'method', 'class') "
-                "ORDER BY RANDOM() LIMIT 150"
-            ).fetchall()
             cal_distances: list[float] = []
-            for (chunk_name,) in sample_rows:
-                query = chunk_name.replace("_", " ")
-                if len(query) < 4:
-                    continue
+            for query in _GENERIC_NL_CALIBRATION_QUERIES:
                 try:
                     emb = _embed_text(query)
                     vec_row = db.execute(
@@ -768,7 +807,20 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
                 calibrated = True
                 global _cal_cache
                 _cal_cache = None
-                print(f"Auto-calibrated: stored {len(cal_distances)} distances", file=sys.stderr)
+                print(
+                    f"Auto-calibrated: stored {len(cal_distances)} distances "
+                    f"from {len(_GENERIC_NL_CALIBRATION_QUERIES)} NL queries",
+                    file=sys.stderr,
+                )
+            else:
+                # Every calibration query failed (e.g. Ollama cold-start race):
+                # leave calibration empty so retrieval_confidence falls back to
+                # the linear map rather than silently storing nothing unnoticed.
+                print(
+                    f"WARNING: auto-calibration skipped — 0 of "
+                    f"{len(_GENERIC_NL_CALIBRATION_QUERIES)} NL queries returned a distance",
+                    file=sys.stderr,
+                )
 
     db.commit()
     db.close()
@@ -785,6 +837,31 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
 # ── Search ────────────────────────────────────────────────────────────────────
 
 _cal_cache: list[float] | None = None
+
+
+def _retrieval_confidence(
+    top_vec_distance: float,
+    cal_distances: list[float] | None,
+    has_fts_ranked: bool,
+) -> float:
+    """Query-level confidence (0-1) from the top vector distance.
+
+    Percentile rank against the calibration distribution: a small distance
+    (closer than most calibration queries) → high confidence; a distance beyond
+    the calibration range → ~0. Falls back to a linear map when no calibration
+    exists. When the result has no FTS support, a sub-0.5 confidence is halved
+    (vector-only weak matches are less trustworthy). Pure function — the
+    calibration I/O and caching stay in the caller so this is unit-testable
+    without an embedding backend (GH #717).
+    """
+    if cal_distances:
+        percentile = bisect.bisect_left(cal_distances, top_vec_distance) / len(cal_distances)
+        confidence = round(1.0 - percentile, 3)
+    else:
+        confidence = round(max(0.0, 1.0 - (top_vec_distance / 2.0)), 3)
+    if not has_fts_ranked and confidence < 0.5:
+        confidence = round(confidence * 0.5, 3)
+    return confidence
 
 
 def search(
@@ -883,14 +960,13 @@ def search(
         ).fetchone()
         if cal_row:
             _cal_cache = json.loads(cal_row[0])
-    if _cal_cache:
-        percentile = bisect.bisect_left(_cal_cache, top_vec_distance) / len(_cal_cache)
-        retrieval_confidence = round(1.0 - percentile, 3)
-    else:
+    if not _cal_cache:
         print("WARNING: no calibration data — run generate-fixture first", file=sys.stderr)
-        retrieval_confidence = round(max(0.0, 1.0 - (top_vec_distance / 2.0)), 3)
-    if not fts_ranked and retrieval_confidence < 0.5:
-        retrieval_confidence = round(retrieval_confidence * 0.5, 3)
+    # bool(fts_ranked): a non-empty list means FTS produced results (load-bearing —
+    # vector-only matches with sub-0.5 confidence are down-weighted in the helper).
+    retrieval_confidence = _retrieval_confidence(
+        top_vec_distance, _cal_cache, bool(fts_ranked)
+    )
 
     # Gap-threshold truncation: cut after a large score cliff (keep high-confidence cluster)
     if gap_threshold > 0.0 and len(fused) > 1:
