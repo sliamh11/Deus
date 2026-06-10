@@ -1219,6 +1219,125 @@ def regenerate_codebase_map(repo_root: Path) -> int:
     return 0
 
 
+def _check_vault_writable() -> str | None:
+    """Return a degradation warning if the configured vault is unwritable.
+
+    Fail-open: no vault configured, or any unexpected error, returns ``None``
+    (silent — not every user runs the memory layer). Only a vault that is
+    configured but provably unusable produces a warning, so a silent /tmp
+    session-log fallback can't recur.
+    """
+    try:
+        vault = _vault_root()
+    except OSError as exc:
+        print(f"[session-init] vault path resolution failed: {exc}", file=sys.stderr)
+        return None
+    if vault is None:
+        return None  # no vault configured — stay silent
+
+    vault = vault.expanduser()
+    degraded = (
+        f"MEMORY SYSTEM DEGRADED: vault not writable at {vault} — "
+        "session logs will be lost (check Full Disk Access / permissions)."
+    )
+
+    if not vault.is_dir():
+        return degraded
+
+    try:
+        # NamedTemporaryFile in the target dir exercises both create and the
+        # OS-level write permission; delete=True cleans up on close.
+        with tempfile.NamedTemporaryFile(
+            dir=str(vault), prefix=".deus-writecheck-", delete=True
+        ) as probe:
+            probe.write(b"ok")
+            probe.flush()
+    except (OSError, PermissionError):
+        # Expected failure surface (read-only dir, Full Disk Access denial).
+        return degraded
+    except Exception as exc:  # noqa: BLE001 - fail-open, but never silently
+        print(
+            f"[session-init] vault write check raised "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+    return None
+
+
+def _check_tree_health() -> str | None:
+    """Return a degradation warning if the memory-tree DB has no live root.
+
+    Fail-open: absent DB (optional) or any DB/parse error returns ``None``
+    (silent). A warning fires only for the dead-tree failure mode — root lost
+    or tree emptied by a migration — distinguishing root-absent from empty.
+    """
+    import sqlite3  # lazy
+
+    db_path = Path(
+        os.environ.get("DEUS_MEMORY_TREE_DB", "~/.deus/memory_tree.db")
+    ).expanduser()
+    if not db_path.exists():
+        return None  # memory tree is optional — stay silent
+
+    root_absent_msg = (
+        "MEMORY SYSTEM DEGRADED: memory tree root (MEMORY_TREE.md) is missing "
+        "— run `python3 scripts/memory_tree.py build` then `check`."
+    )
+    empty_tree_msg = (
+        "MEMORY SYSTEM DEGRADED: memory tree is empty (root present, no "
+        "children) — run `python3 scripts/memory_tree.py build` then `check`."
+    )
+
+    conn = None
+    try:
+        uri = f"file:{db_path}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+        active_count = conn.execute(
+            "SELECT COUNT(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0]
+        root_count = conn.execute(
+            "SELECT COUNT(*) FROM nodes "
+            "WHERE orphaned_at IS NULL AND path LIKE '%MEMORY_TREE.md'"
+        ).fetchone()[0]
+    except sqlite3.Error as exc:
+        # Missing table / locked / corrupt DB — treat as not-degraded (the
+        # schema may predate this check); log so it isn't fully invisible.
+        print(
+            f"[session-init] tree health check skipped (sqlite): {exc}",
+            file=sys.stderr,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001 - fail-open, but never silently
+        print(
+            f"[session-init] tree health check raised "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return None
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if root_count < 1:
+        return root_absent_msg
+    if active_count <= 1:
+        return empty_tree_msg
+    return None
+
+
+def _emit_session_integrity() -> None:
+    """Emit a combined SessionStart warning if any integrity check fails.
+
+    Silent when healthy. Each check is independently fail-open, so a fault in
+    one cannot suppress the other or block session start.
+    """
+    warnings = [w for w in (_check_vault_writable(), _check_tree_health()) if w]
+    if warnings:
+        _session_context("\n".join(warnings))
+
+
 def run_session_init(repo_root: Path) -> int:
     global _PATTERN_ROUTES_CACHE
     # .admin-merge-standing is intentionally absent -- it is bounded by expiry, not session lifetime.
@@ -1238,6 +1357,7 @@ def run_session_init(repo_root: Path) -> int:
     _PATTERN_ROUTES_CACHE = None
     _INJECTED_DOCS.clear()
     _sync_atom_kinds_on_init(repo_root)
+    _emit_session_integrity()
     return 0
 
 
@@ -2309,6 +2429,25 @@ def _additional_context(context: str) -> None:
         {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
+                "additionalContext": context[:CONTEXT_LIMIT],
+            }
+        }
+    )
+
+
+def _session_context(context: str) -> None:
+    """Emit additionalContext from a SessionStart hook.
+
+    Distinct from ``_additional_context`` (which targets UserPromptSubmit):
+    the ``hookEventName`` must match the event the hook is registered under,
+    so SessionStart handlers cannot reuse the UserPromptSubmit emitter.
+    """
+    # SessionStart hookSpecificOutput schema — matches prior art:
+    # standards_pack.py:279, vault_context_hook.py:149.
+    _json(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
                 "additionalContext": context[:CONTEXT_LIMIT],
             }
         }
