@@ -154,3 +154,30 @@ jobs:
 
       - name: Tests
         run: npx vitest run
+
+  test-agent-runner:
+    runs-on: ubuntu-latest
+    # PR-only, mirroring test-packages (merge queue is not enabled on this repo).
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            agent-runner:
+              - 'container/agent-runner/**'
+      - uses: actions/setup-node@v6
+        if: steps.filter.outputs.agent-runner == 'true'
+        with:
+          node-version: 20
+      - name: Test agent-runner
+        if: steps.filter.outputs.agent-runner == 'true'
+        working-directory: container/agent-runner
+        run: |
+          npm ci
+          # vitest isn't a declared dep (the container Dockerfile installs devDeps
+          # into the runtime image), so declaring it would bloat the agent image.
+          # Install ephemerally, pinned to the root's version (see root package-lock).
+          npm install --no-save vitest@4.1.8
+          npx vitest run
