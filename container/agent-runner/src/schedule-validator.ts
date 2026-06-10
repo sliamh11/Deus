@@ -23,13 +23,15 @@ export function validateSchedule(
   const { schedule_type, schedule_value, target_group_jid } = input;
 
   if (schedule_type === 'cron') {
+    // cron-parser silently accepts empty/whitespace strings; guard before parse.
+    const invalidCron = `Invalid cron: "${schedule_value}". Use format like "0 9 * * *" or "*/5 * * * *".`;
+    if (!schedule_value.trim()) {
+      return { ok: false, error: invalidCron };
+    }
     try {
       CronExpressionParser.parse(schedule_value);
     } catch {
-      return {
-        ok: false,
-        error: `Invalid cron: "${schedule_value}". Use format like "0 9 * * *" or "*/5 * * * *".`,
-      };
+      return { ok: false, error: invalidCron };
     }
   } else if (schedule_type === 'interval') {
     const ms = parseInt(schedule_value, 10);
