@@ -157,3 +157,24 @@ export async function handleXIpc(
   }
   return true;
 }
+
+// Structural copy of SkillIpcHandler (src/skills/registry.ts) — keeps host.ts
+// free of any src/ import so tsconfig.skills.json compiles it standalone.
+// `deps` is `unknown` because x-integration uses no IpcDeps method.
+type RegisterFn = (
+  name: string,
+  handler: (
+    data: Record<string, unknown>,
+    sourceGroup: string,
+    isControlGroup: boolean,
+    deps: unknown,
+  ) => Promise<boolean>,
+) => void;
+
+export function register(reg: RegisterFn): void {
+  // dataDir mirrors src/config.ts:55 DATA_DIR (= path.resolve(process.cwd(), 'data')).
+  const dataDir = path.resolve(process.cwd(), 'data');
+  reg('x-integration', (data, sourceGroup, isControlGroup, _deps) =>
+    handleXIpc(data, sourceGroup, isControlGroup, dataDir),
+  );
+}
