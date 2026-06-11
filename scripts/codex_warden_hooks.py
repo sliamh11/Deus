@@ -2631,10 +2631,16 @@ def run_memory_retrieval(event: dict[str, Any], repo_root: Path) -> int:
     if not tree.exists():
         return 0
 
-    abstain = os.environ.get("DEUS_TREE_ABSTAIN", "0.45")
+    # Pin --abstain only when explicitly set to a non-empty value; otherwise the
+    # query subcommand defaults to DEFAULT_ABSTAIN_THRESHOLD (the single
+    # env -> learned-artifact -> provider-default resolution chain).
+    cmd = [sys.executable, str(tree), "query", prompt, "--json", "-k", "3"]
+    abstain = os.environ.get("DEUS_TREE_ABSTAIN", "").strip()
+    if abstain:
+        cmd += ["--abstain", abstain]
     try:
         result = subprocess.run(
-            [sys.executable, str(tree), "query", prompt, "--json", "-k", "3", "--abstain", abstain],
+            cmd,
             cwd=repo_root,
             text=True,
             stdout=subprocess.PIPE,

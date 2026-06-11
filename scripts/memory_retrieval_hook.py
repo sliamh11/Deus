@@ -13,7 +13,6 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 MIN_PROMPT_LEN = 10
 TOP_K = 3
-DEFAULT_ABSTAIN = "0.45"
 MAX_CONTEXT_CHARS = 4096
 
 
@@ -38,7 +37,13 @@ def main() -> None:
         new_terms = sc.extract_terms(prompt)
         concepts = sc.update_concepts(session_id, new_terms) or None
 
-    abstain = float(os.environ.get("DEUS_TREE_ABSTAIN", DEFAULT_ABSTAIN))
+    # Let the library own threshold resolution (env -> learned artifact ->
+    # provider-aware default). Pass None unless DEUS_TREE_ABSTAIN is set to a
+    # non-empty value, so memory_query.recall falls back to
+    # memory_tree.DEFAULT_ABSTAIN_THRESHOLD instead of a hook-local hardcode.
+    # (Empty/whitespace is treated as unset, not float("") -> ValueError.)
+    _env_abstain = os.environ.get("DEUS_TREE_ABSTAIN", "").strip()
+    abstain = float(_env_abstain) if _env_abstain else None
 
     result = mq.recall(
         prompt,

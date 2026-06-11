@@ -862,6 +862,41 @@ def test_memory_retrieval_injects_vault_result(monkeypatch, tmp_path, capsys):
     assert "Brain Dump" not in context
 
 
+def test_memory_retrieval_omits_abstain_flag_unless_env_set(monkeypatch, tmp_path):
+    """#766: the subprocess query omits --abstain unless DEUS_TREE_ABSTAIN is set,
+    so memory_tree's resolution chain (env -> learned artifact -> provider default)
+    owns the threshold instead of a hook-local 0.45 hardcode."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "memory_tree.py").write_text("", encoding="utf-8")
+
+    captured: dict = {}
+
+    def fake_run(*args, **kwargs):
+        captured["argv"] = list(args[0])
+        return subprocess.CompletedProcess(
+            args[0], 0, stdout=json.dumps({"fell_back": True})
+        )
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+
+    monkeypatch.delenv("DEUS_TREE_ABSTAIN", raising=False)
+    hooks.run_memory_retrieval(prompt_event(repo, "remember this"), repo)
+    assert "--abstain" not in captured["argv"]
+
+    # Empty / whitespace is treated as unset (aligned with the main-thread hook).
+    monkeypatch.setenv("DEUS_TREE_ABSTAIN", "  ")
+    hooks.run_memory_retrieval(prompt_event(repo, "remember this"), repo)
+    assert "--abstain" not in captured["argv"]
+
+    monkeypatch.setenv("DEUS_TREE_ABSTAIN", "0.37")
+    hooks.run_memory_retrieval(prompt_event(repo, "remember this"), repo)
+    argv = captured["argv"]
+    assert "--abstain" in argv
+    assert argv[argv.index("--abstain") + 1] == "0.37"
+
+
 def test_memory_retrieval_blocks_vault_path_traversal(monkeypatch, tmp_path, capsys):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
