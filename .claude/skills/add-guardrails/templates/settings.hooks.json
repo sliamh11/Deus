@@ -1,0 +1,63 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v python3 >/dev/null 2>&1 && python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-gate.py\" session-init || true'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v python3 >/dev/null 2>&1 && python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-gate.py\" plan-mode-invalidator || true'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v python3 >/dev/null 2>&1 && python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-gate.py\" plan-review-gate || true'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "ExitPlanMode|Task|Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v python3 >/dev/null 2>&1 && python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-gate.py\" plan-mode-invalidator || true'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'command -v python3 >/dev/null 2>&1 && python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-gate.py\" code-review-gate || true'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'command -v python3 >/dev/null 2>&1 && python3 \"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-gate.py\" verification-gate || true'",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

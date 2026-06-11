@@ -62,3 +62,15 @@ timestamp. It never overwrites the project's memory settings.
   missing, that engine is skipped with a warning — onboarding still completes
   for whatever is available. Run `/setup` to register the code-intelligence
   MCP servers if they are missing.
+
+## Related: development guardrails
+
+`/onboard` sets up code-intelligence search; it does not install review gates.
+After onboarding, if the project has **no** review gates yet — i.e. neither
+`.claude/hooks/warden-gate.py` (the portable kit) nor `scripts/codex_warden_hooks.py`
+(the native gate) exists in the repo — print a one-line pointer:
+
+> Dev-process guardrails (plan-review / code-review / verification gates) are not
+> installed in this repo. Run `/add-guardrails` to add them.
+
+Skip the pointer when either gate is already present.
