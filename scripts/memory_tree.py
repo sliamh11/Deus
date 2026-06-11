@@ -2261,7 +2261,12 @@ def calibrate_sweep(
             return _cache[text]
         return _orig_embed(text)
 
-    import memory_tree as _self
+    # Patch the EXECUTING module: under CLI invocation __name__ is
+    # "__main__" and `import memory_tree` would load a second module copy,
+    # leaving benchmark() calling the unpatched embed_text (one live Ollama
+    # call per query per combo). sys.modules[__name__] resolves to the
+    # right module object in both invocation modes.
+    _self = sys.modules[__name__]
     _self.embed_text = _cached_embed
 
     abstain_vals = [round(x, 2) for x in _frange(0.25, 0.41, 0.03)]

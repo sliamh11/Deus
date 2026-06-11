@@ -2222,3 +2222,66 @@ class TestStandardsPack:
         assert pos_a < pos_b < pos_c, (
             f"expected alphabetical order; positions: A={pos_a} B={pos_b} C={pos_c}"
         )
+
+
+
+# ── calibrate_sweep embed cache ───────────────────────────────────────────────
+
+class TestCalibrateSweepCache:
+    def test_cache_effective_under_cli_module_identity(self, fake_vault, tmp_path, monkeypatch):
+        """Regression: calibrate_sweep must patch the EXECUTING module.
+
+        Under CLI invocation the module is named "__main__", and the old
+        `import memory_tree as _self` patched a second module copy — every
+        per-combo retrieval then hit the live embedder (~107k Ollama calls
+        for a full sweep). Simulate that identity split by loading the
+        script under a different module name and counting embed calls:
+        only the pre-cache pass may embed, once per unique query.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "memory_tree_cli_sim", _ROOT / "scripts" / "memory_tree.py"
+        )
+        sim = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, "memory_tree_cli_sim", sim)
+        spec.loader.exec_module(sim)
+
+        stub = StubEmbed()
+        calls: list[str] = []
+
+        def counting_embed(text: str) -> list[float]:
+            calls.append(text)
+            return stub(text)
+
+        monkeypatch.setattr(sim, "embed_text", counting_embed)
+        monkeypatch.setattr(sim, "embed_batch_text", lambda ts: [stub(t) for t in ts])
+        monkeypatch.setattr(
+            sim, "generate_approach_angles", lambda d, b: ["q one", "q two", "q three"]
+        )
+        # Shrink the grid: 1 value per float dim keeps the test fast while
+        # still exercising multiple combos via the entity-overlap dim.
+        monkeypatch.setattr(sim, "_frange", lambda start, stop, step: [start])
+
+        db = sim.open_db(tmp_path / "sweep.db")
+        try:
+            sim.build_tree(fake_vault, db)
+            calls.clear()
+
+            dataset = [
+                {"query": "background career history", "expected_path": "Persona/life/background.md"},
+                {"query": "totally unrelated nonsense", "abstain": True},
+            ]
+            result = sim.calibrate_sweep(db, dataset, k=3)
+
+            assert result["total_combos"] == 3  # 1*1*1*1 floats x 3 entity-overlap
+            unique_queries = {item["query"] for item in dataset}
+            assert set(calls) == unique_queries
+            assert len(calls) == len(unique_queries), (
+                "embed called per-combo — the pre-cache monkeypatch missed "
+                "the executing module"
+            )
+            # The finally-block must restore the original (our counting stub).
+            assert sim.embed_text is counting_embed
+        finally:
+            db.close()

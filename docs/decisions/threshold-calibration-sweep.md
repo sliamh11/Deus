@@ -35,8 +35,12 @@ Run `deus sweep` after any change to the retrieval pipeline:
 ### Implementation
 
 - Function: `calibrate_sweep()` in `scripts/memory_tree.py`
-- Pre-caches query embeddings before sweeping (~14s upfront) to avoid
-  redundant Ollama calls across ~108-480 combinations
+- Pre-caches query embeddings before sweeping (~5s upfront) to avoid
+  redundant Ollama calls across the grid. The cache monkeypatch targets
+  `sys.modules[__name__]` — under CLI invocation the executing module is
+  `__main__`, and patching via `import memory_tree` would hit a second
+  module copy, silently disabling the cache (observed: a 92s sweep ran
+  ~7h making one live embed call per query per combo)
 - CLI: `python3 scripts/memory_tree.py calibrate-sweep <dataset.jsonl> --json`
 - Wrapper: `deus sweep [optional-dataset-path]`
 - Output: best thresholds, top-5 Pareto frontier, current defaults for
@@ -46,6 +50,10 @@ Run `deus sweep` after any change to the retrieval pipeline:
 
 - Never blend recall and abstain_accuracy into one score (per
   benchmark-regression-gate.md §3)
-- Grid size bounded: 4-6 values per dimension × 4 dimensions = 108-480 combos
-- Pre-cached embeddings keep wall-clock under 60s for 108 combos
+- Grid size bounded: the grid has grown with the pipeline — a 5th
+  dimension (`min_entity_overlap`, added with the coherence gate) brought
+  it to 6×4×5×4×3 = 1,440 combos. Acceptable because per-combo cost with
+  an effective embed cache is ~0.1s
+- Pre-cached embeddings keep wall-clock ~90s for 1,440 combos
+  (measured 2026-06-10, 74-query dataset)
 - Thresholds are env-var tunable — the sweep recommends, the operator decides
