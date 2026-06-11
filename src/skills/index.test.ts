@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { loadSkillIpcHandlers } from './index.js';
+import { logger } from '../logger.js';
 
 // Mock fs and logger
 vi.mock('fs');
@@ -54,5 +55,43 @@ describe('loadSkillIpcHandlers', () => {
     expect(fs.readdirSync).toHaveBeenCalledWith(skillsDir, {
       withFileTypes: true,
     });
+  });
+
+  it('warns loudly when a skill has host.ts but no compiled host.js', async () => {
+    const skillsDir = path.join(process.cwd(), '.claude', 'skills');
+    vi.mocked(fs.existsSync).mockImplementation((p) => {
+      const s = String(p);
+      if (s === skillsDir) return true; // skills dir exists
+      if (s.endsWith('host.js')) return false; // not compiled
+      if (s.endsWith('host.ts')) return true; // source present
+      return false;
+    });
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      { name: 'x-integration', isDirectory: () => true },
+    ] as never);
+
+    await loadSkillIpcHandlers();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ skill: 'x-integration' }),
+      expect.stringContaining('no compiled host.js'),
+    );
+  });
+
+  it('does not warn when a compiled host.js is present', async () => {
+    const skillsDir = path.join(process.cwd(), '.claude', 'skills');
+    vi.mocked(fs.existsSync).mockImplementation((p) => {
+      const s = String(p);
+      if (s === skillsDir) return true;
+      if (s.endsWith('host.js')) return true; // compiled present
+      return false;
+    });
+    vi.mocked(fs.readdirSync).mockReturnValue([
+      { name: 'x-integration', isDirectory: () => true },
+    ] as never);
+
+    await loadSkillIpcHandlers();
+
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });

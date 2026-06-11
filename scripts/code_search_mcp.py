@@ -60,7 +60,7 @@ def _run_mcp_server() -> None:
         Each result includes two confidence scores:
         - confidence (0-1): per-result ranking quality (RRF score normalized).
         - retrieval_confidence (0-1): query-level signal indicating how well the
-          query matches the indexed codebase. Below 0.3 = likely out-of-domain.
+          query matches the indexed codebase. Below 0.25 = likely out-of-domain.
           This value is identical across all results for the same query.
 
         Args:

@@ -23,8 +23,9 @@ import {
   incrementAttemptCount,
   appendReviseHistory,
   computeEnrichmentHash,
+  getIssuePr,
 } from './db.js';
-import { triggerAutoMerge } from './linear-auto-merge.js';
+import { triggerAutoMerge, queryPrState } from './linear-auto-merge.js';
 import { notifyPipelineStep } from './linear-notifications.js';
 import { syncVaultPending } from './linear-vault-sync.js';
 import { RetryableError, UserError, FatalError } from './errors/index.js';
@@ -917,6 +918,28 @@ async function handleIssueUpdate(
     );
     return;
   }
+
+  // LIA-119: skip bouncer eval when the issue already has an open or merged PR.
+  // Triage solves this on fresh agent dispatch (triage_skip_open_pr) but the
+  // bypass doesn't reach the bouncer when a state transition re-enters it (e.g.
+  // In Review → Todo). Inserting BEFORE inFlightGate.add keeps the fast-path
+  // clean — no lock to release on early return.
+  // CLOSED (abandoned) PRs fall through to normal eval so a fresh agent can run.
+  if (gateSpec.name === 'bouncer-gate') {
+    const prRec = getIssuePr(data.id);
+    if (prRec?.pr_url) {
+      const prState = await queryPrState(prRec.pr_url);
+      if (prState && (prState.state === 'OPEN' || prState.state === 'MERGED')) {
+        updateWebhookEventStatus(eventKey, 'done', { verdict: 'skipped' });
+        logger.info(
+          { issueId: data.id, pr: prRec.pr_url, prState: prState.state },
+          'linear-webhook: bouncer skip — open/merged PR',
+        );
+        return;
+      }
+    }
+  }
+
   ctx.inFlightGate.add(data.id);
 
   // --- Bouncer entry-path router: short-circuit on fresh enrichment hash ---
@@ -1924,3 +1947,7 @@ export function startLinearWebhookServer(
     });
   });
 }
+
+// Test-only export — allows unit tests to drive handleIssueUpdate directly
+// without starting the full webhook server. Pattern mirrors _setSleepFnForTests.
+export const _handleIssueUpdateForTest = handleIssueUpdate;

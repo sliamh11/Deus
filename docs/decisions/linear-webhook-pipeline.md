@@ -215,6 +215,7 @@ The bouncer gate uses the enrichment hash for a fast-path: if the hash matches t
 5. **`allowedFrom` check** - illegal transitions (e.g., Backlog directly to Done) are immediately reverted without running a gate agent.
 6. **Cooldown** - if a gate ran for this issue within `cooldown_minutes`, the previous verdict is reused and no agent is spawned.
 7. **`inFlightGate`** - if a gate is already running for this issue, the new event is dropped. One gate run per issue at a time.
+8. **Bouncer open/merged PR bypass** (LIA-119) - if the issue has an open or merged PR in the DB, `queryPrState` confirms the live GitHub state and the bouncer skips without LLM eval. Prevents spurious REVISE on issues with completed work when a state transition re-enters the bouncer (e.g. In Review → Todo). CLOSED PRs fall through to normal eval.
 
 ## UX -- Advise vs Strict Mode
 

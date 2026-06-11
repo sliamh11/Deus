@@ -36,11 +36,22 @@ export async function loadSkillIpcHandlers(): Promise<void> {
     const hostJs = path.join(SKILLS_DIR, entry.name, 'host.js');
     const hostTs = path.join(SKILLS_DIR, entry.name, 'host.ts');
 
-    const resolvedPath = fs.existsSync(hostJs)
-      ? hostJs
-      : fs.existsSync(hostTs)
-        ? hostTs
-        : null;
+    const hasJs = fs.existsSync(hostJs);
+    const hasTs = fs.existsSync(hostTs);
+    if (!hasJs && hasTs) {
+      // The compiled production service (node dist/) has no TS loader, so a
+      // direct import() of host.ts throws ERR_UNKNOWN_FILE_EXTENSION and the
+      // handler silently never registers. Make that misconfig LOUD. Run
+      // `npm run build` (tsconfig.skills.json) to emit host.js; the .ts
+      // fallback below only works under tsx/dev.
+      logger.warn(
+        { skill: entry.name, hostTs },
+        'Skill ships host.ts but no compiled host.js — it will NOT load in the ' +
+          'compiled production service. Run `npm run build` to generate host.js.',
+      );
+    }
+
+    const resolvedPath = hasJs ? hostJs : hasTs ? hostTs : null;
     if (!resolvedPath) continue;
 
     try {
