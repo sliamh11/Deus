@@ -4,6 +4,24 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.22.0](https://github.com/sliamh11/Deus/compare/v1.21.0...v1.22.0) (2026-06-11)
+
+
+### Features
+
+* **memory:** session health check, scaffold-root recovery, calibrate-sweep cache fix ([#767](https://github.com/sliamh11/Deus/issues/767)/[#768](https://github.com/sliamh11/Deus/issues/768)/[#769](https://github.com/sliamh11/Deus/issues/769)) ([#779](https://github.com/sliamh11/Deus/issues/779)) ([e379e4a](https://github.com/sliamh11/Deus/commit/e379e4a23381a6e283683769f0983d73dc5b672c))
+* **skills:** add /add-guardrails portable warden gate installer ([#773](https://github.com/sliamh11/Deus/issues/773)) ([971da62](https://github.com/sliamh11/Deus/commit/971da6247d013f238c4fc8b931a1c63b2f686f95))
+
+
+### Bug Fixes
+
+* **code-search:** calibrate retrieval_confidence on NL queries not symbol names ([#717](https://github.com/sliamh11/Deus/issues/717)) ([#765](https://github.com/sliamh11/Deus/issues/765)) ([2846f8e](https://github.com/sliamh11/Deus/commit/2846f8eb6aae029f16ccfa98459aceafe0ad3e93))
+* **code-search:** re-tune confidence abstain threshold to 0.25 (LIA-204) ([#781](https://github.com/sliamh11/Deus/issues/781)) ([303afde](https://github.com/sliamh11/Deus/commit/303afdeb952220d757b564af4146d3314ae4a3ae))
+* **compress:** restore 3 dangling branches/*.md helper files (LIA-203) ([#777](https://github.com/sliamh11/Deus/issues/777)) ([5ff13af](https://github.com/sliamh11/Deus/commit/5ff13af2bea012799971bec608f1259901054830))
+* **linear-webhook:** bypass bouncer-gate for issues with an open/merged PR (LIA-119) ([#778](https://github.com/sliamh11/Deus/issues/778)) ([5eef37f](https://github.com/sliamh11/Deus/commit/5eef37fcdc067c364cd88e3085db30607da3ea45))
+* **memory:** stop hooks hardcoding the abstain threshold ([#766](https://github.com/sliamh11/Deus/issues/766)) ([#782](https://github.com/sliamh11/Deus/issues/782)) ([f33e191](https://github.com/sliamh11/Deus/commit/f33e1910de5b8b8bc43913597bf547417a7c4524))
+* **skills:** load x-integration host handler in the compiled prod service (LIA-191) ([#780](https://github.com/sliamh11/Deus/issues/780)) ([d3e4cb5](https://github.com/sliamh11/Deus/commit/d3e4cb56f8f31c3c8a9b77a61a9d6ecb71757e5a))
+
 ## [1.21.0](https://github.com/sliamh11/Deus/compare/v1.20.0...v1.21.0) (2026-06-10)
 
 
