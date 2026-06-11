@@ -864,6 +864,28 @@ def test_memory_retrieval_injects_vault_result(monkeypatch, tmp_path, capsys):
     assert "Brain Dump" not in context
 
 
+def test_memory_retrieval_omits_abstain_flag(monkeypatch, tmp_path):
+    """Threshold resolution belongs to the memory_tree CLI (env -> learned
+    artifact -> provider default); the hook must not shadow it."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "memory_tree.py").write_text("", encoding="utf-8")
+
+    captured: list[list[str]] = []
+
+    def fake_run(*args, **kwargs):
+        captured.append(args[0])
+        return subprocess.CompletedProcess(args[0], 0, stdout="")
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+
+    assert hooks.run_memory_retrieval(prompt_event(repo, "remember this"), repo) == 0
+
+    assert len(captured) == 1
+    assert "--abstain" not in captured[0]
+
+
 def test_memory_retrieval_blocks_vault_path_traversal(monkeypatch, tmp_path, capsys):
     hooks = load_hooks()
     repo = git_repo(tmp_path)

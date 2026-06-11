@@ -2643,10 +2643,11 @@ def run_memory_retrieval(event: dict[str, Any], repo_root: Path) -> int:
     if not tree.exists():
         return 0
 
-    abstain = os.environ.get("DEUS_TREE_ABSTAIN", "0.45")
+    # No --abstain: the child inherits DEUS_TREE_ABSTAIN and resolves its
+    # own threshold chain (env -> learned artifact -> provider default).
     try:
         result = subprocess.run(
-            [sys.executable, str(tree), "query", prompt, "--json", "-k", "3", "--abstain", abstain],
+            [sys.executable, str(tree), "query", prompt, "--json", "-k", "3"],
             cwd=repo_root,
             text=True,
             stdout=subprocess.PIPE,
