@@ -100,6 +100,30 @@ describe('image processing', () => {
       const messages = [{ content: 'just text' }];
       expect(parseImageReferences(messages as any)).toEqual([]);
     });
+
+    it('drops path-traversal references that escape the attachments dir', () => {
+      const messages = [
+        { content: '[Image: attachments/img-123.jpg] ok' },
+        {
+          content:
+            '[Image: attachments/../../../../proc/self/environ] exfil attempt',
+        },
+        { content: '[Image: attachments/../vault/CLAUDE.md]' },
+        { content: '[Image: attachments/sub/../img-789.jpg]' },
+      ];
+      const refs = parseImageReferences(messages as any);
+
+      // Escaping refs are dropped; in-tree paths survive. The 'sub/../' case is
+      // not realistic processImage output — it's a boundary check that the guard
+      // keys on actual escape, not on the mere presence of '..'.
+      expect(refs).toEqual([
+        { relativePath: 'attachments/img-123.jpg', mediaType: 'image/jpeg' },
+        {
+          relativePath: 'attachments/sub/../img-789.jpg',
+          mediaType: 'image/jpeg',
+        },
+      ]);
+    });
   });
 
   describe('host-side image flow', () => {

@@ -53,6 +53,20 @@ export async function processImage(
   return { content, relativePath };
 }
 
+/**
+ * Host-side defense-in-depth: drop any `relativePath` that escapes the group's
+ * `attachments/` subtree before it reaches the container (the regex capture
+ * permits `..`, e.g. `attachments/../../proc/self/environ`). `processImage`
+ * only ever emits `attachments/img-*.jpg`, so no legitimate path is rejected.
+ * `path.posix` is deliberate — relativePaths are always POSIX container paths
+ * regardless of host OS.
+ */
+function isWithinAttachments(relativePath: string): boolean {
+  if (path.posix.isAbsolute(relativePath)) return false;
+  const normalized = path.posix.normalize(relativePath);
+  return normalized === 'attachments' || normalized.startsWith('attachments/');
+}
+
 export function parseImageReferences(
   messages: Array<{ content: string }>,
 ): ImageAttachment[] {
@@ -61,8 +75,10 @@ export function parseImageReferences(
     let match: RegExpExecArray | null;
     IMAGE_REF_PATTERN.lastIndex = 0;
     while ((match = IMAGE_REF_PATTERN.exec(msg.content)) !== null) {
+      const relativePath = match[1];
+      if (!isWithinAttachments(relativePath)) continue;
       // Always JPEG — processImage() normalizes all images to .jpg
-      refs.push({ relativePath: match[1], mediaType: 'image/jpeg' });
+      refs.push({ relativePath, mediaType: 'image/jpeg' });
     }
   }
   return refs;

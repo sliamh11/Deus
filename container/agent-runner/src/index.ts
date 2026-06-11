@@ -37,6 +37,7 @@ import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 import { createToolCallLogHook } from './tool-call-log.js';
 import { writeAvailableTools } from './available-tools-log.js';
 import type { AgentRuntimeId } from './tool-broker.js';
+import { resolveGroupAttachmentPath } from './tool-broker.js';
 import { HookDispatchService } from './hook-dispatch-service.js';
 import { createPreToolUseHook, dispatchHost } from './pre-tool-use-hook.js';
 import { createBlockingPreToolUseObserver } from './pre-tool-use-gate-observer.js';
@@ -667,15 +668,20 @@ async function runQuery(
   if (containerInput.imageAttachments?.length) {
     const blocks: ContentBlock[] = [];
     for (const img of containerInput.imageAttachments) {
-      const imgPath = path.join('/workspace/group', img.relativePath);
       try {
+        // Guard against path traversal (e.g. '../../proc/self/environ'), the
+        // same guard the openai/llama backends use. DELIBERATE divergence: those
+        // call it outside the try, so a traversal aborts the whole query; we keep
+        // it inside so one malicious [Image: ...] tag is skipped + logged and the
+        // run continues (any group member could otherwise wedge a query).
+        const imgPath = resolveGroupAttachmentPath(img.relativePath);
         const data = fs.readFileSync(imgPath).toString('base64');
         blocks.push({
           type: 'image',
           source: { type: 'base64', media_type: img.mediaType, data },
         });
       } catch (err) {
-        log(`Failed to load image: ${imgPath}`);
+        log(`Failed to load image: ${img.relativePath}`);
       }
     }
     if (blocks.length > 0) {
