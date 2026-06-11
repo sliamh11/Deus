@@ -59,3 +59,22 @@ def test_717_nl_calibration_beats_symbol_self_lookup():
     assert rc(nl_query_dist, nl_cal, True) > rc(nl_query_dist, symbol_cal, True)
     # Genuinely out-of-domain queries still rank far -> low confidence.
     assert rc(0.70, nl_cal, True) <= 0.1
+
+
+def test_lia204_abstain_threshold_value():
+    # LIA-204 re-tuned the shared abstain/warning threshold off the old 0.3.
+    # Guard against accidental drift back.
+    assert code_search.CONFIDENCE_ABSTAIN_THRESHOLD == 0.25
+
+
+def test_lia204_threshold_separates_indomain_from_ood():
+    """The 0.25 threshold keeps in-domain NL matches above the warning line
+    while still flagging far out-of-domain queries (LIA-204 sweep choice)."""
+    # Generic-NL calibration shape (post-#717).
+    cal = [0.38, 0.42, 0.43, 0.44, 0.46, 0.48, 0.50, 0.53, 0.55, 0.57]
+    thr = code_search.CONFIDENCE_ABSTAIN_THRESHOLD
+    # An in-domain match (low NN distance) scores well above threshold ->
+    # no false "outside indexed codebase" warning.
+    assert rc(0.40, cal, True) >= thr
+    # A far out-of-domain match scores below threshold -> correctly flagged.
+    assert rc(0.95, cal, True) < thr

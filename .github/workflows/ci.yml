@@ -56,6 +56,9 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Typecheck skill hosts
+        run: npx tsc -p tsconfig.skills.json --noEmit
+
       - name: Tests
         run: npx vitest run
 

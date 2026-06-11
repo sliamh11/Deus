@@ -21,6 +21,8 @@ from datetime import date
 from pathlib import Path
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
 
 SEMANTIC_CACHE = Path.home() / ".deus" / "resume_semantic_cache.txt"
 SEMANTIC_TTL = 14400  # 4 hours
@@ -119,10 +121,22 @@ def main() -> None:
 
     config = _load_config()
     vault = _vault_path(config)
+
+    # Memory-system health first: a catastrophic failure (unwritable vault, lost
+    # tree DB / root, dead graph) must surface LOUDLY rather than silently nuke
+    # recall — the "memory died for 4 days" incident. Healthy → nothing emitted.
+    degraded = _memory_degraded_section(vault)
+
     if not vault or not vault.is_dir():
+        # Vault unavailable: there is no context to inject, but do NOT fail
+        # silently when the health probe found (and can explain) the degradation.
+        if degraded:
+            _emit(degraded)
         return
 
     sections = []
+    if degraded:
+        sections.append(degraded)
 
     vault_files = _load_vault_files(vault, config)
     if vault_files:
@@ -143,14 +157,32 @@ def main() -> None:
     if not sections:
         return
 
-    context = "\n\n".join(sections)
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": context,
-        }
-    }
-    json.dump(output, sys.stdout)
+    _emit("\n\n".join(sections))
+
+
+def _emit(context: str) -> None:
+    json.dump(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "additionalContext": context,
+            }
+        },
+        sys.stdout,
+    )
+
+
+def _memory_degraded_section(vault: Path | None) -> str:
+    """Loud DEGRADED banner when memory health is catastrophic, else ''.
+
+    Never let a health-probe error block or corrupt session startup."""
+    try:
+        import memory_health as mh
+
+        ok, _severity, lines = mh.assess_memory_health(vault)
+        return "" if ok else mh.render_degraded_section(lines)
+    except Exception:
+        return ""
 
 
 if __name__ == "__main__":

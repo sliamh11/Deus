@@ -141,6 +141,14 @@ def _migrate_legacy_if_match(root: Path | None, dbp: Path) -> None:
 DEFAULT_TOP_K = 10
 DEFAULT_RRF_K = int(os.environ.get("DEUS_CODE_SEARCH_RRF_K", "60"))
 
+# Retrieval-confidence threshold below which a query is flagged as likely
+# outside the indexed codebase (search() warning) and counted as a correct
+# abstain (benchmark()). Re-tuned for the generic-NL calibration from #717: a
+# sweep over scripts/tests/fixtures/code_search_bench.jsonl found 0.25 is the
+# lowest threshold reaching the 0.85 abstain-accuracy plateau while minimizing
+# in-domain false-flags (LIA-204).
+CONFIDENCE_ABSTAIN_THRESHOLD = 0.25
+
 # Calibration query set for retrieval_confidence (GH #717).
 # Built from NL-shaped queries, not symbol-name self-lookups: querying
 # `chunk_name.replace("_"," ")` matches its own chunk at artificially tight
@@ -876,7 +884,7 @@ def search(
     Returns results with retrieval_confidence (0-1): query-level signal
     indicating how well the query matches the indexed codebase. Computed
     via percentile rank against a stored calibration distribution. Below
-    0.3 = likely out-of-domain.
+    0.25 = likely out-of-domain.
     """
     dbp = _resolve_db_path()
     _migrate_legacy_if_match(_project_root(), dbp)
@@ -1004,7 +1012,7 @@ def search(
             }
             if top_vec_distance >= 2.0:
                 entry["low_confidence_warning"] = "embedding unavailable — confidence unreliable"
-            elif retrieval_confidence < 0.3:
+            elif retrieval_confidence < CONFIDENCE_ABSTAIN_THRESHOLD:
                 entry["low_confidence_warning"] = "query may be outside indexed codebase"
             results.append(entry)
 
@@ -1295,7 +1303,7 @@ def benchmark(
 
         if expect_abstain:
             abstain_total += 1
-            if ret_conf < 0.3:
+            if ret_conf < CONFIDENCE_ABSTAIN_THRESHOLD:
                 abstain_correct += 1
                 bucket.setdefault("abstain_correct", 0)
                 bucket["abstain_correct"] += 1
