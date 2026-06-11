@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -13,7 +12,6 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 MIN_PROMPT_LEN = 10
 TOP_K = 3
-DEFAULT_ABSTAIN = "0.45"
 MAX_CONTEXT_CHARS = 4096
 
 
@@ -38,12 +36,13 @@ def main() -> None:
         new_terms = sc.extract_terms(prompt)
         concepts = sc.update_concepts(session_id, new_terms) or None
 
-    abstain = float(os.environ.get("DEUS_TREE_ABSTAIN", DEFAULT_ABSTAIN))
-
+    # Threshold resolution belongs to the library: memory_query falls back to
+    # mt.DEFAULT_ABSTAIN_THRESHOLD (env var -> learned artifact -> provider
+    # default). A hook-level default would override learned artifacts and
+    # provider-aware calibration.
     result = mq.recall(
         prompt,
         k=TOP_K,
-        abstain_threshold=abstain,
         source="repo-hook",
         concepts=concepts,
     )
