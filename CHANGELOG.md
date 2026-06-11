@@ -4,6 +4,19 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.21.0](https://github.com/sliamh11/Deus/compare/v1.20.0...v1.21.0) (2026-06-10)
+
+
+### Features
+
+* **evolution:** add generic per-task metrics tracking layer ([#758](https://github.com/sliamh11/Deus/issues/758)) ([dba59a7](https://github.com/sliamh11/Deus/commit/dba59a79d5898bfc34902119b707ddcbb9fb7de6))
+
+
+### Bug Fixes
+
+* **pipeline:** park errored gate's issue even when an exception is thrown (LIA-175) ([#761](https://github.com/sliamh11/Deus/issues/761)) ([adca009](https://github.com/sliamh11/Deus/commit/adca009314214bc20ecb86dd3b03cceb682dffd5))
+* **scheduler:** reject empty/whitespace cron expressions (LIA-201) ([#760](https://github.com/sliamh11/Deus/issues/760)) ([c39a380](https://github.com/sliamh11/Deus/commit/c39a380083f326b3d673ad55fd8aa6fde0488e3a))
+
 ## [1.20.0](https://github.com/sliamh11/Deus/compare/v1.19.0...v1.20.0) (2026-06-09)
 
 
