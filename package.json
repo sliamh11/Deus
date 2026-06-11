@@ -5,7 +5,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc -p packages/mcp-channel-core && for d in packages/*/; do [ \"$d\" != 'packages/mcp-channel-core/' ] && [ -f \"$d/tsconfig.json\" ] && tsc -p \"$d\"; done && tsc",
+    "build": "tsc -p packages/mcp-channel-core && for d in packages/*/; do [ \"$d\" != 'packages/mcp-channel-core/' ] && [ -f \"$d/tsconfig.json\" ] && tsc -p \"$d\"; done && tsc && tsc -p tsconfig.skills.json",
     "postbuild": "python3 scripts/codebase_map.py --output .claude/codebase_map.md",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
