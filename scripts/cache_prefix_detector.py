@@ -21,10 +21,18 @@ Not wired to CI or the fcc proxy by design (the proxy is a third-party uv
 tool); that wiring is deferred and tracked in LIA-205. The parser core is kept
 reusable so a future interceptor can import it.
 
+The single-prefix scan flags volatile *shape*, not confirmed *change*: a
+hex-shaped permanent-memory ULID is correctly flagged yet never churns, so it
+does not actually bust the cache. The `--diff` mode closes that gap -- it diffs
+two real assembled prefixes (earlier vs later request) and reports the offset of
+the first char that ACTUALLY differs, the true reuse ceiling; the shaped-token
+core becomes a secondary attribution signal.
+
 Usage:
     cache_prefix_detector.py <file>        # analyze a file's content
     cache_prefix_detector.py --stdin       # analyze stdin
     cache_prefix_detector.py <file> --json  # structured output
+    cache_prefix_detector.py --diff A B    # true reuse ceiling = first real diff
 """
 
 from __future__ import annotations
@@ -34,6 +42,8 @@ import base64
 import json
 import string
 import sys
+import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -52,6 +62,13 @@ _JWT_CHARS = frozenset(string.ascii_letters + string.digits + "-_.")
 
 _SAMPLE_MAX = 16  # never emit full content -- truncate the sample
 
+# Sanitized-window bounds for `--diff` attribution. `context_before` is the
+# shared tail right before the split (identical in both files); a_after/b_after
+# are the first differing chars from each side. Same "never echo full content"
+# philosophy as _SAMPLE_MAX -- callers pre-slice to these char counts.
+_CONTEXT_BEFORE = 48
+_CONTEXT_AFTER = 24
+
 
 @dataclass(frozen=True)
 class VolatileToken:
@@ -59,11 +76,16 @@ class VolatileToken:
 
     `sample` is truncated (<= _SAMPLE_MAX chars) so we never echo full content
     (a prefix can contain secrets); `offset` is the char index in the prefix.
+    `length` is the token's full (un-truncated) char span -- kept so `--diff`
+    can test whether a divergence offset falls INSIDE a token's span (e.g. a
+    date whose last digit changed). It is deliberately NOT serialized by
+    `as_dict`, so the existing single-prefix JSON contract is unchanged.
     """
 
     offset: int
     kind: str  # "uuid" | "iso8601" | "jwt" | "hex"
     sample: str
+    length: int
 
     def as_dict(self) -> dict:
         return {"offset": self.offset, "kind": self.kind, "sample": self.sample}
@@ -200,7 +222,7 @@ def detect_volatile_tokens(text: str) -> list[VolatileToken]:
     for off, length, kind, raw in candidates:
         if off < cursor:
             continue
-        kept.append(VolatileToken(off, kind, _sample(raw)))
+        kept.append(VolatileToken(off, kind, _sample(raw), length))
         cursor = off + length
     return kept
 
@@ -233,6 +255,118 @@ def analyze_prefix(text: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# `--diff` mode: the AUTHORITATIVE reuse-ceiling signal. The single-prefix scan
+# above flags shape; this diffs two real prefixes for the first char that
+# actually CHANGES. Read-only -- compares, never mutates.
+# ---------------------------------------------------------------------------
+
+
+def _first_divergence(a: str, b: str) -> int | None:
+    """Index of the first differing char between `a` and `b` (= the longest
+    common prefix length), or None if neither diverges within the shared length.
+
+    None covers two cases the caller separates via the lengths: identical
+    strings, and one being a strict prefix of the other (no mismatch in
+    [0, min(len)), so the common prefix is the whole shorter string). Single
+    O(min(len)) scan; never allocates the prefix string."""
+    n = min(len(a), len(b))
+    for i in range(n):
+        if a[i] != b[i]:
+            return i
+    return None
+
+
+def _window(raw: str) -> str:
+    """Escape control chars in a short context slice so a newline/tab cannot
+    corrupt single-line human output. Printable non-ASCII (e.g. Hebrew in the
+    vault prefix) is kept as-is -- `unicode_escape` would obscure it. Callers
+    pre-slice `raw` to a bounded length (never echo full content, same intent
+    as `_sample`)."""
+    out = []
+    for ch in raw:
+        if ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch == "\r":
+            out.append("\\r")
+        elif unicodedata.category(ch)[0] == "C":
+            out.append(f"\\x{ord(ch):02x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def diff_prefixes(a: str, b: str) -> dict:
+    """Diff two assembled prefixes (FILE_A = earlier/reference, FILE_B =
+    later/current) and report the offset of the first char that ACTUALLY
+    differs -- the true local KV-cache reuse ceiling, the signal the
+    single-prefix `analyze_prefix` heuristic can only approximate by shape.
+
+    `prefixes_identical` is ALWAYS present and authoritative: `compact_json`
+    strips the nullable `reuse_ceiling`, so callers must key off the bool.
+    Offsets are char indices -- a tight upper bound on the token-level ceiling
+    (the token holding the first differing char is the first non-reusable one).
+
+    Attribution is secondary. `detect_volatile_tokens` runs on FILE_A; the
+    pre-ceiling region is byte-identical in both files, so the choice of side is
+    immaterial. `shaped_false_alarms` counts shaped tokens lying ENTIRELY before
+    the divergence -- shaped-but-stable tokens the single-prefix heuristic would
+    have flagged but the diff proves reusable (the load-bearing LIA-281 point).
+    The divergence is `shaped` iff a token's span covers the offset. Read-only.
+    """
+    a_len, b_len = len(a), len(b)
+    div = _first_divergence(a, b)
+
+    if div is None and a_len == b_len:
+        # Identical: the whole prefix is reusable, so EVERY shaped token in it
+        # is a false alarm (none of them change).
+        false_alarms = sum(1 for t in detect_volatile_tokens(a) if t.offset < a_len)
+        return {
+            "prefixes_identical": True,
+            "a_len": a_len,
+            "b_len": b_len,
+            "reuse_ceiling": None,
+            # b_len==0 guard wins over the identical->1.0 rule: two empty
+            # strings reuse nothing meaningful.
+            "reuse_ceiling_fraction": 1.0 if b_len else 0.0,
+            "one_is_prefix_of_other": False,
+            "shaped_false_alarms": false_alarms,
+        }
+
+    one_prefix = div is None  # no mismatch within shared length, unequal lengths
+    ceiling = min(a_len, b_len) if one_prefix else div
+
+    tokens = detect_volatile_tokens(a)
+    # Entirely before the divergence -> reusable -> the heuristic over-counted.
+    false_alarms = sum(1 for t in tokens if t.offset + t.length <= ceiling)
+    # The shaped token (if any) whose span COVERS the divergence -- the
+    # heuristic's correct hit (e.g. a date whose last digit changed).
+    hit = next(
+        (t for t in tokens if t.offset <= ceiling < t.offset + t.length),
+        None,
+    )
+
+    return {
+        "prefixes_identical": False,
+        "a_len": a_len,
+        "b_len": b_len,
+        "reuse_ceiling": ceiling,
+        "reuse_ceiling_fraction": round(ceiling / b_len, 4) if b_len else 0.0,
+        "one_is_prefix_of_other": one_prefix,
+        "shaped_false_alarms": false_alarms,
+        "divergence": {
+            "offset": ceiling,
+            "shaped": hit is not None,
+            "kind": hit.kind if hit else None,
+            "context_before": _window(a[max(0, ceiling - _CONTEXT_BEFORE) : ceiling]),
+            "a_after": _window(a[ceiling : ceiling + _CONTEXT_AFTER]),
+            "b_after": _window(b[ceiling : ceiling + _CONTEXT_AFTER]),
+        },
+    }
+
+
 def _print_human(report: dict) -> None:
     if report["prefix_stable"]:
         print(
@@ -250,6 +384,56 @@ def _print_human(report: dict) -> None:
         print(f"  @{t['offset']:>7}  {t['kind']:<8}  {t['sample']}")
 
 
+def _print_diff_human(report: dict) -> None:
+    if report["prefixes_identical"]:
+        print(
+            f"prefixes identical: full {report['b_len']} chars KV-reusable "
+            "(no divergence)"
+        )
+        return
+    ceiling = report["reuse_ceiling"]
+    pct = report["reuse_ceiling_fraction"] * 100
+    div = report["divergence"]
+    kind = div["kind"] or "unstructured"
+    # When one prefix is a strict prefix of the other there is no differing char
+    # -- the shorter just ran out. Tag it so the empty A/B next line doesn't read
+    # like a bug.
+    tail = " (one prefix is a prefix of the other)" if report["one_is_prefix_of_other"] else ""
+    print(
+        f"reuse ceiling = {ceiling}/{report['b_len']} chars "
+        f"({pct:.1f}% of FILE_B reusable from FILE_A); "
+        f"first real divergence at offset {ceiling} [{kind}]{tail}"
+    )
+    print(f"  before: {div['context_before']}")
+    print(f"  A next: {div['a_after']}")
+    print(f"  B next: {div['b_after']}")
+    print(
+        "  shaped-but-stable tokens before divergence: "
+        f"{report['shaped_false_alarms']}"
+    )
+
+
+def _emit(
+    report: dict,
+    args: argparse.Namespace,
+    long_fields: tuple,
+    human: Callable[[dict], None],
+) -> int:
+    """Shared output plumbing for both modes: JSON (with --compact/--select) in
+    agent context, else the given human printer. `long_fields` names the fields
+    `--compact` may truncate (differs per mode)."""
+    if args.json or is_agent_context():
+        output = report
+        if args.compact:
+            output = compact_json(output, long_fields=long_fields)
+        if args.select:
+            output = select_fields(output, args.select)
+        print(json.dumps(output))
+    else:
+        human(report)
+    return SUCCESS
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="cache_prefix_detector",
@@ -261,6 +445,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--stdin", action="store_true", help="Read the prefix from stdin instead of a file"
     )
+    parser.add_argument(
+        "--diff",
+        nargs=2,
+        metavar=("FILE_A", "FILE_B"),
+        help="Diff two prefixes (earlier vs later); report the offset of the "
+        "first char that ACTUALLY differs -- the true KV-cache reuse ceiling.",
+    )
     parser.add_argument("--json", action="store_true", help="Structured JSON output")
     parser.add_argument(
         "--compact", action="store_true", help="Strip nulls / truncate long fields"
@@ -270,12 +461,33 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    if args.stdin and args.file:
-        print("error: pass either a file or --stdin, not both", file=sys.stderr)
+    # Exactly one input mode: a file, --stdin, or --diff A B.
+    if sum(bool(m) for m in (args.file, args.stdin, args.diff)) != 1:
+        print(
+            "error: provide exactly one of a file, --stdin, or --diff FILE_A FILE_B",
+            file=sys.stderr,
+        )
         return USAGE_ERROR
-    if not args.stdin and not args.file:
-        print("error: provide a file path or --stdin", file=sys.stderr)
-        return USAGE_ERROR
+
+    if args.diff:
+        try:
+            texts = []
+            for raw_path in args.diff:
+                path = Path(raw_path)
+                if not path.is_file():
+                    print(f"error: file not found: {raw_path}", file=sys.stderr)
+                    return NOT_FOUND
+                texts.append(path.read_text(encoding="utf-8", errors="replace"))
+        except OSError as exc:
+            print(f"error: could not read input: {exc}", file=sys.stderr)
+            return INTERNAL_ERROR
+        report = diff_prefixes(texts[0], texts[1])
+        return _emit(
+            report,
+            args,
+            long_fields=("context_before", "a_after", "b_after"),
+            human=_print_diff_human,
+        )
 
     try:
         if args.stdin:
@@ -291,17 +503,7 @@ def main(argv: list[str] | None = None) -> int:
         return INTERNAL_ERROR
 
     report = analyze_prefix(text)
-
-    if args.json or is_agent_context():
-        output = report
-        if args.compact:
-            output = compact_json(output, long_fields=("sample",))
-        if args.select:
-            output = select_fields(output, args.select)
-        print(json.dumps(output))
-    else:
-        _print_human(report)
-    return SUCCESS
+    return _emit(report, args, long_fields=("sample",), human=_print_human)
 
 
 if __name__ == "__main__":
