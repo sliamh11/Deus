@@ -144,6 +144,117 @@ def test_update_score_writes_score_and_dims():
     assert parsed_dims["quality"] == 0.9
 
 
+# ── LIA-214: credit retrieved reflections at scoring time ────────────────────
+
+
+def test_update_score_credits_retrieved_reflections_once(monkeypatch):
+    """score >= POSITIVE_THRESHOLD credits each retrieved reflection exactly once,
+    even when update_score runs again (re-score)."""
+    credited: list[str] = []
+    monkeypatch.setattr(
+        "evolution.reflexion.store.increment_helpful",
+        lambda rid: credited.append(rid),
+    )
+    iid = log_interaction(
+        prompt="p", response="r", group_folder="g",
+        retrieved_reflection_ids=["ref-a", "ref-b"],
+    )
+    update_score(iid, 0.9, {})
+    assert sorted(credited) == ["ref-a", "ref-b"]
+
+    # Re-score (e.g. a later judge re-run): the one-shot guard blocks re-credit.
+    update_score(iid, 0.95, {})
+    assert sorted(credited) == ["ref-a", "ref-b"]
+
+
+def test_update_score_credits_at_exact_threshold(monkeypatch):
+    """Boundary: a score EXACTLY at POSITIVE_THRESHOLD (0.85) credits — the gate
+    is strict less-than, so the threshold value itself is positive."""
+    credited: list[str] = []
+    monkeypatch.setattr(
+        "evolution.reflexion.store.increment_helpful",
+        lambda rid: credited.append(rid),
+    )
+    iid = log_interaction(
+        prompt="p", response="r", group_folder="g",
+        retrieved_reflection_ids=["ref-edge"],
+    )
+    update_score(iid, config_mod.POSITIVE_THRESHOLD, {})
+    assert credited == ["ref-edge"]
+
+
+def test_update_score_no_credit_below_threshold(monkeypatch):
+    credited: list[str] = []
+    monkeypatch.setattr(
+        "evolution.reflexion.store.increment_helpful",
+        lambda rid: credited.append(rid),
+    )
+    iid = log_interaction(
+        prompt="p", response="r", group_folder="g",
+        retrieved_reflection_ids=["ref-low"],
+    )
+    update_score(iid, 0.5, {})
+    assert credited == []
+    # credited_at stays NULL so a later positive score can still credit.
+    conn = open_db()
+    row = conn.execute(
+        "SELECT credited_at FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert row["credited_at"] is None
+
+
+def test_update_score_sub_then_super_threshold_credits_once(monkeypatch):
+    """A sub-threshold score followed by a >= threshold re-score credits once."""
+    credited: list[str] = []
+    monkeypatch.setattr(
+        "evolution.reflexion.store.increment_helpful",
+        lambda rid: credited.append(rid),
+    )
+    iid = log_interaction(
+        prompt="p", response="r", group_folder="g",
+        retrieved_reflection_ids=["ref-x"],
+    )
+    update_score(iid, 0.4, {})
+    assert credited == []  # below threshold — no claim, no credit
+    update_score(iid, 0.92, {})
+    assert credited == ["ref-x"]  # now credited
+    update_score(iid, 0.99, {})
+    assert credited == ["ref-x"]  # still exactly once
+
+
+def test_update_score_no_credit_when_no_retrieved_ids(monkeypatch):
+    """A high score with no retrieved reflections credits nothing and never crashes."""
+    credited: list[str] = []
+    monkeypatch.setattr(
+        "evolution.reflexion.store.increment_helpful",
+        lambda rid: credited.append(rid),
+    )
+    iid = log_interaction(prompt="p", response="r", group_folder="g")
+    update_score(iid, 0.95, {})
+    assert credited == []
+    # No retrieved IDs → credited_at remains NULL (no spurious claim write).
+    conn = open_db()
+    row = conn.execute(
+        "SELECT credited_at FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert row["credited_at"] is None
+
+
+def test_log_interaction_persists_retrieved_reflection_ids():
+    iid = log_interaction(
+        prompt="p", response="r", group_folder="g",
+        retrieved_reflection_ids=["a", "b", "c"],
+    )
+    conn = open_db()
+    row = conn.execute(
+        "SELECT retrieved_reflection_ids FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert json.loads(row["retrieved_reflection_ids"]) == ["a", "b", "c"]
+
+
 def test_get_recent_returns_logged_interactions():
     log_interaction(prompt="First", response="A", group_folder="g1")
     log_interaction(prompt="Second", response="B", group_folder="g2")

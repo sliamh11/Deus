@@ -269,6 +269,10 @@ def cmd_log_interaction(json_str: str) -> None:
         tool_calls=tool_calls,
         available_tools=available_tools,
         metrics=metrics,
+        # LIA-214: persist the retrieved IDs so update_score can credit them
+        # once the judge score is known (deferred from this fire-and-forget path,
+        # where the score is still NULL).
+        retrieved_reflection_ids=retrieved_reflection_ids or None,
     )
 
     # Batch judge: check if we've accumulated enough unjudged interactions
@@ -296,15 +300,10 @@ def cmd_log_interaction(json_str: str) -> None:
         except Exception as exc:
             log.warning('evolution: user_signal handling failed — %s: %s', type(exc).__name__, exc)
 
-    # Feedback loop — increment helpful counts when current interaction scored well.
-    if retrieved_reflection_ids:
-        try:
-            _handle_retrieved_reflections(
-                current_iid=iid,
-                retrieved_reflection_ids=retrieved_reflection_ids,
-            )
-        except Exception as exc:
-            log.warning('evolution: retrieved_reflection increment failed — %s: %s', type(exc).__name__, exc)
+    # Retrieved-reflection crediting (LIA-214) now happens in update_score, gated
+    # on the judge score being known and >= POSITIVE_THRESHOLD. The previous
+    # synchronous credit here saw a still-NULL score on this fire-and-forget path
+    # ~97% of the time and silently skipped — that block was removed.
 
     print(json.dumps({"id": iid, "status": "ok"}))
 
@@ -351,30 +350,6 @@ def _handle_user_signal(
         interaction_id=prev["id"],
         group_folder=prev.get("group_folder"),
     )
-
-
-def _handle_retrieved_reflections(
-    *,
-    current_iid: str,
-    retrieved_reflection_ids: list,
-) -> None:
-    """Increment helpful count for retrieved reflections when current interaction scored high."""
-    from .config import POSITIVE_THRESHOLD
-    from .reflexion.store import increment_helpful
-    from .storage import get_storage
-
-    store = get_storage()
-    row = store.get_interaction(current_iid)
-    if row is None:
-        return
-
-    judge_score = row.get("judge_score")
-    # Only reward retrievals for responses we know scored well NOW; skip if unjudged
-    if judge_score is None or judge_score < POSITIVE_THRESHOLD:
-        return
-
-    for rid in retrieved_reflection_ids:
-        increment_helpful(rid)
 
 
 def cmd_log_metrics(json_str: str) -> None:

@@ -60,18 +60,33 @@ class StorageProvider(ABC):
         tool_calls: Optional[str] = None,
         available_tools: Optional[str] = None,
         metrics: Optional[str] = None,
+        retrieved_reflection_ids: Optional[str] = None,
     ) -> str:
         """Persist one agent interaction. Returns the interaction ID.
 
         When a row with the same ID already exists, all fields are overwritten
-        EXCEPT metrics: a None metrics value preserves any previously stored
-        metrics (COALESCE upsert), so post-hoc metric updates survive re-logging.
+        EXCEPT metrics and retrieved_reflection_ids: a None value for either
+        preserves the previously stored value (COALESCE upsert), so post-hoc
+        metric updates and the retrieved-reflection IDs (needed at scoring time)
+        survive re-logging. credited_at is never written here — see
+        claim_interaction_credit (LIA-214).
         """
         ...
 
     @abstractmethod
     def update_interaction(self, interaction_id: str, **fields) -> None:
         """Update fields on an existing interaction (e.g. judge_score, judge_dims)."""
+        ...
+
+    @abstractmethod
+    def claim_interaction_credit(self, interaction_id: str) -> bool:
+        """Atomically claim the one-shot reflection-credit slot for an interaction.
+
+        Sets credited_at if currently NULL. Returns True for the single writer
+        that won the claim, False if already claimed or the row is missing.
+        Makes LIA-214 retrieved-reflection crediting idempotent under concurrent
+        score writers and judge re-scores.
+        """
         ...
 
     @abstractmethod

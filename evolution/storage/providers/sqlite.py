@@ -272,6 +272,15 @@ class SQLiteStorageProvider(StorageProvider):
             # observability; no live consumer — unblocks LIA-151 ground truth).
             ("available_tools", "TEXT"),
             ("metrics", "TEXT"),  # JSON: generic per-task metrics (added in v1.7)
+            # LIA-214: IDs of reflections retrieved for this interaction's prompt,
+            # credited (times_helpful++) once the judge scores it >= POSITIVE_THRESHOLD.
+            ("retrieved_reflection_ids", "TEXT"),  # JSON array of reflection ids
+            # LIA-214: one-shot credit guard. Set atomically via
+            # claim_interaction_credit() so concurrent score writers / re-scores
+            # credit each retrieved reflection exactly once. Kept OUT of the
+            # log_interaction upsert (like judge_score) so a NULL re-log cannot
+            # clobber the guard back to NULL.
+            ("credited_at", "TEXT"),
         ]:
             try:
                 # safe: col + coltype come from the literal tuple-list
@@ -336,19 +345,24 @@ class SQLiteStorageProvider(StorageProvider):
         tool_calls: Optional[str] = None,
         available_tools: Optional[str] = None,
         metrics: Optional[str] = None,
+        retrieved_reflection_ids: Optional[str] = None,
     ) -> str:
         db = self._connect()
         # Upsert instead of INSERT OR REPLACE: REPLACE deletes the existing row
         # (clobbering judge_score/judge_dims and firing ON DELETE CASCADE on
-        # reflections). DO UPDATE keeps unlisted columns intact, and metrics
-        # uses COALESCE so a None re-log preserves post-hoc metric updates.
+        # reflections). DO UPDATE keeps unlisted columns intact. metrics and
+        # retrieved_reflection_ids use COALESCE so a None re-log preserves a
+        # previously-stored value (post-hoc metrics; the IDs needed at scoring
+        # time). credited_at is intentionally absent — written only via
+        # claim_interaction_credit (LIA-214).
         db.execute(
             """
             INSERT INTO interactions
                 (id, timestamp, group_folder, prompt, response, tools_used,
                  latency_ms, eval_suite, session_id, domain_presets, user_signal,
-                 context_tokens, has_code, tool_calls, available_tools, metrics)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 context_tokens, has_code, tool_calls, available_tools, metrics,
+                 retrieved_reflection_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 timestamp       = excluded.timestamp,
                 group_folder    = excluded.group_folder,
@@ -364,13 +378,18 @@ class SQLiteStorageProvider(StorageProvider):
                 has_code        = excluded.has_code,
                 tool_calls      = excluded.tool_calls,
                 available_tools = excluded.available_tools,
-                metrics         = COALESCE(excluded.metrics, interactions.metrics)
+                metrics         = COALESCE(excluded.metrics, interactions.metrics),
+                retrieved_reflection_ids = COALESCE(
+                    excluded.retrieved_reflection_ids,
+                    interactions.retrieved_reflection_ids
+                )
             """,
             (
                 interaction_id, timestamp, group_folder, prompt, response,
                 tools_used, latency_ms, eval_suite, session_id,
                 domain_presets, user_signal, context_tokens, has_code,
                 tool_calls, available_tools, metrics,
+                retrieved_reflection_ids,
             ),
         )
         db.commit()
@@ -396,6 +415,27 @@ class SQLiteStorageProvider(StorageProvider):
         )
         db.commit()
         db.close()
+
+    def claim_interaction_credit(self, interaction_id: str) -> bool:
+        """Atomically claim the one-shot reflection-credit slot for an interaction.
+
+        Sets credited_at = now only if it is currently NULL. Returns True for the
+        single writer that won the claim, False if already claimed (or the row is
+        missing). Makes LIA-214 crediting idempotent under concurrent score
+        writers (batch judge + async MCP path) and judge re-scores.
+        """
+        db = self._connect()
+        # datetime('now') mirrors archive_reflection_by_id's lifecycle marker;
+        # the value is only ever read as NULL vs non-NULL (the claim guard).
+        cur = db.execute(
+            "UPDATE interactions SET credited_at = datetime('now') "
+            "WHERE id = ? AND credited_at IS NULL",
+            [interaction_id],
+        )
+        db.commit()
+        claimed = cur.rowcount == 1
+        db.close()
+        return claimed
 
     def get_interaction(self, interaction_id: str) -> Optional[dict]:
         db = self._connect()

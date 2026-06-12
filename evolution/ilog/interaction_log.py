@@ -28,6 +28,7 @@ def log_interaction(
     tool_calls: Optional[list[dict]] = None,
     available_tools: Optional[list[str]] = None,
     metrics: Optional[dict] = None,
+    retrieved_reflection_ids: Optional[list[str]] = None,
 ) -> str:
     """
     Persist one agent interaction.  Returns the interaction ID.
@@ -35,6 +36,12 @@ def log_interaction(
 
     metrics is a flat dict of task metrics (see evolution.metrics) — validated
     here so a malformed payload fails loudly at log time, not at analysis time.
+
+    retrieved_reflection_ids are the reflections retrieved for this prompt;
+    they are persisted now and credited (times_helpful++) at scoring time by
+    update_score, once the judge score is known and >= POSITIVE_THRESHOLD
+    (LIA-214 — crediting at log time saw a still-NULL judge score ~97% of the
+    time and silently skipped).
     """
     # Canonical validation gate: the MCP path calls this directly with no
     # other check (errors propagate to the caller by design). cli.py
@@ -64,6 +71,12 @@ def log_interaction(
         # LIA-154: offered tool manifest (observability only; unblocks LIA-151).
         available_tools=json.dumps(available_tools or []),
         metrics=json.dumps(metrics) if metrics is not None else None,
+        # LIA-214: persisted now, credited at scoring time (see update_score).
+        retrieved_reflection_ids=(
+            json.dumps(retrieved_reflection_ids)
+            if retrieved_reflection_ids
+            else None
+        ),
     )
     return iid
 
@@ -75,7 +88,14 @@ def update_score(
     parse_error: bool = False,
     schema_version: int = 1,
 ) -> None:
-    """Attach judge score and dimension breakdown to a logged interaction."""
+    """Attach judge score and dimension breakdown to a logged interaction.
+
+    Once the score is known, credit any reflections retrieved for this
+    interaction's prompt (LIA-214). This is the single score seam — batch judge
+    (maintenance), async MCP, and backfill all route through here — so crediting
+    here, gated on an atomic one-shot claim, fixes the log-time temporal race
+    (the judge score was still NULL ~97% of the time) without double-crediting.
+    """
     store = get_storage()
     store.update_interaction(
         interaction_id,
@@ -84,6 +104,52 @@ def update_score(
         parse_error=int(parse_error),
         judge_schema_version=schema_version,
     )
+    _credit_retrieved_reflections(store, interaction_id, score)
+
+
+def _credit_retrieved_reflections(store, interaction_id: str, score: float) -> None:
+    """Credit (times_helpful++) reflections retrieved for a positively-scored
+    interaction, exactly once.
+
+    Gated three ways: score >= POSITIVE_THRESHOLD, the interaction actually had
+    retrieved reflections, and an atomic claim_interaction_credit() that only one
+    writer can win — so concurrent score writers and judge re-scores credit a
+    reflection at most once.
+    """
+    from ..config import POSITIVE_THRESHOLD
+
+    if score < POSITIVE_THRESHOLD:
+        return
+    row = store.get_interaction(interaction_id)
+    if not row:
+        return
+    raw = row.get("retrieved_reflection_ids")
+    # This early-return is load-bearing: the backfill/cc_backfill paths call
+    # update_score WITHOUT wrapping it in try/except and log rows with NULL
+    # retrieved_reflection_ids, so returning here (before any raise-capable call)
+    # keeps those paths safe.
+    if not raw:
+        return
+    try:
+        ids = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not ids:
+        return
+    # Atomic one-shot: only the writer that flips credited_at NULL->now credits.
+    # The claim is consumed BEFORE the increment loop ON PURPOSE: under concurrent
+    # score writers (batch judge + async MCP) claiming after the loop would let
+    # both writers increment before either claims = double-credit. Claiming first
+    # bounds credit to exactly once; the cost is that a mid-loop failure leaves
+    # partial credit (acceptable — these are monotonic counters, not user data).
+    if not store.claim_interaction_credit(interaction_id):
+        return
+    # Routed through reflexion.store.increment_helpful (the single "mark helpful"
+    # chokepoint) rather than store.increment_reflection_helpful directly.
+    from ..reflexion.store import increment_helpful
+
+    for rid in ids:
+        increment_helpful(rid)
 
 
 def get_recent(

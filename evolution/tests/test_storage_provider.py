@@ -42,6 +42,7 @@ class FakeStorageProvider(StorageProvider):
     # Stubs — not exercised in registry tests
     def log_interaction(self, **kw): ...
     def update_interaction(self, *a, **kw): ...
+    def claim_interaction_credit(self, *a): return False
     def get_interaction(self, *a): ...
     def get_recent_interactions(self, **kw): return []
     def get_metrics_rows(self, **kw): return []
@@ -385,6 +386,93 @@ class TestSQLiteMetrics:
         row = sqlite_provider.get_interaction("m4")
         assert row["judge_score"] is not None
         assert abs(row["judge_score"] - 0.9) < 1e-5
+
+    # ── LIA-214: retrieved_reflection_ids + credit one-shot ──────────────────
+
+    def test_log_interaction_persists_retrieved_reflection_ids(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="r1",
+            retrieved_reflection_ids='["a", "b"]',
+        )
+        row = sqlite_provider.get_interaction("r1")
+        assert row["retrieved_reflection_ids"] == '["a", "b"]'
+        # A fresh log leaves the credit guard NULL (back-compat / unclaimed).
+        assert row["credited_at"] is None
+
+    def test_log_interaction_defaults_retrieved_reflection_ids_null(self, sqlite_provider):
+        """Back-compat: omitting the IDs stores NULL, not a crash."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="r2",
+        )
+        row = sqlite_provider.get_interaction("r2")
+        assert row["retrieved_reflection_ids"] is None
+
+    def test_relog_preserves_retrieved_reflection_ids(self, sqlite_provider):
+        """COALESCE upsert: a None re-log must not drop the IDs needed at scoring."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="r3",
+            retrieved_reflection_ids='["x", "y"]',
+        )
+        # Re-log without IDs (the fire-and-forget re-log shape).
+        sqlite_provider.log_interaction(
+            prompt="p2", response="r2", group_folder="g",
+            timestamp=self._ts(), interaction_id="r3",
+        )
+        row = sqlite_provider.get_interaction("r3")
+        assert row["retrieved_reflection_ids"] == '["x", "y"]'
+        assert row["prompt"] == "p2"  # non-COALESCE columns still overwritten
+
+    def test_relog_with_retrieved_reflection_ids_overwrites(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="r4",
+            retrieved_reflection_ids='["a"]',
+        )
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="r4",
+            retrieved_reflection_ids='["b", "c"]',
+        )
+        row = sqlite_provider.get_interaction("r4")
+        assert row["retrieved_reflection_ids"] == '["b", "c"]'
+
+    def test_claim_interaction_credit_is_one_shot(self, sqlite_provider):
+        """First claim wins (True); subsequent claims lose (False)."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="r5",
+            retrieved_reflection_ids='["a"]',
+        )
+        assert sqlite_provider.claim_interaction_credit("r5") is True
+        assert sqlite_provider.claim_interaction_credit("r5") is False
+        row = sqlite_provider.get_interaction("r5")
+        assert row["credited_at"] is not None
+
+    def test_claim_interaction_credit_missing_row(self, sqlite_provider):
+        assert sqlite_provider.claim_interaction_credit("does-not-exist") is False
+
+    def test_relog_preserves_credited_at(self, sqlite_provider):
+        """credited_at is absent from the upsert (like judge_score), so a NULL
+        re-log cannot clobber the one-shot guard back to NULL and re-enable
+        double-credit."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp=self._ts(), interaction_id="r6",
+            retrieved_reflection_ids='["a"]',
+        )
+        assert sqlite_provider.claim_interaction_credit("r6") is True
+        # Re-log without credited_at (it is never passed to log_interaction).
+        sqlite_provider.log_interaction(
+            prompt="p2", response="r2", group_folder="g",
+            timestamp=self._ts(), interaction_id="r6",
+        )
+        row = sqlite_provider.get_interaction("r6")
+        assert row["credited_at"] is not None
+        # A second claim must still lose — the guard survived the re-log.
+        assert sqlite_provider.claim_interaction_credit("r6") is False
 
     def test_update_interaction_accepts_metrics(self, sqlite_provider):
         sqlite_provider.log_interaction(
