@@ -12,6 +12,7 @@ import pytest
 from evolution.judge.criteria import (
     COMPOSITE_WEIGHTS,
     DIM_DEFAULTS,
+    RUBRIC,
     _normalize_dim,
     compose_score,
 )
@@ -302,3 +303,38 @@ def test_normalize_tool_use_backward_compat_two_part():
 
 def test_normalize_tool_use_backward_compat_float():
     assert _normalize_dim("tool_use", {"tool_use": 0.7}) == 0.7
+
+
+# ── Hardened tool_use RUBRIC text (LIA-279) ───────────────────────────────────
+# Pins the high-stakes wording that fixes the no-tool over-scoring. These assert
+# specific sentinel phrases (not mere keyword presence), so softening the
+# escape-clause distinction or removing the negative exemplars fails the test.
+
+
+class TestHardenedToolUseRubric:
+    def test_outcome_not_confidence(self):
+        # Judge the outcome, not how confident the response sounds.
+        assert "NOT evidence of execution" in RUBRIC
+
+    def test_derive_score_from_analysis(self):
+        # Mechanism 2 (score-rationale decoupling) guard.
+        assert "MUST follow from your analysis" in RUBRIC
+
+    def test_no_tool_called_is_not_no_tool_needed(self):
+        # Mechanism 1 (escape-clause misfire) guard — the core distinction.
+        assert '"no tool was called" does NOT mean "no tool was needed"' in RUBRIC
+
+    def test_score_5_only_when_genuinely_needed_and_complete(self):
+        assert (
+            "Score 5 ONLY when no tool was genuinely needed AND the response "
+            "fully completes the task by itself" in RUBRIC
+        )
+
+    def test_hollow_confirmation_is_one(self):
+        assert "hollow confirmation, no evidence of execution" in RUBRIC
+
+    def test_error_instead_of_acting_is_one(self):
+        assert "error instead of acting" in RUBRIC
+
+    def test_off_topic_ignores_task_is_one(self):
+        assert "off-topic, ignores the task" in RUBRIC
