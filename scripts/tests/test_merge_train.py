@@ -298,14 +298,22 @@ def test_verify_mergeable_gives_up_after_persistent_unknown(mt, monkeypatch):
     assert "did not settle" in detail
 
 
-def test_wait_required_ci_uses_required_and_watch(mt, monkeypatch):
+def test_wait_required_ci_delegates_to_helper(mt, monkeypatch):
+    """_wait_required_ci now delegates to ci.wait_for_checks.wait_for_required_checks,
+    forwarding the PR and poll interval (no more `gh ... --watch`)."""
+    import ci.wait_for_checks as wfc
+
     captured = {}
 
-    def responder(argv):
-        captured["argv"] = list(argv)
-        return 0, "", ""
+    def fake_wait(pr, *, interval, timeout, retries=5):
+        captured["pr"] = pr
+        captured["interval"] = interval
+        captured["timeout"] = timeout
+        return True, "all 6 required checks green"
 
-    monkeypatch.setattr(mt, "_run", _fake_run(responder))
-    ok, _ = mt._wait_required_ci(709, interval=30)
+    monkeypatch.setattr(wfc, "wait_for_required_checks", fake_wait)
+    ok, detail = mt._wait_required_ci(709, interval=30)
     assert ok is True
-    assert "--required" in captured["argv"] and "--watch" in captured["argv"]
+    assert captured["pr"] == 709
+    assert captured["interval"] == 30
+    assert captured["timeout"] == mt._CI_WATCH_TIMEOUT

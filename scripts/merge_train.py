@@ -149,14 +149,16 @@ def _rebase_and_push(wt: Path, branch: str) -> tuple[bool, str]:
 
 
 def _wait_required_ci(pr: int, interval: int) -> tuple[bool, str]:
-    """Block on ``gh pr checks --required --watch``; green iff exit 0."""
-    result = _run(
-        ["gh", "pr", "checks", str(pr), "--required", "--watch", "--interval", str(interval)],
-        timeout=_CI_WATCH_TIMEOUT,
-    )
-    if result.returncode == 0:
-        return True, "required checks green"
-    return False, f"required CI not green (exit {result.returncode}): {_tail(result)}"
+    """Poll required checks via the vetted ci.wait_for_checks helper.
+
+    Replaces the old blocking ``gh pr checks --required --watch`` (whose exit
+    code several call sites masked by piping through tail/grep). The helper owns
+    the poll loop, parses the checks JSON authoritatively, and fail-closes on
+    the zero-required-checks ambiguity — returning a definite (green, detail).
+    """
+    from ci.wait_for_checks import wait_for_required_checks
+
+    return wait_for_required_checks(pr, interval=interval, timeout=_CI_WATCH_TIMEOUT)
 
 
 def _verify_mergeable(pr: int, *, retries: int = 6, delay: int = 3) -> tuple[bool, str]:
