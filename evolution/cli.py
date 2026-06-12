@@ -714,6 +714,16 @@ def main() -> None:
                              help="Embedding provider (default: auto-detect)")
     p_optparams.add_argument("--db", help="Path to memory_tree.db (default: ~/.deus/memory_tree.db)")
     p_optparams.add_argument("--force", action="store_true", help="Save artifact even if score regressed")
+    p_optparams.add_argument(
+        "--min-abstain", type=float, default=None,
+        help="Reject trials whose abstain accuracy regresses below this floor. "
+             "Default: self-calibrate to the baseline's own abstain accuracy (LIA-209).",
+    )
+    p_optparams.add_argument(
+        "--dry-run", action="store_true",
+        help="Compute and print the best params as JSON WITHOUT saving an artifact "
+             "(no live retrieval impact — the saved artifact is consumed live by memory_tree).",
+    )
 
     # taste
     p_taste = sub.add_parser("taste", help="Generate taste/style hypothesis profile")
@@ -789,14 +799,26 @@ def main() -> None:
     elif args.cmd == "dismiss_warden_finding":
         cmd_dismiss_warden_finding(args.json_str)
     elif args.cmd == "optimize-params":
-        from .optimizer.param_optimizer import optimize_and_save
         provider = args.provider if args.provider != "auto" else None
-        aid = optimize_and_save(
-            db_path=args.db, trials=args.trials, provider=provider,
-            force=args.force,
-        )
-        if not aid:
-            sys.exit(1)
+        if args.dry_run:
+            # Compute-only: never touches the active artifact (LIA-209 verification
+            # path). memory_tree consumes the saved artifact live, so a real save
+            # is a separate, sweep-gated go-live step.
+            from .optimizer.param_optimizer import optimize_params
+            result = optimize_params(
+                db_path=args.db, trials=args.trials, min_abstain=args.min_abstain,
+            )
+            if result is None:
+                sys.exit(1)
+            print(json.dumps(result, indent=2))
+        else:
+            from .optimizer.param_optimizer import optimize_and_save
+            aid = optimize_and_save(
+                db_path=args.db, trials=args.trials, provider=provider,
+                force=args.force, min_abstain=args.min_abstain,
+            )
+            if not aid:
+                sys.exit(1)
     elif args.cmd == "taste":
         cmd_taste(force=args.force, min_interactions=args.min_interactions)
     elif args.cmd == "consolidate-style":

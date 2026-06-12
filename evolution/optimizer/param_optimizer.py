@@ -223,13 +223,21 @@ def optimize_params(
     db_path: Optional[str] = None,
     trials: int = DEFAULT_TRIALS,
     seed: int = 42,
-    min_abstain: float = 0.8,
+    min_abstain: Optional[float] = None,
     verbose: bool = True,
 ) -> Optional[dict[str, Any]]:
     """Run parameter optimization against the labeled benchmark.
 
     Returns dict with best params, scores, and metadata. None if benchmark
     data is missing or no valid trial found.
+
+    min_abstain is the floor below which a trial's abstain accuracy is treated
+    as a regression and the trial rejected. When None (default) it
+    self-calibrates to the baseline candidate's OWN abstain accuracy at i==0
+    ("don't regress abstain below current production"); pass a float to override.
+    LIA-209: a hardcoded 0.8 floor sat ABOVE the live baseline abstain (~0.727),
+    so every trial — including the baseline defaults — was rejected, best_score
+    stayed -1, and the run always reported "No valid trial found."
     """
     if not BENCH_LABELS.exists():
         print(f"[param-optimizer] Benchmark labels not found: {BENCH_LABELS}")
@@ -242,6 +250,24 @@ def optimize_params(
 
     db = _open_db(db_path)
 
+    # Self-calibration (min_abstain is None) anchors the abstain floor to the
+    # BASELINE production defaults, which must be candidates[0]. If
+    # _seed_from_defaults() could not import them (ImportError -> []),
+    # candidates[0] would be a random sample and the floor meaningless — refuse
+    # rather than silently set a bogus production floor that a real (non-dry-run)
+    # run could promote into live retrieval (LIA-209 ai-eng review). Fail fast,
+    # before the expensive embedding step. An explicit --min-abstain has no such
+    # dependency, so it is allowed to proceed without the seed.
+    seeded = _seed_from_defaults()
+    if min_abstain is None and not seeded:
+        print(
+            "[param-optimizer] Cannot self-calibrate abstain floor: production "
+            "defaults unavailable (memory_tree import failed). "
+            "Pass --min-abstain explicitly to override."
+        )
+        db.close()
+        return None
+
     # Pre-embed all queries once (the expensive step)
     queries = list({item["query"] for item in dataset})
     if verbose:
@@ -253,7 +279,7 @@ def optimize_params(
 
     rng = random.Random(seed)
 
-    candidates = _seed_from_defaults()
+    candidates = list(seeded)
     for _ in range(trials - len(candidates)):
         candidates.append(_sample_params(rng))
 
@@ -261,22 +287,42 @@ def optimize_params(
     best_params: dict[str, float | int] = {}
     best_result: dict[str, Any] = {}
     baseline_score: float = -1.0
+    # LIA-209: the abstain floor actually applied. Stays None until the baseline
+    # (i==0) calibrates it to its own abstain accuracy, unless the caller pinned
+    # an explicit min_abstain. The baseline candidate is candidates[0]
+    # (_seed_from_defaults), so it is always scored first.
+    effective_floor: Optional[float] = min_abstain
 
     t_start = time.monotonic()
     for i, params in enumerate(candidates):
         result = _run_trial(db, dataset, params, vec_cache)
-        score = _score_result(result, min_abstain=min_abstain)
 
         if i == 0:
+            # candidates[0] is the production defaults on the self-calibrate path
+            # (the guard above guarantees `seeded` is non-empty there). On the
+            # explicit-floor path with no seed, it is a random sample, so
+            # baseline_score (and the reported delta) is measured against that
+            # random baseline — tolerated because the delta<=0 save guard still
+            # blocks a non-improving artifact, and the caller pinned the floor.
             recall = result.get("recall_at_k", 0.0)
             mrr = result.get("mrr_at_k", 0.0)
             baseline_score = recall * 0.8 + mrr * 0.2
+            if effective_floor is None:
+                baseline_abstain = result.get("abstain_accuracy")
+                # No abstain signal → 0.0 (no constraint); else the baseline's own
+                # accuracy. _score_result uses strict `<`, so the baseline passes
+                # its own floor (baseline_abstain < baseline_abstain is False).
+                effective_floor = (
+                    baseline_abstain if baseline_abstain is not None else 0.0
+                )
             if verbose:
                 print(
                     f"[param-optimizer] Baseline: recall={recall:.3f} "
                     f"abstain={result.get('abstain_accuracy', 'N/A')} "
-                    f"score={baseline_score:.4f}"
+                    f"score={baseline_score:.4f} (abstain floor={effective_floor:.3f})"
                 )
+
+        score = _score_result(result, min_abstain=effective_floor)
 
         if score is not None and score > best_score:
             best_score = score
@@ -331,17 +377,25 @@ def optimize_and_save(
     provider: Optional[str] = None,
     verbose: bool = True,
     force: bool = False,
+    min_abstain: Optional[float] = None,
 ) -> Optional[str]:
     """Run optimization and save result as an evolution artifact.
 
-    Refuses to save if optimized score is worse than baseline (unless force=True).
-    Returns artifact ID on success, None on failure or regression.
+    Refuses to save unless the optimized score strictly beats baseline (delta>0;
+    unless force=True). Returns artifact ID on success, None on failure or
+    no-improvement. min_abstain is forwarded to optimize_params (None =
+    self-calibrate to baseline abstain, LIA-209).
     """
-    result = optimize_params(db_path=db_path, trials=trials, verbose=verbose)
+    result = optimize_params(
+        db_path=db_path, trials=trials, min_abstain=min_abstain, verbose=verbose
+    )
     if result is None:
         return None
 
-    if result["delta"] < 0 and not force:
+    # LIA-209: <= 0, not < 0. A no-op run (best == baseline, delta == 0) now
+    # saves nothing — a delta-0 artifact would needlessly churn the active
+    # artifact (which memory_tree consumes live) without any measured gain.
+    if result["delta"] <= 0 and not force:
         if verbose:
             print(
                 f"[param-optimizer] No improvement found "
