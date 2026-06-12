@@ -752,6 +752,18 @@ class SQLiteStorageProvider(StorageProvider):
         db.close()
         return count
 
+    def archive_reflection_by_id(self, reflection_id: str) -> bool:
+        db = self._connect()
+        cur = db.execute(
+            "UPDATE reflections SET archived_at = datetime('now') "
+            "WHERE id = ? AND archived_at IS NULL",
+            [reflection_id],
+        )
+        changed = cur.rowcount > 0
+        db.commit()
+        db.close()
+        return changed
+
     def count_stale_reflections(self, days: int) -> int:
         db = self._connect()
         count = db.execute(

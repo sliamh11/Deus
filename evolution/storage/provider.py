@@ -205,6 +205,15 @@ class StorageProvider(ABC):
         ...
 
     @abstractmethod
+    def archive_reflection_by_id(self, reflection_id: str) -> bool:
+        """Soft-delete one reflection by id (sets archived_at).
+
+        Returns True if a row transitioned to archived; False if it was already
+        archived or does not exist. Idempotent.
+        """
+        ...
+
+    @abstractmethod
     def count_stale_reflections(self, days: int) -> int:
         """Count reflections that would be archived (dry-run)."""
         ...

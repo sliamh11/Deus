@@ -58,6 +58,7 @@ class FakeStorageProvider(StorageProvider):
     def increment_reflection_retrieved(self, *a): ...
     def increment_reflection_helpful(self, *a): ...
     def archive_stale_reflections(self, *a): return 0
+    def archive_reflection_by_id(self, *a): return False
     def count_stale_reflections(self, *a): return 0
     def count_reflections(self): return 0
     def count_helpful_reflections(self): return 0
@@ -456,6 +457,31 @@ class TestSQLiteReflectionCRUD:
             embedding=_serialize_vec(self.VECTOR_A),
         )
         assert sqlite_provider.count_reflections() == 1
+
+    def test_archive_reflection_by_id_soft_deletes(self, sqlite_provider):
+        blob = _serialize_vec(self.VECTOR_A)
+        sqlite_provider.save_reflection(
+            reflection_id="arch1",
+            content="Soon to be archived",
+            category="reasoning",
+            score_at_gen=0.4,
+            timestamp="2024-01-01T00:00:00Z",
+            embedding=blob,
+        )
+        # Present before archiving: matches dedup (real vec0 MATCH).
+        assert sqlite_provider.check_reflection_duplicate(blob, None, 0.4) is True
+
+        # First archive transitions the row (soft-delete).
+        assert sqlite_provider.archive_reflection_by_id("arch1") is True
+        # Row + embedding retained (not deleted), just archived.
+        assert sqlite_provider.count_reflections() == 1
+        # Excluded from BOTH dedup and retrieval (archived_at IS NULL filters both).
+        assert sqlite_provider.check_reflection_duplicate(blob, None, 0.4) is False
+        assert sqlite_provider.get_reflections_by_embedding(blob, top_k=5) == []
+
+        # Idempotent: re-archiving or a missing id is a no-op.
+        assert sqlite_provider.archive_reflection_by_id("arch1") is False
+        assert sqlite_provider.archive_reflection_by_id("missing") is False
 
     def test_increment_retrieved(self, sqlite_provider):
         sqlite_provider.save_reflection(

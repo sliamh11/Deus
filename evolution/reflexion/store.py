@@ -10,6 +10,7 @@ from ..config import REFLECTION_DEDUP_L2
 from ..db import serialize_vec
 from ..providers.embeddings import embed as _embed
 from ..storage import get_storage
+from .validation import is_valid_reflection
 
 log = logging.getLogger(__name__)
 
@@ -36,10 +37,17 @@ def save_reflection(
     group_folder: Optional[str] = None,
 ) -> Optional[str]:
     """
-    Embed and persist a reflection.  Returns the reflection ID,
-    or None if a semantically similar reflection already exists.
+    Embed and persist a reflection.  Returns the reflection ID, or None if the
+    content is corrupted (LIA-213 save-time validation) or a semantically
+    similar reflection already exists.
     group_folder=None means the reflection applies cross-group.
     """
+    # LIA-213: validate before the expensive embed; see validation.py.
+    ok, reason = is_valid_reflection(content)
+    if not ok:
+        log.warning("Rejected invalid reflection at save (%s): %.80r", reason, content)
+        return None
+
     rid = str(uuid.uuid4())
     ts = datetime.now(timezone.utc).isoformat()
     vec = _embed(content)
@@ -87,3 +95,13 @@ def archive_stale_reflections(days: int = 30, dry_run: bool = False) -> int:
 def increment_helpful(reflection_id: str) -> None:
     store = get_storage()
     store.increment_reflection_helpful(reflection_id)
+
+
+def archive_reflection_by_id(reflection_id: str) -> bool:
+    """Soft-delete a single reflection by id (sets archived_at).
+
+    Returns True if a row transitioned to archived. Idempotent: archiving an
+    already-archived (or missing) row is a no-op returning False.
+    """
+    store = get_storage()
+    return store.archive_reflection_by_id(reflection_id)
