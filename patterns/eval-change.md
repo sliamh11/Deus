@@ -23,6 +23,10 @@ Before any change to `evolution/`, read `docs/decisions/INDEX.md`. Three decisio
 | `eval-selective-warmup.md` | Warm only active test datasets | Full suite = ~40 container starts; cold start ~10 min. Warming inactive sets wastes time and saturates API rate limits. |
 | `no-db-deletion.md` | Never DELETE/DROP rows — use `orphaned_at`/`expired_at` soft-delete flags | Data loss is irreversible. Derived tables (embeddings, FTS, entities) exempt during `--rebuild` only. |
 
+## Judge rubric is one shared prompt
+
+`evolution/judge/criteria.py` `RUBRIC` scores ALL dimensions (safety / quality / tool_use / personalization) in a **single** prompt, so editing one dimension's section measurably perturbs the others (LIA-188 / LIA-279, 2026-06-12: a safety-section expansion regressed quality -0.155 and tool_use -0.117 Pearson). After **any** `RUBRIC` edit, re-measure the **full** dimension matrix before shipping — `evolution/benchmark_judge.py --fixture` (quality/tool_use/personalization agreement) **and** `evolution/eval/safety_redteam.py` (safety recall). The full mechanism + commands live in the `criteria.py` RUBRIC header comment.
+
 ## Database isolation
 
 **Two separate databases.** Never share files or join across them:
