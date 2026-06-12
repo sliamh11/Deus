@@ -1,0 +1,404 @@
+/* ============================================================
+   Architecture Explorer (3D) — UI chrome (dark)
+   The 3D scene visuals live in theme.js; this styles the
+   overlay UI: topbar, detail panel, legend, hint.
+   ============================================================ */
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; height: 100%; overflow: hidden;
+  background: #05070d; color: #e6e9ef;
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+#graph { position: fixed; inset: 0; }
+
+/* ---- topbar ---- */
+#topbar {
+  position: fixed; top: 0; left: 0; right: 0; height: 46px; z-index: 10;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 14px; gap: 12px;
+  background: linear-gradient(#05070dcc, #05070d88 70%, #05070d00);
+  pointer-events: none;
+}
+#topbar .title { font-weight: 600; font-size: 14px; pointer-events: auto; }
+#topbar #meta { color: #7a8499; font-weight: 400; font-size: 12px; margin-left: 6px; }
+.toolbar { display: flex; gap: 6px; align-items: center; pointer-events: auto; }
+.toolbar input, .toolbar button {
+  background: #131826; color: #e6e9ef; border: 1px solid #28304a;
+  border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+}
+.toolbar input { cursor: text; width: 180px; }
+.toolbar button:hover { background: #1c2438; border-color: #3a4568; }
+.toolbar input:focus { outline: none; border-color: #4a90d9; }
+
+/* ---- detail panel ---- */
+#detail {
+  position: fixed; top: 52px; right: 300px; bottom: 44px; width: 320px; z-index: 11;
+  max-height: calc(100vh - 70px);   /* stays scrollable once dragged (bottom:auto); right:300 clears the appearance panel */
+  background: #0b0f1a; border: 1px solid #222b42; border-radius: 10px;
+  padding: 16px 16px 20px; overflow-y: auto;
+  box-shadow: 0 10px 40px #000a;
+}
+#detail h2 { cursor: move; }          /* hint: drag the panel by its header */
+#detail.hidden { display: none; }
+#detail-close {
+  position: absolute; top: 8px; right: 10px; background: none; border: none;
+  color: #7a8499; font-size: 20px; cursor: pointer; line-height: 1;
+}
+#detail-close:hover { color: #e6e9ef; }
+#detail h2 { margin: 0 28px 2px 0; font-size: 15px; }
+#detail .path { color: #7a8499; font-size: 11px; word-break: break-all; margin-bottom: 10px; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.tag {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  background: #161d2e; border: 1px solid #28304a; color: #c7cedd;
+}
+.sec-title {
+  margin: 14px 0 6px; font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+  color: #6b7488;
+}
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { font-size: 11px; padding: 2px 7px; border-radius: 5px; background: #141a29; color: #aeb6c9; }
+.sym { padding: 6px 0; border-bottom: 1px solid #161d2e; }
+.sym b { color: #e6e9ef; }
+.sym-kind { color: #6b7488; font-size: 10px; margin-left: 6px; }
+.sig { color: #8a93a8; font-size: 11px; font-family: ui-monospace, monospace; margin-top: 2px; word-break: break-word; }
+.dep { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+.dep-name { color: #d3d9e6; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dep-meta { font-size: 10px; }
+.dep-layer { font-size: 10px; }
+.dep-empty { color: #5a6177; font-size: 11px; padding: 2px 0; }
+
+/* ---- legend ---- */
+#legend {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  display: flex; flex-wrap: wrap; gap: 18px; align-items: center;
+  padding: 8px 14px; font-size: 11px;
+  background: linear-gradient(#05070d00, #05070dcc 40%);
+  pointer-events: none;
+}
+.legend-group { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.legend-group b { color: #6b7488; letter-spacing: .06em; }
+.leg-layer { display: flex; align-items: center; gap: 5px; color: #aeb6c9; }
+.leg-layer i { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+/* edge-kind chips (legend + detail) */
+.ek { padding: 1px 7px; border-radius: 4px; font-size: 10px; }
+.ek[data-k="imports"]    { color: #7fb2ff; background: #16243f; }
+.ek[data-k="calls"]      { color: #f2c14e; background: #3a2f12; }
+.ek[data-k="references"] { color: #c79bff; background: #2a2147; }
+
+/* ---- hint + no-data ---- */
+#hint {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: 30px; z-index: 9;
+  color: #5a6177; font-size: 11px; pointer-events: none; text-align: center;
+}
+#no-data {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #8a93a8; font-size: 15px; z-index: 20;
+}
+#no-data.hidden { display: none; }
+#no-data code { background: #131826; padding: 2px 6px; border-radius: 4px; color: #e6e9ef; }
+
+/* ---- lil-gui (appearance panel) placement tweak ---- */
+.lil-gui.root { z-index: 12; --background-color: #0b0f1aee; --width: 280px; }
+
+/* ============================================================
+   SIDEBAR — IDE-style file-tree navigator (sidebar.js)
+   Left-anchored dark panel, full height minus topbar + legend.
+   ============================================================ */
+
+#sidebar {
+  position: fixed;
+  top: 52px; left: 8px; bottom: 44px;
+  width: 280px;
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  background: #0b0f1a;
+  border: 1px solid #222b42;
+  border-radius: 10px;
+  box-shadow: 0 10px 40px #000a;
+  overflow: hidden;           /* panel clips; inner sections scroll */
+  transition: left 0.15s ease, top 0.15s ease;
+  user-select: none;
+}
+#sidebar.hidden { display: none; }
+
+/* ---- drag header ---- */
+.sb-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+  height: 36px;
+  flex-shrink: 0;
+  cursor: move;
+  background: #0f1424;
+  border-bottom: 1px solid #222b42;
+  border-radius: 10px 10px 0 0;
+}
+.sb-header-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: #7a8499;
+}
+.sb-collapse-btn {
+  background: none;
+  border: none;
+  color: #7a8499;
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0 2px;
+  border-radius: 4px;
+}
+.sb-collapse-btn:hover { color: #e6e9ef; background: #1c2438; }
+
+/* ---- layer key section ---- */
+.sb-key-section {
+  flex-shrink: 0;
+  padding: 8px 0 4px;
+  border-bottom: 1px solid #1a2035;
+  max-height: 38vh;
+  overflow-y: auto;
+}
+
+.sb-section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: #4e5870;
+  padding: 2px 12px 4px;
+}
+
+.sb-layer-key { padding: 0; }
+
+.sb-layer-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 1px 4px;
+  font-size: 12px;
+  color: #c7cedd;
+  transition: background 0.1s;
+}
+.sb-layer-row:hover { background: #161d2e; }
+
+.sb-layer-swatch {
+  width: 14px; height: 14px;
+  border-radius: 3px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+}
+.sb-layer-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-layer-count {
+  font-size: 10px;
+  color: #4e5870;
+  background: #141a29;
+  border-radius: 8px;
+  padding: 0 5px;
+  min-width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+/* ---- divider between key and tree ---- */
+.sb-divider { height: 1px; background: #1a2035; flex-shrink: 0; }
+
+/* ---- file tree section ---- */
+.sb-tree-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-top: 6px;
+}
+
+/* ---- search box ---- */
+.sb-search-wrap {
+  padding: 0 8px 6px;
+  flex-shrink: 0;
+}
+.sb-search-input {
+  width: 100%;
+  background: #0f1424;
+  border: 1px solid #222b42;
+  border-radius: 6px;
+  color: #c7cedd;
+  font-size: 11px;
+  padding: 4px 8px;
+  outline: none;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+}
+.sb-search-input:focus { border-color: #4a90d9; }
+.sb-search-input::placeholder { color: #3a4568; }
+
+/* ---- tree root (scrollable) ---- */
+.sb-tree-root {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-bottom: 8px;
+}
+.sb-tree-root::-webkit-scrollbar { width: 4px; }
+.sb-tree-root::-webkit-scrollbar-track { background: transparent; }
+.sb-tree-root::-webkit-scrollbar-thumb { background: #222b42; border-radius: 2px; }
+
+/* ---- layer header rows in tree ---- */
+.sb-tree-layer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  color: #aeb6c9;
+  border-left: 3px solid transparent;  /* overridden per-layer via inline style */
+  margin-top: 2px;
+  transition: background 0.1s;
+}
+.sb-tree-layer:hover { background: #0f1424; }
+.sb-tree-layer.expanded { color: #e6e9ef; }
+
+.sb-layer-swatch-sm {
+  width: 8px; height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.sb-tree-layer-label {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ---- chevron ---- */
+.sb-chevron {
+  font-size: 9px;
+  color: #4e5870;
+  flex-shrink: 0;
+  width: 10px;
+  text-align: center;
+}
+
+/* ---- subtree container (indented child group) ---- */
+.sb-subtree {
+  border-left: 1px solid #1a2035;
+  margin-left: 14px;
+}
+
+/* ---- directory rows ---- */
+.sb-tree-dir {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #8a93a8;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background 0.1s;
+}
+.sb-tree-dir:hover { background: #0f1424; color: #c7cedd; }
+.sb-tree-dir.expanded { color: #c7cedd; }
+.sb-dir-icon { font-size: 11px; flex-shrink: 0; }
+.sb-dir-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- file leaf rows ---- */
+.sb-tree-file {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  cursor: pointer;
+  font-size: 11px;
+  color: #8a93a8;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.sb-tree-file:hover { background: #161d2e; color: #e6e9ef; }
+.sb-tree-file.active { background: #1a2a4a; color: #7fb2ff; }
+.sb-file-icon { font-size: 11px; flex-shrink: 0; }
+.sb-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sb-file-meta { font-size: 9px; color: #3a4568; flex-shrink: 0; padding-right: 6px; }
+
+/* filter match highlight */
+.sb-match { background: #2a3f6a; color: #7fb2ff; border-radius: 2px; }
+
+/* scrollbar for key section */
+.sb-key-section::-webkit-scrollbar { width: 3px; }
+.sb-key-section::-webkit-scrollbar-track { background: transparent; }
+.sb-key-section::-webkit-scrollbar-thumb { background: #222b42; border-radius: 2px; }
+
+/* toolbar btn active state for sidebar toggle */
+#btn-sidebar.active { background: #1c2438; border-color: #3a4568; color: #7fb2ff; }
+
+/* END SIDEBAR */
+
+/* ============================================================
+   NAV PAD — on-screen camera navigation (app.js buildNavPad)
+   ============================================================ */
+#navpad {
+  position: fixed; right: 304px; bottom: 18px; z-index: 13;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  background: #0b0f1ad9; border: 1px solid #222b42; border-radius: 10px;
+  padding: 8px; box-shadow: 0 8px 28px #0009;
+}
+#navpad button {
+  background: #131826; color: #c7cedd; border: 1px solid #28304a;
+  border-radius: 6px; cursor: pointer; font-size: 11px; line-height: 1;
+  width: 30px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
+}
+#navpad button:hover { background: #1c2438; border-color: #3a4568; color: #e6e9ef; }
+#navpad .np-rot { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+#navpad .np-mid { display: flex; gap: 3px; }
+#navpad .np-row { display: flex; gap: 3px; }
+#navpad .np-views { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-top: 2px; }
+#navpad .np-views button { width: 44px; font-size: 10px; }
+
+/* ---- detail panel: actions, docstrings, clickable deps ---- */
+.actions { display: flex; gap: 6px; align-items: center; margin: 4px 0 10px; }
+#open-editor {
+  background: #16243f; color: #7fb2ff; border: 1px solid #2a4d7a;
+  border-radius: 6px; padding: 5px 9px; font-size: 12px; cursor: pointer;
+}
+#open-editor:hover { background: #1d3050; }
+#editor-pick {
+  background: #131826; color: #c7cedd; border: 1px solid #28304a;
+  border-radius: 6px; padding: 4px 6px; font-size: 11px; cursor: pointer;
+}
+.sym .doc {
+  color: #8a93a8; font-size: 11px; margin-top: 3px; white-space: pre-wrap;
+  max-height: 4.5em; overflow: hidden; border-left: 2px solid #222b42; padding-left: 7px;
+}
+.sym[data-fp] { cursor: pointer; }
+.sym[data-fp]:hover b { color: #7fb2ff; }
+.dep-click { cursor: pointer; border-radius: 5px; padding: 4px 6px; margin: 0 -6px; }
+.dep-click:hover { background: #161d2e; }
+.dep-click:hover .dep-go { color: #7fb2ff; }
+.dep-go { color: #3a4568; margin-left: 2px; }
+
+/* ---- function-doc hover popup ---- */
+#sym-tip {
+  position: fixed; z-index: 30; max-width: 360px;
+  background: #11182a; color: #c7cedd; border: 1px solid #2a3550;
+  border-radius: 8px; padding: 9px 11px; font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; box-shadow: 0 8px 30px #000b; pointer-events: none;
+}
+.sym[data-doc] { cursor: pointer; }
+.sym-doc-dot { color: #5a7bb0; font-size: 11px; cursor: help; }
+.sym[data-doc]:hover b { color: #7fb2ff; }
