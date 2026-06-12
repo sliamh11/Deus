@@ -181,6 +181,87 @@ describe('buildVolumeMounts: control group', () => {
   });
 });
 
+// ── Control group credential lockdown (LIA-210) ─────────────────────────
+
+describe('buildVolumeMounts: control group credential lockdown (LIA-210)', () => {
+  it('shadows runtime-state dirs (data/store/groups/logs) under the project root', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockStatSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+    mockReaddirSync.mockReturnValue([]);
+    const group = makeGroup({ isControlGroup: true });
+    const mounts = buildVolumeMounts(group, true);
+    for (const name of ['data', 'store', 'groups', 'logs']) {
+      const shadow = findMount(mounts, `/workspace/project/${name}`);
+      expect(shadow, `${name} should be shadowed`).toBeDefined();
+      expect(shadow!.readonly).toBe(true);
+      // Shadow source is an empty dir under DATA_DIR/control-shadows, not the
+      // real runtime dir — so the container cannot read the real content.
+      expect(shadow!.hostPath).toContain('control-shadows');
+      expect(shadow!.hostPath).not.toContain(`${path.sep}${name}${path.sep}`);
+    }
+  });
+
+  it('shadows non-gcal integrations children but preserves gcal', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockStatSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+    mockReaddirSync.mockImplementation((p) =>
+      String(p).endsWith('integrations')
+        ? (['gcal', 'odysseus'] as unknown as ReturnType<typeof fs.readdirSync>)
+        : ([] as unknown as ReturnType<typeof fs.readdirSync>),
+    );
+    const group = makeGroup({ isControlGroup: true });
+    const mounts = buildVolumeMounts(group, true);
+    // odysseus shadowed
+    const odysseus = findMount(
+      mounts,
+      '/workspace/project/integrations/odysseus',
+    );
+    expect(odysseus).toBeDefined();
+    expect(odysseus!.readonly).toBe(true);
+    expect(odysseus!.hostPath).toContain('control-shadows');
+    // gcal preserved (NOT shadowed) — its MCP reads creds in-container by
+    // design; it stays visible through the parent /workspace/project mount.
+    const gcal = findMount(mounts, '/workspace/project/integrations/gcal');
+    expect(gcal).toBeUndefined();
+  });
+
+  it('does not shadow runtime dirs that do not exist', () => {
+    mockExistsSync.mockReturnValue(false);
+    const group = makeGroup({ isControlGroup: true });
+    const mounts = buildVolumeMounts(group, true);
+    for (const name of ['data', 'store', 'groups', 'logs']) {
+      expect(findMount(mounts, `/workspace/project/${name}`)).toBeUndefined();
+    }
+  });
+});
+
+// ── Worktree mount shadowing (LIA-210 shared-helper coverage) ───────────
+
+describe('buildVolumeMounts: worktree mount shadowing', () => {
+  it('shadows sensitive files/dirs in a worktree mount via the shared helper', () => {
+    const worktreePath = path.join(TMP_BASE, 'wt', 'feature-x');
+    mockExistsSync.mockReturnValue(true);
+    mockRealpathSync.mockImplementation((p) => String(p));
+    mockStatSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
+    mockReaddirSync.mockReturnValue([]);
+    const group = makeGroup({ isControlGroup: true });
+    const mounts = buildVolumeMounts(group, true, worktreePath);
+    // Worktree mounted writable at /workspace/project (project override).
+    const proj = findMount(mounts, '/workspace/project');
+    expect(proj).toBeDefined();
+    expect(proj!.readonly).toBe(false);
+    expect(proj!.hostPath).toBe(worktreePath);
+    // .env shadowed via the shared helper.
+    const envShadow = findMount(mounts, '/workspace/project/.env');
+    expect(envShadow).toBeDefined();
+    expect(envShadow!.hostPath).toBe(os.devNull);
+    // credentials/ dir shadowed under worktree-shadows.
+    const credShadow = findMount(mounts, '/workspace/project/credentials');
+    expect(credShadow).toBeDefined();
+    expect(credShadow!.hostPath).toContain('worktree-shadows');
+  });
+});
+
 // ── Non-control group basic mounts ──────────────────────────────────────
 
 describe('buildVolumeMounts: non-control group', () => {

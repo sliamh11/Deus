@@ -66,6 +66,41 @@ function resolveVaultPath(): string | null {
   return null;
 }
 
+/**
+ * Shadow sensitive files (devNull) and dirs (empty dir under `dirShadowBase`)
+ * inside a `/workspace/project` mount. Single-sourced across every project-root
+ * mount branch: divergence here is a credential-exposure bug — it was exactly
+ * that (the control branch shadowed only `.env` while the others ran these
+ * loops; LIA-210).
+ */
+function pushProjectShadows(
+  mounts: VolumeMount[],
+  hostDir: string,
+  dirShadowBase: string,
+): void {
+  for (const pattern of SENSITIVE_FILE_PATTERNS) {
+    if (fs.existsSync(path.join(hostDir, pattern))) {
+      mounts.push({
+        hostPath: os.devNull,
+        containerPath: `/workspace/project/${pattern}`,
+        readonly: true,
+      });
+    }
+  }
+  for (const dirPattern of SENSITIVE_DIR_PATTERNS) {
+    const dirPath = path.join(hostDir, dirPattern);
+    if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
+      const shadowDir = path.join(dirShadowBase, dirPattern);
+      fs.mkdirSync(shadowDir, { recursive: true, mode: 0o700 });
+      mounts.push({
+        hostPath: shadowDir,
+        containerPath: `/workspace/project/${dirPattern}`,
+        readonly: true,
+      });
+    }
+  }
+}
+
 export function buildVolumeMounts(
   group: RegisteredGroup,
   isControlGroup: boolean,
@@ -85,13 +120,61 @@ export function buildVolumeMounts(
         containerPath: '/workspace/project',
         readonly: true,
       });
-      const envFile = path.join(projectRoot, '.env');
-      if (fs.existsSync(envFile)) {
+      // Credential shadowing (LIA-210): the whole repo is mounted read-only for
+      // the control/dev agent, but read-only is still `cat`-able — every path
+      // holding real secrets or PII must be shadowed. Three layers:
+      // (1) shared patterns (.env*, credentials/, secrets/):
+      pushProjectShadows(
+        mounts,
+        projectRoot,
+        path.join(DATA_DIR, 'control-shadows'),
+      );
+      // (2) Deus runtime-state dirs (live creds in data/env/env + store/auth,
+      // message DBs, logs). Denylist, not allowlist: the agent needs broad code
+      // access, so an allowlist would break unknown/future code dirs. DENYLIST:
+      // any new runtime/cred dir under the project root MUST be added here.
+      for (const name of ['data', 'store', 'groups', 'logs']) {
+        if (!fs.existsSync(path.join(projectRoot, name))) continue;
+        const shadowDir = path.join(DATA_DIR, 'control-shadows', name);
+        fs.mkdirSync(shadowDir, { recursive: true, mode: 0o700 });
         mounts.push({
-          hostPath: os.devNull,
-          containerPath: '/workspace/project/.env',
+          hostPath: shadowDir,
+          containerPath: `/workspace/project/${name}`,
           readonly: true,
         });
+      }
+      // (3) integrations/: shadow every child EXCEPT gcal, whose MCP reads its
+      // OAuth creds in-container by design (agent-runner reads
+      // /workspace/project/integrations/gcal/*). gcal stays visible through the
+      // parent mount; enumerating keeps new integrations hidden by default.
+      // Residual in-container gcal-token exposure: follow-up LIA-282.
+      const integrationsDir = path.join(projectRoot, 'integrations');
+      if (fs.existsSync(integrationsDir)) {
+        for (const child of fs.readdirSync(integrationsDir)) {
+          if (child === 'gcal') continue;
+          const childPath = path.join(integrationsDir, child);
+          const containerChild = `/workspace/project/integrations/${child}`;
+          if (fs.statSync(childPath).isDirectory()) {
+            const shadowDir = path.join(
+              DATA_DIR,
+              'control-shadows',
+              'integrations',
+              child,
+            );
+            fs.mkdirSync(shadowDir, { recursive: true, mode: 0o700 });
+            mounts.push({
+              hostPath: shadowDir,
+              containerPath: containerChild,
+              readonly: true,
+            });
+          } else {
+            mounts.push({
+              hostPath: os.devNull,
+              containerPath: containerChild,
+              readonly: true,
+            });
+          }
+        }
       }
     }
 
@@ -137,33 +220,11 @@ export function buildVolumeMounts(
         containerPath: '/workspace/project',
         readonly: false,
       });
-      for (const pattern of SENSITIVE_FILE_PATTERNS) {
-        const filePath = path.join(worktreePath, pattern);
-        if (fs.existsSync(filePath)) {
-          mounts.push({
-            hostPath: os.devNull,
-            containerPath: `/workspace/project/${pattern}`,
-            readonly: true,
-          });
-        }
-      }
-      for (const dirPattern of SENSITIVE_DIR_PATTERNS) {
-        const dirPath = path.join(worktreePath, dirPattern);
-        if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
-          const shadowDir = path.join(
-            DATA_DIR,
-            'worktree-shadows',
-            path.basename(worktreePath),
-            dirPattern,
-          );
-          fs.mkdirSync(shadowDir, { recursive: true, mode: 0o700 });
-          mounts.push({
-            hostPath: shadowDir,
-            containerPath: `/workspace/project/${dirPattern}`,
-            readonly: true,
-          });
-        }
-      }
+      pushProjectShadows(
+        mounts,
+        worktreePath,
+        path.join(DATA_DIR, 'worktree-shadows', path.basename(worktreePath)),
+      );
     }
   } else if (group.projectId) {
     // External project mount: when a group has an associated project,
@@ -197,39 +258,13 @@ export function buildVolumeMounts(
           readonly: effectiveReadonly,
         });
 
-        // Shadow sensitive files to prevent credential leakage.
-        // The container will see the null device instead of the real file.
-        for (const pattern of SENSITIVE_FILE_PATTERNS) {
-          const filePath = path.join(realProjectPath, pattern);
-          if (fs.existsSync(filePath)) {
-            mounts.push({
-              hostPath: os.devNull,
-              containerPath: `/workspace/project/${pattern}`,
-              readonly: true,
-            });
-          }
-        }
-
-        // Shadow sensitive directories
-        for (const dirPattern of SENSITIVE_DIR_PATTERNS) {
-          const dirPath = path.join(realProjectPath, dirPattern);
-          if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
-            // Can't shadow a directory with /dev/null — use an empty tmpdir instead.
-            // Create a project-specific empty dir that persists across runs.
-            const shadowDir = path.join(
-              DATA_DIR,
-              'project-shadows',
-              group.projectId!,
-              dirPattern,
-            );
-            fs.mkdirSync(shadowDir, { recursive: true, mode: 0o700 });
-            mounts.push({
-              hostPath: shadowDir,
-              containerPath: `/workspace/project/${dirPattern}`,
-              readonly: true,
-            });
-          }
-        }
+        // Shadow sensitive files/dirs (.env*, credentials/, secrets/) so the
+        // container sees /dev/null / an empty dir instead of real content.
+        pushProjectShadows(
+          mounts,
+          realProjectPath,
+          path.join(DATA_DIR, 'project-shadows', group.projectId!),
+        );
 
         // Security note: symlinks WITHIN the mounted project can escape the
         // project boundary (e.g., project/data -> /etc/passwd). Docker/Apple
