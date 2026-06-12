@@ -21,7 +21,8 @@ import {
 } from './db.js';
 import { logger } from './logger.js';
 import { extractPrUrl } from './pr-url-extractor.js';
-import { macosNotify, notifyPipelineStep } from './linear-notifications.js';
+import { notifyPipelineStep } from './linear-notifications.js';
+import { fireAndForget } from './async/index.js';
 import type { LinearContext } from './linear-dispatcher.js';
 
 const execFileAsync = promisify(execFile);
@@ -140,10 +141,14 @@ export async function queryPrChecks(prUrl: string): Promise<PrChecksResult> {
   }
 }
 
+// --admin is the only viable merge path on this solo repo (LIA-215/LIA-147):
+// branch protection requires an approving review no second human can give, so
+// GitHub-native --auto can never complete (it sits BLOCKED forever) — and gh
+// rejects --admin+--auto together anyway. Require CI green first, then merge.
+// The "wait for CI" responsibility lives in pollUntilMergeable, not in gh.
 async function mergePr(
   prUrl: string,
-  options: { auto: boolean } = { auto: false },
-): Promise<{ merged: boolean; autoQueued?: boolean; error?: string }> {
+): Promise<{ merged: boolean; error?: string }> {
   const prNumber = prUrl.match(/\/pull\/(\d+)/)?.[1];
   const repoMatch = prUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull/);
   const repo = repoMatch?.[1];
@@ -152,21 +157,9 @@ async function mergePr(
     return { merged: false, error: 'Invalid PR URL' };
   }
 
-  // For direct merge (no --auto), CI must already be passing.
-  // For --auto, we only need CI to have started (pending or pass) — GitHub
-  // will wait for the required checks before completing the merge.
   const preCheck = await queryPrChecks(prUrl);
-  if (options.auto) {
-    if (preCheck.status === 'fail') {
-      return {
-        merged: false,
-        error: `CI already failing, not queuing auto-merge: ${preCheck.summary}`,
-      };
-    }
-  } else {
-    if (preCheck.status !== 'pass') {
-      return { merged: false, error: `CI not passing: ${preCheck.summary}` };
-    }
+  if (preCheck.status !== 'pass') {
+    return { merged: false, error: `CI not passing: ${preCheck.summary}` };
   }
 
   const args = [
@@ -179,17 +172,10 @@ async function mergePr(
     '--delete-branch',
     '--admin',
   ];
-  if (options.auto) {
-    args.push('--auto');
-  }
 
   try {
     await execFileAsync('gh', args, { timeout: MERGE_TIMEOUT_MS });
-    // With --auto, gh exits 0 meaning auto-merge was successfully *queued*;
-    // GitHub will complete the merge when CI passes.
-    return options.auto
-      ? { merged: false, autoQueued: true }
-      : { merged: true };
+    return { merged: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('already been merged') || msg.includes('MERGED')) {
@@ -284,72 +270,55 @@ export async function attemptAutoMerge(
   if (!isAutoMergeEnabled()) return;
   const ident = identifier ?? 'unknown';
 
-  // Step 1: Try to enable GitHub's native auto-merge.  --auto makes GitHub
-  // wait for all required status checks before completing the merge itself, so
-  // we don't need to poll here.
-  const autoResult = await mergePr(prUrl, { auto: true });
-  logger.info(
-    {
-      issueId,
-      prUrl,
-      autoQueued: autoResult.autoQueued,
-      error: autoResult.error,
-    },
-    'auto-merge: auto-merge attempt',
-  );
-
-  if (autoResult.merged) {
-    // Already merged (edge case: --auto succeeded immediately)
-    await handleMergeSuccess(ctx, issueId, prUrl, ident);
-    return;
-  }
-
-  if (autoResult.autoQueued) {
-    // GitHub accepted the auto-merge request — it will merge when CI passes.
-    // The sweepPendingAutoMerges cycle will detect the MERGED state later.
-    logger.info(
-      { issueId, prUrl },
-      'auto-merge: GitHub auto-merge queued, waiting for CI',
-    );
-    return;
-  }
-
-  // Step 2: --auto failed (branch protection not configured, or CI already
-  // failing).  Fall back to a single direct-merge attempt after one poll cycle.
-  logger.warn(
-    { issueId, prUrl, error: autoResult.error },
-    'auto-merge: --auto unavailable, falling back to direct merge after CI poll',
-  );
-
-  await new Promise<void>((resolve) =>
-    setTimeout(resolve, CI_POLL_INTERVAL_MS),
-  );
-
+  // Decide on the CURRENT CI state. GitHub-native --auto is dead on this repo
+  // (see mergePr), so we poll to green ourselves (LIA-215).
   const checks = await queryPrChecks(prUrl);
   logger.info(
     { issueId, prUrl, status: checks.status },
-    'auto-merge: CI status (fallback)',
+    'auto-merge: initial CI status',
   );
 
-  if (checks.status !== 'pass') {
-    const reason =
-      checks.status === 'pending'
-        ? `CI still pending after fallback wait: ${checks.summary}`
-        : `CI failed: ${checks.summary}`;
+  if (checks.status === 'fail') {
+    // A real CI failure — re-dispatch a fresh agent attempt.
     await handleMergeFailure(
       ctx,
       issueId,
       prUrl,
       ident,
-      reason,
+      `CI failed: ${checks.summary}`,
       'automerge_failed',
       true,
     );
     return;
   }
 
-  const directResult = await mergePr(prUrl, { auto: false });
-  if (directResult.merged) {
+  if (checks.status === 'pending') {
+    // CI still running — hand off to a detached bounded poll so the caller (an
+    // awaited webhook cooldown callback) returns immediately. The PR stays
+    // auto_merge_state='pending'; the startup sweep re-runs this on restart.
+    fireAndForget(() => pollUntilMergeable(ctx, issueId, prUrl, ident), {
+      name: 'auto-merge.poll',
+    });
+    return;
+  }
+
+  // CI already green — merge now.
+  await mergeOrFail(ctx, issueId, prUrl, ident);
+}
+
+/**
+ * --admin-merge a green PR and route the outcome. Shared by attemptAutoMerge
+ * and pollUntilMergeable. A merge-call failure here is NOT requeued (requeue
+ * false): the build was green, so a fresh agent attempt would not help.
+ */
+async function mergeOrFail(
+  ctx: LinearContext,
+  issueId: string,
+  prUrl: string,
+  ident: string,
+): Promise<void> {
+  const result = await mergePr(prUrl);
+  if (result.merged) {
     await handleMergeSuccess(ctx, issueId, prUrl, ident);
   } else {
     await handleMergeFailure(
@@ -357,11 +326,88 @@ export async function attemptAutoMerge(
       issueId,
       prUrl,
       ident,
-      directResult.error ?? 'unknown merge error',
+      result.error ?? 'unknown merge error',
       'automerge_failed',
       false,
     );
   }
+}
+
+/**
+ * Poll a PR's CI until it reaches a terminal state, then --admin-merge on pass.
+ * Detached via fireAndForget so it never blocks the dispatch path (LIA-215).
+ *
+ *  - pass    → --admin merge (mergeOrFail).
+ *  - fail    → failure(requeue): a broken build warrants a fresh agent attempt.
+ *  - pending → wait CI_POLL_INTERVAL_MS, retry, up to AUTO_MERGE_POLL_MAX_ATTEMPTS.
+ *  - exhausted (still pending past the cap) → PARK: leave auto_merge_state
+ *    'pending', no requeue, no circuit-breaker, but POST a comment so the parked
+ *    PR is visible, not dark. pending != failure, so we must NOT thrash the
+ *    agent. sweepPendingAutoMerges re-runs this on the next restart. NOTE: that
+ *    sweep is startup-only, so a parked PR waits until the next deploy/restart —
+ *    acceptable for a solo pipeline that restarts on every deploy; a periodic
+ *    sweep is a deferred option.
+ *
+ * CAVEAT: queryPrChecks maps a transient gh error (auth/network/rate-limit) to
+ * 'pending' (see its catch), so a SUSTAINED gh outage looks like slow CI and
+ * parks after the cap rather than alerting. A distinct 'error' status that
+ * requeues after K consecutive errors is a deferred improvement; the
+ * cap-exhaustion comment keeps such a PR visible in the meantime.
+ */
+async function pollUntilMergeable(
+  ctx: LinearContext,
+  issueId: string,
+  prUrl: string,
+  ident: string,
+): Promise<void> {
+  // Max CI-poll cycles before parking a still-pending PR (LIA-215). 20 × 60s ≈
+  // 20 min — generous headroom over this repo's ~3-min CI. Read at call time so
+  // it's env-overridable (and test-tunable) without a restart.
+  const maxAttempts = Number(process.env.AUTO_MERGE_POLL_MAX_ATTEMPTS) || 20;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, CI_POLL_INTERVAL_MS),
+    );
+
+    const checks = await queryPrChecks(prUrl);
+    logger.info(
+      { issueId, prUrl, status: checks.status, attempt: attempt + 1 },
+      'auto-merge: CI poll',
+    );
+
+    if (checks.status === 'pending') continue;
+
+    if (checks.status === 'fail') {
+      await handleMergeFailure(
+        ctx,
+        issueId,
+        prUrl,
+        ident,
+        `CI failed: ${checks.summary}`,
+        'automerge_failed',
+        true,
+      );
+      return;
+    }
+
+    // pass
+    await mergeOrFail(ctx, issueId, prUrl, ident);
+    return;
+  }
+
+  // Cap exhausted, CI still pending. PARK — do not requeue or trip the breaker
+  // (pending != failure), but post a comment so the parked PR is visible rather
+  // than going dark. The startup sweep re-runs this attempt on the next restart.
+  logger.warn(
+    { issueId, prUrl, attempts: maxAttempts },
+    'auto-merge: CI still pending after poll cap, leaving pending for the next startup sweep',
+  );
+  await ctx.client
+    .createComment({
+      issueId,
+      body: `**Auto-merge waiting** - CI still pending after ${maxAttempts} poll cycles. Left in pending (not failed); will retry on the next sweep. PR: ${prUrl}`,
+    })
+    .catch(() => {});
 }
 
 export async function sweepPendingAutoMerges(
@@ -388,8 +434,8 @@ export async function sweepPendingAutoMerges(
           );
           await handleMergeSuccess(ctx, issue_id, pr_url, ident || 'unknown');
         } else {
-          // Not yet merged — re-run the full attempt (will queue --auto again or
-          // fall through to the direct-merge fallback).
+          // Not yet merged — re-run the full attempt (re-checks CI and either
+          // --admin-merges now or schedules the poll, LIA-215).
           await attemptAutoMerge(ctx, issue_id, pr_url, ident || 'unknown');
         }
       })

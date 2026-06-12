@@ -17,7 +17,7 @@
 - Never proceed while a review agent is running. Wait for its verdict.
 - REVISE from any warden means re-run after fixes until SHIP. Never touch markers, commit, or proceed on REVISE — no exceptions, no "close enough," no time-pressure rationalization.
 - Quality over speed by default. Never shortcut a warden loop, skip a review round, or rationalize lower standards because of time pressure, autonomy grants, or late-session fatigue. Only skip when the user explicitly says to prioritize speed.
-- Never merge failing CI. Never use --admin/direct push except emergencies.
+- Never merge failing or pending CI. --admin is the accepted solo-dev landing path once all REQUIRED checks are green (+ fresh per-command approval interactively, or pipeline gates autonomously) — not emergency-only (LIA-147). Never --admin over red/pending CI.
 
 ## Verification & Honesty
 - Never speculate. Only state verified facts. If unsure, say so.
