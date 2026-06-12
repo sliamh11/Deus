@@ -28,7 +28,7 @@ from typing import Optional
 # Generous backstop for runaway generation that lacks a known marker. A valid
 # lesson is "under 100 words" (~600 chars); even verbose analyses run <3k, while
 # the corrupted dumps ran 4.5k-7k. 4000 catches runaway with ~zero false
-# positives on real content. Env-overridable per the machine-adaptive rule.
+# positives on real content. Env-overridable per the machine-adaptive rule (LIA-213).
 MAX_REFLECTION_CHARS = int(os.environ.get("DEUS_REFLECTION_MAX_CHARS", "4000"))
 
 # Raw control tokens / markers that a legitimate lesson never emits verbatim --
