@@ -239,7 +239,11 @@ describe('buildVolumeMounts: control group credential lockdown (LIA-210)', () =>
 
 describe('buildVolumeMounts: worktree mount shadowing', () => {
   it('shadows sensitive files/dirs in a worktree mount via the shared helper', () => {
-    const worktreePath = path.join(TMP_BASE, 'wt', 'feature-x');
+    // path.resolve (not path.join) so the path is drive-absolute on Windows:
+    // the worktree branch guards on `realWorktree !== path.resolve(worktreePath)`,
+    // and a drive-relative path (\tmp\...) would gain a drive letter under
+    // path.resolve and fail that equality, skipping the mount.
+    const worktreePath = path.resolve(TMP_BASE, 'wt', 'feature-x');
     mockExistsSync.mockReturnValue(true);
     mockRealpathSync.mockImplementation((p) => String(p));
     mockStatSync.mockReturnValue({ isDirectory: () => true } as fs.Stats);
