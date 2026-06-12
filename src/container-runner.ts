@@ -468,7 +468,17 @@ export async function runContainerAgent(
             resetTimeout();
             // Call onOutput for all markers (including null results)
             // so idle timers start even for "silent" query completions.
-            outputChain = outputChain.then(() => onOutput(parsed));
+            // .catch keeps outputChain non-poisoning (LIA-212): a rejected
+            // onOutput (e.g. a transient send failure) must not drop later
+            // outputs or block the close-time resolve — log and continue.
+            outputChain = outputChain
+              .then(() => onOutput(parsed))
+              .catch((err) => {
+                logger.error(
+                  { group: group.name, err },
+                  'onOutput handler rejected; continuing stream',
+                );
+              });
           } catch (err) {
             logger.error(
               { group: group.name, err },
@@ -602,7 +612,10 @@ export async function runContainerAgent(
             { group: group.name, containerName, duration, code },
             'Container timed out after output (idle cleanup)',
           );
-          outputChain.then(() => {
+          // .then(settle, settle): settle the dispatch promise whether the
+          // output chain fulfilled or rejected (LIA-212 defense-in-depth) —
+          // this is the only resolve() on this path, so settle unconditionally.
+          const settle = () => {
             // Produced output -> still log for the evolution loop (LIA-196).
             logDispatch(null, input.sessionRef?.session_id, reapedLatencyMs());
             resolve({
@@ -615,7 +628,8 @@ export async function runContainerAgent(
                   : undefined),
               newSessionId,
             });
-          });
+          };
+          outputChain.then(settle, settle);
           return;
         }
 
@@ -707,7 +721,9 @@ export async function runContainerAgent(
             { group: group.name, code, duration },
             'Container exited non-zero after output (treating as success)',
           );
-          outputChain.then(() => {
+          // .then(settle, settle): settle whether the output chain fulfilled or
+          // rejected (LIA-212 defense-in-depth) — see the idle-cleanup seam.
+          const settle = () => {
             // Produced output -> still log for the evolution loop (LIA-196).
             logDispatch(null, input.sessionRef?.session_id, reapedLatencyMs());
             resolve({
@@ -720,7 +736,8 @@ export async function runContainerAgent(
                   : undefined),
               newSessionId,
             });
-          });
+          };
+          outputChain.then(settle, settle);
           return;
         }
 
@@ -746,7 +763,9 @@ export async function runContainerAgent(
 
       // Streaming mode: wait for output chain to settle, return completion marker
       if (onOutput) {
-        outputChain.then(() => {
+        // .then(settle, settle): settle whether the output chain fulfilled or
+        // rejected (LIA-212 defense-in-depth) — see the idle-cleanup seam.
+        const settle = () => {
           logger.info(
             { group: group.name, duration, newSessionId },
             'Container completed (streaming mode)',
@@ -763,7 +782,8 @@ export async function runContainerAgent(
                 : undefined),
             newSessionId,
           });
-        });
+        };
+        outputChain.then(settle, settle);
         return;
       }
 

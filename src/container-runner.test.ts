@@ -313,6 +313,115 @@ describe('container-runner timeout behavior', () => {
 });
 
 // ---------------------------------------------------------------------------
+// A rejected onOutput must NOT wedge the group (LIA-212).
+//
+// onOutput rejection is reachable in production: container-backend.ts's onOutput
+// awaits eventSink with no try/catch, and the orchestrator's eventSink awaits
+// channel.sendMessage — a transient WhatsApp/Telegram send failure rejects.
+// Before the fix, that poisoned outputChain: (1) later streamed outputs were
+// silently dropped, and (2) every streaming close seam gated its only resolve()
+// behind outputChain.then(...), so on a rejected chain the dispatch promise
+// never settled — the group died and leaked a concurrency slot until restart.
+// ---------------------------------------------------------------------------
+
+describe('rejected onOutput resilience (LIA-212)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a rejected onOutput still lets the dispatch promise settle (no wedge)', async () => {
+    // Rejects on the (only) marker — mimics a transient channel.sendMessage
+    // failure bubbling up through the eventSink.
+    const onOutput = vi.fn(async (output: ContainerOutput) => {
+      if (output.result === 'boom') {
+        throw new Error('transient channel.sendMessage failure');
+      }
+    });
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // Capture settlement WITHOUT awaiting: pre-fix the promise never settles,
+    // so `await resultPromise` would hang the suite instead of failing the
+    // assertion. The .then tap lets us assert settlement and fail fast.
+    let settled: Awaited<ReturnType<typeof runContainerAgent>> | undefined;
+    void resultPromise.then((r) => {
+      settled = r;
+    });
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'boom',
+      newSessionId: 'session-wedge',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Normal exit → the streaming-success close seam waits on outputChain.
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Pre-fix: the rejected chain gates the only resolve() → never settles.
+    expect(settled).toBeDefined();
+    expect(settled!.status).toBe('success');
+    expect(onOutput).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rejected onOutput does not drop subsequent streamed outputs', async () => {
+    const seen: Array<string | null> = [];
+    const onOutput = vi.fn(async (output: ContainerOutput) => {
+      seen.push(output.result);
+      if (output.result === 'first') {
+        throw new Error('transient channel.sendMessage failure');
+      }
+    });
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+    let settled = false;
+    void resultPromise.then(() => {
+      settled = true;
+    });
+
+    // First marker rejects (poisons the chain pre-fix) ...
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'first',
+      newSessionId: 'session-drop',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    // ... the second marker must still reach onOutput.
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'second',
+      newSessionId: 'session-drop',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Pre-fix: chain poisoned by the 'first' rejection → onOutput('second')
+    // never runs and the dispatch never settles.
+    expect(seen).toContain('second');
+    expect(settled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // logInteraction fires on EVERY output-producing completion path (LIA-196).
 // Before LIA-196 the idle-after-output and non-zero-after-output paths resolved
 // success but never logged. These tests pin logInteraction to all four close
