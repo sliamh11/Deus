@@ -34,8 +34,14 @@ vi.mock('./group-folder.js', async () => {
     resolveGroupFolderPath: vi.fn((folder: string) =>
       p.default.join(tmpBase, 'deus-groups', folder),
     ),
-    resolveGroupIpcPath: vi.fn((folder: string) =>
-      p.default.join(tmpBase, 'deus-data', 'ipc', folder),
+    resolveGroupIpcPath: vi.fn((folder: string, runKey?: string) =>
+      p.default.join(
+        tmpBase,
+        'deus-data',
+        'ipc',
+        folder,
+        ...(runKey ? [runKey] : []),
+      ),
     ),
     assertValidGroupFolder: vi.fn(),
     isValidGroupFolder: vi.fn(() => true),
@@ -850,5 +856,57 @@ describe('buildFanOutMounts', () => {
 
     expect(mounts[0].containerPath).toBe('/workspace/group');
     expect(mounts[1].containerPath).toBe('/workspace/sandbox');
+  });
+});
+
+// ── Per-run IPC isolation (LIA-211) ─────────────────────────────────────
+// Concurrent Linear dispatches share one groupFolder but each has a unique
+// chatJid; an ipcRunKey namespaces the IPC dir per run so their `_close`
+// sentinels can't collide. Chat/dev runs pass no key → unchanged folder dir.
+
+describe('buildVolumeMounts: per-run IPC isolation (LIA-211)', () => {
+  it('mounts a per-run IPC dir at /workspace/ipc when ipcRunKey is set', () => {
+    const group = makeGroup({
+      folder: 'linear-dispatch',
+      isControlGroup: true,
+    });
+    const mounts = buildVolumeMounts(
+      group,
+      true,
+      undefined,
+      'linear-dispatch-abc12345',
+    );
+    const ipcMount = findMount(mounts, '/workspace/ipc');
+    expect(ipcMount).toBeDefined();
+    expect(ipcMount!.readonly).toBe(false);
+    expect(ipcMount!.hostPath).toBe(
+      path.join(DATA_DIR, 'ipc', 'linear-dispatch', 'linear-dispatch-abc12345'),
+    );
+  });
+
+  it('two different ipcRunKeys mount two different host IPC dirs', () => {
+    const group = makeGroup({
+      folder: 'linear-dispatch',
+      isControlGroup: true,
+    });
+    const a = findMount(
+      buildVolumeMounts(group, true, undefined, 'linear-dispatch-aaaa1111'),
+      '/workspace/ipc',
+    );
+    const b = findMount(
+      buildVolumeMounts(group, true, undefined, 'linear-dispatch-bbbb2222'),
+      '/workspace/ipc',
+    );
+    expect(a!.hostPath).not.toBe(b!.hostPath);
+  });
+
+  it('without ipcRunKey the host IPC dir is the folder dir (chat path preserved)', () => {
+    const group = makeGroup({ folder: 'family-chat' });
+    const ipcMount = findMount(
+      buildVolumeMounts(group, false),
+      '/workspace/ipc',
+    );
+    expect(ipcMount).toBeDefined();
+    expect(ipcMount!.hostPath).toBe(path.join(DATA_DIR, 'ipc', 'family-chat'));
   });
 });

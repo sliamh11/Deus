@@ -105,6 +105,7 @@ export function buildVolumeMounts(
   group: RegisteredGroup,
   isControlGroup: boolean,
   worktreePath?: string,
+  ipcRunKey?: string,
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
@@ -382,8 +383,10 @@ export function buildVolumeMounts(
   });
 
   // Per-group IPC namespace: each group gets its own IPC directory
-  // This prevents cross-group privilege escalation via IPC
-  const groupIpcDir = resolveGroupIpcPath(group.folder);
+  // This prevents cross-group privilege escalation via IPC. ipcRunKey (LIA-211)
+  // further namespaces it per run for shared-folder concurrent dispatches; the
+  // container path stays /workspace/ipc, so the agent is unaffected.
+  const groupIpcDir = resolveGroupIpcPath(group.folder, ipcRunKey);
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });

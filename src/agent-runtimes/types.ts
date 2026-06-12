@@ -41,6 +41,14 @@ export interface RunContext {
   imageInputs?: Array<{ relativePath: string; mediaType: string }>;
   toolBroker?: ToolBroker;
   worktreePath?: string;
+  /**
+   * Per-run IPC namespace key (LIA-211). When set, the container's IPC dir is
+   * keyed `ipc/<groupFolder>/<runKey>` instead of `ipc/<groupFolder>`, so
+   * concurrent runs that share a groupFolder (Linear dispatches/gates, each
+   * with a unique chatJid) don't collide on the `_close` sentinel. Set only by
+   * the linear funnel; absent for chat/dev runs (unchanged folder-keyed IPC).
+   */
+  ipcRunKey?: string;
 }
 
 export type RuntimeEvent =

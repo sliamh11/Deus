@@ -103,6 +103,9 @@ export class ContainerRuntime implements AgentRuntime {
         ...(runContext.worktreePath && {
           worktreePath: runContext.worktreePath,
         }),
+        ...(runContext.ipcRunKey && {
+          ipcRunKey: runContext.ipcRunKey,
+        }),
       },
       (proc, containerName) =>
         this.deps.registerProcess(

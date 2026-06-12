@@ -35,6 +35,7 @@ import { escapeXmlForPrompt } from './prompt-utils.js';
 import { resolveVaultPath } from './solutions/store.js';
 import { defaultSession } from './agent-runtimes/types.js';
 import { CONTAINER_TIMEOUT_ERROR_PREFIX } from './container-runner.js';
+import { resolveGroupIpcPath } from './group-folder.js';
 import { getBus } from './events/bus.js';
 import type {
   RunContext,
@@ -515,6 +516,13 @@ export async function executeAgentRun(
   let result = '';
   let error = '';
 
+  // Per-run IPC isolation (LIA-211): all linear dispatches/gates share the
+  // 'linear-dispatch' groupFolder but each has a unique chatJid. Key the IPC
+  // namespace by chatJid so a concurrent sibling can't steal or destroy this
+  // run's `_close` sentinel. The same key flows to the mounter via the
+  // runContext passed to runTurn below, so writer and mounter agree on the dir.
+  const ipcRunKey = runContext.chatJid;
+
   const eventSink: RuntimeEventSink = (event) => {
     if (event.type === 'output_text') {
       result += event.text;
@@ -526,9 +534,7 @@ export async function executeAgentRun(
     if (event.type === 'turn_complete') {
       try {
         const inputDir = path.join(
-          DATA_DIR,
-          'ipc',
-          runContext.groupFolder,
+          resolveGroupIpcPath(runContext.groupFolder, ipcRunKey),
           'input',
         );
         fs.mkdirSync(inputDir, { recursive: true });
@@ -541,7 +547,7 @@ export async function executeAgentRun(
 
   try {
     const runResult = await resolvedBackend.runTurn(
-      runContext,
+      { ...runContext, ipcRunKey },
       sessionRef,
       eventSink,
     );

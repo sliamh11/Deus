@@ -126,11 +126,13 @@ import {
   deriveFetchTimeout,
   validateLinearIdentifier,
   classifyRunFailure,
+  executeAgentRun,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
   LinearDispatcherDependencies,
 } from './linear-dispatcher.js';
+import type { AgentRuntime, RunContext } from './agent-runtimes/types.js';
 import { RuntimeRegistry } from './agent-runtimes/registry.js';
 import { logger } from './logger.js';
 import { EventBus } from './events/bus.js';
@@ -1640,5 +1642,61 @@ describe('classifyRunFailure (LIA-168)', () => {
     ['unknown error', 'Unknown error'],
   ])('classifies %s as agent-failure', (_label, err) => {
     expect(classifyRunFailure(err)).toBe('agent-failure');
+  });
+});
+
+// ── Per-run IPC isolation (LIA-211) ─────────────────────────────────────
+// The eventSink writes the `_close` sentinel — the one-shot containers' only
+// exit signal — to the run's IPC input dir. All linear flows share groupFolder
+// 'linear-dispatch' but each has a unique chatJid; keying the dir by chatJid
+// stops a concurrent sibling from stealing or destroying this run's `_close`.
+describe('executeAgentRun: per-run IPC isolation (LIA-211)', () => {
+  it('writes _close to a per-run input dir keyed by chatJid (two runs → two dirs)', async () => {
+    const writeSpy = vi
+      .spyOn(fs, 'writeFileSync')
+      .mockImplementation(() => undefined);
+    const mkdirSpy = vi
+      .spyOn(fs, 'mkdirSync')
+      .mockImplementation(() => undefined);
+
+    // Fake backend: drive the real eventSink through the turn_complete path.
+    const fakeBackend = {
+      name: () => 'claude',
+      runTurn: async (
+        _rc: RunContext,
+        _sr: unknown,
+        eventSink: (e: { type: string }) => void,
+      ) => {
+        eventSink({ type: 'turn_complete' });
+        return { status: 'success', result: 'ok' };
+      },
+    } as unknown as AgentRuntime;
+
+    const ctx = makeMockCtx();
+    vi.spyOn(ctx.deps.registry, 'resolve').mockReturnValue(fakeBackend);
+
+    const mkRunContext = (chatJid: string): RunContext => ({
+      prompt: 'p',
+      groupFolder: 'linear-dispatch',
+      chatJid,
+      isControlGroup: true,
+    });
+
+    await executeAgentRun(ctx, mkRunContext('linear-dispatch-aaaa1111'));
+    await executeAgentRun(ctx, mkRunContext('linear-dispatch-bbbb2222'));
+
+    const closePaths = writeSpy.mock.calls
+      .map((c) => String(c[0]))
+      .filter((p) => p.endsWith(`${path.sep}_close`));
+    expect(closePaths).toHaveLength(2);
+    // The core regression: the two runs must NOT share an input dir.
+    expect(closePaths[0]).not.toBe(closePaths[1]);
+    expect(closePaths[0]).toContain('linear-dispatch-aaaa1111');
+    expect(closePaths[1]).toContain('linear-dispatch-bbbb2222');
+    // ...both still namespaced under the shared groupFolder.
+    expect(closePaths[0]).toContain(`${path.sep}linear-dispatch${path.sep}`);
+
+    writeSpy.mockRestore();
+    mkdirSpy.mockRestore();
   });
 });

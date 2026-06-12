@@ -35,10 +35,20 @@ export function resolveGroupFolderPath(folder: string): string {
   return groupPath;
 }
 
-export function resolveGroupIpcPath(folder: string): string {
+export function resolveGroupIpcPath(folder: string, runKey?: string): string {
   assertValidGroupFolder(folder);
   const ipcBaseDir = path.resolve(DATA_DIR, 'ipc');
-  const ipcPath = path.resolve(ipcBaseDir, folder);
+  let ipcPath = path.resolve(ipcBaseDir, folder);
+  // Optional per-run namespace (LIA-211): concurrent Linear dispatches share
+  // one groupFolder but each has a unique chatJid, so without this their IPC
+  // input dirs (and the _close sentinel) collide. The allowlist drops '.', '/'
+  // and '\', so '..' and both separators can't survive — every real runKey is a
+  // chatJid ([A-Za-z0-9-]) anyway, making this defense-in-depth atop
+  // ensureWithinBase. Absent runKey ⇒ unchanged folder path (chat channels).
+  if (runKey) {
+    const safeKey = runKey.replace(/[^A-Za-z0-9_-]/g, '_');
+    ipcPath = path.resolve(ipcPath, safeKey);
+  }
   ensureWithinBase(ipcBaseDir, ipcPath);
   return ipcPath;
 }

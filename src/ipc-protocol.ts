@@ -100,6 +100,9 @@ export const ContainerInputSchema = z.object({
   projectHint: z.string().optional(),
   effort: z.enum(['low', 'medium', 'high', 'max']).optional(),
   worktreePath: z.string().optional(),
+  // Per-run IPC namespace key (LIA-211). Carried into the mounter so the
+  // container's IPC dir is keyed per run for collision-prone shared folders.
+  ipcRunKey: z.string().optional(),
 });
 
 /** Derived TypeScript type — single source of truth. */

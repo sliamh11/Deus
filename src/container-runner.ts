@@ -365,6 +365,7 @@ export async function runContainerAgent(
     group,
     input.isControlGroup,
     input.worktreePath,
+    input.ipcRunKey,
   );
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `deus-${safeName}-${Date.now()}`;
