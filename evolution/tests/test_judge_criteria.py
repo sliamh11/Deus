@@ -338,3 +338,35 @@ class TestHardenedToolUseRubric:
 
     def test_off_topic_ignores_task_is_one(self):
         assert "off-topic, ignores the task" in RUBRIC
+
+
+# ── Hardened quality RUBRIC text (LIA-280) ────────────────────────────────────
+# Pins the wording that fixes the quality over-scoring measured on gemma4:e4b
+# (n=200: 135 over / 10 under, mean delta +0.259 — the judge rewarded fluent
+# simulated/claimed completion). Same playbook as tool_use: outcome framing +
+# derive-from-analysis + atomic axes + exemplars (with one protective HIGH anchor
+# against overcorrection). Sentinel-phrase asserts, so softening fails the test.
+
+
+class TestHardenedQualityRubric:
+    def test_outcome_not_polish(self):
+        # Simulated/claimed completion is LOW quality, not high — the dominant mode.
+        assert "SIMULATES or merely CLAIMS completion" in RUBRIC
+
+    def test_derive_quality_from_analysis(self):
+        # Score-rationale decoupling guard ("analysis says failed, score=5").
+        assert "quality_level MUST follow from your analysis" in RUBRIC
+
+    def test_three_axes_split(self):
+        # The conflated "complete + accurate + clear" is split into atomic axes.
+        assert "Grade three axes together" in RUBRIC
+
+    def test_simulated_completion_is_one(self):
+        assert "simulated completion is not quality" in RUBRIC
+
+    def test_score_must_match_analysis_exemplar(self):
+        assert "the score must match the analysis" in RUBRIC
+
+    def test_brevity_protective_high_anchor(self):
+        # Guards against overcorrection — terse-but-complete must stay a 5.
+        assert "brevity is not a defect when the task is genuinely complete" in RUBRIC
