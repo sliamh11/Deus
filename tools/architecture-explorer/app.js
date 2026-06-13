@@ -273,7 +273,7 @@
     var hint = document.getElementById('hint');
     if (hint) hint.textContent = mode === 'fly'
       ? 'WASD/RF: fly · drag: look · click a layer to expand · click a file for details'
-      : 'Left-drag: rotate · wheel: zoom · right-drag: pan · click a layer to expand · click a file for details';
+      : 'WASD/arrows: fly · left-drag: rotate · wheel: zoom · right-drag: pan · click a layer to expand · click a file for details';
   }
 
   // ---- interaction --------------------------------------------
@@ -339,7 +339,7 @@
       h.innerHTML = 'Exploring <b style="color:' + (l ? l.color : '#fff') + '">' + esc(l ? l.label : isolatedLayer) +
         '</b> only — press <b>Esc</b> or <b>Reset</b> to exit · right-click a layer to isolate it';
     } else {
-      h.textContent = 'Left-drag: rotate · wheel: zoom · right-drag: pan · click a layer to expand · right-click to isolate · click a file for details';
+      h.textContent = 'WASD/arrows: fly · left-drag: rotate · wheel: zoom · right-drag: pan · click a layer to expand · right-click to isolate · click a file for details';
     }
   }
 
@@ -603,6 +603,30 @@
     Graph.cameraPosition(pos, { x: 0, y: 0, z: 0 }, 700);
   }
 
+  // Fly the camera THROUGH the scene (keyboard WASD/arrows + R/F): translate the
+  // camera AND its orbit target by the same world delta, so OrbitControls doesn't
+  // snap the view back (a true pan-through, not a dolly). fwd/rgt/vert = signed steps.
+  function flyMove(fwd, rgt, vert) {
+    var THREE = window.THREE || (typeof ForceGraph3D !== 'undefined' && ForceGraph3D.THREE);
+    var cam = (typeof Graph.camera === 'function') ? Graph.camera() : null;
+    var controls = (typeof Graph.controls === 'function') ? Graph.controls() : null;
+    // No-op unless we have THREE, the camera, and a movable orbit target — moving
+    // the camera without carrying the target would just get snapped back.
+    if (!THREE || !cam || !controls || !controls.target || typeof controls.target.add !== 'function') return;
+    var f = new THREE.Vector3();
+    cam.getWorldDirection(f);                                          // forward (look direction)
+    var up = cam.up.clone().normalize();
+    var right = new THREE.Vector3().crossVectors(f, up).normalize();   // forward × up = screen-right
+    var step = Math.max(cam.position.distanceTo(controls.target) * 0.1, 20);  // scale with zoom for a steady feel
+    var delta = new THREE.Vector3()
+      .addScaledVector(f, fwd * step)
+      .addScaledVector(right, rgt * step)
+      .addScaledVector(up, vert * step);
+    cam.position.add(delta);
+    controls.target.add(delta);
+    controls.update();
+  }
+
   // small on-screen nav pad (bottom-right): rotate arrows + zoom + view presets
   (function buildNavPad() {
     var pad = document.createElement('div');
@@ -651,17 +675,28 @@
     if (window.ArchTheme && window.ArchTheme.onSelect) window.ArchTheme.onSelect(null);
     frameAll(600);
   };
-  // keyboard navigation: arrows orbit, +/- zoom, 1-4 view presets, Esc exits,
-  // Home frames all. (Ignored while typing in an input.)
+  // keyboard navigation: WASD/arrows FLY through the scene (R/F = up/down), +/-
+  // zoom, 1-4 view presets, Esc exits, Home frames all. Ignored while typing in an
+  // input, and when a modifier is held (so Cmd/Ctrl+F/R/S etc. still reach the
+  // browser). In the built-in Fly control mode FlyControls already binds WASD/arrows,
+  // so we defer to it there. (Orbit-by-keyboard moved to the on-screen nav pad.)
   document.addEventListener('keydown', function (e) {
     var tag = document.activeElement && document.activeElement.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;        // leave browser shortcuts alone
+    var k = (e.key && e.key.length === 1) ? e.key.toLowerCase() : e.key;
+    if (controlMode !== 'fly') {
+      switch (k) {
+        case 'w': case 'ArrowUp':    flyMove(1, 0, 0);  e.preventDefault(); return;
+        case 's': case 'ArrowDown':  flyMove(-1, 0, 0); e.preventDefault(); return;
+        case 'a': case 'ArrowLeft':  flyMove(0, -1, 0); e.preventDefault(); return;
+        case 'd': case 'ArrowRight': flyMove(0, 1, 0);  e.preventDefault(); return;
+        case 'r':                    flyMove(0, 0, 1);  e.preventDefault(); return;
+        case 'f':                    flyMove(0, 0, -1); e.preventDefault(); return;
+      }
+    }
     switch (e.key) {
       case 'Escape': if (isolatedLayer) exitIsolation(); else clearSelection(); break;
-      case 'ArrowLeft':  orbitBy(-0.18, 0); e.preventDefault(); break;
-      case 'ArrowRight': orbitBy(0.18, 0); e.preventDefault(); break;
-      case 'ArrowUp':    orbitBy(0, 0.14); e.preventDefault(); break;
-      case 'ArrowDown':  orbitBy(0, -0.14); e.preventDefault(); break;
       case '+': case '=': zoomBy(0.85); break;
       case '-': case '_': zoomBy(1.18); break;
       case 'Home': frameAll(600); break;
