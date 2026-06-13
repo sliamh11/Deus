@@ -613,6 +613,146 @@ describe('processGroupMessages', () => {
       'Visible reply',
     );
   });
+
+  // ── Send-failure resilience (LIA-286) ───────────────────────────────────────
+
+  const FALLBACK_TEXT =
+    'I generated a reply but could not deliver it — please ask again.';
+
+  it('swallows a send failure and continues without throwing (LIA-286)', async () => {
+    const state = makeState(MAIN_GROUP);
+    const channel = makeChannel();
+    // Both the primary send and the fallback send fail.
+    channel.sendMessage.mockRejectedValue(new Error('channel down'));
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
+
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'Hello user!' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'Hello user!' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    // Agent succeeded, so the turn still reports success even though delivery
+    // failed — the failure must not propagate as a rejection.
+    const result = await orchestrator.processGroupMessages('group@g.us');
+    expect(result).toBe(true);
+    // Primary send + fallback send both attempted.
+    expect(channel.sendMessage).toHaveBeenCalledTimes(2);
+    const { logger } = await import('./logger.js');
+    expect(vi.mocked(logger.warn)).toHaveBeenCalled();
+  });
+
+  it('sends a user-facing fallback notice when the primary send fails (LIA-286)', async () => {
+    const state = makeState(MAIN_GROUP);
+    const channel = makeChannel();
+    // Primary send fails, fallback send succeeds.
+    channel.sendMessage
+      .mockRejectedValueOnce(new Error('rejected'))
+      .mockResolvedValue(undefined);
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
+
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'Hello user!' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'Hello user!' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    await orchestrator.processGroupMessages('group@g.us');
+    expect(channel.sendMessage).toHaveBeenCalledTimes(2);
+    expect(channel.sendMessage).toHaveBeenNthCalledWith(
+      1,
+      'group@g.us',
+      'Hello user!',
+    );
+    expect(channel.sendMessage).toHaveBeenNthCalledWith(
+      2,
+      'group@g.us',
+      FALLBACK_TEXT,
+    );
+  });
+
+  it('rolls back the cursor when both sends fail and the agent errors (LIA-286)', async () => {
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    // Primary + fallback both fail: the user received nothing.
+    channel.sendMessage.mockRejectedValue(new Error('channel down'));
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
+
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'Partial response' });
+      return { status: 'error', result: null, error: 'crashed after output' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+    // Nothing delivered + agent error → roll back so the message re-processes.
+    expect(result).toBe(false);
+    expect(state.setLastAgentTimestamp).toHaveBeenNthCalledWith(
+      1,
+      'group@g.us',
+      'ts-1',
+    );
+    expect(state.setLastAgentTimestamp).toHaveBeenNthCalledWith(
+      2,
+      'group@g.us',
+      'ts-prev',
+    );
+  });
+
+  it('does NOT roll back when the fallback was delivered even if the agent errors (LIA-286)', async () => {
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    // Primary fails, fallback succeeds → a user-visible delivery happened.
+    channel.sendMessage
+      .mockRejectedValueOnce(new Error('rejected'))
+      .mockResolvedValue(undefined);
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
+
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'Partial response' });
+      return { status: 'error', result: null, error: 'crashed after output' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+    // Fallback delivered → no rollback, no re-send of the fallback next poll.
+    expect(result).toBe(true);
+    expect(state.setLastAgentTimestamp).toHaveBeenCalledTimes(1);
+    expect(state.setLastAgentTimestamp).toHaveBeenCalledWith(
+      'group@g.us',
+      'ts-1',
+    );
+  });
 });
 
 // ── Injection scanner integration ────────────────────────────────────────────

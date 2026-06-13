@@ -381,6 +381,22 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     let hadError = false;
     let outputSentToUser = false;
 
+    // Swallow channel send failures so they never propagate as an onOutput
+    // rejection (LIA-286); logs with orchestrator-layer context. The boolean
+    // return gates cursor/rollback state on whether delivery actually happened.
+    const trySend = async (text: string, label: string): Promise<boolean> => {
+      try {
+        await channel.sendMessage(chatJid, text);
+        return true;
+      } catch (err) {
+        logger.warn(
+          { group: group.name, chatJid, label, err },
+          'channel.sendMessage failed',
+        );
+        return false;
+      }
+    };
+
     const output = await runAgent(
       group,
       prompt,
@@ -401,8 +417,19 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
             `Agent output: ${raw.length} chars`,
           );
           if (text) {
-            await channel.sendMessage(chatJid, text);
-            outputSentToUser = true;
+            if (await trySend(text, 'agent-output')) {
+              outputSentToUser = true;
+            } else if (
+              // Primary delivery failed — terse user-facing notice so the loss
+              // isn't silent. A delivered fallback sets the flag too, so the
+              // rollback path below won't re-send it next poll (LIA-286).
+              await trySend(
+                'I generated a reply but could not deliver it — please ask again.',
+                'agent-output-fallback',
+              )
+            ) {
+              outputSentToUser = true;
+            }
           }
           // Only reset idle timer on actual results, not session-update markers
           resetIdleTimer();
@@ -415,9 +442,10 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           // s.tokens/s.pct from the null checks.
           const s = result.contextStats;
           if (s?.warn && s.tokens != null && s.pct != null) {
-            await channel.sendMessage(
-              chatJid,
+            // Best-effort advisory notice; swallow delivery failures.
+            await trySend(
               `Context at ${s.pct}% (${s.tokens.toLocaleString()} / ${s.limit.toLocaleString()} tokens). Use /compact to free space.`,
+              'context-notify',
             );
           }
 
@@ -426,9 +454,10 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
             const preInfo = e.preTokens
               ? ` (was ${e.preTokens.toLocaleString()} tokens)`
               : '';
-            await channel.sendMessage(
-              chatJid,
+            // Best-effort advisory notice; swallow delivery failures.
+            await trySend(
               `Context auto-compacted${preInfo}. Use /compact manually to control timing.`,
+              'auto-compact-notice',
             );
           }
         }
