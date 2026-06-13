@@ -222,6 +222,20 @@ export function parseVerdict(
 }
 
 /**
+ * LIA-240: whether to skip a transition because the pipeline's own bot triggered
+ * it (loop-prevention). Skips ONLY when a dedicated bot id is configured AND the
+ * webhook actor matches it. An empty botUserId (no dedicated bot — see
+ * resolveBotUserId) never skips, so CLI-initiated transitions made under the
+ * shared operator identity are honored instead of being silently swallowed.
+ */
+export function shouldSkipBotTransition(
+  actorId: string | undefined,
+  botUserId: string,
+): boolean {
+  return Boolean(actorId) && Boolean(botUserId) && actorId === botUserId;
+}
+
+/**
  * LIA-169: An errored gate halts regardless of mode/verdict — its fallback
  * 'REVISE' would otherwise drive the strict revert and re-dispatch loop.
  * 'halt' = park (quiescent state); 'revert' = legit strict non-SHIP; 'none' = leave.
@@ -685,7 +699,7 @@ async function handleIssueUpdate(
   if (!toState || !fromState) return;
 
   const actorId = payload.actor?.id;
-  if (actorId && actorId === ctx.botUserId) {
+  if (shouldSkipBotTransition(actorId, ctx.botUserId)) {
     logger.info(
       { issueId: data.id, gate: toState.name, actorId },
       'linear-webhook: skipping bot-triggered transition',

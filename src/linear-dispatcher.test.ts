@@ -127,6 +127,7 @@ import {
   validateLinearIdentifier,
   classifyRunFailure,
   executeAgentRun,
+  resolveBotUserId,
 } from './linear-dispatcher.js';
 import type {
   LinearContext,
@@ -190,6 +191,28 @@ function makeMockCtx(overrides: Partial<LinearContext> = {}): LinearContext {
     ...overrides,
   };
 }
+
+describe('resolveBotUserId (LIA-240)', () => {
+  it('returns empty string when unset (guard disabled)', () => {
+    expect(resolveBotUserId(undefined)).toBe('');
+  });
+
+  it('returns empty string for an empty value', () => {
+    expect(resolveBotUserId('')).toBe('');
+  });
+
+  it('returns empty string for whitespace-only (guard disabled)', () => {
+    expect(resolveBotUserId('   ')).toBe('');
+  });
+
+  it('returns a configured bot id verbatim', () => {
+    expect(resolveBotUserId('bot-1')).toBe('bot-1');
+  });
+
+  it('trims surrounding whitespace on a configured id', () => {
+    expect(resolveBotUserId('  bot-1  ')).toBe('bot-1');
+  });
+});
 
 describe('loadRoleSpecs', () => {
   const tmpDir = path.join(process.cwd(), '.test-agents-tmp');

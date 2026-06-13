@@ -14,6 +14,7 @@ import { extractFrontmatter } from './linear-dispatcher.js';
 import {
   parseEnrichment,
   parseVerdict,
+  shouldSkipBotTransition,
   gateTransitionAction,
   parkErroredGateIssue,
   gateOutcomeEventType,
@@ -366,6 +367,30 @@ Needs work.`),
 
   it('returns null when no verdict', () => {
     expect(parseVerdict('No verdict here.')).toBeNull();
+  });
+});
+
+describe('shouldSkipBotTransition (LIA-240)', () => {
+  it('does not skip when no bot id is configured (guard disabled)', () => {
+    // The exact LIA-240 regression: a human CLI actor with no dedicated bot id
+    // configured must NOT be treated as the pipeline's own write.
+    expect(shouldSkipBotTransition('human-actor', '')).toBe(false);
+  });
+
+  it('does not skip when the actor differs from the bot', () => {
+    expect(shouldSkipBotTransition('human-actor', 'bot-1')).toBe(false);
+  });
+
+  it('skips when the actor matches the configured bot (own write)', () => {
+    expect(shouldSkipBotTransition('bot-1', 'bot-1')).toBe(true);
+  });
+
+  it('does not skip when the actor id is missing', () => {
+    expect(shouldSkipBotTransition(undefined, 'bot-1')).toBe(false);
+  });
+
+  it('does not skip when both are empty', () => {
+    expect(shouldSkipBotTransition('', '')).toBe(false);
   });
 });
 
