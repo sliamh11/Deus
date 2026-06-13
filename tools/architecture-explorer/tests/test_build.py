@@ -163,3 +163,143 @@ class TestSchema:
         b = build.build(db, LAYERS, include_tests=False)
         a["meta"]["generated_at"] = b["meta"]["generated_at"] = 0
         assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+# Source whose docstrings differ from the leading comments codegraph would store.
+# Line numbers matter — they drive the by_line match in _resolve_doc.
+#  2 def greet         3 "Return a friendly greeting."
+#  9 def run          10 "Run the thing."
+# 15 def bare         (no docstring)
+# 19 @deco / 20 def decorated / 21 "Decorated doc."
+_PY_SRC = '''# this is a leading comment, NOT the docstring
+def greet(name):
+    """Return a friendly greeting."""
+    return "hi " + name
+
+
+class Thing:
+    """A thing with behavior."""
+    def run(self):
+        """Run the thing."""
+        return 1
+
+
+# misleading comment
+def bare():
+    return 0
+
+
+@deco
+def decorated():
+    """Decorated doc."""
+    return 2
+'''
+
+
+def _make_py_db(tmp_path: Path) -> Path:
+    """A codegraph DB at <tmp>/.codegraph/codegraph.db (so repo_root == <tmp>),
+    plus a real sample.py on disk, with codegraph's WRONG leading-comment values
+    in the docstring column — exercises the Python ast-docstring override."""
+    (tmp_path / "sample.py").write_text(_PY_SRC, encoding="utf-8")
+    cg = tmp_path / ".codegraph"
+    cg.mkdir(parents=True, exist_ok=True)
+    db = cg / "codegraph.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(
+        """
+        CREATE TABLE files (path TEXT PRIMARY KEY, content_hash TEXT, language TEXT,
+                            size INTEGER, modified_at INTEGER, indexed_at INTEGER, node_count INTEGER);
+        CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, qualified_name TEXT,
+                            file_path TEXT, language TEXT, start_line INTEGER, end_line INTEGER,
+                            start_column INTEGER, end_column INTEGER, docstring TEXT, signature TEXT,
+                            visibility TEXT, is_exported INTEGER, is_async INTEGER, is_static INTEGER,
+                            is_abstract INTEGER, decorators TEXT, type_parameters TEXT, updated_at INTEGER);
+        CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, target TEXT,
+                            kind TEXT, metadata TEXT, line INTEGER, col INTEGER, provenance TEXT);
+        """
+    )
+    for path, lang, nc in [("sample.py", "py", 4), ("sample.ts", "ts", 1)]:
+        conn.execute("INSERT INTO files VALUES (?,?,?,?,?,?,?)", (path, "h", lang, 100, 0, 0, nc))
+    # (id, kind, name, file, start_line, end_line, docstring[=codegraph's WRONG value])
+    nodes = [
+        ("greet", "function", "greet", "sample.py", 2, 4, "this is a leading comment, NOT the docstring"),
+        ("run", "method", "run", "sample.py", 9, 11, "A thing with behavior."),
+        ("bare", "function", "bare", "sample.py", 15, 16, "misleading comment"),
+        # start_line points at the @deco line (19), not the def (20): forces the by_name fallback
+        ("decorated", "function", "decorated", "sample.py", 19, 22, "stale comment"),
+        ("tsfn", "function", "tsFn", "sample.ts", 1, 10, "JSDoc summary."),
+    ]
+    for nid, kind, name, fp, sl, el, doc in nodes:
+        conn.execute(
+            "INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, "
+            "end_line, start_column, end_column, docstring, is_exported, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,0,0,?,1,0)",
+            (nid, kind, name, name, fp, ("py" if fp.endswith(".py") else "ts"), sl, el, doc),
+        )
+    conn.commit()
+    conn.close()
+    return db
+
+
+class TestPythonDocstring:
+    """Fix: codegraph stores the leading comment as a Python "docstring"; build.py
+    recovers the real PEP-257 docstring via ast and overrides it (Python only)."""
+
+    def _sym(self, graph, fp, name):
+        node = next(n for n in graph["nodes"] if n["file_path"] == fp)
+        return next(s for s in node["top_symbols"] if s["name"] == name)
+
+    @pytest.fixture
+    def graph(self, tmp_path):
+        return build.build(_make_py_db(tmp_path), LAYERS, include_tests=False)
+
+    def test_real_docstring_beats_leading_comment(self, graph):
+        # by_line match: codegraph start_line (2) == ast def lineno
+        assert self._sym(graph, "sample.py", "greet")["doc"] == "Return a friendly greeting."
+
+    def test_method_docstring_recovered(self, graph):
+        assert self._sym(graph, "sample.py", "run")["doc"] == "Run the thing."
+
+    def test_no_docstring_yields_empty_not_comment(self, graph):
+        # matched but no real docstring -> "" (NOT codegraph's misleading comment)
+        assert self._sym(graph, "sample.py", "bare")["doc"] == ""
+
+    def test_by_name_fallback_when_start_line_offset(self, graph):
+        # start_line (19, the decorator) misses by_line; name match recovers it
+        assert self._sym(graph, "sample.py", "decorated")["doc"] == "Decorated doc."
+
+    def test_non_python_docstring_preserved(self, graph):
+        # TS/JS keep codegraph's value (its JSDoc handling is fine)
+        assert self._sym(graph, "sample.ts", "tsFn")["doc"] == "JSDoc summary."
+
+    def test_unreadable_py_falls_back_to_codegraph(self, tmp_path):
+        # DB references a .py file that doesn't exist on disk -> parse fails ->
+        # _py_doc_maps empty -> codegraph's value kept (graceful, no crash)
+        cg = tmp_path / ".codegraph"
+        cg.mkdir(parents=True, exist_ok=True)
+        db = cg / "codegraph.db"
+        conn = sqlite3.connect(db)
+        conn.executescript(
+            """
+            CREATE TABLE files (path TEXT PRIMARY KEY, content_hash TEXT, language TEXT,
+                                size INTEGER, modified_at INTEGER, indexed_at INTEGER, node_count INTEGER);
+            CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, qualified_name TEXT,
+                                file_path TEXT, language TEXT, start_line INTEGER, end_line INTEGER,
+                                start_column INTEGER, end_column INTEGER, docstring TEXT, signature TEXT,
+                                visibility TEXT, is_exported INTEGER, is_async INTEGER, is_static INTEGER,
+                                is_abstract INTEGER, decorators TEXT, type_parameters TEXT, updated_at INTEGER);
+            CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, target TEXT,
+                                kind TEXT, metadata TEXT, line INTEGER, col INTEGER, provenance TEXT);
+            """
+        )
+        conn.execute("INSERT INTO files VALUES ('ghost.py','h','py',10,0,0,1)")
+        conn.execute(
+            "INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, "
+            "end_line, start_column, end_column, docstring, is_exported, updated_at) "
+            "VALUES ('g','function','gone','gone','ghost.py','py',1,5,0,0,'fallback doc',1,0)"
+        )
+        conn.commit()
+        conn.close()
+        graph = build.build(db, LAYERS, include_tests=False)
+        node = next(n for n in graph["nodes"] if n["file_path"] == "ghost.py")
+        assert node["top_symbols"][0]["doc"] == "fallback doc"

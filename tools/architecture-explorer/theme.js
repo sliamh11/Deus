@@ -204,6 +204,8 @@
     var autoRotateInterval = null;
     var bloomPass = null;
     var bloomEnabled = false;
+    var ctrlController = null;   // lil-gui controller for controlType (kept for updateDisplay)
+    var rebinding = false;       // true while rebind() re-applies visuals (recursion guard)
 
     /* ---- apply helpers ------------------------------------ */
 
@@ -407,6 +409,12 @@
     }
 
     function applyCamera() {
+      // controlType is a CONSTRUCTION option in 3d-force-graph (no runtime setter),
+      // so switching it means rebuilding the graph — app.js owns that via AE.setControlType.
+      // Skip while a rebind is in flight: app.js already drives the rebuild that
+      // called us, and re-entering setControlType here would recurse.
+      if (rebinding) return;
+      if (AE && typeof AE.setControlType === 'function') { AE.setControlType(theme.controlType); return; }
       try { graph.controlType(theme.controlType); } catch (e) { /* graceful */ }
     }
 
@@ -498,7 +506,7 @@
 
       /* Camera */
       var fCamera = gui.addFolder('Camera');
-      fCamera.add(theme, 'controlType', ['orbit','fly','trackball'])
+      ctrlController = fCamera.add(theme, 'controlType', ['orbit','fly','trackball'])
         .name('Control').onChange(function () { saveTheme(theme); applyCamera(); });
       fCamera.add(theme, 'autoRotate')
         .name('Auto-rotate').onChange(function () { saveTheme(theme); applyAutoRotate(); });
@@ -597,7 +605,27 @@
       return theme.shape;
     }
 
-    return { init: init, refresh: refresh, onSelect: onSelect, shapeForLayerOrder: shapeForLayerOrder };
+    // Re-point the theme to a freshly-rebuilt graph instance (control-mode switch)
+    // and re-apply all visuals — WITHOUT rebuilding the lil-gui panel. The
+    // `rebinding` guard stops applyAll()→applyCamera() from re-triggering the
+    // rebuild app.js is already in the middle of.
+    function rebind(g) {
+      rebinding = true;
+      graph = g;
+      try { applyAll(); } finally { rebinding = false; }
+    }
+
+    // Keep theme.controlType (+ its GUI control) in sync when the switch is driven
+    // from the toolbar button rather than the panel. Does NOT re-apply visuals —
+    // app.js performs the actual graph rebuild; this only mirrors the chosen mode
+    // so a later applyCamera() sees a matching value (no spurious re-rebuild).
+    function syncControlType(mode) {
+      theme.controlType = mode;
+      saveTheme(theme);
+      if (ctrlController) { try { ctrlController.updateDisplay(); } catch (e) { /* graceful */ } }
+    }
+
+    return { init: init, refresh: refresh, onSelect: onSelect, rebind: rebind, syncControlType: syncControlType, shapeForLayerOrder: shapeForLayerOrder };
   })();
 
 })();

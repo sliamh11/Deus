@@ -22,6 +22,7 @@ Then open index.html (python3 -m webbrowser index.html).
 from __future__ import annotations
 
 import argparse
+import ast
 import fnmatch
 import json
 import sqlite3
@@ -74,11 +75,72 @@ def _assign_layer(path: str, layers: list[dict]) -> str:
     return layers[-1]["id"]
 
 
+def _py_doc_maps(repo_root: Path, rel_path: str, cache: dict) -> tuple[dict, dict]:
+    """Real PEP-257 docstrings for a Python file, keyed two ways.
+
+    codegraph stores the leading COMMENT above a Python def as its "docstring"
+    (wrong); we recover the actual docstring with the stdlib `ast`. Returns
+    ``(by_line, by_name)`` where:
+      - ``by_line``: {def/class start line -> docstring} — the precise match
+        (line numbers are unique per def in a file, so no collisions).
+      - ``by_name``: {symbol name -> docstring} — fallback when codegraph's
+        start_line doesn't line up with ast's (e.g. decorator-offset). Last
+        writer wins on duplicate names (e.g. two classes' ``__init__`` in one
+        file collide) — an accepted limitation for an offline viz tool.
+    Docstring value may be ``None`` (def exists but has no docstring). Parsed
+    once per file and cached. On any read/parse error the maps are empty and the
+    caller falls back to codegraph's value.
+    """
+    if rel_path in cache:
+        return cache[rel_path]
+    by_line: dict[int, str | None] = {}
+    by_name: dict[str, str | None] = {}
+    try:
+        src = (repo_root / rel_path).read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                doc = ast.get_docstring(node)
+                by_line[node.lineno] = doc
+                by_name[node.name] = doc
+    except (OSError, SyntaxError, ValueError):
+        # OSError: unreadable file. SyntaxError: malformed source. ValueError:
+        # ast.parse rejects source containing NUL bytes (and UnicodeDecodeError,
+        # a ValueError subclass, covers a bad encoding). All -> fall back.
+        by_line, by_name = {}, {}
+    result = (by_line, by_name)
+    cache[rel_path] = result
+    return result
+
+
+def _resolve_doc(repo_root: Path, fp: str, name: str, start_line, raw_doc: str, cache: dict) -> str:
+    """Doc string for a symbol's detail panel, capped at 600 chars.
+
+    Non-Python: trust codegraph's value (its TS/JS JSDoc handling is fine).
+    Python: prefer the real PEP-257 docstring (by start line, then by name). When
+    a Python symbol IS matched but has no real docstring, return "" rather than
+    codegraph's leading-comment value (which is misleading). Only fall back to
+    codegraph's value when the symbol can't be matched at all (parse/read error).
+    """
+    if not fp.endswith(".py"):
+        return raw_doc[:600]
+    by_line, by_name = _py_doc_maps(repo_root, fp, cache)
+    if start_line in by_line:
+        return (by_line[start_line] or "")[:600]
+    if name in by_name:
+        return (by_name[name] or "")[:600]
+    return raw_doc[:600]
+
+
 def build(db_path: Path, layers_path: Path, include_tests: bool) -> dict:
     if not db_path.exists():
         raise FileNotFoundError(f"codegraph DB not found: {db_path}")
     layers = _load_layers(layers_path)
     layer_ids = {l["id"] for l in layers}
+    # Repo root = the directory holding `.codegraph/` — used to resolve source
+    # files for Python docstring recovery (see _py_doc_maps) and editor deep-links.
+    repo_root = db_path.resolve().parent.parent
+    py_doc_cache: dict = {}
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
@@ -116,7 +178,10 @@ def build(db_path: Path, layers_path: Path, include_tests: bool) -> dict:
                         "name": r["name"],
                         "kind": r["kind"],
                         "signature": (r["signature"] or "")[:160],
-                        "doc": (r["docstring"] or "")[:600],
+                        "doc": _resolve_doc(
+                            repo_root, fp, r["name"], r["start_line"],
+                            r["docstring"] or "", py_doc_cache,
+                        ),
                         "line": r["start_line"],
                     }
                 )
@@ -180,8 +245,8 @@ def build(db_path: Path, layers_path: Path, include_tests: bool) -> dict:
 
         return {
             "meta": {
-                "repo": db_path.resolve().parent.parent.name,
-                "repo_root": str(db_path.resolve().parent.parent),  # for editor deep-links
+                "repo": repo_root.name,
+                "repo_root": str(repo_root),  # for editor deep-links
                 "generated_at": int(time.time()),
                 "db_path": str(db_path),
                 "n_files": len(nodes),
