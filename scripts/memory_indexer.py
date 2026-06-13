@@ -2446,8 +2446,6 @@ def detect_contradictions(db: sqlite3.Connection, new_atom_id: int,
             consecutive_failures = 0
             verdict = response.text.strip().upper().split()[0] if response.text else ""
             if verdict == "CONTRADICT":
-                conflicts.append({"older_id": existing_id, "newer_id": new_atom_id,
-                                  "older_text": existing_text})
                 # Log to pending_conflicts for user review — never auto-invalidate
                 today = local_now().strftime("%Y-%m-%d")
                 try:
@@ -2462,10 +2460,18 @@ def detect_contradictions(db: sqlite3.Connection, new_atom_id: int,
                     # the deferred transaction rolls back on connection close and the
                     # conflict is lost — making --resolve-conflicts permanently empty.
                     db.commit()
-                except Exception:
-                    pass
-                print(f"  CONFLICT DETECTED (pending review): atom {existing_id} "
-                      f"may be superseded by {new_atom_id} ({existing_text[:60]})")
+                except sqlite3.Error as e:
+                    # Surface the failed write instead of printing false success;
+                    # narrow so the outer guard still catches non-DB errors (LIA-245).
+                    print(f"  WARN: failed to record contradiction (atom {existing_id} "
+                          f"vs {new_atom_id}): {e}", file=sys.stderr)
+                else:
+                    # Count + announce only once persisted, so cmd_extract's
+                    # "N conflict(s) logged" count matches --resolve-conflicts (LIA-245).
+                    conflicts.append({"older_id": existing_id, "newer_id": new_atom_id,
+                                      "older_text": existing_text})
+                    print(f"  CONFLICT DETECTED (pending review): atom {existing_id} "
+                          f"may be superseded by {new_atom_id} ({existing_text[:60]})")
         except Exception as e:
             consecutive_failures += 1
             print(f"  WARN: contradiction check failed ({consecutive_failures}/3): {e}", file=sys.stderr)
