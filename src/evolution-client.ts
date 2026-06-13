@@ -15,6 +15,7 @@ import path from 'path';
 
 import { logger } from './logger.js';
 import { emojiToSignal } from './reaction-signal.js';
+import { forceKillProcess } from './platform.js';
 
 const EVOLUTION_CLI = path.join(process.cwd(), 'evolution', 'cli.py');
 const PYTHON_BIN = process.env.EVOLUTION_PYTHON ?? 'python3';
@@ -210,15 +211,17 @@ export function logInteraction(params: LogInteractionParams): void {
   });
   // Don't let a slow/hung child pin the host event loop or delay shutdown.
   child.unref();
-  // SIGKILL a child that overruns the ceiling (a genuine hang, not a long but
-  // legitimate batch judge — see LOG_INTERACTION_TIMEOUT_MS). The interaction
-  // row is persisted before the judge runs, so a kill only defers scoring.
+  // Force-kill a child that overruns the ceiling (a genuine hang, not a long
+  // but legitimate batch judge — see LOG_INTERACTION_TIMEOUT_MS). The
+  // interaction row is persisted before the judge runs, so a kill only defers
+  // scoring. forceKillProcess is cross-platform (SIGKILL on Unix, taskkill on
+  // Windows where SIGKILL is unsupported).
   const killTimer = setTimeout(() => {
     logger.warn(
       { id: params.id, timeoutMs: LOG_INTERACTION_TIMEOUT_MS },
       'evolution: log_interaction timed out — killing child',
     );
-    child.kill('SIGKILL');
+    if (child.pid != null) forceKillProcess(child.pid);
   }, LOG_INTERACTION_TIMEOUT_MS);
   killTimer.unref();
   child.on('exit', () => clearTimeout(killTimer));

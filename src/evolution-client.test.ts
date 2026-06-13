@@ -6,7 +6,14 @@ vi.mock('child_process', () => ({
   execFile: vi.fn(),
 }));
 
+// Cross-platform kill helper — mocked so the kill-timer tests can assert on it
+// without sending a real signal (SIGKILL is unsupported on Windows).
+vi.mock('./platform.js', () => ({
+  forceKillProcess: vi.fn(),
+}));
+
 import { spawn } from 'child_process';
+import { forceKillProcess } from './platform.js';
 import {
   logReactionSignal,
   logInteraction,
@@ -17,12 +24,14 @@ const mockSpawn = vi.mocked(spawn);
 
 function _fakeChild() {
   return {
+    pid: 12345,
     stderr: { on: vi.fn() },
     on: vi.fn(),
     unref: vi.fn(),
-    kill: vi.fn(),
   } as unknown as ReturnType<typeof spawn>;
 }
+
+const mockForceKill = vi.mocked(forceKillProcess);
 
 beforeEach(() => {
   mockSpawn.mockReset();
@@ -118,6 +127,7 @@ describe('parsePositiveMsEnv (LIA-235)', () => {
 describe('logInteraction child lifecycle (LIA-235)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    mockForceKill.mockReset();
   });
 
   afterEach(() => {
@@ -161,10 +171,10 @@ describe('logInteraction child lifecycle (LIA-235)', () => {
       response: null,
       groupFolder: 'whatsapp_main',
     });
-    const child = lastChild();
-    expect(child.kill).not.toHaveBeenCalled();
+    lastChild();
+    expect(mockForceKill).not.toHaveBeenCalled();
     vi.advanceTimersByTime(PAST_CEILING_MS);
-    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(mockForceKill).toHaveBeenCalledWith(12345); // the fake child's pid
   });
 
   it('does NOT kill a child that exits before the ceiling', () => {
@@ -177,7 +187,7 @@ describe('logInteraction child lifecycle (LIA-235)', () => {
     const child = lastChild();
     fireChildEvent(child, 'exit'); // child finished its work → clears the timer
     vi.advanceTimersByTime(PAST_CEILING_MS);
-    expect(child.kill).not.toHaveBeenCalled();
+    expect(mockForceKill).not.toHaveBeenCalled();
   });
 });
 
