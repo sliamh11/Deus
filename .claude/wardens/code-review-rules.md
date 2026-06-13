@@ -103,6 +103,12 @@
 **Check:** Does the diff (or PR body) show the actual output diffed against that frozen prediction — the oracle run and its result compared, and where that oracle is a test, evidence it was red-green proven (failed without the change, so it can actually reject) — OR, where no executable oracle exists, the explicit judge/human confirmation? Is any mismatch resolved (code fixed, or prediction corrected with a stated reason) rather than silently dropped? (Calibrate depth to blast radius per `verification-strategy`'s proportionality clause.)
 **Rule:** A behavioral change carrying a committed expected output must land with that output confirmed against the prediction. Commit-time companion to `verification-rules.md` `fresh-evidence` (claim-time) — same predict→execute→diff discipline, enforced where commits are actually gated. An un-diffed or silently-amended prediction is flagged the same way an unwired facade is.
 
+## oracle-integrity
+**Severity:** warning
+**Applies when:** Diff modifies, weakens, deletes, or removes the `@oracle` tag from any test bearing an `@oracle` marker comment.
+**Check:** Does the diff weaken an `@oracle`-tagged test — delete it, untag it, loosen its assertions, make it trivially-passing, skip it, or rewrite its expected values to match the implementation — without an explicit stated reason?
+**Rule:** An `@oracle` test is a frozen contract authored independently of the implementation (plan-review `independent-oracle-high-blast-radius`). A failing oracle means fix the code, not the test; weakening or untagging one to go green is a captured-oracle defect. A genuinely-wrong oracle may be corrected, but only with a stated reason — never a silent edit.
+
 ## comment-discipline
 **Severity:** warning
 **Applies when:** Diff adds or modifies code comments (inline, block, or docstrings).
@@ -212,6 +218,10 @@
 ### expected-output-confirmed
 **Cite:** `verification-rules.md` `fresh-evidence` (claim-time companion); predict→execute→diff / reward-hacking guard; `feedback_predict_before_testing`.
 **Remediation:** Run the prediction's oracle and paste the actual-vs-predicted diff into the PR body. Where no executable oracle exists, state the judge/human confirmation and note it is the weaker check. If the oracle is a test, also show the pre-change run where it failed (red-green). If the output differed from the frozen prediction, record which was wrong (code or mental model) and why — never amend the prediction silently to match.
+
+### oracle-integrity
+**Cite:** independence principle (test author ≠ implementer); plan-review `independent-oracle-high-blast-radius` (plan-side companion); `oracle-rules.md`.
+**Remediation:** If the diff weakens an `@oracle`-tagged test, restore it and fix the implementation so the original assertions pass. If the oracle itself was genuinely wrong (mistaken contract), correct it with an explicit written reason in the PR body and re-confirm independence — never silently loosen it to make the build green.
 
 ### comment-discipline
 **Cite:** system-prompt "Default to writing no comments" rule

@@ -114,6 +114,12 @@ Common traps:
 **Check:** Does the plan articulate, end-to-end, (1) HOW each change will be verified — which tests/commands/manual steps/benchmark, what they cover and what they do NOT — AND (2) the concrete expected output the solution will produce: specific observable values/states, committed here before implementation and sourced from the requirement/spec rather than retrofitted to a chosen implementation?
 **Rule:** Every non-trivial plan answers "how will we know this works?" with both a method and a predicted result. "Tests pass" is insufficient — name the tests, their coverage gaps, and the expected output to diff against at completion. The prediction is frozen at plan time: do not rewrite it later to match what the code happened to produce — that makes the completion diff vacuous. Prefer an executable oracle (test, type-check, repro, command output); a cross-family judge is the fallback only for outputs no command can settle. Unverifiable plans are incomplete plans. **Proportionality:** scale rigor to blast radius — a trivial, easily-reversible change (one-commit revert, no data migration, no external-API side effect) needs a one-line predicted result, not a formal oracle ceremony; reserve the full predict→diff apparatus for changes whose failure is costly or hard to undo. Verification buys risk reduction, not certainty — stop when the marginal risk removed is no longer worth the effort, keyed on blast radius and reversibility, never time pressure (cf. core-behavioral-rules "Quality over speed by default").
 
+## independent-oracle-high-blast-radius
+**Severity:** warning
+**Applies when:** The same blast-radius surface as the `reversibility` rule (see its Applies-when for the authoritative list — e.g. DB migrations, auth/credential rotation, shared production state, deployment manifests, wide caller fan-out).
+**Check:** Does the plan have its discriminating oracle (a red-green test) authored INDEPENDENTLY of the implementation — via `oracle-author`, from the spec, before the code — and tagged `@oracle`? Does the plan state that the implementer makes the oracle pass without weakening it?
+**Rule:** For high-blast-radius changes, the test author must not be the implementer — a self-authored test shares the implementation's blind spots (a captured oracle). Author the oracle from the spec first (`oracle-author`), tag it `@oracle`, then implement against it; a failing oracle means fix the code, not the test. Scoped by `verification-strategy`'s Proportionality clause — does NOT fire on trivial/reversible changes. Commit-side companion: `code-review-rules.md` `oracle-integrity`.
+
 ## file-map-first
 **Severity:** informational
 **Applies when:** Plan touches 3+ files or creates new files.
@@ -193,6 +199,10 @@ Common traps:
 ### verification-strategy
 **Cite:** Superpowers verification-before-completion; debugging-rules.md; Phase 4 pattern from ExitPlanMode workflow; `feedback_predict_before_testing`; reward-hacking / grading-your-own-homework guard.
 **Remediation:** Add an "Expected Output" line to each verification step: the command/oracle and the specific result it should produce. Source the expected value from the spec or a reference implementation, not the code you intend to write. Where no executable oracle exists, name the judge/human check and note it is the weaker fallback. Treat this block as frozen — at completion you diff against it, you do not edit it to match.
+
+### independent-oracle-high-blast-radius
+**Cite:** independence principle (test author ≠ implementer); `oracle-rules.md`; double-entry-bookkeeping analogy. Commit-side companion: `code-review-rules.md` `oracle-integrity`.
+**Remediation:** Before implementing, invoke `Agent(subagent_type="oracle-author")` with the spec to author the failing, `@oracle`-tagged test; implement against it without weakening it. If no executable oracle is possible, state the judge/human check and that it is the weaker fallback. For changes below the blast-radius threshold, skip — the `verification-strategy` Proportionality clause applies.
 
 ### file-map-first
 **Cite:** Superpowers writing-plans "File Structure" section

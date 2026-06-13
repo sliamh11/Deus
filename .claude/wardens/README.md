@@ -6,6 +6,7 @@ Specialized review agents that guard the codebase. Validator wardens check corre
 |--------|------|-------|-------------------|------------|
 | **plan-reviewer** | Validator | Opus | `plan-review-rules.md` | Gated by PreToolUse hook (auto-required for Edit/Write in `~/deus/`) |
 | **qa-tester** | Validator | Sonnet | `qa-test-rules.md` | Manual: invoke after implementation to evaluate test coverage and identify untested edge cases |
+| **oracle-author** | Validator | Sonnet | `oracle-rules.md` | Invoked by plan-review `independent-oracle-high-blast-radius` for high-blast-radius changes: authors the independent red-green oracle from the spec, before implementation (test author ≠ implementer) |
 | **code-reviewer** | Validator | Sonnet | `code-review-rules.md` | Gated by PreToolUse hook (auto-required for `git commit` in `~/deus/`) |
 | **copy-writer** | Validator | Sonnet | `copy-rules.md` | Manual: invoke after changes that add or modify user-facing strings, error messages, help text, or status indicators |
 | **threat-modeler** | Validator | Opus | `threat-modeling-rules.md` | Manual: invoke when plan touches auth, credentials, external APIs, or trust boundaries |
