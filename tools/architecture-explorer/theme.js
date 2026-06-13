@@ -205,6 +205,7 @@
     var bloomPass = null;
     var bloomEnabled = false;
     var ctrlController = null;   // lil-gui controller for controlType (kept for updateDisplay)
+    var dagModeController = null; // lil-gui controller for dagMode (kept for syncDagMode display)
     var rebinding = false;       // true while rebind() re-applies visuals (recursion guard)
 
     /* ---- apply helpers ------------------------------------ */
@@ -233,8 +234,19 @@
         // uniform, well under the inter-layer gap); files are small, sized
         // sub-linearly by their metric. Without bounds, a layer's total LOC
         // (thousands) produces a screen-filling sphere.
+        var treeMode = (typeof AE.layoutMode === 'function' && AE.layoutMode() === 'tree');
         var size;
-        if (AE.isLayerNode(node)) {
+        if (treeMode) {
+          // Tree mode packs nodes close (dagged by directory depth), so LOC-based
+          // sizing would overlap into a blob — use small/uniform sizes instead:
+          // folders are modest hubs (sub-linear by descendant count, capped), files
+          // are uniform small leaves.
+          if (node.kind === 'folder') {
+            size = Math.min(8 + Math.sqrt(node.descendants || 0) * 1.2, 22) * theme.sizeScale;
+          } else {
+            size = 6 * theme.sizeScale;
+          }
+        } else if (AE.isLayerNode(node)) {
           size = (40 + 9 * Math.log10(metric + 10)) * theme.sizeScale;     // headline nodes ~75-90
         } else {
           size = (5 + 2.4 * Math.pow(metric, 1 / 3)) * theme.sizeScale;    // ~10-28
@@ -513,7 +525,7 @@
 
       /* Layout */
       var fLayout = gui.addFolder('Layout');
-      fLayout.add(theme, 'dagMode', ['none','td','lr','zout','radialout'])
+      dagModeController = fLayout.add(theme, 'dagMode', ['none','td','lr','zout','radialout'])
         .name('DAG mode').onChange(function (v) { saveTheme(theme); AE.setDagMode(v); });
 
       /* Labels */
@@ -625,7 +637,18 @@
       if (ctrlController) { try { ctrlController.updateDisplay(); } catch (e) { /* graceful */ } }
     }
 
-    return { init: init, refresh: refresh, onSelect: onSelect, rebind: rebind, syncControlType: syncControlType, shapeForLayerOrder: shapeForLayerOrder };
+    // Keep the DAG dropdown display in sync when the directory-tree toggle is driven
+    // from the toolbar (#btn-layout in app.js) rather than the panel. Display-only:
+    // never calls AE.setDagMode or any apply* (no recursion path). Deliberately does
+    // NOT saveTheme — layoutMode isn't persisted (it always inits 'layered'), so
+    // persisting the tree-driven 'td' would desync the restored dropdown from the
+    // restored layout. localStorage keeps only the user's manual panel choice.
+    function syncDagMode(mode) {
+      theme.dagMode = mode;
+      if (dagModeController) { try { dagModeController.updateDisplay(); } catch (e) { /* graceful */ } }
+    }
+
+    return { init: init, refresh: refresh, onSelect: onSelect, rebind: rebind, syncControlType: syncControlType, syncDagMode: syncDagMode, shapeForLayerOrder: shapeForLayerOrder };
   })();
 
 })();

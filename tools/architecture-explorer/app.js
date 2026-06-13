@@ -72,6 +72,15 @@
   var expanded = {};            // layerId -> true when expanded
   var selectedId = null;        // pinned file selection
   var isolatedLayer = null;     // when set: explore ONLY this layer (right-click)
+  // 'layered' (layer-row) | 'tree' (directory hierarchy). Tree mode is mutually
+  // exclusive with isolation and disables the expand/collapse controls (their
+  // buildData() would re-pin nodes and corrupt the dag). Composite State machine:
+  // {layoutMode} × {controlMode} × {isolatedLayer}.
+  var layoutMode = 'layered';
+  // One-shot frame guard: set true only on tree-entry; onSimSettled() frames once
+  // then clears it, so a later control-mode rebuild's settle doesn't re-zoom.
+  var pendingTreeFrame = false;
+  var TREE_LEVEL_DIST = 260;    // vertical spacing between directory-depth tiers
 
   // ---- node/link id helpers -----------------------------------
   function layerNodeId(id) { return '__layer__' + id; }
@@ -188,6 +197,101 @@
     return { nodes: nodes, links: links };
   }
 
+  // Build the directory-hierarchy tree {nodes, links} from each file's file_path:
+  // root -> dir -> subdir -> file is acyclic (unlike the cyclic dependency graph),
+  // so dagMode('td') stratifies it cleanly by depth. Nodes carry x/y/z SEEDS only,
+  // NEVER fx/fy/fz pins (a pin would fight the dag axis; compact jittered seeds keep
+  // the two free axes from collapsing onto each other).
+  function buildTreeData() {
+    var ROOT_ID = '__root__';
+    var nodes = [];
+    var links = [];
+    var dirNodes = {};         // dirPath -> folder node (also dedups)
+    var descendants = {};      // dirPath ('' = root) -> file count under it
+
+    // Small compact seed so dag's free axes spread instead of stacking. No fx/fy/fz.
+    function seed(node) {
+      node.x = (Math.random() - 0.5) * 60;
+      node.y = (Math.random() - 0.5) * 60;
+      node.z = (Math.random() - 0.5) * 60;
+      return node;
+    }
+
+    var root = seed({
+      id: ROOT_ID, kind: 'folder', label: (G.meta && G.meta.repo) || 'repo',
+      dirPath: '', depth: 0
+    });
+    nodes.push(root);
+    descendants[''] = 0;
+
+    function ensureDir(dirPath, depth) {
+      if (dirNodes[dirPath]) return dirNodes[dirPath];
+      var label = dirPath.split('/').pop();
+      var node = seed({
+        id: '__dir__' + dirPath, kind: 'folder', label: label,
+        dirPath: dirPath, depth: depth
+      });
+      dirNodes[dirPath] = node;
+      nodes.push(node);
+      if (descendants[dirPath] == null) descendants[dirPath] = 0;
+      return node;
+    }
+
+    G.nodes.forEach(function (f) {
+      var parts = (f.file_path || f.id).replace(/\\/g, '/').split('/');
+      // Walk the directory chain, creating folder nodes + parent->child edges.
+      var parentId = ROOT_ID;
+      for (var i = 0; i < parts.length - 1; i++) {
+        var dirPath = parts.slice(0, i + 1).join('/');
+        ensureDir(dirPath, i + 1);
+        // folder->folder edges are emitted once per file passing through; the
+        // post-loop dedup below keeps a single edge per (parent, dir) pair.
+        links.push({ source: parentId, target: '__dir__' + dirPath, kind: 'contains' });
+        parentId = '__dir__' + dirPath;
+      }
+      // Leaf: the file node, attached to its deepest folder (or root for a root file).
+      nodes.push(seed({
+        id: f.id, kind: 'file', layer: f.layer, label: f.label, file_path: f.file_path,
+        loc: f.loc || 0, n_symbols: f.n_symbols || 0,
+        fanIn: fanIn[f.id] || 0, fanOut: fanOut[f.id] || 0,
+        color: (layersById[f.layer] || {}).color || '#888', depth: parts.length
+      }));
+      links.push({ source: parentId, target: f.id, kind: 'contains' });
+      // tally descendant file counts up the chain (root + every ancestor dir)
+      descendants[''] = (descendants[''] || 0) + 1;
+      var acc = '';
+      for (var j = 0; j < parts.length - 1; j++) {
+        acc = acc ? acc + '/' + parts[j] : parts[j];
+        descendants[acc] = (descendants[acc] || 0) + 1;
+      }
+    });
+
+    // Stamp descendant counts (drives folder sizing in theme.js tree mode).
+    root.descendants = descendants[''] || 0;
+    Object.keys(dirNodes).forEach(function (dp) {
+      dirNodes[dp].descendants = descendants[dp] || 0;
+    });
+    // Dedup parent->child folder edges (a folder with N files emitted its parent
+    // edge N times above). File leaf edges are already unique (one per file).
+    var seen = {};
+    links = links.filter(function (l) {
+      var key = l.source + ' ' + l.target;
+      if (l.target.indexOf('__dir__') === 0) {
+        if (seen[key]) return false;
+        seen[key] = true;
+      }
+      return true;
+    });
+    return { nodes: nodes, links: links };
+  }
+
+  // Pure data selector — dispatches to the active layout's builder. MUST stay a
+  // one-liner with no side effects: every call site keeps its own post-update
+  // logic (camera restore, ArchTheme.refresh, etc.).
+  function currentGraphData() {
+    return layoutMode === 'tree' ? buildTreeData() : buildData();
+  }
+
   // ---- create the graph ---------------------------------------
   var el = document.getElementById('graph');
   var controlMode = 'orbit';                 // 'orbit' | 'fly' | 'trackball'
@@ -197,9 +301,10 @@
   // CONSTRUCTION option in 3d-force-graph 1.70.5 (no runtime setter), so changing
   // it means recreating the graph rather than calling a method on it.
   function configureGraph(g) {
-    g.graphData(buildData())
+    g.graphData(currentGraphData())
       .nodeId('id')
       .nodeLabel(function (n) {
+        if (n.kind === 'folder') return n.label + (n.descendants != null ? ' — ' + n.descendants + ' files' : '');
         return isLayerNode(n)
           ? (n.label + ' — ' + n.nFiles + ' files')
           : n.file_path;
@@ -207,14 +312,43 @@
       .onNodeClick(onNodeClick)
       .onNodeRightClick(onNodeRightClick)
       .onBackgroundClick(clearSelection)
+      .onEngineStop(onSimSettled)    // frames the tree once it settles (see pendingTreeFrame)
       .enableNodeDrag(false)         // drag intercepts node clicks; click-to-expand wins
       .warmupTicks(0)                // animate the spring-out (don't pre-settle)
       .cooldownTicks(160);           // longer settle for the wider, more energetic layout
     // Strong repulsion = roomy, dynamic spacing; long links so files spring far out
     // into a spacious cloud when a layer expands (layer nodes stay pinned anchors).
-    g.d3Force('charge').strength(-750);
-    if (g.d3Force('link')) g.d3Force('link').distance(200);
+    applyForces(g, layoutMode);
+    // Re-apply the directory-tree dag when rebuilding while in tree mode (e.g. an
+    // orbit/fly control-mode switch tears down + recreates the instance) so the
+    // tree layout survives the rebuild.
+    if (layoutMode === 'tree') g.dagMode('td').dagLevelDistance(TREE_LEVEL_DIST);
     return g;
+  }
+
+  // Force tuning per layout. Layered: strong repulsion + long links = a roomy,
+  // "space-like" cloud when a layer expands. Tree: gentle repulsion + SHORT links so
+  // each folder's children cluster directly beneath it — the directory tiers (dagged
+  // along y) then read as a clean fanning hierarchy instead of exploding into wide
+  // flat sheets that overlap into a blob.
+  function applyForces(g, mode) {
+    if (mode === 'tree') {
+      g.d3Force('charge').strength(-95);
+      if (g.d3Force('link')) g.d3Force('link').distance(34);
+    } else {
+      g.d3Force('charge').strength(-750);
+      if (g.d3Force('link')) g.d3Force('link').distance(200);
+    }
+  }
+
+  // Fired by 3d-force-graph when the force sim settles. Frames the directory tree
+  // exactly once per tree-entry (a fixed setTimeout would race a 389-node sim and
+  // frame the clustered pre-settle state). Idempotent via pendingTreeFrame so a
+  // later control-mode rebuild's settle doesn't re-zoom.
+  function onSimSettled() {
+    if (!pendingTreeFrame) return;
+    pendingTreeFrame = false;
+    try { Graph.zoomToFit(500, 60); } catch (e) { /* noop */ }
   }
 
   var Graph = configureGraph(ForceGraph3D({ controlType: controlMode })(el));
@@ -276,8 +410,66 @@
       : 'WASD/arrows: fly · left-drag: rotate · wheel: zoom · right-drag: pan · click a layer to expand · click a file for details';
   }
 
+  // ---- layout mode (Layered <-> directory Tree) ---------------
+  // Enable/disable the layer expand/collapse controls. In tree mode their
+  // buildData()-based handlers would re-introduce fx pins and corrupt the
+  // dag-constrained node set, so they are disabled (greyed) while tree is active.
+  function setLayerControlsEnabled(on) {
+    ['btn-expand-all', 'btn-collapse-all'].forEach(function (id) {
+      var b = document.getElementById(id);
+      if (!b) return;
+      b.disabled = !on;
+      b.style.opacity = on ? '' : '0.4';
+      b.style.pointerEvents = on ? '' : 'none';
+    });
+  }
+
+  // Single entry point for the Layered<->Tree switch (toolbar #btn-layout + Back
+  // restore both route here). Undoable: snapshots before mutating.
+  function setLayoutMode(mode) {
+    if (mode !== 'layered' && mode !== 'tree') mode = 'layered';
+    if (mode === layoutMode) return;
+    pushHistory();
+    applyLayoutMode(mode);
+  }
+
+  // Apply a layout mode WITHOUT pushing history (shared by setLayoutMode + restore).
+  function applyLayoutMode(mode) {
+    layoutMode = mode;
+    applyForces(Graph, mode);                  // tree vs layered force tuning
+    if (mode === 'tree') {
+      // Tree is mutually exclusive with isolation; drop any active isolation.
+      isolatedLayer = null;
+      selectedId = null; hideDetail();
+      setLayerControlsEnabled(false);
+      pendingTreeFrame = true;                 // onSimSettled frames once on settle
+      Graph.graphData(buildTreeData());        // reheats the sim -> onEngineStop fires
+      Graph.dagMode('td').dagLevelDistance(TREE_LEVEL_DIST);
+      // Backstop in case the engine never re-heats / was already settled (idempotent
+      // via pendingTreeFrame). Generous delay so it never frames the pre-settle state.
+      setTimeout(onSimSettled, 1800);
+    } else {
+      // Back to the layered row: clear the dag (restores layer-plane pinning),
+      // collapse all for a clean overview, re-enable the layer controls.
+      pendingTreeFrame = false;
+      expanded = {};
+      Graph.dagMode(null);
+      Graph.graphData(buildData());
+      setLayerControlsEnabled(true);
+      frameAll(700);
+    }
+    if (window.ArchTheme && window.ArchTheme.syncDagMode) {
+      window.ArchTheme.syncDagMode(mode === 'tree' ? 'td' : 'none');
+    }
+    if (window.ArchTheme && window.ArchTheme.refresh) window.ArchTheme.refresh();
+    updateIsolationHint();
+    var btn = document.getElementById('btn-layout');
+    if (btn) btn.textContent = layoutMode === 'tree' ? 'Tree' : 'Layered';
+  }
+
   // ---- interaction --------------------------------------------
   function onNodeClick(node) {
+    if (node && node.kind === 'folder') { flyToNode(node, 200); return; }
     if (isLayerNode(node)) {
       var wasExpanded = !!expanded[node.layer];
       toggleLayer(node.layer);
@@ -308,6 +500,7 @@
 
   // ---- isolation (explore one layer alone) --------------------
   function onNodeRightClick(node) {
+    if (layoutMode === 'tree') return;        // isolation is unavailable in tree mode
     if (isLayerNode(node)) isolateLayer(node.layer);
   }
   function isolateLayer(layerId) {
@@ -332,6 +525,10 @@
   function updateIsolationHint() {
     var h = document.getElementById('hint');
     if (!h) return;
+    if (layoutMode === 'tree') {
+      h.textContent = 'Directory tree · click a file for details · WASD/arrows: fly · wheel: zoom · "Layered" to return';
+      return;
+    }
     if (isolatedLayer) {
       var l = layersById[isolatedLayer];
       // esc() the dynamic label/id for consistency with the rest of the file (the
@@ -347,7 +544,7 @@
   var history = [];
   function snapshot() {
     var exp = {}; Object.keys(expanded).forEach(function (k) { if (expanded[k]) exp[k] = true; });
-    return { expanded: exp, selectedId: selectedId, isolated: isolatedLayer, cam: Graph.cameraPosition() };
+    return { expanded: exp, selectedId: selectedId, isolated: isolatedLayer, layoutMode: layoutMode, cam: Graph.cameraPosition() };
   }
   function pushHistory() {
     history.push(snapshot());
@@ -362,8 +559,27 @@
     expanded = {}; Object.keys(state.expanded).forEach(function (k) { expanded[k] = true; });
     selectedId = state.selectedId;
     isolatedLayer = state.isolated || null;
+    // Restore the layout mode (Back may cross a layered<->tree boundary): re-apply
+    // the matching dag + layer-control enablement before rebuilding graphData.
+    layoutMode = state.layoutMode || 'layered';
+    applyForces(Graph, layoutMode);
+    if (layoutMode === 'tree') {
+      isolatedLayer = null;
+      setLayerControlsEnabled(false);
+      pendingTreeFrame = true;
+      Graph.dagMode('td').dagLevelDistance(TREE_LEVEL_DIST);
+    } else {
+      pendingTreeFrame = false;
+      setLayerControlsEnabled(true);
+      Graph.dagMode(null);
+    }
+    var lbtn = document.getElementById('btn-layout');
+    if (lbtn) lbtn.textContent = layoutMode === 'tree' ? 'Tree' : 'Layered';
+    if (window.ArchTheme && window.ArchTheme.syncDagMode) {
+      window.ArchTheme.syncDagMode(layoutMode === 'tree' ? 'td' : 'none');
+    }
     updateIsolationHint();
-    Graph.graphData(buildData());
+    Graph.graphData(currentGraphData());
     if (window.ArchTheme && window.ArchTheme.refresh) window.ArchTheme.refresh();
     if (selectedId) {
       var fn = Graph.graphData().nodes.find(function (n) { return n.id === selectedId; });
@@ -381,6 +597,7 @@
   }
 
   function toggleLayer(layerId) {
+    if (layoutMode === 'tree') return;        // layer controls are disabled in tree mode
     pushHistory();
     expanded[layerId] = !expanded[layerId];
     var cam = Graph.cameraPosition();         // preserve viewpoint across rebuild
@@ -552,14 +769,21 @@
     setControlType(controlMode === 'orbit' ? 'fly' : 'orbit');
   };
 
+  var btnLayout = document.getElementById('btn-layout');
+  if (btnLayout) btnLayout.onclick = function () {
+    setLayoutMode(layoutMode === 'tree' ? 'layered' : 'tree');
+  };
+
   document.getElementById('btn-back').onclick = goBack;
   document.getElementById('btn-expand-all').onclick = function () {
+    if (layoutMode === 'tree') return;        // disabled in tree mode (would corrupt the dag)
     pushHistory();
     G.layers.forEach(function (l) { expanded[l.id] = true; });
     Graph.graphData(buildData());
     if (window.ArchTheme && window.ArchTheme.refresh) window.ArchTheme.refresh();
   };
   document.getElementById('btn-collapse-all').onclick = function () {
+    if (layoutMode === 'tree') return;        // disabled in tree mode (would corrupt the dag)
     pushHistory();
     expanded = {};
     Graph.graphData(buildData());
@@ -669,6 +893,19 @@
   // clear history, reframe.
   document.getElementById('btn-reset-cam').onclick = function () {
     expanded = {}; selectedId = null; isolatedLayer = null; history = []; updateBackBtn();
+    // Reset always returns to the clean layered overview — drop the tree dag and
+    // restore layer-plane pinning + the layer controls (else layoutMode would stay
+    // 'tree' with the dag gone = corrupt state).
+    pendingTreeFrame = false;
+    if (layoutMode === 'tree') {
+      layoutMode = 'layered';
+      applyForces(Graph, 'layered');
+      Graph.dagMode(null);
+      setLayerControlsEnabled(true);
+      var lbtn = document.getElementById('btn-layout');
+      if (lbtn) lbtn.textContent = 'Layered';
+      if (window.ArchTheme && window.ArchTheme.syncDagMode) window.ArchTheme.syncDagMode('none');
+    }
     hideDetail(); updateIsolationHint();
     Graph.graphData(buildData());
     if (window.ArchTheme && window.ArchTheme.refresh) window.ArchTheme.refresh();
@@ -712,6 +949,14 @@
   function focusFile(fileId) {
     var f = fileById[fileId];
     if (!f) return;
+    // In tree mode every file node is already present — just select + fly to it
+    // (do NOT call buildData(), which would re-introduce layered fx pins and
+    // corrupt the dag-constrained node set).
+    if (layoutMode === 'tree') {
+      var tn = Graph.graphData().nodes.find(function (n) { return n.id === fileId; });
+      if (tn) { selectFile(tn); flyToNode(tn, 90); }
+      return;
+    }
     if (!expanded[f.layer]) {
       pushHistory();
       expanded[f.layer] = true;
@@ -763,17 +1008,24 @@
     // expandable = a collapsed layer super-node (it has files to drill into).
     // A file node is a leaf. (Drives the "more inside" visual cue.)
     isExpandable: function (n) { return isLayerNode(n) && !expanded[n.layer]; },
-    rebuild: function () { Graph.graphData(buildData()); },
-    // dagMode toggle done correctly: clear pins before enabling, restore after.
+    rebuild: function () { Graph.graphData(currentGraphData()); },
+    // Current layout: 'layered' (layer-row) | 'tree' (directory hierarchy). Read by
+    // theme.js to pick tree-aware (small/uniform) node sizing.
+    layoutMode: function () { return layoutMode; },
+    // dagMode toggle (panel dropdown) — operates on the DEPENDENCY graph. Disabled
+    // while the directory-tree layout owns the dag, so the panel can't silently
+    // yank the user out of tree mode. Done correctly otherwise: clear pins first.
     setDagMode: function (mode) {
+      if (layoutMode === 'tree') return;     // folder tree owns the dag in tree mode
       var data = Graph.graphData();
       if (mode && mode !== 'none') {
         data.nodes.forEach(function (n) { n.fx = n.fy = n.fz = undefined; });
         Graph.dagMode(mode).dagLevelDistance(LAYER_GAP);
       } else {
         Graph.dagMode(null);
-        // restore layer-plane pinning
-        Graph.graphData(buildData());
+        // restore layer-plane pinning (currentGraphData, not raw buildData, so this
+        // stays correct if the tree guard above is ever relaxed)
+        Graph.graphData(currentGraphData());
       }
     },
     // Switch camera-control scheme (orbit/fly/trackball) by rebuilding the graph
