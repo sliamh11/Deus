@@ -8,11 +8,11 @@
 
 ## fresh-evidence
 **Severity:** blocking
-**Applies when:** Any claim that code works, tests pass, build succeeds, or bug is fixed.
-**Check:** Was the relevant verification command run in this turn (not a previous turn)?
-**Rule:** Every success claim requires fresh command output from the current turn. Prior runs are stale.
-**Cite:** Superpowers verification-before-completion; "If you haven't run the command in this message, you cannot claim it passes."
-**Remediation:** Run the relevant command now (`npm test`, `npm run build`, etc.) and paste its full stdout/stderr output. Do not claim success based on output from a previous turn.
+**Applies when:** Any claim that code works, tests pass, build succeeds, or bug is fixed — or where a plan committed an expected output to diff against.
+**Check:** Was the relevant verification command run in this turn (not a previous turn)? AND, where the plan committed an expected output (plan-review `verification-strategy`), does the fresh output match that frozen prediction?
+**Rule:** Every success claim requires fresh command output from the current turn — prior runs are stale. Where the plan predicted a concrete output, the fresh output must be diffed against that frozen prediction. Where that prediction's oracle is a test, it must be red-green proven — shown to fail without the change — so we know it can actually reject a wrong result; a never-red test is an unvalidated oracle that may simply pass on everything (cf. `regression-check`). A mismatch is a finding to investigate, not noise: if the implementation is wrong, fix the code; if the implementation is correct and the prediction was a mistaken mental model, the prediction may be corrected — but only with an explicit written reason for why the original was wrong. Never silently rewrite the prediction to fit the output; that converts the check into theater.
+**Cite:** Superpowers verification-before-completion; "If you haven't run the command in this message, you cannot claim it passes."; predict→execute→diff / reward-hacking guard.
+**Remediation:** Run the relevant command now (`npm test`, `npm run build`, etc.) and paste its full stdout/stderr output. Where a prediction was committed, show the diff of actual vs predicted; if they differ, state which was wrong (code or mental model) and why. For a test oracle, include the pre-change run showing it fails (red-green proof that the test can actually reject). Do not claim success based on stale output, and do not amend the prediction to match the output without justification.
 
 ## full-command
 **Severity:** blocking
@@ -47,9 +47,9 @@
 ## requirements-checklist
 **Severity:** warning
 **Applies when:** Task or phase completion is claimed.
-**Check:** Were requirements re-read and checked line-by-line against the implementation?
-**Rule:** "Tests pass" ≠ "requirements met." Re-read the spec and verify each requirement individually.
-**Cite:** Superpowers "Requirements: Re-read plan → Create checklist → Verify each → Report gaps"
+**Check:** Were requirements re-read and checked line-by-line against the implementation — and, where the plan committed an expected output, was the actual output confirmed to match it (the diff itself is enforced by `fresh-evidence`)?
+**Rule:** "Tests pass" ≠ "requirements met." Re-read the spec and verify each requirement individually, and confirm any committed output-prediction was diffed (see `fresh-evidence`). Report gaps explicitly rather than asserting completion.
+**Cite:** Superpowers "Requirements: Re-read plan → Create checklist → Verify each → Report gaps"; predict→execute→diff guard.
 
 ## wire-reachability
 **Severity:** warning

@@ -97,6 +97,12 @@
 **Check:** Does the diff (or PR body) show the producer→consumer edge — a non-test caller, a live registration, or the flag actually read on a runtime path — OR cite a deferred-wire Linear issue (e.g. `LIA-NNN`) for the missing wire?
 **Rule:** A new capability must be reachable in the runtime path or explicitly tracked as deferred. Green unit tests do not prove reachability — every facade in the LIA-133 audit had passing unit tests yet no live caller. Flag the unwired-and-untracked case; a cited deferral is acceptable.
 
+## expected-output-confirmed
+**Severity:** warning
+**Applies when:** The branch's plan committed an Expected Output (plan-review `verification-strategy`) for a non-trivial behavioral change present in this diff.
+**Check:** Does the diff (or PR body) show the actual output diffed against that frozen prediction — the oracle run and its result compared, and where that oracle is a test, evidence it was red-green proven (failed without the change, so it can actually reject) — OR, where no executable oracle exists, the explicit judge/human confirmation? Is any mismatch resolved (code fixed, or prediction corrected with a stated reason) rather than silently dropped? (Calibrate depth to blast radius per `verification-strategy`'s proportionality clause.)
+**Rule:** A behavioral change carrying a committed expected output must land with that output confirmed against the prediction. Commit-time companion to `verification-rules.md` `fresh-evidence` (claim-time) — same predict→execute→diff discipline, enforced where commits are actually gated. An un-diffed or silently-amended prediction is flagged the same way an unwired facade is.
+
 ## comment-discipline
 **Severity:** warning
 **Applies when:** Diff adds or modifies code comments (inline, block, or docstrings).
@@ -202,6 +208,10 @@
 ### connectivity-wiring
 **Cite:** `docs/decisions/facade-prevention-mechanism.md`; LIA-133 facade audit (Layer 1 of 3)
 **Remediation:** Add the missing producer→consumer edge — wire the new symbol/module into a live runtime path, or set the flag on that path — and show it in the diff or PR body. If the wire is intentionally deferred, cite the tracking Linear issue in the PR body and an adjacent code comment. Do not rely on unit-test presence as evidence of reachability. The rejected blanket "zero-caller exported symbol" check (and why it floods false positives) is documented in the ADR.
+
+### expected-output-confirmed
+**Cite:** `verification-rules.md` `fresh-evidence` (claim-time companion); predict→execute→diff / reward-hacking guard; `feedback_predict_before_testing`.
+**Remediation:** Run the prediction's oracle and paste the actual-vs-predicted diff into the PR body. Where no executable oracle exists, state the judge/human confirmation and note it is the weaker check. If the oracle is a test, also show the pre-change run where it failed (red-green). If the output differed from the frozen prediction, record which was wrong (code or mental model) and why — never amend the prediction silently to match.
 
 ### comment-discipline
 **Cite:** system-prompt "Default to writing no comments" rule
