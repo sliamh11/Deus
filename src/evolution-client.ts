@@ -19,6 +19,42 @@ import { emojiToSignal } from './reaction-signal.js';
 const EVOLUTION_CLI = path.join(process.cwd(), 'evolution', 'cli.py');
 const PYTHON_BIN = process.env.EVOLUTION_PYTHON ?? 'python3';
 const EVOLUTION_ENABLED = process.env.EVOLUTION_ENABLED !== '0';
+
+/**
+ * Parse a positive-millisecond env value, falling back (with a warning) when it
+ * is set but invalid. Guards against the `Number(env ?? default)` trap: `??`
+ * only catches null/undefined, so an empty or malformed value would otherwise
+ * yield 0/NaN — and `setTimeout(fn, NaN)` fires on the next tick. Exported for
+ * testing.
+ */
+export function parsePositiveMsEnv(
+  raw: string | undefined,
+  fallback: number,
+  name: string,
+): number {
+  if (raw == null) return fallback;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return n;
+  logger.warn(
+    { name, value: raw },
+    'evolution: env var is not a positive number — using default',
+  );
+  return fallback;
+}
+
+// Generous ceiling for the fire-and-forget log_interaction child (LIA-235).
+// This child is NOT a fast logger: evolution/cli.py cmd_log_interaction logs the
+// row, then synchronously runs a batch judge (JUDGE_BATCH_SIZE rows x up to
+// 300s/Ollama-call => ~25 min worst case) plus run_maintenance. A short timeout
+// would kill legitimate work, so the ceiling only catches a genuinely stuck
+// child (DNS hang, slow-drip HTTP, import deadlock); the Python side self-bounds
+// normal operation via its own per-call urllib/sqlite timeouts. Env-overridable
+// for ops tuning; 1h default.
+const LOG_INTERACTION_TIMEOUT_MS = parsePositiveMsEnv(
+  process.env.EVOLUTION_LOG_INTERACTION_TIMEOUT_MS,
+  60 * 60 * 1000,
+  'EVOLUTION_LOG_INTERACTION_TIMEOUT_MS',
+);
 // Kill switch for the DSPy optimizer arm's prompt injection (LIA-131 Phase 2).
 // Default OFF — the arm ships dark until shadow deltas justify flipping it per
 // module. Checked before any subprocess spawn so default-off adds zero latency.
@@ -165,16 +201,33 @@ export function logInteraction(params: LogInteractionParams): void {
     has_code: params.hasCode ? 1 : 0,
   });
 
-  // Spawn detached so it survives even if the host process exits quickly
+  // Fire-and-forget: the host never awaits this child. Kept in the host's
+  // process group (detached:false) so it doesn't outlive the service; bounded
+  // by a kill-timer ceiling so a stuck child can't accumulate (LIA-235).
   const child = spawn(PYTHON_BIN, [EVOLUTION_CLI, 'log_interaction', payload], {
     detached: false,
     stdio: ['ignore', 'ignore', 'pipe'],
   });
+  // Don't let a slow/hung child pin the host event loop or delay shutdown.
+  child.unref();
+  // SIGKILL a child that overruns the ceiling (a genuine hang, not a long but
+  // legitimate batch judge — see LOG_INTERACTION_TIMEOUT_MS). The interaction
+  // row is persisted before the judge runs, so a kill only defers scoring.
+  const killTimer = setTimeout(() => {
+    logger.warn(
+      { id: params.id, timeoutMs: LOG_INTERACTION_TIMEOUT_MS },
+      'evolution: log_interaction timed out — killing child',
+    );
+    child.kill('SIGKILL');
+  }, LOG_INTERACTION_TIMEOUT_MS);
+  killTimer.unref();
+  child.on('exit', () => clearTimeout(killTimer));
   child.stderr?.on('data', (d: Buffer) => {
     const text = d.toString().trim();
     if (text) logger.warn({ data: text }, 'evolution: log_interaction stderr');
   });
   child.on('error', (err) => {
+    clearTimeout(killTimer);
     logger.error(
       { err },
       'evolution: log_interaction spawn error — interaction not logged',
