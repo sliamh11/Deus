@@ -280,6 +280,40 @@ export function readAvailableTools(
   return [];
 }
 
+/**
+ * Bound the streaming parse buffer (LIA-234). Exported for testing.
+ *
+ * Called once per stdout data event on the post-while-loop remainder, which is
+ * at most ONE partial frame: the marker loop already consumed every complete
+ * START..END pair, so a "multiple STARTs" remainder cannot occur. Without this,
+ * sibling stdout/stderr accumulators are capped at CONTAINER_MAX_OUTPUT_SIZE but
+ * parseBuffer was not — a torn frame (START, no END) or marker-free stdout noise
+ * could grow the host heap for the container's full (idle-extendable) lifetime.
+ *
+ * No START present: keep only the last markerLen-1 bytes (the longest possible
+ * split-START prefix), discarding marker-free noise. START present but over the
+ * cap: torn frame, drop it — the cap is a strict `>` so the END can still arrive
+ * in the same chunk as the boundary byte. Stateless, O(n) per call.
+ */
+export function boundParseBuffer(
+  buffer: string,
+  maxSize: number,
+): { buffer: string; droppedTornFrame: boolean } {
+  if (buffer.indexOf(OUTPUT_START_MARKER) === -1) {
+    return {
+      buffer:
+        buffer.length >= OUTPUT_START_MARKER.length
+          ? buffer.slice(-(OUTPUT_START_MARKER.length - 1))
+          : buffer,
+      droppedTornFrame: false,
+    };
+  }
+  if (buffer.length > maxSize) {
+    return { buffer: '', droppedTornFrame: true };
+  }
+  return { buffer, droppedTornFrame: false };
+}
+
 export async function runContainerAgent(
   group: RegisteredGroup,
   input: ContainerInput,
@@ -486,6 +520,21 @@ export async function runContainerAgent(
               'Failed to parse streamed output chunk',
             );
           }
+        }
+
+        // Bound the remainder so a torn frame or marker-free noise can't grow
+        // the host heap unbounded over the container's lifetime (LIA-234).
+        const beforeLen = parseBuffer.length;
+        const bounded = boundParseBuffer(
+          parseBuffer,
+          CONTAINER_MAX_OUTPUT_SIZE,
+        );
+        parseBuffer = bounded.buffer;
+        if (bounded.droppedTornFrame) {
+          logger.warn(
+            { group: group.name, parseBufferSize: beforeLen },
+            'Container output parse buffer exceeded size limit; dropping torn frame',
+          );
         }
       }
     });

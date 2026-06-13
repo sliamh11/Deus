@@ -163,6 +163,7 @@ import {
   ContainerOutput,
   readToolCalls,
   readAvailableTools,
+  boundParseBuffer,
 } from './container-runner.js';
 import {
   getActivePrompt,
@@ -309,6 +310,115 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseBuffer must stay bounded (LIA-234). stdout/stderr accumulators are
+// capped at CONTAINER_MAX_OUTPUT_SIZE, but the stream parser's buffer was not:
+// a torn frame (START, never an END) or marker-free stdout noise could grow
+// the host heap for the container's full lifetime.
+// ---------------------------------------------------------------------------
+describe('boundParseBuffer (LIA-234)', () => {
+  // OUTPUT_START_MARKER = '---DEUS_OUTPUT_START---' (23 chars) → keep tail 22.
+  const KEEP = OUTPUT_START_MARKER.length - 1; // 22
+
+  it('trims marker-free noise to the last markerLen-1 bytes', () => {
+    const out = boundParseBuffer('x'.repeat(100), 50);
+    expect(out.droppedTornFrame).toBe(false);
+    expect(out.buffer).toBe('x'.repeat(KEEP));
+  });
+
+  it('returns a buffer shorter than the marker unchanged (boundary)', () => {
+    const buf = 'y'.repeat(KEEP); // exactly 22 < markerLen → cannot hold a START
+    const out = boundParseBuffer(buf, 50);
+    expect(out.droppedTornFrame).toBe(false);
+    expect(out.buffer).toBe(buf);
+  });
+
+  it('preserves a partial START prefix split across a chunk boundary', () => {
+    const partial = '---DEUS_OUTPUT_ST'; // 17-char prefix, not a full START
+    const buf = 'a'.repeat(20) + partial; // 37 bytes, no full START present
+    const out = boundParseBuffer(buf, 50);
+    expect(out.droppedTornFrame).toBe(false);
+    expect(out.buffer.length).toBe(KEEP);
+    expect(out.buffer.endsWith(partial)).toBe(true);
+  });
+
+  it('drops a torn frame (START with no END) once it exceeds the cap', () => {
+    const buf = OUTPUT_START_MARKER + 'x'.repeat(100); // START, no END
+    const out = boundParseBuffer(buf, 50);
+    expect(out.droppedTornFrame).toBe(true);
+    expect(out.buffer).toBe('');
+  });
+
+  it('leaves a legit pending frame under the cap unchanged', () => {
+    const buf = OUTPUT_START_MARKER + '{"partial'; // START, no END, small
+    const out = boundParseBuffer(buf, 1000);
+    expect(out.droppedTornFrame).toBe(false);
+    expect(out.buffer).toBe(buf);
+  });
+});
+
+describe('streaming parse resilience to noise + split frames (LIA-234)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('still parses a valid frame after marker-free stdout noise', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    fakeProc.stdout.push('random stdout noise with no markers\n');
+    emitOutputMarker(fakeProc, { status: 'success', result: 'hello' });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(onOutput).toHaveBeenCalledTimes(1);
+    expect(onOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'hello' }),
+    );
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+  });
+
+  it('still parses a frame split across two chunks (mid-marker)', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    const json = JSON.stringify({ status: 'success', result: 'split' });
+    const full = `${OUTPUT_START_MARKER}\n${json}\n${OUTPUT_END_MARKER}\n`;
+    // Split inside the START marker so the first chunk holds only a partial
+    // START — exercises the marker-free trim's prefix-preservation path.
+    fakeProc.stdout.push(full.slice(0, 10));
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.stdout.push(full.slice(10));
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(onOutput).toHaveBeenCalledTimes(1);
+    expect(onOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ result: 'split' }),
+    );
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
   });
 });
 
