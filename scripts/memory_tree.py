@@ -639,6 +639,17 @@ def open_db(db_path: Path = None) -> sqlite3.Connection:
     path = Path(db_path) if db_path else DB_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
+    # WAL allows concurrent readers/writer (the tree is read by hooks while the
+    # indexer writes); busy_timeout waits on contention instead of raising
+    # SQLITE_BUSY. busy_timeout is set FIRST so the journal_mode=WAL write itself
+    # (a header change that takes a lock) waits rather than raising on a contended
+    # open. 30s absorbs the long writers (e.g. reenrich_embeddings holds a txn
+    # across many embed calls). Mirrors scripts/code_search.py (post-LIA-189).
+    # Safe here: DB lives under ~/.deus/ (local fs). WAL needs shared memory and
+    # would fail on a network mount. (LIA-242)
+    db.execute("PRAGMA busy_timeout=30000")
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=NORMAL")
     if sqlite_vec is not None:
         db.enable_load_extension(True)
         sqlite_vec.load(db)

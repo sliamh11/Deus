@@ -308,6 +308,18 @@ def _backfill_fts(db: sqlite3.Connection) -> None:
 def open_db() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB_PATH)
+    # WAL lets the fire-and-forget auto-compress indexer write concurrently with
+    # reads instead of racing on a single rollback-journal lock; busy_timeout
+    # makes a contended open wait instead of raising SQLITE_BUSY immediately.
+    # busy_timeout is set FIRST so the journal_mode=WAL write itself (a header
+    # change that takes a lock) waits rather than raising on a contended open.
+    # 30s absorbs the long writers (e.g. reenrich_embeddings holds a txn across
+    # many embed calls). Mirrors scripts/code_search.py (post-LIA-189).
+    # Safe here: DB lives under ~/.deus/ (local fs). WAL needs shared memory and
+    # would fail on a network mount. (LIA-242)
+    db.execute("PRAGMA busy_timeout=30000")
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA synchronous=NORMAL")
     db.enable_load_extension(True)
     sqlite_vec.load(db)
     db.enable_load_extension(False)

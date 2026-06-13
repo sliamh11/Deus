@@ -332,6 +332,18 @@ def test_open_db_creates_entries_table(mi):
     assert "entries" in tables
 
 
+def test_open_db_enables_wal_and_busy_timeout(mi):
+    """open_db must set WAL journal mode and a busy_timeout so the fire-and-forget
+    auto-compress indexer can write concurrently with reads instead of racing on a
+    single rollback-journal lock (LIA-242). Use the read form of each PRAGMA."""
+    db = mi.open_db()
+    journal_mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+    busy_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+    db.close()
+    assert journal_mode.lower() == "wal"
+    assert busy_timeout == 30000
+
+
 def test_entry_exists_false_for_new_db(mi):
     db = mi.open_db()
     result = mi.entry_exists(db, "/nonexistent/path.md")
