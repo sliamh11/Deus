@@ -141,6 +141,25 @@ export function resolveProviderRoute(
   return { provider: registry.get('anthropic'), path: url || '/' };
 }
 
+/**
+ * Parse a positive-integer env value, falling back (with a warning) when it is
+ * set but invalid. Guards the `Number(env ?? default)` trap (`??` only catches
+ * null/undefined — `Number('')` is 0 and `Number('abc')` is NaN). Reads via a
+ * dynamic `process.env[name]` index (also keeps it out of flag_lint's literal
+ * `process.env.DEUS_*` scan).
+ */
+export function envPositiveInt(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw == null) return fallback;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return n;
+  logger.warn(
+    { name, value: raw },
+    'credential-proxy: env var is not a positive number — using default',
+  );
+  return fallback;
+}
+
 export function startCredentialProxy(
   port: number,
   host = '127.0.0.1',
@@ -189,11 +208,56 @@ export function startCredentialProxy(
     );
   }
 
+  // Cap the buffered request body to bound host memory (LIA-236). Generous for
+  // multimodal base64 image payloads; the proxy binds 127.0.0.1 so this is a
+  // robustness bound, not an attack surface.
+  const maxBodyBytes = envPositiveInt(
+    'DEUS_PROXY_MAX_BODY_BYTES',
+    32 * 1024 * 1024,
+  );
+  // Inactivity ceiling for a black-holed upstream connection (LIA-236). Socket
+  // inactivity timeout — a live SSE stream resets it on every chunk, so only a
+  // genuinely stalled/dead connection trips it.
+  const upstreamTimeoutMs = envPositiveInt(
+    'DEUS_PROXY_UPSTREAM_TIMEOUT_MS',
+    600_000,
+  );
+
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
       const chunks: Buffer[] = [];
-      req.on('data', (c) => chunks.push(c));
+      let bodySize = 0;
+      let bodyTooLarge = false;
+      // A client that disconnects mid-upload emits 'error' on the request
+      // stream; an unhandled stream 'error' is a fatal uncaught exception, so
+      // swallow it here (LIA-236).
+      req.on('error', (err) => {
+        logger.debug(
+          { err, url: req.url },
+          'credential-proxy: request stream error',
+        );
+      });
+      req.on('data', (c) => {
+        if (bodyTooLarge) return;
+        bodySize += c.length;
+        if (bodySize > maxBodyBytes) {
+          // Stop storing the body (bounds host memory) and reject. Respond with
+          // Connection: close so Node discards the rest of the upload on close —
+          // cleaner than req.destroy(), which would RST the shared socket and
+          // can truncate this very response before the client reads it.
+          bodyTooLarge = true;
+          logger.warn(
+            { url: req.url, maxBodyBytes },
+            'credential-proxy: request body exceeded size limit',
+          );
+          res.writeHead(413, { Connection: 'close' });
+          res.end('Payload Too Large');
+          return;
+        }
+        chunks.push(c);
+      });
       req.on('end', () => {
+        if (bodyTooLarge) return; // already responded 413 above
         const body = Buffer.concat(chunks);
 
         if (DEUS_PROXY_AUTH_ENABLED) {
@@ -375,6 +439,20 @@ export function startCredentialProxy(
             res.writeHead(502);
             res.end('Bad Gateway');
           }
+        });
+
+        // Bound a black-holed upstream: socket inactivity timeout → destroy,
+        // which surfaces through the error handler above as a 502 (LIA-236).
+        upstream.setTimeout(upstreamTimeoutMs, () => {
+          upstream.destroy(new Error('upstream timeout'));
+        });
+
+        // Client aborted mid-response (e.g. SDK gave up on a long SSE stream):
+        // pipe() does not propagate the destination close to the source, so
+        // destroy the upstream to free its socket. writableEnded is false on an
+        // abort, true on a normal completion (LIA-236).
+        res.on('close', () => {
+          if (!res.writableEnded) upstream.destroy();
         });
 
         upstream.write(body);
