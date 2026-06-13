@@ -99,8 +99,8 @@
 
 ## expected-output-confirmed
 **Severity:** warning
-**Applies when:** The branch's plan committed an Expected Output (plan-review `verification-strategy`) for a behavioral change present in this diff.
-**Check:** Does the diff (or PR body) show the actual output diffed against that frozen prediction — the oracle run and its result compared, and where that oracle is a test, evidence it was red-green proven (failed without the change, so it can actually reject) — OR, where no executable oracle exists, the explicit judge/human confirmation? Is any mismatch resolved (code fixed, or prediction corrected with a stated reason) rather than silently dropped?
+**Applies when:** The branch's plan committed an Expected Output (plan-review `verification-strategy`) for a non-trivial behavioral change present in this diff.
+**Check:** Does the diff (or PR body) show the actual output diffed against that frozen prediction — the oracle run and its result compared, and where that oracle is a test, evidence it was red-green proven (failed without the change, so it can actually reject) — OR, where no executable oracle exists, the explicit judge/human confirmation? Is any mismatch resolved (code fixed, or prediction corrected with a stated reason) rather than silently dropped? (Calibrate depth to blast radius per `verification-strategy`'s proportionality clause.)
 **Rule:** A behavioral change carrying a committed expected output must land with that output confirmed against the prediction. Commit-time companion to `verification-rules.md` `fresh-evidence` (claim-time) — same predict→execute→diff discipline, enforced where commits are actually gated. An un-diffed or silently-amended prediction is flagged the same way an unwired facade is.
 
 ## comment-discipline
