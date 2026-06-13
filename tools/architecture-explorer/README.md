@@ -24,7 +24,8 @@ codegraph index            # run from the repo root if the DB is stale
 
 # 2. generate the graph data
 python3 tools/architecture-explorer/build.py
-#    or against an explicit DB / another repo:
+#    or against an explicit DB / another repo (layers auto-derive if the bundled
+#    layers.json doesn't fit that repo — see "other projects" below):
 python3 tools/architecture-explorer/build.py --db /path/to/.codegraph/codegraph.db
 
 # 3. open it (serving over http is recommended — gives full localStorage for saved themes)
@@ -58,20 +59,34 @@ The control panel (top-right) changes appearance instantly, no code:
 - **Presets** (Blueprint / Galaxy / Minimal) + **Reset**. Your look is saved to
   `localStorage` and restored on reload.
 
-## Reusing / re-layering (and other projects)
+## Other projects (it works on any repo)
 
 It's a **self-contained, portable tool** — copy `tools/architecture-explorer/` into
-any codegraph-indexed repo and run `build.py --db <that repo>/.codegraph/codegraph.db`.
-To change the layers (or adapt to a different repo's structure), edit **`layers.json`**
-— ordered rules, first matching glob wins, no code change. `build.py` is standard-library
-only (no third-party deps). A one-command `deus arch <project>` wrapper is planned (Phase 2).
+any codegraph-indexed repo, or point it at one: `build.py --db <repo>/.codegraph/codegraph.db`.
+`build.py` is standard-library only (no third-party deps).
+
+**Layering is automatic.** The bundled `layers.json` describes *this* repo's
+architecture. On any other repo those rules won't match, so `build.py` detects the
+poor fit and **derives layers from the directory structure instead** — each top-level
+directory (e.g. `src`, `lib`, `api`) becomes a colored layer, with a generated palette.
+You get a meaningful map out of the box, not one undifferentiated blob. No config, no
+code change.
+
+| Want | Do |
+|---|---|
+| Auto-derived layers (default on a foreign repo) | just run `build.py --db <repo>/.codegraph/codegraph.db` |
+| Force directory-derived layers anywhere | `--auto` |
+| Group two levels deep (`src/memory`, `src/api`) | `--layers-depth 2` (applies under `--auto` or when auto-fallback triggers; default auto-selects 1, or 2 when one dir dominates) |
+| Curate the layers by hand | edit `layers.json` (ordered rules, first matching glob wins) or pass `--layers my.json` (always trusted, never auto-overridden) |
+
+A one-command `deus arch <project>` wrapper is still planned (Phase 2).
 
 ## Files
 
 | File | Responsibility |
 |---|---|
-| `build.py` | generator: codegraph DB + `layers.json` → `graph-data.js` (`window.GRAPH`) |
-| `layers.json` | ordered path-glob → layer rules |
+| `build.py` | generator: codegraph DB + layers (curated `layers.json` or directory-derived) → `graph-data.js` (`window.GRAPH`) |
+| `layers.json` | ordered path-glob → layer rules for *this* repo; auto-derived from directories on a poor fit |
 | `index.html` | page shell; loads vendor + `graph-data.js` + `theme.js` + `app.js` |
 | `app.js` | 3D graph structure + behavior (pinned-z layers, expand/collapse, detail panel, search, camera) |
 | `theme.js` | live appearance system (lil-gui panel; shape/color/edges/scene; localStorage) |
@@ -85,7 +100,9 @@ only (no third-party deps). A one-command `deus arch <project>` wrapper is plann
 
 `tests/test_build.py` (`python3 -m pytest tools/architecture-explorer/tests/`)
 covers the generator: layer assignment, edge aggregation, filtering, schema,
-determinism. The **UI is verified manually** — run `build.py`, open `index.html`,
+determinism, and directory-derived (auto) layering — depth selection, the cap +
+long-tail merge, root-file handling, the palette, fit-detection, and the
+no-file-lost invariant across config↔auto. The **UI is verified manually** — run `build.py`, open `index.html`,
 confirm the 3D scene renders (layers as depth planes), fly/orbit work, click-a-layer
 expands its files, the detail panel shows Affects/Affected-by, and the appearance
 panel changes the look live.
@@ -94,6 +111,8 @@ panel changes the look live.
 
 - **Phase 2 — chat panel:** ask "where does X happen / what does Y affect" answered
   from the graph data + codegraph FTS (grounded, not hallucinated).
-- **`deus arch <project>`** — one-command portable invocation for any indexed repo.
+- ✅ **Works on any repo** — layers auto-derive from the directory structure when the
+  curated `layers.json` doesn't fit (done).
+- **`deus arch <project>`** — one-command portable invocation (index if needed → build → open).
 - Theme export/import; git-churn coloring; a semantic-coupling layer (e.g. the shared
   judge RUBRIC → its 4 dimensions) so the map doubles as a change-awareness instrument.

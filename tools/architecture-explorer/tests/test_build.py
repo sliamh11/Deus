@@ -303,3 +303,210 @@ class TestPythonDocstring:
         graph = build.build(db, LAYERS, include_tests=False)
         node = next(n for n in graph["nodes"] if n["file_path"] == "ghost.py")
         assert node["top_symbols"][0]["doc"] == "fallback doc"
+
+
+# ── External-project support: directory-derived (auto) layers ─────────────────
+
+_SCHEMA = """
+    CREATE TABLE files (path TEXT PRIMARY KEY, content_hash TEXT, language TEXT,
+                        size INTEGER, modified_at INTEGER, indexed_at INTEGER, node_count INTEGER);
+    CREATE TABLE nodes (id TEXT PRIMARY KEY, kind TEXT, name TEXT, qualified_name TEXT,
+                        file_path TEXT, language TEXT, start_line INTEGER, end_line INTEGER,
+                        start_column INTEGER, end_column INTEGER, docstring TEXT, signature TEXT,
+                        visibility TEXT, is_exported INTEGER, is_async INTEGER, is_static INTEGER,
+                        is_abstract INTEGER, decorators TEXT, type_parameters TEXT, updated_at INTEGER);
+    CREATE TABLE edges (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT, target TEXT,
+                        kind TEXT, metadata TEXT, line INTEGER, col INTEGER, provenance TEXT);
+"""
+
+
+def _make_simple_db(tmp_path: Path, paths: list[str]) -> Path:
+    """Minimal codegraph DB at <tmp>/.codegraph/codegraph.db: one `files` row + one
+    `nodes` row per path (paths must be DISTINCT — `path` is PRIMARY KEY). Enough to
+    exercise layer resolution; no edges."""
+    cg = tmp_path / ".codegraph"
+    cg.mkdir(parents=True, exist_ok=True)
+    db = cg / "codegraph.db"
+    conn = sqlite3.connect(db)
+    conn.executescript(_SCHEMA)
+    for i, p in enumerate(paths):
+        lang = "py" if p.endswith(".py") else "ts"
+        conn.execute("INSERT INTO files VALUES (?,?,?,?,?,?,?)", (p, "h", lang, 50, 0, 0, 1))
+        conn.execute(
+            "INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, start_line, "
+            "end_line, start_column, end_column, is_exported, updated_at) VALUES (?,?,?,?,?,?,?,?,0,0,1,0)",
+            (f"n{i}", "function", f"fn{i}", f"fn{i}", p, lang, 1, 10),
+        )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _grp(prefix: str, n: int) -> list[str]:
+    """n distinct file paths under `prefix`."""
+    return [f"{prefix}/f{i}.ts" for i in range(n)]
+
+
+class TestPalette:
+    def test_hex_format(self):
+        for h in (0, 90, 180, 270, 359):
+            c = build._hsl_to_hex(h)
+            assert len(c) == 7 and c[0] == "#"
+            int(c[1:], 16)  # parses as hex (raises otherwise)
+
+    def test_known_hue_red_dominant(self):
+        # H=0 (red), L=0.5, S=0.7 -> red channel clearly dominant. Guards the
+        # colorsys HLS argument order (lightness before saturation): a swap here
+        # silently desaturates and this assertion fails.
+        c = build._hsl_to_hex(0, sat=0.7, light=0.5)
+        r, g, b = int(c[1:3], 16), int(c[3:5], 16), int(c[5:7], 16)
+        assert r > g and r > b and r >= 178  # 0.7*255 ~= 178
+
+    def test_distinct_colors(self):
+        cols = [build._hsl_to_hex(360.0 * i / 12) for i in range(12)]
+        assert len(set(cols)) == 12
+
+
+class TestSanitizeAndPrefix:
+    def test_sanitize_whitespace_to_underscore(self):
+        assert build._sanitize_layer_id("my dir") == "my_dir"
+        assert build._sanitize_layer_id("a\tb  c") == "a_b_c"
+
+    def test_sanitize_keeps_slash(self):
+        # '/' is NOT the app.js edge-key delimiter (space is) -> kept for depth-2 ids
+        assert build._sanitize_layer_id("src/memory") == "src/memory"
+
+    def test_sanitize_blank_falls_to_other(self):
+        assert build._sanitize_layer_id("   ") == build._OTHER_ID
+
+    def test_dir_prefix_depths(self):
+        assert build._dir_prefix("src/memory/foo.ts", 1) == "src"
+        assert build._dir_prefix("src/memory/foo.ts", 2) == "src/memory"
+        assert build._dir_prefix("src/foo.ts", 2) == "src"   # fewer levels than depth
+        assert build._dir_prefix("README.md", 1) is None     # root file (no directory)
+
+
+class TestAutoLayers:
+    def test_depth1_groups_by_top_dir(self):
+        paths = _grp("src", 5) + _grp("lib", 5) + _grp("docs", 5) + _grp("test_x", 5)
+        layers, assign, depth = build._auto_layers(paths)
+        assert depth == 1
+        assert {"src", "lib", "docs", "test_x"} <= {l["id"] for l in layers}
+        assert set(assign) == set(paths)
+
+    def test_descend_to_depth2_when_one_dir_dominant(self):
+        paths = _grp("src/api", 8) + _grp("src/web", 8) + _grp("lib", 2)  # src = 16/18 > 70%
+        layers, _, depth = build._auto_layers(paths)
+        assert depth == 2
+        assert "src/api" in {l["label"] for l in layers}
+
+    def test_descend_when_too_few_top_dirs(self):
+        paths = _grp("src/api", 3) + _grp("src/web", 3)  # only 1 top-level dir (<4)
+        _, _, depth = build._auto_layers(paths)
+        assert depth == 2
+
+    def test_root_files_go_to_other(self):
+        paths = _grp("src", 5) + _grp("lib", 5) + _grp("docs", 5) + _grp("x", 5) + ["README.md", "setup.py"]
+        _, assign, _ = build._auto_layers(paths, depth=1)
+        assert assign["README.md"] == build._OTHER_ID
+        assert assign["setup.py"] == build._OTHER_ID
+
+    def test_cap_and_long_tail_merge_into_other(self):
+        # 20 top-level dirs (d00 biggest .. d19 smallest) -> capped at 16 + "other"
+        paths = [p for i in range(20) for p in _grp(f"d{i:02d}", 20 - i)]
+        layers, assign, _ = build._auto_layers(paths, depth=1)
+        non_other = [l for l in layers if l["id"] != build._OTHER_ID]
+        assert len(non_other) == build._AUTO_MAX_LAYERS  # 16
+        assert any(l["id"] == build._OTHER_ID for l in layers)
+        assert assign["d19/f0.ts"] == build._OTHER_ID    # smallest -> tail -> other
+        assert assign["d00/f0.ts"] != build._OTHER_ID    # biggest -> kept
+
+    def test_layers_ordered_by_file_count(self):
+        paths = _grp("big", 10) + _grp("mid", 5) + _grp("small", 2)
+        layers, _, _ = build._auto_layers(paths, depth=1)
+        non_other = [l["id"] for l in layers if l["id"] != build._OTHER_ID]
+        assert non_other[:3] == ["big", "mid", "small"]
+
+    def test_every_path_assigned_exactly_once(self):
+        paths = ["src/a.ts", "lib/b.ts", "c.md", "src/d/e.ts"]
+        _, assign, _ = build._auto_layers(paths)
+        assert set(assign) == set(paths)
+
+    def test_whitespace_dir_id_sanitized_label_preserved(self):
+        paths = _grp("my src", 5) + _grp("lib", 5) + _grp("x", 5) + _grp("y", 5)
+        layers, assign, _ = build._auto_layers(paths, depth=1)
+        msrc = next(l for l in layers if l["label"] == "my src")
+        assert msrc["id"] == "my_src" and " " not in msrc["id"]   # protects app.js space-delim edge keys
+        assert assign["my src/f0.ts"] == "my_src"
+
+    def test_deterministic(self):
+        paths = _grp("src", 5) + _grp("lib", 3) + _grp("x", 4) + _grp("y", 2)
+        assert build._auto_layers(paths, depth=1) == build._auto_layers(paths, depth=1)
+
+    def test_deterministic_with_ties(self):
+        # equal counts -> ties broken by first-occurrence order in `paths` (stable)
+        paths = _grp("x", 4) + _grp("y", 4) + _grp("z", 4)
+        a = build._auto_layers(paths, depth=1)
+        assert a == build._auto_layers(paths, depth=1)
+        assert [l["id"] for l in a[0]] == ["x", "y", "z"]
+
+    def test_distinct_colors_per_layer_including_other(self):
+        # root files force an 'other' layer too; its grey must not collide with the palette
+        paths = _grp("a", 5) + _grp("b", 4) + _grp("c", 3) + _grp("d", 2) + ["README.md", "x.py"]
+        layers, _, _ = build._auto_layers(paths, depth=1)
+        assert any(l["id"] == build._OTHER_ID for l in layers)
+        colors = [l["color"] for l in layers]
+        assert len(set(colors)) == len(colors)
+
+
+class TestLayerResolution:
+    def test_build_auto_mode(self, tmp_path):
+        paths = _grp("src", 4) + _grp("lib", 4) + _grp("api", 4) + _grp("web", 4)
+        g = build.build(_make_simple_db(tmp_path, paths), None, include_tests=False, auto=True)
+        assert g["meta"]["layer_mode"] == "auto" and g["meta"]["layer_depth"] == 1
+        assert g["meta"]["n_files"] == 16
+        assert {"src", "lib", "api", "web"} <= {n["layer"] for n in g["nodes"]}
+
+    def test_none_layers_without_auto_raises(self, tmp_path):
+        db = _make_simple_db(tmp_path, ["src/a.ts"])
+        with pytest.raises(ValueError):
+            build.build(db, None, include_tests=False)  # auto=False + no config
+
+    def test_foreign_repo_auto_fallback(self, tmp_path):
+        # none of Deus's globs match -> with fallback allowed, auto-derive (not 1 blob)
+        paths = _grp("app/api", 5) + _grp("app/web", 5) + _grp("server", 5) + _grp("client", 5)
+        g = build.build(_make_simple_db(tmp_path, paths), LAYERS, include_tests=False,
+                        allow_auto_fallback=True)
+        assert g["meta"]["layer_mode"] == "auto"
+        used = {n["layer"] for n in g["nodes"]}
+        assert "channels" not in used and len(used) > 1
+
+    def test_fitting_repo_keeps_curated_config(self, tmp_path):
+        # Deus-matching paths -> curated config kept even with fallback allowed
+        paths = _grp("src/channels", 5) + _grp("evolution", 5) + _grp("container", 5) + _grp("tui", 5)
+        g = build.build(_make_simple_db(tmp_path, paths), LAYERS, include_tests=False,
+                        allow_auto_fallback=True)
+        assert g["meta"]["layer_mode"] == "config"
+
+    def test_explicit_layers_never_auto_fallback(self, tmp_path):
+        # allow_auto_fallback=False (an explicit --layers) -> config even on a poor fit
+        paths = _grp("app", 5) + _grp("web", 5)
+        g = build.build(_make_simple_db(tmp_path, paths), LAYERS, include_tests=False,
+                        allow_auto_fallback=False)
+        assert g["meta"]["layer_mode"] == "config"
+
+    def test_invariant_same_files_and_edges_across_modes(self, tmp_path):
+        # config vs auto must layer the SAME file set (none lost/duplicated) + same edges
+        paths = _grp("src/channels", 4) + _grp("evolution", 4) + _grp("tui", 4)
+        db = _make_simple_db(tmp_path, paths)
+        cfg = build.build(db, LAYERS, include_tests=False)
+        aut = build.build(db, None, include_tests=False, auto=True)
+        assert cfg["meta"]["n_files"] == aut["meta"]["n_files"]
+        assert cfg["meta"]["n_edges"] == aut["meta"]["n_edges"]
+        assert {n["id"] for n in cfg["nodes"]} == {n["id"] for n in aut["nodes"]}
+
+    def test_auto_layers_all_present_in_out(self, tmp_path):
+        # every auto layer with files is emitted (out_layers filters to used)
+        paths = _grp("src", 4) + _grp("lib", 4) + _grp("docs", 4) + _grp("api", 4)
+        g = build.build(_make_simple_db(tmp_path, paths), None, include_tests=False, auto=True)
+        assert {n["layer"] for n in g["nodes"]} == {l["id"] for l in g["layers"]}
