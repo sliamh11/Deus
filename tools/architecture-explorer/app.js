@@ -57,9 +57,16 @@
   // Layers form a horizontal ROW along x (channels left -> other right), all
   // visible at once. A layer's files expand into the DEPTH (y/z disc) at that
   // layer's x. This avoids the colinear z-stack that occludes + breaks framing.
-  var LAYER_GAP = 360;          // x distance between layer columns (roomy)
-  var FILE_SPREAD = 220;        // y/z radius files seed within a layer's disc
+  // Wide "space-like" gaps: a layer super-node (~90 wide) in a 900 gap reads ~1:10
+  // (open, roomy) vs the cramped ~1:3.5 a 360 gap gave.
+  var LAYER_GAP = 900;          // x distance between layer columns — wide, "space-like"
   function layerX(order) { return (order - (nLayers - 1) / 2) * LAYER_GAP; }
+  // Count-aware y/z disc radius for an expanded layer's files (sunflower seed below):
+  // grows with sqrt(count) so files don't crowd as a layer gets bigger. Capped just
+  // below LAYER_GAP so a single layer's disc never exceeds the inter-layer gap. NOTE:
+  // two ADJACENT large layers expanded at once can still visually overlap in y/z from
+  // a side-on view — explore one large layer at a time for the cleanest read.
+  function FILE_R(n) { return Math.min(260 + Math.sqrt(n) * 70, LAYER_GAP * 0.95); }
 
   // ---- state ---------------------------------------------------
   var expanded = {};            // layerId -> true when expanded
@@ -122,15 +129,19 @@
     });
 
     // Expanded layers -> their file nodes, pinned to the layer's x-column,
-    // seeded on a y/z ring (a disc of files facing down the row at that x).
+    // seeded as a sunflower/Fibonacci DISC in the y/z plane: radius grows as
+    // sqrt(i) so area-per-file is constant (no center crowding), with a
+    // golden-angle rotation between successive files (even, organic, no banding).
     G.layers.forEach(function (l) {
       if (!expanded[l.id]) return;
       var x = layerX(l.order);
       var files = filesByLayer[l.id] || [];
+      var n = Math.max(files.length, 1);
+      var R = FILE_R(n);
       files.forEach(function (f, i) {
         present[f.id] = true;
-        var ang = (i / Math.max(files.length, 1)) * Math.PI * 2;
-        var r = FILE_SPREAD * (0.4 + 0.6 * ((i % 7) / 6));
+        var rr = R * Math.sqrt((i + 0.5) / n);
+        var th = i * 2.39996323;       // golden angle ≈ 137.5° (2π·(2−φ)) in radians
         nodes.push({
           id: f.id,
           kind: 'file',
@@ -143,7 +154,7 @@
           fanIn: fanIn[f.id] || 0,
           fanOut: fanOut[f.id] || 0,
           fx: x,                       // pin x to the layer column; y/z free
-          x: x, y: Math.sin(ang) * r, z: Math.cos(ang) * r
+          x: x, y: Math.sin(th) * rr, z: Math.cos(th) * rr
         });
       });
     });
@@ -198,11 +209,11 @@
       .onBackgroundClick(clearSelection)
       .enableNodeDrag(false)         // drag intercepts node clicks; click-to-expand wins
       .warmupTicks(0)                // animate the spring-out (don't pre-settle)
-      .cooldownTicks(120);
-    // Strong repulsion = roomy, dynamic spacing; longer links so files spring out
+      .cooldownTicks(160);           // longer settle for the wider, more energetic layout
+    // Strong repulsion = roomy, dynamic spacing; long links so files spring far out
     // into a spacious cloud when a layer expands (layer nodes stay pinned anchors).
-    g.d3Force('charge').strength(-220);
-    if (g.d3Force('link')) g.d3Force('link').distance(70);
+    g.d3Force('charge').strength(-750);
+    if (g.d3Force('link')) g.d3Force('link').distance(200);
     return g;
   }
 
