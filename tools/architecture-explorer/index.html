@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Architecture Explorer (3D)</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="graph"></div>
+
+  <header id="topbar">
+    <div class="title">Architecture Explorer <span id="meta"></span></div>
+    <div class="toolbar">
+      <input id="search" type="text" placeholder="Search files…" autocomplete="off" />
+      <button id="btn-sidebar" title="Toggle file tree">&#9776; Files</button>
+      <button id="btn-control" title="Toggle fly / orbit camera">Orbit</button>
+      <button id="btn-back" title="Go back to the previous view" disabled>&larr; Back</button>
+      <button id="btn-expand-all">Expand all</button>
+      <button id="btn-collapse-all">Collapse all</button>
+      <button id="btn-reset-cam">Reset</button>
+    </div>
+  </header>
+
+  <aside id="sidebar"></aside>
+
+  <aside id="detail" class="hidden">
+    <button id="detail-close" title="Close">&times;</button>
+    <div id="detail-body"></div>
+  </aside>
+
+  <footer id="legend">
+    <span class="legend-group"><b>EDGES</b>
+      <span class="ek" data-k="imports">imports</span>
+      <span class="ek" data-k="calls">calls</span>
+      <span class="ek" data-k="references">references</span>
+    </span>
+  </footer>
+
+  <div id="hint">WASD/arrows: fly · left-drag: rotate · wheel: zoom · right-drag: pan · click a layer to expand · click a file for details</div>
+  <div id="no-data" class="hidden">No graph data. Run <code>python3 build.py</code> first.</div>
+
+  <!-- load order: THREE(global) -> engine -> control panel -> data -> theme(defines) -> app(invokes).
+       THREE must be a separate global: the standalone 3d-force-graph build bundles three
+       privately and does NOT expose it, so theme.js needs window.THREE for custom node shapes. -->
+  <script src="vendor/three.min.js"></script>
+  <script src="vendor/3d-force-graph.min.js"></script>
+  <script src="vendor/lil-gui.umd.min.js"></script>
+  <script src="graph-data.js"></script>
+  <script src="theme.js"></script>
+  <script src="sidebar.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

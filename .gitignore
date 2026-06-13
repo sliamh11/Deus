@@ -138,3 +138,6 @@ finetune/judge-bench/
 # Private features — local-only code that must never be committed
 # Personal integrations, trading logic, account-specific tools, etc.
 src/private/
+
+# Architecture Explorer — generated graph data (re-run build.py to regenerate)
+tools/architecture-explorer/graph-data.js

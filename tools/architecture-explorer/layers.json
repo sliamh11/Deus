@@ -1,0 +1,71 @@
+{
+  "_comment": "Ordered layer rules. First matching glob wins (fnmatch over repo-relative file paths). Edit to re-layer, or point the tool at another repo. Order = visual top-to-bottom band order.",
+  "layers": [
+    {
+      "id": "channels",
+      "label": "1 . Channels",
+      "color": "#4a90d9",
+      "globs": ["src/channels/*", "src/x-integration*", "src/reaction-signal*", "src/transcription*", "src/image.*", "src/deus-listen*", "src/user-signal*"]
+    },
+    {
+      "id": "host",
+      "label": "2 . Host runtime",
+      "color": "#6ab04c",
+      "globs": ["src/message-orchestrator*", "src/router*", "src/routing*", "src/agent-runtimes/*", "src/group-*", "src/task-scheduler*", "src/events/*", "src/events/listeners/*", "src/index.ts", "src/container-runner*", "src/container-runtime*", "src/session-commands*", "src/remote-control*", "src/multi-agent/*", "src/bootstrap*", "src/startup-gate*", "src/checks*", "src/async/*", "src/skills/*", "src/solutions/*"]
+    },
+    {
+      "id": "security",
+      "label": "3 . Security boundary",
+      "color": "#e74c3c",
+      "globs": ["src/container-mounter*", "src/mount-security*", "src/tool-proxy*", "src/tool-registry*", "src/tool-broker/*", "src/credential-proxy*", "src/guardrails/*", "src/sender-allowlist*", "src/ipc*", "src/auth-providers/*", "src/auth-refresh*", "src/external-push-gate*"]
+    },
+    {
+      "id": "container",
+      "label": "4 . Container (isolated agent)",
+      "color": "#9b59b6",
+      "globs": ["container/*"]
+    },
+    {
+      "id": "memory",
+      "label": "5 . Memory",
+      "color": "#16a085",
+      "globs": ["scripts/memory_*", "src/memory-bridge*"]
+    },
+    {
+      "id": "evolution",
+      "label": "6 . Evolution (self-tuning)",
+      "color": "#f39c12",
+      "globs": ["evolution/*"]
+    },
+    {
+      "id": "linear",
+      "label": "7 . Linear pipeline",
+      "color": "#3498db",
+      "globs": ["src/linear-*"]
+    },
+    {
+      "id": "persistence",
+      "label": "8 . Persistence + config",
+      "color": "#7f8c8d",
+      "globs": ["src/db.ts", "src/router-state*", "src/project-registry*", "src/config.*", "src/domain-presets*", "src/env.*", "src/types.ts"]
+    },
+    {
+      "id": "tui",
+      "label": "9 . TUI",
+      "color": "#34495e",
+      "globs": ["tui/*"]
+    },
+    {
+      "id": "scripts",
+      "label": "10 . Scripts / tooling",
+      "color": "#95a5a6",
+      "globs": ["scripts/*", "tools/*"]
+    },
+    {
+      "id": "other",
+      "label": "11 . Other",
+      "color": "#566573",
+      "globs": ["*"]
+    }
+  ]
+}
