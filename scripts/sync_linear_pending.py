@@ -41,6 +41,10 @@ STATE_PRIORITY = {
 
 EXCLUDED_STATES = {"Done", "Canceled", "Duplicate"}
 
+# Intentionally per-team (one $teamId per call). main() fans out across all
+# teams and merges the results (Scatter-Gather), which keeps the partial-success
+# loop working when one team's fetch fails. Do NOT collapse this into a bulk
+# multi-team query.
 QUERY = """
 query($teamId: ID!) {
   issues(
@@ -54,6 +58,7 @@ query($teamId: ID!) {
       title
       identifier
       state { name type }
+      team { name }
     }
   }
 }
@@ -104,12 +109,29 @@ def _get_api_token() -> str | None:
     return env_file.get("LINEAR_API_TOKEN") or env_file.get("LINEAR_API_KEY")
 
 
-def _get_team_id() -> str | None:
-    tid = os.environ.get("LINEAR_TEAM_ID")
-    if tid:
-        return tid
+def _get_team_ids() -> list[str]:
+    """Resolve explicit team IDs from config, or [] to signal discover-all.
+
+    Precedence:
+      1. LINEAR_TEAM_IDS (comma-separated) -- restrict to a subset.
+      2. LINEAR_TEAM_ID (single) -- legacy back-compat, one-element list.
+      3. [] -- caller falls back to discovering every team the token sees.
+
+    Env vars win over the .env file for both keys.
+    """
     env_file = _read_env_file()
-    return env_file.get("LINEAR_TEAM_ID")
+
+    multi = os.environ.get("LINEAR_TEAM_IDS") or env_file.get("LINEAR_TEAM_IDS")
+    if multi:
+        ids = [t.strip() for t in multi.split(",") if t.strip()]
+        if ids:
+            return ids
+
+    single = os.environ.get("LINEAR_TEAM_ID") or env_file.get("LINEAR_TEAM_ID")
+    if single and single.strip():
+        return [single.strip()]
+
+    return []
 
 
 def _graphql(token: str, query: str, variables: dict | None = None) -> dict:
@@ -126,12 +148,11 @@ def _graphql(token: str, query: str, variables: dict | None = None) -> dict:
         return json.loads(resp.read())
 
 
-def _discover_team_id(token: str) -> str | None:
+def _discover_team_ids(token: str) -> list[str]:
+    """Return every team ID the token can see (all teams, not just the first)."""
     result = _graphql(token, "{ teams { nodes { id name } } }")
     nodes = result.get("data", {}).get("teams", {}).get("nodes", [])
-    if not nodes:
-        return None
-    return nodes[0]["id"]
+    return [n["id"] for n in nodes if n.get("id")]
 
 
 def _cache_is_fresh(cache: Path, db: Path) -> bool:
@@ -146,18 +167,46 @@ def _cache_is_fresh(cache: Path, db: Path) -> bool:
     return True
 
 
+def _issue_sort_key(issue: dict) -> tuple[int, int]:
+    """Intra-group order: most-urgent state first, then numeric id."""
+    return (
+        STATE_PRIORITY.get(issue.get("state", {}).get("name", ""), 99),
+        int(re.sub(r"\D", "", issue.get("identifier", "0")) or "0"),
+    )
+
+
 def _format_pending(issues: list[dict]) -> str:
-    issues.sort(key=lambda i: (
-        STATE_PRIORITY.get(i.get("state", {}).get("name", ""), 99),
-        int(re.sub(r"\D", "", i.get("identifier", "0")) or "0"),
-    ))
-    lines = ["  # Source of truth: Linear. Synced by SessionStart hook (/compress as fallback)."]
+    """Render the pending block, grouped by project (team) — never interleaved.
+
+    Group key is the identifier alpha-prefix (e.g. "FOR", "LIA"), the authoritative
+    project tag (nodes without one are skipped below). Groups are ordered alphabetically by prefix (stable
+    across syncs — diff-quiet), issues within a group keep the urgency sort. A
+    `  # <project>` sub-header is emitted only when >=2 groups exist, so a
+    single-team block stays byte-identical to the pre-grouping output.
+    """
+    groups: dict[str, list[dict]] = {}
+    labels: dict[str, str] = {}
     for issue in issues:
-        title = issue.get("title", "")
-        if len(title) > 80:
-            title = title[:77] + "..."
         identifier = issue.get("identifier", "")
-        lines.append(f"  - [ ] {title} ({identifier})")
+        m = re.match(r"[A-Za-z]+", identifier)
+        if not m:  # no identifier / no alpha prefix -> malformed, skip (no crash)
+            continue
+        prefix = m.group(0)
+        groups.setdefault(prefix, []).append(issue)
+        # Header label: friendly team name when present, else the prefix itself.
+        if prefix not in labels:
+            labels[prefix] = (issue.get("team") or {}).get("name") or prefix
+
+    lines = ["  # Source of truth: Linear. Synced by SessionStart hook (/compress as fallback)."]
+    multi = len(groups) > 1
+    for prefix in sorted(groups):
+        if multi:
+            lines.append(f"  # {labels[prefix]}")
+        for issue in sorted(groups[prefix], key=_issue_sort_key):
+            title = issue.get("title", "")
+            if len(title) > 80:
+                title = title[:77] + "..."
+            lines.append(f"  - [ ] {title} ({issue.get('identifier', '')})")
     return "\n".join(lines)
 
 
@@ -175,38 +224,79 @@ def main() -> int:
         print("LINEAR_API_TOKEN not found", file=sys.stderr)
         return AUTH_ERROR
 
-    team_id = _get_team_id()
-    if not team_id:
-        team_id = _discover_team_id(token)
-    if not team_id:
-        print("could not determine team ID", file=sys.stderr)
+    team_ids = _get_team_ids()
+    if not team_ids:
+        # Discovery is fail-loud: an auth/rate error here aborts the whole sync.
+        try:
+            team_ids = _discover_team_ids(token)
+        except HTTPError as e:
+            if e.code == 401:
+                print(f"auth error (discovery): {e}", file=sys.stderr)
+                return AUTH_ERROR
+            if e.code == 429:
+                print(f"rate limited (discovery): {e}", file=sys.stderr)
+                return RATE_LIMIT
+            print(f"HTTP error (discovery): {e}", file=sys.stderr)
+            return INTERNAL_ERROR
+        except (URLError, OSError) as e:
+            print(f"network error (discovery): {e}", file=sys.stderr)
+            return INTERNAL_ERROR
+    if not team_ids:
+        print("could not determine any team ID", file=sys.stderr)
         return INTERNAL_ERROR
 
+    # Scatter-Gather: fetch each team independently, merge the results.
+    # Auth/rate errors are fail-loud (abort); other per-team errors are
+    # partial-succeed (warn + skip that team) so one flaky team doesn't nuke
+    # the whole sync. Total failure (zero successes) returns INTERNAL_ERROR so
+    # the hook leaves the existing pending block untouched instead of wiping it.
     t0 = time.time()
-    try:
-        result = _graphql(token, QUERY, {"teamId": team_id})
-    except HTTPError as e:
-        if e.code == 401:
-            print(f"auth error: {e}", file=sys.stderr)
-            return AUTH_ERROR
-        if e.code == 429:
-            print(f"rate limited: {e}", file=sys.stderr)
-            return RATE_LIMIT
-        print(f"HTTP error: {e}", file=sys.stderr)
-        return INTERNAL_ERROR
-    except (URLError, OSError) as e:
-        print(f"network error: {e}", file=sys.stderr)
+    all_nodes: list[dict] = []
+    successes = 0
+    for tid in team_ids:
+        try:
+            result = _graphql(token, QUERY, {"teamId": tid})
+        except HTTPError as e:
+            if e.code == 401:
+                print(f"auth error (team {tid}): {e}", file=sys.stderr)
+                return AUTH_ERROR
+            if e.code == 429:
+                print(f"rate limited (team {tid}): {e}", file=sys.stderr)
+                return RATE_LIMIT
+            print(f"HTTP error (team {tid}, skipped): {e}", file=sys.stderr)
+            continue
+        except (URLError, OSError) as e:
+            print(f"network error (team {tid}, skipped): {e}", file=sys.stderr)
+            continue
+        successes += 1
+        all_nodes.extend(result.get("data", {}).get("issues", {}).get("nodes", []))
+
+    if successes == 0:
+        print("all team fetches failed", file=sys.stderr)
         return INTERNAL_ERROR
 
-    nodes = result.get("data", {}).get("issues", {}).get("nodes", [])
-    issues = [
-        n for n in nodes
-        if n.get("state", {}).get("name") not in EXCLUDED_STATES
-    ]
+    # Dedup by identifier (defensive against a repeated team id in the override;
+    # Linear identifiers are globally unique across teams).
+    seen: set[str] = set()
+    issues = []
+    for n in all_nodes:
+        if n.get("state", {}).get("name") in EXCLUDED_STATES:
+            continue
+        ident = n.get("identifier", "")
+        if not ident:  # malformed node without an identifier -- skip, don't dedup-collapse
+            continue
+        if ident in seen:
+            continue
+        seen.add(ident)
+        issues.append(n)
 
     output = _format_pending(issues)
     elapsed = time.time() - t0
-    print(f"fetched {len(issues)} issues in {elapsed:.1f}s", file=sys.stderr)
+    print(
+        f"fetched {len(issues)} issues from {successes}/{len(team_ids)} teams "
+        f"in {elapsed:.1f}s",
+        file=sys.stderr,
+    )
 
     tmp_fd, tmp_path = tempfile.mkstemp(dir=str(cache.parent), prefix=".cache.")
     closed = False
