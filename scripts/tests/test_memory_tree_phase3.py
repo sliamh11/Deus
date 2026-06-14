@@ -580,7 +580,8 @@ class TestHookEdges:
 
     def test_tool_input_with_no_file_path(self, monkeypatch):
         """tool_input present but missing file_path → bad_input."""
-        monkeypatch.setenv("DEUS_MEMORY_TREE", "1")
+        mt.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mt.DB_PATH.touch()  # open the gate (automation gates on DB presence)
         result = hook.dispatch({"tool_input": {"some_other_key": "v"}})
         assert result == "bad_input"
 
@@ -774,6 +775,7 @@ class TestHookDiscovery:
         monkeypatch.setattr(mt, "DB_PATH", db_path)
         real_open_db = mt.open_db
         monkeypatch.setattr(mt, "open_db", lambda path=None: real_open_db(db_path))
+        real_open_db(db_path).close()  # materialize so the gate (DB-exists) opens
         monkeypatch.setattr(hook, "_vault_root", lambda: v)
         status = hook.dispatch({"tool_input": {"file_path": str(v / "fresh.md")}})
         assert status == "discovered"
@@ -788,10 +790,11 @@ class TestHookDiscovery:
             "description: already in tree.\n---\n"
         )
         db_path = tmp_path / "t.db"
+        monkeypatch.setattr(mt, "DB_PATH", db_path)
         real_open_db = mt.open_db
         monkeypatch.setattr(mt, "open_db", lambda path=None: real_open_db(db_path))
         monkeypatch.setattr(hook, "_vault_root", lambda: v)
-        # Discover once so the node exists.
+        # Discover once so the node exists (also materializes db_path → gate open).
         db = real_open_db(db_path)
         mt.discover_node(v, "exists.md", db)
         db.close()
@@ -805,8 +808,10 @@ class TestHookDiscovery:
         v.mkdir()
         (v / "bare.md").write_text("---\ntitle: Bare\ndescription: no id.\n---\n")
         db_path = tmp_path / "t.db"
+        monkeypatch.setattr(mt, "DB_PATH", db_path)
         real_open_db = mt.open_db
         monkeypatch.setattr(mt, "open_db", lambda path=None: real_open_db(db_path))
+        real_open_db(db_path).close()  # materialize so the gate (DB-exists) opens
         monkeypatch.setattr(hook, "_vault_root", lambda: v)
         status = hook.dispatch({"tool_input": {"file_path": str(v / "bare.md")}})
         assert status == "no_id"
@@ -825,13 +830,14 @@ else:
 
 class TestStopHookDiscovery:
     def _setup(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("DEUS_MEMORY_TREE", "1")
         monkeypatch.setattr(mt, "embed_text", _stub_embed)
         v = tmp_path / "vault"
         v.mkdir()
         db_path = tmp_path / "t.db"
+        monkeypatch.setattr(mt, "DB_PATH", db_path)
         real_open_db = mt.open_db
         monkeypatch.setattr(mt, "open_db", lambda path=None: real_open_db(db_path))
+        real_open_db(db_path).close()  # materialize so the gate (DB-exists) opens
         return v, db_path, real_open_db
 
     def test_drift_scan_discovers_new_files(self, tmp_path, monkeypatch):

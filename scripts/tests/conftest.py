@@ -68,4 +68,14 @@ def isolate_memory_tree_paths(tmp_path, monkeypatch):
         monkeypatch.setattr(mod, "DB_PATH", tmp_db, raising=False)
         monkeypatch.setattr(mod, "_LOG_PATH", tmp_log, raising=False)
         monkeypatch.setattr(mod, "_AUDIT_PATH", tmp_audit, raising=False)
+    # The memory-tree freshness automation gates on the DB existing (LIA-243
+    # follow-up). Pin DEUS_MEMORY_TREE_DB to the same tmp path so the hook's
+    # parent-side pre-check (which reads the env, not the patched constant) agrees
+    # with mt.DB_PATH — otherwise memory_tree_hook.main() would spawn a real
+    # worker against ~/.deus/memory_tree.db. Clear DEUS_MEMORY_TREE so the only
+    # gate control in tests is DB presence + an explicit "0" opt-out; tmp_db is
+    # NOT created here, so automation is OFF by default (tests needing it on
+    # create the DB).
+    monkeypatch.setenv("DEUS_MEMORY_TREE_DB", str(tmp_db))
+    monkeypatch.delenv("DEUS_MEMORY_TREE", raising=False)
     yield

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
 Memory-tree PostToolUse hook. Re-embeds a vault node when Write/Edit/MultiEdit
-touches a tracked markdown file. Silent; gated by DEUS_MEMORY_TREE=1.
+touches a tracked markdown file. Silent; runs when the memory-tree DB exists
+(opt out with DEUS_MEMORY_TREE=0). The re-embed runs in a detached worker so the
+edit never blocks on an embedding round-trip — only the vector (ranking) is
+briefly stale, never the served text (read fresh from disk), and the Stop-hook
+drift scan reconciles anything a worker misses.
 
 Input: Claude Code hook JSON on stdin, e.g.
   {"hook_event_name": "PostToolUse", "tool_name": "Edit",
@@ -54,7 +58,13 @@ def dispatch(data: dict) -> str:
               no_description | missing | skipped_dir | already_tracked |
               embed_failed | import_failed | ext_reembedded | ext_not_in_tree
     """
-    if os.environ.get("DEUS_MEMORY_TREE", "0") != "1":
+    sys.path.insert(0, str(Path(__file__).parent))
+    try:
+        import memory_tree as mt
+    except ImportError:
+        return "import_failed"
+
+    if not mt.tree_automation_enabled():
         return "gate_off"
     fp = _file_path_from_hook(data)
     if not fp:
@@ -63,12 +73,6 @@ def dispatch(data: dict) -> str:
     abs_path = Path(fp).expanduser().resolve()
     if abs_path.suffix != ".md":
         return "not_markdown"
-
-    sys.path.insert(0, str(Path(__file__).parent))
-    try:
-        import memory_tree as mt
-    except ImportError:
-        return "import_failed"
 
     # Check auto-memory dir first (external population).
     ext_root = _auto_memory_root()
@@ -108,18 +112,80 @@ def dispatch(data: dict) -> str:
         return "embed_failed"
 
 
+def _precheck_db_path() -> Path:
+    """Cheap parent-side DB-path resolution (no memory_tree import) — keep this
+    byte-for-byte in sync with memory_tree.DB_PATH's env/default
+    (DEUS_MEMORY_TREE_DB, fallback ~/.deus/memory_tree.db) so the parent's spawn
+    pre-check and the worker's authoritative mt.tree_automation_enabled() agree."""
+    return Path(
+        os.environ.get("DEUS_MEMORY_TREE_DB", "~/.deus/memory_tree.db")
+    ).expanduser()
+
+
+def _reembed_timeout() -> float:
+    """Wall-clock ceiling for the detached worker (LIA-235: bound the child)."""
+    try:
+        v = float(os.environ.get("DEUS_MEMORY_TREE_REEMBED_TIMEOUT", "120"))
+        return v if v > 0 else 120.0
+    except (TypeError, ValueError):
+        return 120.0
+
+
 def main():
+    """Fire-and-forget: spawn a detached worker to re-embed, then return at once
+    so the edit never blocks. Cheap parent gate (no memory_tree import) skips the
+    spawn on opt-out or when no tree DB exists."""
     try:
         data = json.loads(sys.stdin.read() or "{}")
     except (json.JSONDecodeError, OSError):
         return
-    dispatch(data)
+    fp = _file_path_from_hook(data)
+    if not fp:
+        return
+    if os.environ.get("DEUS_MEMORY_TREE") == "0":
+        return
+    if not _precheck_db_path().exists():
+        return
+    import subprocess
+
+    subprocess.Popen(
+        [sys.executable, str(Path(__file__).resolve()), "--worker", fp],
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _run_worker(file_path: str) -> None:
+    """Detached worker: run the synchronous dispatch() under a wall-clock timer so
+    a hung embed can't leave an orphan. Cross-platform (threading.Timer + os._exit,
+    no POSIX-only signal.alarm). A timeout is an EXPECTED slow-embed condition the
+    Stop-scan reconciles, so it exits 0 silently."""
+    import threading
+
+    # os._exit (not sys.exit) is intentional: a hard exit from the timer thread
+    # to kill a hung embed without waiting on interpreter teardown.
+    timer = threading.Timer(_reembed_timeout(), os._exit, args=(0,))
+    timer.daemon = True
+    timer.start()
+    try:
+        dispatch({"tool_input": {"file_path": file_path}})
+    finally:
+        timer.cancel()
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        # Never crash Claude Code, but surface the failure on stderr instead of
-        # vanishing silently (LIA-246).
-        sys.stderr.write(f"[memory-tree-hook] {type(e).__name__}: {e}\n")
+    if "--worker" in sys.argv:
+        try:
+            _run_worker(sys.argv[sys.argv.index("--worker") + 1])
+        except Exception:
+            # Worker is silent — the Stop-hook drift scan reconciles misses.
+            pass
+    else:
+        try:
+            main()
+        except Exception as e:
+            # Never crash Claude Code, but surface the failure on stderr instead
+            # of vanishing silently (LIA-246).
+            sys.stderr.write(f"[memory-tree-hook] {type(e).__name__}: {e}\n")

@@ -251,6 +251,34 @@ class TestFrontmatter:
 
 # ── DB schema ─────────────────────────────────────────────────────────────────
 
+class TestTreeAutomationEnabled:
+    """LIA-243 follow-up: the freshness automation gates on the DB existing, with
+    DEUS_MEMORY_TREE=0 as an explicit opt-out (DB_PATH is redirected to a tmp file
+    by the autouse conftest; DEUS_MEMORY_TREE is cleared there)."""
+
+    def test_off_when_no_db(self):
+        assert not mt.DB_PATH.exists()
+        assert mt.tree_automation_enabled() is False
+
+    def test_on_when_db_present(self):
+        mt.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mt.DB_PATH.touch()
+        assert mt.tree_automation_enabled() is True
+
+    def test_off_on_explicit_opt_out_even_with_db(self, monkeypatch):
+        mt.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mt.DB_PATH.touch()
+        monkeypatch.setenv("DEUS_MEMORY_TREE", "0")
+        assert mt.tree_automation_enabled() is False
+
+    def test_on_when_flag_non_zero_and_db_present(self, monkeypatch):
+        # Any non-"0" value (incl. legacy "1") with a DB present → enabled.
+        mt.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        mt.DB_PATH.touch()
+        monkeypatch.setenv("DEUS_MEMORY_TREE", "1")
+        assert mt.tree_automation_enabled() is True
+
+
 class TestDb:
     def test_open_db_enables_wal_and_busy_timeout(self, tmp_db):
         """open_db must set WAL + busy_timeout so hook reads and indexer writes
