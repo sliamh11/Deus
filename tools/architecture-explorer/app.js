@@ -1090,8 +1090,17 @@
     graph: Graph, AE: AE, GRAPH: G,
     buildData: buildData, toggleLayer: toggleLayer, focusFile: focusFile,
     setControlType: setControlType,
-    isExpanded: function (layerId) { return !!expanded[layerId]; }
+    isExpanded: function (layerId) { return !!expanded[layerId]; },
+    // Saved-view (ArchViews) hooks: snapshot() captures the navigation memento
+    // {expanded, selectedId, isolated, layoutMode, cam}; restore(state, animMs)
+    // reapplies it (rebuilds graphData → reseeds node positions; animates the
+    // camera). These already power the in-memory Back history; views.js persists
+    // them by name. Exposed read/write so an external module owns no graph state.
+    snapshot: snapshot,
+    restore: restore
   };
   // let the file-tree panel (sidebar.js) mount once everything is ready
   if (window.ArchSidebar && window.ArchSidebar.init) window.ArchSidebar.init(window.ArchExplorer);
+  // let the saved-views panel (views.js) mount once everything is ready
+  if (window.ArchViews && window.ArchViews.init) window.ArchViews.init(window.ArchExplorer);
 })();
