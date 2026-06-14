@@ -104,12 +104,25 @@ def _get_api_token() -> str | None:
     return env_file.get("LINEAR_API_TOKEN") or env_file.get("LINEAR_API_KEY")
 
 
-def _get_team_id() -> str | None:
-    tid = os.environ.get("LINEAR_TEAM_ID")
-    if tid:
-        return tid
+def _get_team_ids() -> list[str]:
+    """Explicit team IDs from config, or [] to signal 'discover every team'.
+
+    Precedence: LINEAR_TEAM_IDS (comma-separated subset) > legacy single
+    LINEAR_TEAM_ID > [] (discover all). Env vars win over the .env file.
+    """
     env_file = _read_env_file()
-    return env_file.get("LINEAR_TEAM_ID")
+
+    multi = os.environ.get("LINEAR_TEAM_IDS") or env_file.get("LINEAR_TEAM_IDS")
+    if multi:
+        ids = [t.strip() for t in multi.split(",") if t.strip()]
+        if ids:
+            return ids
+
+    single = os.environ.get("LINEAR_TEAM_ID") or env_file.get("LINEAR_TEAM_ID")
+    if single and single.strip():
+        return [single.strip()]
+
+    return []
 
 
 def _graphql(token: str, query: str, variables: dict | None = None) -> dict:
@@ -126,12 +139,11 @@ def _graphql(token: str, query: str, variables: dict | None = None) -> dict:
         return json.loads(resp.read())
 
 
-def _discover_team_id(token: str) -> str | None:
+def _discover_team_ids(token: str) -> list[str]:
+    """Every team id visible to this token (not just the first)."""
     result = _graphql(token, "{ teams { nodes { id name } } }")
     nodes = result.get("data", {}).get("teams", {}).get("nodes", [])
-    if not nodes:
-        return None
-    return nodes[0]["id"]
+    return [n["id"] for n in nodes if n.get("id")]
 
 
 def _cache_is_fresh(cache: Path, db: Path) -> bool:
@@ -175,38 +187,77 @@ def main() -> int:
         print("LINEAR_API_TOKEN not found", file=sys.stderr)
         return AUTH_ERROR
 
-    team_id = _get_team_id()
-    if not team_id:
-        team_id = _discover_team_id(token)
-    if not team_id:
-        print("could not determine team ID", file=sys.stderr)
+    team_ids = _get_team_ids()
+    if not team_ids:
+        # Discovery is fail-loud: an auth/rate error here aborts the whole sync,
+        # returning the same exit code a per-team failure would.
+        try:
+            team_ids = _discover_team_ids(token)
+        except HTTPError as e:
+            if e.code == 401:
+                print(f"auth error (discovery): {e}", file=sys.stderr)
+                return AUTH_ERROR
+            if e.code == 429:
+                print(f"rate limited (discovery): {e}", file=sys.stderr)
+                return RATE_LIMIT
+            print(f"HTTP error (discovery): {e}", file=sys.stderr)
+            return INTERNAL_ERROR
+        except (URLError, OSError) as e:
+            print(f"network error (discovery): {e}", file=sys.stderr)
+            return INTERNAL_ERROR
+    if not team_ids:
+        print("could not determine any team ID", file=sys.stderr)
         return INTERNAL_ERROR
 
+    # Scatter-Gather across teams: auth/rate errors abort (fail-loud); any other
+    # per-team error is warn + skip (partial-succeed). Zero successes returns
+    # INTERNAL_ERROR so the caller keeps its existing pending block.
     t0 = time.time()
-    try:
-        result = _graphql(token, QUERY, {"teamId": team_id})
-    except HTTPError as e:
-        if e.code == 401:
-            print(f"auth error: {e}", file=sys.stderr)
-            return AUTH_ERROR
-        if e.code == 429:
-            print(f"rate limited: {e}", file=sys.stderr)
-            return RATE_LIMIT
-        print(f"HTTP error: {e}", file=sys.stderr)
-        return INTERNAL_ERROR
-    except (URLError, OSError) as e:
-        print(f"network error: {e}", file=sys.stderr)
+    raw_nodes: list[dict] = []
+    successes = 0
+    for tid in team_ids:
+        try:
+            result = _graphql(token, QUERY, {"teamId": tid})
+        except HTTPError as e:
+            if e.code == 401:
+                print(f"auth error (team {tid}): {e}", file=sys.stderr)
+                return AUTH_ERROR
+            if e.code == 429:
+                print(f"rate limited (team {tid}): {e}", file=sys.stderr)
+                return RATE_LIMIT
+            print(f"HTTP error (team {tid}, skipped): {e}", file=sys.stderr)
+            continue
+        except (URLError, OSError) as e:
+            print(f"network error (team {tid}, skipped): {e}", file=sys.stderr)
+            continue
+        successes += 1
+        raw_nodes.extend(
+            result.get("data", {}).get("issues", {}).get("nodes", [])
+        )
+
+    if successes == 0:
+        print("all team fetches failed", file=sys.stderr)
         return INTERNAL_ERROR
 
-    nodes = result.get("data", {}).get("issues", {}).get("nodes", [])
-    issues = [
-        n for n in nodes
-        if n.get("state", {}).get("name") not in EXCLUDED_STATES
-    ]
+    # Filter excluded states + dedup by identifier (globally unique in Linear).
+    seen: set[str] = set()
+    issues = []
+    for n in raw_nodes:
+        if n.get("state", {}).get("name") in EXCLUDED_STATES:
+            continue
+        ident = n.get("identifier", "")
+        if not ident or ident in seen:
+            continue
+        seen.add(ident)
+        issues.append(n)
 
     output = _format_pending(issues)
     elapsed = time.time() - t0
-    print(f"fetched {len(issues)} issues in {elapsed:.1f}s", file=sys.stderr)
+    print(
+        f"fetched {len(issues)} issues from {successes}/{len(team_ids)} teams "
+        f"in {elapsed:.1f}s",
+        file=sys.stderr,
+    )
 
     tmp_fd, tmp_path = tempfile.mkstemp(dir=str(cache.parent), prefix=".cache.")
     closed = False
