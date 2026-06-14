@@ -10,6 +10,7 @@ vi.mock('child_process', () => ({
 // without sending a real signal (SIGKILL is unsupported on Windows).
 vi.mock('./platform.js', () => ({
   forceKillProcess: vi.fn(),
+  isInteractiveTerminal: () => false,
 }));
 
 import { spawn } from 'child_process';
