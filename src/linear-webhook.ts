@@ -202,12 +202,29 @@ function isNonRetryableHttpError(err: unknown): boolean {
 
 let _syncTimer: ReturnType<typeof setTimeout> | null = null;
 
-function debouncedVaultSync(ctx: LinearContext, vaultPath: string): void {
+// A webhook carries one team's event and can't rebuild a multi-team pending
+// block, so it does its real-time refresh ONLY in the unambiguous single-team
+// case; otherwise it stands down and lets the SessionStart hook own the block.
+// `eventTeamId` MUST be the webhook payload's team, not ctx.teamId (which is
+// derived from LINEAR_TEAM_ID, making the comparison a tautology).
+export function shouldSyncVaultForTeam(eventTeamId: string): boolean {
+  if (process.env.LINEAR_TEAM_IDS) return false;
+  const single = process.env.LINEAR_TEAM_ID;
+  return !!single && single === eventTeamId;
+}
+
+function debouncedVaultSync(
+  ctx: LinearContext,
+  vaultPath: string,
+  eventTeamId: string,
+): void {
+  if (!shouldSyncVaultForTeam(eventTeamId)) return;
+
   if (_syncTimer) clearTimeout(_syncTimer);
   _syncTimer = setTimeout(async () => {
     _syncTimer = null;
     try {
-      await syncVaultPending(ctx.client, ctx.teamId, vaultPath);
+      await syncVaultPending(ctx.client, eventTeamId, vaultPath);
     } catch (err) {
       logger.debug({ err }, 'vault-sync: failed to sync pending block');
     }
@@ -1984,7 +2001,7 @@ export function startLinearWebhookServer(
     }
 
     if (ctx.vaultPath) {
-      debouncedVaultSync(ctx, ctx.vaultPath);
+      debouncedVaultSync(ctx, ctx.vaultPath, d.teamId);
     }
 
     handleIssueUpdate(raw, ctx, gateSpecs).catch((err) => {

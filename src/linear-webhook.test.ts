@@ -28,6 +28,7 @@ import {
   retryWithBackoff,
   _setSleepFnForTests,
   runInlineCompletionCheck,
+  shouldSyncVaultForTeam,
 } from './linear-webhook.js';
 import { RetryableError, UserError, FatalError } from './errors/index.js';
 
@@ -1139,5 +1140,43 @@ describe('computeScopeLabelChanges – gate-error guard', () => {
       gateLabels,
     );
     expect(result.addIds).toContain('label-revise');
+  });
+});
+
+describe('shouldSyncVaultForTeam', () => {
+  const ORIG_IDS = process.env.LINEAR_TEAM_IDS;
+  const ORIG_ID = process.env.LINEAR_TEAM_ID;
+
+  afterEach(() => {
+    if (ORIG_IDS === undefined) delete process.env.LINEAR_TEAM_IDS;
+    else process.env.LINEAR_TEAM_IDS = ORIG_IDS;
+    if (ORIG_ID === undefined) delete process.env.LINEAR_TEAM_ID;
+    else process.env.LINEAR_TEAM_ID = ORIG_ID;
+  });
+
+  it('stands down when LINEAR_TEAM_IDS (multi-team view) is set', () => {
+    process.env.LINEAR_TEAM_IDS = 'team-a,team-b';
+    process.env.LINEAR_TEAM_ID = 'team-a';
+    expect(shouldSyncVaultForTeam('team-a')).toBe(false);
+  });
+
+  it('syncs when single LINEAR_TEAM_ID equals the event team', () => {
+    delete process.env.LINEAR_TEAM_IDS;
+    process.env.LINEAR_TEAM_ID = 'team-a';
+    expect(shouldSyncVaultForTeam('team-a')).toBe(true);
+  });
+
+  it('stands down when single LINEAR_TEAM_ID differs from the event team', () => {
+    delete process.env.LINEAR_TEAM_IDS;
+    process.env.LINEAR_TEAM_ID = 'team-a';
+    expect(shouldSyncVaultForTeam('team-b')).toBe(false);
+  });
+
+  it('stands down when neither var is set (discover-all is multi-team)', () => {
+    // Consequence: real-time vault refresh is disabled in discover-all mode;
+    // the SessionStart hook (+ TTL) maintains the block instead.
+    delete process.env.LINEAR_TEAM_IDS;
+    delete process.env.LINEAR_TEAM_ID;
+    expect(shouldSyncVaultForTeam('team-a')).toBe(false);
   });
 });

@@ -15,10 +15,16 @@ const STATE_PRIORITY: Record<string, number> = {
 
 const EXCLUDED_STATE_TYPES = new Set(['completed', 'canceled']);
 
+// Linear issue priority: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low.
+// Remap so Urgent sorts first and "No priority" sorts last. Mirrors
+// PRIORITY_RANK in scripts/sync_linear_pending.py — keep the two in lockstep.
+const PRIORITY_RANK: Record<number, number> = { 1: 0, 2: 1, 3: 2, 4: 3, 0: 4 };
+
 interface LinearIssueNode {
   title: string;
   identifier: string;
   url: string;
+  priority: number;
   state: { name: string; type: string };
 }
 
@@ -47,11 +53,15 @@ export async function fetchActiveIssues(
       title: node.title,
       identifier: node.identifier,
       url: node.url,
+      priority: node.priority ?? 0,
       state: { name: state.name, type: state.type },
     });
   }
 
   issues.sort((a, b) => {
+    const ra = PRIORITY_RANK[a.priority] ?? 4;
+    const rb = PRIORITY_RANK[b.priority] ?? 4;
+    if (ra !== rb) return ra - rb;
     const pa = STATE_PRIORITY[a.state.name] ?? 99;
     const pb = STATE_PRIORITY[b.state.name] ?? 99;
     if (pa !== pb) return pa - pb;
