@@ -15,11 +15,7 @@ vi.mock('./platform.js', () => ({
 
 import { spawn } from 'child_process';
 import { forceKillProcess } from './platform.js';
-import {
-  logReactionSignal,
-  logInteraction,
-  parsePositiveMsEnv,
-} from './evolution-client.js';
+import { logReactionSignal, logInteraction } from './evolution-client.js';
 
 const mockSpawn = vi.mocked(spawn);
 
@@ -102,27 +98,6 @@ describe('logReactionSignal', () => {
     expect(id1).not.toBe(id2);
     expect(id1).toMatch(/^[0-9a-f-]{36}$/);
   });
-});
-
-describe('parsePositiveMsEnv (LIA-235)', () => {
-  const FB = 60 * 60 * 1000;
-
-  it('returns the fallback when the env var is unset', () => {
-    expect(parsePositiveMsEnv(undefined, FB, 'X')).toBe(FB);
-  });
-
-  it('returns a valid positive number', () => {
-    expect(parsePositiveMsEnv('300000', FB, 'X')).toBe(300000);
-  });
-
-  it.each(['', 'abc', '0', '-5', 'NaN'])(
-    'falls back to the default on malformed/non-positive value %j',
-    (bad) => {
-      // The trap this guards: Number('') === 0 and Number('abc') === NaN, either
-      // of which would make setTimeout fire on the next tick.
-      expect(parsePositiveMsEnv(bad, FB, 'X')).toBe(FB);
-    },
-  );
 });
 
 describe('logInteraction child lifecycle (LIA-235)', () => {

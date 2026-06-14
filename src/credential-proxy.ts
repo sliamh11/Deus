@@ -21,6 +21,7 @@ import { request as httpRequest, RequestOptions } from 'http';
 import { execFile } from 'child_process';
 import path from 'path';
 import { DEUS_PROXY_AUTH_ENABLED } from './config.js';
+import { envPositiveInt } from './env-utils.js';
 import { validateGroupToken } from './group-tokens.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
@@ -145,25 +146,6 @@ export function resolveProviderRoute(
 
   // Default: route to Anthropic for backward compatibility
   return { provider: registry.get('anthropic'), path: url || '/' };
-}
-
-/**
- * Parse a positive-integer env value, falling back (with a warning) when it is
- * set but invalid. Guards the `Number(env ?? default)` trap (`??` only catches
- * null/undefined — `Number('')` is 0 and `Number('abc')` is NaN). Reads via a
- * dynamic `process.env[name]` index (also keeps it out of flag_lint's literal
- * `process.env.DEUS_*` scan).
- */
-export function envPositiveInt(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (raw == null) return fallback;
-  const n = Number(raw);
-  if (Number.isFinite(n) && n > 0) return n;
-  logger.warn(
-    { name, value: raw },
-    'credential-proxy: env var is not a positive number — using default',
-  );
-  return fallback;
 }
 
 export function startCredentialProxy(

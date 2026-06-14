@@ -16,32 +16,11 @@ import path from 'path';
 import { logger } from './logger.js';
 import { emojiToSignal } from './reaction-signal.js';
 import { forceKillProcess } from './platform.js';
+import { envPositiveInt } from './env-utils.js';
 
 const EVOLUTION_CLI = path.join(process.cwd(), 'evolution', 'cli.py');
 const PYTHON_BIN = process.env.EVOLUTION_PYTHON ?? 'python3';
 const EVOLUTION_ENABLED = process.env.EVOLUTION_ENABLED !== '0';
-
-/**
- * Parse a positive-millisecond env value, falling back (with a warning) when it
- * is set but invalid. Guards against the `Number(env ?? default)` trap: `??`
- * only catches null/undefined, so an empty or malformed value would otherwise
- * yield 0/NaN — and `setTimeout(fn, NaN)` fires on the next tick. Exported for
- * testing.
- */
-export function parsePositiveMsEnv(
-  raw: string | undefined,
-  fallback: number,
-  name: string,
-): number {
-  if (raw == null) return fallback;
-  const n = Number(raw);
-  if (Number.isFinite(n) && n > 0) return n;
-  logger.warn(
-    { name, value: raw },
-    'evolution: env var is not a positive number — using default',
-  );
-  return fallback;
-}
 
 // Generous ceiling for the fire-and-forget log_interaction child (LIA-235).
 // This child is NOT a fast logger: evolution/cli.py cmd_log_interaction logs the
@@ -51,10 +30,9 @@ export function parsePositiveMsEnv(
 // child (DNS hang, slow-drip HTTP, import deadlock); the Python side self-bounds
 // normal operation via its own per-call urllib/sqlite timeouts. Env-overridable
 // for ops tuning; 1h default.
-const LOG_INTERACTION_TIMEOUT_MS = parsePositiveMsEnv(
-  process.env.EVOLUTION_LOG_INTERACTION_TIMEOUT_MS,
-  60 * 60 * 1000,
+const LOG_INTERACTION_TIMEOUT_MS = envPositiveInt(
   'EVOLUTION_LOG_INTERACTION_TIMEOUT_MS',
+  60 * 60 * 1000,
 );
 // Kill switch for the DSPy optimizer arm's prompt injection (LIA-131 Phase 2).
 // Default OFF — the arm ships dark until shadow deltas justify flipping it per
