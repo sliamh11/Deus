@@ -252,6 +252,23 @@ class TestFrontmatter:
 # ── DB schema ─────────────────────────────────────────────────────────────────
 
 class TestDb:
+    def test_open_db_enables_wal_and_busy_timeout(self, tmp_db):
+        """open_db must set WAL + busy_timeout so hook reads and indexer writes
+        don't race on a single rollback-journal lock (LIA-242). Read form."""
+        assert tmp_db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+        assert tmp_db.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+
+    def test_open_db_default_path_enables_wal(self):
+        """The production call form open_db() (db_path=None → DB_PATH) must also
+        get WAL + busy_timeout. DB_PATH is redirected to a temp file by the
+        autouse isolate_memory_tree_paths conftest fixture."""
+        db = mt.open_db()
+        try:
+            assert db.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+            assert db.execute("PRAGMA busy_timeout").fetchone()[0] == 30000
+        finally:
+            db.close()
+
     def test_creates_all_tables(self, tmp_db):
         tables = {
             r[0]

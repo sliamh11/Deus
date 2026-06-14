@@ -14,6 +14,7 @@ import { extractFrontmatter } from './linear-dispatcher.js';
 import {
   parseEnrichment,
   parseVerdict,
+  classifyGateOutcome,
   gateTransitionAction,
   parkErroredGateIssue,
   gateOutcomeEventType,
@@ -366,6 +367,28 @@ Needs work.`),
 
   it('returns null when no verdict', () => {
     expect(parseVerdict('No verdict here.')).toBeNull();
+  });
+});
+
+describe('classifyGateOutcome (LIA-241)', () => {
+  it('no verdict + failure signal → error', () => {
+    expect(classifyGateOutcome(null, 'exit 137')).toBe('error');
+  });
+
+  it('no verdict + clean exit → malfunction', () => {
+    expect(classifyGateOutcome(null, '')).toBe('malfunction');
+  });
+
+  it('parseable SHIP → verdict', () => {
+    expect(classifyGateOutcome('SHIP', '')).toBe('verdict');
+  });
+
+  it('parseable REVISE → verdict', () => {
+    expect(classifyGateOutcome('REVISE', '')).toBe('verdict');
+  });
+
+  it('parseable verdict takes precedence over a non-empty error', () => {
+    expect(classifyGateOutcome('SHIP', 'exit 137')).toBe('verdict');
   });
 });
 
