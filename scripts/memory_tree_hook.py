@@ -119,5 +119,7 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
-        pass
+    except Exception as e:
+        # Never crash Claude Code, but surface the failure on stderr instead of
+        # vanishing silently (LIA-246).
+        sys.stderr.write(f"[memory-tree-hook] {type(e).__name__}: {e}\n")

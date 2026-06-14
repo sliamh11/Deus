@@ -6,6 +6,7 @@ We stub those imports before loading the module.
 """
 import importlib
 import os
+import sqlite3
 import sys
 import types
 from pathlib import Path
@@ -2069,6 +2070,64 @@ def test_detect_contradictions_invalidates_on_conflict(mi, fresh_vault, monkeypa
     assert pending[0] == old_id
     assert pending[1] == 999
     assert pending[2] == 0  # unresolved
+    db.close()
+
+
+def test_detect_contradictions_commit_failure_warns_not_false_success(
+    mi, fresh_vault, monkeypatch, capsys
+):
+    """If the pending_conflicts commit fails, we must WARN to stderr and NOT
+    print the 'CONFLICT DETECTED (pending review)' success line — the old code
+    swallowed the error and printed success unconditionally (LIA-245)."""
+    db = mi.open_db()
+    vec = [0.5] * mi.EMBED_DIM
+
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence) "
+        "VALUES ('old.md', '2024-01-01', 'User lives in NYC', 'atom', 0.70)"
+    )
+    old_id = cur.lastrowid
+    db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
+               [old_id, mi.serialize(vec)])
+    db.commit()
+
+    class FakeResponse:
+        text = "CONTRADICT"
+
+    class FakeModels:
+        def generate_content(self, **kwargs):
+            return FakeResponse()
+
+    class FakeClient:
+        models = FakeModels()
+
+    monkeypatch.setattr(mi, "_client", FakeClient())
+
+    # Wrap the connection so commit() raises (sqlite3.Connection methods can't be
+    # monkeypatched directly); everything else proxies to the real db.
+    class FlakyCommitDB:
+        def __init__(self, real):
+            self._real = real
+
+        def __getattr__(self, name):
+            return getattr(self._real, name)
+
+        def commit(self):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    new_vec = [0.5] * mi.EMBED_DIM
+    new_vec[0] = 0.501
+    conflicts = mi.detect_contradictions(
+        FlakyCommitDB(db), 999, "User lives in Tel Aviv", new_vec
+    )
+
+    out, err = capsys.readouterr()
+    # Persistence failed → the conflict must NOT be counted as "logged for review"
+    # (it won't appear in --resolve-conflicts), so it is excluded from the returned
+    # list that feeds cmd_extract's count, and no false success line is printed.
+    assert len(conflicts) == 0
+    assert "CONFLICT DETECTED (pending review)" not in out
+    assert "WARN: failed to record contradiction" in err
     db.close()
 
 

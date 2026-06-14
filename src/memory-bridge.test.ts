@@ -10,7 +10,11 @@ vi.mock('./config.js', () => ({
 
 vi.mock('./group-tokens.js', () => ({
   validateGroupToken: (token: string) =>
-    token === 'test-proxy-token-abc123' ? 'test-group' : null,
+    token === 'test-proxy-token-abc123'
+      ? 'test-group'
+      : token === 'test-proxy-token-group-b'
+        ? 'test-group-b'
+        : null,
 }));
 
 vi.mock('./env.js', () => ({
@@ -277,21 +281,58 @@ describe('memory bridge — POST /memory/query', () => {
     expect(json.error).toMatch(/timed out/i);
   });
 
-  it('returns 429 when rate limit is exceeded (6 rapid requests)', async () => {
-    const results: number[] = [];
-
-    for (let i = 0; i < 6; i++) {
+  it('returns 429 for a group after RATE_LIMIT_MAX (20) requests/min (LIA-244)', async () => {
+    for (let i = 0; i < 20; i++) {
       const res = await memoryRequest(
         proxyPort,
         JSON.stringify({ query: `query ${i}` }),
-        { 'x-deus-source': 'rate-limit-test' },
       );
-      results.push(res.statusCode);
+      expect(res.statusCode).toBe(200);
     }
+    const blocked = await memoryRequest(
+      proxyPort,
+      JSON.stringify({ query: 'one too many' }),
+    );
+    expect(blocked.statusCode).toBe(429);
+  });
 
-    // First 5 should succeed, 6th should be rate limited
-    expect(results.slice(0, 5)).toEqual([200, 200, 200, 200, 200]);
-    expect(results[5]).toBe(429);
+  it('keys the limit per authenticated group, not globally (LIA-244)', async () => {
+    // Exhaust group A's bucket. Under the old x-deus-source keying this was one
+    // global bucket, so group B would have been wrongly blocked too.
+    for (let i = 0; i < 20; i++) {
+      await memoryRequest(proxyPort, JSON.stringify({ query: `a ${i}` }));
+    }
+    expect(
+      (await memoryRequest(proxyPort, JSON.stringify({ query: 'a blocked' })))
+        .statusCode,
+    ).toBe(429);
+
+    // Group B (different proxy token → different group) has its own bucket.
+    const bFirst = await memoryRequest(
+      proxyPort,
+      JSON.stringify({ query: 'b first' }),
+      { 'x-deus-proxy-token': 'test-proxy-token-group-b' },
+    );
+    expect(bFirst.statusCode).toBe(200);
+  });
+
+  it('ignores the spoofable x-deus-source header for keying (LIA-244)', async () => {
+    // The old code keyed on x-deus-source, so rotating it dodged the limit.
+    // Now the same group shares one bucket regardless of the header.
+    for (let i = 0; i < 20; i++) {
+      const res = await memoryRequest(
+        proxyPort,
+        JSON.stringify({ query: `q ${i}` }),
+        { 'x-deus-source': `rotating-source-${i}` },
+      );
+      expect(res.statusCode).toBe(200);
+    }
+    const blocked = await memoryRequest(
+      proxyPort,
+      JSON.stringify({ query: 'still blocked' }),
+      { 'x-deus-source': 'a-fresh-source' },
+    );
+    expect(blocked.statusCode).toBe(429);
   });
 
   it('passes custom k and source to the script', async () => {

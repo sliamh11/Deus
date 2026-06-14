@@ -66,9 +66,15 @@ const MEMORY_QUERY_SCRIPT = path.join(
 );
 const MEMORY_QUERY_TIMEOUT_MS = 4_000;
 
-/* ── Rate limiter (in-process, per-source) ─────────────────────────── */
+/* ── Rate limiter (in-process, keyed per authenticated group) ──────── */
 
-const RATE_LIMIT_MAX = 5;
+// 20/min per group: the /memory/query bucket is keyed on the authenticated
+// groupFolder (LIA-244), so this is a per-group budget — roughly a chatty
+// conversation's few requests per turn across a burst of turns. The old global
+// 5/min was shared across every group/container, so a single active chat
+// silently lost memory context (the container maps a 429 to empty context with
+// no telemetry).
+const RATE_LIMIT_MAX = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
 interface RateBucket {
@@ -260,9 +266,12 @@ export function startCredentialProxy(
         if (bodyTooLarge) return; // already responded 413 above
         const body = Buffer.concat(chunks);
 
+        // Also keys the /memory/query rate limiter per authenticated group;
+        // null when auth is off (falls back to the socket address). (LIA-244)
+        let groupFolder: string | null = null;
         if (DEUS_PROXY_AUTH_ENABLED) {
           const token = req.headers['x-deus-proxy-token'] as string | undefined;
-          const groupFolder = token ? validateGroupToken(token) : null;
+          groupFolder = token ? validateGroupToken(token) : null;
           if (!groupFolder) {
             logger.error(
               { statusCode: 401, url: req.url, hasToken: !!token },
@@ -284,12 +293,18 @@ export function startCredentialProxy(
 
         /* ── Memory bridge route: POST /memory/query ───────────── */
         if (req.method === 'POST' && req.url === '/memory/query') {
-          const sourceKey =
-            (req.headers['x-deus-source'] as string) ||
-            req.socket.remoteAddress ||
-            'unknown';
+          // Rate-limit per AUTHENTICATED group, not the client-supplied
+          // x-deus-source header — that header is the constant 'container-claude'
+          // for every Claude container, so it collapsed all groups into one shared
+          // global bucket, and it is spoofable. Fall back to the socket address
+          // when proxy auth is disabled. (LIA-244)
+          const rateKey = groupFolder ?? req.socket.remoteAddress ?? 'unknown';
 
-          if (isRateLimited(sourceKey)) {
+          if (isRateLimited(rateKey)) {
+            logger.warn(
+              { group: rateKey },
+              'Memory bridge rate limit exceeded',
+            );
             res.writeHead(429, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Rate limit exceeded' }));
             return;
