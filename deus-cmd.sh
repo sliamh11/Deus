@@ -1180,33 +1180,60 @@ $STARTUP_INSTRUCTION"
     exec python3 "$SCRIPT_DIR/scripts/analyze_token_efficiency.py" "$@"
     ;;
   sync)
-    # Make the live install current with origin/main, non-destructively.
-    # See ADR: docs/decisions/live-command-freshness.md
+    # Make the live install current with <remote>/main, non-destructively.
+    #   deus sync            -> origin/main   (this repo's own remote)
+    #   deus sync upstream   -> upstream/main (the canonical Deus, for forks)
+    # See ADR: docs/decisions/live-command-freshness.md (also tracks the eventual
+    # darwin/linux-shell -> TypeScript port that will own the Windows path).
+    shift
+    case "${1:-}" in
+      ""|origin) sync_remote="origin" ;;  # empty and explicit 'origin' are identical
+      upstream)  sync_remote="upstream" ;;
+      *)
+        echo "deus sync: unknown target '$1' (expected 'upstream' or no argument)." >&2
+        exit 1
+        ;;
+    esac
     sync_repo="$SCRIPT_DIR"
     if ! git -C "$sync_repo" rev-parse --git-dir >/dev/null 2>&1; then
       echo "deus sync: $sync_repo is not a git repository." >&2; exit 1
+    fi
+    # The 'upstream' remote is opt-in (only forks need it). Guide the user if absent.
+    # A defined-but-stale URL passes here and fails clearly at fetch (same as origin).
+    if ! git -C "$sync_repo" remote get-url "$sync_remote" >/dev/null 2>&1; then
+      echo "deus sync: no '$sync_remote' remote configured." >&2
+      if [ "$sync_remote" = "upstream" ]; then
+        # Canonical upstream URL — same one documented in README.md / CONTRIBUTING.md.
+        echo "  Add the canonical Deus repo as 'upstream', then retry:" >&2
+        echo "    git -C \"$sync_repo\" remote add upstream https://github.com/sliamh11/Deus.git" >&2
+        echo "    deus sync upstream" >&2
+      fi
+      exit 1
     fi
     sync_branch=$(git -C "$sync_repo" symbolic-ref --short -q HEAD 2>/dev/null || echo "DETACHED")
     if [ "$sync_branch" != "main" ]; then
       echo "deus sync: live tree is on '$sync_branch', not main." >&2
       echo "  Feature work belongs in a worktree. Switch the live tree to main first:" >&2
-      echo "    git -C \"$sync_repo\" checkout main && deus sync" >&2
+      echo "    git -C \"$sync_repo\" checkout main && deus sync${1:+ $1}" >&2
       exit 1
     fi
     if ! git -C "$sync_repo" diff --quiet || ! git -C "$sync_repo" diff --cached --quiet; then
       echo "deus sync: live tree has uncommitted changes — commit or stash first." >&2
       exit 1
     fi
-    echo "Fetching origin/main..."
-    if ! git -C "$sync_repo" fetch origin main; then
+    echo "Fetching $sync_remote/main..."
+    if ! git -C "$sync_repo" fetch "$sync_remote" main; then
       echo "deus sync: fetch failed." >&2; exit 1
     fi
-    if ! git -C "$sync_repo" merge --ff-only origin/main; then
-      echo "deus sync: cannot fast-forward (live tree has diverged from origin/main)." >&2
+    if ! git -C "$sync_repo" merge --ff-only "$sync_remote/main"; then
+      echo "deus sync: cannot fast-forward (live tree has diverged from $sync_remote/main)." >&2
+      if [ "$sync_remote" = "upstream" ]; then
+        echo "  Your main has commits not in upstream — merge or rebase manually." >&2
+      fi
       exit 1
     fi
     _build_and_restart
-    echo "deus: synced to origin/main."
+    echo "deus: synced to $sync_remote/main."
     ;;
   pipeline)
     shift
@@ -1452,7 +1479,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus model      Switch proxy model or open dashboard (model-name|dashboard)"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
     echo "  deus usage      Token-efficiency + cost report (--since|--project|--pricing|--json)"
-    echo "  deus sync       Update the live install to origin/main (fetch + ff + rebuild)"
+    echo "  deus sync       Update live install to origin/main; 'sync upstream' for forks"
     echo "  deus pipeline   Pipeline event audit (LIA-XX | --failed | --active | --all)"
     echo "  deus solution   Manage solution atoms (list|search|add)"
     echo "  deus sweep      Run threshold calibration sweep against benchmark queries"
