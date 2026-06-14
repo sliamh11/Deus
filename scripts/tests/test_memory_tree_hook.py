@@ -85,22 +85,36 @@ def built_db(fake_vault, stub_embed):
     return db
 
 
+@pytest.fixture
+def tree_db():
+    """Open the gate without a full tree: tree_automation_enabled() only needs
+    the DB file to exist (LIA-243 follow-up — automation gates on DB presence)."""
+    mt.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    mt.DB_PATH.touch()
+    yield
+
+
 # ── memory_tree_hook.dispatch ─────────────────────────────────────────────────
 
 class TestHookDispatch:
-    def test_gate_off_noop(self, fake_vault, monkeypatch):
-        monkeypatch.delenv("DEUS_MEMORY_TREE", raising=False)
+    def test_gate_off_no_db(self, fake_vault, monkeypatch):
+        # No DB present (conftest points DB_PATH at a non-existent tmp file) →
+        # automation is off even with a configured vault.
         result = hook.dispatch({"tool_input": {"file_path": str(fake_vault / "MEMORY_TREE.md")}})
         assert result == "gate_off"
 
-    def test_bad_input(self, fake_vault, monkeypatch):
-        monkeypatch.setenv("DEUS_MEMORY_TREE", "1")
+    def test_gate_off_opt_out(self, fake_vault, tree_db, monkeypatch):
+        # DB present but explicit opt-out wins.
+        monkeypatch.setenv("DEUS_MEMORY_TREE", "0")
+        result = hook.dispatch({"tool_input": {"file_path": str(fake_vault / "MEMORY_TREE.md")}})
+        assert result == "gate_off"
+
+    def test_bad_input(self, fake_vault, tree_db, monkeypatch):
         assert hook.dispatch({}) == "bad_input"
         assert hook.dispatch({"tool_input": {}}) == "bad_input"
         assert hook.dispatch({"tool_input": {"file_path": ""}}) == "bad_input"
 
-    def test_no_vault(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("DEUS_MEMORY_TREE", "1")
+    def test_no_vault(self, tree_db, monkeypatch, tmp_path):
         monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
         # Point config lookup at a non-existent file so fallback returns None
         monkeypatch.setattr(
@@ -109,15 +123,13 @@ class TestHookDispatch:
         result = hook.dispatch({"tool_input": {"file_path": str(tmp_path / "x.md")}})
         assert result == "no_vault"
 
-    def test_file_outside_vault(self, fake_vault, tmp_path, monkeypatch):
-        monkeypatch.setenv("DEUS_MEMORY_TREE", "1")
+    def test_file_outside_vault(self, fake_vault, tree_db, tmp_path, monkeypatch):
         outside = tmp_path / "outside.md"
         outside.write_text("# outside")
         result = hook.dispatch({"tool_input": {"file_path": str(outside)}})
         assert result == "not_vault_file"
 
-    def test_non_markdown(self, fake_vault, monkeypatch):
-        monkeypatch.setenv("DEUS_MEMORY_TREE", "1")
+    def test_non_markdown(self, fake_vault, tree_db, monkeypatch):
         txt = fake_vault / "notes.txt"
         txt.write_text("hello")
         result = hook.dispatch({"tool_input": {"file_path": str(txt)}})
@@ -184,13 +196,13 @@ class TestDriftScan:
         attempted = stop_hook._scan_vault_drift(fake_vault, limit=1)
         assert attempted == 1
 
-    def test_missing_db_recovers_via_discovery(self, fake_vault, stub_embed, monkeypatch, tmp_path):
-        """If DB doesn't exist, scan rebuilds it via discovery on the next pass."""
-        monkeypatch.setenv("DEUS_MEMORY_TREE", "1")
+    def test_missing_db_is_noop(self, fake_vault, stub_embed, monkeypatch, tmp_path):
+        """LIA-243 follow-up: the scan gates on the DB existing, so a missing DB
+        is a no-op (the DB is created by `deus init` / `memory_tree.py build`, not
+        bootstrapped by the stop-hook)."""
         monkeypatch.setattr(mt, "DB_PATH", tmp_path / "nonexistent.db")
         attempted = stop_hook._scan_vault_drift(fake_vault, limit=5)
-        # Both fixture files (MEMORY_TREE.md + household.md) should be discovered.
-        assert attempted == 2
+        assert attempted == 0
 
 
 class TestMainHandlerSurfacesErrors:
@@ -211,15 +223,77 @@ class TestMainHandlerSurfacesErrors:
         assert "AttributeError" in proc.stderr
 
     def test_memory_tree_hook_surfaces_crash_on_stderr(self):
-        env = {**os.environ, "DEUS_MEMORY_TREE": "1"}
+        # `[]` slips past json.loads then raises AttributeError in
+        # _file_path_from_hook (before any gate); the raise propagates to the
+        # __main__ `except Exception` block (not dispatch), exercising the
+        # stderr-surfacing path (LIA-246).
         proc = subprocess.run(
             [sys.executable, str(_ROOT / "scripts" / "memory_tree_hook.py")],
             input="[]",
             capture_output=True,
             text=True,
             timeout=30,
-            env=env,
         )
         assert proc.returncode == 0  # never block Claude Code
         assert "[memory-tree-hook]" in proc.stderr
         assert "AttributeError" in proc.stderr
+
+
+# ── memory_tree_hook.main — async fire-and-forget ─────────────────────────────
+
+class TestMainAsync:
+    """main() never re-embeds inline — it spawns a detached worker so the edit
+    doesn't block, and only when the automation is enabled (DB present, not
+    opted out)."""
+
+    def _run_main(self, monkeypatch, fp="/tmp/x.md"):
+        import io
+        import subprocess
+
+        calls = []
+        monkeypatch.setattr(
+            subprocess, "Popen", lambda *a, **k: calls.append((a, k))
+        )
+        monkeypatch.setattr(
+            "sys.stdin",
+            io.StringIO(json.dumps({"tool_input": {"file_path": fp}})),
+        )
+        hook.main()
+        return calls
+
+    def test_spawns_detached_worker_when_enabled(self, tree_db, monkeypatch):
+        import subprocess
+
+        calls = self._run_main(monkeypatch)
+        assert len(calls) == 1
+        args, kwargs = calls[0]
+        argv = args[0]
+        assert argv[0] == sys.executable
+        assert argv[1].endswith("memory_tree_hook.py")
+        assert argv[2] == "--worker"
+        assert argv[3] == "/tmp/x.md"
+        assert kwargs.get("start_new_session") is True
+        # stdout/stderr all silenced
+        assert kwargs.get("stdout") == subprocess.DEVNULL
+        assert kwargs.get("stderr") == subprocess.DEVNULL
+
+    def test_no_spawn_on_opt_out(self, tree_db, monkeypatch):
+        monkeypatch.setenv("DEUS_MEMORY_TREE", "0")
+        assert self._run_main(monkeypatch) == []
+
+    def test_no_spawn_when_no_db(self, monkeypatch):
+        # conftest leaves the DB absent by default → automation off.
+        assert self._run_main(monkeypatch) == []
+
+    def test_no_spawn_when_no_file_path(self, tree_db, monkeypatch):
+        import io
+
+        import subprocess
+
+        calls = []
+        monkeypatch.setattr(
+            subprocess, "Popen", lambda *a, **k: calls.append((a, k))
+        )
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_input": {}})))
+        hook.main()
+        assert calls == []

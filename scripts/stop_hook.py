@@ -168,14 +168,15 @@ status: auto
 def _scan_vault_drift(vault: Path, limit: int = 5) -> int:
     """Re-embed up to `limit` tracked files whose mtime exceeds the last node
     update, then discover up to `limit` new vault files not yet in the tree.
-    Both paths are hash-gated and silent on errors. Gated by
-    DEUS_MEMORY_TREE=1. Returns total files attempted (reembed + discover)."""
-    if os.environ.get("DEUS_MEMORY_TREE", "0") != "1":
-        return 0
+    Both paths are hash-gated and silent on errors. Runs when the memory-tree DB
+    exists (opt out with DEUS_MEMORY_TREE=0). Returns total files attempted
+    (reembed + discover)."""
     try:
         sys.path.insert(0, str(Path(__file__).parent))
         import memory_tree as mt  # type: ignore
     except ImportError:
+        return 0
+    if not mt.tree_automation_enabled():
         return 0
     try:
         db = mt.open_db()

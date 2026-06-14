@@ -21,22 +21,6 @@ _resolve_script_dir() {
 }
 SCRIPT_DIR="$(_resolve_script_dir)"
 
-# LIA-243: auto-enable the memory-tree freshness automation (PostToolUse
-# re-embed via scripts/memory_tree_hook.py, Stop drift scan via
-# scripts/stop_hook.py, and the resume nav-index injection below) when the tree
-# DB already exists — i.e. a configured machine. deus-cmd.sh launches the claude
-# session, so an export here is inherited by claude AND its hooks. We do NOT flip
-# the default on for bare clones (no ~/.deus/memory_tree.db → stays inert), since
-# the automation needs Ollama + embeddinggemma. An explicit DEUS_MEMORY_TREE
-# (0 or 1) always wins.
-if [ -z "${DEUS_MEMORY_TREE:-}" ]; then
-  _mt_db="${DEUS_MEMORY_TREE_DB:-$HOME/.deus/memory_tree.db}"
-  # handle a literal tilde if DEUS_MEMORY_TREE_DB was set as '~/...' (e.g. from a
-  # config file) and so never went through shell tilde expansion.
-  case "$_mt_db" in "~"/*) _mt_db="$HOME/${_mt_db#\~/}" ;; esac
-  [ -f "$_mt_db" ] && export DEUS_MEMORY_TREE=1
-fi
-
 # Prefix selection changes both the foreground CLI and runtime backend for this
 # invocation. Plain `deus` still defaults to Claude unless env/config says
 # otherwise.
@@ -964,8 +948,11 @@ for f in c.get('vault_autoload', ['CLAUDE.md']):
 	        fi
 	      done <<< "$VAULT_AUTOLOAD"
 
-	      # Memory tree (Phase 4, gated by DEUS_MEMORY_TREE=1 during dogfood).
-	      if [ "${DEUS_MEMORY_TREE:-0}" = "1" ]; then
+	      # Memory tree (Phase 4): inject the nav index when the tree DB exists
+	      # (opt out with DEUS_MEMORY_TREE=0).
+	      _mt_db="${DEUS_MEMORY_TREE_DB:-$HOME/.deus/memory_tree.db}"
+	      case "$_mt_db" in "~"/*) _mt_db="$HOME/${_mt_db#\~/}" ;; esac
+	      if [ "${DEUS_MEMORY_TREE:-}" != "0" ] && [ -f "$_mt_db" ]; then
 	        MEMORY_TREE_MD=$(cat "$VAULT/MEMORY_TREE.md" 2>/dev/null)
 	        if [ -n "$MEMORY_TREE_MD" ]; then
 	          CONTEXT="$CONTEXT\n\n=== VAULT: MEMORY_TREE.md ===\n$MEMORY_TREE_MD\n\n=== MEMORY TREE USAGE ===\nFor factual personal questions (identity, household, preferences, cross-branch), call:\n  python3 \$HOME/deus/scripts/memory_tree.py query \"<question>\"\nThe top result's path is the vault file to Read. On abstained:true or low confidence, fall back to Persona/INDEX.md. Prefer this over guessing from CLAUDE.md hints."

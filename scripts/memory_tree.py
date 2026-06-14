@@ -59,6 +59,21 @@ DB_PATH = Path(os.environ.get(
 )).expanduser()
 VAULT_PATH_ENV = "DEUS_VAULT_PATH"
 
+
+def tree_automation_enabled() -> bool:
+    """Whether the memory-tree freshness automation (PostToolUse re-embed, Stop
+    drift scan, resume nav-index injection) should run.
+
+    Gates on the real precondition — the tree DB existing — rather than a manual
+    enable flag: ON by default once ~/.deus/memory_tree.db is present, OFF only on
+    explicit opt-out (DEUS_MEMORY_TREE=0) or when no DB exists (a bare clone with
+    no Ollama/embeddings configured stays inert). The env var is read at call time
+    and DB_PATH is the module constant tests monkeypatch.
+    """
+    if os.environ.get("DEUS_MEMORY_TREE") == "0":
+        return False
+    return DB_PATH.exists()
+
 # Thresholds are provider-specific: Gemini embeddings produce higher absolute
 # cosine scores (~0.55-0.73 in-domain, ~0.45-0.53 OOD) vs Ollama embeddinggemma
 # (~0.30-0.66 in-domain, ~0.25-0.39 OOD). Env vars always override.
