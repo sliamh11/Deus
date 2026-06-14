@@ -154,7 +154,7 @@ export interface LinearContext {
   bus: EventBus; // app-wide event hub; same singleton at emit- and register-side
   stateByName: Map<string, WorkflowState>;
   stateById: Map<string, WorkflowState>;
-  botUserId: string;
+  botUserId: string; // empty = loop-guard disabled (no dedicated bot); see resolveBotUserId
   viewerId: string; // human operator ID, used to assign issues on In Review
   deps: LinearDispatcherDependencies;
   dispatchGroup: RegisteredGroup;
@@ -164,6 +164,19 @@ export interface LinearContext {
   teamId: string;
   repoSlug?: string;
   vaultPath: string | null;
+}
+
+/**
+ * LIA-240: resolve the pipeline's bot identity for the webhook loop-guard.
+ * Returns '' (guard disabled) when no DEDICATED bot id is configured. The old
+ * `|| viewer.id` fallback made the guard match the human operator — because the
+ * CLI and dispatcher share one API key, Linear records the same actor for a
+ * human CLI action (move/rerun/start) and a pipeline self-write, so the guard
+ * silently swallowed CLI-initiated transitions. Only enable the guard when the
+ * pipeline runs under a separate Linear account (an explicit, distinct user id).
+ */
+export function resolveBotUserId(envValue: string | undefined): string {
+  return (envValue ?? '').trim();
 }
 
 let _timer: ReturnType<typeof setInterval> | null = null;
@@ -1680,7 +1693,18 @@ export async function initLinearContext(
     }
 
     const viewer = await client.viewer;
-    const botUserId = process.env.LINEAR_BOT_USER_ID || viewer.id;
+    const botUserId = resolveBotUserId(process.env.LINEAR_BOT_USER_ID);
+    if (botUserId) {
+      logger.info(
+        { botUserId },
+        'linear-dispatcher: actor loop-guard active (dedicated bot identity configured)',
+      );
+    } else {
+      logger.info(
+        {},
+        'linear-dispatcher: actor loop-guard disabled — no LINEAR_BOT_USER_ID set; CLI-initiated transitions are honored',
+      );
+    }
 
     const existing = Object.values(deps.registeredGroups()).find(
       (g) => g.folder === DISPATCH_GROUP_JID,

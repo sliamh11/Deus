@@ -61,6 +61,8 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `CREDENTIAL_PROXY_PORT` | `3001` | Port for the credential injection proxy |
 | `CREDENTIAL_PROXY_HOST` | — | Bind address for proxy (empty = auto-detect) |
 | `DEUS_AUTH_PROVIDER` | (auto-detect) | Force a specific auth provider for the credential proxy: `anthropic` or `openai` |
+| `DEUS_PROXY_MAX_BODY_BYTES` | `33554432` (32MB) | Max buffered request body in bytes; bounds host memory (LIA-236) |
+| `DEUS_PROXY_UPSTREAM_TIMEOUT_MS` | `600000` (10m) | Upstream socket inactivity timeout in ms; a black-holed upstream past this is destroyed → 502 (LIA-236) |
 
 ## Ollama / Local Models
 

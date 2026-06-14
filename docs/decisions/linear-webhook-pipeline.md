@@ -262,7 +262,7 @@ const effectiveMode = data.labels.some((l) => l.name === 'warden:strict')
 | `LINEAR_POLL_INTERVAL_MS` | 30000 | How often the dispatcher polls |
 | `LINEAR_TEAM_ID` | auto-discovered | Override if account has multiple teams |
 | `LINEAR_WEBHOOK_PORT` | 3005 | Port the webhook server binds to |
-| `LINEAR_BOT_USER_ID` | authenticated viewer ID | Override to match a dedicated bot account |
+| `LINEAR_BOT_USER_ID` | none (loop-guard disabled) | Set to a dedicated bot account's user ID to enable pipeline loop-prevention. Do NOT set it to your own user id — the guard would swallow your CLI-initiated transitions (move/rerun/start), since the CLI and dispatcher share one API key. |
 
 **Adding a gate:** create `.claude/agents/wardens/{name}.md` with `gate_to` frontmatter pointing to the target workflow state. Restart Deus. No code change required.
 

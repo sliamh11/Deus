@@ -14,6 +14,8 @@ import { extractFrontmatter } from './linear-dispatcher.js';
 import {
   parseEnrichment,
   parseVerdict,
+  classifyGateOutcome,
+  shouldSkipBotTransition,
   gateTransitionAction,
   parkErroredGateIssue,
   gateOutcomeEventType,
@@ -366,6 +368,52 @@ Needs work.`),
 
   it('returns null when no verdict', () => {
     expect(parseVerdict('No verdict here.')).toBeNull();
+  });
+});
+
+describe('shouldSkipBotTransition (LIA-240)', () => {
+  it('does not skip when no bot id is configured (guard disabled)', () => {
+    // The exact LIA-240 regression: a human CLI actor with no dedicated bot id
+    // configured must NOT be treated as the pipeline's own write.
+    expect(shouldSkipBotTransition('human-actor', '')).toBe(false);
+  });
+
+  it('does not skip when the actor differs from the bot', () => {
+    expect(shouldSkipBotTransition('human-actor', 'bot-1')).toBe(false);
+  });
+
+  it('skips when the actor matches the configured bot (own write)', () => {
+    expect(shouldSkipBotTransition('bot-1', 'bot-1')).toBe(true);
+  });
+
+  it('does not skip when the actor id is missing', () => {
+    expect(shouldSkipBotTransition(undefined, 'bot-1')).toBe(false);
+  });
+
+  it('does not skip when both are empty', () => {
+    expect(shouldSkipBotTransition('', '')).toBe(false);
+  });
+});
+
+describe('classifyGateOutcome (LIA-241)', () => {
+  it('no verdict + failure signal → error', () => {
+    expect(classifyGateOutcome(null, 'exit 137')).toBe('error');
+  });
+
+  it('no verdict + clean exit → malfunction', () => {
+    expect(classifyGateOutcome(null, '')).toBe('malfunction');
+  });
+
+  it('parseable SHIP → verdict', () => {
+    expect(classifyGateOutcome('SHIP', '')).toBe('verdict');
+  });
+
+  it('parseable REVISE → verdict', () => {
+    expect(classifyGateOutcome('REVISE', '')).toBe('verdict');
+  });
+
+  it('parseable verdict takes precedence over a non-empty error', () => {
+    expect(classifyGateOutcome('SHIP', 'exit 137')).toBe('verdict');
   });
 });
 

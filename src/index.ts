@@ -365,17 +365,12 @@ async function main(): Promise<void> {
   });
 
   // Start the Odysseus /v1 web channel (no-op unless ODYSSEUS_HTTP_ENABLED=1).
-  // Shares the main session; serializes through GroupQueue like the scheduler.
+  // Each web turn runs on its own fresh session (LIA-294); serializes through
+  // GroupQueue on the main jid like the scheduler.
   const odysseusServer = await startOdysseusServer({
     queue,
     registry,
     registeredGroups: () => state.registeredGroups,
-    getSession: (groupFolder, backend) =>
-      state.getSession(groupFolder, backend),
-    setSession: (groupFolder, sessionRef) => {
-      state.setSession(groupFolder, sessionRef);
-      persistSession(groupFolder, sessionRef);
-    },
   });
   if (odysseusServer) webhookServers.push(odysseusServer);
 

@@ -222,6 +222,20 @@ export function parseVerdict(
 }
 
 /**
+ * LIA-240: whether to skip a transition because the pipeline's own bot triggered
+ * it (loop-prevention). Skips ONLY when a dedicated bot id is configured AND the
+ * webhook actor matches it. An empty botUserId (no dedicated bot — see
+ * resolveBotUserId) never skips, so CLI-initiated transitions made under the
+ * shared operator identity are honored instead of being silently swallowed.
+ */
+export function shouldSkipBotTransition(
+  actorId: string | undefined,
+  botUserId: string,
+): boolean {
+  return Boolean(actorId) && Boolean(botUserId) && actorId === botUserId;
+}
+
+/**
  * LIA-169: An errored gate halts regardless of mode/verdict — its fallback
  * 'REVISE' would otherwise drive the strict revert and re-dispatch loop.
  * 'halt' = park (quiescent state); 'revert' = legit strict non-SHIP; 'none' = leave.
@@ -234,6 +248,26 @@ export function gateTransitionAction(
   if (gateErrored) return 'halt';
   if (effectiveMode === 'strict' && verdict !== 'SHIP') return 'revert';
   return 'none';
+}
+
+/**
+ * LIA-241: Classify a gate run's raw output so a clean-exit-without-verdict is
+ * never mistaken for a real verdict (LIA-169 only handled the non-empty-error path).
+ *
+ * - 'error'       = no parseable verdict AND a failure signal is present.
+ * - 'malfunction' = clean exit but no parseable verdict (gate produced nothing usable).
+ * - 'verdict'     = a parseable verdict — non-null parsedVerdict ALWAYS maps here,
+ *                   even on a non-zero exit (honor a verdict the gate managed to emit).
+ *
+ * Both 'error' and 'malfunction' callers MUST set the gate-errored flag so the
+ * outcome halts (parks to Manual Review Required) instead of reverting/escalating.
+ */
+export function classifyGateOutcome(
+  parsedVerdict: 'SHIP' | 'REVISE' | 'BLOCK' | null,
+  error: string,
+): 'error' | 'malfunction' | 'verdict' {
+  if (parsedVerdict) return 'verdict';
+  return error ? 'error' : 'malfunction';
 }
 
 /** LIA-169: an errored gate logs `gate_error`, not the misleading `gate_revise`. */
@@ -685,7 +719,7 @@ async function handleIssueUpdate(
   if (!toState || !fromState) return;
 
   const actorId = payload.actor?.id;
-  if (actorId && actorId === ctx.botUserId) {
+  if (shouldSkipBotTransition(actorId, ctx.botUserId)) {
     logger.info(
       { issueId: data.id, gate: toState.name, actorId },
       'linear-webhook: skipping bot-triggered transition',
@@ -1112,7 +1146,8 @@ async function handleIssueUpdate(
     let commentBody: string;
     let verdictText = '';
 
-    if (!parsedVerdict && error) {
+    const gateOutcome = classifyGateOutcome(parsedVerdict, error);
+    if (gateOutcome === 'error') {
       gateDidError = true;
       verdict = gateSpec.fallback;
       logger.warn(
@@ -1129,21 +1164,38 @@ async function handleIssueUpdate(
         `Gate agent error:\n\`\`\`\n${error}\n\`\`\``,
         gateSpec.mode,
       );
+    } else if (gateOutcome === 'malfunction') {
+      // LIA-241: clean exit but no parseable `## Verdict:` line. Treat as a gate
+      // malfunction (not a genuine REVISE) — byte-symmetric with the 'error'
+      // branch: gateDidError halts/parks, applies Warden: Error, skips the
+      // bounced label + attempt escalation, and never merges the raw output into
+      // the issue description (finalEnrichment stays undefined). verdictText also
+      // stays '' so the pipeline detail reads '(no detail)', never raw output.
+      gateDidError = true;
+      verdict = gateSpec.fallback;
+      const preview = output.length > 500 ? `${output.slice(0, 500)}…` : output;
+      logger.warn(
+        {
+          issueId: data.id,
+          gate: gateSpec.name,
+          outputLen: output.length,
+        },
+        'linear-webhook: gate agent exited cleanly but produced no ## Verdict marker — treating as gate malfunction',
+      );
+      commentBody = formatGateComment(
+        gateSpec.name,
+        'ERROR',
+        `Gate agent exited cleanly but produced no \`## Verdict:\` marker (malfunction).\n\nOutput preview:\n\`\`\`\n${preview}\n\`\`\``,
+        gateSpec.mode,
+      );
     } else {
+      // gateOutcome === 'verdict' here, so parsedVerdict is non-null (the
+      // ?? fallback only satisfies the type checker). LIA-241 removed the old
+      // "no markers → use full output as enrichment" path: it is now structurally
+      // unreachable (a marker-less clean exit routes to 'malfunction' above), and
+      // it was the vector that merged raw malformed output into the description.
       verdict = parsedVerdict ?? gateSpec.fallback;
-      let enrichmentBody = parseEnrichment(output);
-
-      if (!enrichmentBody && !parsedVerdict && output.length > 100) {
-        logger.warn(
-          {
-            issueId: data.id,
-            gate: gateSpec.name,
-            outputLen: output.length,
-          },
-          'linear-webhook: agent output missing ## Enrichment/## Verdict markers, using full output as enrichment',
-        );
-        enrichmentBody = output;
-      }
+      const enrichmentBody = parseEnrichment(output);
 
       finalEnrichment = enrichmentBody ?? undefined;
 
@@ -1547,13 +1599,36 @@ async function runGateForIssue(
     let commentBody: string;
     let verdictText = '';
 
-    if (!parsedVerdict && error) {
+    const sweepOutcome = classifyGateOutcome(parsedVerdict, error);
+    if (sweepOutcome === 'error') {
       verdict = 'REVISE';
       gateAgentError = true;
       commentBody = formatGateComment(
         gateSpec.name,
         'ERROR',
         `Gate agent error (startup sweep):\n\`\`\`\n${error}\n\`\`\``,
+        gateSpec.mode,
+      );
+    } else if (sweepOutcome === 'malfunction') {
+      // LIA-241: clean exit, no parseable `## Verdict:` line — same malfunction
+      // handling as handleIssueUpdate. gateAgentError halts/parks; finalEnrichment
+      // and verdictText stay unset so no raw output reaches the description or
+      // pipeline detail.
+      verdict = 'REVISE';
+      gateAgentError = true;
+      const preview = output.length > 500 ? `${output.slice(0, 500)}…` : output;
+      logger.warn(
+        {
+          issueId: issue.id,
+          gate: gateSpec.name,
+          outputLen: output.length,
+        },
+        'startup-sweep: gate agent exited cleanly but produced no ## Verdict marker — treating as gate malfunction',
+      );
+      commentBody = formatGateComment(
+        gateSpec.name,
+        'ERROR',
+        `Gate agent exited cleanly but produced no \`## Verdict:\` marker (malfunction, startup sweep).\n\nOutput preview:\n\`\`\`\n${preview}\n\`\`\``,
         gateSpec.mode,
       );
     } else {

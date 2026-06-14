@@ -35,6 +35,7 @@ import { execFileSync } from 'child_process';
 import {
   startCredentialProxy,
   _resetCredentialsCacheForTest,
+  envPositiveInt,
 } from './credential-proxy.js';
 import { AuthProviderRegistry } from './auth-providers/types.js';
 import * as configModule from './config.js';
@@ -655,4 +656,147 @@ describe('credential-proxy', () => {
       }
     });
   });
+
+  describe('request bounds (LIA-236)', () => {
+    afterEach(() => {
+      delete process.env.DEUS_PROXY_MAX_BODY_BYTES;
+      delete process.env.DEUS_PROXY_UPSTREAM_TIMEOUT_MS;
+    });
+
+    it('rejects a request body over the cap with 413 and never hits upstream', async () => {
+      process.env.DEUS_PROXY_MAX_BODY_BYTES = '50';
+      proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+      const res = await makeRequest(
+        proxyPort,
+        withProxyToken({
+          method: 'POST',
+          path: '/v1/messages',
+          headers: { 'content-type': 'application/json' },
+        }),
+        'x'.repeat(200), // 200 bytes > 50-byte cap
+      );
+
+      expect(res.statusCode).toBe(413);
+      // Upstream was never reached — lastUpstreamHeaders stays the beforeEach {}.
+      expect(Object.keys(lastUpstreamHeaders)).toHaveLength(0);
+    });
+
+    it('allows a request body under the cap', async () => {
+      process.env.DEUS_PROXY_MAX_BODY_BYTES = '1000';
+      proxyPort = await startProxy({ ANTHROPIC_API_KEY: 'sk-ant-real-key' });
+
+      const res = await makeRequest(
+        proxyPort,
+        withProxyToken({
+          method: 'POST',
+          path: '/v1/messages',
+          headers: { 'content-type': 'application/json' },
+        }),
+        '{}',
+      );
+
+      expect(res.statusCode).toBe(200);
+      expect(lastUpstreamHeaders['x-api-key']).toBe('sk-ant-real-key');
+    });
+
+    it('returns 502 when the upstream black-holes past the inactivity timeout', async () => {
+      // Hanging upstream: accepts the request but never responds.
+      const hanging = http.createServer(() => {});
+      await new Promise<void>((r) => hanging.listen(0, '127.0.0.1', () => r()));
+      const hangingPort = (hanging.address() as AddressInfo).port;
+      try {
+        process.env.DEUS_PROXY_UPSTREAM_TIMEOUT_MS = '200';
+        proxyPort = await startProxy({
+          ANTHROPIC_API_KEY: 'sk-ant-real-key',
+          ANTHROPIC_BASE_URL: `http://127.0.0.1:${hangingPort}`,
+        });
+
+        const res = await makeRequest(
+          proxyPort,
+          withProxyToken({
+            method: 'POST',
+            path: '/v1/messages',
+            headers: { 'content-type': 'application/json' },
+          }),
+          '{}',
+        );
+        expect(res.statusCode).toBe(502);
+      } finally {
+        await new Promise<void>((r) => hanging.close(() => r()));
+      }
+    });
+
+    it('destroys the upstream socket when the client aborts mid-response', async () => {
+      let signalClosed: () => void;
+      const upstreamClosed = new Promise<void>((r) => {
+        signalClosed = r;
+      });
+      // Hanging upstream that signals when its incoming request closes.
+      const hanging = http.createServer((upReq) => {
+        upReq.on('close', () => signalClosed());
+      });
+      await new Promise<void>((r) => hanging.listen(0, '127.0.0.1', () => r()));
+      const hangingPort = (hanging.address() as AddressInfo).port;
+      try {
+        proxyPort = await startProxy({
+          ANTHROPIC_API_KEY: 'sk-ant-real-key',
+          ANTHROPIC_BASE_URL: `http://127.0.0.1:${hangingPort}`,
+        });
+
+        const req = http.request({
+          hostname: '127.0.0.1',
+          port: proxyPort,
+          method: 'POST',
+          path: '/v1/messages',
+          headers: withProxyToken({
+            headers: { 'content-type': 'application/json' },
+          }).headers,
+        });
+        req.on('error', () => {}); // aborting emits ECONNRESET client-side
+        req.write('{}');
+        req.end();
+
+        // Let the request reach the (hanging) upstream, then abort the client.
+        await new Promise((r) => setTimeout(r, 50));
+        req.destroy();
+
+        // The proxy must propagate the abort by destroying the upstream.
+        await Promise.race([
+          upstreamClosed,
+          new Promise((_, rej) =>
+            setTimeout(() => rej(new Error('upstream not closed')), 2000),
+          ),
+        ]);
+      } finally {
+        await new Promise<void>((r) => hanging.close(() => r()));
+      }
+    });
+  });
+});
+
+describe('envPositiveInt (LIA-236)', () => {
+  const NAME = 'DEUS_TEST_ENV_POSITIVE_INT';
+  const FB = 12345;
+
+  afterEach(() => {
+    delete process.env[NAME];
+  });
+
+  it('returns the fallback when unset', () => {
+    expect(envPositiveInt(NAME, FB)).toBe(FB);
+  });
+
+  it('returns a valid positive number', () => {
+    process.env[NAME] = '500';
+    expect(envPositiveInt(NAME, FB)).toBe(500);
+  });
+
+  it.each(['', 'abc', '0', '-5', 'NaN'])(
+    'falls back on malformed/non-positive value %j',
+    (bad) => {
+      process.env[NAME] = bad;
+      expect(envPositiveInt(NAME, FB)).toBe(FB);
+    },
+  );
 });

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -189,3 +191,35 @@ class TestDriftScan:
         attempted = stop_hook._scan_vault_drift(fake_vault, limit=5)
         # Both fixture files (MEMORY_TREE.md + household.md) should be discovered.
         assert attempted == 2
+
+
+class TestMainHandlerSurfacesErrors:
+    """LIA-246: a crash in the __main__ guard must surface on stderr, not vanish
+    silently, while still exiting 0. Feeding ``[]`` slips past the JSON parse
+    guard then raises AttributeError on ``[].get(...)`` — before any DB access."""
+
+    def test_stop_hook_surfaces_crash_on_stderr(self):
+        proc = subprocess.run(
+            [sys.executable, str(_ROOT / "scripts" / "stop_hook.py")],
+            input="[]",
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert proc.returncode == 0  # never block Claude Code
+        assert "[stop-hook]" in proc.stderr
+        assert "AttributeError" in proc.stderr
+
+    def test_memory_tree_hook_surfaces_crash_on_stderr(self):
+        env = {**os.environ, "DEUS_MEMORY_TREE": "1"}
+        proc = subprocess.run(
+            [sys.executable, str(_ROOT / "scripts" / "memory_tree_hook.py")],
+            input="[]",
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env=env,
+        )
+        assert proc.returncode == 0  # never block Claude Code
+        assert "[memory-tree-hook]" in proc.stderr
+        assert "AttributeError" in proc.stderr

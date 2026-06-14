@@ -21,6 +21,22 @@ _resolve_script_dir() {
 }
 SCRIPT_DIR="$(_resolve_script_dir)"
 
+# LIA-243: auto-enable the memory-tree freshness automation (PostToolUse
+# re-embed via scripts/memory_tree_hook.py, Stop drift scan via
+# scripts/stop_hook.py, and the resume nav-index injection below) when the tree
+# DB already exists — i.e. a configured machine. deus-cmd.sh launches the claude
+# session, so an export here is inherited by claude AND its hooks. We do NOT flip
+# the default on for bare clones (no ~/.deus/memory_tree.db → stays inert), since
+# the automation needs Ollama + embeddinggemma. An explicit DEUS_MEMORY_TREE
+# (0 or 1) always wins.
+if [ -z "${DEUS_MEMORY_TREE:-}" ]; then
+  _mt_db="${DEUS_MEMORY_TREE_DB:-$HOME/.deus/memory_tree.db}"
+  # handle a literal tilde if DEUS_MEMORY_TREE_DB was set as '~/...' (e.g. from a
+  # config file) and so never went through shell tilde expansion.
+  case "$_mt_db" in "~"/*) _mt_db="$HOME/${_mt_db#\~/}" ;; esac
+  [ -f "$_mt_db" ] && export DEUS_MEMORY_TREE=1
+fi
+
 # Prefix selection changes both the foreground CLI and runtime backend for this
 # invocation. Plain `deus` still defaults to Claude unless env/config says
 # otherwise.
@@ -375,6 +391,83 @@ case "$1" in
     else
       exit $?
     fi
+    ;;
+  arch)
+    # Visualize a project's architecture in the 3D explorer:
+    # index-if-needed → build graph-data.js → serve → open the browser.
+    # Works on ANY repo (layers auto-derive when the bundled layers.json doesn't
+    # fit — see tools/architecture-explorer/README.md).
+    shift
+    arch_port=8000
+    arch_target=""
+    for a in "$@"; do
+      case "$a" in
+        --port=*) arch_port="${a#*=}" ;;
+        -h|--help)
+          echo "Usage: deus arch [path] [--port=N]"
+          echo "  Visualize a project's architecture in 3D (default path: current dir)."
+          echo "  Indexes the repo with codegraph if needed, then serves the explorer."
+          exit 0 ;;
+        -*) ;;  # ignore unknown flags (forward-compat)
+        *) [ -z "$arch_target" ] && arch_target="$a" ;;
+      esac
+    done
+    case "$arch_port" in
+      ''|*[!0-9]*) echo "deus arch: invalid --port: '$arch_port' (must be a number)" >&2; exit 1 ;;
+    esac
+    arch_base="${arch_target:-$PWD}"
+    if [ ! -d "$arch_base" ]; then
+      echo "deus arch: not a directory: $arch_base" >&2; exit 1
+    fi
+    arch_root="$(cd "$arch_base" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)" || arch_root=""
+    [ -z "$arch_root" ] && arch_root="$arch_base"
+    arch_root="$(cd "$arch_root" 2>/dev/null && pwd -P)" || { echo "deus arch: cannot resolve: $arch_base" >&2; exit 1; }
+    arch_db="$arch_root/.codegraph/codegraph.db"
+    if [ ! -f "$arch_db" ]; then
+      if ! command -v codegraph >/dev/null 2>&1; then
+        echo "deus arch: no architecture index for $(basename "$arch_root") and codegraph is not installed." >&2
+        echo "  Run 'deus init \"$arch_root\"' first (it indexes the repo), then retry." >&2
+        exit 1
+      fi
+      # No index for this folder yet — ask before building (indexing can take a
+      # while on a large repo). The [ -t 0 ] gate targets the normal "navigate to
+      # a folder and run deus arch" use; a non-interactive stdin (scripts/CI, or a
+      # path piped in) proceeds automatically so it never hangs on a prompt.
+      if [ -t 0 ]; then
+        printf "No architecture index for %s. Build one now? [Y/n] " "$(basename "$arch_root")"
+        read -r arch_reply
+        case "$arch_reply" in
+          [Nn]*)
+            echo "  Skipped. Run 'deus arch' here again when you want to build it."
+            exit 0 ;;
+        esac
+      else
+        echo "  • No architecture index for $(basename "$arch_root") — building (non-interactive)…"
+      fi
+      # codegraph index requires a prior init. A present .codegraph dir means init
+      # already ran (safe to re-index); otherwise init first, surfacing its failure
+      # so it doesn't resurface later as a misleading "not initialized" error.
+      if [ ! -d "$arch_root/.codegraph" ]; then
+        codegraph init "$arch_root" >/dev/null 2>&1 || {
+          echo "deus arch: codegraph init failed at $arch_root" >&2; exit 1; }
+      fi
+      codegraph index "$arch_root" || { echo "deus arch: codegraph index failed" >&2; exit 1; }
+    fi
+    echo "  • Building architecture graph for $(basename "$arch_root")…"
+    python3 "$SCRIPT_DIR/tools/architecture-explorer/build.py" --db "$arch_db" || {
+      echo "deus arch: build failed" >&2; exit 1; }
+    # use 127.0.0.1 (not localhost) to match the server's --bind below — avoids a
+    # failed browser-open on systems where localhost resolves to ::1 (IPv6) first.
+    arch_url="http://127.0.0.1:$arch_port/index.html"
+    cd "$SCRIPT_DIR/tools/architecture-explorer" || {
+      echo "deus arch: explorer dir missing: $SCRIPT_DIR/tools/architecture-explorer" >&2; exit 1; }
+    echo "  • Serving at $arch_url  (Ctrl-C to stop)"
+    echo "    Note: graph-data.js is reused at this URL — if you previously opened"
+    echo "    a different project, hard-refresh the tab (Cmd-Shift-R)."
+    ( sleep 1; python3 -m webbrowser "$arch_url" >/dev/null 2>&1 ) &
+    # --bind 127.0.0.1: the explorer serves your repo's file/symbol map; keep it
+    # on loopback so it is not exposed on the local network.
+    exec python3 -m http.server "$arch_port" --bind 127.0.0.1
     ;;
   auth)
     # `deus auth refresh [--dry-run]` → proactive OAuth refresh CLI
@@ -1337,7 +1430,7 @@ $STARTUP_INSTRUCTION"
     esac
     ;;
   *)
-    echo "Usage: deus [claude|codex] [home|init|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|solution|sweep|tui] [--agents]"
+    echo "Usage: deus [claude|codex] [home|init|arch|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|solution|sweep|tui] [--agents]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -1346,6 +1439,8 @@ $STARTUP_INSTRUCTION"
     echo "  deus init       Onboard the current project: index it for code intelligence"
     echo "                    (codegraph + code_search) and register it (alias: onboard)"
     echo "                    flags: --force (skip safety gate), --seed (add a memory note)"
+    echo "  deus arch       Visualize a project's architecture in 3D (index if needed →"
+    echo "                    build → serve → open). Usage: deus arch [path] [--port=N]"
     echo "  deus auth       Validate credentials and rebuild+restart"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
     echo "  deus build      Compile TypeScript and restart the service (--no-restart, --quiet)"
