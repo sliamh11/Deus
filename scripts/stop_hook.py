@@ -350,5 +350,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except Exception:
-        pass  # Always silent
+    except Exception as e:
+        # Never crash Claude Code, but surface the failure instead of vanishing
+        # silently — a swallowed crash here can bypass the bg-compress gate and
+        # lose a session from the vault (LIA-246).
+        sys.stderr.write(f"[stop-hook] {type(e).__name__}: {e}\n")
