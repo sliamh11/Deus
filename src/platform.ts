@@ -196,3 +196,10 @@ export function openBrowser(url: string): boolean {
   spawn(cmd, args, { detached: true, stdio: 'ignore' }).unref();
   return true;
 }
+
+// Gates human-only terminal formatting (e.g. ANSI color) so it never lands in a
+// redirected log file under launchd. Centralized per the platform-abstraction
+// ADR — no raw `process.stdout` outside this file.
+export function isInteractiveTerminal(): boolean {
+  return process.stdout.isTTY ?? false;
+}
