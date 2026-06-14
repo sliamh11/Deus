@@ -424,14 +424,34 @@ case "$1" in
     arch_root="$(cd "$arch_root" 2>/dev/null && pwd -P)" || { echo "deus arch: cannot resolve: $arch_base" >&2; exit 1; }
     arch_db="$arch_root/.codegraph/codegraph.db"
     if [ ! -f "$arch_db" ]; then
-      if command -v codegraph >/dev/null 2>&1; then
-        echo "  • No codegraph index at $arch_root — indexing (this can take a moment)…"
-        ( cd "$arch_root" && codegraph index ) || { echo "deus arch: codegraph index failed" >&2; exit 1; }
-      else
-        echo "deus arch: no codegraph index at $arch_db and codegraph is not installed." >&2
+      if ! command -v codegraph >/dev/null 2>&1; then
+        echo "deus arch: no architecture index for $(basename "$arch_root") and codegraph is not installed." >&2
         echo "  Run 'deus init \"$arch_root\"' first (it indexes the repo), then retry." >&2
         exit 1
       fi
+      # No index for this folder yet — ask before building (indexing can take a
+      # while on a large repo). The [ -t 0 ] gate targets the normal "navigate to
+      # a folder and run deus arch" use; a non-interactive stdin (scripts/CI, or a
+      # path piped in) proceeds automatically so it never hangs on a prompt.
+      if [ -t 0 ]; then
+        printf "No architecture index for %s. Build one now? [Y/n] " "$(basename "$arch_root")"
+        read -r arch_reply
+        case "$arch_reply" in
+          [Nn]*)
+            echo "  Skipped. Run 'deus arch' here again when you want to build it."
+            exit 0 ;;
+        esac
+      else
+        echo "  • No architecture index for $(basename "$arch_root") — building (non-interactive)…"
+      fi
+      # codegraph index requires a prior init. A present .codegraph dir means init
+      # already ran (safe to re-index); otherwise init first, surfacing its failure
+      # so it doesn't resurface later as a misleading "not initialized" error.
+      if [ ! -d "$arch_root/.codegraph" ]; then
+        codegraph init "$arch_root" >/dev/null 2>&1 || {
+          echo "deus arch: codegraph init failed at $arch_root" >&2; exit 1; }
+      fi
+      codegraph index "$arch_root" || { echo "deus arch: codegraph index failed" >&2; exit 1; }
     fi
     echo "  • Building architecture graph for $(basename "$arch_root")…"
     python3 "$SCRIPT_DIR/tools/architecture-explorer/build.py" --db "$arch_db" || {
