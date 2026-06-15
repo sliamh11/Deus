@@ -350,6 +350,44 @@ html, body {
 /* END SIDEBAR */
 
 /* ============================================================
+   Saved views panel (views.js) — top-center dropdown. Sidebar
+   owns the left, detail + appearance panels own the right, so
+   center-top is the clear zone.
+   ============================================================ */
+#btn-views.active { background: #1c2438; border-color: #3a4568; color: #7fb2ff; }
+.av-panel {
+  position: fixed; top: 52px; left: 50%; transform: translateX(-50%);
+  width: 300px; max-height: calc(100vh - 96px); z-index: 12;
+  display: flex; flex-direction: column; gap: 8px;
+  background: #0b0f1a; border: 1px solid #222b42; border-radius: 10px;
+  padding: 12px; box-shadow: 0 10px 40px #000a;
+  pointer-events: auto;
+}
+.av-panel.hidden { display: none; }
+.av-head { font-weight: 600; font-size: 13px; color: #e6e9ef; }
+.av-save-row { display: flex; gap: 6px; }
+.av-input {
+  flex: 1; min-width: 0; background: #11182b; color: #e6e9ef;
+  border: 1px solid #2a3450; border-radius: 6px; padding: 5px 8px; font-size: 12px;
+}
+.av-input:focus { outline: none; border-color: #4a90d9; }
+.av-panel button {
+  background: #141c30; color: #cdd5e6; border: 1px solid #2a3450;
+  border-radius: 6px; padding: 5px 9px; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.av-panel button:hover { background: #1c2438; border-color: #3a4568; }
+.av-status { color: #e0a04a; font-size: 11px; }
+.av-empty { color: #7a8499; font-size: 12px; padding: 4px 2px; }
+.av-list { display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+.av-row { display: flex; align-items: center; gap: 6px; }
+.av-name {
+  flex: 1; min-width: 0; font-size: 12px; color: #e6e9ef;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.av-del { color: #c97a7a; padding: 4px 8px; line-height: 1; }
+.av-del:hover { background: #2a1c1c; border-color: #5a3a3a; color: #ff9b9b; }
+
+/* ============================================================
    NAV PAD — on-screen camera navigation (app.js buildNavPad)
    ============================================================ */
 #navpad {

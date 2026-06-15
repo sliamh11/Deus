@@ -46,6 +46,17 @@ cd tools/architecture-explorer && python3 -m http.server 8000
   a file before you touch it), plus its connections light up (focus + context).
 - **Directional particles** flow along edges to show import/call direction.
 - **Search** → locate a file, fly the camera to it, expand its layer.
+- **Save a view** → the **Views** toolbar button opens a panel: name the current
+  view and **Save current** to bookmark it; **Restore** flies you back to it later;
+  **×** deletes it. A saved view captures **both navigation and appearance** —
+  expanded layers, camera position, layout mode (layered/tree), isolation, and
+  selection, plus the full theme (shape/color/edges/scene/labels/camera control).
+  Views are stored in `localStorage` **per repo** (keyed by the repo name in the
+  graph data), so opening the explorer on a different project shows only that
+  project's views. Persistence is scoped to the serving **origin** — views saved at
+  the default `deus arch` port persist across runs; a custom `--port` is a different
+  origin with its own list (same as saved themes). Under `file://` (no http server)
+  the browser may block `localStorage`, in which case saving is a graceful no-op.
 
 ## Customize the look (live)
 
@@ -87,10 +98,12 @@ A one-command `deus arch <project>` wrapper is still planned (Phase 2).
 |---|---|
 | `build.py` | generator: codegraph DB + layers (curated `layers.json` or directory-derived) → `graph-data.js` (`window.GRAPH`) |
 | `layers.json` | ordered path-glob → layer rules for *this* repo; auto-derived from directories on a poor fit |
-| `index.html` | page shell; loads vendor + `graph-data.js` + `theme.js` + `app.js` |
-| `app.js` | 3D graph structure + behavior (pinned-z layers, expand/collapse, detail panel, search, camera) |
-| `theme.js` | live appearance system (lil-gui panel; shape/color/edges/scene; localStorage) |
-| `style.css` | dark UI chrome (topbar, detail panel, legend) |
+| `index.html` | page shell; loads vendor + `graph-data.js` + `theme.js` + `sidebar.js` + `views.js` + `app.js` |
+| `app.js` | 3D graph structure + behavior (pinned-z layers, expand/collapse, detail panel, search, camera); exposes `snapshot`/`restore` for saved views |
+| `theme.js` | live appearance system (lil-gui panel; shape/color/edges/scene; localStorage); `getTheme`/`applyTheme` for saved views |
+| `sidebar.js` | IDE-style file-tree navigator + layer key |
+| `views.js` | save / restore / delete named views (per-repo `localStorage`; navigation + appearance) |
+| `style.css` | dark UI chrome (topbar, detail panel, legend, saved-views panel) |
 | `vendor/3d-force-graph.min.js` | 3D renderer (bundles Three.js; offline — see `vendor/README.md`) |
 | `vendor/lil-gui.umd.min.js` | live control panel |
 | `tests/test_build.py` | pytest for the generator |
@@ -105,7 +118,10 @@ long-tail merge, root-file handling, the palette, fit-detection, and the
 no-file-lost invariant across config↔auto. The **UI is verified manually** — run `build.py`, open `index.html`,
 confirm the 3D scene renders (layers as depth planes), fly/orbit work, click-a-layer
 expands its files, the detail panel shows Affects/Affected-by, and the appearance
-panel changes the look live.
+panel changes the look live. For **saved views**: open **Views**, save a named view,
+reload the page, confirm the name persists and **Restore** reapplies both the
+camera/expansion and the theme; the `archexplorer.views.v1::<repo>` key is visible in
+DevTools → Application → localStorage.
 
 ## Roadmap
 
