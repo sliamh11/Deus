@@ -14,6 +14,9 @@ const STATE_PRIORITY: Record<string, number> = {
 };
 
 const EXCLUDED_STATE_TYPES = new Set(['completed', 'canceled']);
+// Excluded by state NAME (these survive the type filter): Duplicate, plus
+// Icebox — someday/maybe ideas kept in Linear but out of the pending block.
+const EXCLUDED_STATE_NAMES = new Set(['Duplicate', 'Icebox']);
 
 // Linear issue priority: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low.
 // Remap so Urgent sorts first and "No priority" sorts last. Mirrors
@@ -69,7 +72,7 @@ export async function fetchActiveIssues(
     const node = result.nodes[i];
     const state = states[i];
     if (!state || EXCLUDED_STATE_TYPES.has(state.type)) continue;
-    if (state.name === 'Duplicate') continue;
+    if (EXCLUDED_STATE_NAMES.has(state.name)) continue;
     issues.push({
       title: node.title,
       identifier: node.identifier,

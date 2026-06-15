@@ -155,6 +155,16 @@ def test_main_excluded_states_filtered(run_main):
     assert "LIA-2" in out and "LIA-1" not in out
 
 
+def test_main_icebox_state_filtered(run_main):
+    # Icebox = someday/maybe ideas; kept in Linear but excluded from the block.
+    code, out = run_main(
+        ["t1"],
+        {"t1": [_issue("LIA-1", state="Icebox"), _issue("LIA-2", state="Todo")]},
+    )
+    assert code == mod.SUCCESS
+    assert "LIA-2" in out and "LIA-1" not in out
+
+
 def test_main_single_team_output_stays_flat(run_main):
     # Back-compat: a single-team workspace renders exactly as before — header
     # line + one issue line, no per-project sub-headers.

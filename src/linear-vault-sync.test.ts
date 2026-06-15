@@ -82,6 +82,27 @@ describe('fetchActiveIssues', () => {
     expect(result).toHaveLength(0);
   });
 
+  it('filters out Icebox state (someday/maybe, backlog-type)', async () => {
+    const client = mockLinearClient([
+      {
+        title: 'Iced idea',
+        identifier: 'LIA-5',
+        url: '',
+        stateName: 'Icebox',
+        stateType: 'backlog',
+      },
+      {
+        title: 'Active',
+        identifier: 'LIA-6',
+        url: '',
+        stateName: 'Todo',
+        stateType: 'unstarted',
+      },
+    ]);
+    const result = await fetchActiveIssues(client, 'team-1');
+    expect(result.map((i) => i.identifier)).toEqual(['LIA-6']);
+  });
+
   it('sorts by state priority then identifier number', async () => {
     const client = mockLinearClient([
       {

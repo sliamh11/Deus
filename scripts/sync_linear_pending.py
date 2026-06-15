@@ -44,7 +44,11 @@ STATE_PRIORITY = {
 # Keep in sync with PRIORITY_RANK in src/linear-vault-sync.ts.
 PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3, 0: 4}
 
-EXCLUDED_STATES = {"Done", "Canceled", "Duplicate"}
+# "Icebox" = someday/maybe ideas: kept in Linear but excluded from the
+# auto-loaded pending block (move back to Backlog to reactivate). It's a
+# backlog-type state, so it survives the GraphQL type filter and is dropped
+# here by name, same as Duplicate.
+EXCLUDED_STATES = {"Done", "Canceled", "Duplicate", "Icebox"}
 
 # Linear's max page size is 250; we paginate so a team with more open issues
 # is never silently truncated.
