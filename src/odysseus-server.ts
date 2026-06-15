@@ -578,6 +578,13 @@ function handleChatCompletion(
     });
     // Early role delta — satisfies the time-to-first-token window immediately.
     writeSse(res, chunkFrame(turnNonce, { role: 'assistant' }, null));
+    // Immediate thinking indicator — covers container cold-start dead-air on
+    // no-tool turns (see commit msg). reasoning_content is Open WebUI-specific —
+    // it renders as a collapsible thinking block; standard clients ignore it.
+    writeSse(
+      res,
+      chunkFrame(turnNonce, { reasoning_content: 'Thinking…' }, null),
+    );
     activeSse++;
     sseCounted = true;
     keepalive = setInterval(() => {
