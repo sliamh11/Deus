@@ -578,6 +578,13 @@ function handleChatCompletion(
     });
     // Early role delta — satisfies the time-to-first-token window immediately.
     writeSse(res, chunkFrame(turnNonce, { role: 'assistant' }, null));
+    // Immediate thinking indicator — covers container cold-start dead-air on
+    // no-tool turns (see commit msg). reasoning_content is Open WebUI-specific —
+    // it renders as a collapsible thinking block; standard clients ignore it.
+    writeSse(
+      res,
+      chunkFrame(turnNonce, { reasoning_content: 'Thinking…' }, null),
+    );
     activeSse++;
     sseCounted = true;
     keepalive = setInterval(() => {
@@ -632,6 +639,10 @@ function handleChatCompletion(
     groupFolder: mainGroup.folder,
     chatJid: mainJid,
     isControlGroup: true,
+    // Streaming consumers only: enables the Claude backend's incremental
+    // partial/activity events so the answer renders live instead of one terminal
+    // blob. Buffered (stream:false) turns leave it off and assemble the result.
+    ...(stream && { stream: true }),
   };
 
   const sink: RuntimeEventSink = async (event) => {
@@ -642,6 +653,17 @@ function handleChatCompletion(
       if (stream && res.writable)
         writeSse(res, chunkFrame(turnNonce, { content: event.text }, null));
       else if (!stream) buffered.push(event.text);
+      scheduleClose();
+    } else if (event.type === 'activity') {
+      // Transient thinking/tool-progress — surfaced on `reasoning_content` (Open
+      // WebUI renders it as a collapsible thinking block, keeping the answer clean).
+      // Streaming-only and never buffered into the final result.
+      firstTokenSeen = true;
+      if (stream && res.writable)
+        writeSse(
+          res,
+          chunkFrame(turnNonce, { reasoning_content: event.text }, null),
+        );
       scheduleClose();
     } else if (event.type === 'turn_complete') {
       deps.queue.notifyIdle(mainJid);

@@ -42,6 +42,13 @@ export interface RunContext {
   toolBroker?: ToolBroker;
   worktreePath?: string;
   /**
+   * Streaming consumer flag. When true (set by the Odysseus Web UI channel), the
+   * Claude backend enables SDK partial messages so answer text and tool/thinking
+   * activity stream incrementally as `output_text`/`activity` events instead of one
+   * terminal blob. Absent for WhatsApp/scheduler → unchanged buffered behavior.
+   */
+  stream?: boolean;
+  /**
    * Per-run IPC namespace key (LIA-211). When set, the container's IPC dir is
    * keyed `ipc/<groupFolder>/<runKey>` instead of `ipc/<groupFolder>`, so
    * concurrent runs that share a groupFolder (Linear dispatches/gates, each
@@ -53,6 +60,9 @@ export interface RunContext {
 
 export type RuntimeEvent =
   | { type: 'output_text'; text: string }
+  // Transient thinking/tool-progress line surfaced separately from the answer
+  // (Web UI renders it as a reasoning block). Sinks without a handler ignore it.
+  | { type: 'activity'; text: string }
   | { type: 'tool_call'; name: string; arguments: Record<string, unknown> }
   | { type: 'session'; sessionRef: RuntimeSession }
   | { type: 'turn_complete' }
