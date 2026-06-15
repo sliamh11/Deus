@@ -569,6 +569,87 @@ describe('SSE streaming', () => {
   });
 });
 
+// ── Incremental streaming (Web UI live output) ──────────────────────────────
+describe('SSE streaming — incremental', () => {
+  const post = () =>
+    request(
+      { method: 'POST', path: '/v1/chat/completions', headers: authHeaders },
+      chatBody(),
+    );
+
+  it('streams each output_text as its own ordered content delta (none empty)', async () => {
+    const turn: TurnDriver = async (sink) => {
+      await sink({ type: 'output_text', text: 'Hel' });
+      await sink({ type: 'output_text', text: 'lo ' });
+      await sink({ type: 'output_text', text: 'world' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'Hello world' };
+    };
+    await listen(makeDeps({ turn }));
+    const r = await post();
+    const contents = [...r.body.matchAll(/"content":"([^"]*)"/g)].map(
+      (m) => m[1],
+    );
+    expect(contents).toEqual(['Hel', 'lo ', 'world']);
+    expect(contents.every((c) => c.length > 0)).toBe(true);
+  });
+
+  it('maps an activity event to reasoning_content, never to answer content', async () => {
+    const turn: TurnDriver = async (sink) => {
+      await sink({ type: 'activity', text: 'Running grep' });
+      await sink({ type: 'output_text', text: 'done' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'done' };
+    };
+    await listen(makeDeps({ turn }));
+    const r = await post();
+    expect(r.body).toContain('"reasoning_content":"Running grep"');
+    expect(r.body).not.toContain('"content":"Running grep"');
+    expect(r.body).toContain('"content":"done"');
+  });
+
+  it('threads stream=true onto RunContext for a streaming request', async () => {
+    let captured: { stream?: boolean } | undefined;
+    await listen(
+      makeDeps({ onTurn: (ctx) => (captured = ctx as { stream?: boolean }) }),
+    );
+    await request(
+      { method: 'POST', path: '/v1/chat/completions', headers: authHeaders },
+      chatBody('hi', true),
+    );
+    expect(captured?.stream).toBe(true);
+  });
+
+  it('leaves RunContext.stream unset for a non-streaming request', async () => {
+    let captured: { stream?: boolean } | undefined;
+    await listen(
+      makeDeps({ onTurn: (ctx) => (captured = ctx as { stream?: boolean }) }),
+    );
+    await request(
+      { method: 'POST', path: '/v1/chat/completions', headers: authHeaders },
+      chatBody('hi', false),
+    );
+    expect(captured?.stream).toBeFalsy();
+  });
+
+  it('drops activity events on the non-streaming buffered path', async () => {
+    const turn: TurnDriver = async (sink) => {
+      await sink({ type: 'activity', text: 'Running grep' });
+      await sink({ type: 'output_text', text: 'answer' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'answer' };
+    };
+    await listen(makeDeps({ turn }));
+    const r = await request(
+      { method: 'POST', path: '/v1/chat/completions', headers: authHeaders },
+      chatBody('hi', false),
+    );
+    const parsed = JSON.parse(r.body);
+    expect(parsed.choices[0].message.content).toBe('answer');
+    expect(r.body).not.toContain('Running grep');
+  });
+});
+
 // ── Non-streaming ───────────────────────────────────────────────────────────
 describe('non-streaming', () => {
   beforeEach(() => listen(makeDeps()));

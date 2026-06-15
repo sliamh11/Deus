@@ -64,6 +64,10 @@ interface ContainerInput {
   imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
   projectHint?: string;
   effort?: 'low' | 'medium' | 'high' | 'max';
+  // Streaming consumer flag (Odysseus Web UI). Claude-only: enables SDK partial
+  // messages so answer text + tool activity stream incrementally. See host
+  // ContainerInputSchema in src/ipc-protocol.ts.
+  stream?: boolean;
 }
 
 interface ImageContentBlock {
@@ -78,9 +82,15 @@ type ContentBlock = ImageContentBlock | TextContentBlock;
 
 // SYNC-REQUIRED: Must match ContainerOutputSchema in src/ipc-protocol.ts (host side).
 // Cannot import from there — this package runs inside an isolated container.
+// Discriminated-union streaming protocol: 'success'|'error' are terminal;
+// 'partial' (carries `delta`) and 'activity' (carries `text`) are transient
+// streaming side-events, emitted Claude-only when the per-turn stream flag is set.
 interface ContainerOutput {
-  status: 'success' | 'error';
-  result: string | null;
+  status: 'success' | 'error' | 'partial' | 'activity';
+  result?: string | null;
+  delta?: string; // status:'partial' — incremental answer text.
+  text?: string; // status:'activity' — a thinking/tool-progress line.
+  streamed?: boolean; // status:'success' — true iff ≥1 partial was streamed.
   newSessionRef?: RuntimeSession;
   newSessionId?: string;
   error?: string;
@@ -868,9 +878,55 @@ async function runQuery(
     writeAvailableTools(process.env.DEUS_INTERACTION_ID, allowedTools);
   }
 
+  // ── Streaming (Web UI live output) ──────────────────────────────────────────
+  // runQuery is the CLAUDE path only (main() returns for openai/llama-cpp before
+  // calling it), so enabling partial messages here is structurally Claude-only.
+  // Gated by the per-turn stream flag → off for WhatsApp/scheduler (unchanged).
+  const wantsStreaming =
+    !!containerInput.stream &&
+    (containerInput.backend ?? 'claude') === 'claude';
+  // Coalesce token deltas into ~40-char / 50ms chunks (hard cap 512) so partial
+  // markers don't flood the IPC channel one-per-token. `didStreamPartials` tells
+  // the terminal result marker to set `streamed` so the host suppresses the
+  // duplicate final emission.
+  let partialBuf = '';
+  let lastPartialFlush = Date.now();
+  let didStreamPartials = false;
+  const PARTIAL_FLUSH_CHARS = 40;
+  const PARTIAL_FLUSH_MS = 50;
+  const PARTIAL_HARD_CAP = 512;
+  const flushPartial = (): void => {
+    if (!partialBuf) return;
+    writeOutput({ status: 'partial', delta: partialBuf });
+    partialBuf = '';
+    lastPartialFlush = Date.now();
+    didStreamPartials = true;
+  };
+  const pushPartial = (textDelta: string): void => {
+    partialBuf += textDelta;
+    // Emit in hard-cap-sized chunks if a single delta is unusually large, so one
+    // marker can never approach the host parse-buffer bound.
+    while (partialBuf.length >= PARTIAL_HARD_CAP) {
+      writeOutput({
+        status: 'partial',
+        delta: partialBuf.slice(0, PARTIAL_HARD_CAP),
+      });
+      partialBuf = partialBuf.slice(PARTIAL_HARD_CAP);
+      lastPartialFlush = Date.now();
+      didStreamPartials = true;
+    }
+    if (
+      partialBuf.length >= PARTIAL_FLUSH_CHARS ||
+      Date.now() - lastPartialFlush >= PARTIAL_FLUSH_MS
+    ) {
+      flushPartial();
+    }
+  };
+
   for await (const message of query({
     prompt: stream,
     options: {
+      includePartialMessages: wantsStreaming,
       cwd,
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
@@ -989,6 +1045,41 @@ async function runQuery(
       lastAssistantUuid = (message as { uuid: string }).uuid;
     }
 
+    // Web UI streaming: surface answer token deltas (→ partial) and tool-use
+    // starts (→ activity) as they happen. Only present when includePartialMessages
+    // is on (wantsStreaming). Defensive: a malformed event must never break a turn.
+    if (wantsStreaming && message.type === 'stream_event') {
+      try {
+        // The SDKMessage union types `event` as the broad BetaRawMessageStreamEvent;
+        // its content_block_delta/start members aren't narrowed on the union, so we
+        // structurally probe the fields we need rather than import the beta subtypes.
+        const ev = (message as { event?: Record<string, unknown> }).event;
+        const evType = ev?.type as string | undefined;
+        if (evType === 'content_block_delta') {
+          const delta = ev?.delta as
+            | { type?: string; text?: string }
+            | undefined;
+          if (delta?.type === 'text_delta' && delta.text)
+            pushPartial(delta.text);
+        } else if (evType === 'content_block_start') {
+          const block = (
+            ev as { content_block?: { type?: string; name?: string } }
+          ).content_block;
+          if (block?.type === 'tool_use' && block.name) {
+            flushPartial(); // keep streamed answer text ordered before the activity
+            writeOutput({ status: 'activity', text: `Running ${block.name}…` });
+          }
+        }
+      } catch (err) {
+        // Never break a turn on a malformed event, but log so SDK wire drift
+        // (a changed content_block_delta shape silently killing streaming) is
+        // observable instead of resurfacing as dead-air with no trace.
+        log(
+          `malformed stream_event ignored: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     if (message.type === 'system' && message.subtype === 'init') {
       newSessionId = message.session_id;
       if (newSessionId !== _trackedSessionId) {
@@ -1019,6 +1110,7 @@ async function runQuery(
     }
 
     if (message.type === 'result') {
+      flushPartial(); // emit any buffered streamed tail before the terminal marker
       resultCount++;
       const textResult =
         'result' in message ? (message as { result?: string }).result : null;
@@ -1029,6 +1121,10 @@ async function runQuery(
       writeOutput({
         status: 'success',
         result: textResult || null,
+        // When the answer already streamed as partials, tell the host to suppress
+        // re-emitting `result` (avoids duplication). Absent when not streaming →
+        // byte-identical to current behavior for WhatsApp/scheduler.
+        ...(didStreamPartials ? { streamed: true } : {}),
         newSessionRef: defaultSession(newSessionId),
         newSessionId,
         contextStats: _lastContextStats,
