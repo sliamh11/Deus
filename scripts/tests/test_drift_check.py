@@ -1114,6 +1114,86 @@ class TestCheckBenchLabels:
         rc = drift_check.check_bench_labels(repo_root)
         assert rc == 0, "Benchmark labels have drifted from vault — run drift_check.py --bench-labels"
 
+    # Existing tests all set DEUS_VAULT_PATH, bypassing the config.json tier.
+    # These exercise it directly via the expanduser-redirect pattern.
+
+    @staticmethod
+    def _redirect_config(monkeypatch, cfg_path):
+        original_expanduser = Path.expanduser
+
+        def fake_expand(self):
+            if str(self) == "~/.config/deus/config.json":
+                return cfg_path
+            return original_expanduser(self)
+
+        monkeypatch.setattr(Path, "expanduser", fake_expand)
+
+    def test_config_json_vault_used_when_env_unset(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "INFRA.md").write_text("---\ndescription: tools\n---\n")
+        cfg_dir = tmp_path / ".config" / "deus"
+        cfg_dir.mkdir(parents=True)
+        cfg_path = cfg_dir / "config.json"
+        cfg_path.write_text(json.dumps({"vault_path": str(vault)}))
+        self._redirect_config(monkeypatch, cfg_path)
+        # Isolate from real auto-memory so all_known derives only from the config vault.
+        monkeypatch.setattr(drift_check, "_AUTO_MEMORY_GLOBS", (tmp_path / "no-auto",))
+
+        root = self._make_bench(tmp_path, [
+            {"query": "test", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"]},
+        ])
+        assert drift_check.check_bench_labels(root) == 0
+        assert "OK" in capsys.readouterr().out
+
+    def test_malformed_config_json_falls_back(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+        cfg_dir = tmp_path / ".config" / "deus"
+        cfg_dir.mkdir(parents=True)
+        cfg_path = cfg_dir / "config.json"
+        cfg_path.write_text("{not valid json")
+        self._redirect_config(monkeypatch, cfg_path)
+        # Hermetic: malformed config → fall through to legacy path. Patch out
+        # auto-memory AND vault enumeration so the result is deterministic
+        # regardless of whether the legacy fallback happens to exist here.
+        monkeypatch.setattr(drift_check, "_AUTO_MEMORY_GLOBS", (tmp_path / "no-auto",))
+        monkeypatch.setattr(drift_check, "_collect_vault_paths", lambda v: set())
+
+        root = self._make_bench(tmp_path, [
+            {"query": "test", "expected_path": "X.md", "expected_paths": ["X.md"]},
+        ])
+        # Must not raise on malformed JSON; no known paths → skipped, rc 0.
+        assert drift_check.check_bench_labels(root) == 0
+        assert "skipped" in capsys.readouterr().out.lower()
+
+    def test_env_var_takes_precedence_over_config(self, tmp_path, monkeypatch, capsys):
+        env_vault = tmp_path / "env_vault"
+        env_vault.mkdir()
+        (env_vault / "INFRA.md").write_text("---\ndescription: tools\n---\n")
+        monkeypatch.setenv("DEUS_VAULT_PATH", str(env_vault))
+        # Config points at a different, NON-empty vault lacking INFRA.md. If it
+        # were wrongly used, validation would find OTHER.md but not INFRA.md →
+        # "Stale"/rc 1, distinguishable from the env vault's full-pass "OK".
+        cfg_dir = tmp_path / ".config" / "deus"
+        cfg_dir.mkdir(parents=True)
+        cfg_path = cfg_dir / "config.json"
+        bad_vault = tmp_path / "cfg_vault"
+        bad_vault.mkdir()
+        (bad_vault / "OTHER.md").write_text("---\ndescription: other\n---\n")
+        cfg_path.write_text(json.dumps({"vault_path": str(bad_vault)}))
+        self._redirect_config(monkeypatch, cfg_path)
+        monkeypatch.setattr(drift_check, "_AUTO_MEMORY_GLOBS", (tmp_path / "no-auto",))
+
+        root = self._make_bench(tmp_path, [
+            {"query": "test", "expected_path": "INFRA.md", "expected_paths": ["INFRA.md"]},
+        ])
+        rc = drift_check.check_bench_labels(root)
+        # "OK" proves the env vault was validated in full, not the config vault's
+        # skip/stale path — i.e. the env var won.
+        assert rc == 0
+        assert "OK" in capsys.readouterr().out
+
 
 # ── worktree merge-base auto-default (LIA-146) ──────────────────────────────────
 

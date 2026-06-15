@@ -2267,3 +2267,85 @@ class TestStandardsPack:
         assert pos_a < pos_b < pos_c, (
             f"expected alphabetical order; positions: A={pos_a} B={pos_b} C={pos_c}"
         )
+
+
+# ── resolve_vault_path — env var → config.json → legacy fallback ───────────────
+
+
+class TestResolveVaultPath:
+    """Cover resolve_vault_path's three tiers; redirect only the config.json
+    expanduser to a tmp file (pattern from test_memory_tree_phase3.py).
+    Fallback assertions are structural to stay user-agnostic for the public repo.
+    """
+
+    @staticmethod
+    def _redirect_config(monkeypatch, cfg_path):
+        original_expanduser = Path.expanduser
+
+        def fake_expand(self):
+            if str(self) == "~/.config/deus/config.json":
+                return cfg_path
+            return original_expanduser(self)
+
+        monkeypatch.setattr(Path, "expanduser", fake_expand)
+
+    @staticmethod
+    def _write_config(tmp_path, body):
+        cfg_dir = tmp_path / ".config" / "deus"
+        cfg_dir.mkdir(parents=True, exist_ok=True)
+        cfg_path = cfg_dir / "config.json"
+        cfg_path.write_text(body)
+        return cfg_path
+
+    def test_env_var_takes_precedence(self, tmp_path, monkeypatch):
+        env_vault = tmp_path / "env_vault"
+        monkeypatch.setenv("DEUS_VAULT_PATH", str(env_vault))
+        # Config present but must be ignored when the env var is set.
+        cfg_path = self._write_config(
+            tmp_path, json.dumps({"vault_path": str(tmp_path / "cfg_vault")})
+        )
+        self._redirect_config(monkeypatch, cfg_path)
+        assert mt.resolve_vault_path() == Path(str(env_vault))
+
+    def test_config_json_used_when_env_unset(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+        cfg_vault = tmp_path / "cfg_vault"
+        cfg_path = self._write_config(
+            tmp_path, json.dumps({"vault_path": str(cfg_vault)})
+        )
+        self._redirect_config(monkeypatch, cfg_path)
+        assert mt.resolve_vault_path() == Path(str(cfg_vault))
+
+    def test_missing_config_falls_back(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+        # Point at a config path that does not exist (file never written).
+        cfg_path = tmp_path / ".config" / "deus" / "config.json"
+        self._redirect_config(monkeypatch, cfg_path)
+        result = mt.resolve_vault_path()
+        assert isinstance(result, Path)
+        assert str(result).endswith("Deus")  # legacy fallback (user-agnostic)
+
+    def test_malformed_config_falls_back(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+        cfg_path = self._write_config(tmp_path, "{not valid json")
+        self._redirect_config(monkeypatch, cfg_path)
+        result = mt.resolve_vault_path()  # must not raise
+        assert isinstance(result, Path)
+        assert result != cfg_path
+        assert str(result).endswith("Deus")
+
+    def test_empty_vault_path_falls_back(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+        cfg_path = self._write_config(tmp_path, json.dumps({"vault_path": ""}))
+        self._redirect_config(monkeypatch, cfg_path)
+        result = mt.resolve_vault_path()
+        assert isinstance(result, Path)
+        assert str(result).endswith("Deus")
+
+    def test_non_string_vault_path_falls_back(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+        cfg_path = self._write_config(tmp_path, json.dumps({"vault_path": 42}))
+        self._redirect_config(monkeypatch, cfg_path)
+        result = mt.resolve_vault_path()
+        assert isinstance(result, Path)
+        assert str(result).endswith("Deus")
