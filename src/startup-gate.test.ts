@@ -9,6 +9,7 @@ vi.mock('./checks.js', () => ({
   hasAnyChannelAuth: vi.fn(() => false),
   hasContainerImage: vi.fn(() => false),
   countRegisteredGroups: vi.fn(() => 0),
+  detectPortCollision: vi.fn(() => ({ collision: false, port: null })),
 }));
 
 vi.mock('./logger.js', () => ({
@@ -23,6 +24,7 @@ import {
   hasAnyChannelAuth,
   hasContainerImage,
   countRegisteredGroups,
+  detectPortCollision,
 } from './checks.js';
 import {
   runStartupChecks,
@@ -45,6 +47,7 @@ const mockHasPythonDeps = vi.mocked(hasPythonDeps);
 const mockHasAnyChannelAuth = vi.mocked(hasAnyChannelAuth);
 const mockHasContainerImage = vi.mocked(hasContainerImage);
 const mockCountRegisteredGroups = vi.mocked(countRegisteredGroups);
+const mockDetectPortCollision = vi.mocked(detectPortCollision);
 
 beforeEach(() => {
   // Reset all check mocks to failing defaults
@@ -55,6 +58,7 @@ beforeEach(() => {
   mockHasAnyChannelAuth.mockReturnValue(false);
   mockHasContainerImage.mockReturnValue(false);
   mockCountRegisteredGroups.mockReturnValue(0);
+  mockDetectPortCollision.mockReturnValue({ collision: false, port: null });
 });
 
 // ── runStartupChecks ──────────────────────────────────────────────────────
@@ -141,6 +145,24 @@ describe('runStartupChecks', () => {
     expect(report.warnings).toHaveLength(0);
     expect(report.suggestions).toHaveLength(0);
     expect(report.passed.length).toBeGreaterThan(0);
+  });
+
+  it('returns fatal when the Odysseus/Linear webhook ports collide (LIA-301)', () => {
+    mockHasApiCredentials.mockReturnValue(true);
+    mockDetectPortCollision.mockReturnValue({ collision: true, port: 3005 });
+    const report = runStartupChecks();
+    const fatal = report.fatals.find((r) => r.name === 'Port configuration');
+    expect(fatal).toBeDefined();
+    expect(fatal!.hint).toContain('3005');
+    expect(fatal!.hint).toContain('ODYSSEUS_HTTP_PORT');
+    expect(fatal!.hint).toContain('LINEAR_WEBHOOK_PORT');
+  });
+
+  it('puts Port configuration in passed when there is no collision', () => {
+    mockHasApiCredentials.mockReturnValue(true);
+    const report = runStartupChecks();
+    const passedNames = report.passed.map((r) => r.name);
+    expect(passedNames).toContain('Port configuration');
   });
 });
 
