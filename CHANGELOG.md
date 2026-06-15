@@ -4,6 +4,51 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.23.0](https://github.com/sliamh11/Deus/compare/v1.22.0...v1.23.0) (2026-06-15)
+
+
+### Features
+
+* **arch:** save/restore named views in the explorer (LIA-296) ([#828](https://github.com/sliamh11/Deus/issues/828)) ([1a91ae6](https://github.com/sliamh11/Deus/commit/1a91ae618dd17b10d64a7b37882b10cdd0e61460))
+* **cli:** add `deus sync upstream` to pull canonical Deus into a fork ([#815](https://github.com/sliamh11/Deus/issues/815)) ([9bb3cf0](https://github.com/sliamh11/Deus/commit/9bb3cf046aaaa62bf3f755a6a5c0b2e8f6f5f162))
+* **cli:** deus arch command + auto-enable memory-tree when configured (LIA-243) ([#811](https://github.com/sliamh11/Deus/issues/811)) ([8b7a7e3](https://github.com/sliamh11/Deus/commit/8b7a7e3c41253324404b2ed313113d5ba67f419e))
+* **judge:** harden quality rubric against fluent-simulation over-scoring (LIA-280) ([#789](https://github.com/sliamh11/Deus/issues/789)) ([83d6a2a](https://github.com/sliamh11/Deus/commit/83d6a2a02364215d02326401d9035176170517bc))
+* **LIA-188:** safety judge hardening -- red-team fixtures, hardened rubric, bench harness ([#776](https://github.com/sliamh11/Deus/issues/776)) ([f725751](https://github.com/sliamh11/Deus/commit/f725751111533e154d15751062bbcfe1fabea625))
+* **LIA-279:** harden judge tool_use rubric to fix no-tool over-scoring ([#787](https://github.com/sliamh11/Deus/issues/787)) ([ad03ad2](https://github.com/sliamh11/Deus/commit/ad03ad24b294d0e9039ff39a2057843dd9d37635))
+* **LIA-281:** add --diff mode for the true KV-cache reuse ceiling ([#791](https://github.com/sliamh11/Deus/issues/791)) ([07f1382](https://github.com/sliamh11/Deus/commit/07f13823c8ade0525b586d326c3014a0a87b5807))
+* **linear:** sort pending block by priority, fix webhook multi-team clobber ([#833](https://github.com/sliamh11/Deus/issues/833)) ([33981dd](https://github.com/sliamh11/Deus/commit/33981dd64e2fe02f0331d58816ec00261bfc27ad))
+* **odysseus:** isolate Web UI conversations with per-turn sessions (LIA-294) ([#814](https://github.com/sliamh11/Deus/issues/814)) ([9c2ada6](https://github.com/sliamh11/Deus/commit/9c2ada6d73a6a3289972e1f1e9095b0094e9625e))
+* **scripts:** cache-prefix-stability detector (LIA-205) ([#783](https://github.com/sliamh11/Deus/issues/783)) ([f45825c](https://github.com/sliamh11/Deus/commit/f45825c18a05145f7cc960a029a4302979f31531))
+* **scripts:** vetted CI-wait poll helper replacing gh pr checks --watch ([#796](https://github.com/sliamh11/Deus/issues/796)) ([f907cb3](https://github.com/sliamh11/Deus/commit/f907cb31db6874f0e13b3583f75f1c6c3bb632ab))
+* **tools:** 3D architecture explorer ([#797](https://github.com/sliamh11/Deus/issues/797)) ([8b4687e](https://github.com/sliamh11/Deus/commit/8b4687ec40e40fe86c2018e4a2129f864319a22f))
+* **tools:** auto-derive arch-explorer layers so it works on any repo ([#802](https://github.com/sliamh11/Deus/issues/802)) ([75c5fba](https://github.com/sliamh11/Deus/commit/75c5fba09a6ec2833b0512943b85f44ba225157f))
+* **tools:** directory-hierarchy tree view for arch-explorer (LIA-292) ([#807](https://github.com/sliamh11/Deus/issues/807)) ([f54119a](https://github.com/sliamh11/Deus/commit/f54119a1c0c5e88e1ddbe9fe2ffc772754343393))
+* **wardens:** enforce predict→execute→diff expected-output discipline ([#800](https://github.com/sliamh11/Deus/issues/800)) ([4f1b958](https://github.com/sliamh11/Deus/commit/4f1b9582ab39e3442d695eea3a975d0b47c74422))
+* **wardens:** oracle-author for independent red-green tests ([#804](https://github.com/sliamh11/Deus/issues/804)) ([3c6638a](https://github.com/sliamh11/Deus/commit/3c6638a3ffb7c13738e54eb92804dec8643dd85d))
+
+
+### Bug Fixes
+
+* **agent-runner:** guard image-attachment path traversal in default Claude backend (LIA-220) ([#785](https://github.com/sliamh11/Deus/issues/785)) ([a62ff0d](https://github.com/sliamh11/Deus/commit/a62ff0d3854d80217f7356a9fc5b36868473d925))
+* **container-mounter:** shadow real credentials from the control-group project mount (LIA-210) ([#786](https://github.com/sliamh11/Deus/issues/786)) ([dad4854](https://github.com/sliamh11/Deus/commit/dad4854f9005248b7ef0894d9857ecfea45c9fe1))
+* **container-runner:** bound the streaming parse buffer (LIA-234) ([#803](https://github.com/sliamh11/Deus/issues/803)) ([0c7662e](https://github.com/sliamh11/Deus/commit/0c7662e1efa1b8702cdc88b05490e0b567126748))
+* **container-runner:** escalate to runtime kill when graceful stop fails ([#818](https://github.com/sliamh11/Deus/issues/818)) ([6195f31](https://github.com/sliamh11/Deus/commit/6195f315158b6893c4dac73e5b907c0d16b51ac1))
+* **container-runner:** prevent a rejected onOutput from wedging the group (LIA-212) ([#790](https://github.com/sliamh11/Deus/issues/790)) ([c3bdc95](https://github.com/sliamh11/Deus/commit/c3bdc95824d292e7cf26b444f40cbc0a8ed3791f))
+* **credential-proxy:** key memory-bridge rate limit per authenticated group (LIA-244) ([#812](https://github.com/sliamh11/Deus/issues/812)) ([ca4822b](https://github.com/sliamh11/Deus/commit/ca4822b6e00b400e42479c862e5c661c83969dd3))
+* **evolution-client:** bound the fire-and-forget log_interaction child (LIA-235) ([#805](https://github.com/sliamh11/Deus/issues/805)) ([47fc74c](https://github.com/sliamh11/Deus/commit/47fc74c6ddb6fa853baee871d887ed0d2b7db36e))
+* **evolution:** credit retrieved reflections at scoring time (LIA-214) ([#794](https://github.com/sliamh11/Deus/issues/794)) ([2fef9e3](https://github.com/sliamh11/Deus/commit/2fef9e3613c02c2fb1969154587e81edc4451b2d))
+* **evolution:** reject + filter corrupted reflections poisoning live prompts (LIA-213) ([#793](https://github.com/sliamh11/Deus/issues/793)) ([5163e3e](https://github.com/sliamh11/Deus/commit/5163e3ef5de35ee98430e70717975f66089c22f0))
+* **evolution:** self-calibrating optimizer abstain floor (LIA-209) ([#795](https://github.com/sliamh11/Deus/issues/795)) ([6e7d3d5](https://github.com/sliamh11/Deus/commit/6e7d3d54c6692b986cabd59e888c3f513f58a2dd))
+* **linear-auto-merge:** --admin poll-to-green for the autonomous auto-merge (LIA-215) ([#798](https://github.com/sliamh11/Deus/issues/798)) ([3683ad5](https://github.com/sliamh11/Deus/commit/3683ad560188f6d4e227b253ea2e434d128f03d1))
+* **linear-dispatcher:** per-run IPC isolation for concurrent dispatches (LIA-211) ([#792](https://github.com/sliamh11/Deus/issues/792)) ([a57c506](https://github.com/sliamh11/Deus/commit/a57c506ae77e4ff7b5ef6108febac78e1b75aa9d))
+* **linear-sync:** fetch pending issues from all teams, not just the first ([#824](https://github.com/sliamh11/Deus/issues/824)) ([574a805](https://github.com/sliamh11/Deus/commit/574a8053f55eaa6eb9e12e129df8ee2b25a1875c))
+* **linear-webhook:** bind to loopback by default ([#822](https://github.com/sliamh11/Deus/issues/822)) ([e45cc30](https://github.com/sliamh11/Deus/commit/e45cc309c3afafde60b7156a3856b257a578a13f))
+* **linear-webhook:** disable bot-actor guard when no dedicated bot id is set (LIA-240) ([#813](https://github.com/sliamh11/Deus/issues/813)) ([3c0f6bd](https://github.com/sliamh11/Deus/commit/3c0f6bd7e3e0b7e65a9cd85c4b13f0510e2dc648))
+* **linear-webhook:** treat no-verdict-marker gate output as malfunction (LIA-241) ([#808](https://github.com/sliamh11/Deus/issues/808)) ([a2dd2ea](https://github.com/sliamh11/Deus/commit/a2dd2eadc7e07b94eda5439ea4ef9f5437703157))
+* **logger:** disable ANSI color when stdout is not a TTY ([#821](https://github.com/sliamh11/Deus/issues/821)) ([187e85d](https://github.com/sliamh11/Deus/commit/187e85d8c1406a4a1256dc44c8c584d7b6eb9679))
+* **memory,hooks:** surface swallowed exceptions (LIA-245, LIA-246) ([#810](https://github.com/sliamh11/Deus/issues/810)) ([2daea1c](https://github.com/sliamh11/Deus/commit/2daea1c943008a287d5e296cbbbb500f5bad5562))
+* **memory:** WAL + busy_timeout on the shared memory DBs (LIA-242) ([#809](https://github.com/sliamh11/Deus/issues/809)) ([e5d0197](https://github.com/sliamh11/Deus/commit/e5d019745f31daf0b2eb0edc8bf773107e74ac8e))
+
 ## [1.22.0](https://github.com/sliamh11/Deus/compare/v1.21.0...v1.22.0) (2026-06-11)
 
 

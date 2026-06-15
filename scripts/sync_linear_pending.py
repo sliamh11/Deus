@@ -39,6 +39,11 @@ STATE_PRIORITY = {
     "Backlog": 5,
 }
 
+# Linear issue priority: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low.
+# Remap so Urgent sorts first and "No priority" sorts last.
+# Keep in sync with PRIORITY_RANK in src/linear-vault-sync.ts.
+PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3, 0: 4}
+
 EXCLUDED_STATES = {"Done", "Canceled", "Duplicate"}
 
 QUERY = """
@@ -53,6 +58,7 @@ query($teamId: ID!) {
     nodes {
       title
       identifier
+      priority
       state { name type }
     }
   }
@@ -160,6 +166,7 @@ def _cache_is_fresh(cache: Path, db: Path) -> bool:
 
 def _format_pending(issues: list[dict]) -> str:
     issues.sort(key=lambda i: (
+        PRIORITY_RANK.get(i.get("priority", 0), 4),
         STATE_PRIORITY.get(i.get("state", {}).get("name", ""), 99),
         int(re.sub(r"\D", "", i.get("identifier", "0")) or "0"),
     ))

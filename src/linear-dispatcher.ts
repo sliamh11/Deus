@@ -37,6 +37,7 @@ import { defaultSession } from './agent-runtimes/types.js';
 import { CONTAINER_TIMEOUT_ERROR_PREFIX } from './container-runner.js';
 import { resolveGroupIpcPath } from './group-folder.js';
 import { getBus } from './events/bus.js';
+import { envPositiveInt } from './env-utils.js';
 import type {
   RunContext,
   RuntimeEventSink,
@@ -53,8 +54,10 @@ const DEFAULT_POLL_MS = 30_000;
 // Deadline ceiling for a single Linear poll fetch (env-overridable). The effective
 // per-poll timeout (_fetchTimeoutMs) is derived from the active poll interval so it
 // is always < the interval — a hung fetch can never overlap the next tick.
-const LINEAR_FETCH_TIMEOUT_MS =
-  Number(process.env.LINEAR_FETCH_TIMEOUT_MS) || 15_000;
+const LINEAR_FETCH_TIMEOUT_MS = envPositiveInt(
+  'LINEAR_FETCH_TIMEOUT_MS',
+  15_000,
+);
 // Effective per-poll fetch deadline. Recomputed by startLinearDispatcher and
 // setPollInterval (which co-manage _timer) so it tracks the live poll interval.
 let _fetchTimeoutMs = LINEAR_FETCH_TIMEOUT_MS;

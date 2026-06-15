@@ -11,6 +11,7 @@ function mockLinearClient(
     url: string;
     stateName: string;
     stateType: string;
+    priority?: number;
   }>,
 ) {
   // Only .issues() is exercised; full LinearClient has ~40 methods
@@ -20,6 +21,7 @@ function mockLinearClient(
         title: i.title,
         identifier: i.identifier,
         url: i.url,
+        priority: i.priority,
         state: Promise.resolve({ name: i.stateName, type: i.stateType }),
       })),
     }),
@@ -108,6 +110,116 @@ describe('fetchActiveIssues', () => {
       'LIA-8',
       'LIA-10',
     ]);
+  });
+
+  it('sorts by issue priority first: Urgent before High before None', async () => {
+    // Same state (Backlog) so only priority distinguishes them.
+    // Linear priority: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low.
+    const client = mockLinearClient([
+      {
+        title: 'No priority',
+        identifier: 'LIA-1',
+        url: '',
+        stateName: 'Backlog',
+        stateType: 'backlog',
+        priority: 0,
+      },
+      {
+        title: 'High',
+        identifier: 'LIA-2',
+        url: '',
+        stateName: 'Backlog',
+        stateType: 'backlog',
+        priority: 2,
+      },
+      {
+        title: 'Urgent',
+        identifier: 'LIA-3',
+        url: '',
+        stateName: 'Backlog',
+        stateType: 'backlog',
+        priority: 1,
+      },
+    ]);
+    const result = await fetchActiveIssues(client, 'team-1');
+    expect(result.map((i) => i.identifier)).toEqual([
+      'LIA-3', // Urgent
+      'LIA-2', // High
+      'LIA-1', // None (last)
+    ]);
+  });
+
+  it('priority outranks state and identifier (frozen LIA-9/LIA-10 case)', async () => {
+    // Urgent LIA-9 must sort before Medium LIA-10 even though both are Backlog
+    // and LIA-9 has the higher number.
+    const client = mockLinearClient([
+      {
+        title: 'Medium task',
+        identifier: 'LIA-10',
+        url: '',
+        stateName: 'Backlog',
+        stateType: 'backlog',
+        priority: 3,
+      },
+      {
+        title: 'Urgent task',
+        identifier: 'LIA-9',
+        url: '',
+        stateName: 'Backlog',
+        stateType: 'backlog',
+        priority: 1,
+      },
+    ]);
+    const result = await fetchActiveIssues(client, 'team-1');
+    expect(result.map((i) => i.identifier)).toEqual(['LIA-9', 'LIA-10']);
+  });
+
+  it('priority dominates STATE_PRIORITY (Urgent+Backlog before None+In Progress)', async () => {
+    // Priority is prepended to the sort key, so an Urgent issue in a low-ranked
+    // state must still outrank a No-priority issue in a high-ranked state.
+    const client = mockLinearClient([
+      {
+        title: 'No priority, In Progress',
+        identifier: 'LIA-1',
+        url: '',
+        stateName: 'In Progress',
+        stateType: 'started',
+        priority: 0,
+      },
+      {
+        title: 'Urgent, Backlog',
+        identifier: 'LIA-2',
+        url: '',
+        stateName: 'Backlog',
+        stateType: 'backlog',
+        priority: 1,
+      },
+    ]);
+    const result = await fetchActiveIssues(client, 'team-1');
+    expect(result.map((i) => i.identifier)).toEqual(['LIA-2', 'LIA-1']);
+  });
+
+  it('treats missing priority as No priority (sorts last)', async () => {
+    const client = mockLinearClient([
+      {
+        title: 'Unset priority',
+        identifier: 'LIA-1',
+        url: '',
+        stateName: 'Backlog',
+        stateType: 'backlog',
+        // priority omitted -> undefined -> 0 -> rank last
+      },
+      {
+        title: 'Urgent',
+        identifier: 'LIA-2',
+        url: '',
+        stateName: 'Backlog',
+        stateType: 'backlog',
+        priority: 1,
+      },
+    ]);
+    const result = await fetchActiveIssues(client, 'team-1');
+    expect(result.map((i) => i.identifier)).toEqual(['LIA-2', 'LIA-1']);
   });
 });
 

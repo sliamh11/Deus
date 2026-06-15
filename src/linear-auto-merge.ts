@@ -23,6 +23,7 @@ import { logger } from './logger.js';
 import { extractPrUrl } from './pr-url-extractor.js';
 import { notifyPipelineStep } from './linear-notifications.js';
 import { fireAndForget } from './async/index.js';
+import { envPositiveInt } from './env-utils.js';
 import type { LinearContext } from './linear-dispatcher.js';
 
 const execFileAsync = promisify(execFile);
@@ -363,7 +364,7 @@ async function pollUntilMergeable(
   // Max CI-poll cycles before parking a still-pending PR (LIA-215). 20 × 60s ≈
   // 20 min — generous headroom over this repo's ~3-min CI. Read at call time so
   // it's env-overridable (and test-tunable) without a restart.
-  const maxAttempts = Number(process.env.AUTO_MERGE_POLL_MAX_ATTEMPTS) || 20;
+  const maxAttempts = envPositiveInt('AUTO_MERGE_POLL_MAX_ATTEMPTS', 20);
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await new Promise<void>((resolve) =>
       setTimeout(resolve, CI_POLL_INTERVAL_MS),
