@@ -163,3 +163,74 @@ def test_main_single_team_output_stays_flat(run_main):
     lines = out.splitlines()
     assert len(lines) == 2
     assert lines[1] == "  - [ ] hello (LIA-2)"
+
+
+# ── pagination ────────────────────────────────────────────────────────────
+
+
+def test_fetch_team_issues_follows_cursor(monkeypatch):
+    # Two pages: page 1 (hasNextPage, cursor c1) → page 2 (end). Both must be
+    # returned, proving the endCursor is threaded into the next request.
+    def paging(token, query, variables=None):
+        after = (variables or {}).get("after")
+        if after is None:
+            return {
+                "data": {
+                    "issues": {
+                        "nodes": [_issue("LIA-1")],
+                        "pageInfo": {"hasNextPage": True, "endCursor": "c1"},
+                    }
+                }
+            }
+        assert after == "c1"  # the cursor was carried forward
+        return {
+            "data": {
+                "issues": {
+                    "nodes": [_issue("LIA-2")],
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
+                }
+            }
+        }
+
+    monkeypatch.setattr(mod, "_graphql", paging)
+    got = mod._fetch_team_issues("tok", "t1")
+    assert [n["identifier"] for n in got] == ["LIA-1", "LIA-2"]
+
+
+def test_fetch_team_issues_missing_pageinfo_is_single_page(monkeypatch):
+    # Back-compat: a response without pageInfo (the shape the other mocks use)
+    # is treated as a single page — no infinite loop, no second request.
+    calls = {"n": 0}
+
+    def one_page(token, query, variables=None):
+        calls["n"] += 1
+        return {"data": {"issues": {"nodes": [_issue("LIA-1")]}}}
+
+    monkeypatch.setattr(mod, "_graphql", one_page)
+    got = mod._fetch_team_issues("tok", "t1")
+    assert [n["identifier"] for n in got] == ["LIA-1"]
+    assert calls["n"] == 1
+
+
+def test_fetch_team_issues_respects_page_cap(monkeypatch, capsys):
+    # A team that never stops paginating must terminate at MAX_PAGES_PER_TEAM
+    # and emit a visible stderr warning rather than looping forever.
+    def always_more(token, query, variables=None):
+        return {
+            "data": {
+                "issues": {
+                    "nodes": [_issue("LIA-1")],
+                    "pageInfo": {"hasNextPage": True, "endCursor": "c"},
+                }
+            }
+        }
+
+    monkeypatch.setattr(mod, "_graphql", always_more)
+    got = mod._fetch_team_issues("tok", "t1")
+    assert len(got) == mod.MAX_PAGES_PER_TEAM
+    err = capsys.readouterr().err
+    assert (
+        f"warning: team t1 hit page cap "
+        f"(MAX_PAGES_PER_TEAM={mod.MAX_PAGES_PER_TEAM}); results may be truncated"
+        in err
+    )

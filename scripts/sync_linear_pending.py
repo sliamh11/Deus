@@ -46,14 +46,21 @@ PRIORITY_RANK = {1: 0, 2: 1, 3: 2, 4: 3, 0: 4}
 
 EXCLUDED_STATES = {"Done", "Canceled", "Duplicate"}
 
+# Linear's max page size is 250; we paginate so a team with more open issues
+# is never silently truncated.
+LINEAR_PAGE_SIZE = 250
+# Defensive bound far above any real workspace; hitting it warns to stderr.
+MAX_PAGES_PER_TEAM = 40
+
 QUERY = """
-query($teamId: ID!) {
+query($teamId: ID!, $after: String) {
   issues(
     filter: {
       team: { id: { eq: $teamId } }
       state: { type: { nin: ["completed", "canceled"] } }
     }
-    first: 50
+    first: 250
+    after: $after
   ) {
     nodes {
       title
@@ -61,6 +68,7 @@ query($teamId: ID!) {
       priority
       state { name type }
     }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
@@ -152,6 +160,34 @@ def _discover_team_ids(token: str) -> list[str]:
     return [n["id"] for n in nodes if n.get("id")]
 
 
+def _fetch_team_issues(token: str, tid: str) -> list[dict]:
+    """All open issue nodes for a team, following cursor pagination.
+
+    Exceptions are NOT caught here — they propagate to main()'s per-team handler,
+    preserving the fail-loud (auth/rate) vs warn-skip (network) semantics. A
+    response without pageInfo is treated as a single page.
+    """
+    nodes: list[dict] = []
+    after: str | None = None
+    for _ in range(MAX_PAGES_PER_TEAM):
+        result = _graphql(token, QUERY, {"teamId": tid, "after": after})
+        conn = result.get("data", {}).get("issues", {})
+        nodes.extend(conn.get("nodes", []))
+        page = conn.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            break
+        after = page.get("endCursor")
+        if not after:
+            break
+    else:
+        print(
+            f"warning: team {tid} hit page cap "
+            f"(MAX_PAGES_PER_TEAM={MAX_PAGES_PER_TEAM}); results may be truncated",
+            file=sys.stderr,
+        )
+    return nodes
+
+
 def _cache_is_fresh(cache: Path, db: Path) -> bool:
     if not cache.exists():
         return False
@@ -224,7 +260,7 @@ def main() -> int:
     successes = 0
     for tid in team_ids:
         try:
-            result = _graphql(token, QUERY, {"teamId": tid})
+            team_nodes = _fetch_team_issues(token, tid)
         except HTTPError as e:
             if e.code == 401:
                 print(f"auth error (team {tid}): {e}", file=sys.stderr)
@@ -238,9 +274,7 @@ def main() -> int:
             print(f"network error (team {tid}, skipped): {e}", file=sys.stderr)
             continue
         successes += 1
-        raw_nodes.extend(
-            result.get("data", {}).get("issues", {}).get("nodes", [])
-        )
+        raw_nodes.extend(team_nodes)
 
     if successes == 0:
         print("all team fetches failed", file=sys.stderr)

@@ -20,6 +20,12 @@ const EXCLUDED_STATE_TYPES = new Set(['completed', 'canceled']);
 // PRIORITY_RANK in scripts/sync_linear_pending.py — keep the two in lockstep.
 const PRIORITY_RANK: Record<number, number> = { 1: 0, 2: 1, 3: 2, 4: 3, 0: 4 };
 
+// Linear's max page size is 250; we paginate so a team with more open issues
+// is never silently truncated.
+const PAGE_SIZE = 250;
+// Defensive bound far above any real workspace; hitting it logs a warning.
+const MAX_PAGES = 40;
+
 interface LinearIssueNode {
   title: string;
   identifier: string;
@@ -37,8 +43,23 @@ export async function fetchActiveIssues(
       state: { type: { nin: ['completed', 'canceled'] } },
       team: { id: { eq: teamId } },
     },
-    first: 50,
+    first: PAGE_SIZE,
   });
+
+  // Follow pagination: fetchNext() appends the next page to result.nodes
+  // (cumulative) and updates result.pageInfo, so the consumer below reads the
+  // full set.
+  let pages = 1;
+  while (result.pageInfo?.hasNextPage && pages < MAX_PAGES) {
+    await result.fetchNext();
+    pages++;
+  }
+  if (result.pageInfo?.hasNextPage) {
+    logger.warn(
+      { teamId, pages },
+      'vault-sync: hit page cap; pending block may be truncated',
+    );
+  }
 
   const issues: LinearIssueNode[] = [];
   const stateRelations = result.nodes.map((n) => n.state);

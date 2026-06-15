@@ -3,6 +3,16 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { syncVaultPending, fetchActiveIssues } from './linear-vault-sync.js';
+import { logger } from './logger.js';
+
+function issueNode(id: string, name = 'Todo', type = 'unstarted') {
+  return {
+    title: id,
+    identifier: id,
+    url: '',
+    state: Promise.resolve({ name, type }),
+  };
+}
 
 function mockLinearClient(
   issues: Array<{
@@ -220,6 +230,48 @@ describe('fetchActiveIssues', () => {
     ]);
     const result = await fetchActiveIssues(client, 'team-1');
     expect(result.map((i) => i.identifier)).toEqual(['LIA-2', 'LIA-1']);
+  });
+
+  it('paginates across multiple pages via fetchNext', async () => {
+    // Page 1 has a next page; fetchNext appends page 2 and clears hasNextPage
+    // (the @linear/sdk contract: fetchNext mutates connection.nodes in place).
+    const connection: any = {
+      nodes: [issueNode('LIA-1')],
+      pageInfo: { hasNextPage: true },
+      fetchNext: vi.fn(async () => {
+        connection.nodes.push(issueNode('LIA-2'));
+        connection.pageInfo = { hasNextPage: false };
+        return connection;
+      }),
+    };
+    const client = { issues: vi.fn().mockResolvedValue(connection) } as any;
+
+    const result = await fetchActiveIssues(client, 'team-1');
+    // Both pages present (both Todo → sorted by identifier number).
+    expect(result.map((i) => i.identifier)).toEqual(['LIA-1', 'LIA-2']);
+    expect(connection.fetchNext).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops at the page cap and warns instead of looping forever', async () => {
+    const warnSpy = vi
+      .spyOn(logger, 'warn')
+      .mockImplementation(() => undefined as any);
+    // fetchNext never clears hasNextPage → would loop forever without the cap.
+    const connection: any = {
+      nodes: [issueNode('LIA-1')],
+      pageInfo: { hasNextPage: true },
+      fetchNext: vi.fn(async () => {
+        connection.nodes.push(issueNode(`LIA-${connection.nodes.length + 1}`));
+        return connection;
+      }),
+    };
+    const client = { issues: vi.fn().mockResolvedValue(connection) } as any;
+
+    await fetchActiveIssues(client, 'team-1');
+    // MAX_PAGES = 40, loop starts at pages=1 → fetchNext called 39 times.
+    expect(connection.fetchNext).toHaveBeenCalledTimes(39);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
   });
 });
 
