@@ -648,7 +648,39 @@
       if (dagModeController) { try { dagModeController.updateDisplay(); } catch (e) { /* graceful */ } }
     }
 
-    return { init: init, refresh: refresh, onSelect: onSelect, rebind: rebind, syncControlType: syncControlType, syncDagMode: syncDagMode, shapeForLayerOrder: shapeForLayerOrder };
+    // Snapshot the live appearance for a saved view (ArchViews). Returns a shallow
+    // copy so callers can't mutate the internal theme. `dagMode` is DELIBERATELY
+    // excluded: it tracks the live layout (may be 'td' after a tree toggle) but a
+    // saved view drives the dag from its OWN nav.layoutMode via restore()+syncDagMode,
+    // so carrying dagMode here would desync the dropdown on restore (same reasoning as
+    // syncDagMode's no-saveTheme note above).
+    function getTheme() {
+      var copy = Object.assign({}, theme);
+      delete copy.dagMode;
+      return copy;
+    }
+
+    // Re-apply a saved appearance blob (ArchViews restore). Mirrors applyPreset:
+    // merge over the live theme, persist, sync the GUI controls, re-apply visuals.
+    // applyAll()→applyCamera() handles a controlType change by rebuilding the graph
+    // (controlType is construction-only); the rebind `rebinding` guard prevents
+    // re-entry. Node positions are NOT carried here — the caller restores nav state
+    // AFTER this (app.js restore() regenerates graphData), so positions reseed there.
+    function applyTheme(obj) {
+      if (!obj) return;
+      Object.keys(obj).forEach(function (k) {
+        if (k === 'dagMode') return;            // never let a saved blob drive the dag
+        theme[k] = obj[k];
+      });
+      saveTheme(theme);
+      if (gui) {
+        try { gui.controllersRecursive().forEach(function (c) { c.updateDisplay(); }); }
+        catch (e) { /* graceful */ }
+      }
+      applyAll();
+    }
+
+    return { init: init, refresh: refresh, onSelect: onSelect, rebind: rebind, syncControlType: syncControlType, syncDagMode: syncDagMode, shapeForLayerOrder: shapeForLayerOrder, getTheme: getTheme, applyTheme: applyTheme };
   })();
 
 })();

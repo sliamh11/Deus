@@ -1956,6 +1956,10 @@ export function startLinearWebhookServer(
     10,
   );
   const webhookPort = isNaN(port) ? DEFAULT_WEBHOOK_PORT : port;
+  // Bind to loopback by default so the unauthenticated /health endpoint is not
+  // reachable from the LAN; override with LINEAR_WEBHOOK_HOST when fronted by a
+  // tunnel/proxy on a trusted interface.
+  const webhookHost = process.env.LINEAR_WEBHOOK_HOST || '127.0.0.1';
 
   const webhookClient = new LinearWebhookClient(secret);
   const handler = webhookClient.createHandler();
@@ -2007,15 +2011,15 @@ export function startLinearWebhookServer(
 
     server.on('error', (err) => {
       logger.error(
-        { err, port: webhookPort },
+        { err, host: webhookHost, port: webhookPort },
         'linear-webhook: server bind failed',
       );
       reject(err);
     });
 
-    server.listen(webhookPort, '0.0.0.0', () => {
+    server.listen(webhookPort, webhookHost, () => {
       logger.info(
-        { port: webhookPort, gates: [...gateSpecs.keys()] },
+        { host: webhookHost, port: webhookPort, gates: [...gateSpecs.keys()] },
         'linear-webhook: server started',
       );
       resolve(server);

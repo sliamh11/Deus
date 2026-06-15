@@ -586,9 +586,24 @@ export async function runContainerAgent(
           if (err) {
             logger.warn(
               { group: group.name, containerName, err },
-              'Graceful stop failed, force killing',
+              'Graceful stop failed, force killing container',
             );
-            forceKillProcess(container.pid!);
+            // `docker kill` targets the runtime container; forceKillProcess only
+            // reaps the orphaned `docker stop` CLI client, not the container.
+            execFile(
+              CONTAINER_RUNTIME_BIN,
+              ['kill', containerName],
+              { timeout: 15000 },
+              (killErr) => {
+                if (killErr) {
+                  logger.error(
+                    { group: group.name, containerName, err: killErr },
+                    'Force kill failed — container may still be running',
+                  );
+                }
+                if (container.pid != null) forceKillProcess(container.pid);
+              },
+            );
           }
         },
       );

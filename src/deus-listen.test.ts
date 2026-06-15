@@ -24,6 +24,7 @@ vi.mock('./platform.js', () => ({
   IS_LINUX: false,
   IS_WINDOWS: false,
   killProcess: vi.fn(),
+  isInteractiveTerminal: () => false,
 }));
 
 vi.mock('./transcription.js', () => ({

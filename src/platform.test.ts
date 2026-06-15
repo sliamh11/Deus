@@ -22,6 +22,7 @@ import {
   containerBuildHint,
   detectProxyBindHost,
   hostGatewayArgs,
+  isInteractiveTerminal,
 } from './platform.js';
 
 const mockExecFileSync = vi.mocked(execFileSync);
@@ -107,5 +108,11 @@ describe('hostGatewayArgs', () => {
     } else {
       expect(args).toEqual([]);
     }
+  });
+});
+
+describe('isInteractiveTerminal', () => {
+  it('returns a boolean (never undefined, via the ?? false guard)', () => {
+    expect(typeof isInteractiveTerminal()).toBe('boolean');
   });
 });

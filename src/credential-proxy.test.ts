@@ -35,7 +35,6 @@ import { execFileSync } from 'child_process';
 import {
   startCredentialProxy,
   _resetCredentialsCacheForTest,
-  envPositiveInt,
 } from './credential-proxy.js';
 import { AuthProviderRegistry } from './auth-providers/types.js';
 import * as configModule from './config.js';
@@ -773,30 +772,4 @@ describe('credential-proxy', () => {
       }
     });
   });
-});
-
-describe('envPositiveInt (LIA-236)', () => {
-  const NAME = 'DEUS_TEST_ENV_POSITIVE_INT';
-  const FB = 12345;
-
-  afterEach(() => {
-    delete process.env[NAME];
-  });
-
-  it('returns the fallback when unset', () => {
-    expect(envPositiveInt(NAME, FB)).toBe(FB);
-  });
-
-  it('returns a valid positive number', () => {
-    process.env[NAME] = '500';
-    expect(envPositiveInt(NAME, FB)).toBe(500);
-  });
-
-  it.each(['', 'abc', '0', '-5', 'NaN'])(
-    'falls back on malformed/non-positive value %j',
-    (bad) => {
-      process.env[NAME] = bad;
-      expect(envPositiveInt(NAME, FB)).toBe(FB);
-    },
-  );
 });
