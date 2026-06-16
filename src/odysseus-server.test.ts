@@ -8,6 +8,8 @@ vi.mock('./config.js', () => ({
   ODYSSEUS_HTTP_ENABLED: true,
   ODYSSEUS_HTTP_PORT: 0,
   INJECTION_SCANNER_CONFIG: { enabled: false, threshold: 0.7, logOnly: true },
+  // Pulled in transitively via webui-consolidation → memory-session-log (LIA-295).
+  PROJECT_ROOT: '/tmp/deus-test',
 }));
 
 vi.mock('./container-runner.js', () => ({

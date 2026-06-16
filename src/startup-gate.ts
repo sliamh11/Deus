@@ -18,6 +18,7 @@ import {
   hasAnyChannelAuth,
   hasContainerImage,
   countRegisteredGroups,
+  detectPortCollision,
 } from './checks.js';
 import { DEFAULT_AGENT_RUNTIME } from './config.js';
 import { logger } from './logger.js';
@@ -55,6 +56,24 @@ registerStartupCheck({
     ok: hasApiCredentials(),
     hint: 'Set ANTHROPIC_API_KEY or run `claude login` for Claude; set OPENAI_API_KEY or run `codex login` for OpenAI',
   }),
+});
+
+registerStartupCheck({
+  name: 'Port configuration',
+  level: 'fatal',
+  run: () => {
+    const { collision, port } = detectPortCollision();
+    return {
+      name: 'Port configuration',
+      level: 'fatal',
+      ok: !collision,
+      // hint is only surfaced for non-ok results (formatResult), but keep it
+      // truthful on both paths rather than rendering "both null" on success.
+      hint: collision
+        ? `ODYSSEUS_HTTP_PORT and LINEAR_WEBHOOK_PORT are both ${port}. The Web UI and Linear webhook servers cannot share a port — set one to a different value in .env.`
+        : 'Web UI and Linear webhook ports are distinct.',
+    };
+  },
 });
 
 registerStartupCheck({
