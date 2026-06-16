@@ -1,3 +1,5 @@
+import path from 'path';
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockWriteSessionLogAndIndex =
@@ -115,9 +117,12 @@ describe('consolidateWebConversation — vault + content', () => {
   it('writes a stable per-conversation path keyed by the first user message', () => {
     consolidateWebConversation(conversation(3, 'stable-key-convo'));
     const savedPath = mockWriteSessionLogAndIndex.mock.calls[0][0];
-    expect(savedPath).toMatch(
-      /\/vault\/Session-Logs\/\d{4}-\d{2}-\d{2}\/webui-[0-9a-f]{16}\.md$/,
-    );
+    // Assert on path components, not raw separators — path.join yields '\' on
+    // Windows and '/' on POSIX, so a slash-literal regex is not cross-platform.
+    const parts = savedPath.split(/[/\\]/);
+    expect(path.basename(savedPath)).toMatch(/^webui-[0-9a-f]{16}\.md$/);
+    expect(parts).toContain('Session-Logs');
+    expect(parts.some((p) => /^\d{4}-\d{2}-\d{2}$/.test(p))).toBe(true);
   });
 
   it('builds web-session frontmatter with a user/assistant transcript', () => {
