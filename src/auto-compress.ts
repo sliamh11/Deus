@@ -1,9 +1,9 @@
 import path from 'path';
 
 import { ASSISTANT_NAME } from './config.js';
+import { consolidateSessionLog } from './consolidation-core.js';
 import { getMessagesSince } from './db.js';
 import { logger } from './logger.js';
-import { writeSessionLogAndIndex } from './memory-session-log.js';
 import { resolveVaultPath } from './solutions/index.js';
 import type { RegisteredGroup } from './types.js';
 
@@ -11,14 +11,20 @@ import type { RegisteredGroup } from './types.js';
  * Save the current session's conversation to the vault before an idle reset
  * clears it. Lightweight: no LLM calls, no atom extraction — just raw
  * conversation as a session log + fire-and-forget embedding indexing.
+ *
+ * Path/envelope assembly + index dispatch live in the shared consolidation
+ * core (LIA-302); this surface owns the trigger, the message source, the
+ * empty-guard, and the `type: session` format. It also short-circuits on a
+ * missing vault BEFORE the (non-trivial) message query — the core re-checks
+ * the vault as the authoritative write gate.
  */
 export async function autoCompressSession(
   group: RegisteredGroup,
   chatJid: string,
   effectiveIdleHours: number,
 ): Promise<void> {
-  const vaultPath = resolveVaultPath();
-  if (!vaultPath) {
+  // Short-circuit before the DB query when there is nowhere to write.
+  if (!resolveVaultPath()) {
     logger.debug('Auto-compress skipped: no vault configured');
     return;
   }
@@ -44,9 +50,6 @@ export async function autoCompressSession(
   const dateStr = now.toISOString().slice(0, 10);
   const timeStr = now.toISOString().slice(11, 16).replace(':', '');
   const safeFolder = path.basename(group.folder);
-  const fileName = `auto-${safeFolder}-${timeStr}.md`;
-  const dir = path.join(vaultPath, 'Session-Logs', dateStr);
-  const savedPath = path.join(dir, fileName);
 
   const firstUserMsg = messages.find((m) => !m.is_from_me);
   const tldr = firstUserMsg
@@ -65,21 +68,24 @@ export async function autoCompressSession(
     })
     .join('\n\n');
 
-  const content = `---
-type: session
+  const frontmatter = `type: session
 date: ${dateStr}
 topics: [auto-compress]
 tldr: |
-  ${tldr}
----
+  ${tldr}`;
 
-${body}
-`;
+  const savedPath = consolidateSessionLog({
+    dateStr,
+    fileStem: `auto-${safeFolder}-${timeStr}`,
+    frontmatter,
+    body,
+    spawnLabel: 'auto-compress-index',
+  });
 
-  writeSessionLogAndIndex(savedPath, content, 'auto-compress-index');
-
-  logger.info(
-    { group: group.name, path: savedPath },
-    'Auto-compress: session saved',
-  );
+  if (savedPath) {
+    logger.info(
+      { group: group.name, path: savedPath },
+      'Auto-compress: session saved',
+    );
+  }
 }

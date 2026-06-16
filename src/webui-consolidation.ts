@@ -1,11 +1,9 @@
 import crypto from 'crypto';
-import path from 'path';
 
+import { consolidateSessionLog } from './consolidation-core.js';
 import { envPositiveInt } from './env-utils.js';
 import { logger } from './logger.js';
-import { writeSessionLogAndIndex } from './memory-session-log.js';
 import { messageText } from './openai-messages.js';
-import { resolveVaultPath } from './solutions/index.js';
 
 /**
  * Web UI conversation auto-consolidation into vault memory (LIA-295).
@@ -100,12 +98,6 @@ export function consolidateWebConversation(body: unknown): void {
     return;
   }
 
-  const vaultPath = resolveVaultPath();
-  if (!vaultPath) {
-    logger.debug('Web UI consolidation skipped: no vault configured');
-    return;
-  }
-
   const key = crypto
     .createHash('sha256')
     .update(firstUserText)
@@ -113,7 +105,9 @@ export function consolidateWebConversation(body: unknown): void {
     .slice(0, 16);
 
   // Drop re-entrant consolidations for the same conversation while a prior
-  // --add is still running (released in onSettle below).
+  // --add is still running (released via onSettle below — which fires on the
+  // detached spawn settling AND on the core's no-vault skip, so the key can
+  // never get permanently stuck).
   if (inFlightConsolidation.has(key)) {
     logger.debug({ key }, 'Web UI consolidation: already in-flight, skipped');
     return;
@@ -121,13 +115,6 @@ export function consolidateWebConversation(body: unknown): void {
 
   const now = new Date();
   const dateStr = now.toISOString().slice(0, 10);
-  // One file per conversation, overwritten as it grows — re-index re-dedups.
-  const savedPath = path.join(
-    vaultPath,
-    'Session-Logs',
-    dateStr,
-    `webui-${key}.md`,
-  );
 
   // JSON.stringify yields a valid double-quoted YAML scalar (YAML ⊇ JSON), so
   // untrusted first-message text (leading spaces, colons, quotes) can't corrupt
@@ -135,32 +122,39 @@ export function consolidateWebConversation(body: unknown): void {
   const tldr = JSON.stringify(
     firstUserText.replace(/\s+/g, ' ').trim().slice(0, 120),
   );
-  const content = `---
-type: web-session
+  const frontmatter = `type: web-session
 date: ${dateStr}
 topics: [webui, auto-consolidate]
-tldr: ${tldr}
----
+tldr: ${tldr}`;
 
-${transcript}
-`;
-
+  // One file per conversation (`webui-<key>.md`), overwritten as it grows —
+  // re-index re-dedups. Vault resolution + path/envelope assembly happen in the
+  // shared consolidation core (LIA-302).
   inFlightConsolidation.add(key);
+  let savedPath: string | null;
   try {
-    writeSessionLogAndIndex(
-      savedPath,
-      content,
-      'webui-consolidation-index',
-      () => inFlightConsolidation.delete(key),
-    );
+    savedPath = consolidateSessionLog({
+      dateStr,
+      fileStem: `webui-${key}`,
+      frontmatter,
+      body: transcript,
+      spawnLabel: 'webui-consolidation-index',
+      onSettle: () => inFlightConsolidation.delete(key),
+    });
   } catch (err) {
     // Synchronous mkdir/write failure throws BEFORE the indexer spawn launches,
     // so the onSettle release never fires — drop the guard here so the key isn't
-    // stuck. (Success path releases via onSettle when the spawn settles.)
+    // stuck. (Success path releases via onSettle when the spawn settles; a
+    // no-vault skip releases it synchronously inside the core.)
     inFlightConsolidation.delete(key);
     logger.warn({ err }, 'Web UI consolidation: vault write failed');
     return;
   }
 
-  logger.info({ path: savedPath }, 'Web UI conversation consolidated to vault');
+  if (savedPath) {
+    logger.info(
+      { path: savedPath },
+      'Web UI conversation consolidated to vault',
+    );
+  }
 }

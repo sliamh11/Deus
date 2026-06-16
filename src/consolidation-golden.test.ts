@@ -208,6 +208,31 @@ describe('@oracle skip contracts', () => {
     });
     expect(mockWrite).not.toHaveBeenCalled();
   });
+
+  it('webui does NOT write when no vault is configured AND releases the in-flight key', () => {
+    // Phase 1 moves vault resolution into the shared core, so webui now adds its
+    // in-flight key BEFORE the core call. The core MUST release that key on the
+    // no-vault skip (via onSettle), or this conversation could never consolidate
+    // again — a silent, permanent suppression. This pins that contract.
+    const fixture = {
+      messages: [
+        { role: 'user', content: 'no-vault skip-path first message' },
+        { role: 'assistant', content: 'a1' },
+        { role: 'user', content: 'q2' },
+        { role: 'assistant', content: 'a2' },
+        { role: 'user', content: 'q3' },
+      ],
+    };
+
+    mockResolveVault.mockReturnValue(null);
+    consolidateWebConversation(fixture);
+    expect(mockWrite).not.toHaveBeenCalled();
+
+    // Key released → once a vault is configured, an identical retry writes.
+    mockResolveVault.mockReturnValue('/vault');
+    consolidateWebConversation(fixture);
+    expect(mockWrite).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── Behavior goldens (per-surface throw/await contracts the core must preserve) ─
