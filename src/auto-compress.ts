@@ -1,20 +1,11 @@
-import { spawn } from 'child_process';
-import { mkdirSync, writeFileSync } from 'fs';
 import path from 'path';
 
-import { fireAndForget } from './async/index.js';
-import { ASSISTANT_NAME, PROJECT_ROOT } from './config.js';
+import { ASSISTANT_NAME } from './config.js';
 import { getMessagesSince } from './db.js';
 import { logger } from './logger.js';
-import { PYTHON_BIN } from './platform.js';
+import { writeSessionLogAndIndex } from './memory-session-log.js';
 import { resolveVaultPath } from './solutions/index.js';
 import type { RegisteredGroup } from './types.js';
-
-const MEMORY_INDEXER_PATH = path.join(
-  PROJECT_ROOT,
-  'scripts',
-  'memory_indexer.py',
-);
 
 /**
  * Save the current session's conversation to the vault before an idle reset
@@ -85,26 +76,7 @@ tldr: |
 ${body}
 `;
 
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(savedPath, content, 'utf-8');
-
-  fireAndForget(
-    () =>
-      new Promise<void>((resolve, reject) => {
-        const child = spawn(
-          PYTHON_BIN,
-          [MEMORY_INDEXER_PATH, '--add', savedPath],
-          {
-            stdio: ['ignore', 'ignore', 'pipe'],
-          },
-        );
-        child.on('close', (code) =>
-          code === 0 ? resolve() : reject(new Error(`indexer exit ${code}`)),
-        );
-        child.on('error', reject);
-      }),
-    { name: 'auto-compress-index' },
-  );
+  writeSessionLogAndIndex(savedPath, content, 'auto-compress-index');
 
   logger.info(
     { group: group.name, path: savedPath },

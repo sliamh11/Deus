@@ -42,8 +42,10 @@ import { readEnvFile } from './env.js';
 import { GroupQueue } from './group-queue.js';
 import { scanForInjection } from './guardrails/injection-scanner.js';
 import { logger } from './logger.js';
+import { messageText } from './openai-messages.js';
 import { getAvailableGroups } from './router-state.js';
 import { RegisteredGroup } from './types.js';
+import { consolidateWebConversation } from './webui-consolidation.js';
 
 const ODYSSEUS_BIND_HOST = '127.0.0.1'; // localhost only — never 0.0.0.0
 const MIN_TOKEN_LEN = 32;
@@ -181,22 +183,6 @@ function completionFrame(id: string, content: string): Record<string, unknown> {
     ],
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
   };
-}
-
-/** Flatten an OpenAI message `content` (string or multi-part array) to text. */
-function messageText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    // OpenAI multi-part content: concatenate text parts.
-    return content
-      .map((p: unknown) =>
-        typeof (p as { text?: unknown })?.text === 'string'
-          ? (p as { text: string }).text
-          : '',
-      )
-      .join('');
-  }
-  return '';
 }
 
 /** Extract the last user message from an OpenAI chat body. */
@@ -647,6 +633,11 @@ function handleChatCompletion(
       deps.queue.notifyIdle(mainJid);
       scheduleClose();
       finalize();
+      // Consolidate this conversation into vault memory (LIA-295). Called AFTER
+      // finalize() so the SSE response is already closed; it is fire-and-forget
+      // (returns void, never await it) and touches no `res`, so it cannot run
+      // against an ended response. `body` carries the full replayed history.
+      consolidateWebConversation(body);
     } else if (event.type === 'error') {
       finalize(event.error);
     }
