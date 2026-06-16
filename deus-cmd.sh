@@ -648,15 +648,19 @@ sys.exit(1)
     esac
     ;;
   web)
-    # Launch the Deus web UI (Open WebUI), the GUI for the Odysseus web channel.
-    # Container-state dispatch: inspect running state -> skip / start / create.
-    FRONTEND_PORT=3000
+    # Launch the Deus web UI (Open WebUI via uvx) and open the browser.
+    # Open WebUI runs as a NATIVE host process (scripts/webui-serve.sh), not a
+    # container: the Deus endpoint binds 127.0.0.1 only (src/odysseus-server.ts),
+    # which a container can't reach portably. Idempotent — if it's already
+    # serving, just open the browser.
+    FRONTEND_PORT="${WEBUI_PORT:-8090}"   # matches WEBUI_PORT in scripts/webui-serve.sh
     WEBUI_URL="http://localhost:$FRONTEND_PORT"
 
     # Resolve the Odysseus backend port (first non-empty wins):
     #   exported env -> .env -> macOS launchd plist -> default 3005.
-    # NOTE (LIA-301): 3005 is the documented config.ts / .env.example default but
-    # collides with the Linear-webhook default. This host's plist sets it to 3007.
+    # Passed to webui-serve.sh as DEUS_PORT so the script carries no host-specific
+    # default. (3005 is the config.ts / .env.example default; a .env or plist
+    # value overrides it — see LIA-301.)
     BACKEND_PORT="$ODYSSEUS_HTTP_PORT"
     if [ -z "$BACKEND_PORT" ] && [ -f "$SCRIPT_DIR/.env" ]; then
       BACKEND_PORT=$(grep '^ODYSSEUS_HTTP_PORT=' "$SCRIPT_DIR/.env" | head -1 | cut -d= -f2-)
@@ -664,62 +668,39 @@ sys.exit(1)
     if [ -z "$BACKEND_PORT" ] && [ -f "$PLIST" ] && [ -x /usr/libexec/PlistBuddy ]; then
       BACKEND_PORT=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:ODYSSEUS_HTTP_PORT" "$PLIST" 2>/dev/null)
     fi
-    if [ -z "$BACKEND_PORT" ]; then
-      BACKEND_PORT=3005
-      echo "  Note: backend port not set; defaulting to 3005. Set ODYSSEUS_HTTP_PORT in .env to be explicit."
+    BACKEND_PORT="${BACKEND_PORT:-3005}"
+
+    # Already serving? Just open the browser.
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' "$WEBUI_URL/health" --max-time 3 2>/dev/null)" = "200" ]; then
+      echo "  Open WebUI already running: $WEBUI_URL"
+      ( sleep 1; python3 -m webbrowser "$WEBUI_URL" >/dev/null 2>&1 ) &
+      exit 0
     fi
 
-    # Docker preflight.
-    if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
-      echo "Docker is required for the Deus web UI. Start Docker Desktop and retry."
+    # uvx runs Open WebUI without a global install.
+    if ! command -v uvx >/dev/null 2>&1; then
+      echo "uvx is required for the Deus web UI. Install uv:  brew install uv  (or: pipx install uv)"
       exit 1
     fi
 
-    _webui_wait_budget=90  # default; first-run create overrides to 120 below
-    _webui_running=$(docker inspect -f '{{.State.Running}}' open-webui 2>/dev/null)
-    if [ "$_webui_running" = "true" ]; then
-      echo "  Open WebUI already running."
-    elif [ "$_webui_running" = "false" ]; then
-      echo "  Starting Open WebUI container..."
-      docker start open-webui >/dev/null || { echo "Failed to start the Open WebUI container."; exit 1; }
-    else
-      # Container does not exist -> first-run create.
-      echo "  First run: creating the Open WebUI container (pulls the image on a clean host)..."
-      TOKEN=""
-      [ -f "$SCRIPT_DIR/.env" ] && TOKEN=$(grep '^ODYSSEUS_HTTP_TOKEN=' "$SCRIPT_DIR/.env" | head -1 | cut -d= -f2-)
-      if [ -z "$TOKEN" ]; then
-        echo "  Warning: ODYSSEUS_HTTP_TOKEN not found in .env — the UI won't reach the backend until it is set."
-      fi
-      # host.docker.internal is native on Docker Desktop (Mac/Win); only Linux
-      # needs the explicit host-gateway mapping (mirrors hostGatewayArgs() in
-      # src/platform.ts).
-      _add_host=()
-      [ "$(uname)" = "Linux" ] && _add_host=(--add-host=host.docker.internal:host-gateway)
-      docker run -d \
-        --name open-webui \
-        -p "$FRONTEND_PORT:8080" \
-        --restart unless-stopped \
-        "${_add_host[@]}" \
-        -e OPENAI_API_BASE_URL="http://host.docker.internal:$BACKEND_PORT/v1" \
-        -e OPENAI_API_KEY="$TOKEN" \
-        -e WEBUI_NAME="Deus" \
-        -v open-webui:/app/backend/data \
-        ghcr.io/open-webui/open-webui:main >/dev/null || {
-          echo "Failed to create the Open WebUI container."; exit 1; }
-      _webui_wait_budget=120
-    fi
-
-    # Non-fatal backend reachability check (401/405 = alive but gated).
-    _be_code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$BACKEND_PORT/v1/models" --max-time 4 2>/dev/null)
+    # Non-fatal: warn if the Deus backend isn't up (UI loads but can't answer).
+    _be_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$BACKEND_PORT/v1/models" --max-time 4 2>/dev/null)
     case "$_be_code" in
       200|401|405) ;;
-      *) echo "  Warning: Deus backend not reachable on port $BACKEND_PORT (HTTP '$_be_code'). The service may be down — check 'deus logs'." ;;
+      *) echo "  Warning: Deus backend not reachable on 127.0.0.1:$BACKEND_PORT (HTTP '$_be_code'). The UI will load but can't answer until the service is up — check 'deus logs'." ;;
     esac
 
-    # Wait for the UI to answer, then open the browser.
+    # Launch the thin-client server detached; first run downloads open-webui via uvx.
+    LOG="$HOME/.deus/owui/serve.log"
+    mkdir -p "$(dirname "$LOG")"
+    echo "  Starting Open WebUI (uvx) → Deus on 127.0.0.1:$BACKEND_PORT … first run downloads the package."
+    DEUS_ROOT="$SCRIPT_DIR" DEUS_PORT="$BACKEND_PORT" WEBUI_PORT="$FRONTEND_PORT" \
+      nohup "$SCRIPT_DIR/scripts/webui-serve.sh" >"$LOG" 2>&1 & disown
+
+    # Wait for the UI to answer (uvx download can be slow on first run), then open.
     printf "  Waiting for Open WebUI"
     _elapsed=0
-    while [ "$_elapsed" -lt "$_webui_wait_budget" ]; do
+    while [ "$_elapsed" -lt 120 ]; do
       if [ "$(curl -s -o /dev/null -w '%{http_code}' "$WEBUI_URL/health" --max-time 3 2>/dev/null)" = "200" ]; then
         break
       fi
@@ -728,12 +709,13 @@ sys.exit(1)
       _elapsed=$((_elapsed + 2))
     done
     echo ""
-    if [ "$_elapsed" -ge "$_webui_wait_budget" ]; then
-      echo "  Open WebUI is still starting — give it a moment, then open: $WEBUI_URL"
+    if [ "$_elapsed" -ge 120 ]; then
+      echo "  Open WebUI is still starting — check the log: $LOG  (then open $WEBUI_URL)"
     else
       echo "  Open WebUI ready: $WEBUI_URL"
     fi
-    echo "  (First-ever use: create a local admin account, then pick the 'deus' model.)"
+    echo "  (Opens directly — no login; model is preset to 'deus'.)"
+    echo "  Stop it with:  pkill -f 'open-webui serve'   (log: $LOG)"
     ( sleep 1; python3 -m webbrowser "$WEBUI_URL" >/dev/null 2>&1 ) &
     ;;
   home|"")
@@ -1546,7 +1528,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus auth       Validate credentials and rebuild+restart"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
     echo "  deus build      Compile TypeScript and restart the service (--no-restart, --quiet)"
-    echo "  deus web        Launch the Deus web UI (Open WebUI): start/create the container and open the browser"
+    echo "  deus web        Launch the Deus web UI (Open WebUI via uvx) and open the browser"
     echo "                    (Claude-in-Chrome is now opt-in via the chrome_default config key)"
     echo "  deus backend    Manage default AI backend and model (show|set|model|list)"
     echo "  deus gcal       Google Calendar token management (status|auth|ping)"
