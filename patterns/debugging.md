@@ -1,9 +1,9 @@
 ---
-last_verified: "2026-06-14" # auto-bump @1781447481
+last_verified: "2026-06-16" # auto-bump @1781614772
 governs:
   - src/container-runner.ts
   - src/message-orchestrator.ts
-last_verified: "2026-06-14" # auto-bump @1781447481
+last_verified: "2026-06-16" # auto-bump @1781614772
 test_tasks:
   - "Messages from a Telegram group arrive but the agent never responds"
   - "A container exits with code 137 instead of returning a result"
