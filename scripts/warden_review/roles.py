@@ -19,6 +19,9 @@ class RoleSpec:
     rules_path: str      # rules file, RELATIVE to repo root
     claude_marker: str   # the existing Claude verdict marker for this role
     gather: Callable[[str, str | None, str | None], str]  # (root, rev_range, diff_file) -> content
+    is_diff: bool = True  # True: content is a unified diff (split per-file). False: review the
+                          # whole content as one unit (e.g. plan-reviewer's plan text, which has
+                          # no `diff --git` boundaries and would otherwise be dropped to "no files").
 
 
 def _gather_diff(root: str, rev_range: str | None, diff_file: str | None) -> str:
@@ -59,5 +62,6 @@ ROLE_SPECS: dict[str, RoleSpec] = {
         rules_path=".claude/wardens/plan-review-rules.md",
         claude_marker="plan-reviewed",
         gather=_gather_file,
+        is_diff=False,  # reviews plan TEXT, not a diff — review it as one whole unit.
     ),
 }

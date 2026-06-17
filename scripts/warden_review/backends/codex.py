@@ -41,6 +41,7 @@ class CodexBackend(ModelReviewerBackend):
             sandbox=cr.DEFAULT_SANDBOX,        # read-only — never elevate for untrusted input
             timeout=request.timeout,
             rules_path=Path(request.rules_path),
+            is_diff=request.is_diff,           # False for content-file roles (e.g. plan-reviewer)
         )
         try:
             result = cr.review(request.content, cfg, request.cwd, request.cross_context)

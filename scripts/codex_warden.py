@@ -128,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     verdict = backend.review(ReviewRequest(
         role=args.role, rules_path=str(rules_path), content=content, cwd=str(root),
         cross_context=cross_context, model=args.model, timeout=args.timeout,
+        is_diff=spec.is_diff,
     ))
 
     payload = {

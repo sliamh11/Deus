@@ -49,6 +49,9 @@ class ReviewRequest:
                                # OUTSIDE the untrusted-content boundary)
     model: str | None = None   # backend-specific model id; None = backend/config default
     timeout: float = 300.0
+    is_diff: bool = True       # True: `content` is a unified diff (reviewed per-file). False:
+                               # review the whole `content` as one unit (e.g. a plan). Default
+                               # True keeps every existing diff-role caller byte-unchanged.
 
 
 class ModelReviewerBackend(ABC):
