@@ -883,7 +883,7 @@ export async function runContainerAgent(
 
         // Post-dispatch: log interaction for evolution loop (fire-and-forget)
         logDispatch(
-          output.result,
+          output.result ?? null,
           input.sessionRef?.session_id ??
             output.newSessionRef?.session_id ??
             output.newSessionId,

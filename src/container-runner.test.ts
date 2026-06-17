@@ -488,7 +488,7 @@ describe('rejected onOutput resilience (LIA-212)', () => {
   it('a rejected onOutput does not drop subsequent streamed outputs', async () => {
     const seen: Array<string | null> = [];
     const onOutput = vi.fn(async (output: ContainerOutput) => {
-      seen.push(output.result);
+      seen.push(output.result ?? null);
       if (output.result === 'first') {
         throw new Error('transient channel.sendMessage failure');
       }
@@ -528,6 +528,62 @@ describe('rejected onOutput resilience (LIA-212)', () => {
     // never runs and the dispatch never settles.
     expect(seen).toContain('second');
     expect(settled).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Streaming-variant markers (Web UI live output): the parse loop must accept the
+// transient 'partial'/'activity' variants and surface their payloads to onOutput,
+// without disturbing the terminal 'success'/'streamed' handling.
+// ---------------------------------------------------------------------------
+
+describe('streaming variant markers', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('parses partial + activity markers and a streamed terminal in order', async () => {
+    const seen: ContainerOutput[] = [];
+    const onOutput = vi.fn(async (o: ContainerOutput) => {
+      seen.push(o);
+    });
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+    void resultPromise.then(() => {});
+
+    emitOutputMarker(fakeProc, { status: 'activity', text: 'Running grep' });
+    emitOutputMarker(fakeProc, { status: 'partial', delta: 'Hel' });
+    emitOutputMarker(fakeProc, { status: 'partial', delta: 'lo' });
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Hello',
+      streamed: true,
+      newSessionId: 'session-stream',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(seen.map((o) => o.status)).toEqual([
+      'activity',
+      'partial',
+      'partial',
+      'success',
+    ]);
+    expect(seen[0].text).toBe('Running grep');
+    expect(seen[1].delta).toBe('Hel');
+    expect(seen[2].delta).toBe('lo');
+    expect(seen[3].streamed).toBe(true);
+    expect(seen[3].result).toBe('Hello');
   });
 });
 

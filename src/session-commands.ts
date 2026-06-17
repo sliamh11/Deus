@@ -270,9 +270,12 @@ export function isSessionCommandAllowed(
   return isMainGroup || isFromMe;
 }
 
-/** Minimal agent result interface — matches the subset of ContainerOutput used here. */
+/** Minimal agent result interface — matches the subset of ContainerOutput used here.
+ * status mirrors ContainerOutput (incl. transient 'partial'/'activity' streaming
+ * variants) so an onOutput handler typed against this stays assignable; consumers
+ * here only act on 'success'/'error' and ignore the transient ones. */
 export interface AgentResult {
-  status: 'success' | 'error';
+  status: 'success' | 'error' | 'partial' | 'activity';
   result?: string | object | null;
 }
 

@@ -62,7 +62,21 @@ export class ContainerRuntime implements AgentRuntime {
     }
 
     const onOutput = async (output: ContainerOutput) => {
-      if (output.result) {
+      // Transient streaming variants (Claude backend + stream flag only). These
+      // are fire-and-forget side events; they carry no terminal/session state.
+      if (output.status === 'partial') {
+        if (output.delta)
+          await eventSink({ type: 'output_text', text: output.delta });
+        return;
+      }
+      if (output.status === 'activity') {
+        if (output.text)
+          await eventSink({ type: 'activity', text: output.text });
+        return;
+      }
+      // Terminal markers (success/error). Suppress the final answer emission when
+      // it already went out as `partial` deltas (`streamed`), to avoid duplication.
+      if (output.result && !output.streamed) {
         await eventSink({ type: 'output_text', text: output.result });
       }
       if (
@@ -106,6 +120,7 @@ export class ContainerRuntime implements AgentRuntime {
         ...(runContext.ipcRunKey && {
           ipcRunKey: runContext.ipcRunKey,
         }),
+        ...(runContext.stream && { stream: true }),
       },
       (proc, containerName) =>
         this.deps.registerProcess(
@@ -119,7 +134,7 @@ export class ContainerRuntime implements AgentRuntime {
 
     return {
       status: output.status === 'error' ? 'error' : 'success',
-      result: output.result,
+      result: output.result ?? null,
       sessionRef:
         output.newSessionRef ??
         (output.newSessionId

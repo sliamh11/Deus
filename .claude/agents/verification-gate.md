@@ -1,7 +1,10 @@
 ---
 name: verification-gate
 description: Evidence-before-claims gate. Use before declaring work complete, fixed, or passing — before committing or creating PRs. Requires running verification commands and confirming output before any success claims. Adapted from Superpowers' verification-before-completion pattern. <example>Context: Just finished implementing a feature. user: "Done, all tests pass." assistant: "Running verification-gate before claiming completion." <commentary>Any completion claim triggers this.</commentary></example>
-model: sonnet
+# opus (not sonnet): this gate synthesizes tool output across multiple claims in one turn and
+# must catch contradictions between a "done" claim and the actual command output — the failure
+# mode is a missed contradiction, where deeper reasoning earns its cost (LIA-303).
+model: opus
 color: red
 ---
 

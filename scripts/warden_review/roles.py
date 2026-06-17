@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 import cross_family_review as cfr
 
@@ -25,11 +26,38 @@ def _gather_diff(root: str, rev_range: str | None, diff_file: str | None) -> str
     return cfr.get_diff(root, rev_range, diff_file)
 
 
+def _gather_file(root: str, rev_range: str | None, diff_file: str | None) -> str:
+    """Read review content verbatim from a file path (for non-diff roles, e.g. plan-reviewer).
+
+    The path arrives in the ``diff_file`` slot (codex_warden.py routes ``--content-file`` there).
+    Plain ``read_text`` — no shell, no diff parsing. Raises if the path is absent/unreadable so
+    the driver surfaces a clear usage error rather than reviewing empty content. Role-agnostic:
+    the message names no specific role so any future content-file role can reuse this gatherer."""
+    if not diff_file:
+        raise cfr.ReviewError(
+            cfr.USAGE_ERROR,
+            "this role requires --content-file <path> (no git diff to review)",
+        )
+    return Path(diff_file).read_text(encoding="utf-8")
+
+
 ROLE_SPECS: dict[str, RoleSpec] = {
     "code-reviewer": RoleSpec(
         role="code-reviewer",
         rules_path=".claude/wardens/code-review-rules.md",
         claude_marker="code-reviewed",
         gather=_gather_diff,
+    ),
+    "ai-eng-warden": RoleSpec(
+        role="ai-eng-warden",
+        rules_path=".claude/wardens/ai-engineering-rules.md",
+        claude_marker="ai-eng-reviewed",
+        gather=_gather_diff,
+    ),
+    "plan-reviewer": RoleSpec(
+        role="plan-reviewer",
+        rules_path=".claude/wardens/plan-review-rules.md",
+        claude_marker="plan-reviewed",
+        gather=_gather_file,
     ),
 }

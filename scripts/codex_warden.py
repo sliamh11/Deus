@@ -71,6 +71,9 @@ def main(argv: list[str] | None = None) -> int:
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--rev-range", help="commit sha or a..b range (default: working tree)")
     src.add_argument("--diff-file", help="path to a unified diff file to review")
+    src.add_argument("--content-file",
+                     help="path to a file read verbatim as the review target (non-diff roles, "
+                          "e.g. plan-reviewer reviewing a plan file)")
     ap.add_argument("--model", help="backend model id (default: backend/config default)")
     ap.add_argument("--timeout", type=float, default=cr.DEFAULT_TIMEOUT,
                     help=f"per-call timeout seconds (default {cr.DEFAULT_TIMEOUT:.0f})")
@@ -99,7 +102,9 @@ def main(argv: list[str] | None = None) -> int:
         return USAGE_ERROR
 
     try:
-        content = spec.gather(str(root), args.rev_range, args.diff_file)
+        # --content-file (non-diff roles) and --diff-file are mutually exclusive; route whichever
+        # was supplied into the gatherer's diff_file slot (_gather_diff ignores it; _gather_file reads it).
+        content = spec.gather(str(root), args.rev_range, args.content_file or args.diff_file)
     except cr.ReviewError as exc:
         sys.stderr.write(f"[codex-warden] {exc.message}\n")
         return exc.code

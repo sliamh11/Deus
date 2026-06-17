@@ -42,8 +42,10 @@ import { readEnvFile } from './env.js';
 import { GroupQueue } from './group-queue.js';
 import { scanForInjection } from './guardrails/injection-scanner.js';
 import { logger } from './logger.js';
+import { messageText } from './openai-messages.js';
 import { getAvailableGroups } from './router-state.js';
 import { RegisteredGroup } from './types.js';
+import { consolidateWebConversation } from './webui-consolidation.js';
 
 const ODYSSEUS_BIND_HOST = '127.0.0.1'; // localhost only — never 0.0.0.0
 const MIN_TOKEN_LEN = 32;
@@ -181,22 +183,6 @@ function completionFrame(id: string, content: string): Record<string, unknown> {
     ],
     usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
   };
-}
-
-/** Flatten an OpenAI message `content` (string or multi-part array) to text. */
-function messageText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    // OpenAI multi-part content: concatenate text parts.
-    return content
-      .map((p: unknown) =>
-        typeof (p as { text?: unknown })?.text === 'string'
-          ? (p as { text: string }).text
-          : '',
-      )
-      .join('');
-  }
-  return '';
 }
 
 /** Extract the last user message from an OpenAI chat body. */
@@ -578,6 +564,13 @@ function handleChatCompletion(
     });
     // Early role delta — satisfies the time-to-first-token window immediately.
     writeSse(res, chunkFrame(turnNonce, { role: 'assistant' }, null));
+    // Immediate thinking indicator — covers container cold-start dead-air on
+    // no-tool turns (see commit msg). reasoning_content is Open WebUI-specific —
+    // it renders as a collapsible thinking block; standard clients ignore it.
+    writeSse(
+      res,
+      chunkFrame(turnNonce, { reasoning_content: 'Thinking…' }, null),
+    );
     activeSse++;
     sseCounted = true;
     keepalive = setInterval(() => {
@@ -632,6 +625,10 @@ function handleChatCompletion(
     groupFolder: mainGroup.folder,
     chatJid: mainJid,
     isControlGroup: true,
+    // Streaming consumers only: enables the Claude backend's incremental
+    // partial/activity events so the answer renders live instead of one terminal
+    // blob. Buffered (stream:false) turns leave it off and assemble the result.
+    ...(stream && { stream: true }),
   };
 
   const sink: RuntimeEventSink = async (event) => {
@@ -643,10 +640,26 @@ function handleChatCompletion(
         writeSse(res, chunkFrame(turnNonce, { content: event.text }, null));
       else if (!stream) buffered.push(event.text);
       scheduleClose();
+    } else if (event.type === 'activity') {
+      // Transient thinking/tool-progress — surfaced on `reasoning_content` (Open
+      // WebUI renders it as a collapsible thinking block, keeping the answer clean).
+      // Streaming-only and never buffered into the final result.
+      firstTokenSeen = true;
+      if (stream && res.writable)
+        writeSse(
+          res,
+          chunkFrame(turnNonce, { reasoning_content: event.text }, null),
+        );
+      scheduleClose();
     } else if (event.type === 'turn_complete') {
       deps.queue.notifyIdle(mainJid);
       scheduleClose();
       finalize();
+      // Consolidate this conversation into vault memory (LIA-295). Called AFTER
+      // finalize() so the SSE response is already closed; it is fire-and-forget
+      // (returns void, never await it) and touches no `res`, so it cannot run
+      // against an ended response. `body` carries the full replayed history.
+      consolidateWebConversation(body);
     } else if (event.type === 'error') {
       finalize(event.error);
     }

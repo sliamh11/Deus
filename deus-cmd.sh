@@ -647,16 +647,86 @@ sys.exit(1)
         ;;
     esac
     ;;
-  home|web|"")
-    # `deus web` launches with --chrome for Claude-in-Chrome browser integration.
-    # Otherwise identical to bare `deus` / `deus home`.
+  web)
+    # Launch the Deus web UI (Open WebUI via uvx) and open the browser.
+    # Open WebUI runs as a NATIVE host process (scripts/webui-serve.sh), not a
+    # container: the Deus endpoint binds 127.0.0.1 only (src/odysseus-server.ts),
+    # which a container can't reach portably. Idempotent — if it's already
+    # serving, just open the browser.
+    FRONTEND_PORT="${WEBUI_PORT:-8090}"   # matches WEBUI_PORT in scripts/webui-serve.sh
+    WEBUI_URL="http://localhost:$FRONTEND_PORT"
+
+    # Resolve the Odysseus backend port (first non-empty wins):
+    #   exported env -> .env -> macOS launchd plist -> default 3005.
+    # Passed to webui-serve.sh as DEUS_PORT so the script carries no host-specific
+    # default. (3005 is the config.ts / .env.example default; a .env or plist
+    # value overrides it — see LIA-301.)
+    BACKEND_PORT="$ODYSSEUS_HTTP_PORT"
+    if [ -z "$BACKEND_PORT" ] && [ -f "$SCRIPT_DIR/.env" ]; then
+      BACKEND_PORT=$(grep '^ODYSSEUS_HTTP_PORT=' "$SCRIPT_DIR/.env" | head -1 | cut -d= -f2-)
+    fi
+    if [ -z "$BACKEND_PORT" ] && [ -f "$PLIST" ] && [ -x /usr/libexec/PlistBuddy ]; then
+      BACKEND_PORT=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:ODYSSEUS_HTTP_PORT" "$PLIST" 2>/dev/null)
+    fi
+    BACKEND_PORT="${BACKEND_PORT:-3005}"
+
+    # Already serving? Just open the browser.
+    if [ "$(curl -s -o /dev/null -w '%{http_code}' "$WEBUI_URL/health" --max-time 3 2>/dev/null)" = "200" ]; then
+      echo "  Open WebUI already running: $WEBUI_URL"
+      ( sleep 1; python3 -m webbrowser "$WEBUI_URL" >/dev/null 2>&1 ) &
+      exit 0
+    fi
+
+    # uvx runs Open WebUI without a global install.
+    if ! command -v uvx >/dev/null 2>&1; then
+      echo "uvx is required for the Deus web UI. Install uv:  brew install uv  (or: pipx install uv)"
+      exit 1
+    fi
+
+    # Non-fatal: warn if the Deus backend isn't up (UI loads but can't answer).
+    _be_code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$BACKEND_PORT/v1/models" --max-time 4 2>/dev/null)
+    case "$_be_code" in
+      200|401|405) ;;
+      *) echo "  Warning: Deus backend not reachable on 127.0.0.1:$BACKEND_PORT (HTTP '$_be_code'). The UI will load but can't answer until the service is up — check 'deus logs'." ;;
+    esac
+
+    # Launch the thin-client server detached; first run downloads open-webui via uvx.
+    LOG="$HOME/.deus/owui/serve.log"
+    mkdir -p "$(dirname "$LOG")"
+    echo "  Starting Open WebUI (uvx) → Deus on 127.0.0.1:$BACKEND_PORT … first run downloads the package."
+    DEUS_ROOT="$SCRIPT_DIR" DEUS_PORT="$BACKEND_PORT" WEBUI_PORT="$FRONTEND_PORT" \
+      nohup "$SCRIPT_DIR/scripts/webui-serve.sh" >"$LOG" 2>&1 & disown
+
+    # Wait for the UI to answer (uvx download can be slow on first run), then open.
+    printf "  Waiting for Open WebUI"
+    _elapsed=0
+    while [ "$_elapsed" -lt 120 ]; do
+      if [ "$(curl -s -o /dev/null -w '%{http_code}' "$WEBUI_URL/health" --max-time 3 2>/dev/null)" = "200" ]; then
+        break
+      fi
+      printf "."
+      sleep 2
+      _elapsed=$((_elapsed + 2))
+    done
+    echo ""
+    if [ "$_elapsed" -ge 120 ]; then
+      echo "  Open WebUI is still starting — check the log: $LOG  (then open $WEBUI_URL)"
+    else
+      echo "  Open WebUI ready: $WEBUI_URL"
+    fi
+    echo "  (Opens directly — no login; model is preset to 'deus'.)"
+    echo "  Stop it with:  pkill -f 'open-webui serve'   (log: $LOG)"
+    ( sleep 1; python3 -m webbrowser "$WEBUI_URL" >/dev/null 2>&1 ) &
+    ;;
+  home|"")
+    # Bare `deus` / `deus home`. Optional --chrome / TUI via config keys.
     CHROME_FLAG=""
     TUI_DEFAULT="false"
     AGENTS_MODE="false"
-    if [ "$1" = "web" ] || [ "$(_read_config_key chrome_default)" = "true" ]; then
+    if [ "$(_read_config_key chrome_default)" = "true" ]; then
       CHROME_FLAG="--chrome"
     fi
-    if [ "$1" != "web" ] && [ "$(_read_config_key tui_default)" = "true" ]; then
+    if [ "$(_read_config_key tui_default)" = "true" ]; then
       TUI_DEFAULT="true"
     fi
     for _arg in "$@"; do
@@ -1458,7 +1528,8 @@ $STARTUP_INSTRUCTION"
     echo "  deus auth       Validate credentials and rebuild+restart"
     echo "  deus auth refresh [--dry-run]  Proactive OAuth token refresh (scheduled every 30 min by launchd)"
     echo "  deus build      Compile TypeScript and restart the service (--no-restart, --quiet)"
-    echo "  deus web        Same as 'deus' but launches claude with --chrome (Claude-in-Chrome integration)"
+    echo "  deus web        Launch the Deus web UI (Open WebUI via uvx) and open the browser"
+    echo "                    (Claude-in-Chrome is now opt-in via the chrome_default config key)"
     echo "  deus backend    Manage default AI backend and model (show|set|model|list)"
     echo "  deus gcal       Google Calendar token management (status|auth|ping)"
     echo "  deus listen     Record from mic, transcribe, and copy to clipboard"

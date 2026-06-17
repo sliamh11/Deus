@@ -89,6 +89,75 @@ def test_code_reviewer_role_gathers_diff(monkeypatch):
     assert spec.gather("/x", None, None) == "THE DIFF"
 
 
+# ── Phase 3 (LIA-303): ai-eng-warden + plan-reviewer role specs + gatherers ───────
+
+def test_ai_eng_warden_role_gathers_diff(monkeypatch):
+    monkeypatch.setattr(cr.cfr, "get_diff", lambda root, rr, df: "THE DIFF")
+    spec = ROLE_SPECS["ai-eng-warden"]
+    assert spec.claude_marker == "ai-eng-reviewed"
+    assert spec.rules_path == ".claude/wardens/ai-engineering-rules.md"
+    assert spec.gather("/x", None, None) == "THE DIFF"   # diff-based, like code-reviewer
+
+
+def test_plan_reviewer_role_gathers_content_file(tmp_path):
+    spec = ROLE_SPECS["plan-reviewer"]
+    assert spec.claude_marker == "plan-reviewed"
+    assert spec.rules_path == ".claude/wardens/plan-review-rules.md"
+    plan = tmp_path / "plan.md"
+    plan.write_text("THE PLAN TEXT", encoding="utf-8")
+    # The content-file path arrives in the diff_file slot (codex_warden routes --content-file there).
+    assert spec.gather("/x", None, str(plan)) == "THE PLAN TEXT"
+
+
+def test_plan_reviewer_gather_without_content_file_raises():
+    spec = ROLE_SPECS["plan-reviewer"]
+    with pytest.raises(cr.ReviewError):
+        spec.gather("/x", None, None)
+
+
+# ── _evaluate_backends / _evaluate_model_backends (the extracted, trigger-agnostic core) ──
+
+def test_evaluate_model_backends_skips_claude(tmp_path):
+    repo = tmp_path
+    cfg = {"plan-reviewer": {"backends": ["claude", BACKEND_GPT]}}
+    gpt_key = store_key("plan-reviewer", BACKEND_GPT)   # "plan-reviewer@gpt"
+    # Claude verdict deliberately absent; skip_claude must ignore it and judge only gpt.
+    h._write_verdict(repo, gpt_key, "SHIP", "ok")
+    assert h._evaluate_backends("plan-reviewer", cfg, repo, skip_claude=True) == []
+    # And with gpt REVISE it blocks (still ignoring the missing claude verdict):
+    h._write_verdict(repo, gpt_key, "REVISE", "no")
+    blocking = h._evaluate_backends("plan-reviewer", cfg, repo, skip_claude=True)
+    assert [b for b, _ in blocking] == [BACKEND_GPT]
+
+
+def test_evaluate_backends_is_pure_no_event(tmp_path):
+    """The extracted core takes no event/cwd/commit guard — callable standalone."""
+    repo = tmp_path
+    cfg = {"code-reviewer": {"backends": ["claude"]}}
+    # No claude verdict in the store → blocking (fail-closed), no exception.
+    assert h._evaluate_backends("code-reviewer", cfg, repo) == [("claude", None)]
+
+
+def test_claude_trivial_verdict_satisfies_gate(tmp_path):
+    """TRIVIAL is the human trivial-commit bypass — it must pass the Claude side like SHIP, for
+    every role on the backends gate (regression: the GPT co-gate caught that ai-eng's TRIVIAL
+    bypass broke when it moved onto _evaluate_backends; code-reviewer had the same latent bug)."""
+    repo = tmp_path
+    for role in ("code-reviewer", "ai-eng-warden"):
+        h._write_verdict(repo, role, "TRIVIAL", "trivial commit")
+        cfg = {role: {"backends": ["claude"]}}
+        assert h._evaluate_backends(role, cfg, repo) == [], f"{role} TRIVIAL must pass the gate"
+
+
+def test_model_backend_non_ship_still_blocks_under_trivial_claude(tmp_path):
+    """TRIVIAL only excuses the Claude side; a co-gated model backend that is not SHIP still blocks."""
+    repo = tmp_path
+    h._write_verdict(repo, "code-reviewer", "TRIVIAL", "trivial")
+    h._write_verdict(repo, store_key("code-reviewer", BACKEND_GPT), "REVISE", "gpt found a bug")
+    cfg = {"code-reviewer": {"backends": ["claude", BACKEND_GPT]}}
+    assert [b for b, _ in h._evaluate_backends("code-reviewer", cfg, repo)] == [BACKEND_GPT]
+
+
 # ── Codex backend: result mapping + fail-open ─────────────────────────────────────
 
 def test_backend_maps_success_to_verdict(monkeypatch):

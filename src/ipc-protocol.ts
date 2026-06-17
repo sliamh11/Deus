@@ -53,9 +53,22 @@ export const CompactionEventSchema = z.object({
 // ── ContainerOutput ─────────────────────────────────────────────────────────
 
 export const ContainerOutputSchema = z.object({
-  // Load-bearing fields stay strict — a marker missing these is genuinely unusable.
-  status: z.enum(['success', 'error']),
-  result: z.string().nullable(),
+  // Discriminated-union streaming protocol over the single marker channel:
+  //   'success' | 'error'  — terminal, authoritative (carry result/error).
+  //   'partial'            — transient answer chunk (carries `delta`), Phase 2.
+  //   'activity'           — transient thinking/tool-progress (carries `text`), Phase 1.
+  // Transient variants are fire-and-forget side events emitted DURING a turn and
+  // never set session/PR/context fields. Streaming is Claude-only and gated by the
+  // per-turn `stream` flag, so WhatsApp/scheduler/OpenAI/llama turns never see them.
+  status: z.enum(['success', 'error', 'partial', 'activity']),
+  // `result` required-nullable for terminal markers; optional for transient ones.
+  result: z.string().nullable().optional(),
+  // Transient payloads (mutually exclusive with each other).
+  delta: z.string().optional(), // status:'partial' — incremental answer text.
+  text: z.string().optional(), // status:'activity' — a thinking/progress line.
+  // Terminal-`success` flag: true iff ≥1 `partial` was streamed this turn, so the
+  // host suppresses re-emitting `result` (the text already went out as deltas).
+  streamed: z.boolean().optional(),
   newSessionRef: RuntimeSessionSchema.optional(),
   newSessionId: z.string().optional(),
   error: z.string().optional(),
@@ -99,6 +112,10 @@ export const ContainerInputSchema = z.object({
     .optional(),
   projectHint: z.string().optional(),
   effort: z.enum(['low', 'medium', 'high', 'max']).optional(),
+  // Streaming consumers (Odysseus Web UI) set this so the Claude backend enables
+  // SDK partial messages and emits `partial`/`activity` markers. Off for WhatsApp/
+  // scheduler → byte-for-byte unchanged behavior.
+  stream: z.boolean().optional(),
   worktreePath: z.string().optional(),
   // Per-run IPC namespace key (LIA-211). Carried into the mounter so the
   // container's IPC dir is keyed per run for collision-prone shared folders.
