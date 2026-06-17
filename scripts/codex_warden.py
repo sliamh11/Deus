@@ -94,6 +94,13 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write(f"[codex-warden] {exc.message}\n")
         return exc.code
 
+    # `root` (the worktree toplevel) is for gathering the diff + the codex sandbox cwd.
+    # Warden state (verdict store, cross-review files, loop counter) is namespaced under
+    # the PRIMARY repo's per-worktree bucket — the same one the commit gate reads (it uses
+    # warden-shim.sh's git-common-dir REPO_ROOT). So state I/O uses `marker_root` + an
+    # explicit `worktree_override(root)`, making the bucket independent of the process cwd.
+    marker_root = whooks.primary_repo_root(root)
+
     if not registry.is_registered(args.backend):
         sys.stderr.write(
             f"[codex-warden] unknown backend '{args.backend}'. Registered: "
@@ -113,16 +120,20 @@ def main(argv: list[str] | None = None) -> int:
     if not content.strip():
         sys.stderr.write("[codex-warden] empty change — nothing to review (abstain).\n")
         if args.warden_mark:
-            whooks.record_script_verdict(root, skey, "SHIP",
-                                         "abstain: no reviewable content")
-            whooks.note_model_review_round(root, args.role, args.backend, "SHIP",
-                                           whooks.read_claude_verdict(root, args.role))
+            with whooks.worktree_override(root):
+                whooks.record_script_verdict(marker_root, skey, "SHIP",
+                                             "abstain: no reviewable content")
+                whooks.note_model_review_round(marker_root, args.role, args.backend, "SHIP",
+                                               whooks.read_claude_verdict(marker_root, args.role))
         return ABSTAIN
 
     rules_path = Path(spec.rules_path)
     if not rules_path.is_absolute():
         rules_path = root / rules_path
-    cross_context = whooks.read_cross_context(root, args.role, for_backend=args.backend)
+    # Narrowly scoped — only the cross-context read needs the worktree override; the
+    # backend.review() call below is cwd-agnostic (it reviews in-memory content).
+    with whooks.worktree_override(root):
+        cross_context = whooks.read_cross_context(marker_root, args.role, for_backend=args.backend)
 
     backend = registry.get_backend(args.backend)
     verdict = backend.review(ReviewRequest(
@@ -148,11 +159,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.warden_mark:
         reason = (verdict.error if verdict.could_not_run
                   else verdict.summary or f"{args.backend} {verdict.verdict}")
-        whooks.record_script_verdict(root, skey, verdict.verdict, reason)
-        whooks.write_model_cross_review(root, args.role, args.backend, verdict.verdict,
-                                        verdict.findings, verdict.summary)
-        whooks.note_model_review_round(root, args.role, args.backend, verdict.verdict,
-                                       whooks.read_claude_verdict(root, args.role))
+        with whooks.worktree_override(root):
+            whooks.record_script_verdict(marker_root, skey, verdict.verdict, reason)
+            whooks.write_model_cross_review(marker_root, args.role, args.backend, verdict.verdict,
+                                            verdict.findings, verdict.summary)
+            whooks.note_model_review_round(marker_root, args.role, args.backend, verdict.verdict,
+                                           whooks.read_claude_verdict(marker_root, args.role))
 
     if verdict.could_not_run:
         return _CODE_FROM_CATEGORY.get(verdict.category, INTERNAL_ERROR)
