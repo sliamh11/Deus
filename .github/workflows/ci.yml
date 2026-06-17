@@ -63,13 +63,30 @@ jobs:
         run: npx vitest run
 
       - name: Install pytest
-        run: python3 -m pip install pytest
+        # httpx is pinned because the warden tests below import codex_review ->
+        # cross_family_review, which sys.exit()s on a missing httpx at module load: a
+        # breaking httpx major would otherwise surface as a cryptic collection-time exit
+        # rather than a clean failure. Installed here (before any pytest step) so the
+        # warden suite is always collectable.
+        run: python3 -m pip install pytest 'httpx>=0.27,<1.0'
 
       - name: Pattern drift check
         run: python3 scripts/drift_check.py --all --base origin/${{ github.base_ref }}
 
       - name: Pattern tests (Python)
         run: python3 -m pytest scripts/tests/test_drift_check.py scripts/tests/test_prune_warden_backups.py -v
+
+      - name: Warden review tests
+        # Regression-protect the provider-agnostic warden co-gate engine: the gpt +
+        # openai_compat backends, the role specs, the strict-AND gate / loop guard / HITL
+        # override (test_warden_review), the driver (test_codex_warden), the codex engine
+        # (test_codex_review), and the Phase 3 co-gate oracle. All hermetic — the model
+        # seams are mocked, so no codex CLI / network is touched.
+        # NOT included: test_codex_warden_hooks.py — several admin-merge-gate tests invoke
+        # the real `gh` CLI (gh pr checks), which needs GH_TOKEN + network and is not
+        # hermetic in CI. Making them mock `gh` so the full hook engine joins this step is
+        # tracked in LIA-308.
+        run: python3 -m pytest scripts/tests/test_warden_review.py scripts/tests/test_codex_warden.py scripts/tests/test_codex_review.py scripts/tests/test_phase3_cogate_oracle.py -v
 
       - name: Session type contract tests
         run: python3 -m pytest tests/test_session_type_contract.py -v
