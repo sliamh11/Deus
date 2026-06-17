@@ -2409,7 +2409,9 @@ def _glob_to_regex(pattern: str) -> "re.Pattern[str]":
         else:
             out.append(re.escape(c))
             i += 1
-    return re.compile("(?s:" + "".join(out) + r")\Z")
+    # No DOTALL: matched inputs are file paths (an ``as_posix()``), which never contain a
+    # newline, so the ``.*`` emitted for ``**`` has nothing to span — the flag was inert.
+    return re.compile("".join(out) + r"\Z")
 
 
 def _glob_match(rel_posix: str, pattern: str) -> bool:
