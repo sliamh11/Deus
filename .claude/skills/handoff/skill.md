@@ -14,7 +14,8 @@ This skill runs **host-side** (like `/compress` and `/resume`), so it resolves t
 
 1. **Resolve vault path** — read `vault_path` from `~/.config/deus/config.json`; if the env var `DEUS_VAULT_PATH` is set, it overrides. `$VAULT` means this resolved path. Fail loudly if neither is set — never write to a guessed path:
    ```bash
-   VAULT="${DEUS_VAULT_PATH:-$(python3 -c "import json,os;print(json.load(open(os.path.expanduser('~/.config/deus/config.json'))).get('vault_path',''))" 2>/dev/null)}"
+   VAULT="${DEUS_VAULT_PATH:-$(python3 -c "import json,os;print(os.path.expanduser(json.load(open(os.path.expanduser('~/.config/deus/config.json'))).get('vault_path','')))" 2>/dev/null)}"
+   VAULT="${VAULT/#\~/$HOME}"  # expand a leading ~ (e.g. from DEUS_VAULT_PATH); expanduser already handled the config value
    [ -z "$VAULT" ] && { echo "handoff: cannot resolve vault path — set DEUS_VAULT_PATH or config.json vault_path"; exit 1; }
    ```
 
