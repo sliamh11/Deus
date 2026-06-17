@@ -36,6 +36,7 @@ import { DoomLoopDetector, createDoomLoopHook } from './doom-loop-detector.js';
 import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 import { createToolCallLogHook } from './tool-call-log.js';
 import { writeAvailableTools } from './available-tools-log.js';
+import { buildAllowedTools, computeTeamsNeeded } from './allowed-tools.js';
 import type { AgentRuntimeId } from './tool-broker.js';
 import { resolveGroupAttachmentPath } from './tool-broker.js';
 import { HookDispatchService } from './hook-dispatch-service.js';
@@ -138,21 +139,6 @@ interface SDKUserMessage {
 const IPC_INPUT_DIR = '/workspace/ipc/input';
 const IPC_INPUT_CLOSE_SENTINEL = path.join(IPC_INPUT_DIR, '_close');
 const IPC_POLL_MS = 500;
-
-// Keywords that signal the prompt requires multi-agent orchestration.
-// When none are present and no external project is mounted, swarm tools
-// (TeamCreate, TeamDelete, SendMessage) are excluded from allowedTools,
-// saving ~300 tokens per call on personal-assistant queries.
-const SWARM_SIGNALS = [
-  'parallel agent',
-  'subagent',
-  'agent team',
-  'agent swarm',
-  'orchestrate',
-  'in parallel',
-  'multiple agents',
-  'spawn agent',
-];
 
 // Module-level state is safe: container runs one session per process lifecycle.
 let _lastContextStats: ContextStats | undefined;
@@ -802,14 +788,14 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
-  // Swarm tools are only needed for multi-agent orchestration.
-  // Exclude them for plain personal-assistant queries to save ~300 tokens.
-  // Always include when an external project is mounted (engineering context)
-  // or the prompt explicitly signals multi-agent intent.
-  const teamsNeeded =
-    hasProject || SWARM_SIGNALS.some((kw) => prompt.toLowerCase().includes(kw));
+  // Team tools (TeamCreate/TeamDelete) are only needed for multi-agent team
+  // orchestration. Exclude them for plain personal-assistant queries to save
+  // ~200 tokens. Always include when an external project is mounted (engineering
+  // context) or the prompt explicitly signals multi-agent intent. SendMessage is
+  // NOT gated here — see allowed-tools.ts (it pairs with the always-present Task).
+  const teamsNeeded = computeTeamsNeeded(prompt, hasProject);
   log(
-    `Swarm tools: ${teamsNeeded ? 'included' : 'excluded (~300 tokens saved)'}`,
+    `Team tools: ${teamsNeeded ? 'included' : 'excluded (~200 tokens saved)'}`,
   );
 
   // Google Calendar MCP: available when the host project is mounted and gcal
@@ -852,27 +838,11 @@ async function runQuery(
   // LIA-151's tool_selection ground truth. The openai/llama-cpp backends branch
   // out earlier (index.ts ~1104/1119) and never reach here, so available_tools
   // is intentionally empty for them in v1.
-  const allowedTools = [
-    'Bash',
-    'Read',
-    'Write',
-    'Edit',
-    'Glob',
-    'Grep',
-    'WebSearch',
-    'WebFetch',
-    'Task',
-    'TaskOutput',
-    'TaskStop',
-    ...(teamsNeeded ? ['TeamCreate', 'TeamDelete', 'SendMessage'] : []),
-    'TodoWrite',
-    'ToolSearch',
-    'Skill',
-    'NotebookEdit',
-    'mcp__deus__*',
-    ...(hasGcalMcp ? ['mcp__gcal__*'] : []),
-    ...(hasLinearMcp ? ['mcp__linear__*'] : []),
-  ];
+  const allowedTools = buildAllowedTools({
+    teamsNeeded,
+    hasGcalMcp,
+    hasLinearMcp,
+  });
   // LIA-154: capture the offered manifest (default-on; DEUS_AVAILABLE_TOOLS_LOG=0 opts out).
   if (process.env.DEUS_AVAILABLE_TOOLS_LOG !== '0') {
     writeAvailableTools(process.env.DEUS_INTERACTION_ID, allowedTools);
