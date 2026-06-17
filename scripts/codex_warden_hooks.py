@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import datetime as dt
 import hashlib
@@ -391,10 +392,48 @@ _PER_WORKTREE_MARKERS = frozenset({
 #: fresh, single-threaded process, so a plain dict is safe).
 _WORKTREE_CACHE: dict[tuple[str, str], Path] = {}
 
-#: CLI override: the `mark`/`mark-batch` actions run from a terminal whose cwd
-#: is not guaranteed to be the worktree, so main() sets this (try/finally) to
-#: inject the target worktree. Hooks never set it -> they auto-derive from cwd.
+#: Explicit-worktree override, mutated only via the `worktree_override` context manager
+#: (stack-safe). Callers whose cwd is not guaranteed to be the target worktree set it: the
+#: `mark`/`mark-batch` CLI actions, and the out-of-band model driver (codex_warden.py),
+#: which records verdicts into a worktree's bucket from any cwd. Hooks never set it ->
+#: they auto-derive from cwd. Process-local + single-threaded (a plain global): the driver
+#: and CLI are single-threaded CLIs, so there is no cross-thread race on this value.
 _WORKTREE_OVERRIDE: Path | None = None
+
+
+def primary_repo_root(start: Path) -> Path:
+    """The shared/main repo root for ``start``, even from a linked worktree.
+
+    Resolves the parent of ``git rev-parse --git-common-dir`` (the shared ``.git``),
+    mirroring warden-shim.sh's REPO_ROOT. This is the root under which per-worktree
+    marker buckets live, so a driver that records verdicts must use THIS root (not the
+    worktree's own ``--show-toplevel``) to land in the bucket the gate reads. For a
+    non-worktree repo the common dir is ``<top>/.git`` so this equals the toplevel.
+    Falls back to the toplevel, then ``start``, when git can't resolve a common dir.
+    """
+    common = _git(start, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common:
+        return Path(common).resolve(strict=False).parent
+    top = _git(start, "rev-parse", "--show-toplevel")
+    return Path(top).resolve(strict=False) if top else start.resolve(strict=False)
+
+
+@contextlib.contextmanager
+def worktree_override(worktree: Path):
+    """Pin marker/verdict resolution to an EXPLICIT worktree for the duration of the
+    block, independent of ``os.getcwd()``. Restores the prior value on exit (nesting and
+    direct test calls are safe). Writes go through ``_claude_marker_dir(repo_root)``,
+    which reads ``_WORKTREE_OVERRIDE`` — so under this block a driver running from any cwd
+    targets ``repo_root/.claude/worktree-markers/<sha(worktree)>`` deterministically, the
+    same bucket the gate reads via ``_verdicts_path_for_worktree``.
+    """
+    global _WORKTREE_OVERRIDE
+    prev = _WORKTREE_OVERRIDE
+    _WORKTREE_OVERRIDE = worktree
+    try:
+        yield
+    finally:
+        _WORKTREE_OVERRIDE = prev
 
 
 def _current_worktree(repo_root: Path) -> Path:
@@ -4057,11 +4096,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _with_cli_worktree(repo_root: Path, worktree_root_arg: str | None, fn):
-    """Run a CLI mark action with ``_WORKTREE_OVERRIDE`` set so marker + verdict
+    """Run a CLI mark action with the worktree override set so marker + verdict
     writes land in the correct per-worktree bucket regardless of the process cwd.
-    Restores the previous value on exit so direct test calls don't leak state.
     """
-    global _WORKTREE_OVERRIDE
     if worktree_root_arg:
         wt = Path(worktree_root_arg).resolve(strict=False)
     else:
@@ -4074,12 +4111,8 @@ def _with_cli_worktree(repo_root: Path, worktree_root_arg: str | None, fn):
                 file=sys.stderr,
             )
             wt = repo_root
-    prev = _WORKTREE_OVERRIDE  # nested calls are safe: prev is restored on exit
-    _WORKTREE_OVERRIDE = wt
-    try:
+    with worktree_override(wt):
         return fn()
-    finally:
-        _WORKTREE_OVERRIDE = prev
 
 
 def main(argv: list[str] | None = None) -> int:

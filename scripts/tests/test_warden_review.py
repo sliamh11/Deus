@@ -376,6 +376,73 @@ def test_invalidator_clears_gpt_verdict(repo, monkeypatch):
     assert not h._marker(repo, h.cross_review_file(_ROLE)).exists()
 
 
+# ── Driver records into the gate's per-worktree bucket (worktree-marker-root fix) ──
+
+def test_primary_repo_root_normal_repo_returns_toplevel(monkeypatch):
+    # Non-worktree repo: git-common-dir is <top>/.git, so its parent is <top>.
+    monkeypatch.setattr(h, "_git",
+                        lambda cwd, *a: "/repo/.git" if a[-1] == "--git-common-dir" else None)
+    assert h.primary_repo_root(Path("/repo")) == Path("/repo")
+
+
+def test_primary_repo_root_worktree_returns_common_dir_parent(monkeypatch):
+    # A linked worktree's git-common-dir points at the PRIMARY repo's .git, not its own.
+    monkeypatch.setattr(h, "_git",
+                        lambda cwd, *a: "/primary/.git" if a[-1] == "--git-common-dir" else None)
+    assert h.primary_repo_root(Path("/primary/wt-feature")) == Path("/primary")
+
+
+def test_primary_repo_root_falls_back_to_toplevel(monkeypatch):
+    def fake_git(cwd, *a):
+        if a[-1] == "--show-toplevel":
+            return "/fallback/top"
+        return None  # no common dir
+    monkeypatch.setattr(h, "_git", fake_git)
+    assert h.primary_repo_root(Path("/whatever")) == Path("/fallback/top")
+
+
+def test_worktree_override_makes_write_path_equal_gate_read_path(tmp_path):
+    # Frozen invariant: under worktree_override(wt) with repo_root=primary, the driver's
+    # WRITE path (_verdicts_path) equals the gate's deterministic READ path
+    # (_verdicts_path_for_worktree) — independent of os.getcwd(). And WITHOUT the override
+    # (the pre-fix path) they differ — that divergence is exactly the bug being fixed.
+    primary, wt = tmp_path / "primary", tmp_path / "wt-feature"
+    prev = h._WORKTREE_OVERRIDE
+    assert h._verdicts_path(primary) != h._verdicts_path_for_worktree(primary, wt)
+    with h.worktree_override(wt):
+        assert h._verdicts_path(primary) == h._verdicts_path_for_worktree(primary, wt)
+    assert h._WORKTREE_OVERRIDE is prev  # restored on exit, no leak
+
+
+def test_worktree_override_main_repo_is_flat(tmp_path):
+    # Back-compat: when the worktree IS the repo root, resolution stays flat.
+    primary = tmp_path / "primary"
+    with h.worktree_override(primary):
+        assert h._verdicts_path(primary) == primary / ".claude" / ".warden-verdicts.json"
+
+
+def test_worktree_override_restores_prior_value():
+    prev = h._WORKTREE_OVERRIDE
+    h._WORKTREE_OVERRIDE = Path("/prev/override")
+    try:
+        with h.worktree_override(Path("/new/wt")):
+            assert h._WORKTREE_OVERRIDE == Path("/new/wt")
+        assert h._WORKTREE_OVERRIDE == Path("/prev/override")
+    finally:
+        h._WORKTREE_OVERRIDE = prev
+
+
+def test_worktree_override_nesting_is_stack_safe():
+    # Outer sets /a, inner sets /b; inner exit restores /a, outer exit restores the original.
+    prev = h._WORKTREE_OVERRIDE
+    with h.worktree_override(Path("/a")):
+        assert h._WORKTREE_OVERRIDE == Path("/a")
+        with h.worktree_override(Path("/b")):
+            assert h._WORKTREE_OVERRIDE == Path("/b")
+        assert h._WORKTREE_OVERRIDE == Path("/a")
+    assert h._WORKTREE_OVERRIDE is prev
+
+
 # ── Content-kind flag: diff roles vs non-diff (plan) roles ────────────────────────
 
 def test_role_specs_mark_plan_reviewer_as_non_diff():
