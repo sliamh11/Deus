@@ -1,7 +1,7 @@
 ---
 governs:
   - docs/
-last_verified: "2026-06-14" # auto-bump @1781411201
+last_verified: "2026-06-17" # auto-bump @1781681048
 test_tasks:
   - "Add a new ADR to docs/decisions/ explaining an architectural change"
   - "Update ARCHITECTURE.md after a major refactor"

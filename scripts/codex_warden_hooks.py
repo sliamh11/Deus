@@ -1271,6 +1271,13 @@ def run_session_init(repo_root: Path) -> int:
         *(cross_review_file(r) for r in _WIRED_ROLES),
     ):
         _marker(repo_root, name).unlink(missing_ok=True)
+    # plan-reviewer co-gate asymmetry (Phase 3): unlike code-reviewer (store-based, persists across
+    # sessions), plan-reviewer's Claude signal is the .plan-reviewed MARKER, cleared above on every
+    # session start. Its model-backend verdicts must match — clear plan-reviewer@<backend> so a fresh
+    # session needs fresh model review, else a stale GPT SHIP + a re-marked plan bypasses the gate
+    # (oracle O2). Other roles' stores intentionally persist (the comment above).
+    for _b in KNOWN_MODEL_BACKENDS:
+        _clear_verdict(store_key("plan-reviewer", _b), repo_root)
     _PATTERN_ROUTES_CACHE = None
     _INJECTED_DOCS.clear()
     _sync_atom_kinds_on_init(repo_root)
@@ -1552,6 +1559,12 @@ def run_plan_mode_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     if should_clear:
         _marker(repo_root, ".plan-reviewed").unlink(missing_ok=True)
         _marker(repo_root, ".warden-memo.md").unlink(missing_ok=True)
+        # Co-gate (Phase 3): a new plan invalidates the model-backend review too — clear the
+        # plan-reviewer@<backend> verdicts + cross-review, else a stale GPT SHIP from the prior
+        # plan lets a re-marked .plan-reviewed bypass the gate without fresh model review (oracle O1).
+        for _b in KNOWN_MODEL_BACKENDS:
+            _clear_verdict(store_key("plan-reviewer", _b), repo_root)
+        _marker(repo_root, cross_review_file("plan-reviewer")).unlink(missing_ok=True)
     return 0
 
 
@@ -1566,9 +1579,17 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     ):
         return 0
 
-    # Marker check first — cheapest, satisfies the gate before any
-    # subprocess work in `_managed_paths`.
+    # Claude side = the .plan-reviewed marker (its lifecycle is unchanged: SessionStart and /plan
+    # both clear it to force re-review). Phase 3 (LIA-303) layers the co-gate ON TOP: when the
+    # marker is present, every configured MODEL backend (e.g. gpt) must also be SHIP. Marker-absent
+    # paths below are byte-unchanged. _evaluate_backends(skip_claude=True) reads only model verdicts
+    # from the store; the invalidators clear plan-reviewer@<backend> so a fresh plan needs fresh
+    # model review (no stale-SHIP bypass — oracle O1/O2). Pure JSON read: no added subprocess cost.
     if _marker(repo_root, ".plan-reviewed").exists():
+        model_blocking = _evaluate_backends("plan-reviewer", config, repo_root, skip_claude=True)
+        if not model_blocking:
+            return 0
+        _block_pre_tool(_warden_backends_block_message("plan-reviewer", model_blocking, repo_root))
         return 0
 
     # ExitPlanMode has no file paths — skip _managed_paths (which would
@@ -1714,37 +1735,14 @@ def run_ai_eng_gate(event: dict[str, Any], repo_root: Path) -> int:
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
         return 0
-    if _marker(repo_root, ".ai-eng-reviewed").exists():
-        return 0
-
     if not _diff_touches_llm_files(repo_root):
         return 0
 
-    mark_cmd = (
-        f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
-        f"mark ai-eng-reviewed SHIP \"reason\""
-    )
-
-    if _last_verdict_is_blocking(repo_root, "ai-eng-warden"):
-        last = _last_verdict(repo_root, "ai-eng-warden")
-        reason = (
-            f"[ai-eng-gate] BLOCKED: last ai-eng-warden verdict was {last}.\n\n"
-            "Re-run the ai-eng-warden after fixing the issues. Trivial bypass is "
-            f"not permitted after {last} — no exceptions.\n\n"
-            f"After SHIP:\n{mark_cmd}"
-        )
-    else:
-        reason = (
-            "[ai-eng-gate] BLOCKED: no AI engineering review marker.\n\n"
-            "This commit touches LLM-related code. Run the ai-eng-warden and wait "
-            "for VERDICT: SHIP. Then run:\n\n"
-            f"{mark_cmd}\n\n"
-            "Trivial-commit bypass (non-LLM changes only):\n"
-            f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
-            f"mark ai-eng-reviewed TRIVIAL \"reason\""
-        )
-    _block_pre_tool(reason)
-    return 0
+    # Co-gate across every configured backend (Phase 3, LIA-303). Mirrors code-reviewer:
+    # the Claude verdict is read from the store under "ai-eng-warden" and model backends via
+    # store_key. The diff-touches-LLM-files trigger above is ai-eng-specific, so it stays here;
+    # the generic gate handles the strict-AND verdict combination + block messaging.
+    return run_warden_backends_gate("ai-eng-warden", event, repo_root)
 
 
 def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
@@ -2125,8 +2123,14 @@ def run_code_review_invalidator(event: dict[str, Any], repo_root: Path) -> int:
     for _b in KNOWN_MODEL_BACKENDS:
         _clear_verdict(store_key("code-reviewer", _b), repo_root)
     _marker(repo_root, cross_review_file("code-reviewer")).unlink(missing_ok=True)
-    # LLM code is a subset of all code — source edits invalidate both markers
+    # LLM code is a subset of all code — source edits invalidate ai-eng-warden too.
+    # Phase 3 made ai-eng store-based (like code-reviewer), so clear the Claude verdict store +
+    # model-backend verdicts + cross-review here, not just the marker, else a stale SHIP persists.
     _marker(repo_root, ".ai-eng-reviewed").unlink(missing_ok=True)
+    _clear_verdict("ai-eng-reviewed", repo_root)  # clears the "ai-eng-warden" JSON key via MARKER_NAMES
+    for _b in KNOWN_MODEL_BACKENDS:
+        _clear_verdict(store_key("ai-eng-warden", _b), repo_root)
+    _marker(repo_root, cross_review_file("ai-eng-warden")).unlink(missing_ok=True)
     return 0
 
 
@@ -3012,9 +3016,12 @@ def _warden_backends_block_message(
             lines.append(_claude_backend_block_message(role, marker, repo_root))
         else:
             state = verdict or "not run yet"
+            # Non-diff roles (plan-reviewer) need an explicit --content-file path; diff roles
+            # auto-gather the working-tree diff, so no source arg is shown for them.
+            src = " --content-file <path-to-plan>" if role in _CONTENT_FILE_ROLES else ""
             lines.append(
                 f"  - {backend}: {state} -- run:\n"
-                f"  python3 scripts/codex_warden.py --role {role} --backend {backend} --warden-mark"
+                f"  python3 scripts/codex_warden.py --role {role} --backend {backend}{src} --warden-mark"
             )
     if _co_gate_escalation_active(repo_root, role):
         loop = _read_loop(repo_root, role)
@@ -3032,6 +3039,54 @@ def _warden_backends_block_message(
             f"--role {role} --reason \"<justification>\"",
         ]
     return "\n".join(lines)
+
+
+def _evaluate_backends(
+    role: str, config: dict[str, Any], repo_root: Path, *, skip_claude: bool = False
+) -> list[tuple[str, str | None]]:
+    """Strict-AND verdict evaluation for a role's configured backends.
+
+    Returns the list of (backend, verdict) pairs that are NOT SHIP (the blocking set);
+    an empty list means every configured backend is SHIP (gate passes). COULD_NOT_RUN
+    fails OPEN (warn + skip, never blocks). Unknown backend ids are warned and skipped.
+
+    Trigger-agnostic by design: it reads only the verdict store, so commit-triggered gates
+    (code-reviewer/ai-eng-warden) and edit-triggered gates (plan-reviewer) can share it.
+    ``skip_claude=True`` evaluates only the model backends — used by plan-reviewer, whose
+    Claude signal is the ``.plan-reviewed`` marker (not the verdict store)."""
+    blocking: list[tuple[str, str | None]] = []
+    for backend in _role_backends(config, role):
+        if backend == BACKEND_CLAUDE:
+            if skip_claude:
+                continue
+            # Claude's verdict is stored under the role key (run_verdict_tracker writes the
+            # subagent type, which == the role). Read it directly — role-generic, no marker
+            # indirection — equivalent to the old _read_verdict("code-reviewed") for this role.
+            verdict = _last_verdict(repo_root, role)
+            # TRIVIAL is the human trivial-commit bypass (mark_warden accepts SHIP|TRIVIAL and
+            # writes the literal verdict). It satisfies the Claude side exactly like SHIP — the
+            # marker-only gates honored it, so the backends gate must too. Model backends never
+            # emit TRIVIAL (MODEL_VERDICTS), so this only applies to the Claude side.
+            if verdict == "TRIVIAL":
+                continue
+        elif backend in KNOWN_MODEL_BACKENDS:
+            verdict = _read_verdict(store_key(role, backend), repo_root)
+        else:
+            sys.stderr.write(
+                f"[warden-backends-gate] WARNING: unknown backend '{backend}' in "
+                f"{role}.backends -- skipped (not gating).\n"
+            )
+            continue
+        if verdict == VERDICT_SHIP:
+            continue
+        if verdict == VERDICT_COULD_NOT_RUN:
+            sys.stderr.write(
+                f"[warden-backends-gate] WARNING: {role}@{backend} could not run (infra) -- "
+                "gate FAIL-OPEN for this backend; commit allowed. Retry with --warden-mark.\n"
+            )
+            continue
+        blocking.append((backend, verdict))
+    return blocking
 
 
 def run_warden_backends_gate(role: str, event: dict[str, Any], repo_root: Path) -> int:
@@ -3054,31 +3109,7 @@ def run_warden_backends_gate(role: str, event: dict[str, Any], repo_root: Path) 
     if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
         return 0
 
-    blocking: list[tuple[str, str | None]] = []
-    for backend in _role_backends(config, role):
-        if backend == BACKEND_CLAUDE:
-            # Claude's verdict is stored under the role key (run_verdict_tracker writes the
-            # subagent type, which == the role). Read it directly — role-generic, no marker
-            # indirection — equivalent to the old _read_verdict("code-reviewed") for this role.
-            verdict = _last_verdict(repo_root, role)
-        elif backend in KNOWN_MODEL_BACKENDS:
-            verdict = _read_verdict(store_key(role, backend), repo_root)
-        else:
-            sys.stderr.write(
-                f"[warden-backends-gate] WARNING: unknown backend '{backend}' in "
-                f"{role}.backends -- skipped (not gating).\n"
-            )
-            continue
-        if verdict == VERDICT_SHIP:
-            continue
-        if verdict == VERDICT_COULD_NOT_RUN:
-            sys.stderr.write(
-                f"[warden-backends-gate] WARNING: {role}@{backend} could not run (infra) -- "
-                "gate FAIL-OPEN for this backend; commit allowed. Retry with --warden-mark.\n"
-            )
-            continue
-        blocking.append((backend, verdict))
-
+    blocking = _evaluate_backends(role, config, repo_root)
     if not blocking:
         return 0
     _block_pre_tool(_warden_backends_block_message(role, blocking, repo_root))
@@ -3385,7 +3416,13 @@ MARKER_NAMES.update({
 # backend's verdict via this marker, and model backends via the "<role>@<backend>" key.
 _ROLE_CLAUDE_MARKER = {
     "code-reviewer": "code-reviewed",
+    "ai-eng-warden": "ai-eng-reviewed",
+    "plan-reviewer": "plan-reviewed",
 }
+
+#: Roles whose model-backend review reads an explicit file (not a git diff) — the block
+#: message must instruct `--content-file`. Diff roles auto-gather the working-tree diff.
+_CONTENT_FILE_ROLES = frozenset({"plan-reviewer"})
 
 
 def mark_warden(marker_name: str, verdict: str, reason: str, repo_root: Path) -> int:

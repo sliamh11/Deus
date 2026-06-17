@@ -54,5 +54,7 @@ def cross_review_file(role: str) -> str:
     return f".{role}-cross-review.md"
 
 
-#: Roles wired into the provider-agnostic co-gate today (Phase 2). Phase 3 extends this.
-WIRED_ROLES = ("code-reviewer",)
+#: Roles wired into the provider-agnostic co-gate. Phase 2 wired code-reviewer; Phase 3
+#: (LIA-303) added ai-eng-warden + plan-reviewer. Adding a role here auto-registers its
+#: ``<role>@<backend>`` verdict keys into MARKER_NAMES and its loop/cross-review ephemera.
+WIRED_ROLES = ("code-reviewer", "ai-eng-warden", "plan-reviewer")

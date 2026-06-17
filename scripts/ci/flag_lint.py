@@ -48,7 +48,11 @@ SHELL_EXTS = (".sh", ".bash", ".zsh")
 # Ops/framework DEUS_* vars that gate nothing and need no citation; extend as needed.
 # DEUS_REPO: internal computed repo-root path (scripts/deus_init.sh) — never read as
 # an env gate, gates nothing; resolved from the script's own location.
-ALLOWLIST: frozenset[str] = frozenset({"DEUS_REPO"})
+# DEUS_PORT / DEUS_TOKEN: the Deus backend port + bearer token that `deus web`
+# passes to scripts/webui-serve.sh — config plumbing for an already-wired
+# launcher; they toggle no feature (DEUS_TOKEN's absence is a fatal check, not
+# a feature gate).
+ALLOWLIST: frozenset[str] = frozenset({"DEUS_REPO", "DEUS_PORT", "DEUS_TOKEN"})
 
 # Env-gate forms across TS/JS and Python. The flag name is the capture group.
 _GENERAL_GATE_PATTERNS = (
