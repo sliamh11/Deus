@@ -313,9 +313,10 @@ def test_code_review_gate_blocks_git_commit_without_marker(tmp_path, capsys):
     assert "code-reviewer" in reason
 
 
-def test_admin_merge_gate_blocks_without_exact_approval(tmp_path, capsys):
+def test_admin_merge_gate_blocks_without_exact_approval(tmp_path, capsys, monkeypatch):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
+    _green_ci(hooks, monkeypatch)  # CI check is incidental; this gates approval-marker logic
 
     rc = hooks.run_admin_merge_gate(
         bash_event(repo, "gh pr merge 294 --squash --admin"),
@@ -329,9 +330,10 @@ def test_admin_merge_gate_blocks_without_exact_approval(tmp_path, capsys):
     assert "approve-admin-merge" in reason
 
 
-def test_admin_merge_gate_blocks_with_gh_global_repo_flag(tmp_path, capsys):
+def test_admin_merge_gate_blocks_with_gh_global_repo_flag(tmp_path, capsys, monkeypatch):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
+    _green_ci(hooks, monkeypatch)  # CI check is incidental; this gates approval-marker logic
 
     rc = hooks.run_admin_merge_gate(
         bash_event(repo, "gh --repo owner/repo pr merge 294 --squash --admin"),
@@ -344,9 +346,10 @@ def test_admin_merge_gate_blocks_with_gh_global_repo_flag(tmp_path, capsys):
     assert "fresh explicit approval" in reason
 
 
-def test_admin_merge_gate_blocks_with_gh_short_repo_flag(tmp_path, capsys):
+def test_admin_merge_gate_blocks_with_gh_short_repo_flag(tmp_path, capsys, monkeypatch):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
+    _green_ci(hooks, monkeypatch)  # CI check is incidental; this gates admin-command detection
 
     rc = hooks.run_admin_merge_gate(
         bash_event(repo, "gh -R owner/repo pr merge 294 --squash --admin"),
@@ -358,9 +361,10 @@ def test_admin_merge_gate_blocks_with_gh_short_repo_flag(tmp_path, capsys):
     assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_admin_merge_gate_blocks_equals_form_admin_flag(tmp_path, capsys):
+def test_admin_merge_gate_blocks_equals_form_admin_flag(tmp_path, capsys, monkeypatch):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
+    _green_ci(hooks, monkeypatch)  # CI check is incidental; this gates admin-command detection
 
     rc = hooks.run_admin_merge_gate(
         bash_event(repo, "gh pr merge 294 --squash --admin=true"),
@@ -372,9 +376,10 @@ def test_admin_merge_gate_blocks_equals_form_admin_flag(tmp_path, capsys):
     assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_admin_merge_gate_blocks_absolute_gh_path(tmp_path, capsys):
+def test_admin_merge_gate_blocks_absolute_gh_path(tmp_path, capsys, monkeypatch):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
+    _green_ci(hooks, monkeypatch)  # CI check is incidental; this gates admin-command detection
 
     rc = hooks.run_admin_merge_gate(
         bash_event(repo, "/opt/homebrew/bin/gh pr merge 294 --squash --admin=true"),
@@ -386,9 +391,10 @@ def test_admin_merge_gate_blocks_absolute_gh_path(tmp_path, capsys):
     assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_admin_merge_gate_blocks_windows_gh_exe_path(tmp_path, capsys):
+def test_admin_merge_gate_blocks_windows_gh_exe_path(tmp_path, capsys, monkeypatch):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
+    _green_ci(hooks, monkeypatch)  # CI check is incidental; this gates admin-command detection
 
     rc = hooks.run_admin_merge_gate(
         bash_event(
@@ -413,10 +419,11 @@ def test_admin_merge_detection_handles_windows_shell_tokenization(monkeypatch):
 
 
 def test_admin_merge_gate_allows_exact_approved_command_and_consumes_marker(
-    tmp_path, capsys
+    tmp_path, capsys, monkeypatch
 ):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
+    _green_ci(hooks, monkeypatch)  # approve_admin_merge + gate both check CI; mock it green
     command = "gh pr merge 294 --squash --admin"
 
     assert hooks.approve_admin_merge(command, repo) == 0
@@ -430,9 +437,10 @@ def test_admin_merge_gate_allows_exact_approved_command_and_consumes_marker(
     assert "permissionDecision" not in output
 
 
-def test_admin_merge_gate_rejects_stale_marker_for_different_command(tmp_path, capsys):
+def test_admin_merge_gate_rejects_stale_marker_for_different_command(tmp_path, capsys, monkeypatch):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
+    _green_ci(hooks, monkeypatch)  # approve_admin_merge + gate both check CI; mock it green
 
     assert hooks.approve_admin_merge("gh pr merge 294 --squash --admin", repo) == 0
     rc = hooks.run_admin_merge_gate(
@@ -2416,6 +2424,53 @@ def _structural_config(repo: Path, checks: list[dict]) -> None:
     (cold_dir / "structural-checks.json").write_text(
         json.dumps({"checks": checks}), encoding="utf-8"
     )
+
+
+@pytest.mark.parametrize(
+    "rel,pattern,expected",
+    [
+        # ``**`` matches zero or more whole segments — the cross-version bug (LIA-308):
+        # full_match (3.13+) returns True for all of these; the old 3.12 ``.match`` fallback
+        # returned False for the zero-segment case, silently under-matching ``**`` globs.
+        ("src/main.ts", "src/**/*.ts", True),       # ** matches ZERO segments
+        ("src/a/main.ts", "src/**/*.ts", True),     # ** matches one
+        ("src/a/b/c/d.ts", "src/**/*.ts", True),    # ** matches many
+        ("src/foo.js", "src/**/*.ts", False),       # wrong extension
+        ("docs/readme.md", "src/**/*.ts", False),   # wrong root
+        ("packages/mcp-foo/src/a/b.ts", "packages/mcp-*/src/**/*.ts", True),  # real config glob
+        # ``*`` never crosses a path separator:
+        ("main.ts", "*.ts", True),
+        ("a/main.ts", "*.ts", False),
+        ("src/a/main.ts", "src/*.ts", False),
+        # ``**/`` zero-or-more at the root:
+        ("main.ts", "**/*.ts", True),
+        ("a/b/c.ts", "**/*.ts", True),
+        # trailing ``**`` (zero/one/many segments):
+        ("src", "src/**", False),
+        ("src/a", "src/**", True),
+        ("src/a/b/c", "src/**", True),
+        # character classes (incl. negation) — handled, not corrupted by re.escape:
+        ("src/a.ts", "src/[abc].ts", True),
+        ("src/d.ts", "src/[abc].ts", False),
+        ("src/x.ts", "src/[!abc].ts", True),
+        ("src/a.ts", "src/[!abc].ts", False),
+        ("file1.txt", "file[0-9].txt", True),
+        ("fileA.txt", "file[0-9].txt", False),
+        # a LEADING '^' is a glob LITERAL (only '!' negates) — must NOT act as regex negation:
+        ("a.ts", "[^abc].ts", True),    # 'a' is a member of the literal class {^,a,b,c}
+        ("x.ts", "[^abc].ts", False),   # 'x' is not a member
+        ("^.ts", "[^abc].ts", True),    # '^' itself is a member
+        # unterminated '[' is treated as a literal (no crash, no over-match):
+        ("a[b.ts", "a[b.ts", True),
+        ("axb.ts", "a[b.ts", False),
+    ],
+)
+def test_glob_match_full_match_semantics_all_pythons(rel, pattern, expected):
+    """Regression guard for LIA-308: _glob_match must give full_match `**` semantics on
+    EVERY Python (the old impl under-matched `**` on < 3.13). These expectations equal
+    PurePath.full_match's verified output and must hold regardless of the runtime version."""
+    hooks = load_hooks()
+    assert hooks._glob_match(rel, pattern) is expected
 
 
 def test_structural_check_warns_on_pattern_match(tmp_path, capsys):

@@ -80,13 +80,10 @@ jobs:
         # Regression-protect the provider-agnostic warden co-gate engine: the gpt +
         # openai_compat backends, the role specs, the strict-AND gate / loop guard / HITL
         # override (test_warden_review), the driver (test_codex_warden), the codex engine
-        # (test_codex_review), and the Phase 3 co-gate oracle. All hermetic — the model
-        # seams are mocked, so no codex CLI / network is touched.
-        # NOT included: test_codex_warden_hooks.py — several admin-merge-gate tests invoke
-        # the real `gh` CLI (gh pr checks), which needs GH_TOKEN + network and is not
-        # hermetic in CI. Making them mock `gh` so the full hook engine joins this step is
-        # tracked in LIA-308.
-        run: python3 -m pytest scripts/tests/test_warden_review.py scripts/tests/test_codex_warden.py scripts/tests/test_codex_review.py scripts/tests/test_phase3_cogate_oracle.py -v
+        # (test_codex_review), the Phase 3 co-gate oracle, and the full hook engine incl.
+        # the admin-merge + structural-check gates (test_codex_warden_hooks). All hermetic —
+        # the gh CLI and model seams are mocked, so no codex CLI / gh / network is touched.
+        run: python3 -m pytest scripts/tests/test_warden_review.py scripts/tests/test_codex_warden.py scripts/tests/test_codex_review.py scripts/tests/test_phase3_cogate_oracle.py scripts/tests/test_codex_warden_hooks.py -v
 
       - name: Session type contract tests
         run: python3 -m pytest tests/test_session_type_contract.py -v
