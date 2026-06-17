@@ -18,12 +18,15 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
+import httpx
+
 import codex_review as cr
 import codex_warden_hooks as h
 from _exit_codes import RATE_LIMIT
 from warden_review import registry
+from warden_review.backends import openai_compat as oac
 from warden_review.backends.base import ReviewRequest, Verdict
-from warden_review.constants import BACKEND_GPT, store_key
+from warden_review.constants import BACKEND_GPT, BACKEND_OPENAI_COMPAT, store_key
 from warden_review.roles import ROLE_SPECS
 
 _ROLE = "code-reviewer"
@@ -69,9 +72,10 @@ def _gate(repo: Path) -> int:
 # ── Registry ──────────────────────────────────────────────────────────────────────
 
 def test_registry_lists_and_resolves_gpt():
-    assert registry.available_backends() == (BACKEND_GPT,)
     assert registry.is_registered(BACKEND_GPT)
     assert registry.get_backend(BACKEND_GPT).id() == BACKEND_GPT
+    # The registry now holds both model backends (gpt + openai_compat); claude is never registered.
+    assert set(registry.available_backends()) == {BACKEND_GPT, BACKEND_OPENAI_COMPAT}
 
 
 def test_registry_unknown_backend_raises():
@@ -370,3 +374,223 @@ def test_invalidator_clears_gpt_verdict(repo, monkeypatch):
     h.run_code_review_invalidator(ev, repo)
     assert h._read_verdict(_GPT_KEY, repo) is None
     assert not h._marker(repo, h.cross_review_file(_ROLE)).exists()
+
+
+# ── openai_compat backend (LIA-304): OpenAI-compatible /v1 transport ──────────────
+# The single network seam ``_post_chat_completion`` is mocked wholesale — zero real HTTP,
+# so this runs offline in CI. Covers result mapping, the fail-closed verdict invariant
+# (no/invalid verdict NEVER becomes SHIP), every fail-open path (no base URL, transport
+# error, non-200, oversize), and request shaping (json_object, auth header, model override).
+
+_OAC_BASE = "http://127.0.0.1:8080/v1"
+
+
+@pytest.fixture
+def oac_env(monkeypatch):
+    """A configured base URL, with the optional key/model deliberately UNSET."""
+    monkeypatch.setenv("WARDEN_OPENAI_COMPAT_BASE_URL", _OAC_BASE)
+    monkeypatch.delenv("WARDEN_OPENAI_COMPAT_API_KEY", raising=False)
+    monkeypatch.delenv("WARDEN_OPENAI_COMPAT_MODEL", raising=False)
+
+
+def _oac_body(verdict="SHIP", results=None, summary="ok"):
+    """An OpenAI-compatible chat-completions body whose content is the findings JSON."""
+    content = json.dumps({"verdict": verdict, "summary": summary, "results": results or []})
+    return {"choices": [{"message": {"content": content}}]}
+
+
+def _oac_req(content="diff", model=None):
+    # rules_path is intentionally missing so build_rules_digest uses its generic fallback
+    # (no fixture file needed); the diff content is what we assert on.
+    return ReviewRequest(role=_ROLE, rules_path="/nonexistent-rules.md", content=content,
+                         cwd="/r", model=model)
+
+
+def test_oac_registry_registration():
+    assert registry.is_registered(BACKEND_OPENAI_COMPAT)
+    assert registry.get_backend(BACKEND_OPENAI_COMPAT).id() == BACKEND_OPENAI_COMPAT
+    assert oac.OpenAICompatBackend().id() == BACKEND_OPENAI_COMPAT
+
+
+@pytest.mark.parametrize("verdict", ["SHIP", "REVISE", "BLOCK"])
+def test_oac_parses_review_verdicts_and_maps_findings(monkeypatch, oac_env, verdict):
+    results = [{"file": "f.py", "flagged": True,
+                "findings": [{"severity": "MAJOR", "line": 3,
+                              "finding": "bug", "confidence": "high"}]}]
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda *a, **k: (200, _oac_body(verdict, results, "one bug")))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.verdict == verdict
+    assert v.summary == "one bug"
+    assert v.findings[0]["file"] == "f.py"
+    assert v.findings[0]["severity"] == "MAJOR"
+
+
+def test_oac_missing_base_url_could_not_run(monkeypatch):
+    monkeypatch.delenv("WARDEN_OPENAI_COMPAT_BASE_URL", raising=False)
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+    assert v.category == "auth"
+
+
+def test_oac_connection_error_fails_open(monkeypatch, oac_env):
+    def _boom(*a, **k):
+        raise httpx.ConnectError("offline")
+    monkeypatch.setattr(oac, "_post_chat_completion", _boom)
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+
+
+@pytest.mark.parametrize("status,category", [(401, "auth"), (403, "auth"),
+                                             (429, "rate_limit"), (500, "")])
+def test_oac_non_200_fails_open_with_category(monkeypatch, oac_env, status, category):
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda *a, **k: (status, {"error": "boom"}))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+    assert v.category == category
+
+
+def test_oac_invalid_verdict_fails_closed(monkeypatch, oac_env):
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda *a, **k: (200, _oac_body(verdict="MAYBE")))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship   # invalid verdict must NOT auto-SHIP
+
+
+def test_oac_missing_verdict_key_fails_closed(monkeypatch, oac_env):
+    body = {"choices": [{"message": {"content": json.dumps({"summary": "x", "results": []})}}]}
+    monkeypatch.setattr(oac, "_post_chat_completion", lambda *a, **k: (200, body))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+
+
+def test_oac_non_json_content_fails_closed(monkeypatch, oac_env):
+    body = {"choices": [{"message": {"content": "I cannot comply, here is prose."}}]}
+    monkeypatch.setattr(oac, "_post_chat_completion", lambda *a, **k: (200, body))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+
+
+def test_oac_unexpected_response_shape_fails_closed(monkeypatch, oac_env):
+    monkeypatch.setattr(oac, "_post_chat_completion", lambda *a, **k: (200, {"no": "choices"}))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+
+
+def test_oac_oversize_prompt_could_not_run_without_network(monkeypatch, oac_env):
+    called: list[int] = []
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda *a, **k: called.append(1) or (200, _oac_body()))
+    huge = "x" * (oac._MAX_PROMPT_CHARS + 1)
+    v = oac.OpenAICompatBackend().review(_oac_req(content=huge))
+    assert v.could_not_run and not v.is_ship
+    assert called == []   # guarded BEFORE any network call (never truncate-then-SHIP)
+
+
+def test_oac_strips_markdown_fence(monkeypatch, oac_env):
+    fenced = "```json\n" + json.dumps({"verdict": "SHIP", "summary": "", "results": []}) + "\n```"
+    body = {"choices": [{"message": {"content": fenced}}]}
+    monkeypatch.setattr(oac, "_post_chat_completion", lambda *a, **k: (200, body))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.verdict == "SHIP"
+
+
+def test_oac_request_shaping_and_bearer_when_key_set(monkeypatch, oac_env):
+    monkeypatch.setenv("WARDEN_OPENAI_COMPAT_API_KEY", "secret-key")
+    monkeypatch.setenv("WARDEN_OPENAI_COMPAT_MODEL", "env-model")
+    seen: dict = {}
+
+    def _capture(endpoint, payload, headers, timeout):
+        seen.update(endpoint=endpoint, payload=payload, headers=headers)
+        return (200, _oac_body())
+
+    monkeypatch.setattr(oac, "_post_chat_completion", _capture)
+    oac.OpenAICompatBackend().review(_oac_req())
+    assert seen["endpoint"] == _OAC_BASE + "/chat/completions"
+    assert seen["headers"]["Authorization"] == "Bearer secret-key"
+    assert seen["payload"]["response_format"] == {"type": "json_object"}
+    assert seen["payload"]["temperature"] == 0
+    assert seen["payload"]["model"] == "env-model"
+
+
+def test_oac_no_auth_header_when_key_absent(monkeypatch, oac_env):
+    seen: dict = {}
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda e, p, hdr, t: seen.update(headers=hdr) or (200, _oac_body()))
+    oac.OpenAICompatBackend().review(_oac_req())
+    assert "Authorization" not in seen["headers"]
+
+
+def test_oac_request_model_overrides_env(monkeypatch, oac_env):
+    monkeypatch.setenv("WARDEN_OPENAI_COMPAT_MODEL", "env-model")
+    seen: dict = {}
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda e, p, hdr, t: seen.update(payload=p) or (200, _oac_body()))
+    oac.OpenAICompatBackend().review(_oac_req(model="req-model"))
+    assert seen["payload"]["model"] == "req-model"
+
+
+def test_oac_wraps_untrusted_diff_and_appends_shape(monkeypatch, oac_env):
+    """Security: the diff stays inside the untrusted-data boundary; the JSON shape is appended."""
+    seen: dict = {}
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda e, p, hdr, t: seen.update(payload=p) or (200, _oac_body()))
+    oac.OpenAICompatBackend().review(_oac_req(content="MALICIOUS-DIFF-MARKER"))
+    prompt = seen["payload"]["messages"][0]["content"]
+    assert "MALICIOUS-DIFF-MARKER" in prompt
+    assert "UNTRUSTED" in prompt                          # sentinel boundary framing present
+    assert '"verdict": "SHIP|REVISE|BLOCK"' in prompt     # appended shape instruction present
+
+
+def test_oac_post_valueerror_fails_open(monkeypatch, oac_env):
+    """Contract: review() MUST NOT raise for infra failures. A ValueError from the transport
+    (e.g. a malformed base URL on some httpx versions) must become COULD_NOT_RUN, not crash."""
+    def _boom(*a, **k):
+        raise ValueError("unknown url type")
+    monkeypatch.setattr(oac, "_post_chat_completion", _boom)
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+
+
+def test_oac_malformed_base_url_does_not_raise(monkeypatch):
+    """End-to-end (no mock): a schemeless base URL must fail open, never raise out of review()."""
+    monkeypatch.setenv("WARDEN_OPENAI_COMPAT_BASE_URL", "not-a-url")
+    monkeypatch.delenv("WARDEN_OPENAI_COMPAT_API_KEY", raising=False)
+    monkeypatch.delenv("WARDEN_OPENAI_COMPAT_MODEL", raising=False)
+    v = oac.OpenAICompatBackend().review(_oac_req())   # real httpx; UnsupportedProtocol/ValueError
+    assert v.could_not_run and not v.is_ship
+
+
+def test_oac_parses_with_trailing_prose(monkeypatch, oac_env):
+    """A model that appends a human note after the JSON object still yields a real verdict."""
+    obj = json.dumps({"verdict": "SHIP", "summary": "clean", "results": []})
+    body = {"choices": [{"message": {"content": obj + "\n\nNote: looks good to me!"}}]}
+    monkeypatch.setattr(oac, "_post_chat_completion", lambda *a, **k: (200, body))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.verdict == "SHIP"
+
+
+def test_oac_parses_fence_without_language_tag(monkeypatch, oac_env):
+    obj = json.dumps({"verdict": "REVISE", "summary": "x", "results": []})
+    body = {"choices": [{"message": {"content": "```\n" + obj + "\n```"}}]}
+    monkeypatch.setattr(oac, "_post_chat_completion", lambda *a, **k: (200, body))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.verdict == "REVISE"
+
+
+def test_oac_non_object_json_fails_closed(monkeypatch, oac_env):
+    """A valid-JSON but non-object body (e.g. an array) must NOT become a verdict."""
+    body = {"choices": [{"message": {"content": "[1, 2, 3]"}}]}
+    monkeypatch.setattr(oac, "_post_chat_completion", lambda *a, **k: (200, body))
+    v = oac.OpenAICompatBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+
+
+def test_oac_model_omitted_from_payload_when_unset(monkeypatch, oac_env):
+    """No env model + no request.model -> the payload carries no 'model' key (server default)."""
+    seen: dict = {}
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda e, p, hdr, t: seen.update(payload=p) or (200, _oac_body()))
+    oac.OpenAICompatBackend().review(_oac_req())   # oac_env unsets WARDEN_OPENAI_COMPAT_MODEL
+    assert "model" not in seen["payload"]
