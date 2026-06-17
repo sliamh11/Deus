@@ -143,6 +143,25 @@ describe('task scheduler', () => {
     expect(new Date(nextRun!).getTime()).toBe(expected);
   });
 
+  it('computeNextRun throws on a blank cron value (GH #788)', () => {
+    const task = {
+      id: 'blank-cron',
+      group_folder: 'test',
+      chat_jid: 'test@g.us',
+      prompt: 'test',
+      schedule_type: 'cron' as const,
+      schedule_value: '', // empty — cron-parser >= 5.5.0 would treat as every-minute
+      context_mode: 'isolated' as const,
+      next_run: new Date(Date.now() - 1000).toISOString(),
+      last_run: null,
+      last_result: null,
+      status: 'active' as const,
+      created_at: '2026-01-01T00:00:00.000Z',
+    };
+
+    expect(() => computeNextRun(task)).toThrow(/Invalid cron/);
+  });
+
   it('computeNextRun returns null for once-tasks', () => {
     const task = {
       id: 'once-test',
@@ -392,6 +411,34 @@ describe('startSchedulerLoop execution path', () => {
       expect.any(String), // nextRun (ISO string for interval task)
       expect.stringContaining('task output'),
     );
+  });
+
+  // 6b. Blank cron in a stored row → run is recorded, then the task is paused
+  //     (not marked 'completed') so it stops churning. Guards the computeNextRun
+  //     call site against updateTaskAfterRun's null-next_run → 'completed' CASE (GH #788).
+  it('pauses (does not complete) a due task whose stored cron is blank', async () => {
+    createTask(
+      makeTask({
+        id: 'task-blank-cron',
+        schedule_type: 'cron',
+        schedule_value: '',
+        next_run: new Date(Date.now() - 60_000).toISOString(),
+      }),
+    );
+
+    const updateTaskAfterRunSpy = vi.spyOn(
+      await import('./db.js'),
+      'updateTaskAfterRun',
+    );
+
+    startSchedulerLoop(makeDeps());
+    await vi.advanceTimersByTimeAsync(10);
+
+    const task = getTaskById('task-blank-cron');
+    expect(task?.status).toBe('paused');
+    expect(task?.next_run).toBeNull();
+    // The 'completed'-forcing path must be bypassed entirely.
+    expect(updateTaskAfterRunSpy).not.toHaveBeenCalled();
   });
 
   // 7. Guard — second call to startSchedulerLoop returns early

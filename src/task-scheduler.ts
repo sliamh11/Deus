@@ -1,5 +1,6 @@
-import { CronExpressionParser } from 'cron-parser';
 import fs from 'fs';
+
+import { parseCronExpression } from './cron.js';
 
 // Iterate by code point to avoid splitting UTF-16 surrogate pairs (emoji crash on Anthropic API).
 export function safeSlice(str: string, maxCodePoints: number): string {
@@ -50,9 +51,7 @@ export function computeNextRun(task: ScheduledTask): string | null {
   const now = Date.now();
 
   if (task.schedule_type === 'cron') {
-    const interval = CronExpressionParser.parse(task.schedule_value, {
-      tz: TIMEZONE,
-    });
+    const interval = parseCronExpression(task.schedule_value, TIMEZONE);
     return interval.next().toISOString();
   }
 
@@ -263,7 +262,25 @@ async function runTask(
     error,
   });
 
-  const nextRun = computeNextRun(task);
+  let nextRun: string | null;
+  try {
+    nextRun = computeNextRun(task);
+  } catch (cronErr) {
+    // A malformed cron in a stored row (e.g. a legacy/blank value that bypassed
+    // create-time validation) must not be routed through updateTaskAfterRun: with
+    // a null next_run its `CASE WHEN ? IS NULL THEN 'completed'` branch would mark
+    // the task completed, hiding the problem. Pause it instead to stop churn, the
+    // same way the invalid-group-folder path above does. logTaskRun already
+    // recorded this run, so we don't re-log here.
+    const cronMsg =
+      cronErr instanceof Error ? cronErr.message : String(cronErr);
+    logger.error(
+      { taskId: task.id, value: task.schedule_value, error: cronMsg },
+      'Invalid cron in stored task — pausing to stop churn',
+    );
+    updateTask(task.id, { status: 'paused', next_run: null });
+    return;
+  }
   const resultSummary = error
     ? `Error: ${error}`
     : result

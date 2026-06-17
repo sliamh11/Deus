@@ -1,6 +1,5 @@
-import { CronExpressionParser } from 'cron-parser';
-
 import { TIMEZONE } from './config.js';
+import { parseCronExpression } from './cron.js';
 import { createTask, getTaskById } from './db.js';
 
 const GARDENER_ID = 'doc-gardener-weekly';
@@ -9,7 +8,7 @@ const CRON_EXPR = '0 3 * * 1'; // Monday 03:00 local — low-traffic window
 export function seedDocGardener(jid: string, folder: string): void {
   if (!jid || !folder) return;
   if (getTaskById(GARDENER_ID)) return;
-  const interval = CronExpressionParser.parse(CRON_EXPR, { tz: TIMEZONE });
+  const interval = parseCronExpression(CRON_EXPR, TIMEZONE);
   createTask({
     id: GARDENER_ID,
     chat_jid: jid,

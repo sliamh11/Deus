@@ -1,9 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 
-import { CronExpressionParser } from 'cron-parser';
-
 import { fireAndForget } from './async/index.js';
+import { parseCronExpression } from './cron.js';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { getSkillIpcHandlers } from './skills/registry.js';
 import { AvailableGroup } from './container-runner.js';
@@ -273,9 +272,7 @@ export async function processTaskIpc(
         let nextRun: string | null = null;
         if (scheduleType === 'cron') {
           try {
-            const interval = CronExpressionParser.parse(data.schedule_value, {
-              tz: TIMEZONE,
-            });
+            const interval = parseCronExpression(data.schedule_value, TIMEZONE);
             nextRun = interval.next().toISOString();
           } catch {
             logger.warn(
@@ -441,9 +438,9 @@ export async function processTaskIpc(
           };
           if (updatedTask.schedule_type === 'cron') {
             try {
-              const interval = CronExpressionParser.parse(
+              const interval = parseCronExpression(
                 updatedTask.schedule_value,
-                { tz: TIMEZONE },
+                TIMEZONE,
               );
               updates.next_run = interval.next().toISOString();
             } catch {
