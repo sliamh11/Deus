@@ -10,11 +10,12 @@ from __future__ import annotations
 # ── Backend ids (used in config `backends: [...]`, verdict keys, the registry) ──────
 BACKEND_CLAUDE = "claude"   # the in-session subagent transport (NOT in the registry)
 BACKEND_GPT = "gpt"         # GPT via the codex CLI
+BACKEND_OPENAI_COMPAT = "openai_compat"  # any OpenAI-compatible /v1 endpoint (llama.cpp/Ollama/OpenRouter/OpenAI)
 
 #: Model backends the registry/gate recognize. Claude is intentionally excluded — it is
 #: the in-session subagent transport, not an out-of-band model call. Grows by one per
 #: added provider (e.g. a local / openai-compatible backend).
-KNOWN_MODEL_BACKENDS = frozenset({BACKEND_GPT})
+KNOWN_MODEL_BACKENDS = frozenset({BACKEND_GPT, BACKEND_OPENAI_COMPAT})
 
 # ── Verdicts ────────────────────────────────────────────────────────────────────────
 VERDICT_SHIP = "SHIP"
