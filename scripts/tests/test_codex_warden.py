@@ -71,6 +71,39 @@ def test_driver_unknown_backend_usage_error(git_repo, monkeypatch):
     assert rc == USAGE_ERROR
 
 
+# ── Phase 3 (LIA-303): plan-reviewer reviews a --content-file (no git diff) ────────
+
+def test_driver_plan_reviewer_content_file_records_verdict(git_repo, tmp_path, monkeypatch):
+    # plan-reviewer has no diff; the plan text is read verbatim from --content-file and the
+    # gpt verdict is recorded under plan-reviewer@gpt for the co-gate to read.
+    plan = tmp_path / "plan.md"
+    plan.write_text("## Plan\nDo the thing safely.", encoding="utf-8")
+    captured = {}
+    monkeypatch.setattr(cw.cr.cfr, "repo_root", lambda: str(git_repo))
+    monkeypatch.setattr(cw.registry, "is_registered", lambda b: True)
+
+    def _backend(b):
+        def review(req):
+            captured["content"] = req.content      # prove the plan text reached the backend
+            return Verdict("SHIP", [], "plan looks sound")
+        return types.SimpleNamespace(review=review)
+    monkeypatch.setattr(cw.registry, "get_backend", _backend)
+
+    rc = cw.main(["--role", "plan-reviewer", "--content-file", str(plan), "--warden-mark"])
+    assert rc == 0
+    assert "Do the thing safely." in captured["content"]
+    assert cw.whooks._read_verdict("plan-reviewer@gpt", git_repo) == "SHIP"
+
+
+def test_driver_plan_reviewer_without_content_file_errors(git_repo, monkeypatch):
+    from _exit_codes import USAGE_ERROR
+    monkeypatch.setattr(cw.cr.cfr, "repo_root", lambda: str(git_repo))
+    monkeypatch.setattr(cw.registry, "is_registered", lambda b: True)
+    # No --content-file → _gather_file raises ReviewError(USAGE_ERROR); driver maps to non-zero.
+    rc = cw.main(["--role", "plan-reviewer", "--warden-mark"])
+    assert rc == USAGE_ERROR
+
+
 def test_driver_out_writes_json(git_repo, tmp_path, monkeypatch):
     monkeypatch.setattr(cw.cr.cfr, "repo_root", lambda: str(git_repo))
     monkeypatch.setattr(cw.cr.cfr, "get_diff", lambda root, rr, df: _DIFF)
