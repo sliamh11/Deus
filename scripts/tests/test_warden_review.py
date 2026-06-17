@@ -376,6 +376,36 @@ def test_invalidator_clears_gpt_verdict(repo, monkeypatch):
     assert not h._marker(repo, h.cross_review_file(_ROLE)).exists()
 
 
+# ── Content-kind flag: diff roles vs non-diff (plan) roles ────────────────────────
+
+def test_role_specs_mark_plan_reviewer_as_non_diff():
+    # plan-reviewer reviews plan TEXT (no `diff --git` boundaries); the others review diffs.
+    assert ROLE_SPECS["plan-reviewer"].is_diff is False
+    assert ROLE_SPECS["code-reviewer"].is_diff is True
+    assert ROLE_SPECS["ai-eng-warden"].is_diff is True
+
+
+def test_review_request_defaults_to_diff():
+    # Back-compat: every existing diff-role caller that omits is_diff keeps diff semantics.
+    assert ReviewRequest(role=_ROLE, rules_path="/x", content="d", cwd="/r").is_diff is True
+
+
+def test_non_diff_request_threads_is_diff_false_into_review(monkeypatch):
+    # The codex backend must forward ReviewRequest.is_diff onto the CodexReviewConfig it
+    # builds, so review() takes the whole-content path for plan-reviewer.
+    captured = {}
+
+    def _fake_review(content, cfg, cwd, cross_context=""):
+        captured["is_diff"] = cfg.is_diff
+        return {"results": [], "meta": {"verdict": "SHIP", "summary": "ok"}}
+
+    monkeypatch.setattr(cr, "review", _fake_review)  # codex backend calls codex_review.review
+    registry.get_backend(BACKEND_GPT).review(
+        ReviewRequest(role="plan-reviewer", rules_path="/x", content="a plan",
+                      cwd="/r", is_diff=False))
+    assert captured["is_diff"] is False
+
+
 # ── openai_compat backend (LIA-304): OpenAI-compatible /v1 transport ──────────────
 # The single network seam ``_post_chat_completion`` is mocked wholesale — zero real HTTP,
 # so this runs offline in CI. Covers result mapping, the fail-closed verdict invariant
