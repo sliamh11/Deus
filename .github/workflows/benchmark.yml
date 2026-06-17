@@ -14,6 +14,9 @@ on:
         default: ''
         type: string
 
+permissions:
+  contents: read
+
 jobs:
   benchmark:
     runs-on: ubuntu-latest

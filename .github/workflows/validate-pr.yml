@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [opened, edited, synchronize]
 
+permissions:
+  contents: read
+  pull-requests: read # amannn/action-semantic-pull-request reads the PR title
+
 jobs:
   pr-title:
     name: PR title follows Conventional Commits

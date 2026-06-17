@@ -15,6 +15,9 @@ on:
         required: false
         default: "smoke"
 
+permissions:
+  contents: read
+
 jobs:
   eval:
     runs-on: ubuntu-latest

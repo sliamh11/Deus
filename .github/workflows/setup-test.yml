@@ -8,6 +8,9 @@ on:
       - '.github/workflows/setup-test.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   setup-smoke:
     timeout-minutes: 10

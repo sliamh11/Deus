@@ -5,6 +5,10 @@ on:
     branches: [main]
   merge_group:
 
+permissions:
+  contents: read
+  pull-requests: read # dorny/paths-filter reads the PR changed-file list via the API on pull_request runs
+
 jobs:
   ci:
     runs-on: ubuntu-latest

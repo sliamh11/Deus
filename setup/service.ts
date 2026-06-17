@@ -4,7 +4,7 @@
  *
  * Fixes: Root→system systemd, WSL nohup fallback, no `|| true` swallowing errors.
  */
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -959,8 +959,27 @@ function setupMaintenanceWindows(projectRoot: string, _homeDir: string): void {
   }
 
   try {
-    execSync(
-      `schtasks /Create /TN "${taskName}" /TR "${pythonPath} ${projectRoot}\\scripts\\maintenance.py" /SC DAILY /ST 04:30 /F`,
+    // execFileSync drops the cmd.exe shell; /TR keeps inner quotes because
+    // schtasks re-parses it as a command line (so paths with spaces survive).
+    const maintScript = path.win32.join(
+      projectRoot,
+      'scripts',
+      'maintenance.py',
+    );
+    execFileSync(
+      'schtasks',
+      [
+        '/Create',
+        '/TN',
+        taskName,
+        '/TR',
+        `"${pythonPath}" "${maintScript}"`,
+        '/SC',
+        'DAILY',
+        '/ST',
+        '04:30',
+        '/F',
+      ],
       { stdio: 'pipe' },
     );
     logger.info('Windows Task Scheduler: maintenance scheduled (daily 04:30)');

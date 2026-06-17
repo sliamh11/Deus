@@ -4,7 +4,7 @@
  * Other channels discover group names at runtime — this step auto-skips for them.
  * Replaces 05-sync-groups.sh + 05b-list-groups.sh
  */
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
@@ -204,7 +204,7 @@ await connect();
     const tmpScript = path.join(projectRoot, '.tmp-group-sync.mjs');
     fs.writeFileSync(tmpScript, syncScript, 'utf-8');
     try {
-      const output = execSync(`node ${tmpScript}`, {
+      const output = execFileSync('node', [tmpScript], {
         cwd: projectRoot,
         encoding: 'utf-8',
         timeout: 45000,
