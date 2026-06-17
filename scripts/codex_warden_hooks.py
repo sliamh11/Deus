@@ -3990,7 +3990,16 @@ def run(args: argparse.Namespace) -> int:
         Path(args.script_path).expanduser().resolve(strict=False)
     )
     event = _read_stdin_json()
-    return RUNNERS[args.behavior](event, repo_root)
+    # Resolve the store from the EVENT cwd, not the hook process's os.getcwd():
+    # the two can differ, so without this a worktree's verdict-tracker writes
+    # land in a different bucket than the gates read. worktree_override pins
+    # _claude_marker_dir to that worktree's bucket for every runner.
+    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+    wt = _worktree_for_cwd(cwd, repo_root)
+    if wt is None:
+        return RUNNERS[args.behavior](event, repo_root)
+    with worktree_override(wt):
+        return RUNNERS[args.behavior](event, repo_root)
 
 
 def build_parser() -> argparse.ArgumentParser:

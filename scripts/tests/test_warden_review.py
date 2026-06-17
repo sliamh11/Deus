@@ -8,7 +8,9 @@ over a tmp_path verdict store. The gate signals a block by calling ``_block_pre_
 """
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -691,3 +693,107 @@ def test_oac_model_omitted_from_payload_when_unset(monkeypatch, oac_env):
                         lambda e, p, hdr, t: seen.update(payload=p) or (200, _oac_body()))
     oac.OpenAICompatBackend().review(_oac_req())   # oac_env unsets WARDEN_OPENAI_COMPAT_MODEL
     assert "model" not in seen["payload"]
+
+
+# ── run() pins the store to the EVENT cwd's worktree (hook-dispatch bucket fix) ──
+#
+# Companion to the driver fix (worktree_override): the hook dispatcher must set the
+# override from event["cwd"] so EVERY hook (here the verdict-tracker) writes to the
+# gate's per-worktree bucket, not the hook process's os.getcwd()-derived (main-flat)
+# one. _worktree_for_cwd is mocked (no real git), mirroring the driver tests above.
+
+def _run_args(repo_root):
+    return argparse.Namespace(
+        behavior="warden-verdict-tracker", repo_root=str(repo_root),
+        script_path=str(Path(h.__file__)),
+    )
+
+
+def _tracker_event(cwd):
+    return {
+        "tool_name": "Agent", "cwd": str(cwd),
+        "tool_input": {"subagent_type": "code-reviewer"},
+        "tool_response": "## Verdict: SHIP",
+    }
+
+
+def test_run_pins_store_to_event_cwd_worktree(tmp_path, monkeypatch):
+    # @oracle: run() sets worktree_override from event["cwd"] -> verdict-tracker writes to
+    # the gate's bucket (_verdicts_path_for_worktree), NOT the process-cwd flat store.
+    primary, wt = tmp_path / "primary", tmp_path / "wt"
+    (primary / ".claude").mkdir(parents=True)
+    monkeypatch.setattr(h, "_WORKTREE_CACHE", {})  # avoid cross-test cwd aliasing
+    monkeypatch.setattr(h, "_worktree_for_cwd",
+                        lambda cwd, root: wt if Path(cwd).resolve() == wt.resolve() else None)
+    monkeypatch.setattr(h, "_read_stdin_json", lambda: _tracker_event(wt))
+    assert h.run(_run_args(primary)) == 0
+    bucket = h._read_verdicts_at(h._verdicts_path_for_worktree(primary, wt))
+    assert bucket.get("code-reviewer", {}).get("verdict") == "SHIP", (
+        "verdict-tracker must write to the event-cwd worktree bucket"
+    )
+    flat = h._verdicts_path(primary)
+    assert not flat.exists() or "code-reviewer" not in h._read_verdicts_at(flat), (
+        "must NOT write to the process-cwd flat store — the pre-fix bug"
+    )
+
+
+def test_run_falls_back_to_getcwd_when_event_cwd_absent(tmp_path, monkeypatch):
+    # @oracle: event omits "cwd" -> run() falls back to os.getcwd() for the worktree
+    # lookup (no crash on the missing key) and still applies the override.
+    primary, wt = tmp_path / "primary", tmp_path / "wt"
+    (primary / ".claude").mkdir(parents=True)
+    monkeypatch.setattr(h, "_WORKTREE_CACHE", {})
+    seen = {}
+
+    def _fake_wt(cwd, root):
+        seen["cwd"] = cwd
+        return wt
+    monkeypatch.setattr(h, "_worktree_for_cwd", _fake_wt)
+    event = {"tool_name": "Agent", "tool_input": {"subagent_type": "code-reviewer"},
+             "tool_response": "## Verdict: SHIP"}  # no "cwd"
+    monkeypatch.setattr(h, "_read_stdin_json", lambda: event)
+    assert h.run(_run_args(primary)) == 0
+    assert seen["cwd"] == Path(os.getcwd()).resolve(strict=False), (
+        "missing event cwd must fall back to os.getcwd()"
+    )
+    bucket = h._read_verdicts_at(h._verdicts_path_for_worktree(primary, wt))
+    assert bucket.get("code-reviewer", {}).get("verdict") == "SHIP"
+    # And the override was actually applied (not written to the flat store).
+    flat = h._verdicts_path_for_worktree(primary, primary)  # flat == bucket(primary)
+    assert "code-reviewer" not in h._read_verdicts_at(flat)
+
+
+def test_run_main_repo_event_stays_flat(tmp_path, monkeypatch):
+    # @oracle: back-compat — when event cwd is the main repo (worktree == repo_root),
+    # resolution stays flat (no per-worktree bucket).
+    primary = tmp_path / "primary"
+    (primary / ".claude").mkdir(parents=True)
+    monkeypatch.setattr(h, "_WORKTREE_CACHE", {})
+    monkeypatch.setattr(h, "_worktree_for_cwd", lambda cwd, root: primary)  # main repo -> itself
+    monkeypatch.setattr(h, "_read_stdin_json", lambda: _tracker_event(primary))
+    assert h.run(_run_args(primary)) == 0
+    # Resolve the flat path deterministically (worktree_root == repo_root -> flat),
+    # independent of os.getcwd(): this is the same flat store run() wrote to under
+    # worktree_override(primary), where wt == repo_root collapses to the flat dir.
+    flat = h._verdicts_path_for_worktree(primary, primary)
+    assert flat == primary / ".claude" / ".warden-verdicts.json"
+    assert h._read_verdicts_at(flat).get("code-reviewer", {}).get("verdict") == "SHIP"
+
+
+def test_run_restores_override_when_runner_raises(tmp_path, monkeypatch):
+    # @oracle: worktree_override restores _WORKTREE_OVERRIDE even when the runner raises,
+    # so a failing hook can't leak override state into a later hook in the same process.
+    primary, wt = tmp_path / "primary", tmp_path / "wt"
+    monkeypatch.setattr(h, "_worktree_for_cwd", lambda cwd, root: wt)
+    monkeypatch.setattr(h, "_read_stdin_json", lambda: {"cwd": str(wt)})
+
+    def _boom(event, repo):
+        raise RuntimeError("runner blew up")
+    monkeypatch.setitem(h.RUNNERS, "_test_boom", _boom)  # sentinel key, rename-proof
+
+    prev = h._WORKTREE_OVERRIDE
+    args = argparse.Namespace(behavior="_test_boom", repo_root=str(primary),
+                              script_path=str(Path(h.__file__)))
+    with pytest.raises(RuntimeError):
+        h.run(args)
+    assert h._WORKTREE_OVERRIDE == prev, "override must be restored after a runner raises"
