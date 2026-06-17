@@ -145,6 +145,54 @@ def test_generic_failure_raises_internal_error():
     assert ei.value.code == INTERNAL_ERROR
 
 
+# ── review(): non-diff content (e.g. plan-reviewer reviews plan TEXT) ─────────────
+
+_PLAN_TEXT = (
+    "# Plan: add retry to the uploader\n"
+    "1. Wrap the upload call in a bounded retry (3 attempts, exp backoff).\n"
+    "2. Surface the final failure to the caller; do not swallow it.\n"
+)
+
+
+def test_non_diff_content_reviewed_as_single_unit_no_abstain():
+    captured = {}
+
+    def _capture(prompt, cfg, cwd):
+        captured["prompt"] = prompt
+        return _ok("SHIP", [{"file": cr.SYNTHETIC_CONTENT_PATH,
+                             "flagged": False, "findings": []}])
+
+    with patch.object(cr, "call_codex_exec", side_effect=_capture) as m:
+        out = cr.review(_PLAN_TEXT, _cfg(is_diff=False), _TMP)
+    assert m.call_count == 1                       # whole content reviewed in one call
+    assert out["meta"]["verdict"] == "SHIP"
+    assert len(out["results"]) == 1
+    assert out["results"][0]["file"] == cr.SYNTHETIC_CONTENT_PATH
+    assert out["results"][0]["added_loc"] == 0     # prose has no added-code lines
+    assert "CONTENT TO REVIEW" in captured["prompt"]
+    assert "DIFF TO REVIEW" not in captured["prompt"]
+
+
+def test_non_diff_content_without_flag_abstains():
+    # Documents the bug the is_diff flag fixes: plan text has no `diff --git` boundaries, so
+    # the default diff path splits it to zero files → "no files reviewed" → ABSTAIN.
+    with patch.object(cr, "call_codex_exec", return_value=_ok("SHIP")):
+        with pytest.raises(cr.ReviewError) as ei:
+            cr.review(_PLAN_TEXT, _cfg(), _TMP)    # is_diff defaults to True
+    assert ei.value.code == ABSTAIN
+
+
+def test_build_prompt_content_noun_defaults_to_diff_and_adapts():
+    diff_prompt = cr.build_prompt("BODY", "RULES", "<<<S>>>")
+    assert "DIFF TO REVIEW" in diff_prompt
+    assert "END OF DIFF" in diff_prompt
+    content_prompt = cr.build_prompt("BODY", "RULES", "<<<S>>>", content_noun="CONTENT")
+    assert "CONTENT TO REVIEW" in content_prompt
+    assert "END OF CONTENT" in content_prompt
+    assert "inside the content block" in content_prompt
+    assert "UNTRUSTED" in content_prompt          # injection boundary intact for non-diff too
+
+
 # ── review(): caps and fan-out ───────────────────────────────────────────────────
 
 def test_max_files_cap_drops_extra_files():
