@@ -40,6 +40,8 @@ Scope required (e.g. `evolution`, `container`, `skills`, `startup-gate`).
 
 **Before modifying `eval/`, `evolution/`, `src/startup-gate.ts`, `src/checks.ts`, `setup/`, `tui/src/backend/`, or `scripts/memory_indexer.py`**: read `docs/decisions/INDEX.md` first. Past decisions have non-obvious permanent constraints. Skipping the index has caused regressions.
 
+**Before changing session-log consolidation** (`src/consolidation-core.ts`, `src/auto-compress.ts`, `src/webui-consolidation.ts`, `src/memory-session-log.ts`): follow `docs/consolidation-contract.md`. The bytes handed to `memory_indexer.py --add` must stay stable — `src/consolidation-golden.test.ts` pins them as `@oracle` snapshots.
+
 **Provider integrations follow the Backend strategy trait** (ADR: `backend-strategy-trait.md`). Each provider is a single file implementing `Backend`. Do not inline provider-specific CLI commands, JSONL parsing, or model lists in app-level code — implement the trait instead.
 
 ## Startup-gate checks
