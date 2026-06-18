@@ -82,6 +82,48 @@ export const ODYSSEUS_HTTP_PORT = parseInt(
   process.env.ODYSSEUS_HTTP_PORT || '3005',
   10,
 );
+
+// ── Ingress gateway (centralized public inbound) ─────────────────────────────
+// The single public-facing HTTP server (src/ingress/gateway.ts), fronted by the
+// ngrok tunnel (src/ingress/tunnel.ts). Off by default. Secrets (NGROK_AUTHTOKEN,
+// per-source HMAC secrets) are NOT read here — loaded in-module via readEnvFile,
+// matching the "secrets not in config.ts" rule.
+export const INGRESS_GATEWAY_ENABLED =
+  process.env.INGRESS_GATEWAY_ENABLED === '1' ||
+  process.env.INGRESS_GATEWAY_ENABLED === 'true';
+export const INGRESS_GATEWAY_HOST =
+  process.env.INGRESS_GATEWAY_HOST || '127.0.0.1';
+export const INGRESS_GATEWAY_PORT = parseInt(
+  process.env.INGRESS_GATEWAY_PORT || '3007',
+  10,
+);
+export const INGRESS_MAX_BODY_BYTES = parseInt(
+  process.env.INGRESS_MAX_BODY_BYTES || String(256 * 1024),
+  10,
+);
+export const INGRESS_RATE_LIMIT_MAX = parseInt(
+  process.env.INGRESS_RATE_LIMIT_MAX || '60',
+  10,
+);
+export const INGRESS_RATE_LIMIT_WINDOW_MS = parseInt(
+  process.env.INGRESS_RATE_LIMIT_WINDOW_MS || '60000',
+  10,
+);
+export const INGRESS_IP_ALLOWLIST = (process.env.INGRESS_IP_ALLOWLIST || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+export const INGRESS_TUNNEL_ENABLED =
+  process.env.INGRESS_TUNNEL_ENABLED === '1' ||
+  process.env.INGRESS_TUNNEL_ENABLED === 'true';
+export const NGROK_STATIC_DOMAIN = process.env.NGROK_STATIC_DOMAIN || '';
+// Per-source webhook config, OUTSIDE project root, never mounted into containers
+// (same pattern as SENDER_ALLOWLIST_PATH). Consumed in Phase 4 by the webhook channel.
+export const WEBHOOK_SOURCES_PATH = path.join(
+  CONFIG_DIR,
+  'webhook-sources.json',
+);
+
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
 // Sessions older than this many hours are reset to a fresh start.

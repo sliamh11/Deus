@@ -5,12 +5,23 @@ import type { Server } from 'http';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  INGRESS_GATEWAY_ENABLED,
+  INGRESS_GATEWAY_HOST,
+  INGRESS_GATEWAY_PORT,
+  INGRESS_IP_ALLOWLIST,
+  INGRESS_MAX_BODY_BYTES,
+  INGRESS_RATE_LIMIT_MAX,
+  INGRESS_RATE_LIMIT_WINDOW_MS,
+  INGRESS_TUNNEL_ENABLED,
   MAX_MESSAGE_LENGTH,
+  NGROK_STATIC_DOMAIN,
   PROJECT_ROOT,
   TOOL_PROXY_PORT,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import { startToolProxy } from './tool-proxy.js';
+import { startIngressGateway, type IngressHandler } from './ingress/gateway.js';
+import { startTunnel, type TunnelHandle } from './ingress/tunnel.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -111,6 +122,11 @@ async function main(): Promise<void> {
 
   const channels: Channel[] = [];
   const webhookServers: Server[] = [];
+  // Mutable shared registry: the ingress gateway dispatches by these handlers.
+  // Empty in Phase 1 (gateway serves /health + 404s, no dispatch path); the
+  // Phase-4 webhook channel (LIA-315) pushes its route after the gateway listens.
+  const ingressHandlers: IngressHandler[] = [];
+  let ingressTunnel: TunnelHandle | undefined;
   const queue = new GroupQueue();
 
   // Initialize backend registry — all container-based backends share the same deps
@@ -138,6 +154,7 @@ async function main(): Promise<void> {
     logger.info({ signal }, 'Shutdown signal received');
     stopLinearDispatcher();
     for (const srv of webhookServers) srv.close();
+    ingressTunnel?.stop();
     proxyServer.close();
     toolProxyServer.close();
     await queue.shutdown(10000);
@@ -302,6 +319,42 @@ async function main(): Promise<void> {
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => state.registeredGroups,
   };
+
+  // Start the centralized ingress gateway BEFORE channels connect, so the
+  // Phase-4 webhook channel can register its route during connect(). Off unless
+  // INGRESS_GATEWAY_ENABLED; serves /health and dispatches registered handlers
+  // (none in Phase 1). The ngrok tunnel (if enabled) is the only public exposure.
+  if (INGRESS_GATEWAY_ENABLED) {
+    const gatewayServer = await startIngressGateway({
+      handlers: ingressHandlers,
+      config: {
+        host: INGRESS_GATEWAY_HOST,
+        port: INGRESS_GATEWAY_PORT,
+        maxBodyBytes: INGRESS_MAX_BODY_BYTES,
+        rateLimitMax: INGRESS_RATE_LIMIT_MAX,
+        rateLimitWindowMs: INGRESS_RATE_LIMIT_WINDOW_MS,
+        ipAllowlist: INGRESS_IP_ALLOWLIST,
+      },
+    });
+    webhookServers.push(gatewayServer);
+
+    if (INGRESS_TUNNEL_ENABLED) {
+      // Secret loaded in-module (not config.ts), per the "secrets not in config"
+      // rule. process.env wins over .env, matching the linearEnv precedence below.
+      const ngrokAuthtoken =
+        process.env.NGROK_AUTHTOKEN ||
+        readEnvFile(['NGROK_AUTHTOKEN']).NGROK_AUTHTOKEN;
+      try {
+        ingressTunnel = await startTunnel({
+          localPort: INGRESS_GATEWAY_PORT,
+          staticDomain: NGROK_STATIC_DOMAIN,
+          authtoken: ngrokAuthtoken,
+        });
+      } catch (err) {
+        logger.error({ err }, 'ingress-tunnel: failed to start');
+      }
+    }
+  }
 
   // Create and connect all registered channels.
   // Each channel self-registers via the barrel import above.
