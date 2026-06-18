@@ -131,6 +131,38 @@ describe('bootstrap', () => {
     expect(exitSpy).not.toHaveBeenCalled();
   });
 
+  it('installs a warning handler that logs the warning with its stack (GH #305)', async () => {
+    bootstrap(async () => {}, { name: 'entry-warn' });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const listeners = process.listeners('warning');
+    expect(listeners.length).toBeGreaterThanOrEqual(1);
+
+    // Mirror the real signal: a MaxListenersExceededWarning Error with a stack.
+    const warning = new Error(
+      'Possible EventEmitter memory leak detected. 11 drain listeners added to [Socket].',
+    );
+    warning.name = 'MaxListenersExceededWarning';
+    (listeners[listeners.length - 1] as (w: Error) => void)(warning);
+
+    await waitForLog(() =>
+      logCalls.some((c) => c.level === 'warn' && c.msg === 'process warning'),
+    );
+    const logged = logCalls.find(
+      (c) => c.level === 'warn' && c.msg === 'process warning',
+    );
+    expect(logged).toBeDefined();
+    expect(logged!.ctx).toMatchObject({ entry: 'entry-warn' });
+    const ctx = logged!.ctx as {
+      warning: { name: string; message: string; stack?: string };
+    };
+    expect(ctx.warning.name).toBe('MaxListenersExceededWarning');
+    // The stack is the whole point — it carries the emit site we can't otherwise see.
+    expect(typeof ctx.warning.stack).toBe('string');
+    expect((ctx.warning.stack as string).length).toBeGreaterThan(0);
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
   it('exitOnUnhandledRejection=true terminates the process', async () => {
     bootstrap(async () => {}, {
       name: 'entry-g',

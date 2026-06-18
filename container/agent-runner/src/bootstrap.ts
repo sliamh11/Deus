@@ -74,6 +74,15 @@ function installGlobalHandlers(
     if (exitOnUnhandledRejection) process.exit(1);
     // MIRROR-IGNORE-END
   });
+
+  // Node only emits a warning's stack frames under --trace-warnings (GH #305),
+  // so log the `warning` Error directly to capture its emit site. Does not
+  // suppress Node's default stderr print.
+  process.on('warning', (warning: Error) => {
+    // MIRROR-IGNORE-START -- intentional logger divergence (see file header)
+    logError(name, 'process warning', warning);
+    // MIRROR-IGNORE-END
+  });
 }
 
 // MIRROR-IGNORE-START -- helpers for the console-based variant; src/ has only `serializeError` and uses pino at the call sites instead
@@ -97,4 +106,5 @@ export function __resetBootstrapForTesting(): void {
   globalHandlersInstalled = false;
   process.removeAllListeners('uncaughtException');
   process.removeAllListeners('unhandledRejection');
+  process.removeAllListeners('warning');
 }
