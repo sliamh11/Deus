@@ -7,7 +7,6 @@ import argparse
 import contextlib
 import dataclasses
 import datetime as dt
-import functools
 import hashlib
 import json
 import os
@@ -17,7 +16,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # Warden-review layer constants (zero-dependency leaf module — safe on the hot hook path).
@@ -35,6 +34,18 @@ from warden_review.constants import (  # noqa: E402
     loop_file,
     store_key,
 )
+
+# Warden-hooks capsules (LIA-306): pure leaf modules extracted from this file. Re-imported
+# here so the runtime + test symbol surface (``hooks._glob_match`` etc.) stays identical.
+from warden_hooks.command_parse import (  # noqa: E402
+    _command_hash,
+    _extract_pr_ref,
+    _gh_command_index_after_global_flags,
+    _is_admin_merge_command,
+    _is_gh_executable,
+    _shell_tokens,
+)
+from warden_hooks.globs import _glob_match, _glob_to_regex  # noqa: E402
 
 
 @dataclasses.dataclass(frozen=True)
@@ -785,95 +796,9 @@ def _set_commit_window(repo_root: Path) -> None:
     path.touch()
 
 
-def _command_hash(command: str) -> str:
-    return hashlib.sha256(command.encode("utf-8")).hexdigest()
-
-
 def _prompt(event: dict[str, Any]) -> str:
     prompt = event.get("prompt")
     return prompt if isinstance(prompt, str) else ""
-
-
-def _shell_tokens(command: str) -> list[str]:
-    try:
-        return shlex.split(command, posix=os.name != "nt")
-    except ValueError:
-        return command.split()
-
-
-def _gh_command_index_after_global_flags(tokens: list[str], gh_index: int) -> int:
-    index = gh_index + 1
-    flags_with_values = {
-        "--config-dir",
-        "--hostname",
-        "--repo",
-        "-R",
-    }
-
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--":
-            return index + 1
-        if not token.startswith("-"):
-            return index
-        if token in flags_with_values and index + 1 < len(tokens):
-            index += 2
-        else:
-            index += 1
-    return index
-
-
-def _is_gh_executable(token: str) -> bool:
-    token = token.strip("\"'")
-    names = {Path(token).name.lower(), PureWindowsPath(token).name.lower()}
-    return bool(names & {"gh", "gh.exe"})
-
-
-def _is_admin_merge_command(command: str) -> bool:
-    tokens = _shell_tokens(command)
-    if not any(token == "--admin" or token.startswith("--admin=") for token in tokens):
-        return False
-
-    for index, token in enumerate(tokens):
-        if not _is_gh_executable(token):
-            continue
-        command_index = _gh_command_index_after_global_flags(tokens, index)
-        if tokens[command_index : command_index + 2] == ["pr", "merge"]:
-            return True
-    return False
-
-
-def _extract_pr_ref(command: str) -> str | None:
-    """Return the PR number, URL, or branch from a ``gh pr merge`` command.
-
-    Scans past flags so ``gh pr merge --squash 294`` is handled correctly.
-    """
-    _FLAGS_WITH_VALUE = frozenset({
-        "-R", "--repo", "-t", "--subject-body",
-        "--match-head-commit", "--author",
-        "-b", "--body", "-F", "--body-file", "-A", "--author-email",
-    })
-    tokens = _shell_tokens(command)
-    for index, token in enumerate(tokens):
-        if not _is_gh_executable(token):
-            continue
-        command_index = _gh_command_index_after_global_flags(tokens, index)
-        if tokens[command_index : command_index + 2] != ["pr", "merge"]:
-            continue
-        i = command_index + 2
-        while i < len(tokens):
-            tok = tokens[i]
-            if not tok.startswith("-"):
-                return tok
-            if "=" in tok:
-                i += 1
-                continue
-            if tok in _FLAGS_WITH_VALUE:
-                i += 2
-                continue
-            i += 1
-        return None
-    return None
 
 
 _CI_STATUS_GREEN = "green"
@@ -2351,73 +2276,6 @@ def run_cold_memory_injector(event: dict[str, Any], repo_root: Path) -> int:
     _debug(f"[cold-memory-injector] injected {used} chars from {len(parts)} doc(s)")
     _warn_post_tool(text)
     return 0
-
-
-@functools.lru_cache(maxsize=512)  # patterns come from a small static config; 512 never evicts in practice
-def _glob_to_regex(pattern: str) -> "re.Pattern[str]":
-    """Compile a pathlib-style glob to a regex with ``full_match`` semantics on every Python.
-
-    Version-INDEPENDENT by design: ``PurePath.full_match`` (3.13+) treats ``**`` as "zero or
-    more path segments" but the pre-3.13 ``PurePath.match`` fallback does not, so a
-    version-split implementation silently under-matched ``**`` globs on Python < 3.13. Arms:
-    ``**/`` -> zero+ segments; ``**`` -> anything; ``*`` -> within a segment; ``?`` -> one
-    char; ``[seq]``/``[!seq]`` -> char class (``!`` mapped to ``^``); unterminated ``[`` ->
-    literal; everything else escaped. (Regression matrix: test_glob_match_full_match_semantics.)
-    """
-    i, n = 0, len(pattern)
-    out: list[str] = []
-    while i < n:
-        c = pattern[i]
-        if c == "*":
-            if pattern[i:i + 2] == "**":
-                i += 2
-                if i < n and pattern[i] == "/":
-                    out.append("(?:[^/]*/)*")  # ** + / -> zero or more whole segments
-                    i += 1
-                else:
-                    out.append(".*")            # trailing/bare ** -> anything incl. '/'
-            else:
-                out.append("[^/]*")             # * -> within a segment (never crosses '/')
-                i += 1
-        elif c == "?":
-            out.append("[^/]")
-            i += 1
-        elif c == "[":
-            j = i + 1
-            if j < n and pattern[j] == "!":       # ONLY '!' negates (glob/pathlib convention)
-                j += 1
-            if j < n and pattern[j] == "]":      # a literal ']' as the first class member
-                j += 1
-            while j < n and pattern[j] != "]":
-                j += 1
-            if j >= n:                            # unterminated '[' -> literal
-                out.append(r"\[")
-                i += 1
-            else:
-                body = pattern[i + 1:j]
-                neg = body.startswith("!")
-                if neg:
-                    body = body[1:]
-                # Escape for a regex char class: '\' and ']' always; a LEADING '^' is a glob
-                # literal (only '!' negates) so escape it lest regex read it as negation. Ranges
-                # like 'a-z' pass through unchanged.
-                body = body.replace("\\", "\\\\").replace("]", r"\]")
-                if body.startswith("^"):
-                    body = "\\" + body
-                out.append("[" + ("^" if neg else "") + body + "]")
-                i = j + 1
-        else:
-            out.append(re.escape(c))
-            i += 1
-    # No DOTALL: matched inputs are file paths (an ``as_posix()``), which never contain a
-    # newline, so the ``.*`` emitted for ``**`` has nothing to span — the flag was inert.
-    return re.compile("".join(out) + r"\Z")
-
-
-def _glob_match(rel_posix: str, pattern: str) -> bool:
-    # Inputs are always a FILE's ``as_posix()`` (no trailing slash); rstrip defensively so a
-    # trailing '/' can't diverge from pathlib's path normalization.
-    return _glob_to_regex(pattern).match(rel_posix.rstrip("/")) is not None
 
 
 def run_structural_check(event: dict[str, Any], repo_root: Path) -> int:
