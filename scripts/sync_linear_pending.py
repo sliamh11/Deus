@@ -220,14 +220,88 @@ def _format_pending(issues: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def main() -> int:
+# Matches the `pending:` key line plus ONLY its indented child lines (the
+# `# Source of truth` comment + `- [ ]` items). The rule body (project:..index:)
+# lives at column 0 directly after the pending list — vault CLAUDE.md has NO
+# closing `---` — so this pattern stops at the first column-0 key and never
+# touches the body. Same pattern used by linear_pending_hook / linear_vault_sync.
+_PENDING_BLOCK_RE = re.compile(r"^pending:\n(?:[ \t][^\n]*\n)*", re.MULTILINE)
+_COL0_KEY_RE = re.compile(r"^([a-z][a-z0-9-]*):", re.MULTILINE)
+
+
+def _resolve_vault() -> "Path | None":
+    """Vault path: DEUS_VAULT_PATH env → ~/.config/deus/config.json vault_path."""
+    env = os.environ.get("DEUS_VAULT_PATH")
+    if env:
+        return Path(os.path.expanduser(env))
+    try:
+        cfg = json.loads(Path("~/.config/deus/config.json").expanduser().read_text())
+    except (OSError, ValueError):
+        return None
+    vp = cfg.get("vault_path", "")
+    return Path(os.path.expanduser(vp)) if vp else None
+
+
+def _safe_replace_pending(content: str, pending_body: str) -> str:
+    """Replace ONLY the indented pending block, never the column-0 rule body.
+
+    `pending_body` is the indented child lines (comment + `- [ ]` items) WITHOUT
+    the `pending:` header — i.e. exactly this script's stdout. Raises ValueError
+    if there is no pending block, or if the replacement would drop any column-0
+    key. That guard is the fail-safe the agent-manual /compress path lacked: a
+    "replace everything below pending:" slice deleted the CLAUDE.md body twice on
+    2026-06-18 because the body is bare keys after pending (no closing `---`).
+    """
+    new_block = "pending:\n" + pending_body.rstrip("\n") + "\n"
+    new_content, n = _PENDING_BLOCK_RE.subn(new_block, content, count=1)
+    if n == 0:
+        raise ValueError("no `pending:` block found in CLAUDE.md")
+    # The key-set guard is fail-safe only because pending_body is trusted-internal
+    # (always _format_pending() output). A caller that fed attacker-controlled body
+    # with a column-0 `key:` could mask a real key's loss — do not widen the surface.
+    lost = sorted(set(_COL0_KEY_RE.findall(content)) - set(_COL0_KEY_RE.findall(new_content)))
+    if lost:
+        raise ValueError(f"refusing to write: replacement would drop body keys {lost}")
+    return new_content
+
+
+def _emit(output: str, write: bool) -> int:
+    """Print the pending block to stdout, or (--write) safely splice it into the
+    vault CLAUDE.md in place. On any write failure, fall back to stdout so the
+    caller never loses the data, and return INTERNAL_ERROR."""
+    if not write:
+        print(output, end="")
+        return SUCCESS
+    vault = _resolve_vault()
+    claude_md = (vault / "CLAUDE.md") if vault else None
+    if claude_md is None or not claude_md.exists():
+        print("--write: cannot resolve vault CLAUDE.md; printing to stdout", file=sys.stderr)
+        print(output, end="")
+        return INTERNAL_ERROR
+    try:
+        content = claude_md.read_text(encoding="utf-8", errors="replace")
+        new_content = _safe_replace_pending(content, output)
+    except ValueError as e:
+        print(f"--write: {e}; printing to stdout (file unchanged)", file=sys.stderr)
+        print(output, end="")
+        return INTERNAL_ERROR
+    if new_content != content:
+        claude_md.write_text(new_content, encoding="utf-8")
+        print(f"--write: updated {claude_md}", file=sys.stderr)
+    else:
+        print("--write: pending block already current", file=sys.stderr)
+    return SUCCESS
+
+
+def main(argv: "list[str] | None" = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    write = "--write" in args
     cache = _cache_path()
     db = _db_path()
 
     if _cache_is_fresh(cache, db):
-        print(cache.read_text(), end="")
         print("cache fresh", file=sys.stderr)
-        return SUCCESS
+        return _emit(cache.read_text(), write)
 
     token = _get_api_token()
     if not token:
@@ -318,8 +392,7 @@ def main() -> int:
             os.unlink(tmp_path)
         except OSError:
             pass
-    print(output, end="")
-    return SUCCESS
+    return _emit(output, write)
 
 
 if __name__ == "__main__":

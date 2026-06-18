@@ -119,11 +119,17 @@ After saving the session log:
       - **Sync pending tasks from Linear** (preferred) or merge from session log (fallback):
 
         **Linear sync path** (preferred):
-        Run: `python3 ~/deus/scripts/sync_linear_pending.py`
-        The script handles caching, staleness detection, GraphQL query, sorting, and formatting.
-        Capture its stdout. Keep the `pending:` key line itself, replace everything below it with the script's stdout.
-        Prepend nothing -- the script includes the `# Source of truth` comment.
-        **Replace** the entire `pending:` block with the script output. Linear IS the source of truth.
+        Run: `python3 ~/deus/scripts/sync_linear_pending.py --write`
+        The `--write` flag makes the script splice the fresh block into vault CLAUDE.md
+        **in place, safely**: it replaces ONLY the indented lines under `pending:` and aborts
+        rather than ever dropping a column-0 rule key. Linear IS the source of truth.
+
+        NEVER hand-splice with a "replace everything below `pending:`" / slice-to-EOF
+        operation: vault CLAUDE.md has an opening `---` but NO closing `---`, so the rule body
+        (`project:` … `index:`) is bare column-0 keys right after the pending list, and such a
+        replace deletes the whole body. Use `--write`; if you must edit by hand, replace only
+        the `- [ ]` lines and STOP at the first column-0 key.
+
         If any `[x]` items from the session log reference a Linear identifier that is still in the active list, log a note but do NOT remove it -- the issue's state in Linear is authoritative.
         If the script exits non-zero, read `branches/fallback-merge.md` for the manual merge path.
 

@@ -244,3 +244,69 @@ def test_fetch_team_issues_respects_page_cap(monkeypatch, capsys):
         f"(MAX_PAGES_PER_TEAM={mod.MAX_PAGES_PER_TEAM}); results may be truncated"
         in err
     )
+
+
+# ---------------------------------------------------------------------------
+# Safe pending splice + body-key guard (regression for the 2026-06-18
+# /compress body-deletion bug: vault CLAUDE.md has no closing `---`, so the
+# rule body is bare column-0 keys directly after the pending list).
+# ---------------------------------------------------------------------------
+
+_CLAUDE_FIXTURE = """\
+---
+critical:
+  - project
+previous:
+  - "prior session note"
+pending:
+  # Source of truth: Linear.
+  - [ ] old item (LIA-1)
+project: Deus | path: ~/deus
+style: concise, direct
+index: see Persona/INDEX.md
+"""
+
+
+def test_safe_replace_preserves_body_keys():
+    new_body = "  # Source of truth: Linear.\n  - [ ] fresh (LIA-2)\n"
+    out = mod._safe_replace_pending(_CLAUDE_FIXTURE, new_body)
+    assert "LIA-2" in out and "old item" not in out  # pending swapped
+    for key in ("project:", "style:", "index:"):  # body survives
+        assert f"\n{key}" in out
+    assert "Deus | path: ~/deus" in out
+
+
+def test_safe_replace_raises_without_pending_block():
+    with pytest.raises(ValueError):
+        mod._safe_replace_pending("project: Deus\nstyle: x\n", "  - [ ] a\n")
+
+
+def test_safe_replace_guard_fires_on_body_loss(monkeypatch):
+    # Simulate a regex regression that greedily eats to EOF; the column-0
+    # key-preservation guard MUST refuse to return a body-dropping result.
+    import re as _re
+
+    monkeypatch.setattr(
+        mod, "_PENDING_BLOCK_RE", _re.compile(r"^pending:\n[\s\S]*", _re.MULTILINE)
+    )
+    with pytest.raises(ValueError, match="drop body keys"):
+        mod._safe_replace_pending(_CLAUDE_FIXTURE, "  - [ ] fresh (LIA-2)\n")
+
+
+def test_main_write_splices_in_place_preserving_body(tmp_path, monkeypatch):
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text(_CLAUDE_FIXTURE, encoding="utf-8")
+    cache = tmp_path / "cache.md"
+    cache.write_text(
+        "  # Source of truth: Linear.\n  - [ ] fresh (LIA-2)\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(mod, "_cache_path", lambda: cache)
+    monkeypatch.setattr(mod, "_db_path", lambda: tmp_path / "messages.db")
+    monkeypatch.setattr(mod, "_cache_is_fresh", lambda c, d: True)  # no network
+    monkeypatch.setattr(mod, "_resolve_vault", lambda: tmp_path)
+    code = mod.main(["--write"])
+    assert code == mod.SUCCESS
+    out = claude_md.read_text()
+    assert "LIA-2" in out and "old item" not in out
+    for key in ("project:", "style:", "index:"):
+        assert f"\n{key}" in out

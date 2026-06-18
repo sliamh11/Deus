@@ -19,12 +19,17 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent
+
+# Reuse the single safe pending-splice helper (indented-only replace + column-0
+# body-key guard). Importing sync_linear_pending as a library is safe: its work
+# is under main()/__main__. Do not add module-level side effects there.
+sys.path.insert(0, str(_SCRIPTS_DIR))
+from sync_linear_pending import _safe_replace_pending  # noqa: E402
 
 
 def _load_config() -> dict:
@@ -64,17 +69,14 @@ def _update_vault_pending(vault: "Path", pending_stdout: str) -> None:
 
     content = claude_md.read_text(encoding="utf-8", errors="replace")
 
-    # Prepend header to body lines; ensure trailing newline before next key
-    new_block = "pending:\n" + pending_stdout.rstrip() + "\n"
-
-    # Match 'pending:' followed by all indented lines (stops at next top-level key)
-    new_content = re.sub(
-        r"^pending:\n(?:[ \t][^\n]*\n)*",
-        new_block,
-        content,
-        count=1,
-        flags=re.MULTILINE,
-    )
+    # Shared safe splice: replaces only the indented pending block and ABORTS
+    # (ValueError) rather than ever dropping a column-0 rule key. On no-match or
+    # guard violation, leave the file unchanged (same as the prior no-match path).
+    try:
+        new_content = _safe_replace_pending(content, pending_stdout)
+    except ValueError as e:
+        sys.stderr.write(f"[linear-pending-hook] skipped pending update: {e}\n")
+        return
 
     if new_content != content:
         claude_md.write_text(new_content, encoding="utf-8")
