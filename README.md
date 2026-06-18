@@ -266,7 +266,7 @@ cooldown_minutes: 60
 Your gate prompt here...
 ```
 
-Select review wardens (`plan-reviewer`, `code-reviewer`, `ai-eng-warden`) can run on Claude or GPT — or both at once as a cross-model **co-gate**, where each provider reviews independently and the change ships only when both agree. Configure backends per warden via `/wardens`.
+Select review wardens (`plan-reviewer`, `code-reviewer`, `ai-eng-warden`) can run on Claude or GPT — or both at once as a cross-model **co-gate**, where each provider reviews independently and the change ships only when both agree. Per-warden backends are set in `.claude/wardens/config.json` (`/wardens` manages the gates themselves).
 
 ---
 
