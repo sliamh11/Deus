@@ -16,7 +16,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 # Warden-review layer constants (zero-dependency leaf module — safe on the hot hook path).
@@ -46,6 +46,46 @@ from warden_hooks.command_parse import (  # noqa: E402
     _shell_tokens,
 )
 from warden_hooks.globs import _glob_match, _glob_to_regex  # noqa: E402
+from warden_hooks import verdict_store as _verdict_store  # noqa: E402
+from warden_hooks.verdict_store import (  # noqa: E402
+    _audit_log_path,
+    _bypass_log_path,
+    _clear_verdict,
+    _last_verdict,
+    _last_verdict_is_blocking,
+    _read_verdict,
+    _read_verdicts,
+    _read_verdicts_at,
+    _verdicts_path,
+    _verdicts_path_for_worktree,
+    _write_bypass_log,
+    _write_verdict,
+    record_script_verdict,
+)
+
+# Inject the entry module so the verdict-store capsule resolves entry-owned helpers
+# (_claude_marker_dir, _git, _write_atomic, _debug, _marker_dir_for_worktree,
+# MARKER_NAMES) through the LIVE module at call time — preserving test monkeypatches
+# without re-importing this file on the hot hook path. See warden_hooks/verdict_store.py.
+_verdict_store.bind_entry(sys.modules[__name__])
+
+# GitHub Actions CI-status polling for the admin-merge gate (LIA-306). Pure leaf
+# (stdlib only) — re-exported so the entry's admin-merge callers + the tests that
+# monkeypatch _check_ci_status / read _CI_STATUS_* keep resolving by hooks.<name>.
+from warden_hooks.ci_status import (  # noqa: E402
+    _BUCKET_FAIL,
+    _BUCKET_PASS,
+    _BUCKET_PENDING,
+    _CI_STATUS_ERROR,
+    _CI_STATUS_GREEN,
+    _CI_STATUS_NO_CHECKS,
+    _CI_STATUS_NO_REQUIRED,
+    _CI_STATUS_PENDING,
+    _CI_STATUS_RED,
+    _check_ci_status,
+    _ci_block_reason,
+    _query_gh_checks,
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -799,170 +839,6 @@ def _set_commit_window(repo_root: Path) -> None:
 def _prompt(event: dict[str, Any]) -> str:
     prompt = event.get("prompt")
     return prompt if isinstance(prompt, str) else ""
-
-
-_CI_STATUS_GREEN = "green"
-_CI_STATUS_RED = "red"
-_CI_STATUS_PENDING = "pending"
-_CI_STATUS_NO_CHECKS = "no-checks"
-# Checks exist on the PR but none are branch-protection-required — an ambiguous
-# state we fail closed on rather than silently allow an unverified admin-merge.
-_CI_STATUS_NO_REQUIRED = "no-required"
-_CI_STATUS_ERROR = "error"
-
-# Bucket values returned by ``gh pr checks --json bucket``
-_BUCKET_PASS = frozenset({"pass", "skipping"})
-_BUCKET_PENDING = frozenset({"pending"})
-_BUCKET_FAIL = frozenset({"fail", "cancel"})
-
-
-def _query_gh_checks(
-    pr_ref: str, *, required_only: bool, timeout: int = 3
-) -> tuple[str, str, int]:
-    """Run ``gh pr checks`` once and classify the result.
-
-    Returns ``(status, message, num_checks)`` where status is one of the
-    ``_CI_STATUS_*`` constants and num_checks is how many checks were returned.
-    When *required_only* is set, the query is scoped with ``--required`` so the
-    gate sees only branch-protection-required checks. Failure to query defaults
-    to ``_CI_STATUS_ERROR`` so the caller blocks rather than falls open.
-    """
-    argv = ["gh", "pr", "checks", pr_ref, "--json", "bucket,name"]
-    if required_only:
-        argv.append("--required")
-    try:
-        result = subprocess.run(
-            argv,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            check=False,
-        )
-    except FileNotFoundError:
-        return _CI_STATUS_ERROR, "gh CLI not found; cannot verify CI status", 0
-    except subprocess.TimeoutExpired:
-        return _CI_STATUS_ERROR, f"gh pr checks timed out after {timeout}s", 0
-    except OSError as exc:
-        return _CI_STATUS_ERROR, f"gh pr checks failed: {exc}", 0
-
-    if result.returncode not in (0, 1, 8):
-        # Exit code 1 = some checks failed (still parseable).
-        # Exit code 8 = checks pending (still parseable).
-        # Other codes indicate auth / network errors.
-        stderr_snippet = result.stderr.strip()[:200]
-        return (
-            _CI_STATUS_ERROR,
-            f"gh pr checks exited {result.returncode}: {stderr_snippet}",
-            0,
-        )
-
-    raw = result.stdout.strip()
-    if not raw:
-        return _CI_STATUS_NO_CHECKS, "no checks found for this PR", 0
-
-    try:
-        checks = json.loads(raw)
-    except json.JSONDecodeError:
-        return _CI_STATUS_ERROR, "gh pr checks returned unparseable output", 0
-
-    if not isinstance(checks, list):
-        return _CI_STATUS_ERROR, "gh pr checks returned unexpected JSON shape", 0
-
-    if not checks:
-        return _CI_STATUS_NO_CHECKS, "no checks found for this PR", 0
-
-    n = len(checks)
-    buckets = {str(c.get("bucket", "")) for c in checks if isinstance(c, dict)}
-    failed = [
-        str(c.get("name", "?"))
-        for c in checks
-        if isinstance(c, dict) and str(c.get("bucket", "")) in _BUCKET_FAIL
-    ]
-    pending = [
-        str(c.get("name", "?"))
-        for c in checks
-        if isinstance(c, dict) and str(c.get("bucket", "")) in _BUCKET_PENDING
-    ]
-
-    if failed:
-        return _CI_STATUS_RED, f"failing checks: {', '.join(failed[:5])}", n
-    if pending:
-        return _CI_STATUS_PENDING, f"pending checks: {', '.join(pending[:5])}", n
-    if buckets <= _BUCKET_PASS:
-        return _CI_STATUS_GREEN, "all checks passed", n
-
-    unknown = buckets - _BUCKET_PASS - _BUCKET_PENDING - _BUCKET_FAIL
-    return _CI_STATUS_ERROR, f"unknown check buckets: {', '.join(sorted(unknown))}", n
-
-
-def _check_ci_status(pr_ref: str, timeout: int = 3) -> tuple[str, str]:
-    """Classify CI for *pr_ref*, scoped to branch-protection-required checks.
-
-    The admin-merge gate must mirror branch protection — only checks the repo
-    actually marks required (e.g. ``ci``) may block a merge, never
-    advisory bots (TrueCourse, the platform test matrix, CodeQL) the repo
-    deliberately left non-required. Applies to every caller of this function
-    (the one-shot approve CLI, the PreToolUse hook, and merge_train).
-
-    Falls closed: an unverifiable status — or a PR that has checks but none
-    required — blocks rather than allowing an unreviewed admin-merge.
-    """
-    status, message, _ = _query_gh_checks(pr_ref, required_only=True, timeout=timeout)
-    if status != _CI_STATUS_NO_CHECKS:
-        return status, message
-
-    # No REQUIRED checks reported. Disambiguate against the unfiltered set:
-    # genuinely zero checks → allowed through (unchanged behaviour); checks
-    # present but none required → ambiguous, fail closed.
-    all_status, all_message, all_n = _query_gh_checks(
-        pr_ref, required_only=False, timeout=timeout
-    )
-    if all_status == _CI_STATUS_ERROR:
-        return all_status, all_message
-    if all_n == 0:
-        return _CI_STATUS_NO_CHECKS, "no checks found for this PR"
-    # Thread the unfiltered status through so the operator sees WHAT is
-    # outstanding (e.g. a failing advisory check), not just the ambiguity.
-    return (
-        _CI_STATUS_NO_REQUIRED,
-        f"{all_n} check(s) present but none are branch-protection-required "
-        f"(unfiltered: {all_status} — {all_message})",
-    )
-
-
-def _ci_block_reason(pr_ref: str, status: str, detail: str) -> str | None:
-    """Return a block reason string if CI is not green, else ``None``."""
-    if status == _CI_STATUS_GREEN:
-        return None
-    if status == _CI_STATUS_NO_CHECKS:
-        return None
-    if status == _CI_STATUS_RED:
-        return (
-            f"[admin-merge-gate] CI is red — autonomy grant is conditional on green. "
-            f"Run `gh pr checks {pr_ref}` first.\n\n"
-            f"Detail: {detail}"
-        )
-    if status == _CI_STATUS_PENDING:
-        return (
-            f"[admin-merge-gate] CI is pending — autonomy grant is conditional on green. "
-            f"Run `gh pr checks {pr_ref}` first.\n\n"
-            f"Detail: {detail}"
-        )
-    if status == _CI_STATUS_NO_REQUIRED:
-        return (
-            f"[admin-merge-gate] Branch protection reports no required checks for "
-            f"{pr_ref}, yet the PR has checks — refusing admin-merge (fail-closed). "
-            f"Inspect with `gh api repos/<owner>/<repo>/branches/main/protection` and "
-            f"confirm the required-check names before merging.\n\n"
-            f"Detail: {detail}"
-        )
-    # _CI_STATUS_ERROR — fail closed
-    return (
-        f"[admin-merge-gate] CI status could not be verified — blocking as a precaution. "
-        f"Run `gh pr checks {pr_ref}` manually to confirm green, then retry.\n\n"
-        f"Detail: {detail}"
-    )
 
 
 def _admin_merge_marker(repo_root: Path) -> Path:
@@ -2686,156 +2562,15 @@ def run_orchestrator_preflight(event: dict[str, Any], repo_root: Path) -> int:
     return 0
 
 
-def _verdicts_path(repo_root: Path) -> Path:
-    # Per-worktree: the code-review + verification gates decide on this store
-    # (not the marker files), so it must be isolated alongside the markers.
-    # Main repo resolves to the flat .claude/.warden-verdicts.json (back-compat).
-    return _claude_marker_dir(repo_root) / ".warden-verdicts.json"
-
-
-def _verdicts_path_for_worktree(repo_root: Path, worktree_root: Path) -> Path:
-    # Deterministic verdict store for an EXPLICIT worktree (the admin-merge
-    # standing gate resolves the cwd worktree itself rather than relying on
-    # _current_worktree()'s os.getcwd() derivation). Mirrors _verdicts_path.
-    return _marker_dir_for_worktree(repo_root, worktree_root) / ".warden-verdicts.json"
-
-
-def _audit_log_path(repo_root: Path) -> Path:
-    # Deliberately GLOBAL (flat), not per-worktree: this is an append-only audit
-    # trail that aggregates verdicts across every worktree. Do not namespace it.
-    return repo_root / ".claude" / ".warden-log"
-
-
-def _bypass_log_path() -> Path:
-    override = os.environ.get("DEUS_WARDEN_BYPASS_LOG")
-    if override:
-        return Path(override)
-    return Path.home() / ".claude" / ".warden-bypass-log"
-
-
-def _write_bypass_log(
-    warden: str,
-    verdict: str,
-    session_type: str,
-    reason: str,
-    cwd: Path,
-) -> None:
-    try:
-        diff_stats = _git(cwd, "diff", "--stat", "HEAD")
-        entry = {
-            "timestamp": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "warden": warden,
-            "verdict": verdict,
-            "session_type": session_type,
-            "reason": reason,
-            "cwd": str(cwd),
-            "diff_stats": diff_stats,
-        }
-        path = _bypass_log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, separators=(",", ":")) + "\n")
-    except OSError:
-        _debug("bypass log write failed")
-
-
 def _is_bg_session() -> bool:
     return bool(os.environ.get("CLAUDE_JOB_DIR"))
 
 
-def _read_verdicts_at(path: Path) -> dict[str, Any]:
-    """Read a .warden-verdicts.json at an EXPLICIT path (no cwd derivation)."""
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _read_verdicts(repo_root: Path) -> dict[str, Any]:
-    return _read_verdicts_at(_verdicts_path(repo_root))
-
-
-def _read_verdict(marker_name: str, repo_root: Path) -> str | None:
-    """Return the verdict string for *marker_name* from .warden-verdicts.json.
-
-    Maps the marker name (e.g. ``"code-reviewed"``) to the warden key used in
-    the JSON (e.g. ``"code-reviewer"``) via ``MARKER_NAMES``.  Returns ``None``
-    if the file is absent, malformed, or the entry is missing.
-    """
-    warden = MARKER_NAMES.get(marker_name)
-    if not warden:
-        return None
-    data = _read_verdicts(repo_root)
-    entry = data.get(warden)
-    if not isinstance(entry, dict):
-        return None
-    v = entry.get("verdict")
-    return v if isinstance(v, str) else None
-
-
-def _clear_verdict(marker_name: str, repo_root: Path) -> None:
-    """Remove the *marker_name* entry from .warden-verdicts.json.
-
-    Maps the marker name to the warden key via ``MARKER_NAMES``.  Silently
-    skips if the file is absent or the key is not present.
-    """
-    warden = MARKER_NAMES.get(marker_name)
-    if not warden:
-        return
-    path = _verdicts_path(repo_root)
-    data = _read_verdicts(repo_root)
-    if warden not in data:
-        return
-    del data[warden]
-    try:
-        _write_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-    except OSError:
-        _debug(f"_clear_verdict: failed to write {path}")
-
-
-def _write_verdict(repo_root: Path, warden: str, verdict: str, reason: str, source: str = "manual") -> None:
-    path = _verdicts_path(repo_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = _read_verdicts(repo_root)
-    stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    data[warden] = {"verdict": verdict, "ts": stamp, "reason": reason, "source": source}
-    _write_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-
-    log = _audit_log_path(repo_root)
-    safe_reason = reason.replace("|", "/").replace("\n", " ").strip()
-    with log.open("a", encoding="utf-8") as f:
-        f.write(f"{stamp} | {warden:<15} | {verdict:<7} | {safe_reason}\n")
-
-
-def _last_verdict(repo_root: Path, warden: str) -> str | None:
-    data = _read_verdicts(repo_root)
-    entry = data.get(warden)
-    if isinstance(entry, dict):
-        v = entry.get("verdict")
-        return v if isinstance(v, str) else None
-    return None
-
-
-def _last_verdict_is_blocking(repo_root: Path, warden: str) -> bool:
-    v = _last_verdict(repo_root, warden)
-    return v in ("REVISE", "BLOCK")
-
-
-# ── Provider-agnostic warden backends: verdict recording, cross-context, loop guard ──
+# ── Provider-agnostic warden backends: cross-context reads + loop guard ──
 # These are imported by the out-of-band driver (scripts/codex_warden.py); they are NOT
-# called on the hot hook path, so they add no per-tool-call import cost.
-
-def record_script_verdict(
-    repo_root: Path, store_key: str, verdict: str, reason: str, source: str = "script",
-) -> None:
-    """Record a model-backend verdict (SHIP/REVISE/BLOCK/COULD_NOT_RUN) under ``store_key``
-    (the ``<role>@<backend>`` warden key). Unlike ``mark_warden`` (human CLI, SHIP/TRIVIAL
-    only), a script records the real verdict — COULD_NOT_RUN is written verbatim so the
-    audit log distinguishes an infra failure from a genuine SHIP."""
-    _write_verdict(repo_root, store_key, verdict, reason, source=source)
+# called on the hot hook path, so they add no per-tool-call import cost. The verdict-store
+# primitives (``record_script_verdict`` etc.) live in warden_hooks/verdict_store.py and are
+# re-exported at the top of this module.
 
 
 def read_claude_verdict(repo_root: Path, role: str) -> str | None:

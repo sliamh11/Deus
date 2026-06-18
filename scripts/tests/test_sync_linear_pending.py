@@ -310,3 +310,32 @@ def test_main_write_splices_in_place_preserving_body(tmp_path, monkeypatch):
     assert "LIA-2" in out and "old item" not in out
     for key in ("project:", "style:", "index:"):
         assert f"\n{key}" in out
+
+
+# LIA-316: once vault CLAUDE.md gets a real closing `---`, the rule body lives
+# BELOW it as markdown. The splice must still replace only the pending block and
+# stop at the `---`, leaving the body untouched.
+_CLAUDE_FIXTURE_CLOSED = """\
+---
+critical:
+  - project
+pending:
+  # Source of truth: Linear.
+  - [ ] old item (LIA-1)
+---
+
+project: Deus | path: ~/deus
+style: concise, direct
+index: see Persona/INDEX.md
+"""
+
+
+def test_safe_replace_preserves_body_below_closing_marker():
+    new_body = "  # Source of truth: Linear.\n  - [ ] fresh (LIA-2)\n"
+    out = mod._safe_replace_pending(_CLAUDE_FIXTURE_CLOSED, new_body)
+    assert "LIA-2" in out and "old item" not in out
+    assert "\n---\n" in out  # closing marker preserved
+    for key in ("project:", "style:", "index:"):
+        assert f"\n{key}" in out
+    # body still sits below the closing marker, not absorbed into the splice
+    assert out.index("\n---\n") < out.index("\nproject:")
