@@ -117,6 +117,12 @@ export const INGRESS_TUNNEL_ENABLED =
   process.env.INGRESS_TUNNEL_ENABLED === '1' ||
   process.env.INGRESS_TUNNEL_ENABLED === 'true';
 export const NGROK_STATIC_DOMAIN = process.env.NGROK_STATIC_DOMAIN || '';
+// Route Linear webhooks through the centralized ingress gateway (/linear) instead of the
+// standalone :3005 server. Off by default; requires INGRESS_GATEWAY_ENABLED. When off the
+// standalone Linear webhook server keeps running unchanged (rollback path). LIA-315 Phase 5.
+export const INGRESS_LINEAR_VIA_GATEWAY =
+  process.env.INGRESS_LINEAR_VIA_GATEWAY === '1' ||
+  process.env.INGRESS_LINEAR_VIA_GATEWAY === 'true';
 // Per-source webhook config, OUTSIDE project root, never mounted into containers
 // (same pattern as SENDER_ALLOWLIST_PATH). Consumed in Phase 4 by the webhook channel.
 export const WEBHOOK_SOURCES_PATH = path.join(

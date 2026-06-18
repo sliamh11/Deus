@@ -1,6 +1,10 @@
 import { createServer, Server } from 'http';
 import { LinearWebhookClient } from '@linear/sdk/webhooks';
-import type { EntityWebhookPayloadWithIssueData } from '@linear/sdk/webhooks';
+import type {
+  EntityWebhookPayloadWithIssueData,
+  LinearWebhookPayload,
+} from '@linear/sdk/webhooks';
+import type { IngressHandler } from './ingress/gateway.js';
 import { logger } from './logger.js';
 import { executeAgentRun, extractScopeBlock } from './linear-dispatcher.js';
 import { escapeXmlForPrompt } from './prompt-utils.js';
@@ -1959,6 +1963,123 @@ export async function sweepStaleGatedIssues(
   }
 }
 
+/**
+ * Core Issue-webhook processing, shared by the standalone :3005 server and the ingress
+ * gateway `/linear` handler so both fronts behave identically: refresh the issue cache,
+ * debounce a vault sync, and fire-and-forget the gate dispatch. Extracted verbatim from the
+ * original inline `handler.on('Issue', …)` body — no behaviour change.
+ */
+export function processIssueWebhook(
+  raw: EntityWebhookPayloadWithIssueData,
+  ctx: LinearContext,
+  gateSpecs: Map<string, GateSpec>,
+): void {
+  const d = raw.data;
+
+  if (raw.action === 'remove') {
+    softDeleteIssueCache(d.id);
+  } else if (d.state?.name) {
+    upsertIssueCache({
+      issue_id: d.id,
+      identifier: d.identifier,
+      title: d.title,
+      state_name: d.state.name,
+      team_id: d.teamId,
+      priority: d.priority,
+      created_at: d.createdAt,
+      updated_at: d.updatedAt,
+    });
+  }
+
+  if (ctx.vaultPath) {
+    debouncedVaultSync(ctx, ctx.vaultPath, d.teamId);
+  }
+
+  handleIssueUpdate(raw, ctx, gateSpecs).catch((err) => {
+    logger.error({ err }, 'linear-webhook: unhandled error in issue handler');
+  });
+}
+
+/** A request header coerced to a single string, or undefined if absent / an array. */
+function headerString(v: string | string[] | undefined): string | undefined {
+  return typeof v === 'string' ? v : undefined;
+}
+
+/**
+ * Build the ingress-gateway handler for Linear webhooks (the `/linear` route). The gateway
+ * owns the body read and hands handlers a pre-read buffer, so this uses the SDK's BUFFER-based
+ * verification, not the stream-based `createHandler()`. The SDK `client.verify()` THROWS on
+ * failure (never returns false), hence the try/catch hooks. Replay source-of-truth is
+ * `body.webhookTimestamp ?? header` (matching the standalone server) — reproduced in `handle`
+ * via public primitives since the SDK's `parseVerifiedPayload` is private. Secret passed
+ * explicitly (same source as `startLinearWebhookServer`).
+ */
+export function createLinearIngressHandler(
+  ctx: LinearContext,
+  gateSpecs: Map<string, GateSpec>,
+  secret: string,
+): IngressHandler {
+  const client = new LinearWebhookClient(secret);
+
+  return {
+    pathPrefix: '/linear',
+
+    verify(req, bodyRaw) {
+      const sig = headerString(req.headers['linear-signature']);
+      if (!sig) {
+        return { ok: false, reason: 'missing signature' };
+      }
+      // Fast early-reject using the header timestamp; handle() re-checks with the
+      // authoritative body timestamp before dispatch.
+      const tsHeader = headerString(req.headers['linear-timestamp']);
+      try {
+        client.verify(bodyRaw, sig, tsHeader);
+        return { ok: true };
+      } catch (err) {
+        logger.debug({ err }, 'linear-ingress: signature verification failed');
+        return { ok: false, reason: 'invalid signature' };
+      }
+    },
+
+    async handle(req, res, bodyRaw) {
+      const sig = headerString(req.headers['linear-signature']);
+      const tsHeader = headerString(req.headers['linear-timestamp']);
+
+      // Reproduce the SDK's private parseVerifiedPayload: JSON.parse → derive the
+      // authoritative timestamp from the body (preferred over the header) → verify
+      // (signature + 60s replay check). This is the authoritative check; verify()'s
+      // header-ts check above is only a fast pre-filter.
+      let payload: LinearWebhookPayload;
+      try {
+        if (!sig) throw new Error('missing signature');
+        payload = JSON.parse(bodyRaw.toString('utf-8')) as LinearWebhookPayload;
+        const tsAuth =
+          (payload as { webhookTimestamp?: number }).webhookTimestamp ??
+          tsHeader;
+        client.verify(bodyRaw, sig, tsAuth);
+      } catch (err) {
+        logger.warn({ err }, 'linear-ingress: invalid webhook body/signature');
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, message: 'invalid webhook' }));
+        return;
+      }
+
+      if (payload.type === 'Issue') {
+        processIssueWebhook(
+          payload as unknown as EntityWebhookPayloadWithIssueData,
+          ctx,
+          gateSpecs,
+        );
+      }
+
+      // Fast 2xx — gate dispatch is already fire-and-forget inside processIssueWebhook,
+      // so Linear gets a prompt ack and never waits on gate processing.
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    },
+  };
+}
+
 export function startLinearWebhookServer(
   ctx: LinearContext,
   gateSpecs: Map<string, GateSpec>,
@@ -1982,31 +2103,11 @@ export function startLinearWebhookServer(
   const handler = webhookClient.createHandler();
 
   handler.on('Issue', (payload) => {
-    const raw = payload as EntityWebhookPayloadWithIssueData;
-    const d = raw.data;
-
-    if (raw.action === 'remove') {
-      softDeleteIssueCache(d.id);
-    } else if (d.state?.name) {
-      upsertIssueCache({
-        issue_id: d.id,
-        identifier: d.identifier,
-        title: d.title,
-        state_name: d.state.name,
-        team_id: d.teamId,
-        priority: d.priority,
-        created_at: d.createdAt,
-        updated_at: d.updatedAt,
-      });
-    }
-
-    if (ctx.vaultPath) {
-      debouncedVaultSync(ctx, ctx.vaultPath, d.teamId);
-    }
-
-    handleIssueUpdate(raw, ctx, gateSpecs).catch((err) => {
-      logger.error({ err }, 'linear-webhook: unhandled error in issue handler');
-    });
+    processIssueWebhook(
+      payload as EntityWebhookPayloadWithIssueData,
+      ctx,
+      gateSpecs,
+    );
   });
 
   return new Promise((resolve, reject) => {

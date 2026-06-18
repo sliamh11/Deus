@@ -9,6 +9,7 @@ import {
   INGRESS_GATEWAY_HOST,
   INGRESS_GATEWAY_PORT,
   INGRESS_IP_ALLOWLIST,
+  INGRESS_LINEAR_VIA_GATEWAY,
   INGRESS_MAX_BODY_BYTES,
   INGRESS_RATE_LIMIT_MAX,
   INGRESS_RATE_LIMIT_WINDOW_MS,
@@ -77,7 +78,10 @@ import {
 } from './linear-dispatcher.js';
 import type { LinearContext } from './linear-dispatcher.js';
 import { loadGateSpecs } from './linear-gate-specs.js';
-import { startLinearWebhookServer } from './linear-webhook.js';
+import {
+  startLinearWebhookServer,
+  createLinearIngressHandler,
+} from './linear-webhook.js';
 import { registerLinearUpdater } from './events/listeners/linear-updater.js';
 import { registerObservabilitySink } from './events/listeners/observability-sink.js';
 
@@ -471,20 +475,45 @@ async function main(): Promise<void> {
       );
       const gateSpecs = loadGateSpecs(wardensDir);
 
-      if (process.env.LINEAR_WEBHOOK_SECRET) {
+      const linearWebhookSecret = process.env.LINEAR_WEBHOOK_SECRET;
+      if (linearWebhookSecret) {
         if (gateSpecs.size === 0) {
           logger.warn(
             'linear-webhook: no gate specs found — webhook server will pass all transitions',
           );
         }
-        try {
-          const webhookSrv = await startLinearWebhookServer(
-            linearCtx,
-            gateSpecs,
+        if (INGRESS_LINEAR_VIA_GATEWAY && INGRESS_GATEWAY_ENABLED) {
+          // Route Linear webhooks through the centralized ingress gateway (/linear)
+          // instead of the standalone :3005 server. The gateway reads `ingressHandlers`
+          // live (Strategy registry), so pushing here — after the gateway is listening —
+          // is the documented contract (gateway.ts:52, index.ts ingressHandlers).
+          ingressHandlers.push(
+            createLinearIngressHandler(
+              linearCtx,
+              gateSpecs,
+              linearWebhookSecret,
+            ),
           );
-          webhookServers.push(webhookSrv);
-        } catch (err) {
-          logger.error({ err }, 'linear-webhook: server failed to start');
+          logger.info(
+            'linear-webhook: routed via ingress gateway (/linear); standalone :3005 server not started',
+          );
+        } else {
+          if (INGRESS_LINEAR_VIA_GATEWAY && !INGRESS_GATEWAY_ENABLED) {
+            // Fail-safe: never silently drop Linear ingestion when the flag is set but
+            // the gateway it depends on is off — keep the standalone server running.
+            logger.warn(
+              'linear-webhook: INGRESS_LINEAR_VIA_GATEWAY set but INGRESS_GATEWAY_ENABLED off — falling back to standalone :3005 server',
+            );
+          }
+          try {
+            const webhookSrv = await startLinearWebhookServer(
+              linearCtx,
+              gateSpecs,
+            );
+            webhookServers.push(webhookSrv);
+          } catch (err) {
+            logger.error({ err }, 'linear-webhook: server failed to start');
+          }
         }
       }
 
