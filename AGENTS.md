@@ -170,23 +170,34 @@ renaming a repo-owned skill, update this table in the same change.
 | `/add-youtube-transcript` | Add YouTube transcript extraction |
 | `/checkpoint` | Save a mid-session continuity checkpoint |
 | `/code-review` | Run multi-agent code review |
+| `/codebase-design` | Shared vocabulary for designing deep modules — interface depth, seams, testability |
 | `/compress` | Save the session to the vault and update memory indexes |
 | `/convert-to-apple-container` | Switch from Docker to Apple Container |
 | `/customize` | Add channels, integrations, or behavior changes |
 | `/debug` | Debug containers, logs, auth, and runtime issues |
 | `/deep-research` | Multi-stage research pipeline — classifies intent (shallow/deep/creative), fans out lit-scout + brainstormer, synthesizes with citations |
 | `/design-to-dev` | Orchestrate frontend implementation from design wireframes (Linear specs + parallel worktrees) |
+| `/diagnosing-bugs` | Structured diagnosis loop for hard bugs and performance regressions (feedback-loop first) |
+| `/domain-modeling` | Build and sharpen a project's domain model — glossary + ADRs |
+| `/grill-me` | Relentless interview to stress-test a plan or design before building |
+| `/grill-with-docs` | Grill a plan and capture decisions as ADRs + glossary as you go |
+| `/grilling` | The relentless plan/design interview engine (used by `/grill-me` and `/grill-with-docs`) |
 | `/handoff` | Write a structured handoff document so the next agent starts with context |
 | `/onboard` | Onboard the current project into Deus code intelligence (codegraph + code_search indexing) |
 | `/preferences` | View or modify Deus user preferences |
 | `/preserve` | Save durable memories from the current conversation |
 | `/project-settings` | View or modify external project memory settings |
+| `/prototype` | Build a throwaway prototype to validate a state model or UI direction |
+| `/resolving-merge-conflicts` | Disciplined resolution of an in-progress git merge/rebase conflict |
 | `/resume` | Load recent work and memory context |
 | `/review-logs` | Review Deus system health logs |
 | `/setup` | Run first-time installation and configuration |
+| `/tdd` | Test-driven development loop — red-green-refactor, behavior-first |
+| `/teach` | Teach a skill or concept over multiple sessions (stateful teaching workspace) |
 | `/update-skills` | Update installed skill branches from upstream |
 | `/use-local-whisper` | Switch voice transcription to local whisper.cpp |
 | `/wardens` | View, toggle, and configure warden quality gates |
+| `/writing-great-skills` | Reference for authoring predictable skills — leading words, progressive disclosure |
 | `/x-integration` | Set up or use X/Twitter integration |
 
 ## Development Workflow
