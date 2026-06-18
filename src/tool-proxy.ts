@@ -24,7 +24,7 @@ import { execFile } from 'child_process';
 
 import { DEUS_PROXY_AUTH_ENABLED } from './config.js';
 import { getProjectById, getRegisteredGroupByFolder } from './db.js';
-import { validateGroupToken } from './group-tokens.js';
+import { validateGroupToken, isToolAllowedForToken } from './group-tokens.js';
 import { logger } from './logger.js';
 import { loadRegistry, isAllowed, getToolConfig } from './tool-registry.js';
 
@@ -164,6 +164,25 @@ export function startToolProxy(
           );
           res.writeHead(403, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: `Tool not allowed: ${rawName}` }));
+          return;
+        }
+
+        // Per-token scope check (LIA-315 Phase 2, R2). A scoped (publicIngress)
+        // token may invoke ONLY its curated tool set; everything else 403s here
+        // even though it passed the global allowlist. Unscoped (normal-group)
+        // tokens are unaffected — isToolAllowedForToken returns true for them.
+        // The `token &&` guard only no-ops when auth is disabled (dev, no token);
+        // publicIngress containers always receive an injected DEUS_PROXY_TOKEN, so
+        // the scope check always fires for them.
+        if (token && !isToolAllowedForToken(token, rawName)) {
+          logger.warn(
+            { tool: rawName },
+            'Tool proxy rejected tool outside token scope',
+          );
+          res.writeHead(403, { 'Content-Type': 'application/json' });
+          res.end(
+            JSON.stringify({ error: `Tool not in token scope: ${rawName}` }),
+          );
           return;
         }
 

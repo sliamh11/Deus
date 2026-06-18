@@ -29,7 +29,10 @@ import {
   TIMEZONE,
   TOOL_PROXY_PORT,
 } from './config.js';
-import { getOrCreateGroupToken } from './group-tokens.js';
+import {
+  getOrCreateGroupToken,
+  getOrCreateScopedToken,
+} from './group-tokens.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
 
@@ -90,7 +93,27 @@ function containsCodeBlock(text: string | null): boolean {
  */
 export const CONTAINER_TIMEOUT_ERROR_PREFIX = 'Container timed out after';
 
-function buildContainerArgs(
+// LIA-315 Phase 2: host-side authoritative allowlist for a webhook (publicIngress)
+// run's curated tools. The host is the trust boundary — it mints the scoped proxy
+// token and exports DEUS_CURATED_TOOLS — so it must bound BOTH by this set, not by
+// the raw config. A malformed config naming a sensitive tool (e.g. mcp__deus__*)
+// must not end up in the token scope the tool-proxy authorizes against.
+//
+// SYNC-REQUIRED: mirror of SAFE_CURATED in container/agent-runner/src/allowed-tools.ts
+// (host and container build as isolated packages — no shared module, cf. LIA-223).
+// Exact names only (the token scope is matched exactly); MCP-glob curated tools are
+// deferred to Phase 4. Exported so a host-side test can assert byte-equality with the
+// container copy (safe-curated-sync.test.ts) — the automated guard against silent drift.
+export const SAFE_CURATED = new Set<string>([
+  'Read',
+  'Glob',
+  'Grep',
+  'WebSearch',
+  'WebFetch',
+]);
+
+// Exported as a test seam (LIA-315 Phase 2 @oracle byte-identity + isolation tests).
+export function buildContainerArgs(
   mounts: ReturnType<typeof buildVolumeMounts>,
   containerName: string,
   backend: AgentRuntimeId,
@@ -99,9 +122,37 @@ function buildContainerArgs(
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
+  // LIA-315 Phase 2: webhook-originated (publicIngress) groups run reduced-privilege:
+  // a SCOPED proxy token (curated tools only), no raw secrets, and the webhook tool
+  // profile. A normal group keeps the unscoped token + full env (byte-identical).
+  const isPublicIngress = group?.containerConfig?.publicIngress === true;
+  // Bound the curated set by the host SAFE_CURATED allowlist BEFORE it reaches
+  // either the token scope or the container — the raw config is untrusted input.
+  const curatedTools = (group?.containerConfig?.curatedTools ?? []).filter(
+    (t) => SAFE_CURATED.has(t),
+  );
+
+  // R1 (LIA-315) fail-closed: the reduced-privilege tool manifest is enforced
+  // only on the Claude path (buildAllowedTools). The openai/llama-cpp backends
+  // branch before it and run their own toolset, so a publicIngress run on a
+  // non-Claude backend would NOT be privilege-reduced. Refuse to launch rather
+  // than silently downgrade isolation. (Phase 2 is dormant — no publicIngress
+  // group exists yet — but this guards the Phase-4 dispatch wire against a
+  // misconfigured backend.)
+  if (isPublicIngress && backend !== 'claude') {
+    throw new Error(
+      `publicIngress group "${group?.folder}" requires the 'claude' backend ` +
+        `(reduced-privilege profile is claude-only); refusing to launch on '${backend}'`,
+    );
+  }
+
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
-  args.push('-e', `DEUS_PROXY_TOKEN=${getOrCreateGroupToken(group?.folder)}`);
+  const proxyToken =
+    isPublicIngress && group
+      ? getOrCreateScopedToken(group.folder, new Set(curatedTools))
+      : getOrCreateGroupToken(group?.folder);
+  args.push('-e', `DEUS_PROXY_TOKEN=${proxyToken}`);
   // LIA-154: exact per-dispatch join key for the in-container tool-call capture
   // hook → tool-calls/<id>.jsonl → readToolCalls() back on the host.
   args.push('-e', `DEUS_INTERACTION_ID=${interactionId}`);
@@ -124,15 +175,26 @@ function buildContainerArgs(
     `DEUS_CONTEXT_AUTO_COMPACT_PCT=${CONTEXT_AUTO_COMPACT_PCT}`,
   );
 
-  const linearKey = process.env.LINEAR_API_KEY || process.env.LINEAR_API_TOKEN;
-  if (linearKey) {
-    if (/^[A-Za-z0-9_-]+$/.test(linearKey)) {
-      args.push('-e', `LINEAR_API_KEY=${linearKey}`);
-    } else {
-      logger.warn(
-        'LINEAR_API_KEY contains invalid characters; Linear MCP disabled for this container',
-      );
+  // R2 (LIA-315): never inject raw secrets into a webhook (publicIngress) container.
+  // Curated actions that need Linear run host-brokered through the tool-proxy with
+  // the credential on the host, gated by the scoped token.
+  if (!isPublicIngress) {
+    const linearKey =
+      process.env.LINEAR_API_KEY || process.env.LINEAR_API_TOKEN;
+    if (linearKey) {
+      if (/^[A-Za-z0-9_-]+$/.test(linearKey)) {
+        args.push('-e', `LINEAR_API_KEY=${linearKey}`);
+      } else {
+        logger.warn(
+          'LINEAR_API_KEY contains invalid characters; Linear MCP disabled for this container',
+        );
+      }
     }
+  } else {
+    // R1 (LIA-315): tell the in-container agent-runner to build the reduced-
+    // privilege tool manifest, and which curated tools it may request.
+    args.push('-e', 'DEUS_TOOL_PROFILE=webhook');
+    args.push('-e', `DEUS_CURATED_TOOLS=${curatedTools.join(',')}`);
   }
 
   // Inject per-channel memory privacy allowlist if configured

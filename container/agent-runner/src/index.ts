@@ -838,10 +838,21 @@ async function runQuery(
   // LIA-151's tool_selection ground truth. The openai/llama-cpp backends branch
   // out earlier (index.ts ~1104/1119) and never reach here, so available_tools
   // is intentionally empty for them in v1.
+  // LIA-315 Phase 2: reduced-privilege profile for webhook-originated runs.
+  // The host (container-runner.ts) injects these for publicIngress groups only;
+  // a normal run has neither set, so profile defaults to 'full' (unchanged).
+  const toolProfile =
+    process.env.DEUS_TOOL_PROFILE === 'webhook' ? 'webhook' : 'full'; // LIA-315
+  const curatedTools = (process.env.DEUS_CURATED_TOOLS ?? '') // LIA-315
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
   const allowedTools = buildAllowedTools({
     teamsNeeded,
     hasGcalMcp,
     hasLinearMcp,
+    profile: toolProfile,
+    curatedTools,
   });
   // LIA-154: capture the offered manifest (default-on; DEUS_AVAILABLE_TOOLS_LOG=0 opts out).
   if (process.env.DEUS_AVAILABLE_TOOLS_LOG !== '0') {

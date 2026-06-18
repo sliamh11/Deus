@@ -45,6 +45,8 @@ export interface ContainerConfig {
   // Injected as DEUS_MEMORY_PRIVACY env var. Default: all except sensitive.
   agentBackend?: AgentRuntimeId; // Optional override for this group's default backend.
   agentEffort?: AgentEffortLevel; // Optional override for this group's agent effort level.
+  publicIngress?: boolean; // LIA-315 Phase 2: webhook-originated reduced-privilege sandbox group.
+  curatedTools?: string[]; // LIA-315 Phase 2: host-brokered tools allowed (∩ SAFE_CURATED); [] = notify-only.
 }
 
 export interface ProjectType {
