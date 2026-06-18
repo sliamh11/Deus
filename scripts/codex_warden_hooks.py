@@ -16,7 +16,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 # Warden-review layer constants (zero-dependency leaf module — safe on the hot hook path).
@@ -46,6 +46,28 @@ from warden_hooks.command_parse import (  # noqa: E402
     _shell_tokens,
 )
 from warden_hooks.globs import _glob_match, _glob_to_regex  # noqa: E402
+from warden_hooks import verdict_store as _verdict_store  # noqa: E402
+from warden_hooks.verdict_store import (  # noqa: E402
+    _audit_log_path,
+    _bypass_log_path,
+    _clear_verdict,
+    _last_verdict,
+    _last_verdict_is_blocking,
+    _read_verdict,
+    _read_verdicts,
+    _read_verdicts_at,
+    _verdicts_path,
+    _verdicts_path_for_worktree,
+    _write_bypass_log,
+    _write_verdict,
+    record_script_verdict,
+)
+
+# Inject the entry module so the verdict-store capsule resolves entry-owned helpers
+# (_claude_marker_dir, _git, _write_atomic, _debug, _marker_dir_for_worktree,
+# MARKER_NAMES) through the LIVE module at call time — preserving test monkeypatches
+# without re-importing this file on the hot hook path. See warden_hooks/verdict_store.py.
+_verdict_store.bind_entry(sys.modules[__name__])
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2686,156 +2708,15 @@ def run_orchestrator_preflight(event: dict[str, Any], repo_root: Path) -> int:
     return 0
 
 
-def _verdicts_path(repo_root: Path) -> Path:
-    # Per-worktree: the code-review + verification gates decide on this store
-    # (not the marker files), so it must be isolated alongside the markers.
-    # Main repo resolves to the flat .claude/.warden-verdicts.json (back-compat).
-    return _claude_marker_dir(repo_root) / ".warden-verdicts.json"
-
-
-def _verdicts_path_for_worktree(repo_root: Path, worktree_root: Path) -> Path:
-    # Deterministic verdict store for an EXPLICIT worktree (the admin-merge
-    # standing gate resolves the cwd worktree itself rather than relying on
-    # _current_worktree()'s os.getcwd() derivation). Mirrors _verdicts_path.
-    return _marker_dir_for_worktree(repo_root, worktree_root) / ".warden-verdicts.json"
-
-
-def _audit_log_path(repo_root: Path) -> Path:
-    # Deliberately GLOBAL (flat), not per-worktree: this is an append-only audit
-    # trail that aggregates verdicts across every worktree. Do not namespace it.
-    return repo_root / ".claude" / ".warden-log"
-
-
-def _bypass_log_path() -> Path:
-    override = os.environ.get("DEUS_WARDEN_BYPASS_LOG")
-    if override:
-        return Path(override)
-    return Path.home() / ".claude" / ".warden-bypass-log"
-
-
-def _write_bypass_log(
-    warden: str,
-    verdict: str,
-    session_type: str,
-    reason: str,
-    cwd: Path,
-) -> None:
-    try:
-        diff_stats = _git(cwd, "diff", "--stat", "HEAD")
-        entry = {
-            "timestamp": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "warden": warden,
-            "verdict": verdict,
-            "session_type": session_type,
-            "reason": reason,
-            "cwd": str(cwd),
-            "diff_stats": diff_stats,
-        }
-        path = _bypass_log_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, separators=(",", ":")) + "\n")
-    except OSError:
-        _debug("bypass log write failed")
-
-
 def _is_bg_session() -> bool:
     return bool(os.environ.get("CLAUDE_JOB_DIR"))
 
 
-def _read_verdicts_at(path: Path) -> dict[str, Any]:
-    """Read a .warden-verdicts.json at an EXPLICIT path (no cwd derivation)."""
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _read_verdicts(repo_root: Path) -> dict[str, Any]:
-    return _read_verdicts_at(_verdicts_path(repo_root))
-
-
-def _read_verdict(marker_name: str, repo_root: Path) -> str | None:
-    """Return the verdict string for *marker_name* from .warden-verdicts.json.
-
-    Maps the marker name (e.g. ``"code-reviewed"``) to the warden key used in
-    the JSON (e.g. ``"code-reviewer"``) via ``MARKER_NAMES``.  Returns ``None``
-    if the file is absent, malformed, or the entry is missing.
-    """
-    warden = MARKER_NAMES.get(marker_name)
-    if not warden:
-        return None
-    data = _read_verdicts(repo_root)
-    entry = data.get(warden)
-    if not isinstance(entry, dict):
-        return None
-    v = entry.get("verdict")
-    return v if isinstance(v, str) else None
-
-
-def _clear_verdict(marker_name: str, repo_root: Path) -> None:
-    """Remove the *marker_name* entry from .warden-verdicts.json.
-
-    Maps the marker name to the warden key via ``MARKER_NAMES``.  Silently
-    skips if the file is absent or the key is not present.
-    """
-    warden = MARKER_NAMES.get(marker_name)
-    if not warden:
-        return
-    path = _verdicts_path(repo_root)
-    data = _read_verdicts(repo_root)
-    if warden not in data:
-        return
-    del data[warden]
-    try:
-        _write_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-    except OSError:
-        _debug(f"_clear_verdict: failed to write {path}")
-
-
-def _write_verdict(repo_root: Path, warden: str, verdict: str, reason: str, source: str = "manual") -> None:
-    path = _verdicts_path(repo_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = _read_verdicts(repo_root)
-    stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    data[warden] = {"verdict": verdict, "ts": stamp, "reason": reason, "source": source}
-    _write_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-
-    log = _audit_log_path(repo_root)
-    safe_reason = reason.replace("|", "/").replace("\n", " ").strip()
-    with log.open("a", encoding="utf-8") as f:
-        f.write(f"{stamp} | {warden:<15} | {verdict:<7} | {safe_reason}\n")
-
-
-def _last_verdict(repo_root: Path, warden: str) -> str | None:
-    data = _read_verdicts(repo_root)
-    entry = data.get(warden)
-    if isinstance(entry, dict):
-        v = entry.get("verdict")
-        return v if isinstance(v, str) else None
-    return None
-
-
-def _last_verdict_is_blocking(repo_root: Path, warden: str) -> bool:
-    v = _last_verdict(repo_root, warden)
-    return v in ("REVISE", "BLOCK")
-
-
-# ── Provider-agnostic warden backends: verdict recording, cross-context, loop guard ──
+# ── Provider-agnostic warden backends: cross-context reads + loop guard ──
 # These are imported by the out-of-band driver (scripts/codex_warden.py); they are NOT
-# called on the hot hook path, so they add no per-tool-call import cost.
-
-def record_script_verdict(
-    repo_root: Path, store_key: str, verdict: str, reason: str, source: str = "script",
-) -> None:
-    """Record a model-backend verdict (SHIP/REVISE/BLOCK/COULD_NOT_RUN) under ``store_key``
-    (the ``<role>@<backend>`` warden key). Unlike ``mark_warden`` (human CLI, SHIP/TRIVIAL
-    only), a script records the real verdict — COULD_NOT_RUN is written verbatim so the
-    audit log distinguishes an infra failure from a genuine SHIP."""
-    _write_verdict(repo_root, store_key, verdict, reason, source=source)
+# called on the hot hook path, so they add no per-tool-call import cost. The verdict-store
+# primitives (``record_script_verdict`` etc.) live in warden_hooks/verdict_store.py and are
+# re-exported at the top of this module.
 
 
 def read_claude_verdict(repo_root: Path, role: str) -> str | None:
