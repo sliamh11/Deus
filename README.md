@@ -24,11 +24,12 @@ A personal AI that understands you - not just recalls things you've said. It lea
 
 5. **Private by default** - Runs on your machine in isolated containers. No cloud sync, no tracking, no data leaving your computer.
 
-6. **Works on your code too** - Run `deus` in any project directory for a coding assistant that already knows your preferences and past work.
+6. **Works on your code too** - Run `deus` in any project directory for a coding assistant that already knows your preferences and past work. `deus init` indexes a repo for code intelligence (codegraph + semantic search), and `deus arch` opens an interactive 3D map of its architecture.
 
 <details>
 <summary>And more</summary>
 
+- **Web UI** - Talk to Deus from a browser. `deus web` launches a local Open WebUI front-end - no chat platform required.
 - **Voice** - Send a voice message and it transcribes and responds. Runs locally on Apple Silicon.
 - **Vision** - Send a photo or screenshot and it sees and responds to it.
 - **Calendar** - Reads and manages your Google Calendar. Ask what's coming up, or tell it to book something.
@@ -113,6 +114,9 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 |---------|-------------|
 | `deus` | Launch in the current directory (project mode if outside `~/deus`) |
 | `deus home` | Launch in home mode regardless of current directory |
+| `deus web` | Launch the local web UI (Open WebUI) and open it in the browser |
+| `deus init` / `deus onboard` | Index the current project for code intelligence (codegraph + code_search) and register it (`--seed` adds a memory note) |
+| `deus arch` | Visualize a project's architecture in an interactive 3D explorer |
 | `deus codex` | Use OpenAI/Codex backend for this session |
 | `deus fcc` | Launch with a local proxy model (Ollama, llama-server, Gemini) |
 | `deus provider <name>` | Switch proxy provider (`ollama`, `llamacpp`, `gemini`) |
@@ -126,6 +130,7 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus usage` | Token-efficiency + cost report across all projects (`--since`, `--project`, `--pricing`, `--json`) |
 | `deus backend` | Show active agent backend (`claude`, `codex`, `llama-cpp`) |
 | `deus backend set <name>` | Switch backend for all future sessions |
+| `deus sync` | Update the live install to `origin/main` (`deus sync upstream` for forks) |
 
 For direct Codex CLI sessions outside the `deus` launcher, register Deus memory
 recall as an MCP tool through the repo launcher:
@@ -261,6 +266,8 @@ cooldown_minutes: 60
 Your gate prompt here...
 ```
 
+Select review wardens (`plan-reviewer`, `code-reviewer`, `ai-eng-warden`) can run on Claude or GPT — or both at once as a cross-model **co-gate**, where each provider reviews independently and the change ships only when both agree. Configure backends per warden via `/wardens`.
+
 ---
 
 ## Comparison
@@ -287,6 +294,7 @@ Deus goes deep on understanding you and adapting over time. Hermes goes wide on 
 | Memory system | [Architecture - Memory](docs/ARCHITECTURE.md#memory-system) |
 | Self-improvement loop | [Architecture - Evolution](docs/ARCHITECTURE.md#evolution-loop) |
 | Developer tools (CodeGraph, code_search, etc.) | [Architecture - Developer Tools](docs/ARCHITECTURE.md#developer-tools) |
+| 3D architecture explorer (`deus arch`) | [Architecture explorer](tools/architecture-explorer/README.md) |
 | Security model | [Security](docs/SECURITY.md) |
 | Benchmarks & token costs | [Benchmarks](docs/benchmarks.md) |
 | Environment variables | [Environment](docs/ENVIRONMENT.md) |
