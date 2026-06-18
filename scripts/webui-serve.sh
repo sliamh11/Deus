@@ -47,7 +47,7 @@ mkdir -p "$DATA_DIR"
 export OPENAI_API_BASE_URL="http://127.0.0.1:${DEUS_PORT}/v1"
 export OPENAI_API_KEY="$DEUS_TOKEN"
 export ENABLE_OLLAMA_API="False"
-export DEFAULT_MODELS="deus"
+export DEFAULT_MODELS="Deus"
 
 # ── Identity / auth (single local user) ─────────────────────────────────────
 export WEBUI_NAME="Deus"
@@ -87,6 +87,6 @@ export USER_PERMISSIONS_FEATURES_IMAGE_GENERATION="False"
 export USER_PERMISSIONS_FEATURES_CODE_INTERPRETER="False"
 export USER_PERMISSIONS_FEATURES_NOTES="False"
 
-echo "[webui-serve] Open WebUI → Deus on http://127.0.0.1:${DEUS_PORT}/v1 (model: deus)"
+echo "[webui-serve] Open WebUI → Deus on http://127.0.0.1:${DEUS_PORT}/v1 (model: Deus)"
 echo "[webui-serve] UI: http://${WEBUI_HOST}:${WEBUI_PORT}/  DATA_DIR=$DATA_DIR"
 exec uvx --python 3.11 open-webui serve --host "$WEBUI_HOST" --port "$WEBUI_PORT"

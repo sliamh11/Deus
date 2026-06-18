@@ -151,7 +151,7 @@ function writeSse(res: ServerResponse, frame: Record<string, unknown>): void {
 
 const MODELS_RESPONSE = {
   object: 'list',
-  data: [{ id: 'deus', object: 'model', created: 0, owned_by: 'deus' }],
+  data: [{ id: 'Deus', object: 'model', created: 0, owned_by: 'deus' }],
 };
 
 function chunkFrame(
@@ -163,7 +163,7 @@ function chunkFrame(
     id: `chatcmpl-${id}`,
     object: 'chat.completion.chunk',
     created: Math.floor(Date.now() / 1000),
-    model: 'deus',
+    model: 'Deus',
     choices: [{ index: 0, delta, finish_reason: finish }],
   };
 }
@@ -173,7 +173,7 @@ function completionFrame(id: string, content: string): Record<string, unknown> {
     id: `chatcmpl-${id}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
-    model: 'deus',
+    model: 'Deus',
     choices: [
       {
         index: 0,

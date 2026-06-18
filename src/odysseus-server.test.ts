@@ -455,7 +455,7 @@ describe('gates', () => {
       headers: authHeaders,
     });
     expect(r.statusCode).toBe(200);
-    expect(JSON.parse(r.body).data[0].id).toBe('deus');
+    expect(JSON.parse(r.body).data[0].id).toBe('Deus');
   });
 
   it('400 when there is no user message', async () => {
