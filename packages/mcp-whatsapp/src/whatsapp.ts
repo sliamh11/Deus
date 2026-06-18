@@ -140,6 +140,10 @@ export class WhatsAppProvider implements ChannelProvider {
         keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
       },
       printQRInTerminal: false,
+      // Stay 'unavailable' on connect: a linked device that marks itself
+      // online suppresses the phone's push notifications for inbound messages,
+      // and Deus runs headless. The 'open' handler below reinforces this.
+      markOnlineOnConnect: false,
       logger: baileysLogger,
       browser:
         process.platform === 'win32'
@@ -201,7 +205,10 @@ export class WhatsAppProvider implements ChannelProvider {
         this.reconnect.markConnected();
         logger.info('Connected to WhatsApp');
 
-        this.sock.sendPresenceUpdate('available').catch(() => {});
+        // Reinforce 'unavailable' on every (re)connect; this explicit call
+        // would otherwise override markOnlineOnConnect and re-mark us online.
+        // Best-effort: a failed presence update has no recoverable action here.
+        this.sock.sendPresenceUpdate('unavailable').catch(() => {});
 
         // Build LID to phone mapping
         if (this.sock.user) {
