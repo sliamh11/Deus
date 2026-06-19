@@ -217,6 +217,20 @@ export function createWebhookChannel(
         is_from_me: false,
         is_bot_message: false,
       };
+      // Register the chat row BEFORE onMessage → storeMessage (idiomatic
+      // register-chat-on-inbound, like every messaging channel). `messages.chat_jid`
+      // FKs to `chats(jid)`; without this the first event's storeMessage throws
+      // SQLITE_CONSTRAINT_FOREIGNKEY — silently, since onMessage is async and
+      // un-awaited after the 202. Doing it here (lazy, on a real event) — not at
+      // startup — means it never bumps `chats.last_message_time` for idle sources,
+      // and uses the event's own timestamp for correct recency.
+      opts.onChatMetadata(
+        jid,
+        message.timestamp,
+        `Webhook: ${source.name}`,
+        'webhook',
+        false,
+      );
       // Fire into the pipeline; the run + R5/R6 caps happen async in the
       // orchestrator. Respond 202 (accepted) — the sender is not held open for
       // a multi-minute agent run, and a caps rejection load-sheds server-side.

@@ -37,6 +37,19 @@ function sign(body: Buffer): string {
   );
 }
 
+function fakeRes() {
+  const out: { status?: number } = {};
+  const res = {
+    writeHead: (s: number) => {
+      out.status = s;
+      return res;
+    },
+    end: () => {},
+    writableEnded: false,
+  } as unknown as import('http').ServerResponse;
+  return { res, out };
+}
+
 function build(
   sources: ReturnType<typeof source>[],
   registeredGroups: Record<string, RegisteredGroup>,
@@ -49,7 +62,12 @@ function build(
     registeredGroups: () => registeredGroups,
   };
   const channel = createWebhookChannel(opts, sources, (h) => handlers.push(h));
-  return { channel, handler: handlers[0]!, onMessage: opts.onMessage };
+  return {
+    channel,
+    handler: handlers[0]!,
+    onMessage: opts.onMessage,
+    onChatMetadata: opts.onChatMetadata as ReturnType<typeof vi.fn>,
+  };
 }
 
 describe('createWebhookChannel — R3 fatal-skip makes the route inert', () => {
@@ -130,5 +148,44 @@ describe('createWebhookChannel — R3 fatal-skip makes the route inert', () => {
       (await handler.verify(makeReq('/hook/selfsrc', sign(body), body), body))
         .ok,
     ).toBe(true);
+  });
+});
+
+describe('createWebhookChannel — registers the chat lazily on inbound (FK fix)', () => {
+  it('does NOT call onChatMetadata at construction (no startup recency pollution)', () => {
+    // Registering chats at startup would bump chats.last_message_time on every
+    // restart (storeChatMetadata MAX()), making idle webhook chats look active.
+    const { onChatMetadata } = build(
+      [source('good', 'webhook-sandbox-good')],
+      {},
+    );
+    expect(onChatMetadata).not.toHaveBeenCalled();
+  });
+
+  it('handle() registers the chat (onChatMetadata, channel "webhook", event timestamp) before onMessage', async () => {
+    // The chats row must exist before storeMessage (messages.chat_jid FKs to
+    // chats.jid) or the first event throws SQLITE_CONSTRAINT_FOREIGNKEY silently.
+    const { handler, onChatMetadata, onMessage } = build(
+      [source('good', 'webhook-sandbox-good')],
+      {},
+    );
+    const body = Buffer.from('{"event":"x"}');
+    const { res } = fakeRes();
+    await handler.handle(makeReq('/hook/good', sign(body), body), res, body);
+
+    expect(onChatMetadata).toHaveBeenCalledTimes(1);
+    const [chatJid, ts, , channel] = onChatMetadata.mock.calls[0] as [
+      string,
+      string,
+      string,
+      string,
+      boolean,
+    ];
+    expect(chatJid).toBe('webhook:good');
+    expect(channel).toBe('webhook');
+    // Same timestamp as the dispatched message (correct recency, not startup time).
+    const [, msg] = (onMessage as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0] as [string, { timestamp: string }];
+    expect(ts).toBe(msg.timestamp);
   });
 });
