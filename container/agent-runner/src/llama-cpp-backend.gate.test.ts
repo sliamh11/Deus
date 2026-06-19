@@ -16,7 +16,6 @@ vi.mock('./tool-broker.js', () => ({
   })),
   executeBrokerTool: brokerExecute,
   getOpenAIToolDefinitions: vi.fn(() => []),
-  resolveGroupAttachmentPath: vi.fn((p: string) => `/workspace/group/${p}`),
 }));
 
 vi.mock('./context-registry.js', () => ({

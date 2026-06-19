@@ -33,7 +33,6 @@ import {
   createOpenAIMcpToolBridge,
   executeBrokerTool,
   getOpenAIToolDefinitions,
-  resolveGroupAttachmentPath as resolveBrokerGroupAttachmentPath,
 } from './tool-broker.js';
 
 export interface RuntimeSession {
@@ -227,42 +226,6 @@ function getOptionalMcpServerConfigs(containerInput: ContainerInput): Array<{
   }
 
   return configs;
-}
-
-export function buildInitialMessages(
-  prompt: string,
-  containerInput: ContainerInput,
-  systemInstructions: string,
-): ChatMessage[] {
-  // For image attachments we use the OpenAI chat-completions vision shape
-  // (content array with `image_url`). llama-server with a multimodal GGUF
-  // accepts this; text-only GGUFs ignore the image content. The Deus
-  // capability flag `multimodal: false` documents the default.
-  const content: Array<Record<string, unknown>> = [
-    { type: 'text', text: prompt },
-  ];
-  for (const img of containerInput.imageAttachments || []) {
-    const imgPath = resolveBrokerGroupAttachmentPath(img.relativePath);
-    try {
-      const data = fs.readFileSync(imgPath).toString('base64');
-      content.push({
-        type: 'image_url',
-        image_url: { url: `data:${img.mediaType};base64,${data}` },
-      });
-    } catch {
-      // Ignore broken image reads — text prompt still proceeds.
-    }
-  }
-
-  // When there are no images we can use the simpler string-content form for
-  // smaller GGUF chat templates that don't handle structured content arrays.
-  const userMessage: ChatMessage =
-    containerInput.imageAttachments &&
-    containerInput.imageAttachments.length > 0
-      ? { role: 'user', content }
-      : { role: 'user', content: prompt };
-
-  return [{ role: 'system', content: systemInstructions }, userMessage];
 }
 
 async function createChatCompletion(body: {
