@@ -53,8 +53,18 @@ export function loadRegistry(): ToolRegistryFile {
   try {
     const raw = fs.readFileSync(REGISTRY_PATH, 'utf-8');
     const parsed = JSON.parse(raw) as ToolRegistryFile;
-    if (!parsed.tools || typeof parsed.tools !== 'object') {
-      logger.warn({ path: REGISTRY_PATH }, 'Tool registry missing "tools" key');
+    if (
+      !parsed.tools ||
+      typeof parsed.tools !== 'object' ||
+      Array.isArray(parsed.tools)
+    ) {
+      // An array satisfies `typeof === 'object'`; without the Array.isArray
+      // guard its numeric index keys would leak through hasOwnProperty as
+      // allowlisted tools. Fail closed on any non-plain-object shape.
+      logger.warn(
+        { path: REGISTRY_PATH },
+        'Tool registry "tools" is missing or not a plain object',
+      );
       return { tools: {} };
     }
     cachedRegistry = parsed;
