@@ -104,6 +104,55 @@ def test_driver_plan_reviewer_without_content_file_errors(git_repo, monkeypatch)
     assert rc == USAGE_ERROR
 
 
+# ── RETRO-19-04: --worktree-root targets a specific worktree's review + bucket ──────
+
+def test_driver_worktree_root_routes_to_target_bucket(tmp_path, monkeypatch):
+    # --worktree-root <target> must record the verdict into <target>'s bucket, NOT the
+    # cwd-derived repo_root's — that is the parity the flag exists for.
+    cwd_repo = tmp_path / "cwd"
+    target = tmp_path / "target"
+    subprocess.run(["git", "init", "-q", str(cwd_repo)], check=True)
+    subprocess.run(["git", "init", "-q", str(target)], check=True)
+    monkeypatch.setattr(cw.cr.cfr, "repo_root", lambda: str(cwd_repo))
+    monkeypatch.setattr(cw.cr.cfr, "get_diff", lambda root, rr, df: _DIFF)
+    monkeypatch.setattr(cw.registry, "is_registered", lambda b: True)
+    monkeypatch.setattr(cw.registry, "get_backend",
+                        lambda b: _fake_backend(Verdict("SHIP", [], "ok")))
+
+    rc = cw.main(["--role", "code-reviewer", "--warden-mark", "--worktree-root", str(target)])
+    assert rc == 0
+    assert cw.whooks._read_verdict("code-reviewer@gpt", target) == "SHIP"
+    assert cw.whooks._read_verdict("code-reviewer@gpt", cwd_repo) is None
+
+
+def test_driver_worktree_root_resolved_before_repo_root_raises(tmp_path, monkeypatch):
+    # Flag-first ordering: --worktree-root must be resolved WITHOUT calling cr.cfr.repo_root()
+    # (which raises → USAGE_ERROR outside a git repo). If repo_root were consulted, this boom
+    # would propagate and fail the test — proving the flag works from an arbitrary cwd.
+    target = tmp_path / "target"
+    subprocess.run(["git", "init", "-q", str(target)], check=True)
+
+    def _boom():
+        raise RuntimeError("cr.cfr.repo_root() must NOT be called when --worktree-root is set")
+    monkeypatch.setattr(cw.cr.cfr, "repo_root", _boom)
+    monkeypatch.setattr(cw.cr.cfr, "get_diff", lambda root, rr, df: _DIFF)
+    monkeypatch.setattr(cw.registry, "is_registered", lambda b: True)
+    monkeypatch.setattr(cw.registry, "get_backend",
+                        lambda b: _fake_backend(Verdict("SHIP", [], "ok")))
+
+    rc = cw.main(["--role", "code-reviewer", "--warden-mark", "--worktree-root", str(target)])
+    assert rc == 0
+    assert cw.whooks._read_verdict("code-reviewer@gpt", target) == "SHIP"
+
+
+def test_driver_worktree_root_missing_dir_usage_error(tmp_path, monkeypatch):
+    from _exit_codes import USAGE_ERROR
+    monkeypatch.setattr(cw.cr.cfr, "repo_root", lambda: str(tmp_path))
+    rc = cw.main(["--role", "code-reviewer", "--warden-mark",
+                  "--worktree-root", str(tmp_path / "does-not-exist")])
+    assert rc == USAGE_ERROR
+
+
 def test_driver_out_writes_json(git_repo, tmp_path, monkeypatch):
     monkeypatch.setattr(cw.cr.cfr, "repo_root", lambda: str(git_repo))
     monkeypatch.setattr(cw.cr.cfr, "get_diff", lambda root, rr, df: _DIFF)

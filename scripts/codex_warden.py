@@ -68,6 +68,11 @@ def main(argv: list[str] | None = None) -> int:
                          f"{', '.join(registry.available_backends()) or '(none)'})")
     ap.add_argument("--warden-mark", action="store_true",
                     help="record the verdict into the warden store (co-gate); advisory if omitted")
+    ap.add_argument("--worktree-root", default=None,
+                    help="target worktree toplevel for the review + verdict bucket (default: the "
+                         "cwd's repo/worktree toplevel). Lets an out-of-band caller target a "
+                         "specific worktree's bucket from any cwd, matching codex_warden_hooks.py "
+                         "mark --worktree-root.")
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--rev-range", help="commit sha or a..b range (default: working tree)")
     src.add_argument("--diff-file", help="path to a unified diff file to review")
@@ -86,13 +91,27 @@ def main(argv: list[str] | None = None) -> int:
     spec = ROLE_SPECS[args.role]
     skey = store_key(args.role, args.backend)
 
-    try:
-        # cfr.repo_root() returns a str; the warden-hooks helpers need a Path (they do
-        # `repo_root / ".git"` etc.). The backend's cwd stays a str (codex --cd).
-        root = Path(cr.cfr.repo_root())
-    except cr.ReviewError as exc:
-        sys.stderr.write(f"[codex-warden] {exc.message}\n")
-        return exc.code
+    if args.worktree_root:
+        # Flag-first: resolve --worktree-root WITHOUT cr.cfr.repo_root(). That call raises
+        # ReviewError → USAGE_ERROR when cwd is outside a git repo, so resolving the flag only
+        # afterwards would still make `--worktree-root <wt>` fail from an arbitrary cwd —
+        # defeating the out-of-band targeting this flag exists for. The worktree toplevel drives
+        # BOTH the review target (diff gather + sandbox cwd) and the verdict bucket, which is
+        # exactly what an out-of-band co-gate driver wants: "review worktree X, mark into X."
+        root = Path(args.worktree_root).resolve(strict=False)
+        if not root.is_dir():
+            sys.stderr.write(
+                f"[codex-warden] --worktree-root does not exist or is not a directory: {root}\n"
+            )
+            return USAGE_ERROR
+    else:
+        try:
+            # cfr.repo_root() returns a str; the warden-hooks helpers need a Path (they do
+            # `repo_root / ".git"` etc.). The backend's cwd stays a str (codex --cd).
+            root = Path(cr.cfr.repo_root())
+        except cr.ReviewError as exc:
+            sys.stderr.write(f"[codex-warden] {exc.message}\n")
+            return exc.code
 
     # `root` (the worktree toplevel) is for gathering the diff + the codex sandbox cwd.
     # Warden state (verdict store, cross-review files, loop counter) is namespaced under
