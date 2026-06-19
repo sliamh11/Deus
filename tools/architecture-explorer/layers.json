@@ -17,7 +17,7 @@
       "id": "security",
       "label": "3 . Security boundary",
       "color": "#e74c3c",
-      "globs": ["src/container-mounter*", "src/mount-security*", "src/tool-proxy*", "src/tool-registry*", "src/tool-broker/*", "src/credential-proxy*", "src/guardrails/*", "src/sender-allowlist*", "src/ipc*", "src/auth-providers/*", "src/auth-refresh*", "src/external-push-gate*"]
+      "globs": ["src/container-mounter*", "src/mount-security*", "src/tool-proxy*", "src/tool-registry*", "src/credential-proxy*", "src/guardrails/*", "src/sender-allowlist*", "src/ipc*", "src/auth-providers/*", "src/auth-refresh*", "src/external-push-gate*"]
     },
     {
       "id": "container",

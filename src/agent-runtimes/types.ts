@@ -1,5 +1,4 @@
 import type { AgentEffortLevel } from '../types.js';
-import type { ToolBroker } from '../tool-broker/types.js';
 
 export type AgentRuntimeId = 'claude' | 'openai' | 'llama-cpp';
 
@@ -39,7 +38,6 @@ export interface RunContext {
   effort?: AgentEffortLevel;
   backendConfig?: Record<string, unknown>;
   imageInputs?: Array<{ relativePath: string; mediaType: string }>;
-  toolBroker?: ToolBroker;
   worktreePath?: string;
   /**
    * Streaming consumer flag. When true (set by the Odysseus Web UI channel), the
