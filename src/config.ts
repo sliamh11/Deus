@@ -130,6 +130,39 @@ export const WEBHOOK_SOURCES_PATH = path.join(
   'webhook-sources.json',
 );
 
+// LIA-315 Phase 3: R5 DoS/spend caps + R6 audit. Dormant — consumed by the Phase-4
+// webhook dispatch facade (src/ingress/caps.ts + audit.ts). Guard every numeric
+// flag against NaN/0/negative so a bad env value falls back to the safe default
+// (an unguarded `Number('') === 0` would disable a cap; see CLAUDE.md eval-diagnostics).
+function ingressPositive(raw: string | undefined, def: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+// Global ceiling on concurrent in-flight webhook runs (shared across all sources).
+export const INGRESS_MAX_INFLIGHT = ingressPositive(
+  process.env.INGRESS_MAX_INFLIGHT,
+  3,
+);
+// Per-source token-bucket: burst capacity + ms-to-refill-one-token (~10/min default).
+export const INGRESS_SOURCE_RATE_CAPACITY = ingressPositive(
+  process.env.INGRESS_SOURCE_RATE_CAPACITY,
+  10,
+);
+export const INGRESS_SOURCE_RATE_REFILL_MS = ingressPositive(
+  process.env.INGRESS_SOURCE_RATE_REFILL_MS,
+  6000,
+);
+// Hard daily spend ceiling. Unit = tokens-per-day as fed by Phase 4 `recordSpend`;
+// ~1M tokens/day is a deliberately conservative cap for an anonymous webhook source.
+export const INGRESS_DAILY_SPEND_LIMIT = ingressPositive(
+  process.env.INGRESS_DAILY_SPEND_LIMIT,
+  1_000_000,
+);
+// Append-only per-event audit sink. Under CONFIG_DIR (operator-owned, NEVER mounted
+// into a container — R6 "off the container's writable path").
+export const INGRESS_AUDIT_DIR =
+  process.env.INGRESS_AUDIT_DIR || path.join(CONFIG_DIR, 'ingress-audit');
+
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result
 // Sessions older than this many hours are reset to a fresh start.
