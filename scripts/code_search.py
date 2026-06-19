@@ -684,6 +684,8 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
     """Full or incremental reindex with parallel embedding."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    global _cal_cache  # declared once here; reset at end of function (LIA-207)
+
     base = Path(directory).resolve()
     if not base.is_dir():
         return {"error": f"Not a directory: {directory}"}
@@ -813,7 +815,6 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
                     [json.dumps(cal_distances)],
                 )
                 calibrated = True
-                global _cal_cache
                 _cal_cache = None
                 print(
                     f"Auto-calibrated: stored {len(cal_distances)} distances "
@@ -832,6 +833,11 @@ def reindex(directory: str, diff_ref: str | None = None) -> dict[str, Any]:
 
     db.commit()
     db.close()
+
+    # Bust the module-level calibration cache so a long-running server doesn't
+    # keep serving stale retrieval_confidence after a DELETE+reindex cycle.
+    # The next search() reloads calibration_distances from the DB (LIA-207).
+    _cal_cache = None
 
     return {
         "files_scanned": len(files),
