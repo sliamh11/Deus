@@ -1,6 +1,7 @@
 # Orchestration Rules
 # Applies to all agent dispatch, pipeline automation, and task orchestration.
-# Covers: issue creation, gate discipline, state management, and MCP tool hygiene.
+# Covers: issue creation, gate discipline, state management, MCP tool hygiene,
+# warden co-gate verdict marking, session-start freshness, and pipeline co-authorship.
 # Separated from core-behavioral-rules.md because these are pipeline-specific
 # (not general coding/commit rules) and were triggered by observed failures:
 # auth-error fallbacks labeled as "Scoped", agents working on stale requirements
@@ -28,3 +29,19 @@
 
 ## Tool Hygiene
 - When creating or updating issues via MCP tools, verify the rendered output matches intent. Double-escaped markdown, broken formatting, and missing fields are bugs, not cosmetic issues — they degrade agent scoping and human review.
+
+## Warden Co-Gate Verdict Marking
+- The plan-review (edit) and code-review/verification/ai-eng (commit) gates decide on the verdict STORE (`.warden-verdicts.json`), not the marker files. The `run()` hook dispatcher resolves the bucket from the **hook EVENT's cwd** (`event["cwd"]`, which equals the committing session's working directory) and pins it via `worktree_override` for every gate runner — deliberately NOT the hook process's `os.getcwd()`, since the two can differ. Mark verdicts (both claude + gpt backends) into the bucket that matches that cwd, or the gate won't see them.
+- cwd is the MAIN repo (`~/deus`, editing a worktree's files via `git -C <wt>`): the gate reads the FLAT `.claude/.warden-verdicts.json`. Mark from cwd=`~/deus` with NO `--worktree-root`.
+- cwd is INSIDE a linked worktree (`EnterWorktree`, or Claude launched there): the gate reads the per-worktree `.claude/worktree-markers/<sha1(worktree_abspath)[:12]>/.warden-verdicts.json`. Mark from that cwd with NO `--worktree-root`, or from any cwd with `--worktree-root <wt>`. A flat mark is IGNORED here.
+- Rule of thumb: match the bucket to the committing session's cwd — not "always flat" nor "always worktree". `--worktree-root` is only for an out-of-band writer whose cwd is not the gate's worktree (e.g. the gpt driver, or marking for a worktree you are not cwd'd into). If `mark`/`record-verdict` prints "cwd is not inside a worktree ... using the main-repo (flat) bucket", your mark went to the flat bucket — intended only for case 1.
+- Mechanism (source of truth): `codex_warden_hooks.py` `run` (event-cwd → `worktree_override` for every gate runner), `_claude_marker_dir` (bucket resolution), `_current_worktree`/`_worktree_for_cwd` (cwd→worktree), `_with_cli_worktree` (CLI writer side), `run_warden_backends_gate` (gate read); `warden_hooks/verdict_store.py` `_verdicts_path`.
+- SUPERSEDES RETRO-2026-06-17-02's "always mark from inside the worktree with `--worktree-root`": that is correct only for case 2, and post-#868/#869 the cwd-dependent rule above is canonical.
+
+## Session-Start State Freshness
+- Before treating local/worktree state as ground truth or implementing anything, run `git fetch origin` then `git --no-pager diff --stat HEAD origin/main`. Worktrees are pinned at creation and `origin/main` merges continuously (autonomous pipeline + work-fork), so a local checkout can be days behind.
+- For any task that "needs implementing," first confirm it is not already on `origin/main` — a stale start otherwise reconstructs work that already shipped. Verify-don't-trust catches bad code before it lands, but the rediscovery cost is paid regardless; the fetch is the cheap defense.
+
+## Autonomous Pipeline Co-Authorship
+- The autonomous pipeline and work-fork are routine co-authors of `origin/main` and may merge work mid-session/overnight. Before building on or deploying their merged work: (i) re-check merge state via `mergeCommit`/`mergedAt` (not a stale "OPEN" read), (ii) for load-bearing surfaces (memory heart, gates) re-verify the controlling invariant first-hand, (iii) chain a distinct session log via `continues` — never overwrite the pipeline's logs on `/compress`.
+- A pipeline merge is a hypothesis until verified first-hand, same as any delegated verdict (core-behavioral-rules.md § Verification & Honesty). Don't race the pipeline on its own PRs.
