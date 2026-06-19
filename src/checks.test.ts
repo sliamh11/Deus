@@ -336,6 +336,9 @@ describe('detectPortCollision', () => {
   const PORT_VARS = [
     'ODYSSEUS_HTTP_ENABLED',
     'ODYSSEUS_HTTP_PORT',
+    'INGRESS_GATEWAY_ENABLED',
+    'INGRESS_GATEWAY_PORT',
+    'INGRESS_LINEAR_VIA_GATEWAY',
     'LINEAR_WEBHOOK_PORT',
     'LINEAR_WEBHOOK_SECRET',
     'LINEAR_API_KEY',
@@ -351,7 +354,11 @@ describe('detectPortCollision', () => {
       LINEAR_API_KEY: 'lin_x',
       LINEAR_WEBHOOK_SECRET: 'sec',
     });
-    expect(detectPortCollision()).toEqual({ collision: true, port: 3005 });
+    expect(detectPortCollision()).toEqual({
+      collision: true,
+      port: 3005,
+      services: ['ODYSSEUS_HTTP_PORT', 'LINEAR_WEBHOOK_PORT'],
+    });
   });
 
   it('no collision when the ports differ', () => {
@@ -361,7 +368,11 @@ describe('detectPortCollision', () => {
       LINEAR_API_KEY: 'lin_x',
       LINEAR_WEBHOOK_SECRET: 'sec',
     });
-    expect(detectPortCollision()).toEqual({ collision: false, port: null });
+    expect(detectPortCollision()).toEqual({
+      collision: false,
+      port: null,
+      services: null,
+    });
   });
 
   it('no collision when Odysseus is disabled (even on equal ports)', () => {
@@ -369,7 +380,11 @@ describe('detectPortCollision', () => {
       LINEAR_API_KEY: 'lin_x',
       LINEAR_WEBHOOK_SECRET: 'sec',
     });
-    expect(detectPortCollision()).toEqual({ collision: false, port: null });
+    expect(detectPortCollision()).toEqual({
+      collision: false,
+      port: null,
+      services: null,
+    });
   });
 
   it('no collision when the webhook secret is absent (webhook would not start)', () => {
@@ -377,7 +392,11 @@ describe('detectPortCollision', () => {
       ODYSSEUS_HTTP_ENABLED: 'true',
       LINEAR_API_KEY: 'lin_x',
     });
-    expect(detectPortCollision()).toEqual({ collision: false, port: null });
+    expect(detectPortCollision()).toEqual({
+      collision: false,
+      port: null,
+      services: null,
+    });
   });
 
   it('flags a collision when only LINEAR_API_TOKEN (not LINEAR_API_KEY) is set', () => {
@@ -386,7 +405,11 @@ describe('detectPortCollision', () => {
       LINEAR_API_TOKEN: 'lin_tok',
       LINEAR_WEBHOOK_SECRET: 'sec',
     });
-    expect(detectPortCollision()).toEqual({ collision: true, port: 3005 });
+    expect(detectPortCollision()).toEqual({
+      collision: true,
+      port: 3005,
+      services: ['ODYSSEUS_HTTP_PORT', 'LINEAR_WEBHOOK_PORT'],
+    });
   });
 
   it('no collision when no Linear API key/token (webhook would not start)', () => {
@@ -394,7 +417,11 @@ describe('detectPortCollision', () => {
       ODYSSEUS_HTTP_ENABLED: '1',
       LINEAR_WEBHOOK_SECRET: 'sec',
     });
-    expect(detectPortCollision()).toEqual({ collision: false, port: null });
+    expect(detectPortCollision()).toEqual({
+      collision: false,
+      port: null,
+      services: null,
+    });
   });
 
   it('treats a non-numeric port as the 3005 default (NaN guard)', () => {
@@ -404,7 +431,11 @@ describe('detectPortCollision', () => {
       LINEAR_API_KEY: 'lin_x',
       LINEAR_WEBHOOK_SECRET: 'sec',
     });
-    expect(detectPortCollision()).toEqual({ collision: true, port: 3005 });
+    expect(detectPortCollision()).toEqual({
+      collision: true,
+      port: 3005,
+      services: ['ODYSSEUS_HTTP_PORT', 'LINEAR_WEBHOOK_PORT'],
+    });
   });
 
   it('lets process.env win over .env (mirrors index.ts merge order)', () => {
@@ -416,6 +447,78 @@ describe('detectPortCollision', () => {
       LINEAR_WEBHOOK_SECRET: 'sec',
     });
     // process.env says 4000, .env says 3005 → resolves 4000 ≠ 3005 → no collision
-    expect(detectPortCollision()).toEqual({ collision: false, port: null });
+    expect(detectPortCollision()).toEqual({
+      collision: false,
+      port: null,
+      services: null,
+    });
+  });
+
+  // ── ingress gateway coverage (gateway default 3007 once collided with the
+  // common Odysseus deployment port; the detector now binds-aware-compares it) ──
+
+  it('flags a gateway↔Odysseus collision when both bind the same port', () => {
+    mockReadEnvFile.mockReturnValue({
+      ODYSSEUS_HTTP_ENABLED: '1',
+      ODYSSEUS_HTTP_PORT: '3007',
+      INGRESS_GATEWAY_ENABLED: '1',
+      INGRESS_GATEWAY_PORT: '3007',
+    });
+    expect(detectPortCollision()).toEqual({
+      collision: true,
+      port: 3007,
+      services: ['ODYSSEUS_HTTP_PORT', 'INGRESS_GATEWAY_PORT'],
+    });
+  });
+
+  it('no collision: gateway on its new 3009 default vs Odysseus 3005 default', () => {
+    // Gateway enabled, port unset → 3009 default; Odysseus enabled at 3005;
+    // no webhook secret so the standalone webhook does not bind.
+    mockReadEnvFile.mockReturnValue({
+      ODYSSEUS_HTTP_ENABLED: '1',
+      ODYSSEUS_HTTP_PORT: '3005',
+      INGRESS_GATEWAY_ENABLED: '1',
+    });
+    expect(detectPortCollision()).toEqual({
+      collision: false,
+      port: null,
+      services: null,
+    });
+  });
+
+  it('no false positive in the live via-gateway config (webhook routed, not bound)', () => {
+    // Live host: Odysseus 3007, gateway 3008, Linear routed through the gateway.
+    // The standalone webhook never binds, so it must be excluded from the set.
+    mockReadEnvFile.mockReturnValue({
+      ODYSSEUS_HTTP_ENABLED: '1',
+      ODYSSEUS_HTTP_PORT: '3007',
+      INGRESS_GATEWAY_ENABLED: '1',
+      INGRESS_GATEWAY_PORT: '3008',
+      INGRESS_LINEAR_VIA_GATEWAY: '1',
+      LINEAR_API_KEY: 'lin_x',
+      LINEAR_WEBHOOK_SECRET: 'sec',
+    });
+    expect(detectPortCollision()).toEqual({
+      collision: false,
+      port: null,
+      services: null,
+    });
+  });
+
+  it('via-gateway set but gateway disabled → standalone webhook still binds and can collide', () => {
+    // INGRESS_LINEAR_VIA_GATEWAY only suppresses the webhook when the gateway is
+    // actually enabled (else index.ts falls back to the standalone :3005 server).
+    mockReadEnvFile.mockReturnValue({
+      ODYSSEUS_HTTP_ENABLED: '1',
+      ODYSSEUS_HTTP_PORT: '3005',
+      INGRESS_LINEAR_VIA_GATEWAY: '1',
+      LINEAR_API_KEY: 'lin_x',
+      LINEAR_WEBHOOK_SECRET: 'sec',
+    });
+    expect(detectPortCollision()).toEqual({
+      collision: true,
+      port: 3005,
+      services: ['ODYSSEUS_HTTP_PORT', 'LINEAR_WEBHOOK_PORT'],
+    });
   });
 });
