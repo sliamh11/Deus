@@ -203,7 +203,7 @@ LINEAR_WEBHOOK_SECRET=...       # For webhook signature verification
 # LINEAR_AUTO_MERGE=1           # Optional: auto-merge agent PRs after CI
 ```
 
-Quality checks require a public URL to receive Linear webhook events. For local dev, use [ngrok](https://ngrok.com) (`ngrok http 3005`). Register the URL in Linear Settings → API → Webhooks. Dispatch (polling) works without a webhook URL.
+Quality checks require a public URL to receive Linear webhook events. For local dev, use [ngrok](https://ngrok.com) (`ngrok http 3005`). Register the URL in Linear Settings → API → Webhooks. Dispatch (polling) works without a webhook URL. For an always-on self-host, pin an ngrok static domain and run the tunnel under a process manager - see [Always-on self-host](docs/decisions/linear-webhook-pipeline.md#always-on-self-host-static-domain--auto-start).
 
 See [Linear automation architecture](docs/decisions/linear-webhook-pipeline.md) for the full setup, gate spec format, and configuration reference.
 

@@ -280,6 +280,33 @@ ngrok http 3005
 
 Register the resulting HTTPS URL in the Linear workspace webhook settings. Set `LINEAR_WEBHOOK_SECRET` to the value from Linear's webhook configuration panel.
 
+### Always-on self-host (static domain + auto-start)
+
+A free-tier ngrok URL is ephemeral: it changes every time the tunnel restarts. On an always-on personal instance that is not a full production deployment, this causes the webhook to silently stop delivering events after any reboot or crash because the registered URL no longer matches the live tunnel.
+
+Two steps prevent this:
+
+**1. Pin a static domain.**
+The free ngrok plan includes one static domain. Reserve one in the ngrok dashboard, then start the tunnel with the `--url` flag so the public address never drifts:
+
+```bash
+ngrok http 3005 --url=<your-static-subdomain>.ngrok-free.dev
+```
+
+Register this static URL once in Linear Settings > API > Webhooks. It never needs to change.
+
+**2. Run the tunnel under a process manager.**
+Start ngrok automatically on boot and restart it on failure using your OS process manager:
+
+- **macOS:** create a launchd plist in `~/Library/LaunchAgents/` with `RunAtLoad` and `KeepAlive` set.
+- **Linux:** create a systemd user unit with `Restart=on-failure` and `WantedBy=default.target`.
+
+With both steps in place, the tunnel comes back on its own after a reboot or crash and the webhook URL remains valid.
+
+**Free-tier constraint:** ngrok allows only one simultaneous agent session on the free plan. Opening a second `ngrok` process (for example, a manual test tunnel) disconnects the managed one. Keep all tunnels in the process manager; avoid ad-hoc `ngrok` invocations while the managed tunnel is running.
+
+**Alternatives:** a Cloudflare named tunnel (`cloudflared tunnel run`) or any hosted endpoint (reverse proxy, VPS, fly.io machine) removes the single-session constraint and does not require ngrok at all.
+
 ### Webhook Registration
 
 Linear webhooks must be configured in the workspace settings (Settings > API > Webhooks). Required event: `Issue`. The HMAC secret is set once; rotating it requires updating `LINEAR_WEBHOOK_SECRET` and restarting.
