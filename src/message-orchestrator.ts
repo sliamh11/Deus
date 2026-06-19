@@ -13,6 +13,7 @@ import {
   ASSISTANT_NAME,
   CONTEXT_NOTIFY,
   IDLE_TIMEOUT,
+  INGRESS_WEBHOOK_RUN_COST,
   INJECTION_SCANNER_CONFIG,
   POLL_INTERVAL,
   SESSION_IDLE_RESET_HOURS,
@@ -58,6 +59,7 @@ import {
   isSessionCommandAllowed,
 } from './session-commands.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import type { IngressCaps } from './ingress/caps.js';
 
 export interface OrchestratorDeps {
   state: RouterState;
@@ -66,10 +68,14 @@ export interface OrchestratorDeps {
   /** Mutable array — channels are pushed into it during startup before the
    *  orchestrator starts processing, so this reference stays valid. */
   channels: Channel[];
+  /** LIA-315 Phase 4: R5 DoS/spend caps + R6 audit for webhook-originated
+   *  (publicIngress) runs. Undefined when INGRESS_WEBHOOK_ENABLED is off; a
+   *  publicIngress group then fails CLOSED (refuses to run). */
+  ingressCaps?: IngressCaps;
 }
 
 export function createMessageOrchestrator(deps: OrchestratorDeps) {
-  const { state, queue, registry, channels } = deps;
+  const { state, queue, registry, channels, ingressCaps } = deps;
   let messageLoopRunning = false;
   const autoCompactFired = new Set<string>();
 
@@ -261,6 +267,85 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     );
 
     if (missedMessages.length === 0) return true;
+
+    // --- LIA-315 Phase 4: webhook (publicIngress) dispatch under R5/R6 caps ---
+    // A webhook-originated run is gated by the ingress caps. This branch is
+    // deliberately BEFORE the host/session/trigger logic below: those are chat
+    // semantics that don't apply to an anonymous webhook event, and routing a
+    // webhook through them would create post-admit abort points that leak the
+    // inflight slot. For EACH event, admit → run → release/recordSpend is ONE
+    // try/finally scope, so the cap can never leak (caps.ts:170-176).
+    if (group.containerConfig?.publicIngress === true) {
+      // The human-readable source NAME (e.g. "github") from the webhook:<name>
+      // jid — the rate-limiter key + R6 audit identity, NOT the folder (caps.ts:58-61).
+      const source = chatJid.startsWith('webhook:')
+        ? chatJid.slice('webhook:'.length)
+        : group.folder;
+      const lastTs = missedMessages[missedMessages.length - 1]!.timestamp;
+
+      // Fail-closed: a publicIngress group must NEVER run uncapped. Drop the whole
+      // pending batch (advance the cursor past it) rather than dispatch uncapped.
+      if (!ingressCaps) {
+        logger.error(
+          { chatJid, group: group.name },
+          'publicIngress group has no ingress caps wired — refusing run (fail-closed)',
+        );
+        state.setLastAgentTimestamp(chatJid, lastTs);
+        state.save();
+        return true;
+      }
+
+      // Process EACH webhook event INDIVIDUALLY — never batch. Per event: its own
+      // tryAdmit (rate token + inflight slot + R6 audit row keyed on THIS event's
+      // requestId) and its own already-framed, per-event-capped prompt
+      // (buildWebhookPrompt bounded each content ≤ MAX_PROMPT_BODY). Batching N
+      // events into one run would charge them as one, leave N-1 unaudited, and let
+      // the aggregate prompt exceed the per-event cap.
+      for (const msg of missedMessages) {
+        // SAME `now` for tryAdmit and recordSpend so the spend ledger day-key
+        // cannot diverge across the UTC boundary (caps.ts:251-253).
+        const now = Date.now();
+        const admit = await ingressCaps.tryAdmit(
+          { source, requestId: msg.id },
+          now,
+        );
+        if (!admit.ok) {
+          // Load-shed THIS event: the facade already emitted its R6 `rejected`
+          // row. Advance past it (drop) so a capped event does not hot-loop.
+          logger.warn(
+            { chatJid, source, reason: admit.reason, requestId: msg.id },
+            'webhook event rejected by ingress caps — dropped',
+          );
+          state.setLastAgentTimestamp(chatJid, msg.timestamp);
+          state.save();
+          continue;
+        }
+
+        // runAgent never throws (it catches internally and returns 'error'); the
+        // try/finally guarantees release+recordSpend. The already-injection-framed
+        // `msg.content` (its own random sentinel) is passed straight through — NOT
+        // via formatMessages, which would XML-escape + nest it and dilute the
+        // sentinel from being the outermost instruction boundary.
+        try {
+          await runAgent(group, msg.content, chatJid, []);
+        } finally {
+          ingressCaps.release();
+          // v1 charges a FIXED per-run budget unit (real per-run token usage is
+          // not available at this layer — see INGRESS_WEBHOOK_RUN_COST in config.ts;
+          // a follow-up will thread real usage through RunResult). The daily
+          // ceiling thus bounds runs/day.
+          ingressCaps.recordSpend(INGRESS_WEBHOOK_RUN_COST, now);
+        }
+
+        // At-most-once: advance past this event regardless of run outcome (a
+        // webhook is a fire-once external event; sendMessage is a no-op so there
+        // is no user to re-serve, and a rollback-retry would re-spawn + double-charge).
+        state.setLastAgentTimestamp(chatJid, msg.timestamp);
+        state.save();
+      }
+      return true;
+    }
+    // --- End webhook dispatch ---
 
     // --- Host slash commands (host-side, no container spawn) ---
     const hostResult = dispatchHostCommand(
@@ -578,6 +663,17 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
                 { chatJid },
                 'No channel owns JID, skipping messages',
               );
+              continue;
+            }
+
+            // LIA-315 Phase 4: webhook (publicIngress) batches MUST route through
+            // processGroupMessages so the R5/R6 ingress caps gate runs. Never take
+            // the pipe-into-active-container path below, and never interpret a
+            // webhook payload as a host/session command — those paths bypass
+            // tryAdmit/audit/recordSpend (an attacker could otherwise burst events
+            // during an active run to slip uncapped messages into the container).
+            if (group.containerConfig?.publicIngress === true) {
+              queue.enqueueMessageCheck(chatJid);
               continue;
             }
 

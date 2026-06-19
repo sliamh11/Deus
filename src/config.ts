@@ -130,10 +130,18 @@ export const INGRESS_LINEAR_VIA_GATEWAY =
 // Route GitHub CI/PR webhooks through the gateway (/github) to drive merge-on-green +
 // done-on-merge by push instead of polling. Off by default; requires INGRESS_GATEWAY_ENABLED.
 // The signing secret (GITHUB_WEBHOOK_SECRET) is read in-module, not here (secrets-not-in-config).
-// LIA-315 Phase 4 (GitHub source 0).
+// LIA-315 Phase 4 (GitHub source 0 — merge-only, no agent dispatch; #903).
 export const INGRESS_GITHUB_ENABLED =
   process.env.INGRESS_GITHUB_ENABLED === '1' ||
   process.env.INGRESS_GITHUB_ENABLED === 'true';
+// LIA-315 Phase 4: master switch for the GENERIC anonymous webhook dispatch path
+// (channels/webhook.ts + the orchestrator publicIngress caps wiring — dispatches an
+// agent run under R5/R6 caps, distinct from the merge-only /github route above).
+// Default OFF — satisfies the v3 safety invariant (no live webhook dispatch until
+// R5/R6 exist, which they do as of Phase 3). Requires INGRESS_GATEWAY_ENABLED to route.
+export const INGRESS_WEBHOOK_ENABLED =
+  process.env.INGRESS_WEBHOOK_ENABLED === '1' ||
+  process.env.INGRESS_WEBHOOK_ENABLED === 'true';
 // Per-source webhook config, OUTSIDE project root, never mounted into containers
 // (same pattern as SENDER_ALLOWLIST_PATH). Consumed in Phase 4 by the webhook channel.
 export const WEBHOOK_SOURCES_PATH = path.join(
@@ -173,6 +181,18 @@ export const INGRESS_DAILY_SPEND_LIMIT = ingressPositive(
 // into a container — R6 "off the container's writable path").
 export const INGRESS_AUDIT_DIR =
   process.env.INGRESS_AUDIT_DIR || path.join(CONFIG_DIR, 'ingress-audit');
+// LIA-315 Phase 4: the fixed spend charged PER webhook run. Real per-run token
+// usage is not surfaced to the orchestrator layer in v1 (RunResult carries no
+// usage and the runtime eventSink does not forward contextStats; even when it
+// would, the SDK often omits usage — LIA-194). So v1 charges a fixed budget unit
+// per run, which makes the daily ceiling bound RUNS/day (INGRESS_DAILY_SPEND_LIMIT
+// / this) — combined with the per-source rate limit + global inflight cap, the
+// v1 cost/DoS bound. Precise per-run token accounting is a tracked follow-up
+// (thread usage through RunResult). Same unit as the ledger.
+export const INGRESS_WEBHOOK_RUN_COST = ingressPositive(
+  process.env.INGRESS_WEBHOOK_RUN_COST,
+  50_000,
+);
 
 export const IPC_POLL_INTERVAL = 1000;
 export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10); // 30min default — how long to keep container alive after last result

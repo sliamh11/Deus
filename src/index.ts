@@ -10,11 +10,17 @@ import {
   INGRESS_GATEWAY_PORT,
   INGRESS_GITHUB_ENABLED,
   INGRESS_IP_ALLOWLIST,
+  INGRESS_AUDIT_DIR,
+  INGRESS_DAILY_SPEND_LIMIT,
   INGRESS_LINEAR_VIA_GATEWAY,
   INGRESS_MAX_BODY_BYTES,
+  INGRESS_MAX_INFLIGHT,
   INGRESS_RATE_LIMIT_MAX,
   INGRESS_RATE_LIMIT_WINDOW_MS,
+  INGRESS_SOURCE_RATE_CAPACITY,
+  INGRESS_SOURCE_RATE_REFILL_MS,
   INGRESS_TUNNEL_ENABLED,
+  INGRESS_WEBHOOK_ENABLED,
   MAX_MESSAGE_LENGTH,
   NGROK_STATIC_DOMAIN,
   PROJECT_ROOT,
@@ -24,6 +30,8 @@ import { startCredentialProxy } from './credential-proxy.js';
 import { startToolProxy } from './tool-proxy.js';
 import { startIngressGateway, type IngressHandler } from './ingress/gateway.js';
 import { startTunnel, type TunnelHandle } from './ingress/tunnel.js';
+import { createIngressCaps, type IngressCaps } from './ingress/caps.js';
+import { appendAuditEvent } from './ingress/audit.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -62,7 +70,7 @@ import { startSchedulerLoop } from './task-scheduler.js';
 import { seedDocGardener } from './doc-gardener-seed.js';
 import { getAllTasks } from './db.js';
 import { writeGroupsSnapshot, writeTasksSnapshot } from './container-runner.js';
-import { Channel, NewMessage, NewReaction } from './types.js';
+import { Channel, NewMessage, NewReaction, RegisteredGroup } from './types.js';
 import { logReactionSignal } from './evolution-client.js';
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -324,6 +332,14 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => state.registeredGroups,
+    // LIA-315 Phase 4: let the webhook channel provision its per-source sandbox
+    // groups + push its ingress route. registerIngressHandler is a no-op unless
+    // the gateway is enabled (nothing is listening to route to otherwise).
+    registerGroup: (jid: string, group: RegisteredGroup) =>
+      state.registerGroup(jid, group),
+    registerIngressHandler: INGRESS_GATEWAY_ENABLED
+      ? (handler: IngressHandler) => ingressHandlers.push(handler)
+      : undefined,
   };
 
   // Start the centralized ingress gateway BEFORE channels connect, so the
@@ -393,11 +409,40 @@ async function main(): Promise<void> {
     );
   }
 
+  // LIA-315 Phase 4: build the ONE shared R5/R6 caps facade for webhook
+  // (publicIngress) runs. Undefined unless the webhook path is enabled, in which
+  // case a publicIngress group fails closed in the orchestrator. The audit writer
+  // appends to INGRESS_AUDIT_DIR (off any container's writable path — R6).
+  let ingressCaps: IngressCaps | undefined;
+  if (INGRESS_WEBHOOK_ENABLED) {
+    if (!INGRESS_GATEWAY_ENABLED) {
+      // Fail-safe: never silently expose an inert webhook path. The channel still
+      // provisions groups but its route is never registered (gateway off), so no
+      // dispatch can occur — warn loudly so the misconfig is visible.
+      logger.warn(
+        'webhook: INGRESS_WEBHOOK_ENABLED set but INGRESS_GATEWAY_ENABLED off — no public route; webhook dispatch inert',
+      );
+    }
+    ingressCaps = createIngressCaps(
+      {
+        maxInflight: INGRESS_MAX_INFLIGHT,
+        rateCapacity: INGRESS_SOURCE_RATE_CAPACITY,
+        rateRefillMs: INGRESS_SOURCE_RATE_REFILL_MS,
+        dailySpendLimit: INGRESS_DAILY_SPEND_LIMIT,
+      },
+      {
+        append: (event) =>
+          appendAuditEvent(event, { auditDir: INGRESS_AUDIT_DIR }),
+      },
+    );
+  }
+
   const orchestrator = createMessageOrchestrator({
     state,
     queue,
     registry,
     channels,
+    ingressCaps,
   });
 
   // Start subsystems (independently of connection handler)
