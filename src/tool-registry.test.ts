@@ -21,6 +21,7 @@
  * reference before `tool-registry` imports it.
  */
 
+import path from 'path';
 import { describe, expect, it, vi } from 'vitest';
 
 // ── Module-level mocks (hoisted, apply to every import in this file) ─────────
@@ -51,8 +52,17 @@ vi.mock('fs', async () => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/** The controlled registry path that the module will read. */
-const REGISTRY_PATH = '/tmp/deus-test-home/.deus/tool-registry.json';
+/**
+ * The controlled registry path the module will read. Derived via path.join so
+ * it matches the module's own path.join(homeDir, ...) on every OS — on Windows
+ * that yields backslash separators, so a hardcoded forward-slash literal would
+ * fail the `toHaveBeenCalledWith(REGISTRY_PATH, ...)` assertion below.
+ */
+const REGISTRY_PATH = path.join(
+  '/tmp/deus-test-home',
+  '.deus',
+  'tool-registry.json',
+);
 
 /** Minimal valid registry with two tools used across most tests. */
 const VALID_REGISTRY = JSON.stringify({
