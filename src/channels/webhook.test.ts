@@ -23,7 +23,7 @@ function source(name: string, targetGroupFolder: string) {
   };
 }
 
-function makeReq(url: string, sig: string, body: Buffer) {
+function makeReq(url: string, sig: string, _body: Buffer) {
   return {
     headers: { 'x-hub-signature-256': sig },
     url,

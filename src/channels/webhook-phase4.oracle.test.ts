@@ -16,7 +16,7 @@
  */
 
 import crypto from 'node:crypto';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 // The module under test — DOES NOT EXIST YET. Import failure = RED (expected).
 import { createWebhookChannel } from './webhook.js';

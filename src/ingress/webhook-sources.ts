@@ -107,7 +107,7 @@ export function loadWebhookSources(path: string): WebhookSource[] {
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'));
   } catch (err) {
-    throw new Error(`webhook-sources: invalid JSON at ${path}: ${String(err)}`);
+    throw new Error(`webhook-sources: invalid JSON at ${path}`, { cause: err });
   }
 
   const rawList: unknown = Array.isArray(parsed)

@@ -181,7 +181,7 @@ import type {
 import type { RegisteredGroup } from './types.js';
 
 const mockGetMessagesSince = vi.mocked(getMessagesSince);
-const mockGetNewMessages = vi.mocked(getNewMessages);
+const _mockGetNewMessages = vi.mocked(getNewMessages);
 const mockFindChannel = vi.mocked(findChannel);
 
 // ─── Test doubles ─────────────────────────────────────────────────────────────
@@ -202,7 +202,7 @@ type RunTurnFn = (
  */
 function makeFakeCaps(
   admitResult: AdmitResult,
-  runTokens: TokenCount = 42,
+  _runTokens: TokenCount = 42,
 ): IngressCaps & {
   tryAdmitSpy: ReturnType<typeof vi.fn>;
   releaseSpy: ReturnType<typeof vi.fn>;
