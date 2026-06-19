@@ -1,6 +1,6 @@
 # Attribution — mattpocock/skills
 
-The following 11 host skills were imported into Deus from the open-source repo
+The following 12 host skills were imported into Deus from the open-source repo
 **[mattpocock/skills](https://github.com/mattpocock/skills)** (MIT-licensed):
 
 | Skill | Upstream path |
@@ -16,6 +16,7 @@ The following 11 host skills were imported into Deus from the open-source repo
 | `prototype` | `skills/engineering/prototype` |
 | `codebase-design` | `skills/engineering/codebase-design` |
 | `resolving-merge-conflicts` | `skills/engineering/resolving-merge-conflicts` |
+| `improve-codebase-architecture` | `skills/engineering/improve-codebase-architecture` |
 
 **Source:** `github.com/mattpocock/skills` @ commit `6eeb81b`
 (`6eeb81b5fcfeeb5bd531dd47ab2f9f2bbea27461`).
@@ -23,9 +24,10 @@ The following 11 host skills were imported into Deus from the open-source repo
 ## Adaptations from upstream
 
 The skill bodies are **byte-identical** to upstream. The only change is additive: Deus's
-`user_invocable: true` frontmatter field was added to the five user-only skills (`grill-me`,
-`grill-with-docs`, `teach`, `writing-great-skills`, `prototype` — the ones carrying upstream's
-`disable-model-invocation: true`) for convention consistency. Invocation semantics are unchanged.
+`user_invocable: true` frontmatter field was added to the six user-only skills (`grill-me`,
+`grill-with-docs`, `teach`, `writing-great-skills`, `prototype`, `improve-codebase-architecture`
+— the ones carrying upstream's `disable-model-invocation: true`) for convention consistency.
+Invocation semantics are unchanged.
 
 ### Notes for users
 
@@ -35,11 +37,11 @@ The skill bodies are **byte-identical** to upstream. The only change is additive
   log lives in `docs/decisions/` (see `docs/decisions/INDEX.md`) — these skills were deliberately
   **not** re-routed to it, so they remain portable to any repo. When using them inside `~/deus`,
   be aware they default to `docs/adr/`, not `docs/decisions/`.
-- **Known dangling reference.** `diagnosing-bugs` (`SKILL.md`, final step) instructs a hand-off to
-  the `/improve-codebase-architecture` skill, which was **not** imported. Invoking it will error.
-  This reference is only reached at the very end of a debug session (after the fix is in) as an
-  optional "what would have prevented this bug?" follow-up. Import `improve-codebase-architecture`
-  from the same upstream repo if you want that hand-off to resolve.
+- **`diagnosing-bugs` hand-off resolves.** `diagnosing-bugs` (`SKILL.md`, final step) instructs an
+  optional hand-off to the `/improve-codebase-architecture` skill, reached at the very end of a debug
+  session (after the fix is in) as a "what would have prevented this bug?" follow-up. That skill is
+  now imported (see the table above), so the hand-off resolves. It depends on `/codebase-design` for
+  its architecture vocabulary, which is also imported.
 
 ## License
 
