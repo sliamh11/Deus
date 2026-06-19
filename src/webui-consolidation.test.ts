@@ -36,15 +36,23 @@ function body(turns: Turn[]): unknown {
   return { messages: turns };
 }
 
-/** N user/assistant turn-pairs, first user message customizable for hashing. */
+/**
+ * N user/assistant turn-pairs, first user message customizable for hashing.
+ *
+ * Assistant messages are padded to ~200 chars each so a >=3-turn conversation
+ * clears the MIN_CHARS (500) floor under AND semantics — keeping the structural
+ * tests (path/tldr/idempotency/vault) consolidating without touching the
+ * first-user message they hash and quote.
+ */
 function conversation(
   userCount: number,
   firstUser = 'first question',
 ): unknown {
+  const pad = 'pad '.repeat(50).trim(); // ~199 chars of filler per assistant
   const turns: Turn[] = [];
   for (let i = 0; i < userCount; i++) {
     turns.push({ role: 'user', content: i === 0 ? firstUser : `q${i}` });
-    turns.push({ role: 'assistant', content: `a${i}` });
+    turns.push({ role: 'assistant', content: `a${i} ${pad}` });
   }
   return body(turns);
 }
@@ -64,10 +72,38 @@ afterEach(() => {
   settle?.();
 });
 
-describe('consolidateWebConversation — threshold', () => {
-  it('consolidates at the default 3-user-turn boundary (>=)', () => {
+describe('consolidateWebConversation — threshold (AND semantics)', () => {
+  it('consolidates when BOTH thresholds met (>=3 turns AND >=500 chars)', () => {
+    // The padded helper yields ~600 transcript chars for 3 turns.
     consolidateWebConversation(conversation(3, 'boundary-3-turns'));
     expect(mockWriteSessionLogAndIndex).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips when >=3 turns but below the char threshold', () => {
+    // 3 user turns, tiny content (~60 chars) — fails the AND on chars.
+    consolidateWebConversation(
+      body([
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: 'b' },
+        { role: 'user', content: 'c' },
+        { role: 'assistant', content: 'd' },
+        { role: 'user', content: 'e' },
+      ]),
+    );
+    expect(mockWriteSessionLogAndIndex).not.toHaveBeenCalled();
+  });
+
+  it('skips when >=500 chars but fewer than 3 turns', () => {
+    // 1 long user turn (>500 chars) — fails the AND on turns. (A single long
+    // answer is no longer enough on its own; replaces the old OR-era test.)
+    const long = 'x'.repeat(600);
+    consolidateWebConversation(
+      body([
+        { role: 'user', content: long },
+        { role: 'assistant', content: 'ok' },
+      ]),
+    );
+    expect(mockWriteSessionLogAndIndex).not.toHaveBeenCalled();
   });
 
   it('skips a short single-turn conversation (below both thresholds)', () => {
@@ -75,19 +111,11 @@ describe('consolidateWebConversation — threshold', () => {
     expect(mockWriteSessionLogAndIndex).not.toHaveBeenCalled();
   });
 
-  it('consolidates a 1-turn conversation that exceeds the char threshold', () => {
-    const long = 'x'.repeat(250);
-    consolidateWebConversation(
-      body([
-        { role: 'user', content: long },
-        { role: 'assistant', content: 'ok' },
-      ]),
-    );
-    expect(mockWriteSessionLogAndIndex).toHaveBeenCalledTimes(1);
-  });
-
-  it('honors env-overridden MIN_TURNS', () => {
+  it('honors env-overridden MIN_TURNS and MIN_CHARS together', () => {
+    // AND semantics: lowering only MIN_TURNS would still fail the char floor,
+    // so this test must lower BOTH knobs. Keep both — do not strip MIN_CHARS.
     process.env.DEUS_WEBUI_CONSOLIDATE_MIN_TURNS = '2';
+    process.env.DEUS_WEBUI_CONSOLIDATE_MIN_CHARS = '50';
     consolidateWebConversation(conversation(2, 'two-turn-override'));
     expect(mockWriteSessionLogAndIndex).toHaveBeenCalledTimes(1);
   });
@@ -132,7 +160,8 @@ describe('consolidateWebConversation — vault + content', () => {
         { role: 'assistant', content: 'X is Y' },
         { role: 'user', content: 'and Z?' },
         { role: 'assistant', content: 'Z too' },
-        { role: 'user', content: 'thanks' },
+        // Padded so the conversation clears the 500-char floor under AND.
+        { role: 'user', content: `thanks ${'detail '.repeat(80)}` },
       ]),
     );
     const content = mockWriteSessionLogAndIndex.mock.calls[0][1];
@@ -164,7 +193,8 @@ describe('consolidateWebConversation — vault + content', () => {
         { role: 'user', content: 'hello there friend' },
         { role: 'assistant', content: 'hi' },
         { role: 'user', content: 'more' },
-        { role: 'user', content: 'and more text to cross threshold' },
+        // Padded so the conversation clears 3 turns AND the 500-char floor.
+        { role: 'user', content: `and more text ${'word '.repeat(100)}` },
       ]),
     );
     const content = mockWriteSessionLogAndIndex.mock.calls[0][1];

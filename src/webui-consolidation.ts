@@ -31,10 +31,11 @@ function consolidationEnabled(): boolean {
   return raw !== '0' && raw !== 'false';
 }
 
-// Consolidate once the conversation reaches EITHER threshold (env-overridable;
+// Consolidate once the conversation reaches BOTH thresholds (env-overridable;
 // envPositiveInt clamps a non-positive/NaN override back to the fallback).
+// AND (not OR): a short chat or a single long answer isn't worth a vault file.
 const MIN_TURNS = () => envPositiveInt('DEUS_WEBUI_CONSOLIDATE_MIN_TURNS', 3);
-const MIN_CHARS = () => envPositiveInt('DEUS_WEBUI_CONSOLIDATE_MIN_CHARS', 200);
+const MIN_CHARS = () => envPositiveInt('DEUS_WEBUI_CONSOLIDATE_MIN_CHARS', 500);
 
 // In-flight guard keyed by conversation hash. A per-request boolean would not
 // survive across the queued turns GroupQueue serialises on the shared jid; this
@@ -92,9 +93,10 @@ export function consolidateWebConversation(body: unknown): void {
   if (transcriptLines.length === 0) return;
   const transcript = transcriptLines.join('\n\n');
 
-  // Threshold: consolidate once EITHER the user-turn count OR the total
-  // transcript length crosses its bound. Below both → not worth persisting yet.
-  if (userMessages.length < MIN_TURNS() && transcript.length < MIN_CHARS()) {
+  // Threshold: consolidate only once the user-turn count AND the total
+  // transcript length BOTH cross their bound. Skip if EITHER is below — a short
+  // chat or a single long answer is not worth persisting yet.
+  if (userMessages.length < MIN_TURNS() || transcript.length < MIN_CHARS()) {
     return;
   }
 

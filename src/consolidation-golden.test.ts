@@ -78,6 +78,9 @@ function makeGroup(): RegisteredGroup {
   } as unknown as RegisteredGroup;
 }
 
+// Intentionally short (~60 chars) — below the AND char floor by default. Each
+// @oracle test using it pins MIN_TURNS/MIN_CHARS low so the write path runs and
+// the byte snapshot / contract is what's exercised, not the threshold default.
 const WEBUI_FIXTURE = {
   messages: [
     { role: 'user', content: 'How do I configure X?' },
@@ -152,6 +155,11 @@ describe('@oracle auto-compress output', () => {
 
 describe('@oracle webui-consolidation output', () => {
   it('byte-stable web-session envelope handed to writeSessionLogAndIndex', () => {
+    // Pin thresholds low so this fixture writes regardless of the default — the
+    // oracle pins the ENVELOPE bytes, not the threshold default (cf. the skip
+    // test below). Fixture text/hash are unchanged, so the snapshot is too.
+    process.env.DEUS_WEBUI_CONSOLIDATE_MIN_TURNS = '3';
+    process.env.DEUS_WEBUI_CONSOLIDATE_MIN_CHARS = '50';
     consolidateWebConversation(WEBUI_FIXTURE);
 
     expect(mockWrite).toHaveBeenCalledTimes(1);
@@ -224,6 +232,10 @@ describe('@oracle skip contracts', () => {
       ],
     };
 
+    // Pin thresholds low so the fixture clears the AND gate and the test
+    // exercises the vault-skip + key-release contract, not the threshold.
+    process.env.DEUS_WEBUI_CONSOLIDATE_MIN_TURNS = '3';
+    process.env.DEUS_WEBUI_CONSOLIDATE_MIN_CHARS = '50';
     mockResolveVault.mockReturnValue(null);
     consolidateWebConversation(fixture);
     expect(mockWrite).not.toHaveBeenCalled();
@@ -261,6 +273,10 @@ describe('@oracle throw/await contracts', () => {
         { role: 'user', content: 'q3' },
       ],
     };
+    // Pin thresholds low so the fixture clears the AND gate and the test
+    // exercises the swallow + key-release contract, not the threshold.
+    process.env.DEUS_WEBUI_CONSOLIDATE_MIN_TURNS = '3';
+    process.env.DEUS_WEBUI_CONSOLIDATE_MIN_CHARS = '50';
     mockWrite.mockImplementation(() => {
       throw new Error('EACCES: permission denied');
     });
