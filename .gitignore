@@ -8,6 +8,12 @@ dist/
 .claude/.plan-reviewed
 .claude/.code-reviewed
 .claude/.threat-modeled
+.claude/.ai-eng-reviewed
+.claude/.verified
+.claude/.commit-window
+# Warden verdict store + audit log (host-local runtime state; recreated on first mark)
+.claude/.warden-verdicts.json
+.claude/.warden-log
 # Admin-merge gate markers (host-local; contain absolute worktree paths)
 .claude/.admin-merge-approved
 .claude/.admin-merge-standing
