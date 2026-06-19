@@ -127,6 +127,13 @@ export const NGROK_STATIC_DOMAIN = process.env.NGROK_STATIC_DOMAIN || '';
 export const INGRESS_LINEAR_VIA_GATEWAY =
   process.env.INGRESS_LINEAR_VIA_GATEWAY === '1' ||
   process.env.INGRESS_LINEAR_VIA_GATEWAY === 'true';
+// Route GitHub CI/PR webhooks through the gateway (/github) to drive merge-on-green +
+// done-on-merge by push instead of polling. Off by default; requires INGRESS_GATEWAY_ENABLED.
+// The signing secret (GITHUB_WEBHOOK_SECRET) is read in-module, not here (secrets-not-in-config).
+// LIA-315 Phase 4 (GitHub source 0).
+export const INGRESS_GITHUB_ENABLED =
+  process.env.INGRESS_GITHUB_ENABLED === '1' ||
+  process.env.INGRESS_GITHUB_ENABLED === 'true';
 // Per-source webhook config, OUTSIDE project root, never mounted into containers
 // (same pattern as SENDER_ALLOWLIST_PATH). Consumed in Phase 4 by the webhook channel.
 export const WEBHOOK_SOURCES_PATH = path.join(

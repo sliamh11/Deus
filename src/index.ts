@@ -8,6 +8,7 @@ import {
   INGRESS_GATEWAY_ENABLED,
   INGRESS_GATEWAY_HOST,
   INGRESS_GATEWAY_PORT,
+  INGRESS_GITHUB_ENABLED,
   INGRESS_IP_ALLOWLIST,
   INGRESS_LINEAR_VIA_GATEWAY,
   INGRESS_MAX_BODY_BYTES,
@@ -82,6 +83,7 @@ import {
   startLinearWebhookServer,
   createLinearIngressHandler,
 } from './linear-webhook.js';
+import { createGitHubIngressHandler } from './ingress/github-ingress.js';
 import { registerLinearUpdater } from './events/listeners/linear-updater.js';
 import { registerObservabilitySink } from './events/listeners/observability-sink.js';
 
@@ -514,6 +516,37 @@ async function main(): Promise<void> {
           } catch (err) {
             logger.error({ err }, 'linear-webhook: server failed to start');
           }
+        }
+      }
+
+      // Route GitHub CI/PR webhooks through the gateway (/github): merge-on-green +
+      // done-on-merge by push instead of polling. The wrappers are merge-only — they can
+      // NEVER move an issue to "Ready for Agent", so the public endpoint adds no agent-spawn
+      // surface. The poller stays active as the reconciliation safety net. LIA-315 Phase 4.
+      // process.env (plist EnvironmentVariables) wins; fall back to ~/deus/.env, matching the
+      // NGROK_AUTHTOKEN read above (secrets are not config.ts constants).
+      const githubWebhookSecret =
+        process.env.GITHUB_WEBHOOK_SECRET ||
+        readEnvFile(['GITHUB_WEBHOOK_SECRET']).GITHUB_WEBHOOK_SECRET;
+      if (githubWebhookSecret && INGRESS_GITHUB_ENABLED) {
+        if (INGRESS_GATEWAY_ENABLED) {
+          const { mergeIfGreen, markDoneIfMerged } =
+            await import('./linear-auto-merge.js');
+          const { getIssueByPrUrl } = await import('./db.js');
+          ingressHandlers.push(
+            createGitHubIngressHandler({
+              ctx: linearCtx,
+              secret: githubWebhookSecret,
+              mergeIfGreen,
+              markDoneIfMerged,
+              getIssueByPrUrl,
+            }),
+          );
+          logger.info('github-webhook: routed via ingress gateway (/github)');
+        } else {
+          logger.warn(
+            'github-webhook: INGRESS_GITHUB_ENABLED set but INGRESS_GATEWAY_ENABLED off — GitHub events stay on the existing poller',
+          );
         }
       }
 

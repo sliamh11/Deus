@@ -717,3 +717,86 @@ describe('sweepPendingAutoMerges — detects PR already merged by GitHub', () =>
     expect(getPr('sweep-issue-1')?.auto_merge_state).toBe('merged');
   });
 });
+
+describe('mergeIfGreen / markDoneIfMerged — GitHub-webhook merge-only entries (LIA-315 Phase 4)', () => {
+  const PR = 'https://github.com/test-owner/test-repo/pull/300';
+  const checks = (bucket: 'pass' | 'pending' | 'fail') => ({
+    stdout: JSON.stringify([{ bucket, name: 'ci' }]),
+  });
+  const mergeCall = () =>
+    execFileMock.mock.calls.find(
+      (c: unknown[]) =>
+        Array.isArray(c[1]) && (c[1] as string[]).includes('merge'),
+    );
+
+  beforeEach(() => {
+    process.env.LINEAR_AUTO_MERGE = '1';
+  });
+  afterEach(() => {
+    delete process.env.LINEAR_AUTO_MERGE;
+  });
+
+  it('mergeIfGreen: CI green → --admin merge → Done', async () => {
+    execFileMock
+      .mockReturnValueOnce(checks('pass')) // mergeIfGreen re-query
+      .mockReturnValueOnce(checks('pass')) // mergePr precheck
+      .mockReturnValueOnce({ stdout: '' }); // gh pr merge
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('mg-pass', PR);
+    await mergeIfGreen(ctx, 'mg-pass', PR, 'LIA-300');
+    expect(mergeCall()).toBeDefined();
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      'mg-pass',
+      expect.objectContaining({ stateId: 'done-id' }),
+    );
+  });
+
+  // SECURITY: the public webhook must NEVER spawn an agent. On a stale/forged CI-green
+  // event for a now-red PR, mergeIfGreen must be a pure no-op — NO merge, and crucially NO
+  // requeue to "Ready for Agent" (which the dispatcher would turn into an agent run).
+  it('mergeIfGreen: CI fail → NO merge AND NO requeue to Ready for Agent', async () => {
+    execFileMock.mockReturnValueOnce(checks('fail'));
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('mg-fail', PR);
+    await mergeIfGreen(ctx, 'mg-fail', PR, 'LIA-301');
+    expect(mergeCall()).toBeUndefined();
+    expect(ctx.client.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it('mergeIfGreen: CI pending → pure no-op (no merge, no requeue)', async () => {
+    execFileMock.mockReturnValueOnce(checks('pending'));
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('mg-pend', PR);
+    await mergeIfGreen(ctx, 'mg-pend', PR, 'LIA-302');
+    expect(mergeCall()).toBeUndefined();
+    expect(ctx.client.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it('markDoneIfMerged: PR MERGED → moves issue to Done', async () => {
+    execFileMock.mockReturnValueOnce({
+      stdout: JSON.stringify({ state: 'MERGED' }),
+    });
+    const { markDoneIfMerged } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('md-merged', PR);
+    await markDoneIfMerged(ctx, 'md-merged', PR, 'LIA-303');
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      'md-merged',
+      expect.objectContaining({ stateId: 'done-id' }),
+    );
+  });
+
+  it('markDoneIfMerged: PR still OPEN → no-op (no Done transition)', async () => {
+    execFileMock.mockReturnValueOnce({
+      stdout: JSON.stringify({ state: 'OPEN' }),
+    });
+    const { markDoneIfMerged } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('md-open', PR);
+    await markDoneIfMerged(ctx, 'md-open', PR, 'LIA-304');
+    expect(ctx.client.updateIssue).not.toHaveBeenCalled();
+  });
+});

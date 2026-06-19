@@ -335,6 +335,54 @@ async function mergeOrFail(
 }
 
 /**
+ * GitHub-ingress entry: merge the PR IFF its CI is currently green, else NO-OP.
+ *
+ * SECURITY (LIA-315 Phase 4): this is the ONLY merge entry the public `/github` webhook may
+ * call. Unlike `attemptAutoMerge`, it NEVER reaches `handleMergeFailure(requeue=true)` — on a
+ * `fail`/`pending` re-query it does nothing (the existing poller handles those). So a
+ * webhook delivery can never move an issue to "Ready for Agent" / spawn an agent. We re-query
+ * authoritative CI here rather than trust the webhook payload, so a forged-but-signed success
+ * event for a since-red PR is a safe no-op.
+ */
+export async function mergeIfGreen(
+  ctx: LinearContext,
+  issueId: string,
+  prUrl: string,
+  identifier?: string,
+): Promise<void> {
+  if (!isAutoMergeEnabled()) return;
+  const ident = identifier ?? 'unknown';
+  const checks = await queryPrChecks(prUrl);
+  if (checks.status === 'pass') {
+    await mergeOrFail(ctx, issueId, prUrl, ident);
+  } else {
+    logger.info(
+      { issueId, prUrl, status: checks.status },
+      'github-webhook: CI not green — no-op (poller handles fail/pending)',
+    );
+  }
+}
+
+/**
+ * GitHub-ingress entry: advance the issue to "Done" IFF the PR is actually merged, else NO-OP.
+ * Re-queries authoritative PR state (never trusts the payload). `handleMergeSuccess` only moves
+ * to "Done" — it can never spawn an agent. Intentionally NOT gated on `isAutoMergeEnabled()`
+ * (unlike `mergeIfGreen`): a genuinely-merged PR should reach "Done" regardless of that flag.
+ */
+export async function markDoneIfMerged(
+  ctx: LinearContext,
+  issueId: string,
+  prUrl: string,
+  identifier?: string,
+): Promise<void> {
+  const ident = identifier ?? 'unknown';
+  const state = await queryPrState(prUrl);
+  if (state?.state === 'MERGED') {
+    await handleMergeSuccess(ctx, issueId, prUrl, ident);
+  }
+}
+
+/**
  * Poll a PR's CI until it reaches a terminal state, then --admin-merge on pass.
  * Detached via fireAndForget so it never blocks the dispatch path (LIA-215).
  *

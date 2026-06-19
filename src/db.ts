@@ -1491,6 +1491,22 @@ export function getIssuePr(
     | undefined;
 }
 
+/**
+ * Reverse lookup: GitHub PR url → the Linear issue it belongs to. Used by the GitHub
+ * ingress webhook to map an inbound event to its issue. The `linear_issue_prs` table is
+ * keyed by `issue_id` (one PR per issue), so a `pr_url` match is unambiguous; an unknown
+ * PR returns undefined (the handler treats that as a safe no-op).
+ */
+export function getIssueByPrUrl(
+  prUrl: string,
+): { issue_id: string; identifier: string | null } | undefined {
+  return db
+    .prepare(
+      `SELECT issue_id, identifier FROM linear_issue_prs WHERE pr_url = ?`,
+    )
+    .get(prUrl) as { issue_id: string; identifier: string | null } | undefined;
+}
+
 export function updatePrAutoMergeState(
   issueId: string,
   state: 'none' | 'pending' | 'merged' | 'failed',
