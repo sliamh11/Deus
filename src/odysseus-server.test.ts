@@ -571,6 +571,161 @@ describe('SSE streaming', () => {
   });
 });
 
+// ── Turn-admission slot release (spurious-429 window) ───────────────────────
+describe('turn-admission slot release', () => {
+  const streamReq = () =>
+    request(
+      { method: 'POST', path: '/v1/chat/completions', headers: authHeaders },
+      chatBody(),
+    );
+
+  it('frees the slot at finalize (turn_complete) — a follow-up turn during container wind-down is NOT 429', async () => {
+    // Model a live container: runTurn stays pending AFTER turn_complete (until
+    // _close), so the task `finally` (the OLD slot-release site) has NOT run when
+    // the 2nd request arrives. The fix releases the slot in finalize(), so the
+    // 2nd turn must be admitted instead of 429'd.
+    let release1!: () => void;
+    const winddown = new Promise<void>((r) => {
+      release1 = r;
+    });
+    let calls = 0;
+    const turn: TurnDriver = async (sink) => {
+      calls += 1;
+      if (calls === 1) {
+        await sink({ type: 'output_text', text: 'one' });
+        await sink({ type: 'turn_complete' }); // → finalize → releaseSlot; res ends
+        await winddown; // container still alive; task fn + its finally still pending
+        return { status: 'success', result: 'one' };
+      }
+      await sink({ type: 'output_text', text: 'two' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'two' };
+    };
+    await listen(makeDeps({ turn }));
+
+    const r1 = await streamReq(); // resolves at turn_complete (res.end in finalize)
+    expect(r1.body).toContain('"content":"one"');
+
+    const r2 = await streamReq(); // slot freed by finalize → admitted, not 429
+    expect(r2.statusCode).not.toBe(429);
+    expect(r2.body).toContain('"content":"two"');
+
+    release1(); // let the first (pending) container finish; its finally re-releases (no-op)
+  });
+
+  it('client abort frees the slot via finalize() BEFORE the !res.writable return — next turn not 429', async () => {
+    // The abort path (res.on('close') → finalize()) hits the early
+    // `if (!res.writable) return`. releaseSlot must run BEFORE that return or the
+    // slot stays held until task teardown. This verifies the placement (the bug
+    // the GPT co-gate caught).
+    let release1!: () => void;
+    const hang = new Promise<void>((r) => {
+      release1 = r;
+    });
+    let calls = 0;
+    const turn: TurnDriver = async (sink) => {
+      calls += 1;
+      if (calls === 1) {
+        await sink({ type: 'output_text', text: 'partial' }); // client gets a chunk
+        await hang; // never emits turn_complete; the client aborts
+        return { status: 'success', result: 'partial' };
+      }
+      await sink({ type: 'output_text', text: 'after-abort' });
+      await sink({ type: 'turn_complete' });
+      return { status: 'success', result: 'after-abort' };
+    };
+    await listen(makeDeps({ turn }));
+
+    // Fire request 1 and destroy the socket after the first streamed chunk.
+    await new Promise<void>((resolve) => {
+      const req = http.request(
+        {
+          method: 'POST',
+          path: '/v1/chat/completions',
+          headers: authHeaders,
+          hostname: '127.0.0.1',
+          port,
+        },
+        (res) => {
+          res.once('data', () => {
+            req.destroy(); // client abort → server res 'close' → finalize()
+            resolve();
+          });
+          res.on('error', () => {});
+        },
+      );
+      req.on('error', () => {}); // swallow ECONNRESET from destroy()
+      req.write(chatBody());
+      req.end();
+    });
+
+    // Poll the 2nd turn until the server has processed the socket close (bounded;
+    // avoids a fixed-sleep race). Only the admitted attempt runs a turn — a 429'd
+    // attempt is rejected before backend.runTurn, so `calls` is unaffected by it.
+    let r2 = {
+      statusCode: 429,
+      body: '',
+    } as Awaited<ReturnType<typeof request>>;
+    for (let i = 0; i < 50 && r2.statusCode === 429; i += 1) {
+      r2 = await streamReq();
+      if (r2.statusCode === 429) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(r2.statusCode).not.toBe(429);
+    expect(r2.body).toContain('after-abort');
+
+    release1();
+  });
+
+  it('absolute-duration cap frees the slot at finalize; the later teardown release is an idempotent no-op', async () => {
+    // absTimer fires finalize() while runTurn is still pending → releaseSlot runs.
+    // The 2nd turn must be admitted, and when the first container finally exits
+    // its teardown releaseSlot is a no-op (slotReleased guard — no cross-turn
+    // delete of the 2nd turn's marker, no activeSse double-decrement).
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+    });
+    try {
+      let release1!: () => void;
+      const hang = new Promise<void>((r) => {
+        release1 = r;
+      });
+      let started!: () => void;
+      const startedP = new Promise<void>((r) => {
+        started = r;
+      });
+      let calls = 0;
+      const turn: TurnDriver = async (sink) => {
+        calls += 1;
+        if (calls === 1) {
+          await sink({ type: 'output_text', text: 'partial' });
+          started(); // handler is running and absTimer is armed
+          await hang; // no turn_complete — absTimer must fire finalize
+          return { status: 'success', result: 'partial' };
+        }
+        await sink({ type: 'output_text', text: 'second' });
+        await sink({ type: 'turn_complete' });
+        return { status: 'success', result: 'second' };
+      };
+      await listen(makeDeps({ turn }));
+
+      const r1p = streamReq();
+      await startedP; // wait until the request is received + absTimer is set
+      await vi.advanceTimersByTimeAsync(11 * 60_000); // > ABSOLUTE_TURN_MS (10 min)
+      const r1 = await r1p;
+      expect(r1.body).toContain('turn exceeded maximum duration');
+
+      const r2 = await streamReq(); // slot freed by absTimer finalize → admitted
+      expect(r2.statusCode).not.toBe(429);
+      expect(r2.body).toContain('"content":"second"');
+
+      release1(); // first container exits → teardown releaseSlot (no-op)
+      await vi.runAllTimersAsync();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 // ── Incremental streaming (Web UI live output) ──────────────────────────────
 describe('SSE streaming — incremental', () => {
   const post = () =>

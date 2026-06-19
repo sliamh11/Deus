@@ -93,8 +93,12 @@ export const INGRESS_GATEWAY_ENABLED =
   process.env.INGRESS_GATEWAY_ENABLED === 'true';
 export const INGRESS_GATEWAY_HOST =
   process.env.INGRESS_GATEWAY_HOST || '127.0.0.1';
+// Default 3009: collision-free against every other service default
+// (cred-proxy 3001, tool-proxy 3003, Odysseus 3005) and against the common
+// Odysseus deployment port 3007. A shared port would EADDRINUSE deep in startup
+// — detectPortCollision() (checks.ts) guards against it as a fatal startup check.
 export const INGRESS_GATEWAY_PORT = parseInt(
-  process.env.INGRESS_GATEWAY_PORT || '3007',
+  process.env.INGRESS_GATEWAY_PORT || '3009',
   10,
 );
 export const INGRESS_MAX_BODY_BYTES = parseInt(

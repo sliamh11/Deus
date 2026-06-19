@@ -9,7 +9,11 @@ vi.mock('./checks.js', () => ({
   hasAnyChannelAuth: vi.fn(() => false),
   hasContainerImage: vi.fn(() => false),
   countRegisteredGroups: vi.fn(() => 0),
-  detectPortCollision: vi.fn(() => ({ collision: false, port: null })),
+  detectPortCollision: vi.fn(() => ({
+    collision: false,
+    port: null,
+    services: null,
+  })),
 }));
 
 vi.mock('./logger.js', () => ({
@@ -58,7 +62,11 @@ beforeEach(() => {
   mockHasAnyChannelAuth.mockReturnValue(false);
   mockHasContainerImage.mockReturnValue(false);
   mockCountRegisteredGroups.mockReturnValue(0);
-  mockDetectPortCollision.mockReturnValue({ collision: false, port: null });
+  mockDetectPortCollision.mockReturnValue({
+    collision: false,
+    port: null,
+    services: null,
+  });
 });
 
 // ── runStartupChecks ──────────────────────────────────────────────────────
@@ -149,7 +157,11 @@ describe('runStartupChecks', () => {
 
   it('returns fatal when the Odysseus/Linear webhook ports collide (LIA-301)', () => {
     mockHasApiCredentials.mockReturnValue(true);
-    mockDetectPortCollision.mockReturnValue({ collision: true, port: 3005 });
+    mockDetectPortCollision.mockReturnValue({
+      collision: true,
+      port: 3005,
+      services: ['ODYSSEUS_HTTP_PORT', 'LINEAR_WEBHOOK_PORT'],
+    });
     const report = runStartupChecks();
     const fatal = report.fatals.find((r) => r.name === 'Port configuration');
     expect(fatal).toBeDefined();

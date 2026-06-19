@@ -62,16 +62,18 @@ registerStartupCheck({
   name: 'Port configuration',
   level: 'fatal',
   run: () => {
-    const { collision, port } = detectPortCollision();
+    const { collision, port, services } = detectPortCollision();
     return {
       name: 'Port configuration',
       level: 'fatal',
       ok: !collision,
       // hint is only surfaced for non-ok results (formatResult), but keep it
       // truthful on both paths rather than rendering "both null" on success.
+      // services is non-null whenever collision is true (detectPortCollision
+      // return contract); TS can't narrow it through the destructured struct.
       hint: collision
-        ? `ODYSSEUS_HTTP_PORT and LINEAR_WEBHOOK_PORT are both ${port}. The Web UI and Linear webhook servers cannot share a port — set one to a different value in .env.`
-        : 'Web UI and Linear webhook ports are distinct.',
+        ? `${services![0]} and ${services![1]} are both set to ${port}. Two servers cannot bind the same port — set one to a different value in .env.`
+        : 'All configured server ports are distinct.',
     };
   },
 });

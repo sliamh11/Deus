@@ -78,28 +78,41 @@ export function hasApiCredentials(): boolean {
 }
 
 /**
- * Detect an ODYSSEUS_HTTP_PORT / LINEAR_WEBHOOK_PORT collision (LIA-301).
+ * Detect a TCP port collision between any two Deus servers that bind a port
+ * at startup (LIA-301, extended for the ingress gateway).
  *
- * Both default to 3005 (config.ts ODYSSEUS_HTTP_PORT and linear-webhook.ts
- * DEFAULT_WEBHOOK_PORT), so a fresh install that enables the Web UI while the
- * Linear webhook is also configured tries to bind the same port twice →
- * EADDRINUSE deep in startup. Run as a fatal startup check (startup-gate.ts)
- * BEFORE any server binds so the operator gets an actionable message instead.
+ * Covered binders: the Odysseus Web UI (ODYSSEUS_HTTP_PORT, default 3005), the
+ * ingress gateway (INGRESS_GATEWAY_PORT, default 3009), and the standalone
+ * Linear webhook server (LINEAR_WEBHOOK_PORT, default 3005). Odysseus and the
+ * webhook both default to 3005, and the gateway default once collided with the
+ * common Odysseus deployment port 3007 — a shared port EADDRINUSEs deep in
+ * startup. Run as a fatal startup check (startup-gate.ts) BEFORE any server
+ * binds so the operator gets an actionable message instead.
  *
- * Resolves both sides via readEnvFile + process.env (process.env wins, matching
+ * Only services that will ACTUALLY bind are compared:
+ *  - Odysseus: ODYSSEUS_HTTP_ENABLED on.
+ *  - Gateway: INGRESS_GATEWAY_ENABLED on.
+ *  - Standalone webhook: api key + secret present AND NOT routed via the gateway
+ *    (INGRESS_LINEAR_VIA_GATEWAY with the gateway enabled means the webhook does
+ *    not bind its own port — index.ts:485 — so it must be excluded to avoid a
+ *    false positive against the gateway in the live via-gateway config).
+ *
+ * Resolves every side via readEnvFile + process.env (process.env wins, matching
  * the index.ts:390-392 merge order) instead of importing the config.ts
  * constants — those are frozen at module load from process.env only and would
  * miss .env-only values, which is exactly the fresh-install case this guards.
- * Mirrors the actual webhook-start conditions (index.ts: linearApiKey + secret)
- * so it never false-positives when the webhook would not start.
  */
 export function detectPortCollision(): {
   collision: boolean;
   port: number | null;
+  services: [string, string] | null;
 } {
   const env = readEnvFile([
     'ODYSSEUS_HTTP_ENABLED',
     'ODYSSEUS_HTTP_PORT',
+    'INGRESS_GATEWAY_ENABLED',
+    'INGRESS_GATEWAY_PORT',
+    'INGRESS_LINEAR_VIA_GATEWAY',
     'LINEAR_WEBHOOK_PORT',
     'LINEAR_WEBHOOK_SECRET',
     'LINEAR_API_KEY',
@@ -110,26 +123,60 @@ export function detectPortCollision(): {
   // which also treats an empty process.env value as "use .env"). `||` (not `??`)
   // is deliberate so an empty-string env var doesn't shadow the .env value.
   const resolve = (k: string): string | undefined => process.env[k] || env[k];
+  const isOn = (raw: string | undefined): boolean =>
+    raw === '1' || raw === 'true';
+  // NaN/unset → the service's own default, mirroring each binder's guard.
+  const parsePort = (raw: string | undefined, dflt: number): number => {
+    const n = parseInt(raw || String(dflt), 10);
+    return Number.isNaN(n) ? dflt : n;
+  };
 
-  const enabledRaw = resolve('ODYSSEUS_HTTP_ENABLED');
-  const odysseusEnabled = enabledRaw === '1' || enabledRaw === 'true';
-  const webhookWillStart =
-    !!(resolve('LINEAR_API_KEY') || resolve('LINEAR_API_TOKEN')) &&
-    !!resolve('LINEAR_WEBHOOK_SECRET');
-  if (!odysseusEnabled || !webhookWillStart) {
-    return { collision: false, port: null };
+  // Collect the (env-var name, port) of every server that will actually bind.
+  const binders: Array<{ service: string; port: number }> = [];
+
+  if (isOn(resolve('ODYSSEUS_HTTP_ENABLED'))) {
+    binders.push({
+      service: 'ODYSSEUS_HTTP_PORT',
+      port: parsePort(resolve('ODYSSEUS_HTTP_PORT'), 3005),
+    });
   }
 
-  // NaN → 3005, mirroring linear-webhook.ts's own DEFAULT_WEBHOOK_PORT guard.
-  const parsePort = (raw: string | undefined): number => {
-    const n = parseInt(raw || '3005', 10);
-    return Number.isNaN(n) ? 3005 : n;
-  };
-  const odysseusPort = parsePort(resolve('ODYSSEUS_HTTP_PORT'));
-  const webhookPort = parsePort(resolve('LINEAR_WEBHOOK_PORT'));
+  const gatewayEnabled = isOn(resolve('INGRESS_GATEWAY_ENABLED'));
+  if (gatewayEnabled) {
+    binders.push({
+      service: 'INGRESS_GATEWAY_PORT',
+      port: parsePort(resolve('INGRESS_GATEWAY_PORT'), 3009),
+    });
+  }
 
-  const collision = odysseusPort === webhookPort;
-  return { collision, port: collision ? odysseusPort : null };
+  // The standalone webhook binds only when it would start AND is not routed
+  // through the gateway (the latter does not bind its own port).
+  const viaGateway =
+    isOn(resolve('INGRESS_LINEAR_VIA_GATEWAY')) && gatewayEnabled;
+  const webhookWillBind =
+    !!(resolve('LINEAR_API_KEY') || resolve('LINEAR_API_TOKEN')) &&
+    !!resolve('LINEAR_WEBHOOK_SECRET') &&
+    !viaGateway;
+  if (webhookWillBind) {
+    binders.push({
+      service: 'LINEAR_WEBHOOK_PORT',
+      port: parsePort(resolve('LINEAR_WEBHOOK_PORT'), 3005),
+    });
+  }
+
+  // First pair (n is tiny, so an O(n²) scan is fine) sharing a port collides.
+  for (let i = 0; i < binders.length; i++) {
+    for (let j = i + 1; j < binders.length; j++) {
+      if (binders[i].port === binders[j].port) {
+        return {
+          collision: true,
+          port: binders[i].port,
+          services: [binders[i].service, binders[j].service],
+        };
+      }
+    }
+  }
+  return { collision: false, port: null, services: null };
 }
 
 /** Check if a Gemini API key is configured for memory embeddings. */

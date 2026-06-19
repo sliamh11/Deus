@@ -517,7 +517,18 @@ function handleChatCompletion(
     closeTimer = t;
   };
 
-  const cleanup = () => {
+  // Release THIS turn's HTTP admission slot (inFlight) + SSE accounting, exactly
+  // once. The `slotReleased` once-flag is load-bearing, not just idempotence
+  // sugar: inFlight is a per-JID Set, so a LATE call (this turn's task-teardown,
+  // after the ~10s container wind-down) would otherwise delete the JID marker
+  // that a LATER turn already re-added at admission — leaking the 429 guard
+  // across turns. Releasing once, at the earliest of finalize()/teardown, keeps
+  // the marker owned by the turn that set it. Safe to call from both finalize()
+  // and the task's finally backstop.
+  let slotReleased = false;
+  const releaseSlot = () => {
+    if (slotReleased) return;
+    slotReleased = true;
     inFlight.delete(mainJid);
     if (sseCounted) {
       activeSse = Math.max(0, activeSse - 1);
@@ -525,16 +536,20 @@ function handleChatCompletion(
     }
   };
 
-  // finalize() is SSE-only + run-once. It performs NO GroupQueue windown
-  // (notifyIdle/closeStdin) — those happen solely inside the active turn's
-  // eventSink, where taskActive is guaranteed true, so we never disrupt a
-  // WhatsApp turn sharing this jid. Slot release still happens: every success
-  // turn emits turn_complete (→ scheduleClose), error turns self-exit, and the
-  // task's finally + runTurn's hard timeout bound the worst case.
+  // finalize() is run-once. It performs NO GroupQueue windown (notifyIdle/
+  // closeStdin) — those happen solely inside the active turn's eventSink, where
+  // taskActive is guaranteed true, so we never disrupt a WhatsApp turn sharing
+  // this jid. It DOES release the HTTP admission slot (releaseSlot) the instant
+  // the turn is finalized — success, error, absTimer, OR client-abort — so a
+  // follow-up web turn isn't 429'd during the ~10s container wind-down (the
+  // task's finally calls releaseSlot again as an idempotent backstop). The
+  // release runs BEFORE the `!res.writable` early-return so the abort path
+  // (res.on('close')) frees the slot too — not just the response-write paths.
   const finalize = (errMsg?: string) => {
     if (finalized) return;
     finalized = true;
     clearTimers();
+    releaseSlot();
     if (!res.writable) return; // server-ended OR client-aborted (destroyed)
     if (stream) {
       if (errMsg)
@@ -679,7 +694,7 @@ function handleChatCompletion(
     } finally {
       taskActive = false;
       finalize();
-      cleanup();
+      releaseSlot();
     }
   });
 }
