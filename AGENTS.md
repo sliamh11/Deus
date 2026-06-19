@@ -183,6 +183,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/grill-with-docs` | Grill a plan and capture decisions as ADRs + glossary as you go |
 | `/grilling` | The relentless plan/design interview engine (used by `/grill-me` and `/grill-with-docs`) |
 | `/handoff` | Write a structured handoff document so the next agent starts with context |
+| `/learn-this` | Teach a topic and persist it as queryable vault memory, grounded in NotebookLM (vault-native companion to `/teach`) |
 | `/linear-slice` | Decompose a plan into dependency-ordered Linear issues (tracer-bullet slices) and release them into the dispatch pipeline |
 | `/onboard` | Onboard the current project into Deus code intelligence (codegraph + code_search indexing) |
 | `/preferences` | View or modify Deus user preferences |
