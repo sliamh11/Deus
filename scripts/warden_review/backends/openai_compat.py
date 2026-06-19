@@ -54,10 +54,8 @@ from .base import ModelReviewerBackend, ReviewRequest, Verdict
 # key must not auto-approve a commit). Mirrors codex.py's contract.
 _REVIEW_VERDICTS = (VERDICT_SHIP, VERDICT_REVISE, VERDICT_BLOCK)
 
-# Env keys — no hardcoded hosts (a fresh clone sets these or the backend abstains).
-_ENV_BASE_URL = "WARDEN_OPENAI_COMPAT_BASE_URL"
-_ENV_MODEL = "WARDEN_OPENAI_COMPAT_MODEL"
-_ENV_API_KEY = "WARDEN_OPENAI_COMPAT_API_KEY"
+# Env-var NAMES are class attributes on OpenAICompatBackend (see its docstring); module-level
+# aliases for the old private names are defined after the class for back-compat.
 
 # Single-call guard. Same VALUE as codex_review.WHOLE_DIFF_CHAR_LIMIT (200_000) but a
 # different SCOPE: that bounds the DIFF slice alone (minus the rules digest); this bounds the
@@ -129,23 +127,49 @@ def _parse_findings_json(raw: str) -> dict:
 
 
 class OpenAICompatBackend(ModelReviewerBackend):
-    """Backend id ``openai_compat``: any OpenAI-compatible /v1/chat/completions endpoint."""
+    """Backend id ``openai_compat``: any OpenAI-compatible /v1/chat/completions endpoint.
+
+    Subclass to add a provider: override the ``ENV_*`` / ``DEFAULT_*`` / ``REQUIRE_API_KEY``
+    class attributes (and ``id()``) and reuse ``review()`` verbatim — see ``backends/glm.py``.
+    """
+
+    # Env-var NAMES this backend reads (no hardcoded host: a fresh clone sets these or abstains).
+    ENV_BASE_URL = "WARDEN_OPENAI_COMPAT_BASE_URL"
+    ENV_MODEL = "WARDEN_OPENAI_COMPAT_MODEL"
+    ENV_API_KEY = "WARDEN_OPENAI_COMPAT_API_KEY"
+    # Provider-specific defaults (empty = none; generic openai_compat must be env-configured).
+    DEFAULT_BASE_URL = ""
+    DEFAULT_MODEL = ""
+    # Authenticated endpoints (e.g. Z.ai) set this so a keyless call abstains instead of being
+    # sent; generic openai_compat allows keyless (a local llama.cpp / Ollama needs no key).
+    REQUIRE_API_KEY = False
 
     def id(self) -> str:
         return BACKEND_OPENAI_COMPAT
 
     def review(self, request: ReviewRequest) -> Verdict:
-        base_url = os.environ.get(_ENV_BASE_URL, "").strip().rstrip("/")
+        base_url = (os.environ.get(self.ENV_BASE_URL, "").strip()
+                    or self.DEFAULT_BASE_URL).rstrip("/")
         if not base_url:
             # Fail open (never SHIP): the backend is registered but unconfigured here.
             return Verdict(
                 VERDICT_COULD_NOT_RUN,
-                error=f"{_ENV_BASE_URL} is not set — no endpoint to review against. Set it "
+                error=f"{self.ENV_BASE_URL} is not set — no endpoint to review against. Set it "
                       "to an OpenAI-compatible /v1 base URL (e.g. http://127.0.0.1:8080/v1).",
                 category="auth",
             )
 
-        model = request.model or os.environ.get(_ENV_MODEL, "").strip()
+        api_key = os.environ.get(self.ENV_API_KEY, "").strip()
+        if self.REQUIRE_API_KEY and not api_key:
+            # An authenticated endpoint with no key: abstain BEFORE building the prompt or
+            # calling out (fail open, never SHIP) — guarantees a no-op when unconfigured.
+            return Verdict(
+                VERDICT_COULD_NOT_RUN,
+                error=f"{self.ENV_API_KEY} is not set — this backend requires an API key.",
+                category="auth",
+            )
+
+        model = request.model or os.environ.get(self.ENV_MODEL, "").strip() or self.DEFAULT_MODEL
         rules_digest = cr.build_rules_digest(Path(request.rules_path))
         sentinel = f"<<<UNTRUSTED-DIFF-{secrets.token_hex(16)}>>>"  # 128-bit, infeasible to forge
         prompt = (
@@ -160,7 +184,6 @@ class OpenAICompatBackend(ModelReviewerBackend):
             )
 
         headers = {"Content-Type": "application/json"}
-        api_key = os.environ.get(_ENV_API_KEY, "").strip()
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"  # key never logged; header only
         payload: dict = {
@@ -220,3 +243,9 @@ class OpenAICompatBackend(ModelReviewerBackend):
                         findings.append({"file": file, **f})
         return Verdict(verdict=verdict, findings=findings,
                        summary=data.get("summary", ""), raw=raw)
+
+
+# Back-compat module-level aliases for the old private constant names (external importers).
+_ENV_BASE_URL = OpenAICompatBackend.ENV_BASE_URL
+_ENV_MODEL = OpenAICompatBackend.ENV_MODEL
+_ENV_API_KEY = OpenAICompatBackend.ENV_API_KEY

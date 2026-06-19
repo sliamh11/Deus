@@ -23,12 +23,20 @@ if _SCRIPTS_DIR not in sys.path:
 import httpx
 
 import codex_review as cr
+import codex_warden as cw
 import codex_warden_hooks as h
 from _exit_codes import RATE_LIMIT
 from warden_review import registry
 from warden_review.backends import openai_compat as oac
 from warden_review.backends.base import ReviewRequest, Verdict
-from warden_review.constants import BACKEND_GPT, BACKEND_OPENAI_COMPAT, store_key
+from warden_review.backends.glm import GLMBackend
+from warden_review.constants import (
+    BACKEND_GLM,
+    BACKEND_GPT,
+    BACKEND_OPENAI_COMPAT,
+    KNOWN_MODEL_BACKENDS,
+    store_key,
+)
 from warden_review.roles import ROLE_SPECS
 
 _ROLE = "code-reviewer"
@@ -76,8 +84,8 @@ def _gate(repo: Path) -> int:
 def test_registry_lists_and_resolves_gpt():
     assert registry.is_registered(BACKEND_GPT)
     assert registry.get_backend(BACKEND_GPT).id() == BACKEND_GPT
-    # The registry now holds both model backends (gpt + openai_compat); claude is never registered.
-    assert set(registry.available_backends()) == {BACKEND_GPT, BACKEND_OPENAI_COMPAT}
+    # The registry now holds three model backends (gpt + openai_compat + glm); claude is never registered.
+    assert set(registry.available_backends()) == {BACKEND_GPT, BACKEND_OPENAI_COMPAT, BACKEND_GLM}
 
 
 def test_registry_unknown_backend_raises():
@@ -797,3 +805,114 @@ def test_run_restores_override_when_runner_raises(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         h.run(args)
     assert h._WORKTREE_OVERRIDE == prev, "override must be restored after a runner raises"
+
+
+# ── glm backend (Z.ai): a WARDEN_GLM_* subclass of openai_compat, auth-required abstain ──
+# Reuses the openai_compat mock seam + helpers (_oac_body / _oac_req) — zero real HTTP.
+
+@pytest.fixture
+def glm_env(monkeypatch):
+    """A configured GLM key; base/model left to defaults. Clears the openai_compat vars so a
+    test cannot accidentally cross-read them (GLM must read only WARDEN_GLM_*)."""
+    monkeypatch.setenv("WARDEN_GLM_API_KEY", "zai-test-key")
+    monkeypatch.delenv("WARDEN_GLM_BASE_URL", raising=False)
+    monkeypatch.delenv("WARDEN_GLM_MODEL", raising=False)
+
+
+def test_glm_registry_and_known_backends():
+    assert registry.is_registered(BACKEND_GLM)
+    assert registry.get_backend(BACKEND_GLM).id() == BACKEND_GLM
+    assert GLMBackend().id() == BACKEND_GLM
+    assert BACKEND_GLM in KNOWN_MODEL_BACKENDS
+    # The registry now holds three model backends; claude is still never registered.
+    assert set(registry.available_backends()) == {BACKEND_GPT, BACKEND_OPENAI_COMPAT, BACKEND_GLM}
+
+
+def test_glm_abstains_without_api_key(monkeypatch):
+    # No key → abstain (fail open) BEFORE any network call. This is the no-op-when-unconfigured
+    # guarantee: a user who lists "glm" but sets no key never blocks a commit.
+    monkeypatch.delenv("WARDEN_GLM_API_KEY", raising=False)
+    called: list[int] = []
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda *a, **k: called.append(1) or (200, _oac_body()))
+    v = GLMBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+    assert v.category == "auth"
+    assert called == []   # no key → no HTTP attempted
+
+
+def test_glm_reads_glm_env_not_openai_compat(monkeypatch, glm_env):
+    # GLM must read WARDEN_GLM_*; an openai_compat var must NOT configure it. Default base/model
+    # apply, the key rides the Authorization header.
+    monkeypatch.setenv("WARDEN_GLM_MODEL", "glm-5.2-test")
+    monkeypatch.setenv("WARDEN_OPENAI_COMPAT_BASE_URL", "http://wrong:9/v1")  # must be ignored
+    seen: dict = {}
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda e, p, hdr, t: seen.update(endpoint=e, payload=p, headers=hdr)
+                        or (200, _oac_body()))
+    v = GLMBackend().review(_oac_req())
+    assert v.verdict == "SHIP"
+    assert seen["endpoint"] == "https://api.z.ai/api/paas/v4/chat/completions"  # GLM default base
+    assert seen["payload"]["model"] == "glm-5.2-test"
+    assert seen["headers"]["Authorization"] == "Bearer zai-test-key"
+
+
+def test_glm_default_model_when_unset(monkeypatch, glm_env):
+    seen: dict = {}
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda e, p, hdr, t: seen.update(payload=p) or (200, _oac_body()))
+    GLMBackend().review(_oac_req())
+    assert seen["payload"]["model"] == "glm-5.2"   # DEFAULT_MODEL
+
+
+def test_glm_fail_closed_on_invalid_verdict(monkeypatch, glm_env):
+    # The parent's fail-closed invariant is inherited: an invalid verdict NEVER becomes SHIP.
+    monkeypatch.setattr(oac, "_post_chat_completion",
+                        lambda *a, **k: (200, _oac_body(verdict="MAYBE")))
+    v = GLMBackend().review(_oac_req())
+    assert v.could_not_run and not v.is_ship
+
+
+def test_oac_module_aliases_still_resolve():
+    # Back-compat after the env-name hoist to class attributes: external importers of the old
+    # private module constants still resolve to the same strings.
+    assert oac._ENV_BASE_URL == oac.OpenAICompatBackend.ENV_BASE_URL == "WARDEN_OPENAI_COMPAT_BASE_URL"
+    assert oac._ENV_MODEL == "WARDEN_OPENAI_COMPAT_MODEL"
+    assert oac._ENV_API_KEY == "WARDEN_OPENAI_COMPAT_API_KEY"
+
+
+# ── _load_glm_env: the GLM-scoped .env loader (resolves the global-loader co-gate REVISE) ──
+
+def test_load_glm_env_noop_when_file_absent(tmp_path, monkeypatch):
+    monkeypatch.delenv("WARDEN_GLM_API_KEY", raising=False)
+    cw._load_glm_env(tmp_path / "nope.env")   # absent → no exception, no change
+    assert "WARDEN_GLM_API_KEY" not in os.environ
+
+
+def test_load_glm_env_sets_unset_glm_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("WARDEN_GLM_API_KEY", raising=False)
+    envf = tmp_path / ".env"
+    envf.write_text("# comment\nWARDEN_GLM_API_KEY=from-file\n", encoding="utf-8")
+    cw._load_glm_env(envf)
+    assert os.environ["WARDEN_GLM_API_KEY"] == "from-file"
+
+
+def test_load_glm_env_does_not_override_existing(tmp_path, monkeypatch):
+    monkeypatch.setenv("WARDEN_GLM_API_KEY", "from-env")
+    envf = tmp_path / ".env"
+    envf.write_text("WARDEN_GLM_API_KEY=from-file\n", encoding="utf-8")
+    cw._load_glm_env(envf)
+    assert os.environ["WARDEN_GLM_API_KEY"] == "from-env"   # a real exported env var wins
+
+
+def test_load_glm_env_ignores_non_glm_keys(tmp_path, monkeypatch):
+    # THE FIX: a global loader would activate openai_compat from a stale .env line. The
+    # GLM-scoped loader must IGNORE every non-WARDEN_GLM_ key.
+    monkeypatch.delenv("WARDEN_OPENAI_COMPAT_BASE_URL", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    envf = tmp_path / ".env"
+    envf.write_text("WARDEN_OPENAI_COMPAT_BASE_URL=http://sneaky:9/v1\nGEMINI_API_KEY=x\n",
+                    encoding="utf-8")
+    cw._load_glm_env(envf)
+    assert "WARDEN_OPENAI_COMPAT_BASE_URL" not in os.environ
+    assert "GEMINI_API_KEY" not in os.environ

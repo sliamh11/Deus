@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from .backends.base import ModelReviewerBackend
-from .constants import BACKEND_GPT, BACKEND_OPENAI_COMPAT
+from .constants import BACKEND_GLM, BACKEND_GPT, BACKEND_OPENAI_COMPAT
 
 _FACTORIES: dict[str, Callable[[], ModelReviewerBackend]] = {}
 
@@ -51,8 +51,14 @@ def _register_builtins() -> None:
 
         return OpenAICompatBackend()
 
+    def _glm() -> ModelReviewerBackend:
+        from .backends.glm import GLMBackend
+
+        return GLMBackend()
+
     register(BACKEND_GPT, _codex)
     register(BACKEND_OPENAI_COMPAT, _openai_compat)
+    register(BACKEND_GLM, _glm)
 
 
 _register_builtins()

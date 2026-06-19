@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -40,6 +41,30 @@ from warden_review.constants import BACKEND_GPT, store_key  # noqa: E402
 from warden_review.roles import ROLE_SPECS  # noqa: E402
 
 _CODE_FROM_CATEGORY = {"rate_limit": RATE_LIMIT, "auth": AUTH_ERROR}
+
+
+def _load_glm_env(path: Path | None = None) -> None:
+    """Load ONLY ``WARDEN_GLM_*`` keys from the gitignored ``~/deus/.env`` into ``os.environ``
+    when not already set (a real exported env var always wins). No-op when the file is absent.
+
+    Scoped strictly to the ``WARDEN_GLM_`` prefix so it can NEVER change the activation of the
+    openai_compat backend (or anything else) — preserving the zero-behavior-change contract for
+    users who did not opt into the ``glm`` backend. Called from ``main()`` only (never at import),
+    so it cannot poison a test process that imports this module. ``path`` is for tests.
+    """
+    env_path = path or (Path.home() / "deus" / ".env")
+    try:
+        text = env_path.read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return  # absent / unreadable → no-op
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key.startswith("WARDEN_GLM_") and key not in os.environ:
+            os.environ[key] = value.strip()
 
 
 def _render_human(role: str, backend: str, v) -> None:
@@ -82,6 +107,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--compact", action="store_true", help="compact JSON")
     ap.add_argument("--select", help="comma-separated dot-paths to project from the JSON")
     args = ap.parse_args(argv)
+
+    # Load WARDEN_GLM_* from ~/deus/.env (gitignored) if present — scoped to the GLM prefix so it
+    # cannot affect any other backend. No-op when the file is absent or the keys are already set.
+    _load_glm_env()
 
     spec = ROLE_SPECS[args.role]
     skey = store_key(args.role, args.backend)
