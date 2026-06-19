@@ -14,6 +14,15 @@ dist/
 .claude/.warden-verdicts.json.bak-*
 # Per-worktree gate state (markers + verdict store, namespaced by worktree)
 .claude/worktree-markers/
+# Co-gate backend verdict markers (user-local; per-role @<backend>)
+.claude/.*@*
+# Co-gate loop backups (timestamped runtime ephemera)
+.claude/.co-gate-loop-*.bak-*
+# Plan revise log + scratch plan docs (host-local working notes)
+.claude/plan-revise-log.jsonl
+.claude/.plan-*.md
+# One-time migration nudge flag (host-local)
+.claude/.migration-nudged
 
 # Warden config (user-local toggle state and custom instructions)
 .claude/wardens/config.json
@@ -27,6 +36,8 @@ dist/
 store/
 data/
 logs/
+# Local experiment scratch space (never shipped)
+/experiments/
 
 # Groups - only track base structure and template files
 groups/*
