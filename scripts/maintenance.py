@@ -93,6 +93,13 @@ def main():
         "rotate_query_log", [rotate_qlog], dry_run
     )
 
+    # run_task prepends the Python interpreter, so this (like every sibling
+    # maintenance script) runs as `python3 credential_probe.py` and stays 644.
+    cred_probe = str(SCRIPTS_DIR / "maintenance" / "credential_probe.py")
+    results["credential_probe"] = run_task(
+        "credential_probe", [cred_probe], dry_run
+    )
+
     # ── Weekly tasks (Sunday or --weekly) ────────────────────────────────────
 
     if run_weekly:
