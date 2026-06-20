@@ -2,12 +2,12 @@
   "created": "2026-04-25",
   "min_retrieval_recall": 0.90,
   "last_measured": {
-    "retrieval_recall": 0.960,
-    "retrieval_queries": 75,
-    "abstain_accuracy": 0.467,
-    "abstain_queries": 15,
+    "retrieval_recall": 0.923,
+    "retrieval_queries": 52,
+    "abstain_accuracy": 0.318,
+    "abstain_queries": 22,
     "embedding_provider": "ollama",
     "embedding_model": "embeddinggemma"
   },
-  "notes": "Baseline after score-gap fix + benchmark recalibration. 5 remaining misses are dilution cases (auto-memory nodes genuinely more relevant)."
+  "notes": "Re-measured 2026-06-10 after trimming 62 stale labels (vault migration lost their target files; dropped entries recoverable from git history) and recovering the tree via scaffold-root. Retrieval corpus shrank 75 -> 52 queries, so each miss now costs ~1.9pp vs ~1.3pp. 4 remaining misses are dilution cases. Abstain accuracy is measured with raw retrieve (no policy threshold) against a small 10-node tree, hence low; the runtime hook applies its own abstain threshold."
 }

@@ -65,7 +65,7 @@ server does and how they compose.
 
 | Server | Provides | Source |
 |--------|----------|--------|
-| `codegraph` | SQLite call graph — callers/callees/impact, dependency chains (`codegraph_context`, `codegraph_callers`, `codegraph_trace`, …) | npm `@colbymchenry/codegraph` → `codegraph` binary |
+| `codegraph` | SQLite call graph — callers/callees/impact, dependency chains (`codegraph_explore`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, …) | npm `@colbymchenry/codegraph` → `codegraph` binary |
 | `code-search` | Semantic + lexical code search, sqlite-vec + FTS5 with RRF fusion (`search_code`) | in-repo `scripts/code_search_mcp.py` (runs in `eval/.venv`) |
 
 **Restore after migration** (run from the repo root, in one shell so `$PATH`

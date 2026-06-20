@@ -34,7 +34,7 @@ You are a code exploration agent. Your job is to find information in the codebas
 
 - **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
 
-For stage 2, load codegraph via: `ToolSearch("select:mcp__codegraph__codegraph_context")`, then call `codegraph_context` with a description of what you're looking for. Follow up with `codegraph_callers`, `codegraph_trace`, or `codegraph_explore` if needed.
+For stage 2, load codegraph via: `ToolSearch("select:mcp__codegraph__codegraph_explore")`, then call `codegraph_explore` with a description of what you're looking for (or a bag of symbol/file names). Follow up with `codegraph_callers`, `codegraph_callees`, or `codegraph_impact` if needed.
 
 ## Output
 

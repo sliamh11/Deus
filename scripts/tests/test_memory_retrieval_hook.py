@@ -12,6 +12,7 @@ import importlib.util
 import io
 import json
 import sys
+import types
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
@@ -65,3 +66,62 @@ def test_hook_treats_empty_env_as_unset(monkeypatch):
     monkeypatch.setenv("DEUS_TREE_ABSTAIN", "  ")
     captured = _run_hook(monkeypatch)
     assert captured["abstain_threshold"] is None
+
+
+# ── Fork-origin coverage (kept across the upstream merge): the hook passes
+# session concepts to recall, and bails on short prompts before recalling.
+# Fully-stubbed loader so neither memory_query nor session_concepts loads real
+# deps. Abstain assertions match HEAD source (passes abstain_threshold=None).
+
+
+def _load_hook(monkeypatch, recall_calls: list[dict]):
+    """Load the hook module with stubbed memory_query / session_concepts."""
+    fake_mq = types.ModuleType("memory_query")
+
+    def fake_recall(prompt, **kwargs):
+        recall_calls.append(kwargs)
+        return {"context": "stubbed context"}
+
+    fake_mq.recall = fake_recall
+
+    fake_sc = types.ModuleType("session_concepts")
+    fake_sc.extract_terms = lambda prompt: []
+    fake_sc.update_concepts = lambda session_id, terms: None
+
+    monkeypatch.setitem(sys.modules, "memory_query", fake_mq)
+    monkeypatch.setitem(sys.modules, "session_concepts", fake_sc)
+
+    spec = importlib.util.spec_from_file_location(
+        "memory_retrieval_hook_under_test",
+        _ROOT / "scripts" / "memory_retrieval_hook.py",
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_session_concepts_passed_to_recall(monkeypatch, capsys):
+    calls: list[dict] = []
+    hook_mod = _load_hook(monkeypatch, calls)
+    sys.modules["session_concepts"].update_concepts = lambda sid, terms: ["drums", "music"]
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(json.dumps({"prompt": "what instruments do I play", "session_id": "s1"})),
+    )
+
+    hook_mod.main()
+
+    assert len(calls) == 1
+    assert calls[0]["concepts"] == ["drums", "music"]
+    assert calls[0]["abstain_threshold"] is None
+
+
+def test_short_prompt_bails_before_recall(monkeypatch, capsys):
+    calls: list[dict] = []
+    hook_mod = _load_hook(monkeypatch, calls)
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"prompt": "hi"})))
+
+    hook_mod.main()
+
+    assert calls == []
+    assert capsys.readouterr().out == ""

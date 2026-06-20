@@ -1,5 +1,5 @@
 {
-  "description": "Frozen fixture of CC transcript line shapes used by the codegraph-first gate scan predicate. Captured from real session bd4d5baf (scrubbed), CC 2.1.157. Contains positives (mcp_direct, toolsearch_select) and negatives (non_codegraph_tool, user_tool_result, toolsearch_noncodegraph). If check_codegraph_transcript_format fails, re-capture from a fresh session transcript and update _line_is_codegraph_toolcall if the format changed.",
+  "description": "Frozen fixture of CC transcript line shapes used by the codegraph-first gate scan predicate. Captured from real session bd4d5baf (scrubbed), CC 2.1.157. Contains positives (mcp_direct, toolsearch_select) and negatives (non_codegraph_tool, user_tool_result, toolsearch_noncodegraph). The predicate matches on the 'mcp__codegraph__' prefix, not the tool suffix, so suffixes were refreshed to current live tool names (codegraph_explore, codegraph_search) when the legacy composite/trace tools were retired. If check_codegraph_transcript_format fails, re-capture from a fresh session transcript and update _line_is_codegraph_toolcall if the format changed.",
   "cc_version": "2.1.157",
   "capture_date": "2026-05-30",
   "source_session": "bd4d5baf (scrubbed)",

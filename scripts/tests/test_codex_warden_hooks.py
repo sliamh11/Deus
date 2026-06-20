@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import sqlite3
 import subprocess
 import sys
 from argparse import Namespace
@@ -3414,11 +3416,11 @@ def test_memo_enricher_section_ordering_stable_across_multi_edit(tmp_path):
 
 _MCP_CODEGRAPH_LINE = json.dumps({
     "type": "assistant",
-    "message": {"content": [{"type": "tool_use", "id": "t", "name": "mcp__codegraph__codegraph_context", "input": {"task": "x"}}]},
+    "message": {"content": [{"type": "tool_use", "id": "t", "name": "mcp__codegraph__codegraph_explore", "input": {"task": "x"}}]},
 })
 _TOOLSEARCH_CODEGRAPH_LINE = json.dumps({
     "type": "assistant",
-    "message": {"content": [{"type": "tool_use", "id": "t", "name": "ToolSearch", "input": {"query": "select:mcp__codegraph__codegraph_context"}}]},
+    "message": {"content": [{"type": "tool_use", "id": "t", "name": "ToolSearch", "input": {"query": "select:mcp__codegraph__codegraph_explore"}}]},
 })
 _BASH_LINE = json.dumps({
     "type": "assistant",
@@ -4017,7 +4019,7 @@ def test_line_is_codegraph_toolcall_direct_mcp():
     """Direct mcp__codegraph__ call detected."""
     hooks = load_hooks()
     obj = {"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "name": "mcp__codegraph__codegraph_context", "input": {}}
+        {"type": "tool_use", "name": "mcp__codegraph__codegraph_explore", "input": {}}
     ]}}
     assert hooks._line_is_codegraph_toolcall(obj)
 
@@ -4027,7 +4029,7 @@ def test_line_is_codegraph_toolcall_toolsearch_select():
     hooks = load_hooks()
     obj = {"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "ToolSearch",
-         "input": {"query": "select:mcp__codegraph__codegraph_context"}}
+         "input": {"query": "select:mcp__codegraph__codegraph_explore"}}
     ]}}
     assert hooks._line_is_codegraph_toolcall(obj)
 
@@ -4054,7 +4056,7 @@ def test_line_is_codegraph_toolcall_rejects_text_block():
     """text blocks mentioning mcp__codegraph__ are NOT matched."""
     hooks = load_hooks()
     obj = {"type": "assistant", "message": {"content": [
-        {"type": "text", "text": "I will call mcp__codegraph__codegraph_context"}
+        {"type": "text", "text": "I will call mcp__codegraph__codegraph_explore"}
     ]}}
     assert not hooks._line_is_codegraph_toolcall(obj)
 
@@ -4163,8 +4165,8 @@ def test_escalating_deny_tier1_two_prior_searches(tmp_path, capsys):
     reason = out["permissionDecisionReason"]
     assert out["permissionDecision"] == "deny"
     assert "Blocked again" in reason
-    assert 'ToolSearch(query="select:mcp__codegraph__codegraph_context")' in reason
-    assert "codegraph_context" in reason
+    assert 'ToolSearch(query="select:mcp__codegraph__codegraph_explore")' in reason
+    assert "codegraph_explore" in reason
     # Tier-1 should NOT yet include the Read fallback
     assert "If ToolSearch returns no codegraph tool" not in reason
 
@@ -4640,3 +4642,214 @@ def test_buckets_with_ship_excludes_current_bucket(tmp_path):
     )
 
     assert hooks._buckets_with_ship("code-reviewer", "gpt", repo, current) == []
+# --- Session-integrity check (Workstream 2) --------------------------------
+
+
+def _isolate_session_integrity_env(monkeypatch, tmp_path):
+    """Point both checks at non-existent paths so they're silent by default.
+
+    Each test then opts a single dimension back in. Without this, the host's
+    real ~/.config/deus/config.json and ~/.deus/memory_tree.db would leak in.
+    """
+    monkeypatch.delenv("DEUS_VAULT_PATH", raising=False)
+    # Force config.json lookup to a path that does not exist -> {} -> no vault.
+    monkeypatch.setenv("DEUS_CONFIG_PATH", str(tmp_path / "no-such-config.json"))
+    # Force tree DB lookup to a path that does not exist -> silent.
+    monkeypatch.setenv("DEUS_MEMORY_TREE_DB", str(tmp_path / "no-such-tree.db"))
+
+
+def _make_tree_db(path: Path, *, rows: list[tuple[str, str | None]]) -> None:
+    """Create a minimal memory_tree.db with the columns the check reads.
+
+    rows: list of (path, orphaned_at). orphaned_at=None => active node.
+    """
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE nodes (
+                id           TEXT PRIMARY KEY,
+                path         TEXT NOT NULL,
+                description  TEXT NOT NULL DEFAULT '',
+                updated_at   INTEGER NOT NULL DEFAULT 0,
+                content_hash TEXT NOT NULL DEFAULT '',
+                orphaned_at  TEXT DEFAULT NULL
+            )
+            """
+        )
+        for i, (node_path, orphaned_at) in enumerate(rows):
+            conn.execute(
+                "INSERT INTO nodes (id, path, orphaned_at) VALUES (?, ?, ?)",
+                (f"n{i}", node_path, orphaned_at),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_session_integrity_silent_when_healthy(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setenv("DEUS_VAULT_PATH", str(vault))
+
+    db = tmp_path / "tree.db"
+    _make_tree_db(
+        db,
+        rows=[
+            ("MEMORY_TREE.md", None),
+            ("Persona/life/background.md", None),
+        ],
+    )
+    monkeypatch.setenv("DEUS_MEMORY_TREE_DB", str(db))
+
+    hooks._emit_session_integrity()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_session_integrity_vault_unconfigured_is_silent(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+
+    assert hooks._check_vault_writable() is None
+    hooks._emit_session_integrity()
+    assert capsys.readouterr().out == ""
+
+
+def test_session_integrity_missing_vault_dir_warns(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+
+    monkeypatch.setenv("DEUS_VAULT_PATH", str(tmp_path / "does-not-exist"))
+
+    warning = hooks._check_vault_writable()
+    assert warning is not None
+    assert "vault not writable" in warning
+
+    hooks._emit_session_integrity()
+    output = json.loads(capsys.readouterr().out)
+    specific = output["hookSpecificOutput"]
+    assert specific["hookEventName"] == "SessionStart"
+    assert "MEMORY SYSTEM DEGRADED" in specific["additionalContext"]
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="chmod 0o500 does not block writes on Windows"
+)
+def test_session_integrity_unwritable_vault_warns(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setenv("DEUS_VAULT_PATH", str(vault))
+
+    os.chmod(vault, 0o500)  # r-x: present but not writable
+    try:
+        warning = hooks._check_vault_writable()
+    finally:
+        os.chmod(vault, 0o700)  # restore so tmp_path cleanup can proceed
+
+    assert warning is not None
+    assert "vault not writable" in warning
+    assert str(vault) in warning
+
+
+def test_session_integrity_tree_absent_is_silent(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+
+    # DEUS_MEMORY_TREE_DB already points at a non-existent path.
+    assert hooks._check_tree_health() is None
+    hooks._emit_session_integrity()
+    assert capsys.readouterr().out == ""
+
+
+def test_session_integrity_tree_missing_root_warns(tmp_path, monkeypatch):
+    hooks = load_hooks()
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+
+    db = tmp_path / "tree.db"
+    # Active nodes but no MEMORY_TREE.md root — the real dead-tree incident.
+    _make_tree_db(
+        db,
+        rows=[
+            ("Persona/life/background.md", None),
+            ("auto-memory/research_x.md", None),
+        ],
+    )
+    monkeypatch.setenv("DEUS_MEMORY_TREE_DB", str(db))
+
+    warning = hooks._check_tree_health()
+    assert warning is not None
+    assert "root (MEMORY_TREE.md) is missing" in warning
+
+
+def test_session_integrity_tree_only_root_node_warns(tmp_path, monkeypatch):
+    hooks = load_hooks()
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+
+    db = tmp_path / "tree.db"
+    # Root present but count == 1 (<= 1 floor) => empty tree.
+    _make_tree_db(db, rows=[("MEMORY_TREE.md", None)])
+    monkeypatch.setenv("DEUS_MEMORY_TREE_DB", str(db))
+
+    warning = hooks._check_tree_health()
+    assert warning is not None
+    assert "memory tree is empty" in warning
+
+
+def test_session_integrity_tree_orphaned_root_warns(tmp_path, monkeypatch):
+    hooks = load_hooks()
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+
+    db = tmp_path / "tree.db"
+    # Root exists but is orphaned; only one active non-root node.
+    _make_tree_db(
+        db,
+        rows=[
+            ("MEMORY_TREE.md", "2026-06-10T00:00:00"),
+            ("Persona/life/background.md", None),
+        ],
+    )
+    monkeypatch.setenv("DEUS_MEMORY_TREE_DB", str(db))
+
+    # Orphaned root => root_count == 0 => root-absent message (precise).
+    warning = hooks._check_tree_health()
+    assert warning is not None
+    assert "root (MEMORY_TREE.md) is missing" in warning
+
+
+def test_session_integrity_tree_bad_schema_fails_open(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+
+    db = tmp_path / "tree.db"
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE other (x INTEGER)")  # no `nodes` table
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("DEUS_MEMORY_TREE_DB", str(db))
+
+    # Missing table -> sqlite3.Error -> fail-open (None), stderr warning only.
+    assert hooks._check_tree_health() is None
+    assert capsys.readouterr().out == ""
+
+
+def test_run_session_init_emits_integrity_warning(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _isolate_session_integrity_env(monkeypatch, tmp_path)
+    monkeypatch.delenv("DEUS_AUTO_MEMORY_DIR", raising=False)
+
+    monkeypatch.setenv("DEUS_VAULT_PATH", str(tmp_path / "gone"))
+
+    rc = hooks.run_session_init(repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+    assert "MEMORY SYSTEM DEGRADED" in output["hookSpecificOutput"]["additionalContext"]

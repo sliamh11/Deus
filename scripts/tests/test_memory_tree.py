@@ -2349,3 +2349,191 @@ class TestResolveVaultPath:
         result = mt.resolve_vault_path()
         assert isinstance(result, Path)
         assert str(result).endswith("Deus")
+# ── Provider detection (_IS_GEMINI) ───────────────────────────────────────────
+
+class TestProviderDetection:
+    """Regression for the _IS_GEMINI truthiness bug: the detection expression
+    used to evaluate to the GEMINI_API_KEY string or None instead of a bool,
+    which could leak the key into anything serializing the flag."""
+
+    def _eval(self, **env):
+        """Re-evaluate the module-level _IS_GEMINI expression under given env."""
+        provider = env.get("EMBEDDING_PROVIDER", "auto").lower()
+        return bool(
+            provider == "gemini" or (
+                provider == "auto" and not env.get("OLLAMA_HOST")
+                and env.get("GEMINI_API_KEY")
+            )
+        )
+
+    def test_module_flag_is_bool(self):
+        # Whatever the live env, the module constant must be a real bool.
+        assert isinstance(mt._IS_GEMINI, bool)
+
+    def test_auto_with_gemini_key_no_ollama_is_true(self):
+        assert self._eval(EMBEDDING_PROVIDER="auto", GEMINI_API_KEY="secret") is True
+
+    def test_auto_without_gemini_key_is_false_not_none(self):
+        result = self._eval(EMBEDDING_PROVIDER="auto")
+        assert result is False
+        assert result is not None
+
+    def test_auto_with_ollama_host_is_false(self):
+        # Ollama present → not Gemini, even with a key set.
+        assert self._eval(
+            EMBEDDING_PROVIDER="auto", OLLAMA_HOST="http://x", GEMINI_API_KEY="k"
+        ) is False
+
+    def test_explicit_gemini_is_true(self):
+        assert self._eval(EMBEDDING_PROVIDER="gemini") is True
+
+    def test_explicit_ollama_is_false(self):
+        assert self._eval(EMBEDDING_PROVIDER="ollama", GEMINI_API_KEY="k") is False
+
+
+# ── Root scaffold (scaffold-root) ─────────────────────────────────────────────
+
+class TestScaffoldRoot:
+    def _vault_without_root(self, tmp_path):
+        """A vault with id-frontmatter nodes but no MEMORY_TREE.md."""
+        v = tmp_path / "vault"
+        (v / "Persona").mkdir(parents=True)
+        (v / "Persona" / "INDEX.md").write_text(
+            "---\nid: idx00000000000000000000000000001\n"
+            "description: Index for personal facts.\n---\n",
+            encoding="utf-8",
+        )
+        (v / "auto.md").write_text(
+            "---\nid: auto0000000000000000000000000002\n"
+            "summary: Auto-memory note about learning style.\n---\n",
+            encoding="utf-8",
+        )
+        return v
+
+    def test_generates_valid_parseable_root(self, tmp_path):
+        v = self._vault_without_root(tmp_path)
+        text = mt.generate_root_scaffold(v)
+        fm = mt.parse_frontmatter(text)
+        assert fm["type"] == "memory-tree-root"
+        assert fm["id"]
+        assert fm["description"]
+        # Children are vault-relative paths, sorted, both nodes present.
+        assert fm["children"] == ["Persona/INDEX.md", "auto.md"]
+        # Body carries the per-child one-liners (summary falls back to desc).
+        assert "Index for personal facts." in text
+        assert "Auto-memory note about learning style." in text
+
+    def test_under_token_budget(self, tmp_path):
+        v = self._vault_without_root(tmp_path)
+        text = mt.generate_root_scaffold(v)
+        assert mt.token_estimate(text) <= mt.ROOT_TOKEN_BUDGET
+
+    def test_skips_existing_root_node_file(self, tmp_path):
+        """An already-present MEMORY_TREE.md must not become its own child."""
+        v = self._vault_without_root(tmp_path)
+        (v / "MEMORY_TREE.md").write_text(
+            "---\nid: oldroot000000000000000000000003\n"
+            "type: memory-tree-root\ndescription: stale root.\n---\n",
+            encoding="utf-8",
+        )
+        text = mt.generate_root_scaffold(v)
+        assert "MEMORY_TREE.md" not in mt.parse_frontmatter(text)["children"]
+
+    def test_respects_token_cap_with_truncation_line(self, tmp_path):
+        # Many verbose nodes → must truncate with an explicit omitted notice and
+        # never exceed a tight budget.
+        v = tmp_path / "vault"
+        v.mkdir()
+        for i in range(40):
+            (v / f"node{i:02d}.md").write_text(
+                f"---\nid: node{i:02d}00000000000000000000000000\n"
+                f"description: Node {i} covers a fairly long descriptive sentence "
+                f"about some specific topic area number {i} in the vault.\n---\n",
+                encoding="utf-8",
+            )
+        text = mt.generate_root_scaffold(v, token_budget=200)
+        assert mt.token_estimate(text) <= 200
+        assert "more nodes omitted — add manually" in text
+        # At least one node made it in; not all 40 did.
+        children = mt.parse_frontmatter(text)["children"]
+        assert 0 < len(children) < 40
+
+    def test_empty_vault_helpful_error(self, tmp_path):
+        v = tmp_path / "empty"
+        v.mkdir()
+        with pytest.raises(ValueError, match="no id-frontmatter nodes"):
+            mt.generate_root_scaffold(v)
+
+    def test_cli_writes_file(self, tmp_path, tmp_db, monkeypatch, capsys):
+        v = self._vault_without_root(tmp_path)
+        monkeypatch.setattr(mt, "resolve_vault_path", lambda: v)
+        monkeypatch.setattr(mt, "open_db", lambda *a, **k: tmp_db)
+        rc = mt.main(["scaffold-root"])
+        assert rc == mt.SUCCESS
+        root = v / "MEMORY_TREE.md"
+        assert root.exists()
+        fm = mt.parse_frontmatter(root.read_text(encoding="utf-8"))
+        assert fm["type"] == "memory-tree-root"
+        assert "wrote" in capsys.readouterr().out
+
+
+# ── calibrate_sweep embed cache ───────────────────────────────────────────────
+
+class TestCalibrateSweepCache:
+    def test_cache_effective_under_cli_module_identity(self, fake_vault, tmp_path, monkeypatch):
+        """Regression: calibrate_sweep must patch the EXECUTING module.
+
+        Under CLI invocation the module is named "__main__", and the old
+        `import memory_tree as _self` patched a second module copy — every
+        per-combo retrieval then hit the live embedder (~107k Ollama calls
+        for a full sweep). Simulate that identity split by loading the
+        script under a different module name and counting embed calls:
+        only the pre-cache pass may embed, once per unique query.
+        """
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "memory_tree_cli_sim", _ROOT / "scripts" / "memory_tree.py"
+        )
+        sim = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, "memory_tree_cli_sim", sim)
+        spec.loader.exec_module(sim)
+
+        stub = StubEmbed()
+        calls: list[str] = []
+
+        def counting_embed(text: str) -> list[float]:
+            calls.append(text)
+            return stub(text)
+
+        monkeypatch.setattr(sim, "embed_text", counting_embed)
+        monkeypatch.setattr(sim, "embed_batch_text", lambda ts: [stub(t) for t in ts])
+        monkeypatch.setattr(
+            sim, "generate_approach_angles", lambda d, b: ["q one", "q two", "q three"]
+        )
+        # Shrink the grid: 1 value per float dim keeps the test fast while
+        # still exercising multiple combos via the entity-overlap dim.
+        monkeypatch.setattr(sim, "_frange", lambda start, stop, step: [start])
+
+        db = sim.open_db(tmp_path / "sweep.db")
+        try:
+            sim.build_tree(fake_vault, db)
+            calls.clear()
+
+            dataset = [
+                {"query": "background career history", "expected_path": "Persona/life/background.md"},
+                {"query": "totally unrelated nonsense", "abstain": True},
+            ]
+            result = sim.calibrate_sweep(db, dataset, k=3)
+
+            assert result["total_combos"] == 3  # 1*1*1*1 floats x 3 entity-overlap
+            unique_queries = {item["query"] for item in dataset}
+            assert set(calls) == unique_queries
+            assert len(calls) == len(unique_queries), (
+                "embed called per-combo — the pre-cache monkeypatch missed "
+                "the executing module"
+            )
+            # The finally-block must restore the original (our counting stub).
+            assert sim.embed_text is counting_embed
+        finally:
+            db.close()

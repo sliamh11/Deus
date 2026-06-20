@@ -24,7 +24,23 @@
     "auto_threshold": 20,
     "custom_instructions": null
   },
-  "data-quality": {
+  "ai-eng-warden": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "verification-gate": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "qa-tester": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "copy-writer": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "ux-reviewer": {
     "enabled": true,
     "custom_instructions": null
   },
