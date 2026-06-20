@@ -24,6 +24,20 @@ const logger = pino(
   pino.destination(2),
 );
 
+// Process-level safety net: a stray rejection (e.g. grammy's "Aborted delay"
+// from bot.start() during a stop mid-backoff) must not silently kill this MCP
+// channel child. Mirror the host process policy (src/index.ts): log unhandled
+// rejections without exiting, but exit on a genuine uncaught exception so the
+// host orchestrator can respawn a clean process.
+process.on('unhandledRejection', (reason) => {
+  logger.error({ reason }, 'Unhandled rejection');
+});
+process.on('uncaughtException', (err) => {
+  logger.error({ err }, 'Uncaught exception');
+  // eslint-disable-next-line no-restricted-syntax -- MCP server has no upstream catcher for an uncaught exception; exit so the host orchestrator respawns a clean stdio process (same rationale as the resetPolling suicide in telegram.ts).
+  process.exit(1);
+});
+
 const server = new McpServer(
   { name: '@deus-ai/telegram-mcp', version: '1.0.0' },
   { capabilities: { logging: {} } },

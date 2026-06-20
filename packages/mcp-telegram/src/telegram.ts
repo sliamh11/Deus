@@ -371,11 +371,13 @@ export class TelegramProvider implements ChannelProvider {
       }
     });
 
-    return new Promise<void>((resolve) => {
+    return new Promise<void>((resolve, reject) => {
+      let started = false;
       this.bot!.start({
         // message_reaction is not in the default allowed_updates set — opt in.
         allowed_updates: ['message', 'edited_message', 'message_reaction'],
         onStart: (botInfo) => {
+          started = true;
           this.botUsername = botInfo.username;
           this.connectTime = Date.now();
           this.consecutiveErrors = 0;
@@ -385,6 +387,25 @@ export class TelegramProvider implements ChannelProvider {
           );
           resolve();
         },
+      }).catch((err: unknown) => {
+        // grammy's bot.start() promise rejects (e.g. with "Aborted delay")
+        // when bot.stop() is called while it is in a retry-backoff sleep. If
+        // the bot never connected, surface the failure to the caller; if it
+        // had connected, this is an expected teardown — log and swallow so it
+        // never becomes an unhandled rejection that kills the MCP child.
+        if (!started) {
+          // The bot never came up — clear it so isConnected()/getStatus()
+          // don't report a phantom connection, then surface the failure.
+          this.bot = null;
+          reject(err);
+        } else {
+          // Expected teardown race (bot.stop() during shutdown/reset), not an
+          // error — warn so it is visible in log tailing without false alarms.
+          logger.warn(
+            { err, task: 'telegram.connect.start' },
+            'Telegram polling stopped after connect',
+          );
+        }
       });
     });
   }
@@ -425,20 +446,28 @@ export class TelegramProvider implements ChannelProvider {
             reject(new Error('Polling restart timed out'));
           }, 30_000);
 
-          bot.start({
-            onStart: (botInfo) => {
+          bot
+            .start({
+              onStart: (botInfo) => {
+                clearTimeout(timeout);
+                this.botUsername = botInfo.username;
+                this.connectTime = Date.now();
+                this.resetting = false;
+                this.consecutiveErrors = 0;
+                logger.info(
+                  { username: botInfo.username, id: botInfo.id },
+                  'Telegram bot reconnected after polling reset',
+                );
+                resolve();
+              },
+            })
+            .catch((err: unknown) => {
+              // Route a start() rejection (e.g. "Aborted delay" from the
+              // pre-retry stop()) into this attempt's catch instead of letting
+              // it float as an unhandled rejection.
               clearTimeout(timeout);
-              this.botUsername = botInfo.username;
-              this.connectTime = Date.now();
-              this.resetting = false;
-              this.consecutiveErrors = 0;
-              logger.info(
-                { username: botInfo.username, id: botInfo.id },
-                'Telegram bot reconnected after polling reset',
-              );
-              resolve();
-            },
-          });
+              reject(err);
+            });
         });
         return; // Success — exit retry loop
       } catch (err) {

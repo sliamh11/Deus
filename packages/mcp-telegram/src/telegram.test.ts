@@ -65,6 +65,9 @@ describe('TelegramProvider', () => {
       return Promise.resolve();
     });
     mockStop.mockReset();
+    // bot.stop() is always awaited/`.catch()`'d in the provider — it must
+    // resolve to a thenable, not the bare `undefined` mockReset() leaves.
+    mockStop.mockResolvedValue(undefined);
     mockCommand.mockReset();
     mockOn.mockReset();
     mockCatch.mockImplementation((handler: Function) => {
@@ -144,6 +147,69 @@ describe('TelegramProvider', () => {
         .mockImplementation(() => undefined as never);
       await vi.runAllTimersAsync();
       mockExit.mockRestore();
+    });
+
+    it('routes a start() rejection during reset into the retry loop and recovers', async () => {
+      await provider.connect();
+      mockStop.mockClear();
+      mockStart.mockClear();
+
+      // First reset attempt: start() rejects with grammy's "Aborted delay"
+      // (stop() fired mid-backoff). It must be caught and routed into the
+      // retry loop, NOT float as an unhandled rejection. The next attempt
+      // succeeds via onStart.
+      mockStart
+        .mockImplementationOnce(() =>
+          Promise.reject(new Error('Aborted delay')),
+        )
+        .mockImplementation((options: any) => {
+          if (options?.onStart) {
+            options.onStart({ username: 'test_bot', id: 123 });
+          }
+          return Promise.resolve();
+        });
+
+      // Trip the reset threshold (MAX_CONSECUTIVE_ERRORS = 5).
+      for (let i = 0; i < 5; i++) {
+        catchHandler!({ message: `error ${i}` });
+      }
+
+      // Drive the backoff (BASE_BACKOFF_MS * 2^attempt = 1s, then 2s):
+      // attempt 1 rejects, attempt 2 succeeds.
+      await vi.advanceTimersByTimeAsync(1100);
+      await vi.advanceTimersByTimeAsync(2100);
+
+      expect(mockStart).toHaveBeenCalledTimes(2);
+      expect(provider.isConnected()).toBe(true);
+    });
+  });
+
+  describe('bot.start() rejection handling', () => {
+    it('rejects connect() when start() rejects before the bot connects', async () => {
+      // start() rejects without ever firing onStart (e.g. invalid token) —
+      // the failure must surface to the caller, not silently hang.
+      mockStart.mockImplementationOnce(() =>
+        Promise.reject(new Error('Aborted delay')),
+      );
+      await expect(provider.connect()).rejects.toThrow('Aborted delay');
+      // A failed connect must not report a phantom connection.
+      expect(provider.isConnected()).toBe(false);
+    });
+
+    it('resolves connect() and swallows a post-connect start() rejection', async () => {
+      // onStart fires (bot connected), then start() rejects (stop() mid-backoff).
+      // connect() must resolve and the rejection must be caught — if it floated,
+      // vitest would fail the test on the unhandled rejection.
+      mockStart.mockImplementationOnce((options: any) => {
+        if (options?.onStart) {
+          options.onStart({ username: 'test_bot', id: 123 });
+        }
+        return Promise.reject(new Error('Aborted delay'));
+      });
+      await expect(provider.connect()).resolves.toBeUndefined();
+      // Flush microtasks so the .catch handler runs before the test ends.
+      await Promise.resolve();
+      expect(provider.isConnected()).toBe(true);
     });
   });
 
