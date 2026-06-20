@@ -164,6 +164,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/nonumb-gate.sh\"'",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }
