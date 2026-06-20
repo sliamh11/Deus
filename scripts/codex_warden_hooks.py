@@ -2699,6 +2699,35 @@ def _claude_backend_block_message(role: str, marker: str | None, repo_root: Path
     return msg
 
 
+def _buckets_with_ship(
+    role: str, backend: str, repo_root: Path, exclude_dir: Path
+) -> list[Path]:
+    """Marker dirs (other than ``exclude_dir``) that hold a SHIP for ``<role>@<backend>``.
+
+    Read-only diagnostic used to explain a "not run yet" block when the verdict
+    actually landed in a DIFFERENT per-worktree bucket (e.g. a ``--worktree-root``
+    mark whose sha bucket differs from the one the gate resolved from cwd). Scans
+    the flat ``.claude`` store plus every ``worktree-markers/*`` store -- intentionally
+    O(marker-buckets) (~142 today), acceptable because it runs ONLY on an already-
+    blocking, human-visible path. Never affects gate acceptance (display-only).
+    """
+    key = store_key(role, backend)
+    base = repo_root / ".claude"
+    candidates = [base]
+    wm = base / "worktree-markers"
+    if wm.is_dir():
+        candidates += [d for d in sorted(wm.iterdir()) if d.is_dir()]
+    excl = Path(exclude_dir).resolve(strict=False)
+    hits: list[Path] = []
+    for d in candidates:
+        if d.resolve(strict=False) == excl:
+            continue
+        entry = _read_verdicts_at(d / ".warden-verdicts.json").get(key)
+        if isinstance(entry, dict) and entry.get("verdict") == VERDICT_SHIP:
+            hits.append(d)
+    return hits
+
+
 def _warden_backends_block_message(
     role: str, blocking: list[tuple[str, str | None]], repo_root: Path,
 ) -> str:
@@ -2712,10 +2741,26 @@ def _warden_backends_block_message(
             # Non-diff roles (plan-reviewer) need an explicit --content-file path; diff roles
             # auto-gather the working-tree diff, so no source arg is shown for them.
             src = " --content-file <path-to-plan>" if role in _CONTENT_FILE_ROLES else ""
-            lines.append(
+            msg = (
                 f"  - {backend}: {state} -- run:\n"
                 f"  python3 scripts/codex_warden.py --role {role} --backend {backend}{src} --warden-mark"
             )
+            # Bucket-mismatch diagnostic: a "not run yet" often means the verdict landed
+            # in a different per-worktree bucket than the one this gate reads (the classic
+            # --worktree-root-vs-cwd split). Point the operator at it instead of a silent retry.
+            if not verdict:
+                current = _claude_marker_dir(repo_root)
+                hits = _buckets_with_ship(role, backend, repo_root, current)
+                if hits:
+                    wt = _WORKTREE_OVERRIDE or _current_worktree(repo_root)
+                    found = ", ".join(str(h) for h in hits)
+                    msg += (
+                        f"\n  co-gate bucket mismatch: a SHIP for {store_key(role, backend)} "
+                        f"exists in {found}; this gate reads {current} (worktree={wt}). "
+                        "Re-mark for THIS worktree -- from its cwd without --worktree-root, "
+                        f"or --worktree-root {wt}."
+                    )
+            lines.append(msg)
     if _co_gate_escalation_active(repo_root, role):
         loop = _read_loop(repo_root, role)
         hist = "; ".join(

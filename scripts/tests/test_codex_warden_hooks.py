@@ -4597,3 +4597,46 @@ def test_pr_matches_worktree_no_ref_matches_current_branch(tmp_path):
     matched, _ = hooks._pr_matches_worktree("gh pr merge --admin", repo)
 
     assert matched is True  # no explicit ref => current branch => this worktree's PR
+
+
+def test_block_message_diagnoses_bucket_mismatch(tmp_path):
+    """A 'not run yet' model backend whose SHIP sits in a SIBLING bucket gets a
+    pointer to that bucket instead of a silent retry."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    sibling = repo / ".claude" / "worktree-markers" / "deadbeef0001"
+    sibling.mkdir(parents=True)
+    (sibling / ".warden-verdicts.json").write_text(
+        json.dumps(
+            {"code-reviewer@gpt": {"verdict": "SHIP", "ts": "t", "reason": "r"}}
+        )
+    )
+
+    msg = hooks._warden_backends_block_message("code-reviewer", [("gpt", None)], repo)
+
+    assert "co-gate bucket mismatch:" in msg
+    assert "code-reviewer@gpt" in msg
+    assert str(sibling) in msg
+
+
+def test_block_message_no_mismatch_when_verdict_absent_everywhere(tmp_path):
+    """No SHIP anywhere -> plain 'not run yet', no false-positive diagnostic."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    msg = hooks._warden_backends_block_message("code-reviewer", [("gpt", None)], repo)
+
+    assert "not run yet" in msg
+    assert "co-gate bucket mismatch:" not in msg
+
+
+def test_buckets_with_ship_excludes_current_bucket(tmp_path):
+    """A SHIP in the gate's OWN bucket is never reported as a sibling mismatch."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    current = repo / ".claude"  # the excluded (gate's own) bucket
+    (current / ".warden-verdicts.json").write_text(
+        json.dumps({"code-reviewer@gpt": {"verdict": "SHIP", "ts": "t"}})
+    )
+
+    assert hooks._buckets_with_ship("code-reviewer", "gpt", repo, current) == []
