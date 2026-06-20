@@ -58,6 +58,19 @@ const logger = pino(
 );
 const baileysLogger = pino({ level: 'silent' });
 
+/**
+ * Decide whether a close should reconnect, and split the two non-reconnect
+ * cases so an intentional teardown is never mislabeled as a real logout.
+ */
+export function classifyDisconnect(
+  reason: number | undefined,
+  intentional: boolean,
+): 'reconnect' | 'intentional-shutdown' | 'logged-out' {
+  if (intentional) return 'intentional-shutdown';
+  if (reason === DisconnectReason.loggedOut) return 'logged-out';
+  return 'reconnect';
+}
+
 export class WhatsAppProvider implements ChannelProvider {
   readonly name = 'whatsapp';
 
@@ -156,11 +169,10 @@ export class WhatsAppProvider implements ChannelProvider {
         const reason = (
           lastDisconnect?.error as { output?: { statusCode?: number } }
         )?.output?.statusCode;
-        const shouldReconnect =
-          reason !== DisconnectReason.loggedOut && !this.intentionalDisconnect;
-        logger.info({ reason, shouldReconnect }, 'Connection closed');
+        const kind = classifyDisconnect(reason, this.intentionalDisconnect);
+        logger.info({ reason, kind }, 'Connection closed');
 
-        if (shouldReconnect) {
+        if (kind === 'reconnect') {
           // The connection didn't prove stable — let the backoff keep growing.
           this.reconnect.markDisconnected();
           // Single-flight + exponential backoff. Replaces the old zero-delay
@@ -176,6 +188,8 @@ export class WhatsAppProvider implements ChannelProvider {
               'Reconnecting...',
             );
           }
+        } else if (kind === 'intentional-shutdown') {
+          logger.info('WhatsApp socket closed (intentional shutdown).');
         } else {
           logger.info('Logged out. Re-authenticate to continue.');
         }
