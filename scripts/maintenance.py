@@ -88,6 +88,11 @@ def main():
         "prune_warden_baks", [prune_baks, "--keep", "10"], dry_run
     )
 
+    rotate_qlog = str(SCRIPTS_DIR / "maintenance" / "rotate_query_log.py")
+    results["rotate_query_log"] = run_task(
+        "rotate_query_log", [rotate_qlog], dry_run
+    )
+
     # ── Weekly tasks (Sunday or --weekly) ────────────────────────────────────
 
     if run_weekly:
