@@ -30,6 +30,74 @@ const execFileAsync = promisify(execFile);
 
 const CI_POLL_INTERVAL_MS = 60_000;
 // Separate from linear-dispatcher.ts's inline version due to circular import (LinearContext)
+
+// ---------------------------------------------------------------------------
+// Quiet-hours merge gate (LIA-321).
+//
+// LINEAR_AUTO_MERGE_WINDOW="<startHour>-<endHour>" (local wall-clock hours, e.g.
+// "4-5" = [04:00,05:00)) defers autonomous merges to a nightly window so they
+// batch overnight instead of churning service restarts during active hours.
+// UNSET/empty/malformed => always-open (no gate): the continuous-merge default
+// is preserved (fail-open). Wrap-around aware ("22-6" spans midnight).
+//
+// `deferralCommentsSent` dedups the "deferred" Linear comment in-memory rather
+// than via auto_merge_state — `triggerAutoMerge` already sets state='pending'
+// BEFORE reaching `mergeOrFail`, so a state-read guard would wrongly suppress
+// the first comment on the main autonomous path. Restart-reset is acceptable
+// (at most one re-announce per parked PR per process lifetime). auto_merge_state
+// MUST stay 'pending' so `getPendingAutoMerges` still picks the PR up.
+// `inFlightPolls` prevents the periodic sweep from stacking concurrent pollers
+// on a genuinely-slow-CI PR. Both Sets give O(1) membership over a tiny set.
+const deferralCommentsSent = new Set<string>();
+const inFlightPolls = new Set<string>();
+
+export function parseMergeWindow(
+  raw: string | undefined = process.env.LINEAR_AUTO_MERGE_WINDOW,
+): { start: number; end: number } | null {
+  if (!raw || !raw.trim()) return null;
+  const parts = raw.split('-');
+  if (parts.length !== 2) {
+    logger.warn(
+      { raw },
+      'auto-merge: malformed LINEAR_AUTO_MERGE_WINDOW (expected "H-H") — ignoring (always-open)',
+    );
+    return null;
+  }
+  const start = Number(parts[0]);
+  const end = Number(parts[1]);
+  const valid = (n: number) => Number.isInteger(n) && n >= 0 && n <= 23;
+  if (!valid(start) || !valid(end)) {
+    logger.warn(
+      { raw },
+      'auto-merge: LINEAR_AUTO_MERGE_WINDOW hours must be integers 0-23 — ignoring (always-open)',
+    );
+    return null;
+  }
+  if (start === end) {
+    logger.warn(
+      { raw },
+      'auto-merge: LINEAR_AUTO_MERGE_WINDOW start === end (zero-width) — ignoring (always-open)',
+    );
+    return null;
+  }
+  return { start, end };
+}
+
+/**
+ * True when `now` (local wall clock) falls inside the configured quiet-hours
+ * window, OR when no valid window is configured (always-open). Uses
+ * Date.getHours() = process-local TZ (assumes process TZ matches the user's
+ * local TZ; documented in .env.example).
+ */
+export function isWithinMergeWindow(now: Date = new Date()): boolean {
+  const win = parseMergeWindow();
+  if (!win) return true;
+  const h = now.getHours();
+  return win.start > win.end
+    ? h >= win.start || h < win.end // wrap-around (e.g. 22-6)
+    : h >= win.start && h < win.end; // normal (e.g. 4-5)
+}
+
 async function tripCircuitBreaker(
   ctx: LinearContext,
   issueId: string,
@@ -297,9 +365,24 @@ export async function attemptAutoMerge(
     // CI still running — hand off to a detached bounded poll so the caller (an
     // awaited webhook cooldown callback) returns immediately. The PR stays
     // auto_merge_state='pending'; the startup sweep re-runs this on restart.
-    fireAndForget(() => pollUntilMergeable(ctx, issueId, prUrl, ident), {
-      name: 'auto-merge.poll',
-    });
+    // inFlightPolls (LIA-321): one poller per issue — the periodic quiet-hours
+    // sweep re-enters attemptAutoMerge every interval, so without this guard a
+    // genuinely-slow-CI PR would stack overlapping pollers.
+    if (inFlightPolls.has(issueId)) {
+      logger.info(
+        { issueId, prUrl },
+        'auto-merge: poll already in flight — skipping duplicate spawn',
+      );
+      return;
+    }
+    inFlightPolls.add(issueId);
+    fireAndForget(
+      () =>
+        pollUntilMergeable(ctx, issueId, prUrl, ident).finally(() =>
+          inFlightPolls.delete(issueId),
+        ),
+      { name: 'auto-merge.poll' },
+    );
     return;
   }
 
@@ -318,8 +401,30 @@ async function mergeOrFail(
   prUrl: string,
   ident: string,
 ): Promise<void> {
+  // Quiet-hours gate (LIA-321): outside the configured window, PARK for the
+  // sweep instead of merging now. Not a failure — never routes to
+  // handleMergeFailure (no agent re-dispatch, no circuit-breaker).
+  if (!isWithinMergeWindow()) {
+    updatePrAutoMergeState(issueId, 'pending');
+    if (!deferralCommentsSent.has(issueId)) {
+      deferralCommentsSent.add(issueId);
+      const win = parseMergeWindow();
+      const fmt = (h: number) => String(h).padStart(2, '0');
+      await ctx.client.createComment({
+        issueId,
+        body: `**Auto-merge deferred** — CI is green, holding PR ${prUrl} until the quiet-hours window (${fmt(win!.start)}:00–${fmt(win!.end)}:00 local). It will merge on the next in-window sweep.`,
+      });
+      logger.info(
+        { issueId, prUrl, window: process.env.LINEAR_AUTO_MERGE_WINDOW },
+        'auto-merge: deferred to quiet-hours window',
+      );
+    }
+    return;
+  }
+
   const result = await mergePr(prUrl);
   if (result.merged) {
+    deferralCommentsSent.delete(issueId);
     await handleMergeSuccess(ctx, issueId, prUrl, ident);
   } else {
     await handleMergeFailure(
@@ -392,10 +497,9 @@ export async function markDoneIfMerged(
  *  - exhausted (still pending past the cap) → PARK: leave auto_merge_state
  *    'pending', no requeue, no circuit-breaker, but POST a comment so the parked
  *    PR is visible, not dark. pending != failure, so we must NOT thrash the
- *    agent. sweepPendingAutoMerges re-runs this on the next restart. NOTE: that
- *    sweep is startup-only, so a parked PR waits until the next deploy/restart —
- *    acceptable for a solo pipeline that restarts on every deploy; a periodic
- *    sweep is a deferred option.
+ *    agent. sweepPendingAutoMerges re-runs this on the next startup AND, when the
+ *    quiet-hours window (LIA-321) is configured, on the periodic sweep registered
+ *    in index.ts — so a parked PR no longer waits for a restart in that mode.
  *
  * CAVEAT: queryPrChecks maps a transient gh error (auth/network/rate-limit) to
  * 'pending' (see its catch), so a SUSTAINED gh outage looks like slow CI and

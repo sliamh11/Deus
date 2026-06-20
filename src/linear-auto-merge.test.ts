@@ -800,3 +800,224 @@ describe('mergeIfGreen / markDoneIfMerged — GitHub-webhook merge-only entries 
     expect(ctx.client.updateIssue).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Quiet-hours merge gate (LIA-321) — window parser + mergeOrFail gate.
+// Oracle authored blind from the spec (B1-B5 park/comment, C1-C3 happy-path,
+// W1 wrap-around); B5 drives two sequential outside-window calls because the
+// comment dedup is Set-based (module-level deferralCommentsSent), not state-
+// based — triggerAutoMerge pre-sets state='pending' before mergeOrFail.
+// ---------------------------------------------------------------------------
+
+describe('parseMergeWindow / isWithinMergeWindow (LIA-321)', () => {
+  afterEach(() => {
+    delete process.env.LINEAR_AUTO_MERGE_WINDOW;
+  });
+
+  it('unset / empty / malformed / out-of-range / zero-width → null (always-open)', async () => {
+    const { parseMergeWindow } = await import('./linear-auto-merge.js');
+    for (const raw of [
+      undefined,
+      '',
+      '   ',
+      '4',
+      '4-5-6',
+      'a-b',
+      '4-25',
+      '-1-5',
+      '4-4',
+    ]) {
+      expect(parseMergeWindow(raw as string | undefined)).toBeNull();
+    }
+  });
+
+  it('valid "4-5" parses to {start:4,end:5}', async () => {
+    const { parseMergeWindow } = await import('./linear-auto-merge.js');
+    expect(parseMergeWindow('4-5')).toEqual({ start: 4, end: 5 });
+  });
+
+  it('unset window → always inside (no gate)', async () => {
+    const { isWithinMergeWindow } = await import('./linear-auto-merge.js');
+    expect(isWithinMergeWindow(new Date('2025-01-15T12:00:00'))).toBe(true);
+  });
+
+  it('"4-5": 04:30 inside, 05:30 + 03:30 outside', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '4-5';
+    const { isWithinMergeWindow } = await import('./linear-auto-merge.js');
+    expect(isWithinMergeWindow(new Date('2025-01-15T04:30:00'))).toBe(true);
+    expect(isWithinMergeWindow(new Date('2025-01-15T05:30:00'))).toBe(false);
+    expect(isWithinMergeWindow(new Date('2025-01-15T03:30:00'))).toBe(false);
+  });
+
+  it('wrap-around "22-6": 23:00 + 02:00 inside, 12:00 outside', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '22-6';
+    const { isWithinMergeWindow } = await import('./linear-auto-merge.js');
+    expect(isWithinMergeWindow(new Date('2025-01-15T23:00:00'))).toBe(true);
+    expect(isWithinMergeWindow(new Date('2025-01-15T02:00:00'))).toBe(true);
+    expect(isWithinMergeWindow(new Date('2025-01-15T12:00:00'))).toBe(false);
+  });
+});
+
+describe('mergeOrFail quiet-hours gate (LIA-321)', () => {
+  const PR = 'https://github.com/test-owner/test-repo/pull/999';
+  const checks = (bucket: 'pass' | 'pending' | 'fail') => ({
+    stdout: JSON.stringify([{ bucket, name: 'ci' }]),
+  });
+
+  function mergeCallArgs(): string[] | undefined {
+    const call = execFileMock.mock.calls.find(
+      (c: unknown[]) =>
+        Array.isArray(c[1]) && (c[1] as string[]).includes('merge'),
+    );
+    return call ? (call[1] as string[]) : undefined;
+  }
+
+  beforeEach(() => {
+    process.env.LINEAR_AUTO_MERGE = '1';
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    delete process.env.LINEAR_AUTO_MERGE;
+    delete process.env.LINEAR_AUTO_MERGE_WINDOW;
+    vi.useRealTimers();
+  });
+
+  it('B1: outside window → NO gh pr merge call', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '4-5';
+    vi.setSystemTime(new Date('2025-01-15T03:00:00'));
+    execFileMock.mockReturnValueOnce(checks('pass'));
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-b1', PR);
+    await mergeIfGreen(ctx, 'qh-b1', PR, 'LIA-999');
+    expect(mergeCallArgs()).toBeUndefined();
+  });
+
+  it('B2: outside window → parked as "pending" (not "failed"/"none")', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '4-5';
+    vi.setSystemTime(new Date('2025-01-15T03:00:00'));
+    execFileMock.mockReturnValueOnce(checks('pass'));
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-b2', PR);
+    await mergeIfGreen(ctx, 'qh-b2', PR, 'LIA-999');
+    expect(getIssuePr('qh-b2')?.auto_merge_state).toBe('pending');
+  });
+
+  it('B3: outside window → no issue state change (no handleMergeFailure)', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '4-5';
+    vi.setSystemTime(new Date('2025-01-15T03:00:00'));
+    execFileMock.mockReturnValueOnce(checks('pass'));
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-b3', PR);
+    await mergeIfGreen(ctx, 'qh-b3', PR, 'LIA-999');
+    expect(ctx.client.updateIssue).not.toHaveBeenCalled();
+  });
+
+  it('B4: first park (prev state none) → one deferred comment', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '4-5';
+    vi.setSystemTime(new Date('2025-01-15T03:00:00'));
+    execFileMock.mockReturnValueOnce(checks('pass'));
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-b4', PR);
+    await mergeIfGreen(ctx, 'qh-b4', PR, 'LIA-999');
+    expect(ctx.client.createComment).toHaveBeenCalledTimes(1);
+    expect(ctx.client.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId: 'qh-b4',
+        body: expect.stringMatching(/deferred|quiet.hours|window/i),
+      }),
+    );
+  });
+
+  it('B5: re-park (two outside-window calls) → exactly one comment', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '4-5';
+    vi.setSystemTime(new Date('2025-01-15T03:00:00'));
+    execFileMock
+      .mockReturnValueOnce(checks('pass'))
+      .mockReturnValueOnce(checks('pass'));
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-b5', PR);
+    await mergeIfGreen(ctx, 'qh-b5', PR, 'LIA-999'); // first park: comment
+    await mergeIfGreen(ctx, 'qh-b5', PR, 'LIA-999'); // re-park: suppressed
+    expect(ctx.client.createComment).toHaveBeenCalledTimes(1);
+    expect(getIssuePr('qh-b5')?.auto_merge_state).toBe('pending');
+    expect(mergeCallArgs()).toBeUndefined();
+  });
+
+  it('C1: inside window → --admin merge proceeds → Done', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '4-5';
+    vi.setSystemTime(new Date('2025-01-15T04:30:00'));
+    execFileMock
+      .mockReturnValueOnce(checks('pass'))
+      .mockReturnValueOnce(checks('pass'))
+      .mockReturnValueOnce({ stdout: '' });
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-c1', PR);
+    await mergeIfGreen(ctx, 'qh-c1', PR, 'LIA-999');
+    expect(mergeCallArgs()).toBeDefined();
+    expect(mergeCallArgs()).toContain('--admin');
+    expect(ctx.client.updateIssue).toHaveBeenCalledWith(
+      'qh-c1',
+      expect.objectContaining({ stateId: 'done-id' }),
+    );
+  });
+
+  it('C2: no window env → merge proceeds (backward compat)', async () => {
+    vi.setSystemTime(new Date('2025-01-15T03:00:00'));
+    execFileMock
+      .mockReturnValueOnce(checks('pass'))
+      .mockReturnValueOnce(checks('pass'))
+      .mockReturnValueOnce({ stdout: '' });
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-c2', PR);
+    await mergeIfGreen(ctx, 'qh-c2', PR, 'LIA-999');
+    expect(mergeCallArgs()).toBeDefined();
+    expect(mergeCallArgs()).toContain('--admin');
+  });
+
+  it('C3: empty window string → merge proceeds (backward compat)', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '';
+    vi.setSystemTime(new Date('2025-01-15T03:00:00'));
+    execFileMock
+      .mockReturnValueOnce(checks('pass'))
+      .mockReturnValueOnce(checks('pass'))
+      .mockReturnValueOnce({ stdout: '' });
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-c3', PR);
+    await mergeIfGreen(ctx, 'qh-c3', PR, 'LIA-999');
+    expect(mergeCallArgs()).toBeDefined();
+  });
+
+  it('W1: wrap-around "22-6" at 23:00 inside → merge proceeds', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '22-6';
+    vi.setSystemTime(new Date('2025-01-15T23:00:00'));
+    execFileMock
+      .mockReturnValueOnce(checks('pass'))
+      .mockReturnValueOnce(checks('pass'))
+      .mockReturnValueOnce({ stdout: '' });
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-w1', PR);
+    await mergeIfGreen(ctx, 'qh-w1', PR, 'LIA-999');
+    expect(mergeCallArgs()).toBeDefined();
+  });
+
+  it('W1b: wrap-around "22-6" at 12:00 outside → parked, no merge', async () => {
+    process.env.LINEAR_AUTO_MERGE_WINDOW = '22-6';
+    vi.setSystemTime(new Date('2025-01-15T12:00:00'));
+    execFileMock.mockReturnValueOnce(checks('pass'));
+    const { mergeIfGreen } = await import('./linear-auto-merge.js');
+    const ctx = makeAutoMergeCtx();
+    upsertIssuePr('qh-w1b', PR);
+    await mergeIfGreen(ctx, 'qh-w1b', PR, 'LIA-999');
+    expect(mergeCallArgs()).toBeUndefined();
+    expect(getIssuePr('qh-w1b')?.auto_merge_state).toBe('pending');
+  });
+});

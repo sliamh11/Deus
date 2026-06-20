@@ -601,6 +601,31 @@ async function main(): Promise<void> {
       sweepPendingAutoMerges(linearCtx).catch((err) => {
         logger.warn({ err }, 'auto-merge: startup sweep failed');
       });
+
+      // Periodic pending-merge sweep — registered ONLY when the quiet-hours
+      // window is configured, so deferred PRs merge once the window opens
+      // without waiting for a restart. No window => no interval => the exact
+      // pre-feature startup-only behavior is preserved (zero-change default).
+      // (LIA-321 quiet-hours merge gate.)
+      const { parseMergeWindow } = await import('./linear-auto-merge.js');
+      const { isAutoMergeEnabled } = await import('./config.js');
+      if (parseMergeWindow() && isAutoMergeEnabled()) {
+        const { envPositiveInt } = await import('./env-utils.js');
+        const sweepMs = envPositiveInt('AUTO_MERGE_SWEEP_INTERVAL_MS', 900_000);
+        // Capture the narrowed (non-null) ctx — the setInterval closure runs
+        // later, so TS won't carry the outer non-null narrowing into it.
+        const sweepCtx = linearCtx;
+        const periodicSweep = setInterval(() => {
+          sweepPendingAutoMerges(sweepCtx).catch((err) => {
+            logger.warn({ err }, 'auto-merge: periodic sweep failed');
+          });
+        }, sweepMs);
+        periodicSweep.unref();
+        logger.info(
+          { sweepMs, window: process.env.LINEAR_AUTO_MERGE_WINDOW },
+          'auto-merge: periodic pending-merge sweep registered (quiet-hours window active)',
+        );
+      }
       const { runInlineCompletionCheck } = await import('./linear-webhook.js');
       const ctx = linearCtx;
       sweepStaleInReview(ctx, (issueData) =>
