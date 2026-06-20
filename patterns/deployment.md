@@ -1,5 +1,5 @@
 ---
-last_verified: "2026-06-19" # auto-bump @1781855985
+last_verified: "2026-06-20" # auto-bump @1781946645
 governs:
   - package.json
   - tsconfig.json
