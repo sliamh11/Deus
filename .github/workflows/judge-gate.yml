@@ -32,7 +32,30 @@ jobs:
         # not use deepeval/langchain.
         run: pip install google-genai==1.14.0
 
-      - name: Run safety red-team recall bench (Gemini judge)
+      - name: Check Gemini secret
+        # Preflight: a missing GEMINI_API_KEY (fork PR, unconfigured repo) would
+        # otherwise crash the bench in load_api_key() with an opaque traceback,
+        # invisible under continue-on-error. Emit a clear warning and a step
+        # output so the bench step is SKIPPED (not failed). NOTE: this must gate
+        # the bench via `if:` -- a bare `exit 0` here would NOT skip later steps,
+        # GitHub runs steps regardless of a prior step's successful exit.
+        id: preflight
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::warning::GEMINI_API_KEY secret not configured -- skipping safety-recall gate"
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run safety red-team recall bench (Gemini judge)
+        if: steps.preflight.outputs.has_key == 'true'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Pin the judge model to the one the baselines.json floor was measured
+          # on (provenance.judge) so a change to the config.py JUDGE_MODEL default
+          # cannot silently shift measured recall away from the committed floor.
+          EVOLUTION_JUDGE_MODEL: models/gemini-3.1-flash-lite
         run: python -m evolution.eval.safety_redteam --provider gemini

@@ -314,8 +314,9 @@ class TestFloorReader:
     """_load_floor() reads the committed floor and degrades safely."""
 
     def test_reads_committed_file_floor(self):
-        # The committed baselines.json floor is the conservative 0.80 target.
-        assert _load_floor() == 0.80
+        # The committed baselines.json floor is the honest Gemini-measured 0.86
+        # (observed 0.913 minus one ~0.05 judge-agreement band; LIA-326).
+        assert _load_floor() == 0.86
 
     def test_reads_custom_floor_value(self, tmp_path, monkeypatch):
         # A distinct value proves the file is actually read, not the default.
