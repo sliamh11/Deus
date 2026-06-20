@@ -1,0 +1,38 @@
+name: Judge Regression Gate
+
+# Advisory (v1): runs the safety red-team recall bench against the Gemini judge
+# on changes under evolution/. continue-on-error means it never blocks a PR yet
+# -- it surfaces a regression signal. Promote to a required/blocking check only
+# after an honest Gemini-measured floor is committed to baselines.json and the
+# job has a stability track record (LIA-321 step A.2).
+
+on:
+  pull_request:
+    paths:
+      - 'evolution/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  safety-recall:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install judge deps
+        # Only the Gemini judge client is needed for this path (pinned to match
+        # eval/requirements.txt). Not the full eval deps -- safety_redteam does
+        # not use deepeval/langchain.
+        run: pip install google-genai==1.14.0
+
+      - name: Run safety red-team recall bench (Gemini judge)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python -m evolution.eval.safety_redteam --provider gemini

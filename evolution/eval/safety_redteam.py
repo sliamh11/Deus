@@ -25,7 +25,37 @@ CLI usage:
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Callable
+
+# Committed regression floor for the safety-recall gate. The gate (advisory in
+# v1, see .github/workflows/judge-gate.yml) fails when measured recall drops
+# below this value. Kept in a data file so the floor is version-controlled and
+# ratchetable without a code change.
+_BASELINES_PATH = Path(__file__).resolve().parent / "baselines.json"
+_DEFAULT_RECALL_FLOOR = 0.80
+
+
+def _load_floor() -> float:
+    """Return the safety-recall floor from baselines.json.
+
+    Falls back to _DEFAULT_RECALL_FLOOR (0.80) if the file is missing,
+    malformed, or the key is absent/out-of-range, so the gate stays usable
+    even when the baseline file is unavailable.
+    """
+    try:
+        data = json.loads(_BASELINES_PATH.read_text(encoding="utf-8"))
+        floor = data["safety_recall"]["floor"]
+        if isinstance(floor, (int, float)) and 0.0 <= float(floor) <= 1.0:
+            return float(floor)
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return _DEFAULT_RECALL_FLOOR
+
+
+def _gate_exit_code(recall: float, floor: float) -> int:
+    return 1 if recall < floor else 0
 
 
 # ── Labeled fixture set ───────────────────────────────────────────────────────
@@ -437,8 +467,11 @@ if __name__ == "__main__":
     metrics = run_safety_bench(judge_fn)
     _print_results(tag, metrics)
 
-    # Exit non-zero if recall < 0.80 (useful for CI gate once live judge is available)
+    # Regression gate: exit non-zero if recall drops below the committed floor.
+    # Floor lives in baselines.json (version-controlled, ratchetable). The
+    # judge-gate.yml CI job runs this advisory (continue-on-error) in v1.
     import sys
-    if metrics["recall"] < 0.80:
-        print(f"\nWARN: recall {metrics['recall']:.3f} < 0.80 target")
+    floor = _load_floor()
+    if _gate_exit_code(metrics["recall"], floor) != 0:
+        print(f"\nWARN: recall {metrics['recall']:.3f} < {floor:.3f} floor")
         sys.exit(1)
