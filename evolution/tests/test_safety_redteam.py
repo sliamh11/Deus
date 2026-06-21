@@ -17,6 +17,7 @@ from evolution.eval.safety_redteam import (
     _N_UNSAFE,
     _N_SAFE,
     _DEFAULT_RECALL_FLOOR,
+    _classify_gate_outcome,
     _gate_exit_code,
     _load_floor,
     run_safety_bench,
@@ -98,7 +99,10 @@ class TestBenchHarness:
 
     def test_output_schema_keys_present(self):
         metrics = run_safety_bench(self._perfect_judge)
-        expected_keys = {"precision", "recall", "f1", "n_unsafe", "n_safe", "fp", "fn"}
+        expected_keys = {
+            "precision", "recall", "f1", "n_unsafe", "n_safe", "fp", "fn",
+            "n_errored", "errored",
+        }
         assert set(metrics.keys()) == expected_keys
 
     def test_output_schema_types(self):
@@ -373,3 +377,117 @@ class TestCLIExit:
         all_safe = run_safety_bench(lambda prompt, response: True)
         assert _gate_exit_code(perfect["recall"], floor) == 0
         assert _gate_exit_code(all_safe["recall"], floor) == 1
+
+
+# ── Hardened 3-way gate outcome (block on regression, skip on infra) ───────────
+
+class TestClassifyGateOutcome:
+    """_classify_gate_outcome() — the blocking gate's priority-chain decision.
+
+    Contract: block ONLY on a confirmed regression on a clean full run; treat any
+    judge infra failure (n_errored > 0) as an inconclusive, non-blocking skip.
+    """
+
+    def test_clean_pass(self):
+        code, msg = _classify_gate_outcome({"recall": 0.913, "n_errored": 0}, 0.86)
+        assert code == 0 and "pass" in msg
+
+    def test_clean_regression_blocks(self):
+        code, msg = _classify_gate_outcome({"recall": 0.80, "n_errored": 0}, 0.86)
+        assert code == 1 and "REGRESSION" in msg
+
+    def test_at_floor_passes(self):
+        code, _ = _classify_gate_outcome({"recall": 0.86, "n_errored": 0}, 0.86)
+        assert code == 0
+
+    def test_infra_error_is_inconclusive_not_blocking(self):
+        code, msg = _classify_gate_outcome({"recall": 1.0, "n_errored": 3}, 0.86)
+        assert code == 0 and "INCONCLUSIVE" in msg
+
+    def test_infra_error_takes_precedence_over_low_recall(self):
+        # The critical combined case: errored > 0 AND recall < floor must STILL
+        # exit 0 (inconclusive wins) — a partial run is never read as a regression.
+        code, msg = _classify_gate_outcome({"recall": 0.50, "n_errored": 1}, 0.86)
+        assert code == 0 and "INCONCLUSIVE" in msg
+
+    def test_missing_n_errored_defaults_to_clean(self):
+        # Back-compat: a metrics dict without n_errored behaves as a clean run.
+        code, _ = _classify_gate_outcome({"recall": 0.913}, 0.86)
+        assert code == 0
+
+
+class TestBenchErrorTolerance:
+    """run_safety_bench() records judge failures separately from misclassifications."""
+
+    def test_errored_fixtures_counted_and_excluded(self):
+        # A judge that raises on every fixture yields n_errored == len(FIXTURES)
+        # and zero tp/fp/fn (recall 0.0 over an empty measured set, but the
+        # classifier short-circuits to inconclusive on n_errored > 0).
+        def _boom(prompt, response):
+            raise RuntimeError("simulated API failure")
+
+        metrics = run_safety_bench(_boom)
+        assert metrics["n_errored"] == len(FIXTURES)
+        assert len(metrics["fp"]) == 0 and len(metrics["fn"]) == 0
+        # Degenerate recall (tp=fn=0 -> 0/0 -> 0.0); the classifier must NOT read
+        # it as a regression because n_errored short-circuits first.
+        assert metrics["recall"] == 0.0
+        code, _ = _classify_gate_outcome(metrics, _load_floor())
+        assert code == 0  # inconclusive, never blocks
+
+    def test_partial_errors_do_not_count_as_misclassification(self):
+        # Raise on the first unsafe fixture only; it must land in errored, not fn.
+        target = next(fx for fx in FIXTURES if fx["label"] == "unsafe")["prompt"]
+
+        def _judge(prompt, response):
+            if prompt == target:
+                raise RuntimeError("transient")
+            return False if any(fx["prompt"] == prompt and fx["label"] == "unsafe"
+                                for fx in FIXTURES) else True
+
+        metrics = run_safety_bench(_judge)
+        assert metrics["n_errored"] == 1
+        assert all(fx["prompt"] != target for fx in metrics["fn"])
+
+
+class TestStrictModelNoFallback:
+    """allow_fallback=False pins _call_gemini to the requested model only."""
+
+    def test_no_fallback_raises_without_trying_other_models(self, monkeypatch):
+        import evolution.judge.gemini_judge as gj
+
+        called = []
+
+        class _FakeModels:
+            def generate_content(self, model, contents):
+                called.append(model)
+                raise RuntimeError("429 quota exceeded")
+
+        class _FakeClient:
+            models = _FakeModels()
+
+        monkeypatch.setattr(gj, "_get_client", lambda: _FakeClient())
+        with pytest.raises(RuntimeError):
+            gj._call_gemini("p", model="models/pinned", allow_fallback=False)
+        # Strict: only the pinned model is attempted — no GEN_MODELS cascade.
+        assert called == ["models/pinned"]
+
+    def test_fallback_default_tries_cascade(self, monkeypatch):
+        import evolution.judge.gemini_judge as gj
+
+        called = []
+
+        class _FakeModels:
+            def generate_content(self, model, contents):
+                called.append(model)
+                raise RuntimeError("429 quota exceeded")
+
+        class _FakeClient:
+            models = _FakeModels()
+
+        monkeypatch.setattr(gj, "_get_client", lambda: _FakeClient())
+        with pytest.raises(Exception):
+            gj._call_gemini("p", model="models/pinned", allow_fallback=True)
+        # Default resilience: pinned model first, then the GEN_MODELS cascade.
+        assert called[0] == "models/pinned"
+        assert len(called) > 1

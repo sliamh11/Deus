@@ -1,10 +1,16 @@
 name: Judge Regression Gate
 
-# Advisory (v1): runs the safety red-team recall bench against the Gemini judge
-# on changes under evolution/. continue-on-error means it never blocks a PR yet
-# -- it surfaces a regression signal. Promote to a required/blocking check only
-# after an honest Gemini-measured floor is committed to baselines.json and the
-# job has a stability track record (LIA-321 step A.2).
+# Blocking (LIA-326 item 4): runs the safety red-team recall bench against the
+# pinned Gemini judge on changes under evolution/. Contract: BLOCK only on a
+# confirmed regression (recall < the baselines.json floor on a clean full run on
+# the pinned model); NEVER block on infrastructure. The bench itself exits 0 on
+# any judge infra failure (API error / rate-limit / strict-model quota -> an
+# INCONCLUSIVE run, _classify_gate_outcome in safety_redteam.py), and a missing
+# GEMINI_API_KEY skips the bench step (preflight below). So a Gemini hiccup
+# cannot hard-block evolution/** PRs -- only a real recall drop does.
+# Recovery: if this required check is persistently red due to a JOB-level infra
+# failure (OOM/runner timeout/Docker), drop 'safety-recall' from the branch
+# protection required_status_checks contexts and re-enable after resolution.
 
 on:
   pull_request:
@@ -18,7 +24,6 @@ permissions:
 jobs:
   safety-recall:
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
@@ -34,11 +39,12 @@ jobs:
 
       - name: Check Gemini secret
         # Preflight: a missing GEMINI_API_KEY (fork PR, unconfigured repo) would
-        # otherwise crash the bench in load_api_key() with an opaque traceback,
-        # invisible under continue-on-error. Emit a clear warning and a step
-        # output so the bench step is SKIPPED (not failed). NOTE: this must gate
-        # the bench via `if:` -- a bare `exit 0` here would NOT skip later steps,
-        # GitHub runs steps regardless of a prior step's successful exit.
+        # otherwise crash the bench in load_api_key() with an opaque traceback.
+        # Emit a clear warning and a step output so the bench step is SKIPPED
+        # (not failed) -- a missing secret is infrastructure, not a regression,
+        # so it must not block (consistent with the in-bench infra-skip). NOTE:
+        # this must gate the bench via `if:` -- a bare `exit 0` here would NOT
+        # skip later steps; GitHub runs steps regardless of a prior step's exit.
         id: preflight
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
