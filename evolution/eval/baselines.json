@@ -20,5 +20,23 @@
         "note": "Pre-LIA-326 measurement on a different judge (Ollama gemma4:e4b), NOT the CI gate's Gemini judge -- kept for history, not used as the gemini threshold."
       }
     }
+  },
+  "quality_pearson": {
+    "floor": 0.58,
+    "comment": "Regression floor for the LOCAL judge-calibration watchdog (scripts/maintenance/judge_calibration.py, LIA-261), measured on the LOCAL gemma4:e4b judge against the pinned Gemini ground truth (finetune/judge-bench/fixture-v1.jsonl, n=200), QUALITY dimension. NOT a CI gate: judge-gate.yml runs the Gemini judge (CI has no Ollama); this anchors the local judge, which only exists locally, so it runs as a scheduled weekly maintenance task. Three runs span 0.670-0.682 (run-to-run Ollama nondeterminism ~0.012); the bootstrap 95% CI lower bound of the composite is ~0.595. floor 0.58 sits just below that CI lower bound and ~0.09 below the worst observed quality run, so a healthy run never false-alarms, while a >=0.10 Pearson drop -- the established real-degradation threshold (a 2026-05-20 grammar change degraded quality Pearson 0.06-0.12) -- trips it. The code fallback _DEFAULT_QUALITY_FLOOR (judge_calibration.py) stays at the conservative 0.50 for when this file is missing/malformed -- the file floor and the fallback constant deliberately diverge, same as safety_recall.",
+    "provenance": {
+      "observed": 0.682,
+      "judge": "gemma4:e4b",
+      "runtime": "ollama",
+      "recorded": "2026-06-23",
+      "fixtures": 200,
+      "dim": "quality",
+      "runs": 3,
+      "comment": "Fresh confirmation run 2026-06-23: quality Pearson 0.682 (Spearman 0.683, MAE 0.198), 0/200 parse errors, avg latency 3.9s/record, composite_pearson 0.672 (95% CI 0.595-0.742). Personalization is deliberately excluded from the watchdog (structurally dead -- the limiter is the judge model, not the rubric; see CLAUDE.md perso-structural). tool_use/safety are out of v1 scope.",
+      "prior": [
+        {"observed": 0.673, "recorded": "2026-06-06", "source": "#713 results-v1.json", "note": "n=200 gemma4:e4b fixture-v1 ollama, same fixture+judge+runtime"},
+        {"observed": 0.670, "recorded": "2026-06-12", "source": "lia285-diag PRE", "note": "n=200 gemma4:e4b fixture-v1 ollama, same fixture+judge+runtime"}
+      ]
+    }
   }
 }
