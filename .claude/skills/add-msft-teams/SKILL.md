@@ -5,15 +5,17 @@ description: Add Microsoft Teams as a channel. Can replace WhatsApp entirely or 
 
 # Add Microsoft Teams Channel
 
-> **Status:** Coming soon — this channel will be available as `@deus-ai/teams-mcp`. The MCP package is not yet available. In the meantime, the setup/registration phases below describe what the integration will look like, mirroring the other channel skills.
+> **Status:** Available in-repo as `packages/mcp-teams/` (`@deus-ai/teams-mcp`). The published npm package is not out yet, so the channel factory falls back to the in-repo build at `packages/mcp-teams/dist/index.js` — you build it locally (below).
 
 Microsoft Teams is the chat-channel analog of Slack: a bot identity receives
 messages and posts replies. Unlike Slack's Socket Mode, the Teams bot uses the
 **Azure Bot Service (Bot Framework)**, which delivers activities to a **public
-HTTPS messaging endpoint** — so this channel depends on Deus's existing ingress
-gateway / tunnel to expose `/api/messages`.
+HTTPS messaging endpoint**. The channel runs its own HTTP server on `TEAMS_PORT`
+(default 3978) serving `/api/messages`; you must expose that port via a
+**dedicated public tunnel** (see below) — Deus's existing ingress tunnel forwards
+only the gateway port and does **not** cover `TEAMS_PORT`.
 
-## Phase 1: Setup (Future)
+## Phase 1: Setup
 
 ### Register the Azure app + bot (if needed)
 
@@ -25,16 +27,22 @@ what's needed:
    ID** and **Directory (tenant) ID**.
 2. **Certificates & secrets** → **New client secret** → copy the secret **value**
    (shown once).
-3. Create an **Azure Bot** resource (Azure Bot Service). Link it to the app
+3. Start a dedicated tunnel to the Teams port (any HTTPS tunnel works):
+
+   ```bash
+   ngrok http 3978   # → forwards a public https URL to http://localhost:3978
+   ```
+
+4. Create an **Azure Bot** resource (Azure Bot Service). Link it to the app
    registration above (the Microsoft App ID). Set the **messaging endpoint** to
-   your public URL: `https://your-domain.example.com/api/messages`.
-4. On the bot resource → **Channels** → enable the **Microsoft Teams** channel.
-5. Create a Teams app (Developer Portal for Teams / manifest) that references the
+   your tunnel's URL: `https://<your-tunnel-domain>/api/messages`.
+5. On the bot resource → **Channels** → enable the **Microsoft Teams** channel.
+6. Create a Teams app (Developer Portal for Teams / manifest) that references the
    bot's App ID, then install it to a team or chat.
 
-> The messaging endpoint must be a **public HTTPS URL**. Deus already runs an
-> ingress gateway / tunnel — point the bot at that host's `/api/messages` path.
-> A local-only endpoint will not receive Bot Framework activities.
+> The messaging endpoint must be a **public HTTPS URL** reaching `TEAMS_PORT`.
+> A local-only endpoint (or the gateway tunnel) will not receive Bot Framework
+> activities — use a dedicated tunnel to port 3978.
 
 ### Configure environment
 
@@ -44,21 +52,31 @@ domain values belong in this skill):
 ```bash
 TEAMS_APP_ID=<your-application-client-id>
 TEAMS_APP_PASSWORD=<your-client-secret-value>
-TEAMS_TENANT_ID=<your-directory-tenant-id>
+# Single-tenant only (omit for a multi-tenant bot):
+TEAMS_APP_TENANT_ID=<your-directory-tenant-id>
+# Optional — defaults to 3978:
+# TEAMS_PORT=3978
 ```
 
-Channels auto-enable when their credentials are present — no extra configuration
-needed.
+### Build the package
 
-Sync to container environment:
+The published npm package is not out yet, so build the in-repo package:
 
 ```bash
-mkdir -p data/env && cp .env data/env/env
+cd packages/mcp-teams && npm install && npm run build && cd ../..
 ```
 
-The container reads environment from `data/env/env`, not `.env` directly.
+The channel runs **host-side** and auto-enables once `TEAMS_APP_ID` +
+`TEAMS_APP_PASSWORD` are present. Restart the service so the host picks it up:
 
-## Phase 2: Registration (Future)
+```bash
+# macOS
+launchctl kickstart -k gui/$(id -u)/com.deus
+# Linux (systemd)
+sudo systemctl restart deus
+```
+
+## Phase 2: Registration
 
 ### Get the conversation ID
 
@@ -100,13 +118,8 @@ npx tsx setup/index.ts --step smoke-test -- --channel teams
 The smoke test checks: service running, registered group exists, DB write/read
 works, and channel connection appears in logs.
 
-> **Expected while this skill is a stub:** the smoke test will fail with a
-> "channel not registered / adapter not found" result until `@deus-ai/teams-mcp`
-> ships and the Teams channel factory is wired. That failure is the documented
-> state today, not a misconfiguration.
-
-Once the package is available and the smoke test passes, tell the user
-"Microsoft Teams channel is working." Then ask them to send a test message:
+If it passes, tell the user "Microsoft Teams channel is working." Then ask them
+to send a test message:
 
 > Send a message in your registered Teams channel to confirm real-time delivery.
 > - For main channel: any message works
@@ -116,31 +129,36 @@ Once the package is available and the smoke test passes, tell the user
 
 ### Bot not responding
 
-1. Check `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`, and `TEAMS_TENANT_ID` are set in
-   `.env` AND synced to `data/env/env`.
-2. Check the channel is registered:
+1. Check `TEAMS_APP_ID`, `TEAMS_APP_PASSWORD`, and `TEAMS_APP_TENANT_ID` are set
+   in `.env`.
+2. Confirm the package is built: `ls packages/mcp-teams/dist/index.js`.
+3. Check the channel is registered:
    `sqlite3 store/messages.db "SELECT * FROM registered_groups WHERE jid LIKE 'teams:%'"`
-3. For non-main channels: the message must include the trigger pattern.
-4. Service is running: `launchctl list | grep deus`.
+4. For non-main channels: the message must include the trigger pattern.
+5. Service is running: `launchctl list | grep deus` (macOS) /
+   `systemctl status deus` (Linux).
 
 ### Bot connected but not receiving messages
 
-1. Verify the messaging endpoint in the Azure Bot resource is your **public**
-   `https://.../api/messages` URL and is reachable from the internet.
+1. Verify the messaging endpoint in the Azure Bot resource is your **dedicated
+   tunnel's** `https://.../api/messages` URL (reaching `TEAMS_PORT`), reachable
+   from the internet.
 2. Verify the **Microsoft Teams** channel is enabled on the bot resource.
 3. Verify the Teams app (manifest) referencing the bot is installed in the
    target team/chat.
-4. Check the ingress tunnel is up — a Bot Framework activity to an unreachable
-   endpoint is silently dropped by Azure.
+4. Check the dedicated tunnel is up — a Bot Framework activity to an unreachable
+   endpoint is silently dropped by Azure. (The Deus ingress tunnel does NOT cover
+   `TEAMS_PORT` — Teams needs its own tunnel.)
 
 ### Authorization / 401 from the Bot Framework
 
 1. Confirm the client secret **value** (not the secret ID) is in
    `TEAMS_APP_PASSWORD`, and that it has not expired (Azure secrets expire).
-2. Confirm `TEAMS_TENANT_ID` matches the app registration's directory.
+2. Confirm `TEAMS_APP_TENANT_ID` matches the app registration's directory (for a
+   single-tenant bot).
 3. Regenerate the secret in **Certificates & secrets** if in doubt, update
-   `.env`, sync `data/env/env`, and restart:
-   `launchctl kickstart -k gui/$(id -u)/com.deus`.
+   `.env`, and restart (`launchctl kickstart -k gui/$(id -u)/com.deus` on macOS /
+   `sudo systemctl restart deus` on Linux).
 
 ## After Setup
 
@@ -154,9 +172,15 @@ The Microsoft Teams channel will support:
 
 ## Known Limitations
 
-- **Public endpoint required** — unlike Slack's Socket Mode, the Bot Framework
-  pushes activities to a public HTTPS endpoint. Without the ingress tunnel
-  exposing `/api/messages`, the channel cannot receive messages.
+- **Dedicated public endpoint required** — unlike Slack's Socket Mode, the Bot
+  Framework pushes activities to a public HTTPS endpoint. The channel listens on
+  `TEAMS_PORT` (3978); you must expose it with a dedicated tunnel and point the
+  Azure Bot messaging endpoint at it. Deus's existing ingress tunnel covers only
+  the gateway port, not `TEAMS_PORT`.
+- **Reply needs a prior inbound** — outbound replies use Bot Framework proactive
+  messaging, which requires a conversation reference captured from a prior inbound
+  activity (persisted to `~/.teams-mcp/conversations.json`). A reply to a
+  conversation the bot has never received a message from is logged and skipped.
 - **Threads / replies** — Teams reply chains will be delivered as flat messages
   unless thread-aware routing is added (database schema, `NewMessage` type, and
   `Channel.sendMessage` interface changes), the same limitation the Slack channel

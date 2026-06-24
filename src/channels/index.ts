@@ -9,4 +9,5 @@ import './mcp-discord.js';
 import './mcp-gmail.js';
 import './mcp-outlook.js';
 import './mcp-slack.js';
+import './mcp-teams.js';
 import './webhook.js';
