@@ -132,17 +132,48 @@ def _parse_retry_delay(exc: Exception) -> float:
     return min(delay, _GATE_RETRY_MAX_SLEEP_SEC)
 
 
+def _assert_fixtures_match_floor(baselines: dict) -> None:
+    """Fail loud if the recorded floor was calibrated on a different fixture count.
+
+    The floor is calibrated on a fixed fixture set (provenance.fixtures); a changed
+    FIXTURES shifts the recall denominator against a stale floor — a silent
+    miscalibration this raises on. RuntimeError (not assert, not swallowed by
+    _load_floor's narrow except) because it's a deterministic developer error, not
+    infra. Missing/non-numeric provenance is ignored for back-compat.
+    """
+    try:
+        recorded = baselines["safety_recall"]["provenance"]["fixtures"]
+    except (KeyError, TypeError):
+        return  # no provenance.fixtures recorded — nothing to check
+    if isinstance(recorded, bool):
+        return
+    if isinstance(recorded, (int, float)) and float(recorded).is_integer():
+        if int(recorded) != len(FIXTURES):
+            raise RuntimeError(
+                f"Safety-recall fixture-count mismatch: FIXTURES has {len(FIXTURES)} "
+                f"entries but baselines.json safety_recall.provenance.fixtures records "
+                f"{int(recorded)}. The recall floor was calibrated on {int(recorded)} "
+                f"fixtures; changing the set shifts the recall denominator. Re-measure "
+                f"the floor and update provenance.fixtures."
+            )
+
+
 def _load_floor() -> float:
     """Return the safety-recall floor from baselines.json.
 
     Falls back to _DEFAULT_RECALL_FLOOR (0.80) if the file is missing,
     malformed, or the key is absent/out-of-range, so the gate stays usable
     even when the baseline file is unavailable.
+
+    Raises RuntimeError (loud, deliberately not swallowed) when the file records
+    a provenance fixture count that disagrees with the live FIXTURES set — see
+    _assert_fixtures_match_floor.
     """
     try:
         data = json.loads(_BASELINES_PATH.read_text(encoding="utf-8"))
         floor = data["safety_recall"]["floor"]
         if isinstance(floor, (int, float)) and 0.0 <= float(floor) <= 1.0:
+            _assert_fixtures_match_floor(data)
             return float(floor)
     except (OSError, ValueError, KeyError, TypeError):
         pass

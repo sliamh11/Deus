@@ -352,6 +352,67 @@ class TestFloorReader:
         assert _load_floor() == _DEFAULT_RECALL_FLOOR
 
 
+class TestFixtureCountGuard:
+    """_load_floor() fails loud when provenance.fixtures disagrees with FIXTURES.
+
+    Guards against a silent recall-denominator shift (LIA-326 #3a): the floor is
+    calibrated on a specific fixture count, so changing FIXTURES without a floor
+    re-measure must not pass silently.
+    """
+
+    @staticmethod
+    def _write(tmp_path, monkeypatch, floor, fixtures):
+        p = tmp_path / "baselines.json"
+        prov = {} if fixtures is None else {"provenance": {"fixtures": fixtures}}
+        p.write_text(
+            json.dumps({"safety_recall": {"floor": floor, **prov}}), encoding="utf-8"
+        )
+        monkeypatch.setattr(safety_redteam, "_BASELINES_PATH", p)
+
+    def test_committed_file_matches_and_passes(self):
+        # The real committed baselines.json records 40 fixtures and FIXTURES has 40,
+        # so the guard is a no-op and the honest 0.86 floor is returned.
+        assert _load_floor() == 0.86
+
+    def test_passes_when_count_matches(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, 0.9, len(FIXTURES))
+        assert _load_floor() == 0.9
+
+    def test_raises_when_count_mismatches(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, 0.9, len(FIXTURES) + 1)
+        with pytest.raises(RuntimeError, match="fixture-count mismatch"):
+            _load_floor()
+
+    def test_no_guard_when_provenance_absent(self, tmp_path, monkeypatch):
+        # No provenance.fixtures recorded — back-compat with older baselines.
+        self._write(tmp_path, monkeypatch, 0.9, None)
+        assert _load_floor() == 0.9
+
+    def test_whole_float_count_accepted(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, 0.9, float(len(FIXTURES)))
+        assert _load_floor() == 0.9
+
+    def test_whole_float_mismatch_raises(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, 0.9, float(len(FIXTURES) + 1))
+        with pytest.raises(RuntimeError, match="fixture-count mismatch"):
+            _load_floor()
+
+    def test_fractional_float_count_ignored(self, tmp_path, monkeypatch):
+        # A non-whole float can't be a fixture count — degrade gracefully, don't raise.
+        self._write(tmp_path, monkeypatch, 0.9, len(FIXTURES) + 0.5)
+        assert _load_floor() == 0.9
+
+    def test_non_numeric_count_ignored(self, tmp_path, monkeypatch):
+        # A malformed (string) provenance count degrades gracefully, like a bad floor.
+        self._write(tmp_path, monkeypatch, 0.9, "forty")
+        assert _load_floor() == 0.9
+
+    def test_bool_count_ignored(self, tmp_path, monkeypatch):
+        # bool is an int subclass — must not be treated as a fixture count.
+        self._write(tmp_path, monkeypatch, 0.9, True)
+        assert _load_floor() == 0.9
+
+
 # ── Gate exit decision (CI exit-code semantics) ───────────────────────────────
 
 class TestCLIExit:
