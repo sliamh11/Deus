@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import path from 'path';
+import { SCHEDULED_JOBS, buildScheduledJobPlist } from './service.js';
 
 /**
  * Tests for service configuration generation.
@@ -7,6 +8,62 @@ import path from 'path';
  * These tests verify the generated content of plist/systemd/nohup configs
  * without actually loading services.
  */
+
+describe('scheduled python jobs (LIA-254 generic refactor)', () => {
+  const maintenance = SCHEDULED_JOBS.find((j) => j.id === 'maintenance');
+  const morning = SCHEDULED_JOBS.find((j) => j.id === 'morning-report');
+
+  it('preserves the maintenance job spec (regression guard for the refactor)', () => {
+    // The 04:30 KB maintenance job is live-critical — the generic extraction
+    // must not drift its schedule, script, or id.
+    expect(maintenance).toEqual({
+      id: 'maintenance',
+      scriptRelPath: 'scripts/maintenance.py',
+      hour: 4,
+      minute: 30,
+      description: 'Deus KB maintenance',
+    });
+  });
+
+  it('registers the morning report at 07:00', () => {
+    expect(morning).toMatchObject({
+      id: 'morning-report',
+      scriptRelPath: 'scripts/maintenance/morning_report.py',
+      hour: 7,
+      minute: 0,
+    });
+  });
+
+  it('maintenance plist keeps the unchanged label/time/script/log paths', () => {
+    const plist = buildScheduledJobPlist(
+      maintenance!,
+      '/home/user/deus',
+      '/home/user',
+      '/usr/bin/python3',
+    );
+    expect(plist).toContain('<string>com.deus.maintenance</string>');
+    expect(plist).toContain('/home/user/deus/scripts/maintenance.py');
+    expect(plist).toContain('<integer>4</integer>'); // hour
+    expect(plist).toContain('<integer>30</integer>'); // minute
+    expect(plist).toContain('/home/user/deus/logs/maintenance.log');
+  });
+
+  it('morning-report plist targets 07:00 and its own script/log', () => {
+    const plist = buildScheduledJobPlist(
+      morning!,
+      '/home/user/deus',
+      '/home/user',
+      '/usr/bin/python3',
+    );
+    expect(plist).toContain('<string>com.deus.morning-report</string>');
+    expect(plist).toContain(
+      '/home/user/deus/scripts/maintenance/morning_report.py',
+    );
+    expect(plist).toContain('<integer>7</integer>'); // hour
+    expect(plist).toContain('<integer>0</integer>'); // minute
+    expect(plist).toContain('/home/user/deus/logs/morning-report.log');
+  });
+});
 
 // Helper: generate a plist string the same way service.ts does
 function generatePlist(
