@@ -5,13 +5,13 @@ description: Add Outlook (Microsoft 365 email) integration to Deus. Can be confi
 
 # Add Outlook Integration
 
-> **Status:** Coming soon — this channel will be available as `@deus-ai/outlook-mcp`. The MCP package is not yet available. In the meantime, the setup/config phases below describe what the integration will look like, mirroring the Gmail skill.
+> **Status:** Available in-repo as `packages/mcp-outlook/` (`@deus-ai/outlook-mcp`). The published npm package is not out yet, so the channel factory falls back to the in-repo build at `packages/mcp-outlook/dist/index.js` — you just build it locally (below).
 
 Outlook is the email-channel analog of Gmail, built on the **Microsoft Graph
-API**. It can run as a **tool** (read, send, search, draft) or as a full
-**channel** that polls the inbox and lets incoming mail trigger the agent.
+API**. It polls the inbox for unread mail, forwards each conversation to the
+agent, and replies in-thread. It also exposes tools (read, send, search, draft).
 
-## Phase 1: Pre-flight (Future)
+## Phase 1: Pre-flight
 
 ### Ask the user
 
@@ -24,7 +24,7 @@ AskUserQuestion: Should incoming emails be able to trigger the agent?
 - **No** — Tool-only: the agent gets full Outlook tools (read, send, search,
   draft) but won't monitor the inbox. No channel code is added.
 
-## Phase 2: Setup (Future)
+## Phase 2: Setup
 
 ### Azure AD app registration
 
@@ -39,12 +39,14 @@ Tell the user:
 >    **Delegated permissions**, and add: `Mail.Read`, `Mail.Send`,
 >    `Mail.ReadWrite`, `offline_access`, `User.Read`. Click **Grant admin
 >    consent** (or have a tenant admin grant it).
-> 3. For the OAuth flow, either add a **client secret** (Certificates & secrets)
->    for the confidential flow, or enable the **device code flow** under
->    **Authentication → Advanced settings → Allow public client flows**.
+> 3. Under **Authentication → Advanced settings**, enable **Allow public client
+>    flows** (required for the device-code sign-in).
 >
 > Tell me the Application (client) ID and Directory (tenant) ID, or paste the
-> values here. Do not paste a client secret into chat — set it in `.env`.
+> values here.
+
+Auth is delegated, device-code only (a user signs in once). The confidential
+(clientSecret / app-only) flow is not supported.
 
 Store the app credentials (no personal values belong in this skill — these go in
 the user's local config):
@@ -52,21 +54,33 @@ the user's local config):
 ```bash
 mkdir -p ~/.outlook-mcp
 # Written by setup: ~/.outlook-mcp/app-credentials.json
-#   { "clientId": "...", "tenantId": "...", "clientSecret": "..." (optional) }
+#   { "clientId": "...", "tenantId": "..." }
 ```
 
-### OAuth authorization
+### Build the package + sign in
 
-Tell the user:
+The published npm package is not out yet, so build the in-repo package and run a
+one-time device-code sign-in:
 
-> I'm going to run Outlook authorization using the device-code flow. I'll print a
-> URL and a short code — open the URL, sign in to your Microsoft 365 account, and
-> enter the code. If you see a consent screen, approve the requested mail
-> permissions.
+```bash
+cd packages/mcp-outlook && npm install && npm run build && cd ../..
+node packages/mcp-outlook/dist/index.js auth
+```
 
-The authorization caches the token to `~/.outlook-mcp/token.json` (with the
-`offline_access` refresh token so it renews without re-prompting). Verify with
-`ls ~/.outlook-mcp/token.json`.
+`auth` prints a URL and a short code — open the URL, sign in to your Microsoft
+365 account, enter the code, and approve the requested mail permissions. It
+caches the token to `~/.outlook-mcp/token.json` (with a refresh token so it
+renews without re-prompting). Verify with `ls ~/.outlook-mcp/token.json`.
+
+The channel auto-enables once `app-credentials.json` + `token.json` are present.
+Restart the service so the host picks up the channel:
+
+```bash
+# macOS
+launchctl kickstart -k gui/$(id -u)/com.deus
+# Linux (systemd)
+sudo systemctl restart deus
+```
 
 ## Verify
 
@@ -79,13 +93,8 @@ npx tsx setup/index.ts --step smoke-test -- --channel outlook
 The smoke test checks: service running, registered group exists, DB write/read
 works, and channel connection appears in logs.
 
-> **Expected while this skill is a stub:** the smoke test will fail with a
-> "channel not registered / adapter not found" result until `@deus-ai/outlook-mcp`
-> ships and the Outlook channel factory is wired. That failure is the documented
-> state today, not a misconfiguration.
-
-Once the package is available and the smoke test passes, tell the user "Outlook
-channel is working." Then, for channel mode, ask them to send a test email:
+If it passes, tell the user "Outlook channel is working." Then, for channel mode,
+ask them to send a test email:
 
 > Send a test email to your connected Outlook account to confirm real-time
 > delivery. Check `logs/deus.log` for processing confirmation.
@@ -123,13 +132,13 @@ rm ~/.outlook-mcp/token.json
 3. Delete `~/.outlook-mcp/token.json` and re-authorize so the new scopes are
    included in the token.
 
-### Container can't access Outlook
+### Channel not connecting
 
-- The `~/.outlook-mcp` credentials directory must be mounted into the container
-  for the agent to use Outlook tools. That mount is added when
-  `@deus-ai/outlook-mcp` ships and the channel is wired — it does not exist yet
-  in this stub.
-- Check container logs: `cat groups/main/logs/container-*.log | tail -50`.
+- The Outlook MCP server runs **host-side** (spawned by the host process via
+  stdio), so it reads `~/.outlook-mcp/` directly — there is no container mount.
+- Confirm the package is built: `ls packages/mcp-outlook/dist/index.js`.
+- Confirm both files exist: `ls ~/.outlook-mcp/app-credentials.json ~/.outlook-mcp/token.json`.
+- Check `logs/deus.log` for `Outlook channel connected` / connect errors.
 
 ### Emails not being detected (Channel mode only)
 
@@ -137,3 +146,10 @@ rm ~/.outlook-mcp/token.json
   `/me/mailFolders/Inbox/messages?$filter=isRead eq false`.
 - Check `logs/deus.log` for Graph polling errors (throttling returns HTTP 429
   with a `Retry-After` header).
+
+## Known limitation
+
+- **First reply to a pre-existing thread is skipped.** The reply target (a
+  message id in the conversation) is cached only when the channel sees an inbound
+  message during a poll. A reply to a thread that arrived before the channel
+  started has no stored target, so it is logged and skipped rather than misdelivered.
