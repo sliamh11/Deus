@@ -7,5 +7,6 @@ import './mcp-whatsapp.js';
 import './mcp-telegram.js';
 import './mcp-discord.js';
 import './mcp-gmail.js';
+import './mcp-outlook.js';
 import './mcp-slack.js';
 import './webhook.js';
