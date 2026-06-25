@@ -1,6 +1,7 @@
 ---
 name: add-slack
 description: Add Slack as a channel. Can replace WhatsApp entirely or run alongside it. Uses Socket Mode (no public URL needed).
+disable-model-invocation: true
 ---
 
 # Add Slack Channel

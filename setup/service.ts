@@ -56,13 +56,16 @@ export async function run(_args: string[]): Promise<void> {
     setupLaunchd(projectRoot, nodePath, homeDir);
     setupLogReviewLaunchd(projectRoot, homeDir);
     setupOAuthRefreshLaunchd(projectRoot, nodePath, homeDir);
-    setupMaintenanceLaunchd(projectRoot, homeDir);
+    for (const spec of SCHEDULED_JOBS)
+      installScheduledJobLaunchd(projectRoot, homeDir, spec);
   } else if (platform === 'linux') {
     setupLinux(projectRoot, nodePath, homeDir);
-    setupMaintenanceLinux(projectRoot, homeDir);
+    for (const spec of SCHEDULED_JOBS)
+      installScheduledJobLinux(projectRoot, homeDir, spec);
   } else if (platform === 'windows') {
     setupWindows(projectRoot, nodePath, homeDir);
-    setupMaintenanceWindows(projectRoot, homeDir);
+    for (const spec of SCHEDULED_JOBS)
+      installScheduledJobWindows(projectRoot, spec);
   } else {
     emitStatus('SETUP_SERVICE', {
       SERVICE_TYPE: 'unknown',
@@ -830,34 +833,79 @@ function getWindowsPythonPath(): string {
   }
 }
 
-function setupMaintenanceLaunchd(projectRoot: string, homeDir: string): void {
-  const pythonPath = getPythonPath();
-  const plistPath = path.join(
-    homeDir,
-    'Library',
-    'LaunchAgents',
-    'com.deus.maintenance.plist',
-  );
+// ── Scheduled Python maintenance jobs ────────────────────────────────────────
+// Both the nightly KB maintenance (04:30) and the morning memory report (07:00)
+// are daily Python scripts scheduled per-OS. They differ ONLY in the spec below,
+// so the per-platform scheduling logic lives ONCE in the installScheduledJob*
+// helpers (parameterize-method extraction; was three near-identical
+// setupMaintenance* functions). A new daily job = one more SCHEDULED_JOBS entry.
 
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+export interface ScheduledJobSpec {
+  /** Canonical id: macOS label `com.deus.<id>`, linux unit `deus-<id>`,
+   *  windows task `Deus<PascalCase>`, log `logs/<id>.log`. */
+  id: string;
+  scriptRelPath: string; // POSIX-style relative path from the project root
+  hour: number;
+  minute: number;
+  description: string;
+}
+
+export const SCHEDULED_JOBS: ScheduledJobSpec[] = [
+  {
+    id: 'maintenance',
+    scriptRelPath: 'scripts/maintenance.py',
+    hour: 4,
+    minute: 30,
+    description: 'Deus KB maintenance',
+  },
+  {
+    id: 'morning-report',
+    scriptRelPath: 'scripts/maintenance/morning_report.py',
+    hour: 7,
+    minute: 0,
+    description: 'Deus morning memory report',
+  },
+];
+
+function jobTaskName(id: string): string {
+  return (
+    'Deus' +
+    id
+      .split('-')
+      .map((s) => s.charAt(0).toUpperCase() + s.slice(1))
+      .join('')
+  );
+}
+
+/** Pure: the launchd plist for a scheduled job. Exported for regression tests
+ *  (locks the maintenance job's label/time/paths across the generic refactor). */
+export function buildScheduledJobPlist(
+  spec: ScheduledJobSpec,
+  projectRoot: string,
+  homeDir: string,
+  pythonPath: string,
+): string {
+  const label = `com.deus.${spec.id}`;
+  const logPath = `${projectRoot}/logs/${spec.id}.log`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.deus.maintenance</string>
+    <string>${label}</string>
     <key>ProgramArguments</key>
     <array>
         <string>${pythonPath}</string>
-        <string>${projectRoot}/scripts/maintenance.py</string>
+        <string>${projectRoot}/${spec.scriptRelPath}</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${projectRoot}</string>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>4</integer>
+        <integer>${spec.hour}</integer>
         <key>Minute</key>
-        <integer>30</integer>
+        <integer>${spec.minute}</integer>
     </dict>
     <key>EnvironmentVariables</key>
     <dict>
@@ -867,32 +915,53 @@ function setupMaintenanceLaunchd(projectRoot: string, homeDir: string): void {
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>${projectRoot}/logs/maintenance.log</string>
+    <string>${logPath}</string>
     <key>StandardErrorPath</key>
-    <string>${projectRoot}/logs/maintenance.log</string>
+    <string>${logPath}</string>
     <key>RunAtLoad</key>
     <false/>
 </dict>
 </plist>`;
+}
 
-  fs.writeFileSync(plistPath, plist);
+function installScheduledJobLaunchd(
+  projectRoot: string,
+  homeDir: string,
+  spec: ScheduledJobSpec,
+): void {
+  const pythonPath = getPythonPath();
+  const label = `com.deus.${spec.id}`;
+  const plistPath = path.join(
+    homeDir,
+    'Library',
+    'LaunchAgents',
+    `${label}.plist`,
+  );
+
+  fs.writeFileSync(
+    plistPath,
+    buildScheduledJobPlist(spec, projectRoot, homeDir, pythonPath),
+  );
+  const when = `${String(spec.hour).padStart(2, '0')}:${String(spec.minute).padStart(2, '0')}`;
   try {
     execSync(`launchctl load ${JSON.stringify(plistPath)}`, {
       stdio: 'ignore',
     });
-    logger.info({ plistPath }, 'Maintenance job scheduled (daily 04:30)');
+    logger.info({ plistPath }, `${spec.description} scheduled (daily ${when})`);
   } catch {
-    logger.warn(
-      'launchctl load for maintenance failed (may already be loaded)',
-    );
+    logger.warn(`launchctl load for ${spec.id} failed (may already be loaded)`);
   }
 }
 
-function setupMaintenanceLinux(projectRoot: string, homeDir: string): void {
+function installScheduledJobLinux(
+  projectRoot: string,
+  homeDir: string,
+  spec: ScheduledJobSpec,
+): void {
   const serviceManager = getServiceManager();
   if (serviceManager !== 'systemd') {
     logger.info(
-      'No systemd — skipping maintenance timer (run scripts/maintenance.py manually or via cron)',
+      `No systemd — skipping ${spec.id} timer (run ${spec.scriptRelPath} manually or via cron)`,
     );
     return;
   }
@@ -903,53 +972,58 @@ function setupMaintenanceLinux(projectRoot: string, homeDir: string): void {
     ? '/etc/systemd/system'
     : path.join(homeDir, '.config', 'systemd', 'user');
   const systemctlPrefix = runningAsRoot ? 'systemctl' : 'systemctl --user';
+  const unitBase = `deus-${spec.id}`;
+  const logPath = `${projectRoot}/logs/${spec.id}.log`;
+  const when = `${String(spec.hour).padStart(2, '0')}:${String(spec.minute).padStart(2, '0')}`;
 
   fs.mkdirSync(unitDir, { recursive: true });
 
-  // Service unit
   const serviceUnit = `[Unit]
-Description=Deus KB maintenance
+Description=${spec.description}
 
 [Service]
 Type=oneshot
-ExecStart=${pythonPath} ${projectRoot}/scripts/maintenance.py
+ExecStart=${pythonPath} ${projectRoot}/${spec.scriptRelPath}
 WorkingDirectory=${projectRoot}
 Environment=HOME=${homeDir}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin:${homeDir}/.local/bin
-StandardOutput=append:${projectRoot}/logs/maintenance.log
-StandardError=append:${projectRoot}/logs/maintenance.log`;
+StandardOutput=append:${logPath}
+StandardError=append:${logPath}`;
 
-  // Timer unit
   const timerUnit = `[Unit]
-Description=Deus KB maintenance timer
+Description=${spec.description} timer
 
 [Timer]
-OnCalendar=*-*-* 04:30:00
+OnCalendar=*-*-* ${when}:00
 Persistent=true
 
 [Install]
 WantedBy=timers.target`;
 
-  fs.writeFileSync(path.join(unitDir, 'deus-maintenance.service'), serviceUnit);
-  fs.writeFileSync(path.join(unitDir, 'deus-maintenance.timer'), timerUnit);
+  fs.writeFileSync(path.join(unitDir, `${unitBase}.service`), serviceUnit);
+  fs.writeFileSync(path.join(unitDir, `${unitBase}.timer`), timerUnit);
 
   try {
     execSync(`${systemctlPrefix} daemon-reload`, { stdio: 'ignore' });
-    execSync(`${systemctlPrefix} enable deus-maintenance.timer`, {
+    execSync(`${systemctlPrefix} enable ${unitBase}.timer`, {
       stdio: 'ignore',
     });
-    execSync(`${systemctlPrefix} start deus-maintenance.timer`, {
+    execSync(`${systemctlPrefix} start ${unitBase}.timer`, {
       stdio: 'ignore',
     });
-    logger.info('Maintenance timer scheduled (daily 04:30)');
+    logger.info(`${spec.description} timer scheduled (daily ${when})`);
   } catch {
-    logger.warn('systemd maintenance timer setup failed');
+    logger.warn(`systemd ${spec.id} timer setup failed`);
   }
 }
 
-function setupMaintenanceWindows(projectRoot: string, _homeDir: string): void {
+function installScheduledJobWindows(
+  projectRoot: string,
+  spec: ScheduledJobSpec,
+): void {
   const pythonPath = getWindowsPythonPath();
-  const taskName = 'DeusMaintenance';
+  const taskName = jobTaskName(spec.id);
+  const when = `${String(spec.hour).padStart(2, '0')}:${String(spec.minute).padStart(2, '0')}`;
 
   try {
     // Delete existing task if present
@@ -961,10 +1035,9 @@ function setupMaintenanceWindows(projectRoot: string, _homeDir: string): void {
   try {
     // execFileSync drops the cmd.exe shell; /TR keeps inner quotes because
     // schtasks re-parses it as a command line (so paths with spaces survive).
-    const maintScript = path.win32.join(
+    const script = path.win32.join(
       projectRoot,
-      'scripts',
-      'maintenance.py',
+      ...spec.scriptRelPath.split('/'),
     );
     execFileSync(
       'schtasks',
@@ -973,20 +1046,20 @@ function setupMaintenanceWindows(projectRoot: string, _homeDir: string): void {
         '/TN',
         taskName,
         '/TR',
-        `"${pythonPath}" "${maintScript}"`,
+        `"${pythonPath}" "${script}"`,
         '/SC',
         'DAILY',
         '/ST',
-        '04:30',
+        when,
         '/F',
       ],
       { stdio: 'pipe' },
     );
-    logger.info('Windows Task Scheduler: maintenance scheduled (daily 04:30)');
+    logger.info(`Windows Task Scheduler: ${spec.id} scheduled (daily ${when})`);
   } catch (err) {
     logger.warn(
       { err },
-      'Windows Task Scheduler setup failed — run scripts/maintenance.py manually',
+      `Windows Task Scheduler setup failed — run ${spec.scriptRelPath} manually`,
     );
   }
 }

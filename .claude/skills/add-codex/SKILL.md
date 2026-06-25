@@ -1,6 +1,7 @@
 ---
 name: add-codex
 description: Add OpenAI/Codex as a backend. Guides through API key setup, service backend configuration, optional CLI setup, and verification. Can run alongside Claude (default) or replace it.
+disable-model-invocation: true
 ---
 
 # Add OpenAI/Codex Backend

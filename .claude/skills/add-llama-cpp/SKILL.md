@@ -1,6 +1,7 @@
 ---
 name: add-llama-cpp
 description: Install and verify a local llama.cpp server for optional Deus local-generation experiments. Keeps Ollama as the required default for embeddings and judge work.
+disable-model-invocation: true
 ---
 
 # Add llama.cpp

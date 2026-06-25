@@ -94,13 +94,30 @@ _build_and_restart() {
   fi
 }
 
+# >>> deploy-plan
+# `deus deploy`'s rebuild decision: read changed file paths (newline-separated) on stdin,
+# emit `build` if any touch src/ and/or `container` if any touch container/ OR
+# .claude/skills/. Both feed the agent image (build.sh stages skills/*/agent.ts; the
+# Dockerfile copies container/), so a MISSED `container` token would ship a STALE image
+# with the wrong tool profile — a security risk — hence anchored regexes (not substrings,
+# so docs/container-notes.md / mysrc/x.ts don't match) and over- never under-trigger.
+# grep/printf only, so it sources in isolation for scripts/tests/test_deus_cmd_deploy.py.
+_deploy_plan() {
+  local changed
+  changed="$(cat)"
+  printf '%s\n' "$changed" | grep -qE '^src/'                         && echo "build"
+  printf '%s\n' "$changed" | grep -qE '^(container/|\.claude/skills/)' && echo "container"
+  return 0  # force success: grep -q exits 1 when no token matched, which is not an error here
+}
+# <<< deploy-plan
+
 # Warn (never block) when the live tree drifts off main or behind origin/main, so
 # `deus <cmd>` doesn't silently ship stale behavior from a feature branch.
 # darwin/Linux only (date +%s, git); Windows port pending — project_windows_support.md
 _deus_freshness_check() {
   [[ "$OSTYPE" == darwin* || "$OSTYPE" == linux* ]] || return 0
-  # Skip for sync (does its own reporting) and help/no-arg paths.
-  case "$1" in sync|""|-h|--help|help) return 0 ;; esac
+  # Skip for sync/deploy (both do their own fetch + reporting) and help/no-arg paths.
+  case "$1" in sync|deploy|""|-h|--help|help) return 0 ;; esac
   git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
 
   local stamp_dir="$HOME/.config/deus" stamp now last
@@ -1292,6 +1309,91 @@ $STARTUP_INSTRUCTION"
     _build_and_restart
     echo "deus: synced to $sync_remote/main."
     ;;
+  deploy)
+    # Diff-driven conditional deploy of the live main tree. Like `deus sync` (ff-merge
+    # origin/main, non-destructive) but rebuilds ONLY what the incoming diff touched:
+    # host build + restart only when src/ changed; container rebuild only when container
+    # inputs changed. Codifies the post-merge-deploy + PRIVATE-WIPE-TRAP tribal knowledge
+    # in CLAUDE.md `git` key. See ADR: docs/decisions/live-command-freshness.md.
+    shift
+    deploy_dry_run=false
+    for arg in "$@"; do
+      case "$arg" in
+        --dry-run) deploy_dry_run=true ;;
+        *) echo "deus deploy: unknown option '$arg' (expected --dry-run)." >&2; exit 1 ;;
+      esac
+    done
+    # darwin/Linux only — Windows service restart + container build are unimplemented
+    # (same gap as _build_and_restart:85 / sync; project_windows_support.md).
+    if [[ "$OSTYPE" != darwin* && "$OSTYPE" != linux* ]]; then
+      echo "deus deploy: not supported on this platform yet (darwin/Linux only)." >&2
+      exit 1
+    fi
+    deploy_repo="$SCRIPT_DIR"
+    if ! git -C "$deploy_repo" rev-parse --git-dir >/dev/null 2>&1; then
+      echo "deus deploy: $deploy_repo is not a git repository." >&2; exit 1
+    fi
+    # Private-wipe guard: deploy builds the live tree IN PLACE (it never rsync/mirrors). A
+    # linked worktree lacks gitignored src/private/, so an in-place build there would emit
+    # a private-less dist/ over the live one (CLAUDE.md `git` key PRIVATE-WIPE TRAP). The
+    # `deus` symlink always points at the main tree, so this only trips on a raw
+    # `./deus-cmd.sh deploy` from inside a worktree — refuse exactly that case.
+    if [ "$(git -C "$deploy_repo" rev-parse --git-dir)" != "$(git -C "$deploy_repo" rev-parse --git-common-dir)" ]; then
+      echo "deus deploy: refusing to deploy from a linked worktree ($deploy_repo)." >&2
+      echo "  Run 'deus deploy' so it targets the live main tree, not a worktree." >&2
+      exit 1
+    fi
+    deploy_branch=$(git -C "$deploy_repo" symbolic-ref --short -q HEAD 2>/dev/null || echo "DETACHED")
+    if [ "$deploy_branch" != "main" ]; then
+      echo "deus deploy: live tree is on '$deploy_branch', not main." >&2
+      echo "  Switch the live tree to main first: git -C \"$deploy_repo\" checkout main" >&2
+      exit 1
+    fi
+    if ! git -C "$deploy_repo" diff --quiet || ! git -C "$deploy_repo" diff --cached --quiet; then
+      echo "deus deploy: live tree has uncommitted changes — commit or stash first." >&2
+      exit 1
+    fi
+    if ! git -C "$deploy_repo" remote get-url origin >/dev/null 2>&1; then
+      echo "deus deploy: no 'origin' remote configured." >&2; exit 1
+    fi
+    echo "Fetching origin..."
+    # Plain fetch updates refs/remotes/origin/main via the clone-default refspec, so the
+    # diff/merge below always see the freshest tip (no FETCH_HEAD-only ambiguity).
+    if ! git -C "$deploy_repo" fetch origin; then
+      echo "deus deploy: fetch failed." >&2; exit 1
+    fi
+    deploy_changed="$(git -C "$deploy_repo" diff --name-only HEAD origin/main)"
+    if [ -z "$deploy_changed" ]; then
+      echo "deus deploy: already up to date with origin/main — nothing to deploy."
+      exit 0
+    fi
+    # Compute the rebuild plan from the incoming diff BEFORE merging (post-merge it is empty).
+    deploy_plan="$(printf '%s\n' "$deploy_changed" | _deploy_plan)"
+    deploy_needs_build=false; deploy_needs_container=false
+    printf '%s\n' "$deploy_plan" | grep -qx build     && deploy_needs_build=true
+    printf '%s\n' "$deploy_plan" | grep -qx container && deploy_needs_container=true
+    deploy_count=$(printf '%s\n' "$deploy_changed" | grep -c .)
+    echo "Incoming: $deploy_count changed file(s) (HEAD..origin/main)."
+    echo "  host build + restart: $($deploy_needs_build && echo yes || echo 'no (no src/ change)')"
+    echo "  container rebuild:    $($deploy_needs_container && echo yes || echo 'no (no container/ or .claude/skills/ change)')"
+    if $deploy_dry_run; then
+      echo "deus deploy --dry-run: no changes applied."
+      exit 0
+    fi
+    if ! git -C "$deploy_repo" merge --ff-only origin/main; then
+      echo "deus deploy: cannot fast-forward (live tree diverged from origin/main)." >&2
+      echo "  Your main has local commits not on origin — merge or rebase manually." >&2
+      exit 1
+    fi
+    if $deploy_needs_build; then
+      _build_and_restart
+    fi
+    if $deploy_needs_container; then
+      echo "Rebuilding agent container..."
+      (cd "$deploy_repo" && ./container/build.sh) || { echo "deus deploy: container build failed." >&2; exit 1; }
+    fi
+    echo "deus: deployed to origin/main."
+    ;;
   pipeline)
     shift
     # cd required: config.ts evaluates PROJECT_ROOT from process.cwd() at import time
@@ -1538,6 +1640,8 @@ $STARTUP_INSTRUCTION"
     echo "  deus logs       Review system health logs (rotate|review|summary|pinned)"
     echo "  deus usage      Token-efficiency + cost report (--since|--project|--pricing|--json)"
     echo "  deus sync       Update live install to origin/main; 'sync upstream' for forks"
+    echo "  deus deploy     Diff-driven deploy (origin only): ff-merge origin/main + rebuild"
+    echo "                    only what changed (host if src/, container if container/ or skills). --dry-run"
     echo "  deus pipeline   Pipeline event audit (LIA-XX | --failed | --active | --all)"
     echo "  deus solution   Manage solution atoms (list|search|add)"
     echo "  deus sweep      Run threshold calibration sweep against benchmark queries"

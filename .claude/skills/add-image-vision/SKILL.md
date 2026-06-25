@@ -1,6 +1,7 @@
 ---
 name: add-image-vision
 description: Add image vision to Deus agents. Resizes and processes WhatsApp image attachments, then sends them to Claude as multimodal content blocks.
+disable-model-invocation: true
 ---
 
 # Image Vision Skill

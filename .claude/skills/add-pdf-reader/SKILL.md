@@ -1,6 +1,7 @@
 ---
 name: add-pdf-reader
 description: Add PDF reading to Deus agents. Extracts text from PDFs via pdftotext CLI. Handles WhatsApp attachments, URLs, and local files.
+disable-model-invocation: true
 ---
 
 # Add PDF Reader

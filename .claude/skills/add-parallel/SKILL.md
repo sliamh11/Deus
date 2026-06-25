@@ -1,6 +1,7 @@
 ---
 name: add-parallel
 description: Add Parallel AI MCP integration to Deus for advanced web research capabilities.
+disable-model-invocation: true
 ---
 
 # Add Parallel AI Integration

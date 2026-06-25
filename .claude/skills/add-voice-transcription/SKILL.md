@@ -1,6 +1,7 @@
 ---
 name: add-voice-transcription
 description: Add voice message transcription to Deus using OpenAI's Whisper API. Automatically transcribes WhatsApp voice notes so the agent can read and respond to them.
+disable-model-invocation: true
 ---
 
 # Add Voice Transcription
