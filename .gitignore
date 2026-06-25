@@ -81,6 +81,7 @@ config.local.json    # local config overrides that may contain secrets
 
 # Personal/one-time scripts
 scripts/rename-repo.sh
+scripts/send-webhook-test.sh
 
 # Rust build artifacts
 tui/target/

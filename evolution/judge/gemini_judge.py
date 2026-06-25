@@ -31,10 +31,17 @@ def _get_client():
     return _client
 
 
-def _call_gemini(prompt: str, model: str = JUDGE_MODEL) -> str:
-    """Call Gemini with model fallback chain."""
+def _call_gemini(prompt: str, model: str = JUDGE_MODEL, allow_fallback: bool = True) -> str:
+    """Call Gemini, optionally with the GEN_MODELS quota-fallback chain.
+
+    allow_fallback=False pins the call to `model` only: a throttled/unavailable
+    pinned model raises instead of silently retrying on a different (often
+    stronger) model. The safety-recall gate uses this so its recall is always
+    measured on the model the floor was calibrated on (baselines.json
+    provenance.judge) — a fallback measurement is not comparable to the floor.
+    """
     client = _get_client()
-    models_to_try = [model] + [m for m in GEN_MODELS if m != model]
+    models_to_try = [model] if not allow_fallback else [model] + [m for m in GEN_MODELS if m != model]
     last_exc = None
     for m in models_to_try:
         try:
@@ -43,17 +50,17 @@ def _call_gemini(prompt: str, model: str = JUDGE_MODEL) -> str:
         except Exception as exc:
             last_exc = exc
             exc_str = str(exc)
-            if any(s in exc_str for s in ("429", "quota", "503", "unavailable", "UNAVAILABLE")):
+            if allow_fallback and any(s in exc_str for s in ("429", "quota", "503", "unavailable", "UNAVAILABLE")):
                 continue
             raise
     raise RuntimeError(f"All Gemini models failed. Last: {last_exc}")
 
 
-async def _call_gemini_async(prompt: str, model: str = JUDGE_MODEL) -> str:
+async def _call_gemini_async(prompt: str, model: str = JUDGE_MODEL, allow_fallback: bool = True) -> str:
     """Async Gemini call — runs sync in thread pool to avoid blocking."""
     import asyncio
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: _call_gemini(prompt, model))
+    return await loop.run_in_executor(None, lambda: _call_gemini(prompt, model, allow_fallback))
 
 
 # ── Runtime evaluator ─────────────────────────────────────────────────────────
@@ -64,8 +71,15 @@ class GeminiRuntimeJudge(BaseJudge):
     Returns a JudgeResult with per-dimension scores and a composite score.
     """
 
-    def __init__(self, model: str = JUDGE_MODEL):
+    def __init__(self, model: str = JUDGE_MODEL, allow_fallback: bool = True):
         self.model = model
+        # allow_fallback=False pins evaluation to `model` (no GEN_MODELS cascade) —
+        # used by the safety-recall gate so a quota-throttled pinned model raises
+        # (surfaced as an inconclusive run) rather than silently measuring on a
+        # different model than the floor was calibrated on. Default True keeps
+        # runtime resilience unchanged. Note: in strict mode a quota error during
+        # the parse-error retry loop also raises (intended — counted as an error).
+        self.allow_fallback = allow_fallback
 
     def evaluate(
         self,
@@ -79,11 +93,11 @@ class GeminiRuntimeJudge(BaseJudge):
         prompt = prompt[:JUDGE_MAX_PROMPT_CHARS]
         response = (response or "")[:JUDGE_MAX_RESPONSE_CHARS]
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
-        raw = _call_gemini(eval_prompt, self.model)
+        raw = _call_gemini(eval_prompt, self.model, self.allow_fallback)
         result = _parse_result(raw)
         if result.is_parse_error:
             for _ in range(JUDGE_RETRY_COUNT):
-                raw = _call_gemini(_build_eval_prompt(prompt, response, tools_used, context, user_profile, strict_json=True), self.model)
+                raw = _call_gemini(_build_eval_prompt(prompt, response, tools_used, context, user_profile, strict_json=True), self.model, self.allow_fallback)
                 result = _parse_result(raw)
                 if not result.is_parse_error:
                     break
@@ -101,12 +115,12 @@ class GeminiRuntimeJudge(BaseJudge):
         prompt = prompt[:JUDGE_MAX_PROMPT_CHARS]
         response = (response or "")[:JUDGE_MAX_RESPONSE_CHARS]
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
-        raw = await _call_gemini_async(eval_prompt, self.model)
+        raw = await _call_gemini_async(eval_prompt, self.model, self.allow_fallback)
         result = _parse_result(raw)
         if result.is_parse_error:
             for _ in range(JUDGE_RETRY_COUNT):
                 raw = await _call_gemini_async(
-                    _build_eval_prompt(prompt, response, tools_used, context, user_profile, strict_json=True), self.model
+                    _build_eval_prompt(prompt, response, tools_used, context, user_profile, strict_json=True), self.model, self.allow_fallback
                 )
                 result = _parse_result(raw)
                 if not result.is_parse_error:

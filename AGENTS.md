@@ -157,7 +157,9 @@ renaming a repo-owned skill, update this table in the same change.
 | `/add-linear` | Add Linear project management MCP integration (read/write issues, projects, cycles) |
 | `/add-listen-hotkey` | Add a global hotkey for `deus listen` |
 | `/add-llama-cpp` | Install and verify optional local `llama.cpp` generation |
+| `/add-msft-teams` | Add Microsoft Teams as a channel (Azure Bot Service / Bot Framework) |
 | `/add-ollama-tool` | Add Ollama as an MCP tool for local model calls |
+| `/add-outlook` | Add Outlook (Microsoft 365 email) as a tool or channel |
 | `/add-parallel` | Add Parallel AI MCP research tools |
 | `/add-pdf-reader` | Add PDF text extraction |
 | `/add-reactions` | Add WhatsApp emoji reaction support |

@@ -126,6 +126,21 @@ def _head_is_stale_autobump(wt: Path) -> bool:
     return bool(paths) and all(p.startswith("patterns/") and p.endswith(".md") for p in paths)
 
 
+def _classify_rebase_conflict(wt: Path) -> str:
+    """Label a mid-rebase conflict by its unmerged files for the human-facing detail.
+
+    Must be called BEFORE `rebase --abort`, which clears the unmerged set.
+    """
+    unmerged = _run(["git", "-C", str(wt), "diff", "--name-only", "--diff-filter=U"])
+    files = [f.strip() for f in unmerged.stdout.splitlines() if f.strip()]
+    if not files:
+        return "non-conflict failure"  # rebase failed without unmerged files
+    non_patterns = [f for f in files if not (f.startswith("patterns/") and f.endswith(".md"))]
+    if not non_patterns:
+        return "patterns-only conflict — a real two-sided edit to drift patterns; resolve manually"
+    return f"mixed conflict — non-patterns files need manual resolution: {', '.join(non_patterns)}"
+
+
 def _rebase_and_push(wt: Path, branch: str) -> tuple[bool, str]:
     """Drop a stale bump, rebase onto origin/main, push (re-pushing once if the
     pre-push drift hook commits a fresh bump and aborts)."""
@@ -134,8 +149,13 @@ def _rebase_and_push(wt: Path, branch: str) -> tuple[bool, str]:
         _run(["git", "-C", str(wt), "reset", "--hard", "HEAD~1"])
     rebase = _run(["git", "-C", str(wt), "rebase", "origin/main"], timeout=120)
     if rebase.returncode != 0:
+        # Classify the conflict BEFORE aborting (abort clears the unmerged set), so the
+        # human knows whether it's a drift-bump collision or a substantive merge. We STOP
+        # either way — auto-resolving a surviving patterns conflict would silently drop a
+        # real two-sided pattern edit (the bump itself is already dropped above).
+        kind = _classify_rebase_conflict(wt)
         _run(["git", "-C", str(wt), "rebase", "--abort"])
-        return False, f"rebase onto origin/main failed (conflict?): {_tail(rebase)}"
+        return False, f"rebase onto origin/main failed ({kind}): {_tail(rebase)}"
     refspec = f"{branch}:{branch}"
     push_argv = ["git", "-C", str(wt), "push", "--force-with-lease", "origin", refspec]
     first = _run(push_argv, timeout=180)

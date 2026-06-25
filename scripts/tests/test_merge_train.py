@@ -253,6 +253,79 @@ def test_rebase_and_push_full_path_with_bump_and_repush(mt, monkeypatch):
     assert "re-push" in detail
 
 
+def test_rebase_conflict_classified_patterns_only(mt, monkeypatch):
+    # Rebase conflicts with ONLY patterns/*.md unmerged -> the abort message says so,
+    # the rebase is still aborted, and the result is a hard stop (ok False).
+    order = []
+
+    def responder(argv):
+        if "fetch" in argv:
+            return 0, "", ""
+        if "log" in argv:  # not a stale autobump -> no reset
+            return 0, "fix(memory): real change\n", ""
+        if "rebase" in argv and "--abort" in argv:
+            order.append("abort")
+            return 0, "", ""
+        if "rebase" in argv:  # the rebase itself fails (conflict)
+            return 1, "", "CONFLICT (content): patterns/eval-change.md"
+        if "diff" in argv and "--diff-filter=U" in argv:
+            order.append("classify")
+            return 0, "patterns/eval-change.md\npatterns/documentation.md\n", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(mt, "_run", _fake_run(responder))
+    ok, detail = mt._rebase_and_push(Path("/wt"), "feat/x")
+
+    assert ok is False
+    assert "patterns-only conflict" in detail
+    assert order == ["classify", "abort"]  # unmerged set read BEFORE abort clears it
+
+
+def test_rebase_conflict_classified_mixed_lists_non_patterns(mt, monkeypatch):
+    # A non-patterns file among the unmerged set -> "mixed", naming the offending file.
+    def responder(argv):
+        if "fetch" in argv:
+            return 0, "", ""
+        if "log" in argv:
+            return 0, "fix(memory): real change\n", ""
+        if "rebase" in argv and "--abort" in argv:
+            return 0, "", ""
+        if "rebase" in argv:
+            return 1, "", "CONFLICT"
+        if "diff" in argv and "--diff-filter=U" in argv:
+            return 0, "patterns/eval-change.md\nscripts/memory_indexer.py\n", ""
+        return 0, "", ""
+
+    monkeypatch.setattr(mt, "_run", _fake_run(responder))
+    ok, detail = mt._rebase_and_push(Path("/wt"), "feat/x")
+
+    assert ok is False
+    assert "mixed conflict" in detail
+    assert "scripts/memory_indexer.py" in detail
+
+
+def test_rebase_conflict_no_unmerged_files_falls_back(mt, monkeypatch):
+    # Rebase fails for a non-conflict reason (empty unmerged set) -> generic "conflict".
+    def responder(argv):
+        if "fetch" in argv:
+            return 0, "", ""
+        if "log" in argv:
+            return 0, "fix(memory): real change\n", ""
+        if "rebase" in argv and "--abort" in argv:
+            return 0, "", ""
+        if "rebase" in argv:
+            return 1, "", "some other failure"
+        if "diff" in argv and "--diff-filter=U" in argv:
+            return 0, "", ""  # nothing unmerged
+        return 0, "", ""
+
+    monkeypatch.setattr(mt, "_run", _fake_run(responder))
+    ok, detail = mt._rebase_and_push(Path("/wt"), "feat/x")
+
+    assert ok is False
+    assert "non-conflict failure" in detail  # generic fallback, not patterns/mixed
+
+
 def test_verify_mergeable_polls_through_unknown(mt, monkeypatch):
     # GitHub reports UNKNOWN right after a push, then settles to MERGEABLE.
     seq = iter([

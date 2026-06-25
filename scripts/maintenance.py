@@ -88,6 +88,18 @@ def main():
         "prune_warden_baks", [prune_baks, "--keep", "10"], dry_run
     )
 
+    rotate_qlog = str(SCRIPTS_DIR / "maintenance" / "rotate_query_log.py")
+    results["rotate_query_log"] = run_task(
+        "rotate_query_log", [rotate_qlog], dry_run
+    )
+
+    # run_task prepends the Python interpreter, so this (like every sibling
+    # maintenance script) runs as `python3 credential_probe.py` and stays 644.
+    cred_probe = str(SCRIPTS_DIR / "maintenance" / "credential_probe.py")
+    results["credential_probe"] = run_task(
+        "credential_probe", [cred_probe], dry_run
+    )
+
     # ── Weekly tasks (Sunday or --weekly) ────────────────────────────────────
 
     if run_weekly:
@@ -106,6 +118,18 @@ def main():
             "vault_integrity",
             [compression_bench, "--vault-integrity"],
             dry_run,
+        )
+
+        # Local judge calibration watchdog (LIA-261): anchor the local gemma4:e4b
+        # evolution judge to the pinned Gemini ground truth; WARN on a quality-
+        # Pearson regression. 130min ceiling > the watchdog's own 7200s bench
+        # timeout, so the watchdog returns a clean INCONCLUSIVE (exit 0) before a
+        # hard maintenance TIMEOUT could mark it FAILED on pure infra slowness.
+        # run_task prepends the Python interpreter, so this (like every sibling
+        # maintenance script) runs as `python3 judge_calibration.py` and stays 644.
+        judge_calib = str(SCRIPTS_DIR / "maintenance" / "judge_calibration.py")
+        results["judge_calibration"] = run_task(
+            "judge_calibration", [judge_calib], dry_run, timeout=7800,
         )
     else:
         print(f"\n── Weekly tasks skipped (not Sunday, use --weekly to force) ──")
