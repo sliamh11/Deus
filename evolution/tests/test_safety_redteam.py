@@ -352,6 +352,67 @@ class TestFloorReader:
         assert _load_floor() == _DEFAULT_RECALL_FLOOR
 
 
+class TestFixtureCountGuard:
+    """_load_floor() fails loud when provenance.fixtures disagrees with FIXTURES.
+
+    Guards against a silent recall-denominator shift (LIA-326 #3a): the floor is
+    calibrated on a specific fixture count, so changing FIXTURES without a floor
+    re-measure must not pass silently.
+    """
+
+    @staticmethod
+    def _write(tmp_path, monkeypatch, floor, fixtures):
+        p = tmp_path / "baselines.json"
+        prov = {} if fixtures is None else {"provenance": {"fixtures": fixtures}}
+        p.write_text(
+            json.dumps({"safety_recall": {"floor": floor, **prov}}), encoding="utf-8"
+        )
+        monkeypatch.setattr(safety_redteam, "_BASELINES_PATH", p)
+
+    def test_committed_file_matches_and_passes(self):
+        # The real committed baselines.json records 40 fixtures and FIXTURES has 40,
+        # so the guard is a no-op and the honest 0.86 floor is returned.
+        assert _load_floor() == 0.86
+
+    def test_passes_when_count_matches(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, 0.9, len(FIXTURES))
+        assert _load_floor() == 0.9
+
+    def test_raises_when_count_mismatches(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, 0.9, len(FIXTURES) + 1)
+        with pytest.raises(RuntimeError, match="fixture-count mismatch"):
+            _load_floor()
+
+    def test_no_guard_when_provenance_absent(self, tmp_path, monkeypatch):
+        # No provenance.fixtures recorded — back-compat with older baselines.
+        self._write(tmp_path, monkeypatch, 0.9, None)
+        assert _load_floor() == 0.9
+
+    def test_whole_float_count_accepted(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, 0.9, float(len(FIXTURES)))
+        assert _load_floor() == 0.9
+
+    def test_whole_float_mismatch_raises(self, tmp_path, monkeypatch):
+        self._write(tmp_path, monkeypatch, 0.9, float(len(FIXTURES) + 1))
+        with pytest.raises(RuntimeError, match="fixture-count mismatch"):
+            _load_floor()
+
+    def test_fractional_float_count_ignored(self, tmp_path, monkeypatch):
+        # A non-whole float can't be a fixture count — degrade gracefully, don't raise.
+        self._write(tmp_path, monkeypatch, 0.9, len(FIXTURES) + 0.5)
+        assert _load_floor() == 0.9
+
+    def test_non_numeric_count_ignored(self, tmp_path, monkeypatch):
+        # A malformed (string) provenance count degrades gracefully, like a bad floor.
+        self._write(tmp_path, monkeypatch, 0.9, "forty")
+        assert _load_floor() == 0.9
+
+    def test_bool_count_ignored(self, tmp_path, monkeypatch):
+        # bool is an int subclass — must not be treated as a fixture count.
+        self._write(tmp_path, monkeypatch, 0.9, True)
+        assert _load_floor() == 0.9
+
+
 # ── Gate exit decision (CI exit-code semantics) ───────────────────────────────
 
 class TestCLIExit:
@@ -491,3 +552,214 @@ class TestStrictModelNoFallback:
         # Default resilience: pinned model first, then the GEN_MODELS cascade.
         assert called[0] == "models/pinned"
         assert len(called) > 1
+
+
+# ── Rate-limit robustness for the gate's Gemini judge (LIA-326) ───────────────
+
+
+class _FakeClock:
+    """Monotonic clock whose sleep() advances time — lets the pacer and the
+    wall-clock deadline run deterministically with zero real waiting."""
+
+    def __init__(self, start: float = 1000.0):
+        self.t = float(start)
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self.t
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.t += seconds
+
+
+def _install_fake_judge(monkeypatch, script: list):
+    """Patch GeminiRuntimeJudge so _make_gemini_judge_fn drives a scripted fake.
+
+    `script[i]` is consumed on the i-th evaluate() call: a float -> returned as
+    .safety; an Exception instance -> raised. The last entry repeats if the loop
+    out-runs the script. Returns a holder whose ['judge'] is the live fake.
+    """
+    import types
+    import evolution.judge.gemini_judge as gemini_judge
+
+    holder: dict = {}
+
+    class _FakeJudge:
+        def __init__(self, *args, **kwargs):
+            self.calls = 0
+            holder["judge"] = self
+
+        def evaluate(self, prompt, response, *args, **kwargs):
+            action = script[self.calls] if self.calls < len(script) else script[-1]
+            self.calls += 1
+            if isinstance(action, Exception):
+                raise action
+            return types.SimpleNamespace(safety=action)
+
+    monkeypatch.setattr(gemini_judge, "GeminiRuntimeJudge", _FakeJudge)
+    return holder
+
+
+class TestEnvFloat:
+    """_env_float() guards the Number(env ?? default) trap for the gate knobs."""
+
+    def test_unset_uses_default(self, monkeypatch):
+        monkeypatch.delenv("X_GATE_FLOAT_TEST", raising=False)
+        assert safety_redteam._env_float("X_GATE_FLOAT_TEST", 4.5) == 4.5
+
+    def test_empty_garbage_and_nonpositive_use_default(self, monkeypatch):
+        for bad in ("", "abc", "0", "-1", "nan", "inf"):
+            monkeypatch.setenv("X_GATE_FLOAT_TEST", bad)
+            assert safety_redteam._env_float("X_GATE_FLOAT_TEST", 4.5) == 4.5, bad
+
+    def test_valid_override(self, monkeypatch):
+        monkeypatch.setenv("X_GATE_FLOAT_TEST", "2.0")
+        assert safety_redteam._env_float("X_GATE_FLOAT_TEST", 4.5) == 2.0
+
+
+class TestTransientErrorClassification:
+    """_is_transient_error() / _parse_retry_delay() — the retry decision inputs."""
+
+    def test_transient_markers_detected(self):
+        assert safety_redteam._is_transient_error(RuntimeError("429 RESOURCE_EXHAUSTED"))
+        assert safety_redteam._is_transient_error(RuntimeError("503 UNAVAILABLE"))
+        assert safety_redteam._is_transient_error(RuntimeError("exceeded your quota"))
+
+    def test_transient_classification_is_case_insensitive(self):
+        # An SDK wording change must not break retry classification.
+        assert safety_redteam._is_transient_error(RuntimeError("503 Service Unavailable"))
+        assert safety_redteam._is_transient_error(RuntimeError("Resource_Exhausted"))
+
+    def test_permanent_errors_not_transient(self):
+        assert not safety_redteam._is_transient_error(RuntimeError("401 unauthorized"))
+        assert not safety_redteam._is_transient_error(RuntimeError("404 model not found"))
+        assert not safety_redteam._is_transient_error(ValueError("bad json"))
+
+    def test_parse_retry_delay_prose_form(self):
+        exc = RuntimeError("RESOURCE_EXHAUSTED ... Please retry in 57.8s.")
+        assert safety_redteam._parse_retry_delay(exc) == pytest.approx(57.8)
+
+    def test_parse_retry_delay_structured_field_form(self):
+        exc = RuntimeError("... 'retryDelay': '57s' ...")
+        assert safety_redteam._parse_retry_delay(exc) == pytest.approx(57.0)
+
+    def test_parse_retry_delay_capped_at_window(self):
+        exc = RuntimeError("Please retry in 999s")
+        assert safety_redteam._parse_retry_delay(exc) == safety_redteam._GATE_RETRY_MAX_SLEEP_SEC
+
+    def test_parse_retry_delay_absent_uses_default(self):
+        exc = RuntimeError("429 RESOURCE_EXHAUSTED with no retry hint")
+        assert safety_redteam._parse_retry_delay(exc) == safety_redteam._GATE_RETRY_DEFAULT_SLEEP_SEC
+
+
+class TestGateJudgePacingAndRetry:
+    """_make_gemini_judge_fn() — pacing, transient retry, and deadline fail-fast.
+
+    All timing is driven by a fake clock (sleep advances time) so the tests are
+    deterministic and instant.
+    """
+
+    def _patch_clock(self, monkeypatch, clock):
+        monkeypatch.setattr(safety_redteam.time, "monotonic", clock.monotonic)
+        monkeypatch.setattr(safety_redteam.time, "sleep", clock.sleep)
+
+    def test_first_call_is_not_paced(self, monkeypatch):
+        clock = _FakeClock()
+        self._patch_clock(monkeypatch, clock)
+        _install_fake_judge(monkeypatch, [1.0])
+        fn = safety_redteam._make_gemini_judge_fn()
+        assert fn("p", "r") is True  # safety 1.0 >= 0.5 -> safe
+        assert clock.sleeps == []  # sentinel last_call -> no pacing sleep on first call
+
+    def test_consecutive_calls_are_paced(self, monkeypatch):
+        clock = _FakeClock()
+        self._patch_clock(monkeypatch, clock)
+        _install_fake_judge(monkeypatch, [1.0, 1.0])
+        fn = safety_redteam._make_gemini_judge_fn()
+        fn("p", "r")
+        assert clock.sleeps == []
+        fn("p2", "r2")  # second call must wait ~_GATE_MIN_INTERVAL_SEC
+        assert any(
+            abs(s - safety_redteam._GATE_MIN_INTERVAL_SEC) < 1e-6 for s in clock.sleeps
+        )
+
+    def test_transient_then_success_retries_with_backoff(self, monkeypatch):
+        clock = _FakeClock()
+        self._patch_clock(monkeypatch, clock)
+        monkeypatch.setattr(safety_redteam.random, "uniform", lambda a, b: 0.0)
+        holder = _install_fake_judge(
+            monkeypatch, [RuntimeError("429 Please retry in 10s"), 0.0]
+        )
+        fn = safety_redteam._make_gemini_judge_fn()
+        assert fn("p", "r") is False  # safety 0.0 < 0.5 -> unsafe, second call won
+        assert holder["judge"].calls == 2  # retried once after the 429
+        assert any(abs(s - 10.0) < 1e-6 for s in clock.sleeps)  # honored retryDelay
+
+    def test_permanent_error_not_retried(self, monkeypatch):
+        clock = _FakeClock()
+        self._patch_clock(monkeypatch, clock)
+        holder = _install_fake_judge(monkeypatch, [ValueError("permanent 400"), 1.0])
+        fn = safety_redteam._make_gemini_judge_fn()
+        with pytest.raises(ValueError):
+            fn("p", "r")
+        assert holder["judge"].calls == 1  # no retry on a permanent error
+        assert clock.sleeps == []  # no backoff sleep
+
+    def test_deadline_exhausted_fails_fast(self, monkeypatch):
+        clock = _FakeClock()
+        self._patch_clock(monkeypatch, clock)
+        # Zero deadline -> remaining <= 0 at the first exception -> no retry sleep.
+        monkeypatch.setattr(safety_redteam, "_GATE_DEADLINE_SEC", 0.0)
+        holder = _install_fake_judge(
+            monkeypatch, [RuntimeError("429 Please retry in 10s"), 1.0]
+        )
+        fn = safety_redteam._make_gemini_judge_fn()
+        with pytest.raises(RuntimeError):
+            fn("p", "r")
+        assert holder["judge"].calls == 1  # deadline budget spent -> no retry
+        assert clock.sleeps == []  # never sleeps past the deadline
+
+    def test_exhausted_transient_retries_raise_for_errored_recording(self, monkeypatch):
+        # Sustained 429 across all attempts -> the wrapper re-raises so
+        # run_safety_bench records the fixture as errored (inconclusive), never
+        # as a misclassification.
+        clock = _FakeClock()
+        self._patch_clock(monkeypatch, clock)
+        monkeypatch.setattr(safety_redteam.random, "uniform", lambda a, b: 0.0)
+        holder = _install_fake_judge(
+            monkeypatch, [RuntimeError("429 Please retry in 5s")]
+        )
+        fn = safety_redteam._make_gemini_judge_fn(retries=2)
+        with pytest.raises(RuntimeError):
+            fn("p", "r")
+        assert holder["judge"].calls == 3  # retries + 1 attempts all 429'd
+
+
+class TestPrintResultsErrorSurfacing:
+    """_print_results() surfaces errored reasons so a CI log can diagnose 429s."""
+
+    def test_errored_reasons_printed(self, capsys):
+        metrics = {
+            "precision": 1.0, "recall": 0.9, "f1": 0.94,
+            "n_unsafe": _N_UNSAFE, "n_safe": _N_SAFE, "fp": [], "fn": [],
+            "n_errored": 2,
+            "errored": [
+                {"class": "soft_compliance", "error": "429 RESOURCE_EXHAUSTED Please retry in 57s"},
+                {"class": "jailbreak_compliance", "error": "503 UNAVAILABLE"},
+            ],
+        }
+        safety_redteam._print_results("Gemini", metrics)
+        out = capsys.readouterr().out
+        assert "Errored" in out and "INCONCLUSIVE" in out
+        assert "429" in out and "503" in out  # both reasons surfaced
+
+    def test_no_error_block_on_clean_run(self, capsys):
+        metrics = {
+            "precision": 1.0, "recall": 1.0, "f1": 1.0,
+            "n_unsafe": _N_UNSAFE, "n_safe": _N_SAFE, "fp": [], "fn": [],
+            "n_errored": 0, "errored": [],
+        }
+        safety_redteam._print_results("Gemini", metrics)
+        out = capsys.readouterr().out
+        assert "Errored" not in out

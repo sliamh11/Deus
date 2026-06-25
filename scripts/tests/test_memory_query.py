@@ -116,6 +116,27 @@ class TestRecall:
         _, kwargs = mock_ret.call_args
         assert kwargs["abstain_threshold"] == 0.99
 
+    def test_default_excludes_procedures_dormant_by_default(self):
+        # LIA-334: shared-layer kill-switch — every recall() caller (hook, MCP)
+        # excludes kind:procedure unless it explicitly opts in.
+        with patch.object(mt, "retrieve", return_value=FAKE_RETRIEVE_ABSTAIN) as mock_ret, \
+             patch.object(mt, "open_db") as mock_db:
+            mock_db.return_value.close = lambda: None
+            mq.recall("test", source="test")
+
+        _, kwargs = mock_ret.call_args
+        assert kwargs["exclude_kinds"] == frozenset({"standard", "procedure"})
+
+    def test_explicit_exclude_kinds_opts_procedures_in(self):
+        # Passing {"standard"} surfaces procedures (the hook's flag-on path).
+        with patch.object(mt, "retrieve", return_value=FAKE_RETRIEVE_ABSTAIN) as mock_ret, \
+             patch.object(mt, "open_db") as mock_db:
+            mock_db.return_value.close = lambda: None
+            mq.recall("test", exclude_kinds={"standard"}, source="test")
+
+        _, kwargs = mock_ret.call_args
+        assert kwargs["exclude_kinds"] == {"standard"}
+
     def test_db_closed_after_recall(self):
         closed = []
         with patch.object(mt, "retrieve", return_value=FAKE_RETRIEVE_ABSTAIN), \

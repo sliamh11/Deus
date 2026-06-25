@@ -1,6 +1,7 @@
 ---
 name: add-linear
 description: Add Linear project management MCP integration to Deus. Gives host-side Claude Code sessions read/write access to Linear issues, projects, cycles, and workflow states via @tacticlaunch/mcp-linear.
+disable-model-invocation: true
 ---
 
 # Add Linear

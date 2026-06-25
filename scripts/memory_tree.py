@@ -171,6 +171,18 @@ _AUDIT_PATH = Path(os.environ.get(
 # silently wiping live data — see 2026-04-15 incident). `--force` bypasses.
 REBUILD_MIN_RETENTION = 0.5
 
+# Orphan-sweep false-positive guard (LIA-336). The orphan sweeps decide from a
+# single in-memory walk snapshot, but a concurrent rewrite of a tracked file —
+# vault files are written via Path.write_text (truncate-in-place, NOT atomic),
+# and /compress + parallel sessions rewrite CLAUDE.md — can make a live file
+# momentarily unreadable (OSError) or truncated (no `id:` yet) exactly when the
+# walk observes it, dropping a live node from the walk and soft-orphaning it.
+# Before orphaning a candidate we re-confirm absence on disk across a few spaced
+# retries; any single observation that the file is still tracked aborts the
+# orphan. Module-level so tests can set the delay to 0.
+ORPHAN_CONFIRM_RETRIES = 3
+ORPHAN_CONFIRM_DELAY_S = 0.05
+
 
 def is_external_namespace(path: str) -> bool:
     """True if path belongs to an external population (e.g. auto-memory/)."""
@@ -916,6 +928,43 @@ def iter_tree_files(vault: Path) -> list[Path]:
     return files
 
 
+def _confirm_orphan(path: Path, *, require_id: bool) -> bool:
+    """Confirm a tracked file is genuinely gone before orphaning its node (LIA-336).
+
+    A node becomes an orphan candidate when its file is absent from an in-memory
+    walk, but a concurrent rewrite can make a *live* file momentarily unreadable
+    (OSError) or truncated (no `id:` yet) during that walk. We re-check the
+    filesystem up to ORPHAN_CONFIRM_RETRIES times, spaced by ORPHAN_CONFIRM_DELAY_S,
+    and return True (safe to orphan) ONLY if every attempt confirms the file is
+    gone. A single observation that the file is still tracked returns False early.
+
+    Pattern: bounded retry with early-exit on confirmed-present. O(retries) reads,
+    paid only per orphan candidate (≈0 in steady state).
+
+    require_id=True  — mirror iter_tree_files membership: a clean read AND `id:`
+      present. A file persistently missing its `id:` is a real de-list (still
+      orphaned); a truncated read that momentarily hides `id:` is not.
+    require_id=False — pure existence check (for the existence-triggered sweeps).
+
+    OSError on every retry maps to "absent" intentionally: a file unreadable for
+    the whole window (e.g. revoked permissions, genuine deletion) should orphan.
+    """
+    for attempt in range(ORPHAN_CONFIRM_RETRIES):
+        try:
+            if require_id:
+                head = path.read_text(encoding="utf-8", errors="replace")[:4096]
+                still_tracked = bool(parse_frontmatter(head).get("id"))
+            else:
+                still_tracked = path.exists()
+        except OSError:
+            still_tracked = False
+        if still_tracked:
+            return False
+        if attempt < ORPHAN_CONFIRM_RETRIES - 1:
+            time.sleep(ORPHAN_CONFIRM_DELAY_S)
+    return True
+
+
 # ── Build ─────────────────────────────────────────────────────────────────────
 
 def build_tree(
@@ -1085,6 +1134,10 @@ def build_tree(
         if is_external_namespace(npath):
             continue
         if npath not in path_to_id:
+            # LIA-336: re-confirm before orphaning (see _confirm_orphan). The root
+            # is admitted by iter_tree_files without an id check → existence only.
+            if not _confirm_orphan(vault / npath, require_id=(npath != "MEMORY_TREE.md")):
+                continue
             db.execute(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
                 (now_iso, nid),
@@ -1863,7 +1916,9 @@ def autofix_tree(db: sqlite3.Connection, vault: Path) -> dict[str, int]:
     for (nid, npath, _) in active:
         if is_external_namespace(npath):
             continue
-        if not (vault / npath).exists():
+        # LIA-336: re-confirm before orphaning. This sweep is existence-based
+        # (no id check), so require_id=False mirrors the original .exists() test.
+        if _confirm_orphan(vault / npath, require_id=False):
             db.execute(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
                 (now_iso, nid),
@@ -2021,6 +2076,13 @@ def reindex_external(
     ).fetchall()
     for (nid, npath) in ext_active:
         if npath not in walked_paths:
+            # LIA-336: a rename-gap during rglob can briefly hide a live file;
+            # confirm it's truly gone on disk before orphaning. ns_path was built
+            # as EXTERNAL_NAMESPACE + rel_to_ext, so strip the prefix to recover
+            # the path under external_dir.
+            ext_file = external_dir / npath[len(EXTERNAL_NAMESPACE):]
+            if not _confirm_orphan(ext_file, require_id=False):
+                continue
             db.execute(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
                 (now_iso, nid),

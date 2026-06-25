@@ -119,6 +119,18 @@ def main():
             [compression_bench, "--vault-integrity"],
             dry_run,
         )
+
+        # Local judge calibration watchdog (LIA-261): anchor the local gemma4:e4b
+        # evolution judge to the pinned Gemini ground truth; WARN on a quality-
+        # Pearson regression. 130min ceiling > the watchdog's own 7200s bench
+        # timeout, so the watchdog returns a clean INCONCLUSIVE (exit 0) before a
+        # hard maintenance TIMEOUT could mark it FAILED on pure infra slowness.
+        # run_task prepends the Python interpreter, so this (like every sibling
+        # maintenance script) runs as `python3 judge_calibration.py` and stays 644.
+        judge_calib = str(SCRIPTS_DIR / "maintenance" / "judge_calibration.py")
+        results["judge_calibration"] = run_task(
+            "judge_calibration", [judge_calib], dry_run, timeout=7800,
+        )
     else:
         print(f"\n── Weekly tasks skipped (not Sunday, use --weekly to force) ──")
 

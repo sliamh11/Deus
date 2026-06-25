@@ -1,6 +1,7 @@
 ---
 name: add-youtube-transcript
 description: Add YouTube transcript extraction as an MCP tool. Installs the MCP server and configures it so the agent can fetch video captions/subtitles on demand.
+disable-model-invocation: true
 ---
 
 # Add YouTube Transcript

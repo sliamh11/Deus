@@ -1,6 +1,7 @@
 ---
 name: add-telegram
 description: Add Telegram as a channel. Can replace WhatsApp entirely or run alongside it. Also configurable as a control-only channel (triggers actions) or passive channel (receives notifications only).
+disable-model-invocation: true
 ---
 
 # Add Telegram Channel
@@ -206,7 +207,7 @@ After completing the Telegram setup, use `AskUserQuestion`:
 
 AskUserQuestion: Would you like to add Agent Swarm support? Without it, Agent Teams still work — they just operate behind the scenes. With Swarm support, each subagent appears as a different bot in the Telegram group so you can see who's saying what and have interactive team sessions.
 
-If they say yes, invoke the `/add-telegram-swarm` skill.
+If they say yes, tell the user to run the `/add-telegram-swarm` skill themselves (it is a user-invoked setup skill and cannot be triggered automatically).
 
 ## Troubleshooting: Re-authentication
 

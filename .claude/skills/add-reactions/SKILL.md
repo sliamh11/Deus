@@ -1,6 +1,7 @@
 ---
 name: add-reactions
 description: Add WhatsApp emoji reaction support — receive, send, store, and search reactions.
+disable-model-invocation: true
 ---
 
 # Add Reactions
