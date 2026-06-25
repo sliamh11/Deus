@@ -44,7 +44,7 @@
     "@linear/sdk": "^86.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.11.1",
-    "cron-parser": "^5.5.0",
+    "cron-parser": "^5.6.1",
     "google-auth-library": "^10.7.0",
     "googleapis": "^173.0.0",
     "minimatch": "^10.2.5",
