@@ -904,6 +904,18 @@ def resolve_vault_path() -> Path:
     return Path("~/Desktop/אישי/Brain Dump/Second Brain/Deus").expanduser()
 
 
+def _frontmatter_id(path: Path) -> str | None:
+    """Return a markdown file's frontmatter ``id``, or None if absent.
+
+    Reads the whole file, not a fixed-size head: a frontmatter block whose
+    closing ``---`` fence falls past any truncation window (e.g. the large vault
+    CLAUDE.md) otherwise parses as unterminated and reports no ``id`` (LIA-340).
+    ``OSError`` propagates so each caller decides how an unreadable file is treated.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return parse_frontmatter(text).get("id")
+
+
 def iter_tree_files(vault: Path) -> list[Path]:
     """Yield markdown files that participate in the tree (have `id:` or are
     the root). We skip Session-Logs, Checkpoints, Atoms — those are owned by
@@ -919,11 +931,10 @@ def iter_tree_files(vault: Path) -> list[Path]:
         if p == root:
             continue
         try:
-            head = p.read_text(encoding="utf-8", errors="replace")[:4096]
+            has_id = _frontmatter_id(p) is not None
         except OSError:
             continue
-        fm = parse_frontmatter(head)
-        if fm.get("id"):
+        if has_id:
             files.append(p)
     return files
 
@@ -952,8 +963,7 @@ def _confirm_orphan(path: Path, *, require_id: bool) -> bool:
     for attempt in range(ORPHAN_CONFIRM_RETRIES):
         try:
             if require_id:
-                head = path.read_text(encoding="utf-8", errors="replace")[:4096]
-                still_tracked = bool(parse_frontmatter(head).get("id"))
+                still_tracked = bool(_frontmatter_id(path))
             else:
                 still_tracked = path.exists()
         except OSError:

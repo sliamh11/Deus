@@ -515,6 +515,49 @@ class TestConfirmOrphan:
     def test_absent_orphaned_existence(self, tmp_path):  # row e
         assert mt._confirm_orphan(tmp_path / "gone.md", require_id=False) is True
 
+    def test_large_frontmatter_present_not_orphaned(self, tmp_path):  # LIA-340
+        # A frontmatter block whose closing `---` sits past a 4096-byte head:
+        # a truncated read leaves the fence unterminated, parse_frontmatter
+        # reports no id, and the node was falsely orphaned on every build
+        # (this is exactly how the vault CLAUDE.md got orphaned).
+        f = tmp_path / "big.md"
+        padding = "x" * 5000  # pushes the closing fence well past byte 4096
+        f.write_text(
+            f"---\nid: bigfm\ndescription: d\npadding: {padding}\n---\nbody\n",
+            encoding="utf-8",
+        )
+        fm_block = f.read_text(encoding="utf-8").split("---", 2)[1]
+        assert len(fm_block.encode("utf-8")) > 4096  # guard the fixture's premise
+        assert mt._confirm_orphan(f, require_id=True) is False
+
+
+class TestFrontmatterId:
+    """LIA-340: id extraction must read the whole frontmatter, not a 4096 head."""
+
+    def test_large_frontmatter_id_found(self, tmp_path):
+        f = tmp_path / "big.md"
+        f.write_text(
+            f"---\nid: bigfm\ndescription: d\npadding: {'x' * 5000}\n---\nbody\n",
+            encoding="utf-8",
+        )
+        assert mt._frontmatter_id(f) == "bigfm"
+
+    def test_no_id_returns_none(self, tmp_path):
+        f = tmp_path / "n.md"
+        f.write_text("plain text, no frontmatter\n", encoding="utf-8")
+        assert mt._frontmatter_id(f) is None
+
+    def test_iter_tree_files_admits_large_frontmatter(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "MEMORY_TREE.md").write_text("---\nid: root\n---\n", encoding="utf-8")
+        big = vault / "big.md"
+        big.write_text(
+            f"---\nid: bigfm\ndescription: d\npadding: {'x' * 5000}\n---\nbody\n",
+            encoding="utf-8",
+        )
+        assert big in mt.iter_tree_files(vault)
+
 
 # ── Retrieve ──────────────────────────────────────────────────────────────────
 
