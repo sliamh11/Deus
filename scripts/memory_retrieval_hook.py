@@ -68,6 +68,12 @@ def main() -> None:
     if not context:
         return
 
+    # Head-truncation is load-bearing for the LIA-335 injection boundary: the
+    # untrusted framing header + opening sentinel are the first two lines of the
+    # wrapped block (memory_query._wrap_untrusted), so slicing from the front
+    # always preserves them — the untrusted zone stays OPENED even when the
+    # closing sentinel is dropped. Do NOT switch to tail-truncation: that would
+    # drop the framing header and silently re-trust recalled memory content.
     if len(context) > MAX_CONTEXT_CHARS:
         context = context[:MAX_CONTEXT_CHARS] + "\n=== [truncated] ==="
 
