@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env zsh
 PLIST="$HOME/Library/LaunchAgents/com.deus.plist"
 DEUS_PROJECTS_DIR="$HOME/.config/deus/projects"
 readonly DEUS_SKILLS_DIR="$HOME/.claude/skills"
@@ -20,6 +20,16 @@ _resolve_script_dir() {
   echo "$(cd "$(dirname "$src")" && pwd)"
 }
 SCRIPT_DIR="$(_resolve_script_dir)"
+
+# Portable file mtime (epoch seconds). macOS/BSD `stat` uses -f %m; GNU/Linux
+# `stat` uses -c %Y. Keep both platforms working from one call site.
+_file_mtime() {
+  if [[ "$OSTYPE" == darwin* ]]; then
+    stat -f %m "$1" 2>/dev/null
+  else
+    stat -c %Y "$1" 2>/dev/null
+  fi
+}
 
 # Prefix selection changes both the foreground CLI and runtime backend for this
 # invocation. Plain `deus` still defaults to Claude unless env/config says
@@ -82,10 +92,12 @@ _build_and_restart() {
     ln -sf "$SCRIPT_DIR/deus-cmd.sh" "$LINK_DIR/deus"
   fi
   if ! $no_restart; then
-    # Linux/Windows restart not implemented yet — project_windows_support.md
+    # macOS restarts via launchd; Linux runs as a systemd unit (manual restart).
     if [[ "$OSTYPE" == darwin* ]]; then
       launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
       $quiet || echo "Deus built and restarted (CLI symlink refreshed)."
+    elif [[ "$OSTYPE" == linux* ]]; then
+      $quiet || echo "Built. Restart the service: 'systemctl --user restart deus' (or 'systemctl restart deus' if installed as a system service)."
     else
       $quiet || echo "Built. Service restart: not implemented on this platform."
     fi
@@ -550,7 +562,7 @@ sys.exit(1)
       status)
         TOKENS_PATH="$SCRIPT_DIR/integrations/gcal/tokens.json"
         if [ -f "$TOKENS_PATH" ]; then
-          AGE_DAYS=$(( ( $(date +%s) - $(stat -f %m "$TOKENS_PATH") ) / 86400 ))
+          AGE_DAYS=$(( ( $(date +%s) - $(_file_mtime "$TOKENS_PATH") ) / 86400 ))
           echo "Google Calendar tokens: $TOKENS_PATH (${AGE_DAYS}d old)"
           echo "Refresh token expires after ~7 days of no use."
           echo ""
@@ -1062,7 +1074,7 @@ for f in c.get('vault_autoload', ['CLAUDE.md']):
 	      SEMANTIC=""
 	      USE_CACHE=false
 	      if [ -f "$SEMANTIC_CACHE" ]; then
-	        CACHE_AGE=$(( $(date +%s) - $(stat -f %m "$SEMANTIC_CACHE") ))
+	        CACHE_AGE=$(( $(date +%s) - $(_file_mtime "$SEMANTIC_CACHE") ))
 	        [ "$CACHE_AGE" -lt "$SEMANTIC_TTL" ] && USE_CACHE=true
 	      fi
 	      if $USE_CACHE; then
