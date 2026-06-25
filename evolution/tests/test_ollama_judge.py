@@ -32,14 +32,21 @@ def test_gemma4_suppresses_thinking_via_body_key():
     assert "/no_think" not in body["prompt"]
 
 
-def test_qwen_suppresses_thinking_via_prompt_suffix():
-    # Qwen keeps the /no_think prompt-suffix mechanism and no body-level key.
-    captured = {}
-    with patch("urllib.request.urlopen", side_effect=_capturing_urlopen(captured)):
-        _call_ollama("rate this response", model="qwen3:4b")
-    body = captured["body"]
-    assert body["prompt"].endswith("/no_think")
-    assert "think" not in body
+def test_qwen3_suppresses_thinking_via_both_mechanisms():
+    # Qwen3 gets BOTH controls: the body-level "think": false key (the real
+    # control — qwen3.5+ ignores the /no_think suffix and returns an empty
+    # response under the strict format schema) AND the /no_think prompt suffix
+    # (harmless belt-and-suspenders for qwen3.0 compat). Covers both the older
+    # qwen3.0 (suffix originally validated in LIA-186) and qwen3.5 (the variant
+    # the suffix alone left broken).
+    for model in ("qwen3:4b", "qwen3.5:4b"):
+        captured = {}
+        with patch("urllib.request.urlopen", side_effect=_capturing_urlopen(captured)):
+            _call_ollama("rate this response", model=model)
+        body = captured["body"]
+        assert body["prompt"].endswith("/no_think"), f"{model} missing suffix"
+        assert body.get("think") is False, f"{model} missing think key"
+        assert "think" not in body.get("options", {})
 
 
 def test_non_thinking_model_sends_no_controls():
@@ -61,3 +68,18 @@ def test_earlier_gemma_variants_excluded_from_think_key():
         with patch("urllib.request.urlopen", side_effect=_capturing_urlopen(captured)):
             _call_ollama("rate this response", model=model)
         assert "think" not in captured["body"], f"{model} should not get think key"
+
+
+def test_earlier_qwen_variants_excluded_from_controls():
+    # Boundary canary: both the think key and the /no_think suffix are scoped to
+    # qwen3 only. Non-thinking qwen variants (qwen2.5, hypothetical qwen-embed)
+    # must receive NEITHER — guards against widening the predicate to a bare
+    # "qwen" substring, which would send a thinking control to a model that has
+    # no thinking mode to suppress.
+    for model in ("qwen2:7b", "qwen2.5:7b", "qwen-embed:0.6b"):
+        captured = {}
+        with patch("urllib.request.urlopen", side_effect=_capturing_urlopen(captured)):
+            _call_ollama("rate this response", model=model)
+        body = captured["body"]
+        assert "think" not in body, f"{model} should not get think key"
+        assert "/no_think" not in body["prompt"], f"{model} should not get suffix"

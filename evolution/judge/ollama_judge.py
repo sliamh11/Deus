@@ -58,12 +58,18 @@ def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
     """Synchronous Ollama generate call."""
     # Suppress model "thinking" for structured output — otherwise the thinking
     # preamble slows the call and can corrupt the JSON-grammar response. The
-    # mechanism is family-specific: Qwen uses the /no_think prompt suffix; Gemma4
-    # (the default OLLAMA_MODEL) uses the "think": false request-body key. Prior
-    # to this fix the default judge ran with thinking ON and no suppression.
-    # Scoped to gemma4 specifically — the only Gemma we run — rather than all
-    # "gemma*" so earlier variants aren't sent a key they may not support.
-    full_prompt = f"{prompt}\n/no_think" if "qwen" in model.lower() else prompt
+    # real control is the Ollama "think": false request-body key, used for the
+    # two thinking-capable judge families we run: Gemma4 (the default
+    # OLLAMA_MODEL) and Qwen3. Qwen3 ALSO keeps the older /no_think prompt suffix
+    # for qwen3.0 compat, but the suffix alone is insufficient: qwen3.5+ ignores
+    # it (a qwen3.0-era soft switch) and returns an EMPTY response under the
+    # strict `format` schema — a silent parse failure. The body key is what
+    # actually suppresses thinking on qwen3.5+; the suffix is harmless
+    # belt-and-suspenders for qwen3.0.
+    # Both predicates are scoped to specific families (gemma4, qwen3) rather than
+    # bare "gemma"/"qwen" so non-thinking variants (gemma2/3, qwen2.5, qwen-embed)
+    # aren't sent a key/suffix they don't support.
+    full_prompt = f"{prompt}\n/no_think" if "qwen3" in model.lower() else prompt
     payload = {
         "model": model,
         "prompt": full_prompt,
@@ -86,7 +92,7 @@ def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
             "seed": 42,
         },
     }
-    if "gemma4" in model.lower():
+    if "gemma4" in model.lower() or "qwen3" in model.lower():
         payload["think"] = False
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
