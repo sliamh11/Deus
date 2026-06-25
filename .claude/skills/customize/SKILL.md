@@ -10,7 +10,7 @@ This skill helps users add capabilities or modify behavior. Use AskUserQuestion 
 ## Workflow
 
 1. **Understand the request** - Ask clarifying questions
-3. **Plan the changes** - Identify files to modify. If a skill exists for the request (e.g., `/add-telegram` for adding Telegram), invoke it instead of implementing manually.
+3. **Plan the changes** - Identify files to modify. If an installer skill exists for the request (e.g., `/add-telegram` for adding Telegram), tell the user to run it themselves instead of implementing manually (`/add-*` setup skills are user-invoked and cannot be triggered programmatically).
 4. **Implement** - Make changes directly to the code
 5. **Test guidance** - Tell user how to verify
 

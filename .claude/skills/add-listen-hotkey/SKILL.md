@@ -1,6 +1,7 @@
 ---
 name: add-listen-hotkey
 description: Install a global hotkey that triggers `deus listen` from anywhere on the OS. Also installs sox, whisper-cli, and a whisper model.
+disable-model-invocation: true
 ---
 
 # /add-listen-hotkey

@@ -1,6 +1,7 @@
 ---
 name: add-editor
 description: Wire Deus's memory + evolution layers into an external code editor (Zed and other ACP/MCP clients) so the editor's own agent gains Deus's vault recall and self-improving reflexion loop. Configuration only — no new code. Triggers on "add editor", "use Deus in my editor", "zed integration", "editor integration", "wire Deus into Zed", or ACP/MCP editor setup requests.
+disable-model-invocation: true
 ---
 
 # Add Editor Integration (ACP / MCP)

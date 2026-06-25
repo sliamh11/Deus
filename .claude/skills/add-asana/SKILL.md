@@ -1,6 +1,7 @@
 ---
 name: add-asana
 description: Add Asana project management MCP integration to Deus. Gives host-side Claude Code sessions read/write access to Asana tasks, projects, sections, and tags via @roychri/mcp-server-asana.
+disable-model-invocation: true
 ---
 
 # Add Asana

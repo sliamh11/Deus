@@ -1,6 +1,7 @@
 ---
 name: add-gmail
 description: Add Gmail integration to Deus. Can be configured as a tool (agent reads/sends emails when triggered from WhatsApp) or as a full channel (emails can trigger the agent, schedule tasks, and receive replies). Guides through GCP OAuth setup and implements the integration.
+disable-model-invocation: true
 ---
 
 # Add Gmail Integration

@@ -1,6 +1,7 @@
 ---
 name: add-understand-anything
 description: Install the Understand-Anything plugin so the agent gains /understand, /understand-chat, /understand-dashboard and related codebase-analysis skills (interactive knowledge graphs, guided tours, deep-dive explanations). Claude Code backend only — adds the plugin from its GitHub marketplace end-to-end; non–Claude-Code backends use the upstream install.sh fallback.
+disable-model-invocation: true
 ---
 
 # Add Understand-Anything

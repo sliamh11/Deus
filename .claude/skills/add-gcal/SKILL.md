@@ -1,6 +1,7 @@
 ---
 name: add-gcal
 description: Add Google Calendar integration to Deus. Agents can list, create, update, and delete calendar events. Guides through GCP OAuth setup, token generation, keep-alive timer, and CLI command installation.
+disable-model-invocation: true
 ---
 
 # Add Google Calendar
