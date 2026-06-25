@@ -27,16 +27,17 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import memory_tree as mt  # noqa: E402
+from auto_memory_dir import resolve_auto_memory_dir  # noqa: E402
 
 LOG_FILE = Path(os.environ.get(
     "DEUS_RETRIEVAL_LOG",
     "~/.deus/memory_retrieval_log.jsonl",
 )).expanduser()
 
-AUTO_MEM_DIR = Path(os.environ.get(
-    mt.EXTERNAL_DIR_ENV,
-    "~/.deus/auto-memory",
-)).expanduser()
+# Shared resolver (LIA-341): the same dir memory_tree indexes into and
+# standards_pack reads. The old default `~/.deus/auto-memory` was a dir that
+# never exists, so recall returned None for every promoted auto-memory node.
+AUTO_MEM_DIR = resolve_auto_memory_dir()
 
 
 def _read_node_file(path: str) -> str | None:
