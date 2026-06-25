@@ -156,7 +156,12 @@ def recall(
 
     db = mt.open_db()
     try:
-        _excl = exclude_kinds if exclude_kinds is not None else frozenset({"standard"})
+        # LIA-334: procedure nodes are dormant-by-default across EVERY recall()
+        # caller (hook, MCP memory_recall, etc.), not just the prompt hook — so
+        # the kill-switch holds even on surfaces with no flag plumbing. A caller
+        # opts procedures IN by passing exclude_kinds without "procedure" (the
+        # hook passes {"standard"} when DEUS_PROCEDURE_MEMORY=1).
+        _excl = exclude_kinds if exclude_kinds is not None else frozenset({"standard", "procedure"})
         raw = mt.retrieve(db, query, k=k, abstain_threshold=threshold, concepts=concepts, exclude_kinds=_excl)
     finally:
         db.close()

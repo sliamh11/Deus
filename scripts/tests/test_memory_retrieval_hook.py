@@ -65,3 +65,27 @@ def test_hook_treats_empty_env_as_unset(monkeypatch):
     monkeypatch.setenv("DEUS_TREE_ABSTAIN", "  ")
     captured = _run_hook(monkeypatch)
     assert captured["abstain_threshold"] is None
+
+
+def test_hook_excludes_procedures_when_flag_unset(monkeypatch):
+    # LIA-334: procedure surfacing is opt-in. Flag off → pass None so recall()
+    # uses its dormant-by-default exclusion ({"standard","procedure"}); the
+    # kill-switch lives in the shared recall layer, not the hook.
+    monkeypatch.delenv("DEUS_PROCEDURE_MEMORY", raising=False)
+    captured = _run_hook(monkeypatch)
+    assert captured["exclude_kinds"] is None
+
+
+def test_hook_includes_procedures_when_flag_on(monkeypatch):
+    # Flag "1" → opt procedures IN by excluding only {"standard"} ("standard"
+    # stays excluded as usual; procedures become eligible to surface).
+    monkeypatch.setenv("DEUS_PROCEDURE_MEMORY", "1")
+    captured = _run_hook(monkeypatch)
+    assert captured["exclude_kinds"] == {"standard"}
+
+
+def test_hook_keeps_procedures_dormant_when_flag_zero(monkeypatch):
+    # Any value other than "1" is off (kill-switch) → None → recall default.
+    monkeypatch.setenv("DEUS_PROCEDURE_MEMORY", "0")
+    captured = _run_hook(monkeypatch)
+    assert captured["exclude_kinds"] is None
