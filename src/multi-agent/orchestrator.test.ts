@@ -360,7 +360,7 @@ describe('MultiAgentOrchestrator', () => {
       expect(result.results[0].output).toContain('The answer is 42');
     });
 
-    it('defaults to DONE when no marker present', async () => {
+    it('missing marker with output → DONE_WITH_CONCERNS (unverified), not silent DONE', async () => {
       const runtime = createMockRuntime('Just some output without markers.');
       const registry = createMockRegistry(runtime);
       const orchestrator = new MultiAgentOrchestrator(registry);
@@ -368,10 +368,56 @@ describe('MultiAgentOrchestrator', () => {
 
       const result = await orchestrator.dispatch([makeTask()], group);
 
-      expect(result.results[0].status).toBe('DONE');
+      expect(result.results[0].status).toBe('DONE_WITH_CONCERNS');
       expect(result.results[0].output).toBe(
         'Just some output without markers.',
       );
+      expect(result.results[0].concerns).toEqual([
+        'no [STATUS] marker emitted — completion unverified',
+      ]);
+    });
+
+    it('missing marker with empty output → BLOCKED (no deliverable)', async () => {
+      const runtime = createMockRuntime('   ');
+      const registry = createMockRegistry(runtime);
+      const orchestrator = new MultiAgentOrchestrator(registry);
+      const group = makeGroup();
+
+      const result = await orchestrator.dispatch([makeTask()], group);
+
+      expect(result.results[0].status).toBe('BLOCKED');
+      expect(result.results[0].blockedReason).toBe(
+        'no deliverable and no status marker',
+      );
+    });
+
+    it('explicit [STATUS:DONE] with empty output is trusted as DONE', async () => {
+      const runtime = createMockRuntime('[STATUS:DONE]');
+      const registry = createMockRegistry(runtime);
+      const orchestrator = new MultiAgentOrchestrator(registry);
+      const group = makeGroup();
+
+      const result = await orchestrator.dispatch([makeTask()], group);
+
+      expect(result.results[0].status).toBe('DONE');
+      expect(result.results[0].output).toBe('');
+    });
+
+    it('parses a marker buried before long trailing chatter (>200 chars)', async () => {
+      // Tail-200 scan would miss this; full-output last-match finds it.
+      const trailing = 'x'.repeat(400);
+      const runtime = createMockRuntime(
+        `The real answer. [STATUS:DONE] ${trailing}`,
+      );
+      const registry = createMockRegistry(runtime);
+      const orchestrator = new MultiAgentOrchestrator(registry);
+      const group = makeGroup();
+
+      const result = await orchestrator.dispatch([makeTask()], group);
+
+      expect(result.results[0].status).toBe('DONE');
+      expect(result.results[0].output).toContain('The real answer.');
+      expect(result.results[0].output).not.toContain('[STATUS:DONE]');
     });
 
     it('parses DONE_WITH_CONCERNS and extracts concerns', async () => {
@@ -403,6 +449,45 @@ describe('MultiAgentOrchestrator', () => {
 
       expect(result.results[0].status).toBe('BLOCKED');
       expect(result.results[0].blockedReason).toBe('missing credentials');
+    });
+  });
+
+  describe('missing-marker contract (dispatch-level)', () => {
+    it('surfaces the synthetic concern into OrchestratorResult.concerns and stays success', async () => {
+      const runtime = createMockRuntime('Findings, but no marker emitted.');
+      const registry = createMockRegistry(runtime);
+      const orchestrator = new MultiAgentOrchestrator(registry);
+      const group = makeGroup();
+
+      const result = await orchestrator.dispatch([makeTask()], group);
+
+      // DONE_WITH_CONCERNS counts toward done → blockedCount 0 → success.
+      expect(result.status).toBe('success');
+      expect(result.concerns).toContain(
+        'no [STATUS] marker emitted — completion unverified',
+      );
+    });
+
+    it('a no-marker (DONE_WITH_CONCERNS) dependency does NOT cascade-block its dependents', async () => {
+      // Both tasks get the same marker-less output; T2 depends on T1. T1 →
+      // DONE_WITH_CONCERNS must NOT block T2 (cascade guard blocks only on BLOCKED).
+      const runtime = createMockRuntime('Output without a marker.');
+      const registry = createMockRegistry(runtime);
+      const orchestrator = new MultiAgentOrchestrator(registry);
+      const group = makeGroup();
+
+      const tasks = [
+        makeTask({ id: 'task-1', prompt: 'First' }),
+        makeTask({ id: 'task-2', prompt: 'Second', contextFrom: ['task-1'] }),
+      ];
+
+      const result = await orchestrator.dispatch(tasks, group);
+
+      // T2 ran (not skipped as blocked) → runtime called for both tasks.
+      expect(runtime.runTurn).toHaveBeenCalledTimes(2);
+      const t2 = result.results[1]; // results preserve task order (tasks.map at aggregation)
+      expect(t2.status).toBe('DONE_WITH_CONCERNS');
+      expect(t2.blockedReason).toBeUndefined();
     });
   });
 
