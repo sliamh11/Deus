@@ -473,9 +473,19 @@ def open_db() -> sqlite3.Connection:
             created_at  TEXT NOT NULL,
             resolved    INTEGER DEFAULT 0,
             resolution  TEXT,
+            resolved_at TEXT DEFAULT NULL,
             UNIQUE(older_id, newer_id)
         )
     """)
+    # Migrate pre-existing pending_conflicts tables (LIA-338): add resolved_at so
+    # the review cadence becomes measurable. Historical resolved rows stay NULL
+    # on purpose — we never observed WHEN they were resolved, so inventing a
+    # timestamp would fabricate data. New resolutions stamp it going forward.
+    # Idempotent: ADD COLUMN raises OperationalError once the column exists.
+    try:
+        db.execute("ALTER TABLE pending_conflicts ADD COLUMN resolved_at TEXT DEFAULT NULL")
+    except sqlite3.OperationalError:
+        pass
     for col, definition in [
         ("privacy", "TEXT DEFAULT 'internal'"),
         ("temperature", "REAL DEFAULT 1.0"),
@@ -3194,13 +3204,18 @@ def cmd_resolve_conflicts():
         print(f"  OLDER (atom {older_id}): {older_text[:120]}")
         print(f"  NEWER (atom {newer_id}): {newer_text[:120]}")
         print(f"  → To invalidate older: --invalidate-conflict {cid}")
+        print(f"  → To invalidate newer: --invalidate-conflict {cid} --newer")
         print(f"  → To dismiss:          --dismiss-conflict {cid}")
         print()
     db.close()
 
 
-def cmd_invalidate_conflict(conflict_id: int):
-    """Invalidate the older atom in a conflict after user review."""
+def cmd_invalidate_conflict(conflict_id: int, newer: bool = False):
+    """Resolve a conflict by soft-deleting one of its atoms.
+
+    Default soft-deletes the OLDER atom (resolution='invalidated'); newer=True
+    soft-deletes the NEWER one (resolution='invalidated_newer').
+    """
     db = open_db()
     row = db.execute(
         "SELECT older_id, newer_id FROM pending_conflicts WHERE id = ? AND resolved = 0",
@@ -3211,24 +3226,41 @@ def cmd_invalidate_conflict(conflict_id: int):
         db.close()
         return
     older_id, newer_id = row
-    invalidate_atom(db, older_id, reason=f"superseded by atom {newer_id} (user-confirmed)")
+    if newer:
+        target_id, resolution = newer_id, "invalidated_newer"
+        reason = f"newer atom rejected vs atom {older_id} (user-confirmed)"
+    else:
+        target_id, resolution = older_id, "invalidated"
+        reason = f"superseded by atom {newer_id} (user-confirmed)"
+    # invalidate_atom commits internally; the conflict-row UPDATE below is a
+    # separate transaction (same shape as before this change — not atomic).
+    invalidate_atom(db, target_id, reason=reason)
     db.execute(
-        "UPDATE pending_conflicts SET resolved = 1, resolution = 'invalidated' WHERE id = ?",
-        [conflict_id],
+        "UPDATE pending_conflicts SET resolved = 1, resolution = ?, resolved_at = ? WHERE id = ?",
+        [resolution, local_now().strftime("%Y-%m-%d"), conflict_id],
     )
     db.commit()
     db.close()
 
 
 def cmd_dismiss_conflict(conflict_id: int):
-    """Dismiss a false-positive conflict."""
+    """Dismiss a false-positive conflict (no-op if already resolved).
+
+    The ``resolved = 0`` guard makes resolved_at write-once: re-dismissing an
+    already-resolved row must not overwrite its (possibly NULL, historical)
+    resolved_at with today's date.
+    """
     db = open_db()
-    db.execute(
-        "UPDATE pending_conflicts SET resolved = 1, resolution = 'dismissed' WHERE id = ?",
-        [conflict_id],
+    cur = db.execute(
+        "UPDATE pending_conflicts SET resolved = 1, resolution = 'dismissed', resolved_at = ? "
+        "WHERE id = ? AND resolved = 0",
+        [local_now().strftime("%Y-%m-%d"), conflict_id],
     )
     db.commit()
-    print(f"Conflict #{conflict_id} dismissed.")
+    if cur.rowcount:
+        print(f"Conflict #{conflict_id} dismissed.")
+    else:
+        print(f"Conflict #{conflict_id} not found or already resolved.")
     db.close()
 
 
@@ -4420,7 +4452,8 @@ def main() -> int:
     group.add_argument("--resolve-conflicts", action="store_true",
                        help="Show pending contradictions for review (no auto-invalidation)")
     group.add_argument("--invalidate-conflict", type=int, metavar="ID",
-                       help="Confirm and invalidate the older atom in conflict #ID")
+                       help="Confirm and invalidate the older atom in conflict #ID "
+                            "(add --newer to invalidate the newer atom instead)")
     group.add_argument("--dismiss-conflict", type=int, metavar="ID",
                        help="Dismiss conflict #ID as false positive")
     group.add_argument("--export", metavar="PATH",
@@ -4456,6 +4489,9 @@ def main() -> int:
                         help="Preview --prune changes without applying them")
     parser.add_argument("--reason", default="manual",
                         help="Reason for --invalidate (default: manual)")
+    parser.add_argument("--newer", action="store_true",
+                        help="With --invalidate-conflict: invalidate the NEWER atom "
+                             "instead of the older one (resolution=invalidated_newer)")
     parser.add_argument("--domain", metavar="DOMAIN",
                         help="Filter --query results by domain (dev/study/trading/personal/general)")
     parser.add_argument("--graph", action="store_true",
@@ -4477,6 +4513,11 @@ def main() -> int:
                              "(e.g. public,internal,private). Overrides --privacy. "
                              "Also reads from DEUS_MEMORY_PRIVACY env var.")
     args = parser.parse_args()
+
+    # --newer is a modifier for --invalidate-conflict; reject it standalone so
+    # it is never silently ignored (LIA-338).
+    if args.newer and args.invalidate_conflict is None:
+        parser.error("--newer requires --invalidate-conflict")
 
     # Warm up embedding provider before batch workloads when requested.
     # Only fires when the caller sets DEUS_EMBED_WARMUP=1 to avoid adding
@@ -4519,7 +4560,7 @@ def main() -> int:
         cmd_resolve_conflicts()
         return
     if args.invalidate_conflict is not None:
-        cmd_invalidate_conflict(args.invalidate_conflict)
+        cmd_invalidate_conflict(args.invalidate_conflict, newer=args.newer)
         return
     if args.dismiss_conflict is not None:
         cmd_dismiss_conflict(args.dismiss_conflict)
