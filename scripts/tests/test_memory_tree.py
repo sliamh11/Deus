@@ -841,6 +841,71 @@ class TestReindexExternal:
             counts = mt.reindex_external(tmp_db, ext_dir)
         assert counts["orphaned"] == 1
 
+    def test_reindex_external_one_adds_without_orphaning(self, tmp_db, ext_dir, tmp_path):
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external(tmp_db, ext_dir)
+        before = {
+            r[0] for r in tmp_db.execute(
+                "SELECT path FROM nodes WHERE orphaned_at IS NULL"
+            ).fetchall()
+        }
+        assert len(before) == 2  # feedback_test + project_test
+
+        (ext_dir / "procedure_new.md").write_text(
+            "---\nname: New proc\ndescription: A newly captured procedure\ntype: procedure\n---\nSteps\n"
+        )
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            counts = mt.reindex_external_one(tmp_db, ext_dir, "procedure_new.md")
+        assert counts["indexed"] == 1
+        after = {
+            r[0] for r in tmp_db.execute(
+                "SELECT path FROM nodes WHERE orphaned_at IS NULL"
+            ).fetchall()
+        }
+        assert before <= after and len(after) == 3  # originals untouched
+
+        # Persistence: a FRESH connection sees the committed node (proves the
+        # explicit db.commit() — a single-connection assert would pass without it).
+        db2 = mt.open_db(tmp_path / "tree.db")
+        try:
+            active = {
+                r[0] for r in db2.execute(
+                    "SELECT path FROM nodes WHERE orphaned_at IS NULL"
+                ).fetchall()
+            }
+        finally:
+            db2.close()
+        assert "auto-memory/procedure_new.md" in active
+        assert len(active) == 3
+
+    def test_reindex_external_one_rejects_escape(self, tmp_db, ext_dir, tmp_path):
+        # A ../ path that escapes external_dir is rejected (resolved containment),
+        # even though the target file exists.
+        (tmp_path / "outside.md").write_text(
+            "---\nname: x\ndescription: y\ntype: feedback\n---\n"
+        )
+        with pytest.raises(ValueError):
+            mt.reindex_external_one(tmp_db, ext_dir, "../outside.md")
+        assert tmp_db.execute(
+            "SELECT count(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0] == 0
+
+    def test_reindex_external_one_missing_file(self, tmp_db, ext_dir):
+        with pytest.raises(FileNotFoundError):
+            mt.reindex_external_one(tmp_db, ext_dir, "nonexistent.md")
+
+    def test_cli_add_dispatch(self, tmp_path, ext_dir, monkeypatch):
+        # Exercises the `reindex-external --add` CLI branch end to end: resolver
+        # via DEUS_AUTO_MEMORY_DIR, SUCCESS exit + --json, and the USAGE_ERROR path.
+        monkeypatch.setattr(mt, "DB_PATH", tmp_path / "cli.db")
+        monkeypatch.setenv("DEUS_AUTO_MEMORY_DIR", str(ext_dir))
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            rc = mt.main(["reindex-external", "--add", "feedback_test.md", "--json"])
+        assert rc == mt.SUCCESS
+        # A ../ escape returns USAGE_ERROR, not a crash.
+        rc_escape = mt.main(["reindex-external", "--add", "../escape.md"])
+        assert rc_escape == mt.USAGE_ERROR
+
     def test_transient_rglob_miss_does_not_orphan(self, tmp_db, ext_dir, monkeypatch):
         """LIA-336: a present file that rglob misses during one sweep (a rename
         gap) must NOT be orphaned — _confirm_orphan re-checks it on disk. Mirrors
