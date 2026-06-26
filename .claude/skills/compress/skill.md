@@ -157,4 +157,20 @@ After saving the session log:
 7. **Trigger session retrospective** (home mode only, background, opt-in):
    Read `branches/retrospective.md` for conditions and dispatch instructions. Skip silently if any check fails.
 
+8. **Render a Decision Receipt** (always, in the chat reply — home + external):
+   After the log is saved, render a short user-facing digest so the user can follow what
+   changed despite fast delivery — a RENDERING of the data already written (no new content):
+   - **Headline** = the saved log's `tldr` first line (the one-line outcome; it usually already
+     carries the main PR/issue reference).
+   - Up to **3 pivotal-decision bullets** = the saved `decisions[]` array, verbatim, each prefixed
+     `→`. The `decisions[]` strings carry no link field, so do NOT fabricate one; where this
+     session clearly maps a decision to a specific PR/issue, you may append that reference for
+     depth — otherwise render the string as-is.
+   - Optional single closing line WITHIN this receipt block: one open thread or "what's next"
+     (let the user drive). It is part of the receipt, before the operational Confirm line below.
+   Hard cap: **≤5 sentences AND ≤5 bullets, plain language, no deep technical detail** (depth
+   lives in the linked PRs/issues). Skip the receipt for a trivial session — one with no
+   `decisions[]` recorded AND no PR/merge this session; in that case the Confirm line still
+   reports the save. This is the comprehension digest; the operational Confirm line is separate.
+
 Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, and whether a session retrospective was triggered (home mode only — report "retrospective triggered (background)" or "retrospective skipped: <reason>").
