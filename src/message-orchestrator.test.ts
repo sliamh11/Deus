@@ -1023,3 +1023,240 @@ describe('startMessageLoop', () => {
     expect(mockGetNewMessages.mock.calls.length).toBeLessThanOrEqual(2);
   });
 });
+
+// ── LIA-127: multi-agent dispatch wiring ─────────────────────────────────────
+describe('multi-agent dispatch (DEUS_MULTI_AGENT)', () => {
+  const TASK_BLOCK =
+    'do this\n```deus-tasks\n' +
+    JSON.stringify([
+      {
+        id: 'a',
+        role: 'researcher',
+        goal: 'g',
+        backstory: '',
+        prompt: 'research X',
+        mode: 'read',
+      },
+    ]) +
+    '\n```';
+
+  afterEach(() => {
+    delete process.env.DEUS_MULTI_AGENT;
+  });
+
+  it('flag-on + valid block → dispatches via orchestrator and sends the aggregate', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    // The sub-agent run emits output + a DONE marker.
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({
+        type: 'output_text',
+        text: 'found the answer [STATUS:DONE]',
+      });
+      return { status: 'success', result: 'found the answer [STATUS:DONE]' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true);
+    // The aggregated multi-agent reply was sent (task id + status + output).
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('✓ a: done'),
+    );
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('found the answer'),
+    );
+  });
+
+  it('flag-off + same block → single-agent path unchanged (no regression)', async () => {
+    delete process.env.DEUS_MULTI_AGENT; // flag OFF
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    // Single-agent backend echoes a plain reply — NOT a multi-agent aggregate.
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'single agent reply' });
+      return { status: 'success', result: 'single agent reply' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true);
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('single agent reply'),
+    );
+    // No multi-agent formatting was produced.
+    expect(channel.sendMessage).not.toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('✓ a: done'),
+    );
+  });
+
+  it('flag-on + blocked by injection scanner → NOT dispatched (security guard)', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    // Scanner flags the prompt as a blocked injection attempt.
+    mockScanForInjection.mockReturnValue({
+      blocked: true,
+      triggered: true,
+      score: 1,
+      matches: ['ignore previous instructions'],
+    });
+    let dispatched = false;
+    activeRunTurn = async (_ctx, _session, sink) => {
+      dispatched = true;
+      await sink({ type: 'output_text', text: 'should not run [STATUS:DONE]' });
+      return { status: 'success', result: 'x' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true); // consumed, no retry
+    expect(dispatched).toBe(false); // sub-agents never ran
+    expect(channel.sendMessage).not.toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('✓ a: done'),
+    );
+  });
+
+  it('flag-on + malformed block → parse-error notice, no rollback', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({
+        content: '```deus-tasks\n{not valid json\n```',
+        timestamp: 'ts-1',
+      }),
+    ]);
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true); // consumed, no retry
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining("couldn't parse"),
+    );
+    // Cursor advanced to ts-1, not rolled back to ts-prev.
+    expect(state.setLastAgentTimestamp).toHaveBeenLastCalledWith(
+      'group@g.us',
+      'ts-1',
+    );
+  });
+
+  it('flag-on + all subagents blocked (status error) → reports reasons and consumes (no loop)', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    // Subagent run errors → BLOCKED → all-blocked → OrchestratorResult.status 'error'.
+    activeRunTurn = async () => ({
+      status: 'error',
+      result: null,
+      error: 'container crashed',
+    });
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    // Work ran (side effects possible) → consume + report, never loop.
+    expect(result).toBe(true);
+    // Cursor stays advanced (NOT rolled back) so the block isn't re-dispatched.
+    expect(state.setLastAgentTimestamp).toHaveBeenLastCalledWith(
+      'group@g.us',
+      'ts-1',
+    );
+    // The blocked reason is reported to the user.
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('✗ a: blocked'),
+    );
+  });
+
+  it('flag-on + delivery failure after a completed run → still consumes (no duplicate re-dispatch)', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    // Delivery fails — must NOT trigger a re-dispatch (would re-run write tasks).
+    channel.sendMessage = vi.fn(async () => {
+      throw new Error('send failed');
+    });
+    mockFindChannel.mockReturnValue(channel as any);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'done [STATUS:DONE]' });
+      return { status: 'success', result: 'done [STATUS:DONE]' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as any,
+      queue: makeQueue() as any,
+      channels: [channel as any],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true); // consumed despite delivery failure
+    expect(state.setLastAgentTimestamp).toHaveBeenLastCalledWith(
+      'group@g.us',
+      'ts-1', // not rolled back
+    );
+  });
+});

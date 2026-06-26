@@ -17,11 +17,25 @@ import type { RegisteredGroup } from '../types.js';
 import type { SubagentTask, OrchestratorResult } from './types.js';
 import { MultiAgentOrchestrator } from './orchestrator.js';
 import { UserError } from '../errors/index.js';
+import { writeFileSync } from 'fs';
+import { resolveGroupIpcPath } from '../group-folder.js';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
 
 vi.mock('../logger.js', () => ({
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+// Mock fs + IPC-path resolution so the one-shot `_close` sentinel write never
+// touches the real filesystem during tests.
+vi.mock('fs', () => ({
+  mkdirSync: vi.fn(),
+  writeFileSync: vi.fn(),
+}));
+vi.mock('../group-folder.js', () => ({
+  resolveGroupIpcPath: vi.fn(
+    (folder: string, key: string) => `/ipc/${folder}/${key}`,
+  ),
 }));
 
 // ── Test helpers ───────────────────────────────────────────────────────
@@ -125,6 +139,30 @@ describe('MultiAgentOrchestrator', () => {
       expect(result.results.every((r) => r.status === 'DONE')).toBe(true);
       // Runtime should have been called for each task
       expect(runtime.runTurn).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  describe('one-shot _close sentinel', () => {
+    it('writes a per-task _close sentinel on turn_complete so the container exits promptly', async () => {
+      const runtime = createMockRuntime('Done. [STATUS:DONE]');
+      const registry = createMockRegistry(runtime);
+      const orchestrator = new MultiAgentOrchestrator(registry);
+      const group = makeGroup({ folder: 'grp' });
+
+      await orchestrator.dispatch([makeTask({ id: 'task-x' })], group);
+
+      // IPC namespace keyed per-task (slug id) to avoid sibling collisions.
+      expect(resolveGroupIpcPath).toHaveBeenCalledWith(
+        'grp',
+        'multi-agent-task-x',
+      );
+      // The _close sentinel was written into that run's input dir.
+      const wrote = vi
+        .mocked(writeFileSync)
+        .mock.calls.some(
+          (c) => typeof c[0] === 'string' && c[0].endsWith('/input/_close'),
+        );
+      expect(wrote).toBe(true);
     });
   });
 
