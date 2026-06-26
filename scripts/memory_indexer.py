@@ -3650,6 +3650,12 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
                 total_conflicts += len(conflicts)
             if total_conflicts:
                 print(f"  contradictions: {total_conflicts} conflict(s) logged for review (use --resolve-conflicts)")
+            # Standing-backlog reminder so the review queue can't silently rot (LIA-338).
+            backlog = db.execute(
+                "SELECT COUNT(*) FROM pending_conflicts WHERE resolved = 0"
+            ).fetchone()[0]
+            if backlog:
+                print(f"  review backlog: {backlog} unresolved conflict(s) pending (use --resolve-conflicts)")
         except Exception as e:
             print(f"  WARN: contradiction detection failed: {e}", file=sys.stderr)
 
