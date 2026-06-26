@@ -32,6 +32,7 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 from _exit_codes import SUCCESS, ABSTAIN, USAGE_ERROR, NOT_FOUND, AUTH_ERROR, INTERNAL_ERROR
 from _agent_io import is_agent_context, compact_json, select_fields
 from _time import local_now, utc_now  # noqa: E402
+from auto_memory_dir import resolve_auto_memory_dir  # noqa: E402
 
 
 def _utc_iso() -> str:
@@ -1985,6 +1986,116 @@ def _write_id_to_frontmatter(path: Path, new_id: str) -> None:
     path.write_text(updated, encoding="utf-8")
 
 
+def _index_external_file(
+    db: sqlite3.Connection,
+    path: Path,
+    ns_path: str,
+    *,
+    skip_embed: bool = False,
+) -> dict[str, int]:
+    """Upsert ONE external (auto-memory) file into the tree under ``ns_path``.
+
+    The per-file half of :func:`reindex_external`: read, parse, embed-if-needed,
+    upsert. Pure single-node work — it does NOT walk, track ``walked_paths``,
+    orphan-sweep, back up, or commit. Callers own those (the walk + sweep are
+    what make a full reindex destructive; keeping them out of here is what makes
+    the single-file admit non-destructive — LIA-341). Returns per-file counts.
+    """
+    c = {"indexed": 0, "embedded": 0, "skipped": 0, "id_written": 0}
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        c["skipped"] += 1
+        return c
+
+    fm = parse_frontmatter(content)
+    description = fm.get("description", "").strip()
+    if not description:
+        c["skipped"] += 1
+        return c
+
+    node_id = fm.get("id")
+    if not node_id:
+        node_id = make_id()
+        _write_id_to_frontmatter(path, node_id)
+        c["id_written"] += 1
+
+    title = fm.get("name") or path.stem
+    node_type = fm.get("type", "feedback")
+    embed_src = embedding_source(description, content)
+    ch = content_hash(embed_src)
+
+    existing = db.execute(
+        "SELECT content_hash FROM nodes WHERE id = ?", (node_id,)
+    ).fetchone()
+    has_embedding = sqlite_vec is not None and db.execute(
+        "SELECT 1 FROM embeddings WHERE rowid = ?", (_rowid_for(node_id),)
+    ).fetchone() is not None
+    need_embed = existing is None or existing[0] != ch or not has_embedding
+
+    vec = None
+    if need_embed and not skip_embed:
+        try:
+            vec = embed_text(embed_src)
+            c["embedded"] += 1
+        except Exception as exc:
+            print(f"WARN: embed failed for {ns_path}: {exc}", file=sys.stderr)
+            vec = None
+
+    upsert_node(
+        db,
+        node_id=node_id,
+        path=ns_path,
+        title=title,
+        description=description,
+        level=0,
+        node_type=node_type,
+        embedding=vec,
+        content_hash_val=ch,
+        body_text=_body_from_content(content),
+        atom_kind=fm.get("atom_kind", "knowledge"),
+    )
+    c["indexed"] += 1
+    return c
+
+
+def reindex_external_one(
+    db: sqlite3.Connection,
+    external_dir: Path,
+    rel_path: str,
+    *,
+    skip_embed: bool = False,
+) -> dict[str, int]:
+    """Index a SINGLE auto-memory file without the orphan sweep (LIA-341).
+
+    Non-destructive: a resolved-containment guard plus one upsert — no orphan
+    sweep or ``_backup_db`` (nothing else can be lost); commits explicitly since
+    :func:`upsert_node` does not and this path bypasses :func:`reindex_external`'s
+    commit; raises ``FileNotFoundError`` (dir/file missing) or ``ValueError``
+    (``rel_path`` escapes ``external_dir`` via ``..`` or a symlink).
+    """
+    external_dir = external_dir.expanduser().resolve()
+    if not external_dir.is_dir():
+        raise FileNotFoundError(f"auto-memory dir not found: {external_dir}")
+
+    pr = (external_dir / rel_path).resolve(strict=False)
+    if not pr.is_relative_to(external_dir):
+        raise ValueError(f"{rel_path} is not under {external_dir}")
+    if not pr.exists():
+        raise FileNotFoundError(f"file not found: {pr}")
+
+    ns_path = EXTERNAL_NAMESPACE + str(pr.relative_to(external_dir))
+    counts = {"indexed": 0, "embedded": 0, "skipped": 0, "id_written": 0}
+    sub = _index_external_file(db, pr, ns_path, skip_embed=skip_embed)
+    for k, v in sub.items():
+        counts[k] += v
+    db.commit()
+    _emit_audit(
+        {"action": "reindex_external_one", "dir": str(external_dir), "file": ns_path, **counts}
+    )
+    return counts
+
+
 def reindex_external(
     db: sqlite3.Connection,
     external_dir: Path,
@@ -2023,60 +2134,9 @@ def reindex_external(
         ns_path = EXTERNAL_NAMESPACE + str(rel_to_ext)
         walked_paths.add(ns_path)
 
-        try:
-            content = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            counts["skipped"] += 1
-            continue
-
-        fm = parse_frontmatter(content)
-        description = fm.get("description", "").strip()
-        if not description:
-            counts["skipped"] += 1
-            continue
-
-        node_id = fm.get("id")
-        if not node_id:
-            node_id = make_id()
-            _write_id_to_frontmatter(p, node_id)
-            counts["id_written"] += 1
-
-        title = fm.get("name") or p.stem
-        node_type = fm.get("type", "feedback")
-        embed_src = embedding_source(description, content)
-        ch = content_hash(embed_src)
-
-        existing = db.execute(
-            "SELECT content_hash FROM nodes WHERE id = ?", (node_id,)
-        ).fetchone()
-        has_embedding = sqlite_vec is not None and db.execute(
-            "SELECT 1 FROM embeddings WHERE rowid = ?", (_rowid_for(node_id),)
-        ).fetchone() is not None
-        need_embed = existing is None or existing[0] != ch or not has_embedding
-
-        vec = None
-        if need_embed and not skip_embed:
-            try:
-                vec = embed_text(embed_src)
-                counts["embedded"] += 1
-            except Exception as exc:
-                print(f"WARN: embed failed for {ns_path}: {exc}", file=sys.stderr)
-                vec = None
-
-        upsert_node(
-            db,
-            node_id=node_id,
-            path=ns_path,
-            title=title,
-            description=description,
-            level=0,
-            node_type=node_type,
-            embedding=vec,
-            content_hash_val=ch,
-            body_text=_body_from_content(content),
-            atom_kind=fm.get("atom_kind", "knowledge"),
-        )
-        counts["indexed"] += 1
+        sub = _index_external_file(db, p, ns_path, skip_embed=skip_embed)
+        for k, v in sub.items():
+            counts[k] += v
 
     # Orphan external nodes no longer on disk.
     now_iso = _utc_iso()
@@ -3206,6 +3266,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("manifest", help="Generate thin manifest from all indexed nodes")
 
     p_ext = sub.add_parser("reindex-external", help="Index auto-memory files from DEUS_AUTO_MEMORY_DIR")
+    p_ext.add_argument(
+        "--add",
+        metavar="PATH",
+        help="Non-destructively index a SINGLE auto-memory file (resolved via the "
+        "shared resolver; no orphan sweep, unlike the bare full reindex)",
+    )
     p_ext.add_argument("--skip-embed", action="store_true", help="Skip embedding API calls")
     p_ext.add_argument("--json", action="store_true")
 
@@ -3387,6 +3453,26 @@ def main(argv: list[str] | None = None) -> int:
         return SUCCESS
 
     if args.cmd == "reindex-external":
+        if args.add:
+            # Non-destructive single-file admit: resolve the canonical dir
+            # ourselves (the safe path, unlike the destructive bare reindex).
+            try:
+                counts = reindex_external_one(
+                    db, resolve_auto_memory_dir(), args.add, skip_embed=args.skip_embed
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"ABORT: {exc}", file=sys.stderr)
+                return USAGE_ERROR
+            if args.json:
+                print(json.dumps(counts, indent=2))
+            else:
+                print(
+                    f"reindex-external --add: indexed={counts['indexed']} "
+                    f"embedded={counts['embedded']} "
+                    f"id_written={counts['id_written']} "
+                    f"skipped={counts['skipped']}"
+                )
+            return SUCCESS
         ext_dir = os.environ.get(EXTERNAL_DIR_ENV)
         if not ext_dir:
             print(f"ABORT: {EXTERNAL_DIR_ENV} not set", file=sys.stderr)
