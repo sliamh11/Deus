@@ -92,6 +92,46 @@ python3 -c "import sys; sys.path.insert(0,'$HOME/deus/scripts'); import memory_t
 ```
 Pick a short hyphenated `<slug>` from the title.
 
+### 3.5 — Dual-warden pre-review (required)
+
+Before the approval gate, vet the drafted node with two INDEPENDENT reviewers and surface
+every verdict at step 4. The lenses are orthogonal: one judges whether the node is *needed*,
+the other whether it is *well-formed as recalled context*. Both are ADVISORY — they inform the
+human's keep/revise/abandon call and do NOT write the warden verdict store. Dispatch all three
+reviews CONCURRENTLY (the result-skeptic Agent call and the two `codex_warden` Bash calls are
+independent tool calls; order does not matter).
+
+1. **Relevancy — `result-skeptic` (Opus).** Is this worth persisting at all? Checks redundancy
+   with an existing skill/convention, single-incident overreach, and the enforcement-vs-recall
+   layer mismatch (a behavior that should be *enforced* by a skill or hook does not belong in a
+   recall-gated advisory node). Opus, because the keep/kill call is nuanced judgment. Pass the
+   rendered node AND the task/session context that motivated capturing it:
+   `Agent(subagent_type="result-skeptic", model="opus", prompt=<rendered node + why it was proposed>)`
+
+2. **Instruction quality — `ai-eng-warden`, TWO cross-family models.** A procedure node is recalled
+   context re-injected into future prompts, so review it on the AI-engineering axes: description
+   discriminativeness + negative scope, false-fire risk against adjacent intents, injection-safety
+   of the steps (neutral how-to, NEVER second-person imperative commands or secrets), token cost,
+   and flag-gating. `ai-eng-warden` is a DIFF role, so present the draft as a new-file diff and
+   review it through two CROSS-FAMILY backends (not Claude) for failure-mode diversity. Run WITHOUT
+   `--warden-mark` — these are advisory; marking would stamp `ai-eng-reviewed` against the procedure
+   draft and pollute a later code-review co-gate. Collect each verdict from stdout:
+   ```bash
+   DIFF=$(mktemp)
+   # git diff --no-index ALWAYS exits 1 on a new file — expected; the diff is still written.
+   git diff --no-index /dev/null <draft-temp-file> > "$DIFF" || true
+   python3 ~/deus/scripts/codex_warden.py --role ai-eng-warden --backend gpt --diff-file "$DIFF"
+   python3 ~/deus/scripts/codex_warden.py --role ai-eng-warden --backend glm --diff-file "$DIFF"
+   ```
+   Each `python3` warden call should exit 0 and print a verdict (SHIP / REVISE / BLOCK /
+   COULD_NOT_RUN). A non-zero exit or missing verdict FROM A WARDEN CALL (not the expected exit-1
+   from `git diff`) means the review did not run — fix the invocation and retry before step 4.
+
+At the approval gate (step 4), show all three verdicts (skeptic + the two ai-eng backends) verbatim
+alongside the rendered node. On any DON'T-SAVE / REVISE, do NOT silently loop: either revise the
+draft and re-run this step, or present the verdict to the user and let them decide keep / revise /
+abandon. The human approval gate is authoritative.
+
 ### 4. Human approval gate (required)
 
 Show the fully-rendered node (frontmatter + steps) and the target path. Write the file ONLY
