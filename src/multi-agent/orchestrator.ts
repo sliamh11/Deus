@@ -15,7 +15,11 @@ import type {
   RuntimeEvent,
   RuntimeEventSink,
 } from '../agent-runtimes/types.js';
+import * as fs from 'fs';
+import * as path from 'path';
+
 import { UserError } from '../errors/index.js';
+import { resolveGroupIpcPath } from '../group-folder.js';
 import { logger } from '../logger.js';
 import { buildPrompt } from './prompt-templates.js';
 import type { RegisteredGroup } from '../types.js';
@@ -269,12 +273,16 @@ export class MultiAgentOrchestrator {
     priorOutputs: Map<string, SubagentResult>,
   ): Promise<SubagentResult> {
     const prompt = buildPrompt(task, priorOutputs);
+    const chatJid = `multi-agent-${task.id}`;
     const runContext = {
       prompt,
       groupFolder: group.folder,
-      chatJid: `multi-agent-${task.id}`,
+      chatJid,
       isControlGroup: false,
       isScheduledTask: false,
+      // Per-task IPC namespace (slug-only id → safe, unique key) so concurrent
+      // sibling subagents don't collide on the one-shot `_close` sentinel.
+      ipcRunKey: chatJid,
     };
 
     const outputParts: string[] = [];
@@ -285,6 +293,22 @@ export class MultiAgentOrchestrator {
       }
       if (event.type === 'error') {
         throw new Error(event.error);
+      }
+      // One-shot: signal the container to exit after its first result. Without
+      // this the container idles until IDLE_TIMEOUT (~30s) before runTurn
+      // resolves (container-runner resolves on exit). Mirrors the single-agent
+      // path and linear-dispatcher.executeAgentRun. Best-effort.
+      if (event.type === 'turn_complete') {
+        try {
+          const inputDir = path.join(
+            resolveGroupIpcPath(group.folder, chatJid),
+            'input',
+          );
+          fs.mkdirSync(inputDir, { recursive: true });
+          fs.writeFileSync(path.join(inputDir, '_close'), '');
+        } catch {
+          /* best-effort — close sentinel is an optimization, not correctness */
+        }
       }
     };
 
