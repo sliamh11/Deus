@@ -138,7 +138,29 @@ ATOM_DIST_THRESHOLD = float(os.environ.get("DEUS_ATOM_DIST", "0"))
 # procedure candidate is actually present (post-retrieval), which bounds its
 # latency cost — most prompts never pay it.
 _INTENT_GATE_ENABLED = os.environ.get("DEUS_PROCEDURE_INTENT_GATE", "1").strip() != "0"  # LIA-337
-_INTENT_MODEL = os.environ.get("DEUS_INTENT_MODEL", "gemma4:e2b").strip() or "gemma4:e2b"  # LIA-337
+
+# LIA-342: ordered LOCAL fallback chain for intent classification. gemma4:e2b is
+# the validated primary; gemma4:e4b (the always-loaded entity/atom model) is the
+# fallback so a transient e2b outage does not silently disable the precision gate.
+# (Opus cloud tier is a separate follow-up — see LIA-342.)
+_DEFAULT_INTENT_MODELS = ("gemma4:e2b", "gemma4:e4b")
+
+
+def _intent_models() -> list[str]:
+    """Ordered local model chain (read at CALL time for test isolation).
+
+    DEUS_INTENT_MODELS (comma-separated) overrides; else the legacy single
+    DEUS_INTENT_MODEL (#957 back-compat) if set; else the e2b->e4b default pair.
+    """
+    raw = os.environ.get("DEUS_INTENT_MODELS", "").strip()  # LIA-342
+    if raw:
+        models = [m.strip() for m in raw.split(",") if m.strip()]
+        if models:
+            return models
+    legacy = os.environ.get("DEUS_INTENT_MODEL", "").strip()  # LIA-337 back-compat
+    if legacy:
+        return [legacy]
+    return list(_DEFAULT_INTENT_MODELS)
 
 _INTENT_PROMPT_TEMPLATE = (
     "You are an intent classifier. Decide whether the user's message is a request "
@@ -159,6 +181,20 @@ _INTENT_PROMPT_TEMPLATE = (
 )
 
 
+def _parse_intent(text: str | None) -> str | None:
+    """Parse a classifier's INNER JSON text into a validated label (LIA-342).
+
+    `text` is the model's own JSON string (e.g. '{"intent":"factual"}'). Strict
+    parse + label whitelist; any miss -> None (the caller's fail-safe keeps
+    procedures).
+    """
+    try:
+        intent = json.loads(text or "{}").get("intent")
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return None
+    return intent if intent in ("procedural", "factual") else None
+
+
 def _intent_timeout() -> float:
     """Resolve the intent-classify HTTP timeout (seconds), guarded against
     empty/non-numeric/non-positive env values (''/'abc'/'0' -> default 10)."""
@@ -170,15 +206,13 @@ def _intent_timeout() -> float:
     return v if v > 0 else 10.0
 
 
-def classify_intent(query: str) -> str | None:
-    """Classify a query as 'procedural' or 'factual' via a local Ollama model.
+def _classify_ollama(query: str, model: str) -> str | None:
+    """Classify a query as 'procedural'/'factual' via one local Ollama model.
 
-    Returns 'procedural', 'factual', or None when the classifier is unavailable
-    (Ollama down, timeout, non-200, unparseable body, or an unknown label). None
-    is the FAIL-SAFE signal: the caller keeps procedures surfacing (errs toward
-    recall — a dropped real procedure is worse than an occasional false-fire).
-    Mirrors the HTTP shape of memory_tree.generate_approach_angles. Monkey-patched
-    in tests.
+    Returns the label, or None when this model is unavailable (Ollama down,
+    timeout, non-200, unparseable body, or an unknown label) so the caller can
+    fall through to the next model in the chain. Mirrors the HTTP shape of
+    memory_tree.generate_approach_angles.
     """
     import http.client
     import json as _json
@@ -194,7 +228,7 @@ def classify_intent(query: str) -> str | None:
     # Neutralize the closing delimiter so a query can't escape the <user-query> frame.
     prompt = _INTENT_PROMPT_TEMPLATE.replace("__QUERY__", query.replace("</user-query>", " "))
     payload = _json.dumps({
-        "model": _INTENT_MODEL,
+        "model": model,
         "prompt": prompt,
         "format": "json",
         "stream": False,
@@ -210,15 +244,29 @@ def classify_intent(query: str) -> str | None:
         body = resp.read()
         conn.close()
         if resp.status != 200:
-            print(f"[deus] intent classify returned {resp.status}", file=sys.stderr)
+            print(f"[deus] intent classify ({model}) returned {resp.status}", file=sys.stderr)
             return None
         data = _json.loads(body)
-        parsed_resp = _json.loads(data.get("response", "") or "{}")
-        intent = parsed_resp.get("intent")
-        return intent if intent in ("procedural", "factual") else None
+        return _parse_intent(data.get("response", ""))  # unwrap Ollama envelope, then parse inner JSON
     except Exception as exc:
-        print(f"[deus] intent classify failed: {exc}", file=sys.stderr)
+        print(f"[deus] intent classify ({model}) failed: {exc}", file=sys.stderr)
         return None
+
+
+def classify_intent(query: str) -> str | None:
+    """Classify a query as 'procedural' or 'factual' via the local model chain.
+
+    Tries each model in _intent_models() in order (LIA-342: gemma4:e2b -> e4b by
+    default), returning the first successful classification. Returns None only
+    when EVERY tier is unavailable/unparseable — the FAIL-SAFE signal that makes
+    the caller keep procedures surfacing (a dropped real procedure is worse than
+    an occasional false-fire). Monkey-patched in tests.
+    """
+    for model in _intent_models():
+        verdict = _classify_ollama(query, model)
+        if verdict is not None:
+            return verdict
+    return None
 
 
 def _procedure_ids(db, result_ids: list[str]) -> set[str]:

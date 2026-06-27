@@ -486,3 +486,98 @@ class TestIntentTimeout:
     def test_valid_override(self, monkeypatch):
         monkeypatch.setenv("DEUS_INTENT_TIMEOUT", "3.5")
         assert mq._intent_timeout() == 3.5
+
+
+class TestIntentModels:
+    """LIA-342: the ordered local model chain resolver."""
+
+    def test_default_pair(self, monkeypatch):
+        monkeypatch.delenv("DEUS_INTENT_MODELS", raising=False)
+        monkeypatch.delenv("DEUS_INTENT_MODEL", raising=False)
+        assert mq._intent_models() == ["gemma4:e2b", "gemma4:e4b"]
+
+    def test_models_env_override_and_strip(self, monkeypatch):
+        monkeypatch.setenv("DEUS_INTENT_MODELS", "a, b , ,c")
+        assert mq._intent_models() == ["a", "b", "c"]
+
+    def test_legacy_single_model_backcompat(self, monkeypatch):
+        monkeypatch.delenv("DEUS_INTENT_MODELS", raising=False)
+        monkeypatch.setenv("DEUS_INTENT_MODEL", "foo:x")
+        assert mq._intent_models() == ["foo:x"]
+
+    def test_models_env_beats_legacy(self, monkeypatch):
+        monkeypatch.setenv("DEUS_INTENT_MODELS", "p,q")
+        monkeypatch.setenv("DEUS_INTENT_MODEL", "ignored")
+        assert mq._intent_models() == ["p", "q"]
+
+    def test_blank_models_falls_through_to_default(self, monkeypatch):
+        monkeypatch.setenv("DEUS_INTENT_MODELS", "  ,  ")
+        monkeypatch.delenv("DEUS_INTENT_MODEL", raising=False)
+        assert mq._intent_models() == ["gemma4:e2b", "gemma4:e4b"]
+
+
+class TestParseIntent:
+    """LIA-342: strict inner-JSON parse + label whitelist (shared by tiers)."""
+
+    def test_valid_factual(self):
+        assert mq._parse_intent('{"intent":"factual"}') == "factual"
+
+    def test_valid_procedural(self):
+        assert mq._parse_intent('{"intent":"procedural"}') == "procedural"
+
+    def test_unknown_label(self):
+        assert mq._parse_intent('{"intent":"banana"}') is None
+
+    def test_empty_and_none(self):
+        assert mq._parse_intent("") is None
+        assert mq._parse_intent(None) is None
+
+    def test_garbage(self):
+        assert mq._parse_intent("not json") is None
+
+
+class TestIntentChain:
+    """LIA-342: classify_intent walks the model chain, first hit wins, fail-safe None."""
+
+    def test_first_model_hit_skips_rest(self, monkeypatch):
+        monkeypatch.setenv("DEUS_INTENT_MODELS", "m1,m2")
+        calls: list[str] = []
+
+        def fake(_query, model):
+            calls.append(model)
+            return "factual"
+
+        monkeypatch.setattr(mq, "_classify_ollama", fake)
+        assert mq.classify_intent("q") == "factual"
+        assert calls == ["m1"]  # m2 never tried
+
+    def test_falls_through_to_second(self, monkeypatch):
+        monkeypatch.setenv("DEUS_INTENT_MODELS", "m1,m2")
+        calls: list[str] = []
+
+        def fake(_query, model):
+            calls.append(model)
+            return None if model == "m1" else "procedural"
+
+        monkeypatch.setattr(mq, "_classify_ollama", fake)
+        assert mq.classify_intent("q") == "procedural"
+        assert calls == ["m1", "m2"]
+
+    def test_all_fail_returns_none(self, monkeypatch):
+        monkeypatch.setenv("DEUS_INTENT_MODELS", "m1,m2")
+        monkeypatch.setattr(mq, "_classify_ollama", lambda _q, _m: None)
+        assert mq.classify_intent("q") is None
+
+    def test_legacy_single_model_drives_chain(self, monkeypatch):
+        # End-to-end through classify_intent via the back-compat single-var path.
+        monkeypatch.delenv("DEUS_INTENT_MODELS", raising=False)
+        monkeypatch.setenv("DEUS_INTENT_MODEL", "m1")
+        calls: list[str] = []
+
+        def fake(_query, model):
+            calls.append(model)
+            return "factual"
+
+        monkeypatch.setattr(mq, "_classify_ollama", fake)
+        assert mq.classify_intent("q") == "factual"
+        assert calls == ["m1"]
