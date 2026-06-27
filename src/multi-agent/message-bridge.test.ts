@@ -220,4 +220,40 @@ describe('formatMultiAgentResult', () => {
     expect(out).toContain('**Concerns:**');
     expect(out).toContain('- flaky');
   });
+
+  it('strips <internal>...</internal> reasoning before delivery (no leak on the multi-agent path)', () => {
+    const res: OrchestratorResult = {
+      status: 'success',
+      results: [
+        {
+          status: 'DONE',
+          output: '<internal>secret plan</internal>Visible answer A',
+        },
+        { status: 'DONE', output: 'answer B' },
+      ],
+      concerns: [],
+    };
+    const out = formatMultiAgentResult(res, tasks);
+    expect(out).toContain('Visible answer A');
+    expect(out).not.toContain('secret plan');
+    expect(out).not.toContain('<internal>');
+  });
+
+  it('treats an internal-only output as no deliverable (nothing visible after stripping)', () => {
+    const res: OrchestratorResult = {
+      status: 'success',
+      results: [
+        {
+          status: 'DONE',
+          output: '<internal>only reasoning, no answer</internal>',
+        },
+        { status: 'DONE', output: 'real output' },
+      ],
+      concerns: [],
+    };
+    const out = formatMultiAgentResult(res, tasks);
+    expect(out).toContain('⚠ a: produced no deliverable');
+    expect(out).not.toContain('only reasoning');
+    expect(out).not.toContain('✓ a: done');
+  });
 });

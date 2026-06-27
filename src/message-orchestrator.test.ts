@@ -72,10 +72,17 @@ vi.mock('./container-runner.js', () => ({
   writeGroupsSnapshot: vi.fn(),
 }));
 
-vi.mock('./router.js', () => ({
-  findChannel: vi.fn(),
-  formatMessages: vi.fn(() => 'formatted prompt'),
-}));
+vi.mock('./router.js', async () => {
+  // Keep the real stripInternalTags (used transitively by the multi-agent
+  // formatter) while stubbing the channel/format helpers.
+  const actual =
+    await vi.importActual<typeof import('./router.js')>('./router.js');
+  return {
+    ...actual,
+    findChannel: vi.fn(),
+    formatMessages: vi.fn(() => 'formatted prompt'),
+  };
+});
 
 vi.mock('./session-commands.js', () => ({
   handleSessionCommand: vi.fn(async () => ({ handled: false, success: false })),

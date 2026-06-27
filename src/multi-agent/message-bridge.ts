@@ -6,6 +6,7 @@
  *  - formatMultiAgentResult does deliverable-presence artifact verification: a DONE task
  *    with empty output renders as a concern, never a silent success.
  */
+import { stripInternalTags } from '../router.js';
 import type { OrchestratorResult, SubagentTask } from './types.js';
 
 /** Sentinel: a deus-tasks fence was present but could not be parsed/validated. */
@@ -115,12 +116,18 @@ export function formatMultiAgentResult(
   const lines: string[] = [];
   const concerns = [...res.concerns];
 
+  // Strip <internal>...</internal> reasoning before anything reaches the user —
+  // mirrors the single-agent outbound path (message-orchestrator.ts) so the
+  // multi-agent path cannot leak internal content. A task whose output is
+  // ENTIRELY internal then reads as "produced no deliverable".
+  const visible = res.results.map((r) => stripInternalTags(r.output));
+
   res.results.forEach((r, i) => {
     const task = tasks[i];
     const label = task?.id ?? `task-${i + 1}`;
     const noDeliverable =
       (r.status === 'DONE' || r.status === 'DONE_WITH_CONCERNS') &&
-      !r.output.trim();
+      !visible[i].trim();
 
     if (r.status === 'BLOCKED') {
       lines.push(
@@ -140,9 +147,9 @@ export function formatMultiAgentResult(
   const header = lines.join('\n');
 
   const outputs = res.results
-    .map((r, i) => ({ r, task: tasks[i] }))
-    .filter(({ r }) => r.status !== 'BLOCKED' && r.output.trim())
-    .map(({ r, task }) => `### ${task?.id ?? 'task'}\n${r.output.trim()}`)
+    .map((r, i) => ({ r, out: visible[i], task: tasks[i] }))
+    .filter(({ r, out }) => r.status !== 'BLOCKED' && out.trim())
+    .map(({ out, task }) => `### ${task?.id ?? 'task'}\n${out.trim()}`)
     .join('\n\n');
 
   const concernBlock = concerns.length

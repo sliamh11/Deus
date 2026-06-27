@@ -18,6 +18,7 @@ import type { SubagentTask, OrchestratorResult } from './types.js';
 import { MultiAgentOrchestrator } from './orchestrator.js';
 import { UserError } from '../errors/index.js';
 import { writeFileSync } from 'fs';
+import { join } from 'path';
 import { resolveGroupIpcPath } from '../group-folder.js';
 
 // ── Mocks ──────────────────────────────────────────────────────────────
@@ -157,11 +158,12 @@ describe('MultiAgentOrchestrator', () => {
         'multi-agent-task-x',
       );
       // The _close sentinel was written into that run's input dir.
-      const wrote = vi
-        .mocked(writeFileSync)
-        .mock.calls.some(
-          (c) => typeof c[0] === 'string' && c[0].endsWith('/input/_close'),
-        );
+      const wrote = vi.mocked(writeFileSync).mock.calls.some(
+        // Cross-platform: production code uses path.join, so the separator is
+        // '\' on Windows — assert against the joined suffix, not a literal '/'.
+        (c) =>
+          typeof c[0] === 'string' && c[0].endsWith(join('input', '_close')),
+      );
       expect(wrote).toBe(true);
     });
   });
