@@ -45,18 +45,35 @@ def main() -> None:
     _env_abstain = os.environ.get("DEUS_TREE_ABSTAIN", "").strip()
     abstain = float(_env_abstain) if _env_abstain else None
 
+    # LIA-334: procedure-memory surfacing is opt-in. recall() is dormant-by-
+    # default (its default excludes {"standard","procedure"}), so passing None
+    # keeps procedures hidden — the kill-switch. To OPT IN we pass {"standard"}
+    # (procedures eligible, "standard" still excluded as usual). Measured neutral
+    # on the 136-query benchmark (recall/abstain_acc identical on/off; LIA-334).
+    # Strict binary: only "1" enables. "true"/"yes"/"on" are intentionally NOT
+    # accepted — keep the kill-switch unambiguous for future maintainers.
+    _proc_on = os.environ.get("DEUS_PROCEDURE_MEMORY", "").strip() == "1"
+    exclude_kinds: set[str] | None = {"standard"} if _proc_on else None
+
     result = mq.recall(
         prompt,
         k=TOP_K,
         abstain_threshold=abstain,
         source="repo-hook",
         concepts=concepts,
+        exclude_kinds=exclude_kinds,
     )
 
     context = result["context"]
     if not context:
         return
 
+    # Head-truncation is load-bearing for the LIA-335 injection boundary: the
+    # untrusted framing header + opening sentinel are the first two lines of the
+    # wrapped block (memory_query._wrap_untrusted), so slicing from the front
+    # always preserves them — the untrusted zone stays OPENED even when the
+    # closing sentinel is dropped. Do NOT switch to tail-truncation: that would
+    # drop the framing header and silently re-trust recalled memory content.
     if len(context) > MAX_CONTEXT_CHARS:
         context = context[:MAX_CONTEXT_CHARS] + "\n=== [truncated] ==="
 

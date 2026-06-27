@@ -41,7 +41,7 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Check out PR head with full history
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # full history required so we can `git checkout` origin/main
           # for the baseline scan and back to the PR head for the diff

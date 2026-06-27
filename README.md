@@ -266,7 +266,7 @@ cooldown_minutes: 60
 Your gate prompt here...
 ```
 
-Select review wardens (`plan-reviewer`, `code-reviewer`, `ai-eng-warden`) can run on Claude or GPT — or both at once as a cross-model **co-gate**, where each provider reviews independently and the change ships only when both agree. Per-warden backends are set in `.claude/wardens/config.json` (`/wardens` manages the gates themselves).
+Select review wardens (`plan-reviewer`, `code-reviewer`, `ai-eng-warden`) can run on Claude, GPT, and GLM as a cross-model **co-gate** — each provider reviews the diff independently, and a `REVISE` or `BLOCK` from any configured backend stops the change (a backend that can't run is skipped, not a blocker). Per-warden backends are set in `.claude/wardens/config.json` (`/wardens` manages the gates themselves); see [Warden co-gate](docs/WARDEN_CO_GATE.md) for the exact pass/fail semantics and how to add a backend.
 
 ---
 
@@ -302,6 +302,7 @@ Deus goes deep on understanding you and adapting over time. Hermes goes wide on 
 | Local backend (llama.cpp) | [Multi-backend — llama.cpp](docs/MULTI_BACKEND.md#llamacpp-local-backend) |
 | Use Deus in your editor (Zed, ACP/MCP) | [Editor integration](docs/EDITOR_INTEGRATION.md) |
 | Backend quality benchmark | [Claude vs Codex parity report](docs/research/backend-quality-benchmark-2026-04-26.md) |
+| Cross-model review co-gate | [Warden co-gate](docs/WARDEN_CO_GATE.md) |
 | Development setup | [Development](docs/DEVELOPMENT.md) |
 | Contributing | [Contributing](CONTRIBUTING.md) |
 | Known limitations | [Limitations](docs/KNOWN_LIMITATIONS.md) |

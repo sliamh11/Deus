@@ -13,6 +13,7 @@ dist/
 .claude/.commit-window
 # Warden verdict store + audit log (host-local runtime state; recreated on first mark)
 .claude/.warden-verdicts.json
+.claude/.warden-verdicts.json.lock
 .claude/.warden-log
 # Admin-merge gate markers (host-local; contain absolute worktree paths)
 .claude/.admin-merge-approved

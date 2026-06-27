@@ -1,6 +1,7 @@
 ---
 name: add-compact
 description: Add /compact command for manual context compaction. Solves context rot in long sessions by forwarding the SDK's built-in /compact slash command. Main-group or trusted sender only.
+disable-model-invocation: true
 ---
 
 # Add /compact Command

@@ -1,6 +1,7 @@
 ---
 name: add-msft-teams
 description: Add Microsoft Teams as a channel. Can replace WhatsApp entirely or run alongside it. Uses the Azure Bot Service (Bot Framework) and requires a public HTTPS messaging endpoint.
+disable-model-invocation: true
 ---
 
 # Add Microsoft Teams Channel

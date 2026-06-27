@@ -1,6 +1,7 @@
 ---
 name: add-discord
 description: Add Discord bot channel integration to Deus.
+disable-model-invocation: true
 ---
 
 # Add Discord Channel

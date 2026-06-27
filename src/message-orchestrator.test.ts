@@ -72,10 +72,17 @@ vi.mock('./container-runner.js', () => ({
   writeGroupsSnapshot: vi.fn(),
 }));
 
-vi.mock('./router.js', () => ({
-  findChannel: vi.fn(),
-  formatMessages: vi.fn(() => 'formatted prompt'),
-}));
+vi.mock('./router.js', async () => {
+  // Keep the real stripInternalTags (used transitively by the multi-agent
+  // formatter) while stubbing the channel/format helpers.
+  const actual =
+    await vi.importActual<typeof import('./router.js')>('./router.js');
+  return {
+    ...actual,
+    findChannel: vi.fn(),
+    formatMessages: vi.fn(() => 'formatted prompt'),
+  };
+});
 
 vi.mock('./session-commands.js', () => ({
   handleSessionCommand: vi.fn(async () => ({ handled: false, success: false })),
@@ -157,7 +164,9 @@ import {
   extractSessionCommand,
 } from './session-commands.js';
 import { scanForInjection } from './guardrails/injection-scanner.js';
-import type { RegisteredGroup } from './types.js';
+import type { Channel, RegisteredGroup } from './types.js';
+import type { RouterState } from './router-state.js';
+import type { GroupQueue } from './group-queue.js';
 import { RuntimeRegistry } from './agent-runtimes/registry.js';
 
 const mockScanForInjection = vi.mocked(scanForInjection);
@@ -326,8 +335,8 @@ describe('processGroupMessages', () => {
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: queue as any,
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
       channels: [],
     });
 
@@ -339,14 +348,14 @@ describe('processGroupMessages', () => {
   it('returns true immediately when no missed messages', async () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([]);
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -356,7 +365,7 @@ describe('processGroupMessages', () => {
   it('advances cursor then rolls back on agent error with no output sent', async () => {
     const state = makeState(MAIN_GROUP, 'ts-prev');
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     activeRunTurn = async () => ({
@@ -367,9 +376,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -391,7 +400,7 @@ describe('processGroupMessages', () => {
   it('clears stale session on "No conversation found" error instead of persisting it', async () => {
     const state = makeState(MAIN_GROUP, 'ts-prev');
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     const mockClearSession = vi.mocked(clearSession);
@@ -410,9 +419,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -426,7 +435,7 @@ describe('processGroupMessages', () => {
   it('does NOT roll back cursor when output was already sent to the user', async () => {
     const state = makeState(MAIN_GROUP, 'ts-prev');
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     activeRunTurn = async (_ctx, _session, sink) => {
@@ -436,9 +445,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -459,16 +468,16 @@ describe('processGroupMessages', () => {
   it('skips non-main group when trigger is required but not present', async () => {
     const state = makeState(NON_MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([
       makeMsg({ content: 'just a regular message, no trigger' }),
     ]);
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -478,7 +487,7 @@ describe('processGroupMessages', () => {
   it('processes non-main group when trigger message is present', async () => {
     const state = makeState(NON_MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([
       makeMsg({ content: '@Deus please help' }),
     ]);
@@ -492,9 +501,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -505,7 +514,7 @@ describe('processGroupMessages', () => {
   it('main group processes messages without trigger check', async () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([
       makeMsg({ content: 'no trigger here, just a regular message' }),
     ]);
@@ -519,9 +528,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -532,7 +541,7 @@ describe('processGroupMessages', () => {
   it('returns session command result without running agent when handled', async () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([
       makeMsg({ content: '@Deus /compact' }),
     ]);
@@ -549,9 +558,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -562,7 +571,7 @@ describe('processGroupMessages', () => {
   it('sends agent output to the channel', async () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     activeRunTurn = async (_ctx, _session, sink) => {
@@ -573,9 +582,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     await orchestrator.processGroupMessages('group@g.us');
@@ -588,7 +597,7 @@ describe('processGroupMessages', () => {
   it('strips <internal> blocks before sending to user', async () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     activeRunTurn = async (_ctx, _session, sink) => {
@@ -602,9 +611,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     await orchestrator.processGroupMessages('group@g.us');
@@ -624,7 +633,7 @@ describe('processGroupMessages', () => {
     const channel = makeChannel();
     // Both the primary send and the fallback send fail.
     channel.sendMessage.mockRejectedValue(new Error('channel down'));
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     activeRunTurn = async (_ctx, _session, sink) => {
@@ -635,9 +644,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     // Agent succeeded, so the turn still reports success even though delivery
@@ -657,7 +666,7 @@ describe('processGroupMessages', () => {
     channel.sendMessage
       .mockRejectedValueOnce(new Error('rejected'))
       .mockResolvedValue(undefined);
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     activeRunTurn = async (_ctx, _session, sink) => {
@@ -668,9 +677,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     await orchestrator.processGroupMessages('group@g.us');
@@ -692,7 +701,7 @@ describe('processGroupMessages', () => {
     const channel = makeChannel();
     // Primary + fallback both fail: the user received nothing.
     channel.sendMessage.mockRejectedValue(new Error('channel down'));
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     activeRunTurn = async (_ctx, _session, sink) => {
@@ -702,9 +711,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -729,7 +738,7 @@ describe('processGroupMessages', () => {
     channel.sendMessage
       .mockRejectedValueOnce(new Error('rejected'))
       .mockResolvedValue(undefined);
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     activeRunTurn = async (_ctx, _session, sink) => {
@@ -739,9 +748,9 @@ describe('processGroupMessages', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -761,7 +770,7 @@ describe('injection scanner integration', () => {
   it('blocks message and prevents runTurn when injection is detected', async () => {
     const state = makeState(MAIN_GROUP, 'ts-prev');
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     mockScanForInjection.mockReturnValue({
@@ -780,9 +789,9 @@ describe('injection scanner integration', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -798,7 +807,7 @@ describe('injection scanner integration', () => {
   it('lets message through in logOnly mode even when triggered', async () => {
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
 
     mockScanForInjection.mockReturnValue({
@@ -818,9 +827,9 @@ describe('injection scanner integration', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: makeQueue() as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const result = await orchestrator.processGroupMessages('group@g.us');
@@ -842,8 +851,8 @@ describe('recoverPendingMessages', () => {
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: queue as any,
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
       channels: [],
     });
 
@@ -858,8 +867,8 @@ describe('recoverPendingMessages', () => {
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: queue as any,
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
       channels: [],
     });
 
@@ -883,7 +892,7 @@ describe('startMessageLoop', () => {
     });
 
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetNewMessages
       .mockReturnValueOnce({
         messages: [{ ...makeMsg(), chat_jid: 'group@g.us' }],
@@ -894,9 +903,9 @@ describe('startMessageLoop', () => {
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: queue as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     const loopPromise = orchestrator.startMessageLoop();
@@ -914,7 +923,7 @@ describe('startMessageLoop', () => {
     vi.useFakeTimers();
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetNewMessages
       .mockReturnValueOnce({
         messages: [{ ...makeMsg(), chat_jid: 'group@g.us' }],
@@ -928,9 +937,9 @@ describe('startMessageLoop', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: queue as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     orchestrator.startMessageLoop();
@@ -944,7 +953,7 @@ describe('startMessageLoop', () => {
     vi.useFakeTimers();
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetNewMessages
       .mockReturnValueOnce({
         messages: [{ ...makeMsg(), chat_jid: 'group@g.us' }],
@@ -958,9 +967,9 @@ describe('startMessageLoop', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: queue as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     orchestrator.startMessageLoop();
@@ -973,7 +982,7 @@ describe('startMessageLoop', () => {
     vi.useFakeTimers();
     const state = makeState(MAIN_GROUP);
     const channel = makeChannel();
-    mockFindChannel.mockReturnValue(channel as any);
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
     mockGetNewMessages
       .mockReturnValueOnce({
         messages: [
@@ -989,9 +998,9 @@ describe('startMessageLoop', () => {
 
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: queue as any,
-      channels: [channel as any],
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
     });
 
     orchestrator.startMessageLoop();
@@ -1010,8 +1019,8 @@ describe('startMessageLoop', () => {
     const queue = makeQueue();
     const orchestrator = createMessageOrchestrator({
       registry: makeRegistry(),
-      state: state as any,
-      queue: queue as any,
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
       channels: [],
     });
 
@@ -1021,5 +1030,460 @@ describe('startMessageLoop', () => {
     await vi.advanceTimersByTimeAsync(10);
     // getNewMessages called once (from first loop), not twice
     expect(mockGetNewMessages.mock.calls.length).toBeLessThanOrEqual(2);
+  });
+});
+
+// ── LIA-127: multi-agent dispatch wiring ─────────────────────────────────────
+describe('multi-agent dispatch (DEUS_MULTI_AGENT)', () => {
+  const TASK_BLOCK =
+    'do this\n```deus-tasks\n' +
+    JSON.stringify([
+      {
+        id: 'a',
+        role: 'researcher',
+        goal: 'g',
+        backstory: '',
+        prompt: 'research X',
+        mode: 'read',
+      },
+    ]) +
+    '\n```';
+
+  afterEach(() => {
+    delete process.env.DEUS_MULTI_AGENT;
+  });
+
+  it('flag-on + valid block → dispatches via orchestrator and sends the aggregate', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    // The sub-agent run emits output + a DONE marker.
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({
+        type: 'output_text',
+        text: 'found the answer [STATUS:DONE]',
+      });
+      return { status: 'success', result: 'found the answer [STATUS:DONE]' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true);
+    // The aggregated multi-agent reply was sent (task id + status + output).
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('✓ a: done'),
+    );
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('found the answer'),
+    );
+  });
+
+  it('flag-off + same block → single-agent path unchanged (no regression)', async () => {
+    delete process.env.DEUS_MULTI_AGENT; // flag OFF
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    // Single-agent backend echoes a plain reply — NOT a multi-agent aggregate.
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'single agent reply' });
+      return { status: 'success', result: 'single agent reply' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true);
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('single agent reply'),
+    );
+    // No multi-agent formatting was produced.
+    expect(channel.sendMessage).not.toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('✓ a: done'),
+    );
+  });
+
+  it('flag-on + blocked by injection scanner → NOT dispatched (security guard)', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    // Scanner flags the prompt as a blocked injection attempt.
+    mockScanForInjection.mockReturnValue({
+      blocked: true,
+      triggered: true,
+      score: 1,
+      matches: ['ignore previous instructions'],
+    });
+    let dispatched = false;
+    activeRunTurn = async (_ctx, _session, sink) => {
+      dispatched = true;
+      await sink({ type: 'output_text', text: 'should not run [STATUS:DONE]' });
+      return { status: 'success', result: 'x' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true); // consumed, no retry
+    expect(dispatched).toBe(false); // sub-agents never ran
+    expect(channel.sendMessage).not.toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('✓ a: done'),
+    );
+  });
+
+  it('flag-on + malformed block → parse-error notice, no rollback', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({
+        content: '```deus-tasks\n{not valid json\n```',
+        timestamp: 'ts-1',
+      }),
+    ]);
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true); // consumed, no retry
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining("couldn't parse"),
+    );
+    // Cursor advanced to ts-1, not rolled back to ts-prev.
+    expect(state.setLastAgentTimestamp).toHaveBeenLastCalledWith(
+      'group@g.us',
+      'ts-1',
+    );
+  });
+
+  it('flag-on + all subagents blocked (status error) → reports reasons and consumes (no loop)', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    // Subagent run errors → BLOCKED → all-blocked → OrchestratorResult.status 'error'.
+    activeRunTurn = async () => ({
+      status: 'error',
+      result: null,
+      error: 'container crashed',
+    });
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    // Work ran (side effects possible) → consume + report, never loop.
+    expect(result).toBe(true);
+    // Cursor stays advanced (NOT rolled back) so the block isn't re-dispatched.
+    expect(state.setLastAgentTimestamp).toHaveBeenLastCalledWith(
+      'group@g.us',
+      'ts-1',
+    );
+    // The blocked reason is reported to the user.
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      expect.stringContaining('✗ a: blocked'),
+    );
+  });
+
+  it('flag-on + delivery failure after a completed run → still consumes (no duplicate re-dispatch)', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    // Delivery fails — must NOT trigger a re-dispatch (would re-run write tasks).
+    channel.sendMessage = vi.fn(async () => {
+      throw new Error('send failed');
+    });
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: TASK_BLOCK, timestamp: 'ts-1' }),
+    ]);
+    activeRunTurn = async (_ctx, _session, sink) => {
+      await sink({ type: 'output_text', text: 'done [STATUS:DONE]' });
+      return { status: 'success', result: 'done [STATUS:DONE]' };
+    };
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: makeQueue() as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    const result = await orchestrator.processGroupMessages('group@g.us');
+
+    expect(result).toBe(true); // consumed despite delivery failure
+    expect(state.setLastAgentTimestamp).toHaveBeenLastCalledWith(
+      'group@g.us',
+      'ts-1', // not rolled back
+    );
+  });
+});
+
+// ── LIA-127: multi-agent warm-path routing (startMessageLoop, blocker #8) ─────
+// A ```deus-tasks block must reach the orchestrator (which lives only in
+// processGroupMessages) on a WARM turn too, not get piped into the single-agent
+// session. The interception finalizes the warm session (closeStdin) and routes to
+// the cold path via enqueueMessageCheck — instead of queue.sendMessage piping.
+describe('multi-agent warm-path routing (startMessageLoop)', () => {
+  const WARM_TASK_BLOCK =
+    'do this\n```deus-tasks\n' +
+    JSON.stringify([
+      {
+        id: 'a',
+        role: 'researcher',
+        goal: 'g',
+        backstory: '',
+        prompt: 'research X',
+        mode: 'read',
+      },
+    ]) +
+    '\n```';
+  const WARM_MALFORMED_BLOCK = '```deus-tasks\n{not valid json\n```';
+
+  afterEach(() => {
+    delete process.env.DEUS_MULTI_AGENT;
+  });
+
+  it('flag-on + warm container + valid block → closeStdin + enqueue, never pipes, cursor untouched', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    vi.useFakeTimers();
+    const state = makeState(MAIN_GROUP);
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetNewMessages
+      .mockReturnValueOnce({
+        messages: [
+          { ...makeMsg({ content: WARM_TASK_BLOCK }), chat_jid: 'group@g.us' },
+        ],
+        newTimestamp: 'ts-1',
+      })
+      .mockReturnValue({ messages: [], newTimestamp: '' });
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: WARM_TASK_BLOCK }),
+    ]);
+
+    const queue = makeQueue();
+    queue.sendMessage.mockReturnValue(true); // warm container exists
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    orchestrator.startMessageLoop();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(queue.closeStdin).toHaveBeenCalledWith('group@g.us');
+    expect(queue.enqueueMessageCheck).toHaveBeenCalledWith('group@g.us');
+    expect(queue.sendMessage).not.toHaveBeenCalled();
+    // Cursor left for processGroupMessages to advance (not touched here).
+    expect(state.setLastAgentTimestamp).not.toHaveBeenCalled();
+  });
+
+  it('flag-on + warm container + malformed block → closeStdin + enqueue (cold path emits the notice), never pipes', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    vi.useFakeTimers();
+    const state = makeState(MAIN_GROUP);
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetNewMessages
+      .mockReturnValueOnce({
+        messages: [
+          {
+            ...makeMsg({ content: WARM_MALFORMED_BLOCK }),
+            chat_jid: 'group@g.us',
+          },
+        ],
+        newTimestamp: 'ts-1',
+      })
+      .mockReturnValue({ messages: [], newTimestamp: '' });
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: WARM_MALFORMED_BLOCK }),
+    ]);
+
+    const queue = makeQueue();
+    queue.sendMessage.mockReturnValue(true);
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    orchestrator.startMessageLoop();
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Authorized block (valid OR malformed) finalizes the warm session and routes
+    // to the cold path — same as a valid block; the single parse-error notice
+    // fires in processGroupMessages, never here.
+    expect(queue.closeStdin).toHaveBeenCalledWith('group@g.us');
+    expect(queue.enqueueMessageCheck).toHaveBeenCalledWith('group@g.us');
+    expect(queue.sendMessage).not.toHaveBeenCalled();
+    expect(channel.sendMessage).not.toHaveBeenCalled();
+    expect(state.setLastAgentTimestamp).not.toHaveBeenCalled();
+  });
+
+  it('flag-on + warm container + ordinary message (no block) → pipes as before', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    vi.useFakeTimers();
+    const state = makeState(MAIN_GROUP);
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetNewMessages
+      .mockReturnValueOnce({
+        messages: [
+          { ...makeMsg({ content: 'just chatting' }), chat_jid: 'group@g.us' },
+        ],
+        newTimestamp: 'ts-1',
+      })
+      .mockReturnValue({ messages: [], newTimestamp: '' });
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: 'just chatting' }),
+    ]);
+
+    const queue = makeQueue();
+    queue.sendMessage.mockReturnValue(true);
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    orchestrator.startMessageLoop();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(queue.sendMessage).toHaveBeenCalled();
+    expect(queue.closeStdin).not.toHaveBeenCalled();
+    expect(queue.enqueueMessageCheck).not.toHaveBeenCalled();
+  });
+
+  it('flag-off + warm container + valid block → pipes as before (no interception)', async () => {
+    delete process.env.DEUS_MULTI_AGENT; // flag OFF
+    vi.useFakeTimers();
+    const state = makeState(MAIN_GROUP);
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetNewMessages
+      .mockReturnValueOnce({
+        messages: [
+          { ...makeMsg({ content: WARM_TASK_BLOCK }), chat_jid: 'group@g.us' },
+        ],
+        newTimestamp: 'ts-1',
+      })
+      .mockReturnValue({ messages: [], newTimestamp: '' });
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: WARM_TASK_BLOCK }),
+    ]);
+
+    const queue = makeQueue();
+    queue.sendMessage.mockReturnValue(true);
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    orchestrator.startMessageLoop();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(queue.sendMessage).toHaveBeenCalled();
+    expect(queue.closeStdin).not.toHaveBeenCalled();
+    expect(queue.enqueueMessageCheck).not.toHaveBeenCalled();
+  });
+
+  it('flag-on + non-main trigger-gated group + block WITHOUT trigger → not intercepted (accumulates as context)', async () => {
+    process.env.DEUS_MULTI_AGENT = '1';
+    vi.useFakeTimers();
+    const state = makeState(NON_MAIN_GROUP);
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    // Block present but NO trigger token → the trigger gate continues before the
+    // interception is reached, so the block must just accumulate.
+    mockGetNewMessages
+      .mockReturnValueOnce({
+        messages: [
+          { ...makeMsg({ content: WARM_TASK_BLOCK }), chat_jid: 'group@g.us' },
+        ],
+        newTimestamp: 'ts-1',
+      })
+      .mockReturnValue({ messages: [], newTimestamp: '' });
+    mockGetMessagesSince.mockReturnValue([
+      makeMsg({ content: WARM_TASK_BLOCK }),
+    ]);
+
+    const queue = makeQueue();
+    queue.sendMessage.mockReturnValue(true);
+
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    orchestrator.startMessageLoop();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(queue.closeStdin).not.toHaveBeenCalled();
+    expect(queue.enqueueMessageCheck).not.toHaveBeenCalled();
+    expect(queue.sendMessage).not.toHaveBeenCalled();
   });
 });

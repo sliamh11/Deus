@@ -1,6 +1,7 @@
 ---
 name: add-outlook
 description: Add Outlook (Microsoft 365 email) integration to Deus. Can be configured as a tool (agent reads/sends mail when triggered) or as a full channel that polls the inbox. Uses the Microsoft Graph API and Azure AD OAuth.
+disable-model-invocation: true
 ---
 
 # Add Outlook Integration

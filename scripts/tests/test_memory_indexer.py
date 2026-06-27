@@ -2960,6 +2960,58 @@ def test_cmd_extract_sets_privacy(mi, fresh_vault, monkeypatch):
     db.close()
 
 
+def _extract_session(mi, fresh_vault, monkeypatch):
+    """Build a minimal session + stub atom extraction so cmd_extract reaches the
+    contradiction/backlog tail with exactly one new atom (and no real LLM calls:
+    a single new atom has no peers within L2<1.2, so detect_contradictions is a
+    no-op)."""
+    session = fresh_vault / "Session-Logs" / "2024-01-01" / "test.md"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text(
+        "---\ntype: session\ndate: 2024-01-01\ntopics: [dev]\ntldr: test\n"
+        "decisions:\n  - \"chose X\"\n---\n## Decisions Made\n- chose X\n"
+    )
+    monkeypatch.setattr(mi, "extract_atoms",
+                        lambda c: [{"text": "prefer dark mode always", "category": "preference"}])
+    monkeypatch.setattr(mi, "embed", lambda t: [0.1] * 768)
+    return session
+
+
+def test_cmd_extract_prints_review_backlog(mi, fresh_vault, monkeypatch, capsys):
+    """cmd_extract surfaces the standing unresolved-conflict backlog so the review
+    queue can't silently rot (LIA-338 item 2)."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO pending_conflicts (older_id, newer_id, older_text, newer_text, created_at, resolved) "
+        "VALUES (1, 2, 'old fact', 'new fact', '2024-01-01', 0)"
+    )
+    db.commit()
+    db.close()
+
+    session = _extract_session(mi, fresh_vault, monkeypatch)
+    mi.cmd_extract(str(session))
+
+    out = capsys.readouterr().out
+    assert "review backlog: 1 unresolved conflict(s) pending (use --resolve-conflicts)" in out
+
+
+def test_cmd_extract_no_backlog_line_when_clean(mi, fresh_vault, monkeypatch, capsys):
+    """No backlog reminder when every conflict is resolved (queue is clean)."""
+    db = mi.open_db()
+    db.execute(
+        "INSERT INTO pending_conflicts (older_id, newer_id, older_text, newer_text, created_at, resolved, resolution) "
+        "VALUES (1, 2, 'old fact', 'new fact', '2024-01-01', 1, 'dismissed')"
+    )
+    db.commit()
+    db.close()
+
+    session = _extract_session(mi, fresh_vault, monkeypatch)
+    mi.cmd_extract(str(session))
+
+    out = capsys.readouterr().out
+    assert "review backlog:" not in out
+
+
 def test_query_privacy_filter(mi, monkeypatch, capsys):
     db = mi.open_db()
     vec1 = mi.embed("public fact")

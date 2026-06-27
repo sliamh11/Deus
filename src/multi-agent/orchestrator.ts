@@ -15,7 +15,11 @@ import type {
   RuntimeEvent,
   RuntimeEventSink,
 } from '../agent-runtimes/types.js';
+import * as fs from 'fs';
+import * as path from 'path';
+
 import { UserError } from '../errors/index.js';
+import { resolveGroupIpcPath } from '../group-folder.js';
 import { logger } from '../logger.js';
 import { buildPrompt } from './prompt-templates.js';
 import type { RegisteredGroup } from '../types.js';
@@ -28,29 +32,55 @@ import type {
 const STATUS_MARKER_RE =
   /\[STATUS:(DONE_WITH_CONCERNS:[^\]]*|DONE|BLOCKED:[^\]]*)\]/;
 
+/** Synthetic concern raised when a sub-agent omits its instructed status marker. */
+const NO_MARKER_CONCERN = 'no [STATUS] marker emitted — completion unverified';
+
 function parseStatusMarker(
   rawOutput: string,
   taskId: string,
 ): Pick<SubagentResult, 'status' | 'concerns' | 'blockedReason'> & {
   cleanOutput: string;
 } {
-  const tail = rawOutput.slice(-200);
-  const match = STATUS_MARKER_RE.exec(tail);
+  // Scan the FULL output for the LAST [STATUS:...] marker. buildPrompt instructs the
+  // agent to end with exactly one marker; last-match is robust to trailing chatter that
+  // the previous tail-200 window silently dropped. STATUS_MARKER_RE has no `g` flag, so
+  // a fresh global copy is required for matchAll (a non-global regex never advances
+  // lastIndex). Same edge as the old tail-window: a post-marker quoted marker wins.
+  const matches = [
+    ...rawOutput.matchAll(new RegExp(STATUS_MARKER_RE.source, 'g')),
+  ];
+  const match = matches[matches.length - 1];
 
   if (!match) {
+    const trimmed = rawOutput.trim();
+    // The agent was told to emit a marker and did not. Never assume success — the old
+    // silent-DONE default masked truncated, errored, or non-compliant runs.
+    if (!trimmed) {
+      logger.warn(
+        { taskId },
+        'Subagent produced no output and no status marker — treating as BLOCKED',
+      );
+      return {
+        status: 'BLOCKED',
+        cleanOutput: '',
+        blockedReason: 'no deliverable and no status marker',
+      };
+    }
     logger.info(
       { taskId },
-      'No status marker found in subagent output — defaulting to DONE',
+      'No status marker in subagent output — DONE_WITH_CONCERNS (unverified)',
     );
-    return { status: 'DONE', cleanOutput: rawOutput };
+    return {
+      status: 'DONE_WITH_CONCERNS',
+      concerns: [NO_MARKER_CONCERN],
+      cleanOutput: trimmed,
+    };
   }
 
   const markerBody = match[1];
-  const markerStart = rawOutput.length - 200 + (match.index ?? 0);
-  const actualStart = Math.max(0, markerStart);
+  const idx = match.index ?? 0;
   const cleanOutput = (
-    rawOutput.slice(0, actualStart) +
-    rawOutput.slice(actualStart).replace(match[0], '')
+    rawOutput.slice(0, idx) + rawOutput.slice(idx + match[0].length)
   ).trim();
 
   if (markerBody === 'DONE') {
@@ -243,12 +273,16 @@ export class MultiAgentOrchestrator {
     priorOutputs: Map<string, SubagentResult>,
   ): Promise<SubagentResult> {
     const prompt = buildPrompt(task, priorOutputs);
+    const chatJid = `multi-agent-${task.id}`;
     const runContext = {
       prompt,
       groupFolder: group.folder,
-      chatJid: `multi-agent-${task.id}`,
+      chatJid,
       isControlGroup: false,
       isScheduledTask: false,
+      // Per-task IPC namespace (slug-only id → safe, unique key) so concurrent
+      // sibling subagents don't collide on the one-shot `_close` sentinel.
+      ipcRunKey: chatJid,
     };
 
     const outputParts: string[] = [];
@@ -259,6 +293,22 @@ export class MultiAgentOrchestrator {
       }
       if (event.type === 'error') {
         throw new Error(event.error);
+      }
+      // One-shot: signal the container to exit after its first result. Without
+      // this the container idles until IDLE_TIMEOUT (~30s) before runTurn
+      // resolves (container-runner resolves on exit). Mirrors the single-agent
+      // path and linear-dispatcher.executeAgentRun. Best-effort.
+      if (event.type === 'turn_complete') {
+        try {
+          const inputDir = path.join(
+            resolveGroupIpcPath(group.folder, chatJid),
+            'input',
+          );
+          fs.mkdirSync(inputDir, { recursive: true });
+          fs.writeFileSync(path.join(inputDir, '_close'), '');
+        } catch {
+          /* best-effort — close sentinel is an optimization, not correctness */
+        }
       }
     };
 

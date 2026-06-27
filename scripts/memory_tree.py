@@ -32,6 +32,7 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 from _exit_codes import SUCCESS, ABSTAIN, USAGE_ERROR, NOT_FOUND, AUTH_ERROR, INTERNAL_ERROR
 from _agent_io import is_agent_context, compact_json, select_fields
 from _time import local_now, utc_now  # noqa: E402
+from auto_memory_dir import resolve_auto_memory_dir  # noqa: E402
 
 
 def _utc_iso() -> str:
@@ -176,6 +177,18 @@ _AUDIT_PATH = Path(os.environ.get(
 # of the current active node count (protects against DEUS_VAULT_PATH misconfig
 # silently wiping live data — see 2026-04-15 incident). `--force` bypasses.
 REBUILD_MIN_RETENTION = 0.5
+
+# Orphan-sweep false-positive guard (LIA-336). The orphan sweeps decide from a
+# single in-memory walk snapshot, but a concurrent rewrite of a tracked file —
+# vault files are written via Path.write_text (truncate-in-place, NOT atomic),
+# and /compress + parallel sessions rewrite CLAUDE.md — can make a live file
+# momentarily unreadable (OSError) or truncated (no `id:` yet) exactly when the
+# walk observes it, dropping a live node from the walk and soft-orphaning it.
+# Before orphaning a candidate we re-confirm absence on disk across a few spaced
+# retries; any single observation that the file is still tracked aborts the
+# orphan. Module-level so tests can set the delay to 0.
+ORPHAN_CONFIRM_RETRIES = 3
+ORPHAN_CONFIRM_DELAY_S = 0.05
 
 
 def is_external_namespace(path: str) -> bool:
@@ -898,6 +911,18 @@ def resolve_vault_path() -> Path:
     return Path("~/Desktop/אישי/Brain Dump/Second Brain/Deus").expanduser()
 
 
+def _frontmatter_id(path: Path) -> str | None:
+    """Return a markdown file's frontmatter ``id``, or None if absent.
+
+    Reads the whole file, not a fixed-size head: a frontmatter block whose
+    closing ``---`` fence falls past any truncation window (e.g. the large vault
+    CLAUDE.md) otherwise parses as unterminated and reports no ``id`` (LIA-340).
+    ``OSError`` propagates so each caller decides how an unreadable file is treated.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
+    return parse_frontmatter(text).get("id")
+
+
 def iter_tree_files(vault: Path) -> list[Path]:
     """Yield markdown files that participate in the tree (have `id:` or are
     the root). We skip Session-Logs, Checkpoints, Atoms — those are owned by
@@ -913,11 +938,10 @@ def iter_tree_files(vault: Path) -> list[Path]:
         if p == root:
             continue
         try:
-            head = p.read_text(encoding="utf-8", errors="replace")[:4096]
+            has_id = _frontmatter_id(p) is not None
         except OSError:
             continue
-        fm = parse_frontmatter(head)
-        if fm.get("id"):
+        if has_id:
             files.append(p)
     return files
 
@@ -1020,6 +1044,40 @@ def generate_root_scaffold(
 
     omitted = len(children) - len(included)
     return _render(included, omitted)
+def _confirm_orphan(path: Path, *, require_id: bool) -> bool:
+    """Confirm a tracked file is genuinely gone before orphaning its node (LIA-336).
+
+    A node becomes an orphan candidate when its file is absent from an in-memory
+    walk, but a concurrent rewrite can make a *live* file momentarily unreadable
+    (OSError) or truncated (no `id:` yet) during that walk. We re-check the
+    filesystem up to ORPHAN_CONFIRM_RETRIES times, spaced by ORPHAN_CONFIRM_DELAY_S,
+    and return True (safe to orphan) ONLY if every attempt confirms the file is
+    gone. A single observation that the file is still tracked returns False early.
+
+    Pattern: bounded retry with early-exit on confirmed-present. O(retries) reads,
+    paid only per orphan candidate (≈0 in steady state).
+
+    require_id=True  — mirror iter_tree_files membership: a clean read AND `id:`
+      present. A file persistently missing its `id:` is a real de-list (still
+      orphaned); a truncated read that momentarily hides `id:` is not.
+    require_id=False — pure existence check (for the existence-triggered sweeps).
+
+    OSError on every retry maps to "absent" intentionally: a file unreadable for
+    the whole window (e.g. revoked permissions, genuine deletion) should orphan.
+    """
+    for attempt in range(ORPHAN_CONFIRM_RETRIES):
+        try:
+            if require_id:
+                still_tracked = bool(_frontmatter_id(path))
+            else:
+                still_tracked = path.exists()
+        except OSError:
+            still_tracked = False
+        if still_tracked:
+            return False
+        if attempt < ORPHAN_CONFIRM_RETRIES - 1:
+            time.sleep(ORPHAN_CONFIRM_DELAY_S)
+    return True
 
 
 # ── Build ─────────────────────────────────────────────────────────────────────
@@ -1191,6 +1249,10 @@ def build_tree(
         if is_external_namespace(npath):
             continue
         if npath not in path_to_id:
+            # LIA-336: re-confirm before orphaning (see _confirm_orphan). The root
+            # is admitted by iter_tree_files without an id check → existence only.
+            if not _confirm_orphan(vault / npath, require_id=(npath != "MEMORY_TREE.md")):
+                continue
             db.execute(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
                 (now_iso, nid),
@@ -1969,7 +2031,9 @@ def autofix_tree(db: sqlite3.Connection, vault: Path) -> dict[str, int]:
     for (nid, npath, _) in active:
         if is_external_namespace(npath):
             continue
-        if not (vault / npath).exists():
+        # LIA-336: re-confirm before orphaning. This sweep is existence-based
+        # (no id check), so require_id=False mirrors the original .exists() test.
+        if _confirm_orphan(vault / npath, require_id=False):
             db.execute(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
                 (now_iso, nid),
@@ -2026,6 +2090,116 @@ def _write_id_to_frontmatter(path: Path, new_id: str) -> None:
     path.write_text(updated, encoding="utf-8")
 
 
+def _index_external_file(
+    db: sqlite3.Connection,
+    path: Path,
+    ns_path: str,
+    *,
+    skip_embed: bool = False,
+) -> dict[str, int]:
+    """Upsert ONE external (auto-memory) file into the tree under ``ns_path``.
+
+    The per-file half of :func:`reindex_external`: read, parse, embed-if-needed,
+    upsert. Pure single-node work — it does NOT walk, track ``walked_paths``,
+    orphan-sweep, back up, or commit. Callers own those (the walk + sweep are
+    what make a full reindex destructive; keeping them out of here is what makes
+    the single-file admit non-destructive — LIA-341). Returns per-file counts.
+    """
+    c = {"indexed": 0, "embedded": 0, "skipped": 0, "id_written": 0}
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        c["skipped"] += 1
+        return c
+
+    fm = parse_frontmatter(content)
+    description = fm.get("description", "").strip()
+    if not description:
+        c["skipped"] += 1
+        return c
+
+    node_id = fm.get("id")
+    if not node_id:
+        node_id = make_id()
+        _write_id_to_frontmatter(path, node_id)
+        c["id_written"] += 1
+
+    title = fm.get("name") or path.stem
+    node_type = fm.get("type", "feedback")
+    embed_src = embedding_source(description, content)
+    ch = content_hash(embed_src)
+
+    existing = db.execute(
+        "SELECT content_hash FROM nodes WHERE id = ?", (node_id,)
+    ).fetchone()
+    has_embedding = sqlite_vec is not None and db.execute(
+        "SELECT 1 FROM embeddings WHERE rowid = ?", (_rowid_for(node_id),)
+    ).fetchone() is not None
+    need_embed = existing is None or existing[0] != ch or not has_embedding
+
+    vec = None
+    if need_embed and not skip_embed:
+        try:
+            vec = embed_text(embed_src)
+            c["embedded"] += 1
+        except Exception as exc:
+            print(f"WARN: embed failed for {ns_path}: {exc}", file=sys.stderr)
+            vec = None
+
+    upsert_node(
+        db,
+        node_id=node_id,
+        path=ns_path,
+        title=title,
+        description=description,
+        level=0,
+        node_type=node_type,
+        embedding=vec,
+        content_hash_val=ch,
+        body_text=_body_from_content(content),
+        atom_kind=fm.get("atom_kind", "knowledge"),
+    )
+    c["indexed"] += 1
+    return c
+
+
+def reindex_external_one(
+    db: sqlite3.Connection,
+    external_dir: Path,
+    rel_path: str,
+    *,
+    skip_embed: bool = False,
+) -> dict[str, int]:
+    """Index a SINGLE auto-memory file without the orphan sweep (LIA-341).
+
+    Non-destructive: a resolved-containment guard plus one upsert — no orphan
+    sweep or ``_backup_db`` (nothing else can be lost); commits explicitly since
+    :func:`upsert_node` does not and this path bypasses :func:`reindex_external`'s
+    commit; raises ``FileNotFoundError`` (dir/file missing) or ``ValueError``
+    (``rel_path`` escapes ``external_dir`` via ``..`` or a symlink).
+    """
+    external_dir = external_dir.expanduser().resolve()
+    if not external_dir.is_dir():
+        raise FileNotFoundError(f"auto-memory dir not found: {external_dir}")
+
+    pr = (external_dir / rel_path).resolve(strict=False)
+    if not pr.is_relative_to(external_dir):
+        raise ValueError(f"{rel_path} is not under {external_dir}")
+    if not pr.exists():
+        raise FileNotFoundError(f"file not found: {pr}")
+
+    ns_path = EXTERNAL_NAMESPACE + str(pr.relative_to(external_dir))
+    counts = {"indexed": 0, "embedded": 0, "skipped": 0, "id_written": 0}
+    sub = _index_external_file(db, pr, ns_path, skip_embed=skip_embed)
+    for k, v in sub.items():
+        counts[k] += v
+    db.commit()
+    _emit_audit(
+        {"action": "reindex_external_one", "dir": str(external_dir), "file": ns_path, **counts}
+    )
+    return counts
+
+
 def reindex_external(
     db: sqlite3.Connection,
     external_dir: Path,
@@ -2064,60 +2238,9 @@ def reindex_external(
         ns_path = EXTERNAL_NAMESPACE + str(rel_to_ext)
         walked_paths.add(ns_path)
 
-        try:
-            content = p.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            counts["skipped"] += 1
-            continue
-
-        fm = parse_frontmatter(content)
-        description = fm.get("description", "").strip()
-        if not description:
-            counts["skipped"] += 1
-            continue
-
-        node_id = fm.get("id")
-        if not node_id:
-            node_id = make_id()
-            _write_id_to_frontmatter(p, node_id)
-            counts["id_written"] += 1
-
-        title = fm.get("name") or p.stem
-        node_type = fm.get("type", "feedback")
-        embed_src = embedding_source(description, content)
-        ch = content_hash(embed_src)
-
-        existing = db.execute(
-            "SELECT content_hash FROM nodes WHERE id = ?", (node_id,)
-        ).fetchone()
-        has_embedding = sqlite_vec is not None and db.execute(
-            "SELECT 1 FROM embeddings WHERE rowid = ?", (_rowid_for(node_id),)
-        ).fetchone() is not None
-        need_embed = existing is None or existing[0] != ch or not has_embedding
-
-        vec = None
-        if need_embed and not skip_embed:
-            try:
-                vec = embed_text(embed_src)
-                counts["embedded"] += 1
-            except Exception as exc:
-                print(f"WARN: embed failed for {ns_path}: {exc}", file=sys.stderr)
-                vec = None
-
-        upsert_node(
-            db,
-            node_id=node_id,
-            path=ns_path,
-            title=title,
-            description=description,
-            level=0,
-            node_type=node_type,
-            embedding=vec,
-            content_hash_val=ch,
-            body_text=_body_from_content(content),
-            atom_kind=fm.get("atom_kind", "knowledge"),
-        )
-        counts["indexed"] += 1
+        sub = _index_external_file(db, p, ns_path, skip_embed=skip_embed)
+        for k, v in sub.items():
+            counts[k] += v
 
     # Orphan external nodes no longer on disk.
     now_iso = _utc_iso()
@@ -2127,6 +2250,13 @@ def reindex_external(
     ).fetchall()
     for (nid, npath) in ext_active:
         if npath not in walked_paths:
+            # LIA-336: a rename-gap during rglob can briefly hide a live file;
+            # confirm it's truly gone on disk before orphaning. ns_path was built
+            # as EXTERNAL_NAMESPACE + rel_to_ext, so strip the prefix to recover
+            # the path under external_dir.
+            ext_file = external_dir / npath[len(EXTERNAL_NAMESPACE):]
+            if not _confirm_orphan(ext_file, require_id=False):
+                continue
             db.execute(
                 "UPDATE nodes SET orphaned_at = ?, orphan_reason = 'missing_file' WHERE id = ?",
                 (now_iso, nid),
@@ -3240,6 +3370,12 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("manifest", help="Generate thin manifest from all indexed nodes")
 
     p_ext = sub.add_parser("reindex-external", help="Index auto-memory files from DEUS_AUTO_MEMORY_DIR")
+    p_ext.add_argument(
+        "--add",
+        metavar="PATH",
+        help="Non-destructively index a SINGLE auto-memory file (resolved via the "
+        "shared resolver; no orphan sweep, unlike the bare full reindex)",
+    )
     p_ext.add_argument("--skip-embed", action="store_true", help="Skip embedding API calls")
     p_ext.add_argument("--json", action="store_true")
 
@@ -3421,6 +3557,26 @@ def main(argv: list[str] | None = None) -> int:
         return SUCCESS
 
     if args.cmd == "reindex-external":
+        if args.add:
+            # Non-destructive single-file admit: resolve the canonical dir
+            # ourselves (the safe path, unlike the destructive bare reindex).
+            try:
+                counts = reindex_external_one(
+                    db, resolve_auto_memory_dir(), args.add, skip_embed=args.skip_embed
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"ABORT: {exc}", file=sys.stderr)
+                return USAGE_ERROR
+            if args.json:
+                print(json.dumps(counts, indent=2))
+            else:
+                print(
+                    f"reindex-external --add: indexed={counts['indexed']} "
+                    f"embedded={counts['embedded']} "
+                    f"id_written={counts['id_written']} "
+                    f"skipped={counts['skipped']}"
+                )
+            return SUCCESS
         ext_dir = os.environ.get(EXTERNAL_DIR_ENV)
         if not ext_dir:
             print(f"ABORT: {EXTERNAL_DIR_ENV} not set", file=sys.stderr)

@@ -390,6 +390,31 @@ class TestBuild:
         counts = mt.build_tree(fake_vault, tmp_db)
         assert counts["orphaned"] == 1
 
+    def test_transient_walk_miss_does_not_orphan(
+        self, tmp_db, fake_vault, stub_embed, monkeypatch
+    ):
+        """LIA-336: a file present on disk but missing from one walk (concurrent
+        rewrite) must NOT be orphaned — _confirm_orphan re-reads it and aborts."""
+        mt.build_tree(fake_vault, tmp_db)
+        monkeypatch.setattr(mt, "ORPHAN_CONFIRM_DELAY_S", 0)
+        movies = fake_vault / "Persona" / "taste" / "movies.md"
+        assert movies.exists()  # still on disk — only the walk "missed" it
+
+        real_iter = mt.iter_tree_files
+
+        def _iter_minus_movies(vault):
+            return [p for p in real_iter(vault) if p != movies]
+
+        monkeypatch.setattr(mt, "iter_tree_files", _iter_minus_movies)
+        counts = mt.build_tree(fake_vault, tmp_db)
+
+        assert counts["orphaned"] == 0
+        active = tmp_db.execute(
+            "SELECT 1 FROM nodes WHERE path = ? AND orphaned_at IS NULL",
+            ("Persona/taste/movies.md",),
+        ).fetchone()
+        assert active is not None  # node still live, not soft-deleted
+
     def test_rebuild_aborts_when_vault_shrinks(
         self, tmp_db, fake_vault, stub_embed, tmp_path, monkeypatch
     ):
@@ -445,6 +470,93 @@ class TestBuild:
         mt.build_tree(fake_vault, tmp_db, rebuild=True)
         audit = (tmp_path / "audit.jsonl").read_text().strip().splitlines()
         assert any('"action": "rebuild"' in line for line in audit)
+
+
+# ── Confirm-orphan guard (LIA-336) ──────────────────────────────────────────────
+
+class TestConfirmOrphan:
+    """Frozen oracle for _confirm_orphan: confirm-before-orphan guard against
+    false-orphaning a live file mid-rewrite. Returns True => safe to orphan."""
+
+    @pytest.fixture(autouse=True)
+    def _fast(self, monkeypatch):
+        monkeypatch.setattr(mt, "ORPHAN_CONFIRM_DELAY_S", 0)
+
+    def test_present_with_id_not_orphaned(self, tmp_path):  # row a
+        f = tmp_path / "n.md"
+        f.write_text("---\nid: abc\ndescription: d\n---\n", encoding="utf-8")
+        assert mt._confirm_orphan(f, require_id=True) is False
+
+    def test_absent_orphaned_require_id(self, tmp_path):  # row b
+        assert mt._confirm_orphan(tmp_path / "gone.md", require_id=True) is True
+
+    def test_persistent_no_id_orphaned(self, tmp_path):  # row c — real de-list
+        f = tmp_path / "n.md"
+        f.write_text("plain text, no frontmatter id\n", encoding="utf-8")
+        assert mt._confirm_orphan(f, require_id=True) is True
+
+    def test_transient_truncation_not_orphaned(self):  # row c' — the bug case
+        calls = {"n": 0}
+
+        class _Flaky:
+            def read_text(self, *a, **k):
+                calls["n"] += 1
+                # First read sees a truncated (mid-rewrite) file; retry sees id.
+                return "" if calls["n"] == 1 else "---\nid: abc\n---\n"
+
+        assert mt._confirm_orphan(_Flaky(), require_id=True) is False
+        assert calls["n"] >= 2  # proves it retried rather than orphaning on miss 1
+
+    def test_present_not_orphaned_existence(self, tmp_path):  # row d
+        f = tmp_path / "n.md"
+        f.write_text("x", encoding="utf-8")
+        assert mt._confirm_orphan(f, require_id=False) is False
+
+    def test_absent_orphaned_existence(self, tmp_path):  # row e
+        assert mt._confirm_orphan(tmp_path / "gone.md", require_id=False) is True
+
+    def test_large_frontmatter_present_not_orphaned(self, tmp_path):  # LIA-340
+        # A frontmatter block whose closing `---` sits past a 4096-byte head:
+        # a truncated read leaves the fence unterminated, parse_frontmatter
+        # reports no id, and the node was falsely orphaned on every build
+        # (this is exactly how the vault CLAUDE.md got orphaned).
+        f = tmp_path / "big.md"
+        padding = "x" * 5000  # pushes the closing fence well past byte 4096
+        f.write_text(
+            f"---\nid: bigfm\ndescription: d\npadding: {padding}\n---\nbody\n",
+            encoding="utf-8",
+        )
+        fm_block = f.read_text(encoding="utf-8").split("---", 2)[1]
+        assert len(fm_block.encode("utf-8")) > 4096  # guard the fixture's premise
+        assert mt._confirm_orphan(f, require_id=True) is False
+
+
+class TestFrontmatterId:
+    """LIA-340: id extraction must read the whole frontmatter, not a 4096 head."""
+
+    def test_large_frontmatter_id_found(self, tmp_path):
+        f = tmp_path / "big.md"
+        f.write_text(
+            f"---\nid: bigfm\ndescription: d\npadding: {'x' * 5000}\n---\nbody\n",
+            encoding="utf-8",
+        )
+        assert mt._frontmatter_id(f) == "bigfm"
+
+    def test_no_id_returns_none(self, tmp_path):
+        f = tmp_path / "n.md"
+        f.write_text("plain text, no frontmatter\n", encoding="utf-8")
+        assert mt._frontmatter_id(f) is None
+
+    def test_iter_tree_files_admits_large_frontmatter(self, tmp_path):
+        vault = tmp_path / "vault"
+        vault.mkdir()
+        (vault / "MEMORY_TREE.md").write_text("---\nid: root\n---\n", encoding="utf-8")
+        big = vault / "big.md"
+        big.write_text(
+            f"---\nid: bigfm\ndescription: d\npadding: {'x' * 5000}\n---\nbody\n",
+            encoding="utf-8",
+        )
+        assert big in mt.iter_tree_files(vault)
 
 
 # ── Retrieve ──────────────────────────────────────────────────────────────────
@@ -728,6 +840,100 @@ class TestReindexExternal:
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
             counts = mt.reindex_external(tmp_db, ext_dir)
         assert counts["orphaned"] == 1
+
+    def test_reindex_external_one_adds_without_orphaning(self, tmp_db, ext_dir, tmp_path):
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external(tmp_db, ext_dir)
+        before = {
+            r[0] for r in tmp_db.execute(
+                "SELECT path FROM nodes WHERE orphaned_at IS NULL"
+            ).fetchall()
+        }
+        assert len(before) == 2  # feedback_test + project_test
+
+        (ext_dir / "procedure_new.md").write_text(
+            "---\nname: New proc\ndescription: A newly captured procedure\ntype: procedure\n---\nSteps\n"
+        )
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            counts = mt.reindex_external_one(tmp_db, ext_dir, "procedure_new.md")
+        assert counts["indexed"] == 1
+        after = {
+            r[0] for r in tmp_db.execute(
+                "SELECT path FROM nodes WHERE orphaned_at IS NULL"
+            ).fetchall()
+        }
+        assert before <= after and len(after) == 3  # originals untouched
+
+        # Persistence: a FRESH connection sees the committed node (proves the
+        # explicit db.commit() — a single-connection assert would pass without it).
+        db2 = mt.open_db(tmp_path / "tree.db")
+        try:
+            active = {
+                r[0] for r in db2.execute(
+                    "SELECT path FROM nodes WHERE orphaned_at IS NULL"
+                ).fetchall()
+            }
+        finally:
+            db2.close()
+        assert "auto-memory/procedure_new.md" in active
+        assert len(active) == 3
+
+    def test_reindex_external_one_rejects_escape(self, tmp_db, ext_dir, tmp_path):
+        # A ../ path that escapes external_dir is rejected (resolved containment),
+        # even though the target file exists.
+        (tmp_path / "outside.md").write_text(
+            "---\nname: x\ndescription: y\ntype: feedback\n---\n"
+        )
+        with pytest.raises(ValueError):
+            mt.reindex_external_one(tmp_db, ext_dir, "../outside.md")
+        assert tmp_db.execute(
+            "SELECT count(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0] == 0
+
+    def test_reindex_external_one_missing_file(self, tmp_db, ext_dir):
+        with pytest.raises(FileNotFoundError):
+            mt.reindex_external_one(tmp_db, ext_dir, "nonexistent.md")
+
+    def test_cli_add_dispatch(self, tmp_path, ext_dir, monkeypatch):
+        # Exercises the `reindex-external --add` CLI branch end to end: resolver
+        # via DEUS_AUTO_MEMORY_DIR, SUCCESS exit + --json, and the USAGE_ERROR path.
+        monkeypatch.setattr(mt, "DB_PATH", tmp_path / "cli.db")
+        monkeypatch.setenv("DEUS_AUTO_MEMORY_DIR", str(ext_dir))
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            rc = mt.main(["reindex-external", "--add", "feedback_test.md", "--json"])
+        assert rc == mt.SUCCESS
+        # A ../ escape returns USAGE_ERROR, not a crash.
+        rc_escape = mt.main(["reindex-external", "--add", "../escape.md"])
+        assert rc_escape == mt.USAGE_ERROR
+
+    def test_transient_rglob_miss_does_not_orphan(self, tmp_db, ext_dir, monkeypatch):
+        """LIA-336: a present file that rglob misses during one sweep (a rename
+        gap) must NOT be orphaned — _confirm_orphan re-checks it on disk. Mirrors
+        test_orphans_deleted_files but the file stays on disk."""
+        import pathlib
+
+        monkeypatch.setattr(mt, "ORPHAN_CONFIRM_DELAY_S", 0)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external(tmp_db, ext_dir)
+
+        target = ext_dir / "feedback_test.md"
+        assert target.exists()  # still on disk; only the walk "misses" it
+
+        real_rglob = pathlib.Path.rglob
+
+        def _rglob_minus_target(self, pattern):
+            return (p for p in real_rglob(self, pattern) if p.name != "feedback_test.md")
+
+        monkeypatch.setattr(pathlib.Path, "rglob", _rglob_minus_target)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            counts = mt.reindex_external(tmp_db, ext_dir)
+
+        assert counts["orphaned"] == 0
+        row = tmp_db.execute(
+            "SELECT 1 FROM nodes WHERE path = ? AND orphaned_at IS NULL",
+            ("auto-memory/feedback_test.md",),
+        ).fetchone()
+        assert row is not None  # live node preserved, not soft-deleted
 
     def test_reads_name_for_title(self, tmp_db, ext_dir):
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):

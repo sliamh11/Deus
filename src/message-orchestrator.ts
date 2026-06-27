@@ -49,6 +49,13 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { parseImageReferences } from './image.js';
 import { logger } from './logger.js';
+import {
+  MultiAgentOrchestrator,
+  parseTaskBlock,
+  formatMultiAgentResult,
+  MALFORMED_TASK_BLOCK,
+  type OrchestratorResult,
+} from './multi-agent/index.js';
 import { findChannel, formatMessages } from './router.js';
 import { RouterState, getAvailableGroups } from './router-state.js';
 import { isTriggerAllowed, loadSenderAllowlist } from './sender-allowlist.js';
@@ -242,6 +249,25 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
       logger.error({ group: group.name, err }, 'Agent error');
       return 'error';
     }
+  }
+
+  /**
+   * Authorized-sender subset eligible to carry a multi-agent task block. Shared by
+   * the cold-path dispatch and the warm-path interception so both gate on the same
+   * rule — an unauthorized sender's message must never become an executable block.
+   */
+  function eligibleSenderMessages(
+    messages: NewMessage[],
+    group: RegisteredGroup,
+    chatJid: string,
+    allowlist: ReturnType<typeof loadSenderAllowlist>,
+  ): NewMessage[] {
+    if (group.isControlGroup === true || group.requiresTrigger === false) {
+      return messages;
+    }
+    return messages.filter(
+      (m) => m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlist),
+    );
   }
 
   /**
@@ -460,8 +486,6 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
       }, IDLE_TIMEOUT);
     };
 
-    // FIXME(LIA-127): Wire MultiAgentOrchestrator dispatch behind DEUS_MULTI_AGENT=1 env gate. Orchestrator is built and tested (src/multi-agent/orchestrator.ts) but not connected to the message loop. See LIA-127 for implementation scope.
-
     await channel.setTyping?.(chatJid, true);
     let hadError = false;
     let outputSentToUser = false;
@@ -481,6 +505,115 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         return false;
       }
     };
+
+    // LIA-127: multi-agent dispatch (behind DEUS_MULTI_AGENT). When the prompt
+    // carries a parseable ```deus-tasks block, fan out to MultiAgentOrchestrator
+    // instead of the single-agent path. Flag-off, no block, or an unparseable
+    // block (other than the explicit malformed-notice case) all leave the
+    // single-agent path below byte-identical.
+    if (process.env.DEUS_MULTI_AGENT === '1') {
+      const finishEarly = async (rollback: boolean, ret: boolean) => {
+        await channel.setTyping?.(chatJid, false);
+        if (idleTimer) clearTimeout(idleTimer);
+        if (rollback) {
+          state.setLastAgentTimestamp(chatJid, previousCursor);
+          state.save();
+        }
+        return ret;
+      };
+
+      // Parse from RAW message content, NOT `prompt`: formatMessages XML-escapes
+      // content (" → &quot;), which would break JSON.parse on the fenced block.
+      //
+      // Authorization: only AUTHORIZED senders' messages are eligible to carry a
+      // task block. A non-main group proceeds once ANY message has an authorized
+      // trigger, but an UNauthorized sender's accumulated message must not become an
+      // executable block — unlike the single-agent path (which treats other senders'
+      // messages as mere context), this path EXECUTES the block, incl. `write` tasks.
+      const eligible = eligibleSenderMessages(
+        missedMessages,
+        group,
+        chatJid,
+        loadSenderAllowlist(),
+      );
+      const rawContent = eligible.map((m) => m.content).join('\n');
+      const parsed = parseTaskBlock(rawContent);
+      if (parsed === MALFORMED_TASK_BLOCK) {
+        await trySend(
+          "I found a `deus-tasks` block but couldn't parse it — check the JSON and that each task has id/role/goal/prompt/mode.",
+          'multi-agent-parse-error',
+        );
+        // Message consumed; retrying won't fix malformed input. No rollback.
+        return finishEarly(false, true);
+      }
+      if (parsed) {
+        // Injection guard on the DECODED task fields — the text that actually
+        // reaches the container after JSON.parse + buildPrompt. Scanning the
+        // pre-decode chat prompt would MISS JSON-escape-obfuscated injections
+        // (e.g. "ignore previous instructions" scans clean but decodes to
+        // "ignore previous instructions" at the agent). Fail-open on scanner error.
+        const decoded = parsed
+          .map((t) => [t.role, t.goal, t.backstory, t.prompt].join('\n'))
+          .join('\n');
+        let maScan: ScanResult | undefined;
+        try {
+          maScan = scanForInjection(decoded, INJECTION_SCANNER_CONFIG);
+        } catch (err) {
+          logger.error(
+            { err },
+            'Injection scanner error (multi-agent) — failing open',
+          );
+        }
+        if (maScan?.blocked) {
+          logger.warn(
+            { group: group.name, score: maScan.score, matches: maScan.matches },
+            'Injection attempt blocked — multi-agent tasks NOT dispatched',
+          );
+          // Consumed, no retry (mirror runAgent's blocked→success semantics).
+          return finishEarly(false, true);
+        }
+        if (maScan?.triggered) {
+          logger.warn(
+            { group: group.name, score: maScan.score, matches: maScan.matches },
+            'Injection detected in multi-agent tasks (logOnly, passing through)',
+          );
+        }
+
+        logger.info(
+          { group: group.name, taskCount: parsed.length },
+          'Multi-agent dispatch',
+        );
+        let maResult: OrchestratorResult | undefined;
+        try {
+          const orchestrator = new MultiAgentOrchestrator(registry);
+          maResult = await orchestrator.dispatch(parsed, group);
+        } catch (err) {
+          // A throw means dispatch failed BEFORE running any task: topologicalSort
+          // (cyclic/dangling deps — both already caught at parse time) and
+          // registry.resolve run before execution; Promise.allSettled never rejects.
+          // So no work happened → safe to roll back and retry (transient/infra).
+          logger.warn({ group: group.name, err }, 'Multi-agent dispatch threw');
+          await trySend(
+            'Multi-agent dispatch failed — please try again.',
+            'multi-agent-error',
+          );
+          return finishEarly(true, false);
+        }
+        // Dispatch RETURNED → tasks ran and their side effects (incl. `write`)
+        // already happened. CONSUME regardless of status or delivery success:
+        // re-dispatching would re-run completed tasks (duplicate writes), and a
+        // valid all-blocked result (status 'error') must be REPORTED to the user
+        // with its blocked reasons, not silently looped. This mirrors the
+        // single-agent invariant "work done → consume; only retry if work didn't
+        // happen". (status 'error' conflates a deterministic all-blocked run with a
+        // transient infra failure that surfaced as BLOCKED; auto-retrying only the
+        // transient case would need the orchestrator to separate them.)
+        const reply = formatMultiAgentResult(maResult, parsed);
+        await trySend(reply, 'multi-agent-output');
+        return finishEarly(false, true);
+      }
+      // No block present → fall through to the single-agent path unchanged.
+    }
 
     const output = await runAgent(
       group,
@@ -753,6 +886,37 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
             );
             const messagesToSend =
               allPending.length > 0 ? allPending : groupMessages;
+
+            // LIA-127: multi-agent dispatch (behind DEUS_MULTI_AGENT). A
+            // ```deus-tasks block cannot be piped into a warm single-agent session
+            // — it must reach MultiAgentOrchestrator, which lives only in
+            // processGroupMessages. Mirror the authorized session-command
+            // interception above: finalize the warm session (closeStdin) and route
+            // to the cold path via enqueueMessageCheck, so BOTH cold and warm turns
+            // hit the one dispatch site. Placed AFTER the trigger gate (a
+            // non-triggered block in a trigger-gated group just accumulates as
+            // context, matching the cold path) and detected on the SAME pending set
+            // that would otherwise be piped, filtered to authorized senders. A
+            // non-null parse result (valid SubagentTask[] OR malformed — both
+            // truthy) means an authorized sender sent a block; the cold path then
+            // dispatches it or emits the single canonical parse-error notice. Do NOT
+            // advance the cursor — processGroupMessages pulls-since and consumes.
+            // closeStdin is a no-op when no container is active, so this branch also
+            // covers cold-start uniformly.
+            if (process.env.DEUS_MULTI_AGENT === '1') {
+              const maEligible = eligibleSenderMessages(
+                messagesToSend,
+                group,
+                chatJid,
+                loadSenderAllowlist(),
+              );
+              if (parseTaskBlock(maEligible.map((m) => m.content).join('\n'))) {
+                queue.closeStdin(chatJid);
+                queue.enqueueMessageCheck(chatJid);
+                continue;
+              }
+            }
+
             const formatted = formatMessages(messagesToSend, TIMEZONE);
 
             if (queue.sendMessage(chatJid, formatted)) {

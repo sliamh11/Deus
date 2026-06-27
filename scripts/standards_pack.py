@@ -17,30 +17,15 @@ import re
 import sys
 from pathlib import Path
 
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from auto_memory_dir import resolve_auto_memory_dir  # noqa: E402
+
+
 def _default_auto_mem_dir() -> Path:
-    # 1. Explicit env override wins (matches memory_tree.EXTERNAL_DIR_ENV).
-    env = os.environ.get("DEUS_AUTO_MEMORY_DIR")
-    if env:
-        return Path(env)
-    # 2. Derive the per-project auto-memory dir from CLAUDE_PROJECT_DIR.
-    #    Mirrors memory_indexer.py promotion target (~/.claude/projects/<encoded>/memory).
-    #    Encoding: leading '-' + slashes replaced with '-'.
-    project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if project_dir:
-        encoded = project_dir.replace("/", "-")
-        if not encoded.startswith("-"):
-            encoded = "-" + encoded
-        candidate = Path(os.path.expanduser(f"~/.claude/projects/{encoded}/memory"))
-        if candidate.is_dir():
-            return candidate
-    # 3. Derive from this script's filesystem location (repo_root/scripts/standards_pack.py).
-    repo_root = Path(__file__).resolve().parent.parent
-    encoded = repo_root.as_posix().replace("/", "-")
-    legacy = Path(os.path.expanduser(f"~/.claude/projects/{encoded}/memory"))
-    if legacy.is_dir():
-        return legacy
-    # 4. Final fallback (will trigger fail-loud warning in load_standards).
-    return Path(os.path.expanduser("~/.deus/auto-memory"))
+    # Must match memory_tree + memory_query — see auto_memory_dir.py (LIA-341).
+    return resolve_auto_memory_dir()
 
 
 AUTO_MEM_DIR = _default_auto_mem_dir()

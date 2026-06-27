@@ -23,11 +23,23 @@ Intra-capsule calls stay direct; only the 6 distinct entry-owned symbols
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+# OS-SPECIFIC (flagged per core-rules): fcntl is POSIX-only. The warden machinery
+# runs dev-host-only (macOS/Linux); on Windows fcntl is absent and the verdict-store
+# lock degrades to a NO-OP, which is correct because no concurrent marks occur there.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows; warden never runs marks there
+    fcntl = None  # type: ignore[assignment]
+
+#: Sentinel distinguishing "key was absent" from a real value in locked mutations.
+_VERDICT_UNSET: Any = object()
 
 #: The live entry module (``codex_warden_hooks``), injected by :func:`bind_entry`
 #: at entry-module import time. Entry-owned helpers are resolved through this so
@@ -138,6 +150,53 @@ def _read_verdict(marker_name: str, repo_root: Path) -> str | None:
     return v if isinstance(v, str) else None
 
 
+@contextlib.contextmanager
+def _verdict_file_lock(path: Path):
+    """Exclusive cross-process lock guarding a read-modify-write of *path*.
+
+    Held on a SIDECAR lockfile (``<path>.lock``), not on *path* itself, so the
+    lock survives ``_write_atomic``'s ``os.replace`` (which swaps the target inode
+    while the lockfile's inode is untouched). NO-OP when ``fcntl`` is unavailable
+    (Windows) — see the import-site note; that branch is exercised in tests by
+    monkeypatching ``fcntl = None``.
+    """
+    if fcntl is None:  # Windows / no fcntl — no concurrent marks occur there
+        yield
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    # O_CREAT|O_RDWR (no O_TRUNC) = create-if-absent without truncating, the safe
+    # opener for a long-lived lockfile.
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _locked_verdict_update(path: Path, mutate: Callable[[dict[str, Any]], bool]) -> bool:
+    """Lock-guarded read-modify-write of the verdict store at *path*.
+
+    ``mutate(data) -> bool`` mutates the dict in place and returns whether it
+    changed anything. The store is re-read FRESH inside the lock, so a concurrent
+    writer's key (already on disk) is merged rather than clobbered. The write — and
+    its ``.bak`` backup — is skipped when ``mutate`` reports no change.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _verdict_file_lock(path):
+        data = _read_verdicts_at(path)
+        changed = mutate(data)
+        if changed:
+            _entry._write_atomic(
+                path, json.dumps(data, indent=2, sort_keys=True) + "\n"
+            )
+    return changed
+
+
 def _clear_verdict(marker_name: str, repo_root: Path) -> None:
     """Remove the *marker_name* entry from .warden-verdicts.json.
 
@@ -148,23 +207,34 @@ def _clear_verdict(marker_name: str, repo_root: Path) -> None:
     if not warden:
         return
     path = _verdicts_path(repo_root)
-    data = _read_verdicts(repo_root)
-    if warden not in data:
-        return
-    del data[warden]
+
+    def _pop(data: dict[str, Any]) -> bool:
+        # Absent key → no change → caller skips the write (no spurious .bak).
+        return data.pop(warden, _VERDICT_UNSET) is not _VERDICT_UNSET
+
     try:
-        _entry._write_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+        _locked_verdict_update(path, _pop)
     except OSError:
         _entry._debug(f"_clear_verdict: failed to write {path}")
 
 
 def _write_verdict(repo_root: Path, warden: str, verdict: str, reason: str, source: str = "manual") -> None:
     path = _verdicts_path(repo_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = _read_verdicts(repo_root)
+    # Submission time, not write time: under lock contention the actual write can lag.
     stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    data[warden] = {"verdict": verdict, "ts": stamp, "reason": reason, "source": source}
-    _entry._write_atomic(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+
+    def _set(data: dict[str, Any]) -> bool:
+        data[warden] = {
+            "verdict": verdict,
+            "ts": stamp,
+            "reason": reason,
+            "source": source,
+        }
+        return True
+
+    # Lock-guarded RMW: re-reads inside the lock so a concurrent writer's key is
+    # merged, not clobbered (LIA-332).
+    _locked_verdict_update(path, _set)
 
     log = _audit_log_path(repo_root)
     safe_reason = reason.replace("|", "/").replace("\n", " ").strip()

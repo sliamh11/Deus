@@ -1,6 +1,7 @@
 ---
 name: add-claude-context
 description: "[DEPRECATED] Replaced by scripts/code_search.py (native sqlite-vec + Ollama). Do not use."
+disable-model-invocation: true
 ---
 
 # Add Claude Context (Semantic Code Search) -- DEPRECATED
