@@ -78,7 +78,7 @@ jobs:
         run: python3 scripts/drift_check.py --all --base origin/${{ github.base_ref }}
 
       - name: Pattern tests (Python)
-        run: python3 -m pytest scripts/tests/test_drift_check.py scripts/tests/test_prune_warden_backups.py -v
+        run: python3 -m pytest scripts/tests/test_drift_check.py scripts/tests/test_prune_warden_backups.py scripts/tests/test_session_preflight.py -v
 
       - name: Warden review tests
         # Regression-protect the provider-agnostic warden co-gate engine: the gpt +
