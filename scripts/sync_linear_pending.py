@@ -14,6 +14,7 @@ INTERNAL_ERROR=5, RATE_LIMIT=7).
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -25,7 +26,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _exit_codes import AUTH_ERROR, INTERNAL_ERROR, RATE_LIMIT, SUCCESS
+from _exit_codes import AUTH_ERROR, INTERNAL_ERROR, RATE_LIMIT, SUCCESS, USAGE_ERROR
 
 LINEAR_API_URL = "https://api.linear.app/graphql"
 CACHE_MAX_AGE_S = 3600
@@ -227,6 +228,14 @@ def _format_pending(issues: list[dict]) -> str:
 # touches the body. Same pattern used by linear_pending_hook / linear_vault_sync.
 _PENDING_BLOCK_RE = re.compile(r"^pending:\n(?:[ \t][^\n]*\n)*", re.MULTILINE)
 _COL0_KEY_RE = re.compile(r"^([a-z][a-z0-9-]*):", re.MULTILINE)
+# Matches BOTH the multi-line form (`previous:\n  - "..."\n...`) AND the single-line
+# inline form (`previous: "..."`). The optional `(?:[ \t][^\n]*)?` consumes an inline
+# value on the header line; the trailing group consumes indented child lines and stops
+# at the first column-0 key (e.g. `pending:`), so the body is never touched.
+_PREVIOUS_BLOCK_RE = re.compile(r"^previous:(?:[ \t][^\n]*)?\n(?:[ \t][^\n]*\n)*", re.MULTILINE)
+# A `  - "entry"` child line under `previous:` (captures the quoted/bare entry text).
+_PREVIOUS_ITEM_RE = re.compile(r'^[ \t]+-[ \t]+"?(.*?)"?[ \t]*$')
+MAX_PREVIOUS_ENTRIES = 3
 
 
 def _resolve_vault() -> "Path | None":
@@ -265,6 +274,170 @@ def _safe_replace_pending(content: str, pending_body: str) -> str:
     return new_content
 
 
+# --------------------------------------------------------------------------- #
+# previous: block — atomic, lock-serialized splice
+# --------------------------------------------------------------------------- #
+def _parse_previous_entries(content: str) -> "list[str]":
+    """Extract existing `previous:` entries (newest-first) from CLAUDE.md content.
+
+    Handles both the multi-line list form and the single-line inline form
+    (`previous: "..."`). Returns [] when there is no previous: block.
+    """
+    m = _PREVIOUS_BLOCK_RE.search(content)
+    if not m:
+        return []
+    block = m.group(0)
+    lines = block.splitlines()
+    header = lines[0]  # `previous:` possibly with an inline value
+    entries: list[str] = []
+    inline = header[len("previous:") :].strip()
+    if inline:  # single-line form: `previous: "value"`
+        entries.append(inline.strip('"'))
+    for line in lines[1:]:
+        im = _PREVIOUS_ITEM_RE.match(line)
+        if im and im.group(1).strip():
+            entries.append(im.group(1).strip())
+    return entries
+
+
+def _render_previous_block(entries: "list[str]") -> str:
+    """Render a `previous:` block (header + `  - "entry"` lines) with trailing newline."""
+    out = ["previous:"]
+    for e in entries:
+        out.append(f'  - "{e}"')
+    return "\n".join(out) + "\n"
+
+
+def _assert_single_previous(new_content: str, old_content: str) -> None:
+    """Guard: no column-0 body key dropped AND exactly one `previous:` key remains.
+
+    The loss guard alone (a la _safe_replace_pending) cannot catch a NEWLY-INJECTED
+    duplicate `previous:` (e.g. inline form not matched -> a second block appended),
+    so the count guard is required for the previous: path.
+    """
+    lost = sorted(set(_COL0_KEY_RE.findall(old_content)) - set(_COL0_KEY_RE.findall(new_content)))
+    if lost:
+        raise ValueError(f"refusing to write: replacement would drop body keys {lost}")
+    n_prev = _COL0_KEY_RE.findall(new_content).count("previous")
+    if n_prev != 1:
+        raise ValueError(f"refusing to write: result has {n_prev} `previous:` keys (want exactly 1)")
+
+
+def _safe_replace_previous(content: str, entries: "list[str]") -> str:
+    """Splice the `previous:` block with `entries`, or insert it if absent.
+
+    Replaces an existing previous: block (either form) in place; if none exists,
+    inserts a fresh block immediately before `pending:`, else before the first
+    column-0 body key. Guards against body-key loss and duplicate previous: keys.
+    """
+    new_block = _render_previous_block(entries)
+    if _PREVIOUS_BLOCK_RE.search(content):
+        new_content = _PREVIOUS_BLOCK_RE.sub(new_block, content, count=1)
+    else:
+        # Insert before `pending:` if present, else before the first column-0 key.
+        if pend := re.search(r"^pending:", content, re.MULTILINE):
+            idx = pend.start()
+        elif first := _COL0_KEY_RE.search(content):
+            idx = first.start()
+        else:
+            raise ValueError("refusing to write: no column-0 key to anchor `previous:` insertion")
+        new_content = content[:idx] + new_block + content[idx:]
+    # Two independent guards (no body-key dropped + exactly one previous: key); a
+    # ValueError here leaves the file unchanged (caller never writes).
+    _assert_single_previous(new_content, content)
+    return new_content
+
+
+@contextlib.contextmanager
+def _claudemd_lock(claude_md: Path):
+    """Best-effort exclusive lock serializing all CLAUDE.md mutations.
+
+    Degrades to a no-op (with a stderr note) on win32, missing fcntl, or any OSError
+    acquiring the lock -- the lock is defense-in-depth; the atomic write + guards are
+    the real safety, so a lock-acquisition failure must never crash the caller or
+    suppress its stdout fallback. Lock file sits beside CLAUDE.md in the vault.
+    """
+    if sys.platform == "win32":
+        yield
+        return
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    lock_path = str(claude_md) + ".lock"
+    fd = None
+    try:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError as e:
+        print(f"--write: lock unavailable ({e}); proceeding without lock", file=sys.stderr)
+        if fd is not None:
+            os.close(fd)
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write `text` to `path` atomically (tempfile in same dir + os.replace).
+
+    No fsync: this prevents concurrent-process races, not power-loss corruption —
+    crash-durability is not required here. Add fsync if reused for durable writes.
+    """
+    tmp_path: "Path | None" = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=str(path.parent), delete=False, prefix=".claudemd."
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+            tmp.write(text)
+        os.replace(str(tmp_path), str(path))
+    except Exception:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_previous(entry: str) -> int:
+    """Prepend `entry` to the previous: block (trim to MAX_PREVIOUS_ENTRIES) and
+    splice it into vault CLAUDE.md atomically, under the shared lock. On any failure,
+    leave the file unchanged and return INTERNAL_ERROR."""
+    entry = entry.strip()
+    if not entry:
+        print("--write-previous: empty entry; nothing to do", file=sys.stderr)
+        return USAGE_ERROR
+    vault = _resolve_vault()
+    claude_md = (vault / "CLAUDE.md") if vault else None
+    if claude_md is None or not claude_md.exists():
+        print("--write-previous: cannot resolve vault CLAUDE.md (file unchanged)", file=sys.stderr)
+        return INTERNAL_ERROR
+    try:
+        with _claudemd_lock(claude_md):
+            content = claude_md.read_text(encoding="utf-8", errors="replace")
+            existing = _parse_previous_entries(content)
+            if existing and existing[0] == entry:
+                print("--write-previous: top entry already current; no change", file=sys.stderr)
+                return SUCCESS
+            entries = [entry, *existing][:MAX_PREVIOUS_ENTRIES]
+            new_content = _safe_replace_previous(content, entries)
+            if new_content != content:
+                _atomic_write(claude_md, new_content)
+                print(f"--write-previous: updated {claude_md}", file=sys.stderr)
+            else:
+                print("--write-previous: no change", file=sys.stderr)
+    except (ValueError, OSError) as e:
+        print(f"--write-previous: {e} (file unchanged)", file=sys.stderr)
+        return INTERNAL_ERROR
+    return SUCCESS
+
+
 def _emit(output: str, write: bool) -> int:
     """Print the pending block to stdout, or (--write) safely splice it into the
     vault CLAUDE.md in place. On any write failure, fall back to stdout so the
@@ -278,23 +451,34 @@ def _emit(output: str, write: bool) -> int:
         print("--write: cannot resolve vault CLAUDE.md; printing to stdout", file=sys.stderr)
         print(output, end="")
         return INTERNAL_ERROR
+    # Take the shared CLAUDE.md lock so a concurrent --write-previous can't
+    # interleave with this pending splice (the cross-block corruption vector).
     try:
-        content = claude_md.read_text(encoding="utf-8", errors="replace")
-        new_content = _safe_replace_pending(content, output)
-    except ValueError as e:
+        with _claudemd_lock(claude_md):
+            content = claude_md.read_text(encoding="utf-8", errors="replace")
+            new_content = _safe_replace_pending(content, output)
+            if new_content != content:
+                _atomic_write(claude_md, new_content)
+                print(f"--write: updated {claude_md}", file=sys.stderr)
+            else:
+                print("--write: pending block already current", file=sys.stderr)
+    except (ValueError, OSError) as e:
         print(f"--write: {e}; printing to stdout (file unchanged)", file=sys.stderr)
         print(output, end="")
         return INTERNAL_ERROR
-    if new_content != content:
-        claude_md.write_text(new_content, encoding="utf-8")
-        print(f"--write: updated {claude_md}", file=sys.stderr)
-    else:
-        print("--write: pending block already current", file=sys.stderr)
     return SUCCESS
 
 
 def main(argv: "list[str] | None" = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+
+    # --write-previous "<entry>": prepend a rolling session entry to the previous:
+    # block (atomic + lock-serialized). Independent of Linear -- no fetch needed.
+    if "--write-previous" in args:
+        i = args.index("--write-previous")
+        entry = args[i + 1] if i + 1 < len(args) else ""
+        return _write_previous(entry)
+
     write = "--write" in args
     cache = _cache_path()
     db = _db_path()

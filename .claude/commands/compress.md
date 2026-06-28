@@ -53,11 +53,14 @@ After saving the session log, do three things:
 
 1. Update vault CLAUDE.md (`$VAULT/CLAUDE.md`):
 
-   **`previous:` block** — rolling list of the last 3 sessions (parallel-safe, prepend-only):
-   - Format each entry as: `  - "YYYY-MM-DD: <tldr one-liner>"` (≤120 chars total)
-   - Read the current `previous:` block. If it's a single line (`previous: "..."`), convert it to list format first.
-   - Prepend the new entry at the top. Trim to 3 entries max (drop the oldest).
-   - If `previous:` doesn't exist, add it before `pending:`.
+   **`previous:` block** — rolling list of the last 3 sessions. Do NOT hand-edit it
+   (concurrent `/compress` runs race on a manual read-modify-write and have corrupted
+   the file). Use the atomic, lock-serialized splice:
+   - Run: `python3 ~/deus/scripts/sync_linear_pending.py --write-previous "YYYY-MM-DD: <tldr one-liner>"` (≤120 chars).
+   - It prepends, trims to 3, converts a single-line `previous: "..."` to list form,
+     inserts before `pending:` if absent, and writes atomically under a lock — refusing
+     (file unchanged, nonzero) rather than dropping a body key. If it exits non-zero,
+     leave `previous:` as-is; never hand-splice.
 
    **`pending:` block** — merge, never replace:
    1. Read the current `pending:` block from CLAUDE.md. If missing, treat as empty list.
