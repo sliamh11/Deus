@@ -38,6 +38,7 @@ The [cli-printing-press](https://github.com/mvanhorn/cli-printing-press) project
 | NOT_FOUND | 3 | UserError | Surface to user |
 | AUTH_ERROR | 4 | FatalError | Log + stop |
 | INTERNAL_ERROR | 5 | FatalError | Log + stop |
+| CONFLICT | 6 | (CLI-only) | Stop before write / re-check state |
 
 ### Phase 2: Host-Side Tool Proxy (future)
 
