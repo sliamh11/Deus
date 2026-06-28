@@ -45,46 +45,39 @@ class TestMemoryRecallTool:
     """Test the memory_recall tool function directly."""
 
     def test_calls_recall_with_correct_args(self, monkeypatch):
-        # Default (flag unset): procedures stay dormant -> exclude_kinds=None.
+        # Default (flag unset): procedures ON -> exclude_kinds={"standard"}.
         monkeypatch.delenv("DEUS_PROCEDURE_MEMORY", raising=False)
         with patch.object(mq, "recall", return_value=FAKE_RECALL_RESULT) as mock_recall:
             result = mms.memory_recall("what timezone?", k=5, source="test")
 
         mock_recall.assert_called_once_with(
-            "what timezone?", k=5, source="test", exclude_kinds=None
+            "what timezone?", k=5, source="test", exclude_kinds={"standard"}
         )
         assert result == FAKE_RECALL_RESULT
 
-    def test_procedure_flag_on_opts_procedures_in(self, monkeypatch):
-        # DEUS_PROCEDURE_MEMORY=1 -> opt procedures in via exclude_kinds={"standard"}
-        # (mirrors scripts/memory_retrieval_hook.py).
-        monkeypatch.setenv("DEUS_PROCEDURE_MEMORY", "1")
+    @pytest.mark.parametrize("value", ["1", " 1 ", "\t1\n", "true", "anything"])
+    def test_procedures_on_by_default_and_for_non_disable_values(
+        self, monkeypatch, value
+    ):
+        # Procedures recall by default. Only an explicit "0" disables, so every
+        # non-"0" value (incl. unset, handled above) keeps procedures eligible.
+        monkeypatch.setenv("DEUS_PROCEDURE_MEMORY", value)
         with patch.object(mq, "recall", return_value=FAKE_RECALL_RESULT) as mock_recall:
             mms.memory_recall("how do I capture a procedure?")
 
         _, kwargs = mock_recall.call_args
         assert kwargs["exclude_kinds"] == {"standard"}
 
-    @pytest.mark.parametrize("value", ["", "0", "true", "yes", "on", "TRUE", " 1 x"])
-    def test_procedure_flag_off_keeps_procedures_dormant(self, monkeypatch, value):
-        # Strict binary: only the exact string "1" enables; everything else is off.
+    @pytest.mark.parametrize("value", ["0", " 0 ", "\t0\n"])
+    def test_explicit_zero_is_the_kill_switch(self, monkeypatch, value):
+        # The ONLY disable is an explicit "0" (stripped). Then exclude_kinds=None,
+        # which falls through to recall()'s default that also drops procedures.
         monkeypatch.setenv("DEUS_PROCEDURE_MEMORY", value)
         with patch.object(mq, "recall", return_value=FAKE_RECALL_RESULT) as mock_recall:
             mms.memory_recall("how do I capture a procedure?")
 
         _, kwargs = mock_recall.call_args
         assert kwargs["exclude_kinds"] is None
-
-    @pytest.mark.parametrize("value", ["1", " 1 ", "\t1\n"])
-    def test_procedure_flag_on_tolerates_surrounding_whitespace(self, monkeypatch, value):
-        # The gate strips before comparing (byte-for-byte the same as
-        # memory_retrieval_hook.py), so whitespace-padded "1" still enables.
-        monkeypatch.setenv("DEUS_PROCEDURE_MEMORY", value)
-        with patch.object(mq, "recall", return_value=FAKE_RECALL_RESULT) as mock_recall:
-            mms.memory_recall("how do I capture a procedure?")
-
-        _, kwargs = mock_recall.call_args
-        assert kwargs["exclude_kinds"] == {"standard"}
 
     def test_default_source_is_mcp(self):
         with patch.object(mq, "recall", return_value=FAKE_RECALL_RESULT) as mock_recall:

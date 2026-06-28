@@ -66,13 +66,13 @@ def memory_recall(query: str, k: int = 3, source: str = "mcp") -> dict:
     Returns:
         ``{"context": str, "paths": [str], "confidence": float, "fell_back": bool}``
     """
-    # Opt procedures in only when the flag is exactly "1" (the kill-switch is
-    # unambiguous — "true"/"yes" do NOT count). {"standard"} as the exclude set
-    # makes procedures eligible while keeping ordinary standard atoms excluded;
-    # None lets recall()'s default ({"standard","procedure"}) keep procedures
-    # hidden. Byte-for-byte the same gate as scripts/memory_retrieval_hook.py.
-    proc_on = os.environ.get("DEUS_PROCEDURE_MEMORY", "").strip() == "1"
-    exclude_kinds = {"standard"} if proc_on else None
+    # Procedures recall by default on the MCP path (the broad external recall
+    # surface). Kill-switch is an explicit DEUS_PROCEDURE_MEMORY=0; any other value
+    # (incl. unset) keeps them eligible via {"standard"} (None falls through to
+    # recall()'s default which ALSO drops procedures). Intentionally diverges from
+    # the default-off host hook — see docs/decisions/procedure-memory-default-on.md.
+    proc_disabled = os.environ.get("DEUS_PROCEDURE_MEMORY", "").strip() == "0"
+    exclude_kinds = None if proc_disabled else {"standard"}
     return memory_query.recall(query, k=k, source=source, exclude_kinds=exclude_kinds)
 
 

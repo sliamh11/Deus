@@ -141,14 +141,15 @@ recall as an MCP tool through the repo launcher:
 codex mcp add deus-memory -- /path/to/deus/scripts/deus-memory-mcp
 ```
 
-The same `deus-memory` server powers memory recall in **any** project (it is
-registered globally), so procedures captured via `/learn-procedure` can be
-recalled outside `~/deus`. Procedure recall is **opt-in and dormant by default**
-— to surface `kind: procedure` nodes through the MCP server, set
-`DEUS_PROCEDURE_MEMORY=1` in the `env` block of the `deus-memory` entry in your
-MCP client's config (e.g. `~/.claude.json`, or the Codex MCP registration).
-Because the MCP server reads its `env` only at spawn, restart the session
-afterward for the change to take effect.
+`/setup` registers the `deus-memory` server globally (alongside codegraph and
+code-search), so memory recall — including procedures captured via
+`/learn-procedure` — works in **any** project, not just `~/deus`. **Procedure
+recall is on by default.** To disable it (the kill-switch), set
+`DEUS_PROCEDURE_MEMORY=0` in the `env` block of the `deus-memory` entry in your
+MCP client's config (e.g. `~/.claude.json`, or the Codex MCP registration);
+`/setup` registers the server only if it is absent, so it never overwrites an
+entry you have customized. Because the MCP server reads its `env` only at spawn,
+restart the session afterward for the change to take effect.
 
 To use Deus's memory and evolution layers from a code editor (Zed and other
 ACP/MCP clients), see [Editor integration](docs/EDITOR_INTEGRATION.md).
