@@ -17,12 +17,17 @@ from evolution.optimizer.param_optimizer import (
     optimize_params,
 )
 
+# This repo's benchmark fixture is intentionally smaller than upstream (~74 vs
+# 136 entries). The floor asserts non-trivial population without pinning to
+# upstream's count.
+MIN_BENCH_LABELS = 50
+
 
 def test_load_labels():
     """Benchmark labels file exists and is parseable."""
     assert BENCH_LABELS.exists(), f"Benchmark labels not found: {BENCH_LABELS}"
     labels = _load_labels()
-    assert len(labels) >= 90
+    assert len(labels) >= MIN_BENCH_LABELS
     for label in labels:
         assert "query" in label
         assert "tag" in label
