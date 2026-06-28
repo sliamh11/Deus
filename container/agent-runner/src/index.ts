@@ -37,6 +37,7 @@ import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 import { createToolCallLogHook } from './tool-call-log.js';
 import { writeAvailableTools } from './available-tools-log.js';
 import { buildAllowedTools, computeTeamsNeeded } from './allowed-tools.js';
+import { subagentNudgeAppend } from './subagent-nudge.js';
 import type { AgentRuntimeId } from './tool-broker.js';
 import { resolveGroupAttachmentPath } from './tool-broker.js';
 import { HookDispatchService } from './hook-dispatch-service.js';
@@ -859,6 +860,19 @@ async function runQuery(
     writeAvailableTools(process.env.DEUS_INTERACTION_ID, allowedTools);
   }
 
+  // Layer-A subagent fan-out nudge: appended only in engineering context
+  // (hasProject + full tool profile — the webhook profile has no Task tool), so
+  // plain chat pays no tokens. Runtime kill-switch: DEUS_SUBAGENT_NUDGE=0.
+  const subagentNudgeEnabled = process.env.DEUS_SUBAGENT_NUDGE !== '0'; // LIA-343
+  const subagentNudge = subagentNudgeAppend({
+    enabled: subagentNudgeEnabled,
+    hasProject,
+    toolProfile,
+  });
+  const fullSystemAppend = [systemAppend, subagentNudge]
+    .filter(Boolean)
+    .join('\n\n');
+
   // ── Streaming (Web UI live output) ──────────────────────────────────────────
   // runQuery is the CLAUDE path only (main() returns for openai/llama-cpp before
   // calling it), so enabling partial messages here is structurally Claude-only.
@@ -913,11 +927,11 @@ async function runQuery(
       resume: sessionId,
       resumeSessionAt: resumeAt,
       effort,
-      systemPrompt: systemAppend
+      systemPrompt: fullSystemAppend
         ? {
             type: 'preset' as const,
             preset: 'claude_code' as const,
-            append: systemAppend,
+            append: fullSystemAppend,
           }
         : undefined,
       allowedTools,
