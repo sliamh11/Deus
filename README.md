@@ -131,6 +131,7 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus backend` | Show active agent backend (`claude`, `codex`, `llama-cpp`) |
 | `deus backend set <name>` | Switch backend for all future sessions |
 | `deus sync` | Update the live install to `origin/main` (`deus sync upstream` for forks) |
+| `deus preflight` | Detect whether another live session is working the current git tree (read-only; exit 6 on collision) |
 
 For direct Codex CLI sessions outside the `deus` launcher, register Deus memory
 recall as an MCP tool through the repo launcher:

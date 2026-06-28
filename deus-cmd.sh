@@ -1265,6 +1265,17 @@ $STARTUP_INSTRUCTION"
     shift
     exec python3 "$SCRIPT_DIR/scripts/analyze_token_efficiency.py" "$@"
     ;;
+  preflight)
+    # Read-only concurrent-session collision check for the current git tree
+    # (LIA-284). Pure pass-through to the detector: exec inherits PWD so it
+    # checks the invocation directory, forwards all flags, and propagates the
+    # detector's exit code (CONFLICT=6 on a CRITICAL collision, 2 if not a git
+    # repo, 0 otherwise). $SCRIPT_DIR (not $HOME/deus) so it works from any
+    # install path / worktree. The detector self-excludes via CLAUDE_SESSION_ID
+    # when set; pass --self <id> explicitly when running inside a session.
+    shift
+    exec python3 "$SCRIPT_DIR/scripts/session_preflight.py" "$@"
+    ;;
   sync)
     # Make the live install current with <remote>/main, non-destructively.
     #   deus sync            -> origin/main   (this repo's own remote)
@@ -1628,7 +1639,7 @@ $STARTUP_INSTRUCTION"
     esac
     ;;
   *)
-    echo "Usage: deus [claude|codex] [home|init|arch|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|solution|sweep|tui] [--agents]"
+    echo "Usage: deus [claude|codex] [home|init|arch|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|preflight|solution|sweep|tui] [--agents]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -1655,6 +1666,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus deploy     Diff-driven deploy (origin only): ff-merge origin/main + rebuild"
     echo "                    only what changed (host if src/, container if container/ or skills). --dry-run"
     echo "  deus pipeline   Pipeline event audit (LIA-XX | --failed | --active | --all)"
+    echo "  deus preflight  Check if another live session is working this git tree (read-only; exit 6 on collision)"
     echo "  deus solution   Manage solution atoms (list|search|add)"
     echo "  deus sweep      Run threshold calibration sweep against benchmark queries"
     echo "  deus tui        Interactive terminal UI (set tui_default=true in config to use by default)"
