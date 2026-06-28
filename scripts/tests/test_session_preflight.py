@@ -307,3 +307,34 @@ class TestMainContract:
         assert sp.main([]) == CONFLICT
         text = capsys.readouterr().out
         assert "CONFLICT" in text and "exit 6" in text
+
+
+# ── --critical-only probe selection ──────────────────────────────────────────
+class TestCriticalOnly:
+    def test_flag_runs_only_critical_probes(self, monkeypatch, capsys):
+        ran = []
+        crit = lambda ctx: (ran.append("crit") or [])  # noqa: E731
+        warn = lambda ctx: (ran.append("warn") or [])  # noqa: E731
+        monkeypatch.setattr(sp, "_build_context", lambda args: _ctx())
+        monkeypatch.setattr(sp, "CRITICAL_PROBES", [crit])
+        monkeypatch.setattr(sp, "PROBES", [crit, warn])
+        sp.main(["--critical-only", "--json"])
+        assert ran == ["crit"]
+
+    def test_no_flag_runs_all_probes(self, monkeypatch, capsys):
+        ran = []
+        crit = lambda ctx: (ran.append("crit") or [])  # noqa: E731
+        warn = lambda ctx: (ran.append("warn") or [])  # noqa: E731
+        monkeypatch.setattr(sp, "_build_context", lambda args: _ctx())
+        monkeypatch.setattr(sp, "CRITICAL_PROBES", [crit])
+        monkeypatch.setattr(sp, "PROBES", [crit, warn])
+        sp.main(["--json"])
+        assert ran == ["crit", "warn"]
+
+    def test_network_probe_excluded_from_critical_set(self):
+        # main() selects CRITICAL_PROBES verbatim, so membership IS the guarantee
+        # that the network gh-PR probe (and the mtime probe) never run with the flag.
+        assert sp.probe_open_pr_for_branch not in sp.CRITICAL_PROBES
+        assert sp.probe_recent_uncommitted not in sp.CRITICAL_PROBES
+        assert sp.probe_live_session_same_tree in sp.CRITICAL_PROBES
+        assert sp.probe_branch_in_another_worktree in sp.CRITICAL_PROBES

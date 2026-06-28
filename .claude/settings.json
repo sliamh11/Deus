@@ -16,6 +16,11 @@
             "type": "command",
             "command": "bash -c 'python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/linear_pending_hook.py\"'",
             "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash -c 'python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/session_preflight_hook.py\"'",
+            "timeout": 8
           }
         ]
       }

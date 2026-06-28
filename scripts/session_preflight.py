@@ -326,6 +326,16 @@ PROBES = [
     probe_recent_uncommitted,
 ]
 
+# The two probes that can produce a CRITICAL (blocking) finding -- both are local
+# (git/filesystem) and fast. --critical-only runs exactly these, skipping the
+# advisory WARNING probes: probe_open_pr_for_branch makes a network `gh pr list`
+# call, so a session-start gate that only surfaces CRITICAL collisions avoids that
+# latency entirely rather than waiting on a timeout.
+CRITICAL_PROBES = [
+    probe_live_session_same_tree,
+    probe_branch_in_another_worktree,
+]
+
 
 # --------------------------------------------------------------------------- #
 # orchestration
@@ -387,6 +397,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--self-pid", type=int, default=None, help="This session's pid, excluded from checks"
     )
+    parser.add_argument(
+        "--critical-only",
+        action="store_true",
+        help="Run only the CRITICAL (blocking) probes; skip advisory WARNING probes "
+        "(notably the network gh-PR check). Used by the session-start hook.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
     parser.add_argument("--compact", action="store_true", help="Compact JSON (strip nulls)")
     parser.add_argument("--select", default=None, help="Comma-separated field projection")
@@ -403,9 +419,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"USAGE: {exc}", file=sys.stderr)
         return USAGE_ERROR
 
+    probes = CRITICAL_PROBES if args.critical_only else PROBES
     try:
         findings: list[Finding] = []
-        for probe in PROBES:
+        for probe in probes:
             findings.extend(probe(ctx))
     except Exception as exc:  # pragma: no cover - defensive last resort
         print(f"INTERNAL: {exc}", file=sys.stderr)
