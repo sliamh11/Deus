@@ -128,8 +128,9 @@ _deploy_plan() {
 # darwin/Linux only (date +%s, git); Windows port pending — project_windows_support.md
 _deus_freshness_check() {
   [[ "$OSTYPE" == darwin* || "$OSTYPE" == linux* ]] || return 0
-  # Skip for sync/deploy (both do their own fetch + reporting) and help/no-arg paths.
-  case "$1" in sync|deploy|""|-h|--help|help) return 0 ;; esac
+  # Skip for sync/deploy (both do their own fetch + reporting), help/no-arg paths,
+  # and `root` (a pure query used by skills — must stay side-effect-free, no fetch).
+  case "$1" in sync|deploy|root|""|-h|--help|help) return 0 ;; esac
   git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
 
   local stamp_dir="$HOME/.config/deus" stamp now last
@@ -326,6 +327,7 @@ PORTABLE_SKILLS=(
   compress
   deep-research
   handoff
+  learn-procedure
   onboard
   preferences
   preserve
@@ -675,6 +677,13 @@ sys.exit(1)
         echo "  deus backend bench     Run parity benchmark (claude vs openai)"
         ;;
     esac
+    ;;
+  root)
+    # Print the resolved Deus clone directory (symlink-resolved $SCRIPT_DIR).
+    # A cwd-independent anchor so user-scope skills running in ANY project can
+    # locate the clone's scripts (e.g. DEUS_HOME="$(deus root)"). Pure query:
+    # no fetch (skipped in _deus_freshness_check), no side effects, stdout only.
+    echo "$SCRIPT_DIR"
     ;;
   web)
     # Launch the Deus web UI (Open WebUI via uvx) and open the browser.

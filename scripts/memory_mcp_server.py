@@ -26,6 +26,7 @@ Register in ~/.claude/settings.json:
 """
 from __future__ import annotations
 
+import os
 import sys
 
 if sys.platform == "win32":
@@ -65,7 +66,14 @@ def memory_recall(query: str, k: int = 3, source: str = "mcp") -> dict:
     Returns:
         ``{"context": str, "paths": [str], "confidence": float, "fell_back": bool}``
     """
-    return memory_query.recall(query, k=k, source=source)
+    # Opt procedures in only when the flag is exactly "1" (the kill-switch is
+    # unambiguous — "true"/"yes" do NOT count). {"standard"} as the exclude set
+    # makes procedures eligible while keeping ordinary standard atoms excluded;
+    # None lets recall()'s default ({"standard","procedure"}) keep procedures
+    # hidden. Byte-for-byte the same gate as scripts/memory_retrieval_hook.py.
+    proc_on = os.environ.get("DEUS_PROCEDURE_MEMORY", "").strip() == "1"
+    exclude_kinds = {"standard"} if proc_on else None
+    return memory_query.recall(query, k=k, source=source, exclude_kinds=exclude_kinds)
 
 
 def _run_mcp_server() -> None:
