@@ -51,7 +51,11 @@ class TestMemoryRecallTool:
             result = mms.memory_recall("what timezone?", k=5, source="test")
 
         mock_recall.assert_called_once_with(
-            "what timezone?", k=5, source="test", exclude_kinds={"standard"}
+            "what timezone?",
+            k=5,
+            source="test",
+            exclude_kinds={"standard"},
+            max_context_chars=mms._MAX_CONTEXT_CHARS,
         )
         assert result == FAKE_RECALL_RESULT
 
@@ -145,3 +149,48 @@ class TestServerName:
             mms._run_mcp_server()
 
         assert "deus-memory" in created_servers
+
+
+class TestMemoryRecallCap:
+    """LIA-344: server-side payload bound (k clamp + max_context_chars)."""
+
+    def test_forwards_max_context_chars(self):
+        with patch.object(mq, "recall", return_value=FAKE_RECALL_RESULT) as mock_recall:
+            mms.memory_recall("hello")
+        _, kwargs = mock_recall.call_args
+        assert kwargs["max_context_chars"] == mms._MAX_CONTEXT_CHARS
+
+    def test_clamps_large_k_to_ceiling(self):
+        with patch.object(mq, "recall", return_value=FAKE_RECALL_RESULT) as mock_recall:
+            mms.memory_recall("hello", k=9999)
+        _, kwargs = mock_recall.call_args
+        assert kwargs["k"] == mms._K_MAX
+
+    def test_clamps_non_positive_k_to_one(self):
+        with patch.object(mq, "recall", return_value=FAKE_RECALL_RESULT) as mock_recall:
+            mms.memory_recall("hello", k=0)
+        _, kwargs = mock_recall.call_args
+        assert kwargs["k"] == 1
+
+    def test_k_within_range_passes_through(self):
+        with patch.object(mq, "recall", return_value=FAKE_RECALL_RESULT) as mock_recall:
+            mms.memory_recall("hello", k=3)
+        _, kwargs = mock_recall.call_args
+        assert kwargs["k"] == 3
+
+
+class TestIntEnvGuard:
+    """LIA-344: env override parsing with safe fallback."""
+
+    def test_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("DEUS_MCP_RECALL_MAX_CHARS", raising=False)
+        assert mms._int_env("DEUS_MCP_RECALL_MAX_CHARS", 8192) == 8192
+
+    def test_valid_override(self, monkeypatch):
+        monkeypatch.setenv("DEUS_MCP_RECALL_MAX_CHARS", "5000")
+        assert mms._int_env("DEUS_MCP_RECALL_MAX_CHARS", 8192) == 5000
+
+    @pytest.mark.parametrize("bad", ["abc", "", "0", "-10", "3.5"])
+    def test_invalid_or_non_positive_falls_back(self, monkeypatch, bad):
+        monkeypatch.setenv("DEUS_MCP_RECALL_MAX_CHARS", bad)
+        assert mms._int_env("DEUS_MCP_RECALL_MAX_CHARS", 8192) == 8192

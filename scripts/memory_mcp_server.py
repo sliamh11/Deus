@@ -52,6 +52,24 @@ except ImportError:
     _MCP_AVAILABLE = False
 
 
+def _int_env(name: str, default: int) -> int:
+    """Positive-int env override with a safe fallback (invalid/<=0 -> default)."""
+    try:
+        v = int(os.environ.get(name, ""))  # LIA-344
+    except ValueError:
+        return default
+    return v if v > 0 else default
+
+
+# LIA-344: bound the MCP recall payload server-side (the host hook caps at 4096,
+# but the MCP path returned recall()'s context uncapped with no k ceiling).
+# 8192 chars (~2k tok) exceeds the largest real procedure node (2,962) and a
+# typical k=3 body (~5 KB) while bounding the k=10 worst case (~57 KB). Both
+# env-overridable starting values, tunable post-ship on real MCP traffic.
+_MAX_CONTEXT_CHARS = _int_env("DEUS_MCP_RECALL_MAX_CHARS", 8192)  # LIA-344
+_K_MAX = _int_env("DEUS_MCP_RECALL_MAX_K", 10)  # LIA-344
+
+
 def memory_recall(query: str, k: int = 3, source: str = "mcp") -> dict:
     """Retrieve memory context for a query.
 
@@ -60,8 +78,12 @@ def memory_recall(query: str, k: int = 3, source: str = "mcp") -> dict:
 
     Args:
         query:  Natural-language query (e.g. "what is Liam's timezone?").
-        k:      Number of top results to return.
+        k:      Number of top results to return (LIA-344: clamped server-side to
+                1.._K_MAX, default ceiling 10).
         source: Identifier written to the retrieval log (default ``"mcp"``).
+
+    The formatted context is capped server-side to ``_MAX_CONTEXT_CHARS``
+    (LIA-344) so a caller cannot pull an unbounded payload.
 
     Returns:
         ``{"context": str, "paths": [str], "confidence": float, "fell_back": bool}``
@@ -73,7 +95,16 @@ def memory_recall(query: str, k: int = 3, source: str = "mcp") -> dict:
     # the default-off host hook — see docs/decisions/procedure-memory-default-on.md.
     proc_disabled = os.environ.get("DEUS_PROCEDURE_MEMORY", "").strip() == "0"
     exclude_kinds = None if proc_disabled else {"standard"}
-    return memory_query.recall(query, k=k, source=source, exclude_kinds=exclude_kinds)
+    # LIA-344: clamp k and cap the formatted context so an MCP caller cannot pull
+    # an unbounded payload (the sentinel framing survives — see _truncate_body).
+    k = min(max(1, k), _K_MAX)
+    return memory_query.recall(
+        query,
+        k=k,
+        source=source,
+        exclude_kinds=exclude_kinds,
+        max_context_chars=_MAX_CONTEXT_CHARS,
+    )
 
 
 def _run_mcp_server() -> None:

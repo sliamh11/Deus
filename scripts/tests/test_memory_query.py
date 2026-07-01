@@ -581,3 +581,85 @@ class TestIntentChain:
         monkeypatch.setattr(mq, "_classify_ollama", fake)
         assert mq.classify_intent("q") == "factual"
         assert calls == ["m1"]
+
+
+class TestTruncateBody:
+    """LIA-344: single-pass body cap applied before untrusted-wrap."""
+
+    def test_none_is_passthrough(self):
+        body = "x" * 10000
+        assert mq._truncate_body(body, None) == body
+
+    def test_under_cap_is_identity(self):
+        body = "short body"
+        assert mq._truncate_body(body, 8192) == body
+
+    def test_over_cap_head_truncates_with_marker(self):
+        body = "y" * 5000
+        out = mq._truncate_body(body, 100)
+        assert out.startswith("y" * 100)
+        assert out.endswith("=== [truncated] ===")
+        assert len(out) == 100 + len("\n=== [truncated] ===")
+
+
+class TestFormatContextCap:
+    """LIA-344: _format_context bounds the JOINED body once, framing survives."""
+
+    def _results(self, n):
+        return [{"path": f"n{i}.md", "score": 0.5} for i in range(n)]
+
+    def test_cap_bounds_total_and_preserves_framing(self):
+        # Each node returns a large body; with 3 results an uncapped join would be
+        # ~9k chars. Cap the joined body to 500 and assert the total stays bounded.
+        with patch.object(mq, "_read_node_file", return_value="z" * 3000):
+            out = mq._format_context(self._results(3), False, max_context_chars=500)
+        # Untrusted framing header (line 1) + both sentinels survive.
+        assert out.startswith("=== Auto-retrieved memory")
+        assert out.count("<<<UNTRUSTED-MEMORY-") == 3  # header mention + open + close
+        assert "=== [truncated] ===" in out
+        # Bounded: body<=500 + wrapper overhead (~410 measured) -> comfortably <1200.
+        assert len(out) < 1200
+
+    def test_default_none_is_uncapped(self):
+        with patch.object(mq, "_read_node_file", return_value="z" * 3000):
+            out = mq._format_context(self._results(3), False)
+        assert "=== [truncated] ===" not in out
+        assert out.count("<<<UNTRUSTED-MEMORY-") == 3  # header mention + open + close
+
+
+class TestAtomFallbackCap:
+    """LIA-344: the atom-fallback path is also capped (security-relevant path)."""
+
+    def test_atom_fallback_body_is_capped(self, monkeypatch):
+        # Force the atom path to produce an oversized joined body, then cap it.
+        monkeypatch.setattr(mq, "ATOM_DIST_THRESHOLD", 1.0)
+
+        class _FakeMI:
+            def open_db(self):
+                return self
+
+            def execute(self, sql, *args):
+                class _Cur:
+                    def fetchone(_self):
+                        return (5,)
+
+                    def fetchall(_self):
+                        return [("A" * 4000, 0.1), ("B" * 4000, 0.2)]
+
+                return _Cur()
+
+            def close(self):
+                pass
+
+            def embed(self, _q):
+                return [0.0]
+
+            def serialize(self, _v):
+                return b""
+
+        monkeypatch.setitem(sys.modules, "memory_indexer", _FakeMI())
+        out = mq._atom_fallback("q", 5, max_context_chars=500)
+        assert out is not None
+        assert "=== [truncated] ===" in out
+        assert out.count("<<<UNTRUSTED-MEMORY-") == 3  # framing survives
+        assert len(out) < 1200
