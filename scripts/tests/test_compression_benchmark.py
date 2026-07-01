@@ -463,3 +463,79 @@ def test_module_constants_are_paths():
     assert isinstance(cb.BENCHMARK_DIR, Path)
     assert isinstance(cb.GOLDEN_DIR, Path)
     assert isinstance(cb.RESULTS_LOG, Path)
+
+
+# == verify_facts robustness against malformed local-judge JSON ================
+
+_FACTS = [
+    {"fact": "A", "classification": "critical"},
+    {"fact": "B", "classification": "supplementary"},
+]
+
+
+def _verify_with(judge_output: str):
+    """Run verify_facts with llm_call mocked to return a canned judge string."""
+    with patch.object(cb, "llm_call", return_value=judge_output):
+        return cb.verify_facts(_FACTS, "compressed doc")
+
+
+def _status_of(results, fact):
+    return next(r["status"] for r in results if r["fact"] == fact)
+
+
+def test_verify_facts_wellformed_is_identity():
+    res = _verify_with('[{"fact":"A","status":"preserved"},{"fact":"B","status":"missing"}]')
+    assert len(res) == len(_FACTS)
+    assert _status_of(res, "A") == "preserved"
+    assert _status_of(res, "B") == "missing"
+    # classification preserved from input
+    assert next(r["classification"] for r in res if r["fact"] == "A") == "critical"
+
+
+def test_verify_facts_bare_string_element_backfills_missing():
+    res = _verify_with('["A", {"fact":"B","status":"preserved"}]')
+    assert len(res) == len(_FACTS)
+    assert _status_of(res, "A") == "missing"   # bare string not keyed
+    assert _status_of(res, "B") == "preserved"
+
+
+def test_verify_facts_dict_missing_status_is_missing():
+    res = _verify_with('[{"fact":"A"},{"fact":"B","status":"preserved"}]')
+    assert _status_of(res, "A") == "missing"
+    assert _status_of(res, "B") == "preserved"
+
+
+def test_verify_facts_dict_missing_fact_no_keyerror():
+    res = _verify_with('[{"status":"preserved"}]')
+    assert len(res) == len(_FACTS)
+    assert all(r["status"] == "missing" for r in res)
+    # every result has a usable fact key (no KeyError downstream)
+    assert {r["fact"] for r in res} == {"A", "B"}
+
+
+def test_verify_facts_unhashable_fact_no_typeerror():
+    # list-valued "fact" would TypeError as a dict key without the str guard
+    res = _verify_with('[{"fact":["x","y"],"status":"preserved"}]')
+    assert len(res) == len(_FACTS)
+    assert all(r["status"] == "missing" for r in res)
+
+
+def test_verify_facts_non_list_root_backfills_missing():
+    res = _verify_with('{"fact":"A","status":"preserved"}')
+    assert len(res) == len(_FACTS)
+    assert all(r["status"] == "missing" for r in res)
+
+
+def test_verify_facts_unparseable_no_crash():
+    res = _verify_with("total garbage, no json here at all")
+    assert len(res) == len(_FACTS)
+    assert all(r["status"] == "missing" for r in res)
+
+
+def test_verify_facts_len_invariant_and_score_runs():
+    # denominator invariant + downstream compute_weighted_score never raises
+    for out in ('["A"]', '{"x":1}', "garbage", '[{"status":"missing"}]'):
+        res = _verify_with(out)
+        assert len(res) == len(_FACTS)
+        s = cb.compute_weighted_score(res)  # must not raise on any shape
+        assert s["total"] == len(_FACTS)
