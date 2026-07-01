@@ -135,9 +135,7 @@ export function withTimeout<T>(
 // ── allSettledOrThrow ─────────────────────────────────────────────────────
 
 export type AllSettledThrowPolicy =
-  | 'any'
-  | 'all'
-  | ((failures: number, total: number) => boolean);
+  'any' | 'all' | ((failures: number, total: number) => boolean);
 
 export interface AllSettledOrThrowOptions {
   /** Label for aggregate failure — e.g. `'channel.fanout'`. */

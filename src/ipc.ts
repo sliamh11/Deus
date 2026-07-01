@@ -422,9 +422,7 @@ export async function processTaskIpc(
         if (data.prompt !== undefined) updates.prompt = data.prompt;
         if (data.schedule_type !== undefined)
           updates.schedule_type = data.schedule_type as
-            | 'cron'
-            | 'interval'
-            | 'once';
+            'cron' | 'interval' | 'once';
         if (data.schedule_value !== undefined)
           updates.schedule_value = data.schedule_value;
         if (data.agent_backend !== undefined)

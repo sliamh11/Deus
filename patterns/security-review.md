@@ -5,7 +5,7 @@ governs:
   - src/ipc.ts
   - src/sender-allowlist.ts
   - src/mount-security.ts
-last_verified: "2026-06-18" # auto-bump @1781770135
+last_verified: "2026-07-01" # auto-bump @1782914887
 test_tasks:
   - "Add a new mount in src/container-mounter.ts for per-group config files"
   - "Update src/mount-security.ts to permit reading a new credential path"
