@@ -188,6 +188,28 @@ _fcc_current_model() {
   _fcc_current_full | cut -d/ -f2-
 }
 
+# Ensure fcc-server is running on :8082, starting it if needed.
+# No-op when already up. Returns 127 if the fcc-server binary is missing,
+# 1 if it fails to start. Shared by launch_fcc and the provider/model switches.
+_fcc_ensure_server() {
+  if curl -s --max-time 3 http://127.0.0.1:8082/health >/dev/null 2>&1; then
+    return 0
+  fi
+  if ! command -v fcc-server >/dev/null 2>&1; then
+    echo "Error: fcc-server not found. Install: uv tool install free-claude-code@git+https://github.com/Alishahryar1/free-claude-code.git"
+    return 127
+  fi
+  echo "fcc-server not running — starting..."
+  mkdir -p ~/.fcc/logs
+  fcc-server > ~/.fcc/logs/server.log 2>&1 &
+  sleep 3  # wait for server to bind before health check
+  if ! curl -s --max-time 3 http://127.0.0.1:8082/health >/dev/null 2>&1; then
+    echo "Error: fcc-server failed to start. Check ~/.fcc/logs/server.log"
+    return 1
+  fi
+  echo "fcc-server ready."
+}
+
 _backend_to_display() {
   case "$1" in
     openai) echo "codex" ;;
@@ -839,16 +861,7 @@ sys.exit(1)
         echo "Error: fcc-claude not found. Install: uv tool install free-claude-code@git+https://github.com/Alishahryar1/free-claude-code.git"
         return 127
       fi
-      if ! curl -s http://127.0.0.1:8082/health >/dev/null 2>&1; then
-        echo "Starting fcc-server..."
-        mkdir -p ~/.fcc/logs
-        fcc-server > ~/.fcc/logs/server.log 2>&1 &
-        sleep 3  # wait for server to bind before health check
-        if ! curl -s http://127.0.0.1:8082/health >/dev/null 2>&1; then
-          echo "Error: fcc-server failed to start. Check ~/.fcc/logs/server.log"
-          return 1
-        fi
-      fi
+      _fcc_ensure_server || return $?
       local fcc_model=$(grep '^MODEL=' ~/.fcc/.env 2>/dev/null | cut -d= -f2)
       echo "Proxy: $fcc_model"
       fcc-claude "$@"
@@ -1495,6 +1508,7 @@ $STARTUP_INSTRUCTION"
         FCC_OLD_MODEL=$(grep '^MODEL=' ~/.fcc/.env 2>/dev/null | cut -d= -f2 | cut -d/ -f2-)
         FCC_NEW_MODEL="${FCC_NEW_PROV}/${FCC_OLD_MODEL}"
         _fcc_validate_model_name "$FCC_NEW_MODEL"
+        _fcc_ensure_server || exit 1
         FCC_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FCC_PROXY/admin/api/config/apply" \
           -H "Content-Type: application/json" \
           -d "{\"values\":{\"MODEL\":\"$FCC_NEW_MODEL\"}}" 2>&1)
@@ -1634,6 +1648,7 @@ $STARTUP_INSTRUCTION"
           [[ "$reply" != [yY] ]] && exit 0
         fi
 
+        _fcc_ensure_server || exit 1
         FCC_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$FCC_PROXY/admin/api/config/apply" \
           -H "Content-Type: application/json" \
           -d "{\"values\":{\"MODEL\":\"$FCC_NEW_MODEL\"}}" 2>&1)
