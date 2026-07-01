@@ -29,6 +29,7 @@ import { fileURLToPath } from 'url';
 
 import { bootstrap } from './bootstrap.js';
 import { loadRegisteredContextFiles } from './context-registry.js';
+import { measureToolResponse } from './tool-size-measure.js';
 import { createMemoryRetrievalHook } from './memory-retrieval-hook.js';
 import { runOpenAIConversation } from './openai-backend.js';
 import { runLlamaCppConversation } from './llama-cpp-backend.js';
@@ -442,11 +443,12 @@ function createToolSizeLogHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
     try {
       const hookInput = input as PostToolUseHookInput;
-      const serialized =
-        typeof hookInput.tool_response === 'string'
-          ? hookInput.tool_response
-          : JSON.stringify(hookInput.tool_response ?? '');
-      const bytes = Buffer.byteLength(serialized, 'utf8');
+      // Measure the MODEL-FACING size: file-mutation tools embed full-file
+      // snapshots the model never receives (LIA-347, see tool-size-measure.ts).
+      const { bytes, stripped } = measureToolResponse(
+        hookInput.tool_name,
+        hookInput.tool_response,
+      );
       // Rough heuristic: ~3.7 bytes per token for mixed English+code. Phase A
       // uses this for relative comparison, not absolute budgeting.
       const approxTokens = Math.round(bytes / 3.7);
@@ -456,6 +458,7 @@ function createToolSizeLogHook(): HookCallback {
         tool_use_id: hookInput.tool_use_id,
         bytes,
         approx_tokens: approxTokens,
+        stripped,
       };
       fs.mkdirSync(path.dirname(logPath), { recursive: true });
       fs.appendFileSync(logPath, JSON.stringify(entry) + '\n');
