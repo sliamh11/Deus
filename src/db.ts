@@ -601,8 +601,7 @@ export function createTask(
 
 export function getTaskById(id: string): ScheduledTask | undefined {
   return db.prepare('SELECT * FROM scheduled_tasks WHERE id = ?').get(id) as
-    | ScheduledTask
-    | undefined;
+    ScheduledTask | undefined;
 }
 
 export function getAllTasks(): ScheduledTask[] {
@@ -1308,8 +1307,7 @@ export function getLastCompletedGateRun(
        ORDER BY finished_at DESC, rowid DESC LIMIT 1`,
     )
     .get(issueId, gateTo) as
-    | { finished_at: string; verdict: string }
-    | undefined;
+    { finished_at: string; verdict: string } | undefined;
 }
 
 export function upsertGateComment(

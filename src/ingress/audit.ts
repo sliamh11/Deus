@@ -15,10 +15,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 export type IngressAuditEventType =
-  | 'received'
-  | 'admitted'
-  | 'rejected'
-  | 'dispatched';
+  'received' | 'admitted' | 'rejected' | 'dispatched';
 export type IngressAuditDecision = 'admitted' | 'rejected';
 
 /**

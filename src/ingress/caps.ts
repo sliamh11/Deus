@@ -126,14 +126,10 @@ export class DailySpendLedger {
 }
 
 export type AdmitResult =
-  | { ok: true }
-  | { ok: false; reason: AdmitRejectReason };
+  { ok: true } | { ok: false; reason: AdmitRejectReason };
 
 export type AdmitRejectReason =
-  | 'spend-limit'
-  | 'inflight-cap'
-  | 'rate-limit'
-  | 'audit-unavailable';
+  'spend-limit' | 'inflight-cap' | 'rate-limit' | 'audit-unavailable';
 
 /** The minimum a webhook event must carry to be admitted + audited. */
 export interface AdmitEventInput {
