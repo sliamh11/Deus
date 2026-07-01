@@ -87,7 +87,22 @@ def _wrap_untrusted(body: str, *, label: str) -> str:
     ])
 
 
-def _format_context(results: list[dict], fell_back: bool) -> str:
+def _truncate_body(body: str, max_context_chars: int | None) -> str:
+    """Head-truncate a to-be-wrapped body to a char budget.
+
+    Applied to the FULL joined body (all results) exactly once, BEFORE
+    ``_wrap_untrusted``, so the untrusted framing header + both random sentinels
+    always survive — strictly stronger than the hook's post-wrap head-truncation
+    (LIA-335). Identity when uncapped (``None``) or already within budget.
+    """
+    if max_context_chars is None or len(body) <= max_context_chars:
+        return body
+    return body[:max_context_chars] + "\n=== [truncated] ==="
+
+
+def _format_context(
+    results: list[dict], fell_back: bool, *, max_context_chars: int | None = None
+) -> str:
     if fell_back or not results:
         return ""
     body_lines: list[str] = []
@@ -99,7 +114,9 @@ def _format_context(results: list[dict], fell_back: bool) -> str:
     if not body_lines:
         # All results unreadable: emit nothing rather than an empty wrapper.
         return ""
-    return _wrap_untrusted("\n".join(body_lines), label="may not be relevant to your task")
+    # Cap the single joined body ONCE (total bound, independent of k).
+    body = _truncate_body("\n".join(body_lines), max_context_chars)
+    return _wrap_untrusted(body, label="may not be relevant to your task")
 
 
 def _log_retrieval(
@@ -286,7 +303,7 @@ def _procedure_ids(db, result_ids: list[str]) -> set[str]:
     return {r[0] for r in rows}
 
 
-def _atom_fallback(query: str, k: int) -> str | None:
+def _atom_fallback(query: str, k: int, *, max_context_chars: int | None = None) -> str | None:
     """Best-effort fallback: query atoms when tree abstains. Returns None on any failure."""
     if ATOM_DIST_THRESHOLD <= 0:
         return None
@@ -316,7 +333,7 @@ def _atom_fallback(query: str, k: int) -> str | None:
         if not good:
             return None
 
-        body = "\n".join(f"- {tldr}" for tldr, _ in good)
+        body = _truncate_body("\n".join(f"- {tldr}" for tldr, _ in good), max_context_chars)
         return _wrap_untrusted(body, label="atom fallback")
     except Exception as exc:
         print(f"[deus] atom_fallback failed: {exc}", file=sys.stderr)
@@ -331,6 +348,7 @@ def recall(
     source: str = "unknown",
     concepts: list[str] | None = None,
     exclude_kinds: set[str] | None = None,
+    max_context_chars: int | None = None,
 ) -> dict:
     """Retrieve memory context for a query.
 
@@ -377,7 +395,7 @@ def recall(
             raw["trace"].append("intent_gate:unavailable")
 
     if raw["fell_back"]:
-        atom_context = _atom_fallback(query, k)
+        atom_context = _atom_fallback(query, k, max_context_chars=max_context_chars)
         if atom_context:
             raw["atom_fallback"] = True
             _log_retrieval(query, raw, source)
@@ -389,7 +407,9 @@ def recall(
                 "atom_fallback": True,
             }
 
-    context = _format_context(raw["results"], raw["fell_back"])
+    context = _format_context(
+        raw["results"], raw["fell_back"], max_context_chars=max_context_chars
+    )
     paths = [r["path"] for r in raw["results"]] if not raw["fell_back"] else []
 
     out = {

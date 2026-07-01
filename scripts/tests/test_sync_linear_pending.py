@@ -9,6 +9,7 @@ caller to KEEP its existing pending block.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -339,3 +340,190 @@ def test_safe_replace_preserves_body_below_closing_marker():
         assert f"\n{key}" in out
     # body still sits below the closing marker, not absorbed into the splice
     assert out.index("\n---\n") < out.index("\nproject:")
+
+
+# ── previous: atomic, lock-serialized splice (LIA-284 surface #3) ─────────────
+_PREV_MULTILINE = """\
+---
+id: x
+previous:
+  - "2026-06-26: one"
+  - "2026-06-25: two"
+pending:
+  - [ ] a (LIA-1)
+project: Deus
+style: concise
+index: x
+"""
+
+_PREV_INLINE = """\
+---
+id: x
+previous: "2026-06-20: solo line"
+pending:
+  - [ ] a (LIA-1)
+project: Deus
+index: x
+"""
+
+_PREV_ABSENT = """\
+---
+id: y
+pending:
+  - [ ] a (LIA-1)
+project: Deus
+index: x
+"""
+
+
+class TestParsePreviousEntries:
+    def test_multiline(self):
+        assert mod._parse_previous_entries(_PREV_MULTILINE) == [
+            "2026-06-26: one",
+            "2026-06-25: two",
+        ]
+
+    def test_inline_single_line(self):
+        assert mod._parse_previous_entries(_PREV_INLINE) == ["2026-06-20: solo line"]
+
+    def test_absent(self):
+        assert mod._parse_previous_entries(_PREV_ABSENT) == []
+
+
+class TestSafeReplacePrevious:
+    def test_replace_preserves_body_and_single_key(self):
+        out = mod._safe_replace_previous(_PREV_MULTILINE, ["2026-06-28: new", "2026-06-26: one"])
+        assert mod._COL0_KEY_RE.findall(out).count("previous") == 1
+        assert "2026-06-28: new" in out
+        for key in ("pending:", "project:", "style:", "index:"):
+            assert f"\n{key}" in out
+
+    def test_inline_converted_no_duplicate_key(self):
+        out = mod._safe_replace_previous(_PREV_INLINE, ["2026-06-28: new", "2026-06-20: solo line"])
+        # the inline form must be consumed, not left behind as a 2nd previous: key
+        assert mod._COL0_KEY_RE.findall(out).count("previous") == 1
+        assert '  - "2026-06-28: new"' in out
+
+    def test_insert_before_pending_when_absent(self):
+        out = mod._safe_replace_previous(_PREV_ABSENT, ["2026-06-28: first"])
+        assert mod._COL0_KEY_RE.findall(out).count("previous") == 1
+        assert out.index("\nprevious:") < out.index("\npending:")
+        for key in ("pending:", "project:", "index:"):
+            assert f"\n{key}" in out
+
+    def test_body_loss_guard_fires(self, monkeypatch):
+        import re as _re
+
+        # Greedy regex that would eat the body -> guard must refuse.
+        monkeypatch.setattr(mod, "_PREVIOUS_BLOCK_RE", _re.compile(r"^previous:[\s\S]*", _re.MULTILINE))
+        with pytest.raises(ValueError, match="drop body keys"):
+            mod._safe_replace_previous(_PREV_MULTILINE, ["x"])
+
+    def test_dup_key_guard_fires(self, monkeypatch):
+        import re as _re
+
+        # Regex that never matches -> falls to insert path, producing a 2nd
+        # previous: key alongside the existing one -> count guard must refuse.
+        monkeypatch.setattr(mod, "_PREVIOUS_BLOCK_RE", _re.compile(r"^ZZZNOMATCH:", _re.MULTILINE))
+        with pytest.raises(ValueError, match="previous:. keys"):
+            mod._safe_replace_previous(_PREV_MULTILINE, ["x"])
+
+
+class TestWritePreviousCLI:
+    def _vault(self, tmp_path, content, monkeypatch):
+        claude_md = tmp_path / "CLAUDE.md"
+        claude_md.write_text(content, encoding="utf-8")
+        monkeypatch.setattr(mod, "_resolve_vault", lambda: tmp_path)
+        return claude_md
+
+    def test_prepend_and_trim_to_max(self, tmp_path, monkeypatch):
+        full = _PREV_MULTILINE.replace(
+            '  - "2026-06-25: two"\n', '  - "2026-06-25: two"\n  - "2026-06-24: three"\n'
+        )
+        claude_md = self._vault(tmp_path, full, monkeypatch)
+        assert mod.main(["--write-previous", "2026-06-28: newest"]) == mod.SUCCESS
+        entries = mod._parse_previous_entries(claude_md.read_text())
+        assert entries == ["2026-06-28: newest", "2026-06-26: one", "2026-06-25: two"]
+        assert len(entries) == mod.MAX_PREVIOUS_ENTRIES
+
+    def test_inline_form_converts(self, tmp_path, monkeypatch):
+        claude_md = self._vault(tmp_path, _PREV_INLINE, monkeypatch)
+        assert mod.main(["--write-previous", "2026-06-28: top"]) == mod.SUCCESS
+        out = claude_md.read_text()
+        assert mod._COL0_KEY_RE.findall(out).count("previous") == 1
+        assert mod._parse_previous_entries(out)[0] == "2026-06-28: top"
+
+    def test_insert_when_absent(self, tmp_path, monkeypatch):
+        claude_md = self._vault(tmp_path, _PREV_ABSENT, monkeypatch)
+        assert mod.main(["--write-previous", "2026-06-28: first"]) == mod.SUCCESS
+        assert mod._parse_previous_entries(claude_md.read_text()) == ["2026-06-28: first"]
+
+    def test_idempotent_when_top_unchanged(self, tmp_path, monkeypatch):
+        claude_md = self._vault(tmp_path, _PREV_MULTILINE, monkeypatch)
+        mod.main(["--write-previous", "2026-06-28: top"])
+        before = claude_md.read_text()
+        assert mod.main(["--write-previous", "2026-06-28: top"]) == mod.SUCCESS
+        assert claude_md.read_text() == before  # no second prepend
+
+    def test_empty_entry_is_usage_error(self, tmp_path, monkeypatch):
+        self._vault(tmp_path, _PREV_MULTILINE, monkeypatch)
+        assert mod.main(["--write-previous", "   "]) == mod.USAGE_ERROR
+
+    def test_missing_vault_returns_internal_error(self, monkeypatch):
+        monkeypatch.setattr(mod, "_resolve_vault", lambda: None)
+        assert mod.main(["--write-previous", "x"]) == mod.INTERNAL_ERROR
+
+    def test_lock_degrades_when_fcntl_absent(self, tmp_path, monkeypatch):
+        # Simulate a platform without fcntl: the write must still succeed (no raise).
+        claude_md = self._vault(tmp_path, _PREV_MULTILINE, monkeypatch)
+        import builtins
+
+        real_import = builtins.__import__
+
+        def no_fcntl(name, *a, **k):
+            if name == "fcntl":
+                raise ImportError("no fcntl")
+            return real_import(name, *a, **k)
+
+        # fcntl is cached in sys.modules by earlier tests; the `import fcntl`
+        # statement bypasses __import__ for cached modules, so evict it first to
+        # actually drive the ImportError degradation branch.
+        monkeypatch.delitem(sys.modules, "fcntl", raising=False)
+        monkeypatch.setattr(builtins, "__import__", no_fcntl)
+        assert mod.main(["--write-previous", "2026-06-28: top"]) == mod.SUCCESS
+        assert mod._parse_previous_entries(claude_md.read_text())[0] == "2026-06-28: top"
+
+
+def test_atomic_write_roundtrip(tmp_path):
+    p = tmp_path / "f.txt"
+    mod._atomic_write(p, "hello\nworld\n")
+    assert p.read_text() == "hello\nworld\n"
+    # no leftover temp files in the dir
+    assert [x.name for x in tmp_path.iterdir()] == ["f.txt"]
+
+
+def test_concurrent_write_previous_no_corruption(tmp_path):
+    """Two concurrent --write-previous processes must not corrupt the file:
+    exactly one well-formed previous: block, no body-key loss (lost-update of one
+    entry is acceptable; structural corruption is not)."""
+    import subprocess
+
+    claude_md = tmp_path / "CLAUDE.md"
+    claude_md.write_text(_PREV_MULTILINE, encoding="utf-8")
+    script = str(_SCRIPTS / "sync_linear_pending.py")
+    env = {**os.environ, "DEUS_VAULT_PATH": str(tmp_path)}
+    procs = [
+        subprocess.Popen(
+            ["python3", script, "--write-previous", f"2026-06-28: writer {i}"], env=env
+        )
+        for i in range(6)
+    ]
+    for p in procs:
+        p.wait()
+    out = claude_md.read_text()
+    assert mod._COL0_KEY_RE.findall(out).count("previous") == 1  # structurally intact
+    for key in ("pending", "project", "style", "index"):
+        assert key in mod._COL0_KEY_RE.findall(out)  # no body-key loss
+    # the previous: block has no more than MAX entries and all are well-formed
+    entries = mod._parse_previous_entries(out)
+    assert 1 <= len(entries) <= mod.MAX_PREVIOUS_ENTRIES

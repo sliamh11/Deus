@@ -132,6 +132,7 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus backend set <name>` | Switch backend for all future sessions |
 | `deus sync` | Update the live install to `origin/main` (`deus sync upstream` for forks) |
 | `deus preflight` | Detect whether another live session is working the current git tree (read-only; exit 6 on collision) |
+| `deus root` | Print the resolved Deus clone directory (a cwd-independent anchor for user-scope skills) |
 
 For direct Codex CLI sessions outside the `deus` launcher, register Deus memory
 recall as an MCP tool through the repo launcher:
@@ -139,6 +140,16 @@ recall as an MCP tool through the repo launcher:
 ```bash
 codex mcp add deus-memory -- /path/to/deus/scripts/deus-memory-mcp
 ```
+
+`/setup` registers the `deus-memory` server globally (alongside codegraph and
+code-search), so memory recall — including procedures captured via
+`/learn-procedure` — works in **any** project, not just `~/deus`. **Procedure
+recall is on by default.** To disable it (the kill-switch), set
+`DEUS_PROCEDURE_MEMORY=0` in the `env` block of the `deus-memory` entry in your
+MCP client's config (e.g. `~/.claude.json`, or the Codex MCP registration);
+`/setup` registers the server only if it is absent, so it never overwrites an
+entry you have customized. Because the MCP server reads its `env` only at spawn,
+restart the session afterward for the change to take effect.
 
 To use Deus's memory and evolution layers from a code editor (Zed and other
 ACP/MCP clients), see [Editor integration](docs/EDITOR_INTEGRATION.md).

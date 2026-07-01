@@ -43,7 +43,8 @@ promotes atoms into and that `memory_query` reads node content back from (LIA-34
 with the shared resolver (never hardcode a path):
 
 ```bash
-python3 -c "import sys; sys.path.insert(0,'$HOME/deus/scripts'); from auto_memory_dir import resolve_auto_memory_dir; print(resolve_auto_memory_dir())"
+DEUS_HOME=$(deus root) || { echo "deus not on PATH" >&2; exit 1; }
+python3 -c "import sys; sys.path.insert(0,'$DEUS_HOME/scripts'); from auto_memory_dir import resolve_auto_memory_dir; print(resolve_auto_memory_dir())"
 ```
 
 All paths below use `$AUTOMEM` for this resolved directory.
@@ -68,7 +69,7 @@ the auto-memory embedding source.
 
 ```markdown
 ---
-id: <ULID>            # REQUIRED — generate via: python3 ~/deus/scripts/memory_tree.py  (mt.make_id())
+id: <ULID>            # REQUIRED — generate via: python3 "$DEUS_HOME/scripts/memory_tree.py"  (mt.make_id())
                       # without an id:, the tree builder silently skips the file
 kind: procedure       # routes to atom_kind=procedure; no schema change
 type: procedure
@@ -88,7 +89,8 @@ updated: <YYYY-MM-DD>
 
 Generate the ULID with:
 ```bash
-python3 -c "import sys; sys.path.insert(0,'$HOME/deus/scripts'); import memory_tree as mt; print(mt.make_id())"
+DEUS_HOME=$(deus root) || { echo "deus not on PATH" >&2; exit 1; }
+python3 -c "import sys; sys.path.insert(0,'$DEUS_HOME/scripts'); import memory_tree as mt; print(mt.make_id())"
 ```
 Pick a short hyphenated `<slug>` from the title.
 
@@ -117,11 +119,12 @@ independent tool calls; order does not matter).
    `--warden-mark` — these are advisory; marking would stamp `ai-eng-reviewed` against the procedure
    draft and pollute a later code-review co-gate. Collect each verdict from stdout:
    ```bash
+   DEUS_HOME=$(deus root) || { echo "deus not on PATH" >&2; exit 1; }
    DIFF=$(mktemp)
    # git diff --no-index ALWAYS exits 1 on a new file — expected; the diff is still written.
    git diff --no-index /dev/null <draft-temp-file> > "$DIFF" || true
-   python3 ~/deus/scripts/codex_warden.py --role ai-eng-warden --backend gpt --diff-file "$DIFF"
-   python3 ~/deus/scripts/codex_warden.py --role ai-eng-warden --backend glm --diff-file "$DIFF"
+   python3 "$DEUS_HOME/scripts/codex_warden.py" --role ai-eng-warden --backend gpt --diff-file "$DIFF"
+   python3 "$DEUS_HOME/scripts/codex_warden.py" --role ai-eng-warden --backend glm --diff-file "$DIFF"
    ```
    Each `python3` warden call should exit 0 and print a verdict (SHIP / REVISE / BLOCK /
    COULD_NOT_RUN). A non-zero exit or missing verdict FROM A WARDEN CALL (not the expected exit-1
@@ -158,14 +161,16 @@ action, rewrite it before the approval gate. Flag any such content to the user a
 ### 6. Index it
 
 ```bash
-python3 ~/deus/scripts/memory_tree.py reindex-external --add "$AUTOMEM/procedures/<slug>.md"
+DEUS_HOME=$(deus root) || { echo "deus not on PATH" >&2; exit 1; }
+python3 "$DEUS_HOME/scripts/memory_tree.py" reindex-external --add "$AUTOMEM/procedures/<slug>.md"
 ```
 This is a **non-destructive single-file admit**: it indexes only this one node. Do NOT use
 `memory_tree.py build` (it skips the `auto-memory/` external namespace entirely) and do NOT use
 the bare `reindex-external` (a global reindex that would risk orphaning the rest of the
 auto-memory population if pointed at the wrong dir). Confirm it ranks:
 ```bash
-python3 ~/deus/scripts/memory_tree.py query "<the procedure's trigger phrase>"
+DEUS_HOME=$(deus root) || { echo "deus not on PATH" >&2; exit 1; }
+python3 "$DEUS_HOME/scripts/memory_tree.py" query "<the procedure's trigger phrase>"
 ```
 The new node should be the top result. Note: the `query` CLI exercises the retrieval/ranking
 path directly and is NOT gated by `DEUS_PROCEDURE_MEMORY` — it confirms the node is indexed and

@@ -488,6 +488,15 @@ if ($Command.ToLower() -in @("codex", "claude")) {
 }
 
 switch ($Command.ToLower()) {
+    "root" {
+        # Print the resolved Deus clone directory (cwd-independent anchor for
+        # user-scope skills). Mirrors `deus root` in deus-cmd.sh. Pure query.
+        # NB: the portable-skill symlinking is unix-only today, so this is
+        # forward-looking on Windows (the skill flow that consumes it doesn't
+        # run here yet).
+        Write-Output $DeusHome
+    }
+
     "auth" {
         # Validate credentials before restarting
         $credPath = "$env:USERPROFILE\.claude\.credentials.json"
