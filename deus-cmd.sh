@@ -128,8 +128,9 @@ _deploy_plan() {
 # darwin/Linux only (date +%s, git); Windows port pending — project_windows_support.md
 _deus_freshness_check() {
   [[ "$OSTYPE" == darwin* || "$OSTYPE" == linux* ]] || return 0
-  # Skip for sync/deploy (both do their own fetch + reporting) and help/no-arg paths.
-  case "$1" in sync|deploy|""|-h|--help|help) return 0 ;; esac
+  # Skip for sync/deploy (both do their own fetch + reporting), help/no-arg paths,
+  # and `root` (a pure query used by skills — must stay side-effect-free, no fetch).
+  case "$1" in sync|deploy|root|""|-h|--help|help) return 0 ;; esac
   git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
 
   local stamp_dir="$HOME/.config/deus" stamp now last
@@ -326,6 +327,7 @@ PORTABLE_SKILLS=(
   compress
   deep-research
   handoff
+  learn-procedure
   onboard
   preferences
   preserve
@@ -675,6 +677,13 @@ sys.exit(1)
         echo "  deus backend bench     Run parity benchmark (claude vs openai)"
         ;;
     esac
+    ;;
+  root)
+    # Print the resolved Deus clone directory (symlink-resolved $SCRIPT_DIR).
+    # A cwd-independent anchor so user-scope skills running in ANY project can
+    # locate the clone's scripts (e.g. DEUS_HOME="$(deus root)"). Pure query:
+    # no fetch (skipped in _deus_freshness_check), no side effects, stdout only.
+    echo "$SCRIPT_DIR"
     ;;
   web)
     # Launch the Deus web UI (Open WebUI via uvx) and open the browser.
@@ -1265,6 +1274,17 @@ $STARTUP_INSTRUCTION"
     shift
     exec python3 "$SCRIPT_DIR/scripts/analyze_token_efficiency.py" "$@"
     ;;
+  preflight)
+    # Read-only concurrent-session collision check for the current git tree
+    # (LIA-284). Pure pass-through to the detector: exec inherits PWD so it
+    # checks the invocation directory, forwards all flags, and propagates the
+    # detector's exit code (CONFLICT=6 on a CRITICAL collision, 2 if not a git
+    # repo, 0 otherwise). $SCRIPT_DIR (not $HOME/deus) so it works from any
+    # install path / worktree. The detector self-excludes via CLAUDE_SESSION_ID
+    # when set; pass --self <id> explicitly when running inside a session.
+    shift
+    exec python3 "$SCRIPT_DIR/scripts/session_preflight.py" "$@"
+    ;;
   sync)
     # Make the live install current with <remote>/main, non-destructively.
     #   deus sync            -> origin/main   (this repo's own remote)
@@ -1628,7 +1648,7 @@ $STARTUP_INSTRUCTION"
     esac
     ;;
   *)
-    echo "Usage: deus [claude|codex] [home|init|arch|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|solution|sweep|tui] [--agents]"
+    echo "Usage: deus [claude|codex] [home|init|arch|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|preflight|solution|sweep|tui] [--agents]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -1655,6 +1675,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus deploy     Diff-driven deploy (origin only): ff-merge origin/main + rebuild"
     echo "                    only what changed (host if src/, container if container/ or skills). --dry-run"
     echo "  deus pipeline   Pipeline event audit (LIA-XX | --failed | --active | --all)"
+    echo "  deus preflight  Check if another live session is working this git tree (read-only; exit 6 on collision)"
     echo "  deus solution   Manage solution atoms (list|search|add)"
     echo "  deus sweep      Run threshold calibration sweep against benchmark queries"
     echo "  deus tui        Interactive terminal UI (set tui_default=true in config to use by default)"

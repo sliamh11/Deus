@@ -45,11 +45,18 @@ export const CODEGRAPH_PACKAGE = '@colbymchenry/codegraph@0.9.9';
 export const CODE_SEARCH_DEP_CHECK =
   'import sqlite_vec; from mcp.server.fastmcp import FastMCP';
 
+/**
+ * Python import the deus-memory MCP **server** needs to start — `mcp` is the
+ * hard requirement (mirrors `scripts/deus-memory-mcp`'s own `import mcp` probe).
+ * We probe it before registering so we never register a server that can't run.
+ */
+export const DEUS_MEMORY_DEP_CHECK = 'from mcp.server.fastmcp import FastMCP';
+
 /** Background build logs (mirrors ollama's ~/.config/deus/ollama-downloads/). */
 const LOG_DIR = path.join(CONFIG_DIR, 'codeintel');
 
 type SubStatus = 'success' | 'skipped';
-type McpStatus = 'registered' | 'failed' | 'skipped';
+type McpStatus = 'registered' | 'already-registered' | 'failed' | 'skipped';
 type IndexStatus = 'started' | 'failed' | 'skipped';
 
 interface SubResult {
@@ -78,14 +85,27 @@ export function codeSearchServerCommand(
   return [python, path.join(repoRoot, 'scripts', 'code_search_mcp.py')];
 }
 
-/** Roll up the two sub-step statuses into one step-level status. */
+/**
+ * stdio server command for deus-memory: the `scripts/deus-memory-mcp` launcher
+ * (an sh shim that selects an MCP-capable python itself, e.g. the repo `.venv`).
+ */
+export function deusMemoryServerCommand(repoRoot: string): string[] {
+  return [path.join(repoRoot, 'scripts', 'deus-memory-mcp')];
+}
+
+/**
+ * Roll up sub-step statuses into one step-level status: 'success' only when all
+ * succeed, 'skipped' when none do, else 'partial'. Variadic so every sub-step
+ * (codegraph, code-search, deus-memory, ...) is reflected — leaving one out
+ * would misreport STATUS=success while that sub-step silently failed/skipped.
+ */
 export function overallStatus(
-  a: SubStatus,
-  b: SubStatus,
+  ...subs: SubStatus[]
 ): 'success' | 'partial' | 'skipped' {
-  if (a === 'success' && b === 'success') return 'success';
-  if (a === 'success' || b === 'success') return 'partial';
-  return 'skipped';
+  const successes = subs.filter((s) => s === 'success').length;
+  if (successes === subs.length) return 'success';
+  if (successes === 0) return 'skipped';
+  return 'partial';
 }
 
 // ── Side-effecting helpers (covered by live-run verification) ───────────────
@@ -111,6 +131,42 @@ function registerMcpServer(name: string, serverCommand: string[]): McpStatus {
       timeout: 15000,
     });
     return 'registered';
+  } catch (err) {
+    logger.warn({ name, err: (err as Error).message }, 'claude mcp add failed');
+    return 'failed';
+  }
+}
+
+/**
+ * Register an MCP server at **user scope** without clobbering an existing entry.
+ *
+ * Uses `claude mcp add --scope user` directly — it is the right primitive on two
+ * axes (both verified against claude-cli):
+ *   - NON-CLOBBERING: re-adding an existing user-scope entry is a no-op
+ *     ("...already exists in user config" on stderr, exit 0) — it never
+ *     overwrites, so a deliberate `DEUS_PROCEDURE_MEMORY=0` kill-switch survives.
+ *   - SCOPE-CORRECT: it targets user scope specifically, so a project-scope entry
+ *     elsewhere does NOT make us skip the global registration (the bug a
+ *     scope-blind `claude mcp get` presence-check would cause).
+ *
+ * A fresh add prints "Added ... to user config" on stdout; an already-present
+ * entry prints nothing there — distinguish on that so the caller only announces
+ * a genuinely new registration. Non-fatal: returns 'failed' rather than throwing.
+ */
+function registerMcpServerIfAbsent(
+  name: string,
+  serverCommand: string[],
+): McpStatus {
+  try {
+    const out = execFileSync(
+      'claude',
+      buildMcpAddArgs(name, 'user', serverCommand),
+      {
+        encoding: 'utf8',
+        timeout: 15000,
+      },
+    );
+    return /\bAdded\b/.test(out) ? 'registered' : 'already-registered';
   } catch (err) {
     logger.warn({ name, err: (err as Error).message }, 'claude mcp add failed');
     return 'failed';
@@ -260,6 +316,67 @@ function setupCodeSearch(repoRoot: string): SubResult {
   return { status: 'success', mcp, indexBuild };
 }
 
+// ── Sub-step C: deus-memory (macOS/Linux only, first-party) ──────────────────
+
+/**
+ * Does an MCP-capable interpreter exist for the deus-memory launcher? Mirrors
+ * `scripts/deus-memory-mcp` `choose_python`'s preference order so the probe
+ * matches the interpreter the launcher will ACTUALLY select:
+ * `DEUS_MEMORY_MCP_PYTHON` → `<repo>/.venv/bin/python` → `python3` → `python`.
+ *
+ * Probing a bare `resolvePython()` (system `python3`) would false-skip on a
+ * standard install — Deus installs `mcp` into `.venv` (see the launcher's own
+ * error message), not system `python3` — so the probe MUST try `.venv` first or
+ * setup never registers deus-memory despite a working launcher.
+ */
+function deusMemoryInterpreterHasMcp(repoRoot: string): boolean {
+  const candidates: string[] = [];
+  const override = process.env.DEUS_MEMORY_MCP_PYTHON;
+  if (override) candidates.push(override);
+  candidates.push(path.join(repoRoot, '.venv', 'bin', 'python'));
+  const sys = resolvePython();
+  if (sys) candidates.push(sys);
+
+  for (const py of candidates) {
+    try {
+      execFileSync(py, ['-c', DEUS_MEMORY_DEP_CHECK], {
+        stdio: 'ignore',
+        timeout: 10000,
+      });
+      return true;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return false;
+}
+
+function setupDeusMemory(repoRoot: string): SubResult {
+  if (getPlatform() === 'windows') {
+    // scripts/memory_mcp_server.py hard-exits on win32 (needs sqlite_vec + Ollama).
+    return { status: 'skipped', reason: 'windows_unsupported' };
+  }
+
+  // Probe the interpreter the LAUNCHER will select (not a bare resolvePython()),
+  // so a deps_missing skip is accurate and never clobbers a working entry.
+  if (!deusMemoryInterpreterHasMcp(repoRoot)) {
+    return { status: 'skipped', reason: 'deps_missing' };
+  }
+
+  // Register at user scope, non-clobbering (see registerMcpServerIfAbsent: an
+  // existing entry — incl. an explicit DEUS_PROCEDURE_MEMORY=0 kill-switch — is
+  // preserved). Procedures default ON in the server (scripts/memory_mcp_server.py),
+  // so no `-e` flag is needed here.
+  const mcp: McpStatus = commandExists('claude')
+    ? registerMcpServerIfAbsent(
+        'deus-memory',
+        deusMemoryServerCommand(repoRoot),
+      )
+    : 'skipped';
+
+  return { status: 'success', mcp };
+}
+
 // ── Step entry point ────────────────────────────────────────────────────────
 
 export async function run(_args: string[]): Promise<void> {
@@ -267,6 +384,7 @@ export async function run(_args: string[]): Promise<void> {
 
   const codegraph = setupCodegraph(repoRoot);
   const codeSearch = setupCodeSearch(repoRoot);
+  const deusMemory = setupDeusMemory(repoRoot);
 
   // Human-facing notes: manual fallbacks + background-build pointers.
   const notes: string[] = [];
@@ -285,6 +403,16 @@ export async function run(_args: string[]): Promise<void> {
       'code-search index not built (Ollama absent). After installing Ollama: python3 scripts/code_search.py reindex .',
     );
   }
+  if (deusMemory.reason === 'deps_missing') {
+    notes.push(
+      'deus-memory needs the `mcp` Python package — install it (`pip install mcp`), then re-run `--step codeintel`.',
+    );
+  }
+  if (deusMemory.mcp === 'registered') {
+    notes.push(
+      'deus-memory MCP registered — procedure memory is recalled by default in any project. Disable with DEUS_PROCEDURE_MEMORY=0 on the deus-memory env (see README).',
+    );
+  }
   if (
     codegraph.indexBuild === 'started' ||
     codeSearch.indexBuild === 'started'
@@ -297,7 +425,11 @@ export async function run(_args: string[]): Promise<void> {
 
   // The step itself always succeeds — optional tooling never fails setup.
   emitStatus('CODEINTEL', {
-    STATUS: overallStatus(codegraph.status, codeSearch.status),
+    STATUS: overallStatus(
+      codegraph.status,
+      codeSearch.status,
+      deusMemory.status,
+    ),
     CODEGRAPH: codegraph.status,
     CODEGRAPH_REASON: codegraph.reason ?? 'none',
     CODEGRAPH_MCP: codegraph.mcp ?? 'skipped',
@@ -306,6 +438,9 @@ export async function run(_args: string[]): Promise<void> {
     CODE_SEARCH_REASON: codeSearch.reason ?? 'none',
     CODE_SEARCH_MCP: codeSearch.mcp ?? 'skipped',
     CODE_SEARCH_INDEX: codeSearch.indexBuild ?? 'skipped',
+    DEUS_MEMORY: deusMemory.status,
+    DEUS_MEMORY_REASON: deusMemory.reason ?? 'none',
+    DEUS_MEMORY_MCP: deusMemory.mcp ?? 'skipped',
     LOG_DIR,
   });
 }

@@ -183,11 +183,35 @@ Facts to verify:
 {json.dumps(batch, indent=2)}
 
 Output ONLY a JSON array of objects: {{"fact": "...", "status": "preserved|derivable|missing", "note": "..."}}"""
-        batch_results = parse_json(llm_call(prompt))
-        # Attach classification to each result
-        for r in batch_results:
-            r["classification"] = classifications.get(r.get("fact", ""), "supplementary")
-        all_results.extend(batch_results)
+        # The local judge occasionally emits imperfect JSON (bare-string array
+        # element, dict missing "fact"/"status", non-list root, or a totally
+        # unparseable response). Build results by iterating the INPUT batch so
+        # every fact gets exactly one well-formed verdict (stable denominator);
+        # any malformed/omitted judge entry backfills conservatively to "missing"
+        # (never inflates coverage). Guarantees fact/status/classification on
+        # every element -> all downstream indexing is safe.
+        try:
+            raw = parse_json(llm_call(prompt))
+        except ValueError:
+            raw = None
+        by_fact: dict[str, dict] = {}
+        if isinstance(raw, list):
+            for el in raw:
+                if isinstance(el, dict) and isinstance(el.get("fact"), str) and el["fact"]:
+                    status = el.get("status")
+                    if status not in ("preserved", "derivable", "missing"):
+                        status = "missing"
+                    el["status"] = status
+                    by_fact[el["fact"]] = el
+        for fact in batch:
+            r = by_fact.get(fact)
+            if not isinstance(r, dict):
+                # No valid verdict for this fact -> conservative "missing".
+                r = {"fact": fact, "status": "missing", "note": "no valid verdict returned"}
+            # by_fact entries were already normalized (valid status, fact == key),
+            # so both branches now guarantee fact + status here.
+            r["classification"] = classifications.get(fact, "supplementary")
+            all_results.append(r)
     return all_results
 
 

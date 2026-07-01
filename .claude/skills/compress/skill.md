@@ -109,13 +109,17 @@ After saving the session log:
    b. Extract all unchecked `[ ]` items from the `## Pending Tasks` section of the session log. Also extract any checked `[x]` items — these are tasks completed during this session.
 
    c. In vault CLAUDE.md:
-      - Update the `previous:` block as a rolling list of the last 3 sessions (parallel-safe, prepend-only):
-        - Format each entry as: `  - "YYYY-MM-DD: <tldr one-liner>"` (date prefix + first line of tldr, ≤120 chars total)
-        - Read the current `previous:` block. If it's a single line (`previous: "..."`), convert it to list format with that entry as the first item.
-        - Prepend the new entry at the top of the list.
-        - Trim to the 3 most recent entries (drop the oldest).
-        - Replace the entire `previous:` block with the updated list.
-        - If `previous:` doesn't exist yet, add it before `pending:`.
+      - Update the `previous:` block (rolling list of the last 3 sessions) via the
+        atomic, lock-serialized splice — do NOT hand-edit the block (concurrent
+        `/compress` runs race on a manual read-modify-write and have corrupted the
+        file by gluing `pending:` onto `previous:`):
+        - Run: `python3 ~/deus/scripts/sync_linear_pending.py --write-previous "YYYY-MM-DD: <tldr one-liner>"`
+          (date prefix + first line of tldr, ≤120 chars total).
+        - The script prepends the entry, trims to the 3 most recent, converts a
+          single-line `previous: "..."` to list form, inserts the block before
+          `pending:` if absent, and writes atomically under a file lock — refusing
+          (file unchanged, nonzero exit) rather than ever dropping a body key.
+        - If it exits non-zero, leave `previous:` as-is and note it; never hand-splice.
       - **Sync pending tasks from Linear** (preferred) or merge from session log (fallback):
 
         **Linear sync path** (preferred):

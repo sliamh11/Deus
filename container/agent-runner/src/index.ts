@@ -29,6 +29,7 @@ import { fileURLToPath } from 'url';
 
 import { bootstrap } from './bootstrap.js';
 import { loadRegisteredContextFiles } from './context-registry.js';
+import { measureToolResponse } from './tool-size-measure.js';
 import { createMemoryRetrievalHook } from './memory-retrieval-hook.js';
 import { runOpenAIConversation } from './openai-backend.js';
 import { runLlamaCppConversation } from './llama-cpp-backend.js';
@@ -37,6 +38,7 @@ import { isAuditedTool, writeAuditEntry } from './tool-audit.js';
 import { createToolCallLogHook } from './tool-call-log.js';
 import { writeAvailableTools } from './available-tools-log.js';
 import { buildAllowedTools, computeTeamsNeeded } from './allowed-tools.js';
+import { subagentNudgeAppend } from './subagent-nudge.js';
 import type { AgentRuntimeId } from './tool-broker.js';
 import { resolveGroupAttachmentPath } from './tool-broker.js';
 import { HookDispatchService } from './hook-dispatch-service.js';
@@ -441,11 +443,12 @@ function createToolSizeLogHook(): HookCallback {
   return async (input, _toolUseId, _context) => {
     try {
       const hookInput = input as PostToolUseHookInput;
-      const serialized =
-        typeof hookInput.tool_response === 'string'
-          ? hookInput.tool_response
-          : JSON.stringify(hookInput.tool_response ?? '');
-      const bytes = Buffer.byteLength(serialized, 'utf8');
+      // Measure the MODEL-FACING size: file-mutation tools embed full-file
+      // snapshots the model never receives (LIA-347, see tool-size-measure.ts).
+      const { bytes, stripped } = measureToolResponse(
+        hookInput.tool_name,
+        hookInput.tool_response,
+      );
       // Rough heuristic: ~3.7 bytes per token for mixed English+code. Phase A
       // uses this for relative comparison, not absolute budgeting.
       const approxTokens = Math.round(bytes / 3.7);
@@ -455,6 +458,7 @@ function createToolSizeLogHook(): HookCallback {
         tool_use_id: hookInput.tool_use_id,
         bytes,
         approx_tokens: approxTokens,
+        stripped,
       };
       fs.mkdirSync(path.dirname(logPath), { recursive: true });
       fs.appendFileSync(logPath, JSON.stringify(entry) + '\n');
@@ -859,6 +863,19 @@ async function runQuery(
     writeAvailableTools(process.env.DEUS_INTERACTION_ID, allowedTools);
   }
 
+  // Layer-A subagent fan-out nudge: appended only in engineering context
+  // (hasProject + full tool profile — the webhook profile has no Task tool), so
+  // plain chat pays no tokens. Runtime kill-switch: DEUS_SUBAGENT_NUDGE=0.
+  const subagentNudgeEnabled = process.env.DEUS_SUBAGENT_NUDGE !== '0'; // LIA-343
+  const subagentNudge = subagentNudgeAppend({
+    enabled: subagentNudgeEnabled,
+    hasProject,
+    toolProfile,
+  });
+  const fullSystemAppend = [systemAppend, subagentNudge]
+    .filter(Boolean)
+    .join('\n\n');
+
   // ── Streaming (Web UI live output) ──────────────────────────────────────────
   // runQuery is the CLAUDE path only (main() returns for openai/llama-cpp before
   // calling it), so enabling partial messages here is structurally Claude-only.
@@ -913,11 +930,11 @@ async function runQuery(
       resume: sessionId,
       resumeSessionAt: resumeAt,
       effort,
-      systemPrompt: systemAppend
+      systemPrompt: fullSystemAppend
         ? {
             type: 'preset' as const,
             preset: 'claude_code' as const,
-            append: systemAppend,
+            append: fullSystemAppend,
           }
         : undefined,
       allowedTools,

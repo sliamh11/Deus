@@ -86,6 +86,11 @@ class TestProjectSettingsHooks:
         cmds = _extract_hook_commands_for_event(self.settings, "SessionStart")
         assert any("warden-shim" in c and "session-init" in c for c in cmds)
 
+    def test_session_start_has_preflight_hook(self):
+        # LIA-284: the concurrent-session collision warning must stay wired in.
+        cmds = _extract_hook_commands_for_event(self.settings, "SessionStart")
+        assert any("session_preflight_hook" in c for c in cmds)
+
     def test_user_prompt_submit_has_memory_retrieval(self):
         cmds = _extract_hook_commands_for_event(self.settings, "UserPromptSubmit")
         assert any("memory_retrieval" in c for c in cmds)

@@ -79,6 +79,50 @@ describe('codeSearchServerCommand', () => {
   });
 });
 
+// ── deusMemoryServerCommand ─────────────────────────────────────────────────
+
+describe('deusMemoryServerCommand', () => {
+  it('derives [<repo>/scripts/deus-memory-mcp] — the launcher, no python prefix', async () => {
+    const { deusMemoryServerCommand } = await import('../codeintel.js');
+    const cmd = deusMemoryServerCommand('/home/u/deus');
+    // The launcher selects its own python (choose_python), so the command is
+    // just the shim path — not a [python, script] pair like code-search.
+    expect(cmd).toEqual([
+      path.join('/home/u/deus', 'scripts', 'deus-memory-mcp'),
+    ]);
+  });
+
+  it('builds a registration argv with the launcher after the -- separator', async () => {
+    const { buildMcpAddArgs, deusMemoryServerCommand } =
+      await import('../codeintel.js');
+    const args = buildMcpAddArgs(
+      'deus-memory',
+      'user',
+      deusMemoryServerCommand('/repo'),
+    );
+    const sep = args.indexOf('--');
+    // No `-e` env flag — procedures default ON in the server itself, and an env
+    // would be clobbered by a re-run anyway (we register-if-absent).
+    expect(args).not.toContain('-e');
+    expect(args.slice(0, sep)).toContain('deus-memory');
+    expect(args.slice(sep + 1)).toEqual([
+      path.join('/repo', 'scripts', 'deus-memory-mcp'),
+    ]);
+  });
+});
+
+// ── DEUS_MEMORY_DEP_CHECK ───────────────────────────────────────────────────
+
+describe('DEUS_MEMORY_DEP_CHECK', () => {
+  it('gates on the mcp server import (mirrors the launcher probe)', async () => {
+    const { DEUS_MEMORY_DEP_CHECK } = await import('../codeintel.js');
+    // Exact import line so the probe and the server's real requirement can't drift.
+    expect(DEUS_MEMORY_DEP_CHECK).toBe(
+      'from mcp.server.fastmcp import FastMCP',
+    );
+  });
+});
+
 // ── CODE_SEARCH_DEP_CHECK ───────────────────────────────────────────────────
 
 describe('CODE_SEARCH_DEP_CHECK', () => {
@@ -111,6 +155,16 @@ describe('overallStatus', () => {
   it('skipped when neither succeeds', async () => {
     const { overallStatus } = await import('../codeintel.js');
     expect(overallStatus('skipped', 'skipped')).toBe('skipped');
+  });
+
+  it('is variadic — every sub-step counts (deus-memory included)', async () => {
+    const { overallStatus } = await import('../codeintel.js');
+    // All three succeed -> success.
+    expect(overallStatus('success', 'success', 'success')).toBe('success');
+    // A skipped deus-memory must drop a 2-success roll-up to partial, not hide
+    // it as success (the bug GPT ai-eng caught).
+    expect(overallStatus('success', 'success', 'skipped')).toBe('partial');
+    expect(overallStatus('skipped', 'skipped', 'skipped')).toBe('skipped');
   });
 });
 
