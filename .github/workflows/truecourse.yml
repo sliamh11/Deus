@@ -32,7 +32,12 @@ jobs:
   truecourse-diff:
     name: TrueCourse --diff vs main
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    # Bumped from 10 -> 20 (2026-07-02): the baseline-then-diff double scan on the current repo
+    # size regularly runs 10m18s-10m22s, right at the old 10-minute ceiling -- two consecutive
+    # PR runs got cancelled mid-diff-step with no real defect involved. 20 gives real headroom
+    # without masking a genuine future regression (a run approaching 20m would still be worth
+    # investigating).
     # Both `truecourse analyze` invocations (baseline + diff) parse a large
     # AST graph and routinely hit the default 4 GB V8 heap limit on repos
     # with 170+ files. ubuntu-latest has 16 GB RAM; 8 GB is well within
