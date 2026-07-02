@@ -23,6 +23,84 @@ Resolve in order, stopping at the first that works:
 
 Also read the schema for `session_window` (default: 20) and `project_filter` (default: basename of `$REPO_ROOT`).
 
+### Step 1.5: External-mode inbox classification (only if MODE=external)
+
+Only runs when the invocation prompt carries `MODE=external`. Skip entirely otherwise (home mode
+retrospectives are unaffected by this step).
+
+If `INBOX_CONTENT` in the prompt is `none` or empty, skip to Step 2 with nothing to classify (still
+report `Staged Inbox Classification: none this run` in the artifact's Scope section).
+
+Otherwise, for each staged note in `INBOX_CONTENT`, classify it into exactly one bucket, and propose
+a concrete route action -- **propose only, never write to the proposed home yourself**, mirroring how
+Step 7's Procedure Candidates already work:
+
+- **cross-project, high-confidence shape** (general-methodology phrasing, no repo-bound noun, no
+  existing overlap) -> route action: "recall node via `log_interaction` (no `group_folder`)"
+- **cross-project, escalation-shape** (matches the shape of an existing `~/.claude/rules/*.md`
+  entry -- a hard always-on rule, not a recall-surfaced one) -> route action: "promote to
+  `~/.claude/rules/*.md` (+ mirror to `Communication-Style-Prompt.md`/config `persona` for Codex)"
+- **repo-specific, insight/behavior** (references a file/symbol/PR/migration/product-concept unique
+  to this repo) -> route action: "project CC memory (`project_*.md`/`feedback_*.md` +
+  `MEMORY.md` pointer)"
+- **repo-specific, procedure/workflow** (a repeatable multi-step thing, not a one-off fact) -> route
+  action: "flag for `/learn-procedure`"
+- **redundant** (high overlap with an existing rule/procedure/skill already surfaced by the
+  novelty-check machinery in Step 7) -> route action: "discard, cite what it duplicates"
+
+Confidence is signal-based (how cleanly these criteria agree), not self-reported. Record a one-line
+`why` per note.
+
+**Redaction note:** this step never independently redacts note text. It relies on
+`compress/skill.md` Step 0.5 already having restricted `INBOX_CONTENT` to cross-project-only notes
+for `standard` memory-level projects — repo-specific notes are never staged there in the first place.
+Do not treat this step as a place to backfill repo-specific notes for standard-mode projects; that
+upstream gate is load-bearing.
+
+Append one row per note to the calibration ledger,
+`<VAULT_ROOT>/Retrospectives/external/calibration-ledger.md` (create with a header row if absent --
+this file is global across ALL external projects, since the classification MECHANISM's reliability,
+not any one repo's, is what's being calibrated):
+```markdown
+| Date | Repo | Note | Bucket | Route action | Confidence | Verdict |
+|------|------|------|--------|--------------|------------|---------|
+| YYYY-MM-DD | <repo> | <note text> | cross-project/repo-specific | <route action> | High/Medium/Low | pending |
+```
+`Verdict` starts `pending` and is only ever filled in by a human, out of band -- no step here fills
+it automatically.
+
+**Graduation check (light-touch -- Phase 1 stays manual/simple by design):** re-scan the ledger's
+already-verdicted (non-`pending`) rows. If, across those rows, there are >= 3 distinct `Date` values
+AND >= 15 rows total AND agreement (verdict matches the proposed bucket) >= 90% AND zero category
+errors (verdict indicates a completely wrong bucket, or a wrong escalation to always-on-rules /
+cross-project when it should have stayed local), add a flagged line to this run's artifact:
+"Graduation criteria met -- graduate to Phase 2 (confidence-gated auto-routing)? Requires explicit
+confirmation." Never auto-flip the phase yourself -- this is a proposal, not an action.
+
+**Wipe the inbox -- sole writer, content-scoped, only after this step's writes are confirmed.** This
+step is the ONLY place that ever wipes `_retro-inbox.md`. Do this LAST, after you have (a) written
+this run's classification table into the artifact (Step 8) and (b) successfully appended the ledger
+rows above -- both must be durably written first. If either write fails, do NOT wipe; report the
+failure plainly in your output instead of silently losing data.
+
+To wipe: acquire the same lock the collection step (`compress/skill.md` Step 0.5) and the dispatch
+step (`compress/branches/external-mode.md`) use — the exclusive-create lock file at the literal path
+`${inbox_dir}_retro-inbox.md.lock` (short retry/backoff -- if you can't acquire it within a few
+seconds, skip the wipe this run rather than risk a corrupt write; the next retro cycle will pick up
+the backlog). Under the lock:
+1. Re-read the CURRENT `_retro-inbox.md` (it may have grown since `SNAPSHOT_BYTES` was captured at
+   dispatch time -- collection only ever appends, so the snapshot is guaranteed to be a byte-prefix
+   of whatever is there now).
+2. Keep only the bytes from offset `SNAPSHOT_BYTES` onward (strip exactly the prefix you consumed;
+   anything appended during your run survives untouched). If `SNAPSHOT_BYTES` is `0` or unset,
+   nothing was consumed -- do not touch the file.
+3. Write the result to a temp file in the same directory, then atomically rename over the original.
+   Never edit the file in place -- a crash mid-write must never leave a half-written inbox.
+
+Never truncate to empty unconditionally -- that is the exact data-loss bug this design closes (a
+second same-day `/compress` could append a note between your `SNAPSHOT_BYTES` read and this wipe;
+truncating to empty would silently discard it).
+
 ### Step 2: Collect session files
 
 ```bash
@@ -62,8 +140,13 @@ Evidence quality: an explicit user correction is strong evidence. A decision ent
 
 ### Step 6: Prior retrospective check
 
+Same mode-dependent path as Step 8's write target — check the matching root, not always home:
+
 ```bash
+# Home mode:
 ls "<VAULT_ROOT>/Retrospectives"/*.md 2>/dev/null | sort | tail -1
+# External mode (MODE=external):
+ls "<RETRO_ROOT>"*.md 2>/dev/null | sort | tail -1
 ```
 
 If found, read it. Extract prior recommendations by their `RETRO-*` IDs. For each:
@@ -91,9 +174,16 @@ A candidate must be genuinely repeatable and worth re-running -- not a one-off i
 
 ### Step 8: Generate artifact
 
-Write to: `<VAULT_ROOT>/Retrospectives/YYYY-MM-DD-retrospective.md`
+Write path depends on mode:
+- **Home mode (default, `MODE` absent or `home`):** `<VAULT_ROOT>/Retrospectives/YYYY-MM-DD-retrospective.md`
+- **External mode (`MODE=external` in the invocation prompt):** the `RETRO_ROOT` value passed in the
+  invocation prompt, e.g. `<RETRO_ROOT>YYYY-MM-DD-retrospective.md` (`RETRO_ROOT` already resolves to
+  `$VAULT/Retrospectives/external/<project-name>/`, per `branches/external-mode.md` — do NOT fall back
+  to the home path in external mode, or `branches/external-mode.md`'s own same-day sentinel check at
+  that path will never find the file, and the trigger can re-fire on every eligible `/compress` run).
 
-Create `Retrospectives/` directory if needed. Use today's date.
+Create the target `Retrospectives/` (or `Retrospectives/external/<project-name>/`) directory if needed.
+Use today's date.
 
 ## Output format
 
@@ -193,6 +283,22 @@ Repeatable workflows worth capturing as procedure-memory nodes via `/learn-proce
 
 (Show both Novel and Duplicate candidates, labeled. Only Novel ones are capture-worthy; the human captures them via `/learn-procedure`. You never write or index a node yourself.)
 
+## Staged Inbox Classification
+
+(External mode only -- `MODE=external` in the invocation prompt. Omit this section entirely for
+home-mode runs.) Empty = "None this run -- inbox was empty or absent."
+
+| Note | Bucket | Route action | Confidence | Why |
+|------|--------|--------------|------------|-----|
+| <staged note text> | cross-project / repo-specific | <concrete mechanism -- see Step 1.5> | High/Medium/Low | <one-line signal-based reason> |
+
+PROPOSE-ONLY -- you never write to the proposed route yourself; a human confirms/vetoes per row
+later (synchronously if this ran on-demand, or on their own schedule if it fired via background
+`/compress`), exactly like Procedure Candidates above. Each row above also gets appended to the
+calibration ledger (Step 1.5) with `Verdict: pending`.
+
+(If graduation criteria were met this run, the flagged line from Step 1.5 goes here too.)
+
 ## Scope
 
 - **Window:** <N files from YYYY-MM-DD to YYYY-MM-DD>
@@ -202,6 +308,8 @@ Repeatable workflows worth capturing as procedure-memory nodes via `/learn-proce
 - **Procedure novelty check:** ran (AUTOMEM=`<resolved path>`, scanned `<N>` existing nodes) / skipped -- `<reason>`
 - **CRITICAL rules checked:** <N>
 - **Prior retrospective:** <date or "none">
+- **Staged inbox classification (external mode only):** ran (<N> notes classified, inbox wiped
+  <N> bytes consumed) / skipped -- `<reason, e.g. "home mode" or "inbox empty">`
 - **Not covered:** <honest statement>
 ```
 
@@ -219,3 +327,10 @@ Repeatable workflows worth capturing as procedure-memory nodes via `/learn-proce
 - **Hebrew-safe paths.** Vault path may contain non-ASCII. Always quote paths in shell commands.
 - **Fail-closed on missing schema.** Use defaults (window=20, save to `<session_log_root>/../Retrospectives/`) and note "schema not found."
 - **Don't write if source is empty.** Zero session logs = report failure and stop.
+- **You are the sole wiper of `_retro-inbox.md`.** No other file/step ever truncates or clears it --
+  the collection step only appends, the dispatch step only reads. Wipe last, content-scoped
+  (strip exactly `SNAPSHOT_BYTES`, never truncate to empty), and only after your own artifact +
+  ledger writes are confirmed. See Step 1.5.
+- **Staged inbox classification is propose-only**, same discipline as Procedure Candidates -- you
+  never write to a proposed bucket's home yourself, and the ledger's `Verdict` column is never
+  filled in by you.

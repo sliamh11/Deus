@@ -91,6 +91,43 @@ decisions:
 
 External Project Mode redaction: see `branches/external-mode.md`.
 
+## Step 0.5 — Collect retrospective candidates (External Project Mode only, silent)
+
+Home mode: skip entirely — home mode already has its own separate capture paths (CLAUDE.md Step 0,
+`/learn-procedure`, `.claude/rules/`). This step exists only to give external projects an equivalent,
+since they don't have those paths.
+
+External Project Mode only: scan the just-finished conversation for retro-worthy notes — either a
+cross-project methodology insight (something Deus-wide, not tied to this repo) or a repo-specific
+insight worth persisting (an architecture decision, a root cause, a gotcha). Do not interrupt the user
+and do not grill; this step only stages candidates for later classification when a retrospective
+actually fires (see `branches/external-mode.md`).
+
+**Memory-level scope for candidates (mirrors Step 0's scope rule above):** the memory-level gate
+(`branches/external-mode.md`) has already stopped this entire step for `restricted` projects before
+we get here.
+- **standard:** only stage cross-project methodology candidates. Do NOT stage repo-specific
+  candidates (anything referencing a file, symbol, PR, migration, or product concept unique to this
+  repo) — same restriction Step 0 already applies to `$VAULT/CLAUDE.md`. If a note only makes sense
+  with a repo-specific reference, discard it rather than staging it.
+- **full:** both candidate types may be staged.
+
+For each candidate that survives the scope check above, append one line to `_retro-inbox.md`, resolved via:
+```bash
+inbox_dir=$(ls -d "$HOME/.claude/projects"/*"$(basename "$REPO_ROOT")"*/memory/ 2>/dev/null | head -1)
+```
+(Same idiom `.claude/agents/session-retrospective.md` already uses to resolve `MEMORY.md`; zero-match
+= skip this step silently, don't guess or create a path.) If `$inbox_dir` resolves, append under the
+same lock used by the wipe step in `session-retrospective.md` and the dispatch step in
+`branches/external-mode.md` — the exclusive-create lock file at the literal path
+`${inbox_dir}_retro-inbox.md.lock` (short retry/backoff, skip silently on failure to
+acquire within ~2s — a missed candidate this run is low-cost, a corrupted file is not):
+```
+<ISO-date> <one-line note>
+```
+
+Skip this step entirely if no scripts/Agent tool are available (non-Claude-Code backend).
+
 Rules for `decisions:` array:
 - Maximum 3 items. Only include decisions that affect future sessions.
 - Each item: quoted string, verb-first, ≤12 words.
@@ -158,8 +195,11 @@ After saving the session log:
 6. **Pre-warm semantic cache** (always, background):
    Run: `python3 ~/deus/scripts/memory_indexer.py --query "recent work ongoing tasks" --top 2 --recency-boost > ~/.deus/resume_semantic_cache.txt 2>/dev/null &`
 
-7. **Trigger session retrospective** (home mode only, background, opt-in):
-   Read `branches/retrospective.md` for conditions and dispatch instructions. Skip silently if any check fails.
+7. **Trigger session retrospective** (background, opt-in):
+   - Home mode: read `branches/retrospective.md` for conditions and dispatch instructions (unchanged).
+   - External mode: read the "External retrospective" section of `branches/external-mode.md` (has its
+     own conditions, threshold, and inbox handling — separate from home mode's).
+   Skip silently if any check fails.
 
 8. **Render a Decision Receipt** (always, in the chat reply — home + external):
    After the log is saved, render a short user-facing digest so the user can follow what
@@ -177,4 +217,4 @@ After saving the session log:
    `decisions[]` recorded AND no PR/merge this session; in that case the Confirm line still
    reports the save. This is the comprehension digest; the operational Confirm line is separate.
 
-Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, and whether a session retrospective was triggered (home mode only — report "retrospective triggered (background)" or "retrospective skipped: <reason>").
+Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, and whether a session retrospective was triggered (home or external mode — report "retrospective triggered (background)" or "retrospective skipped: <reason>").

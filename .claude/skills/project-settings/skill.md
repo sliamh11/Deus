@@ -43,6 +43,8 @@ Then show available commands:
 - `/project-settings memory full|standard|restricted` — change memory level
 - `/project-settings summaries on|off` — toggle session summaries
 - `/project-settings description <text>` — set a short project description Deus uses as context
+- `/project-settings retro_threshold <N>` — override the external-retrospective session-count
+  threshold for this project (default 10, set in `.claude/wardens/retrospective-schema.md`)
 - `/project-settings delete` — delete all Deus data for this project
 
 ## When invoked with arguments
@@ -72,6 +74,23 @@ import json, sys
 with open(sys.argv[1], 'r+') as f:
     d = json.load(f)
     d['description'] = sys.argv[2]
+    f.seek(0); json.dump(d, f, indent=2); f.truncate()
+```
+
+### `retro_threshold <N>`
+
+Update the `retro_threshold` field in the config JSON. Overrides the default
+`session_window_external` (10, from `.claude/wardens/retrospective-schema.md`) used by
+`branches/external-mode.md`'s "External retrospective" trigger to decide how many new session logs
+must accumulate before an external retrospective fires for this project. `<N>` must be a positive
+integer.
+
+Use Python to update the field:
+```python
+import json, sys
+with open(sys.argv[1], 'r+') as f:
+    d = json.load(f)
+    d['retro_threshold'] = int(sys.argv[2])
     f.seek(0); json.dump(d, f, indent=2); f.truncate()
 ```
 

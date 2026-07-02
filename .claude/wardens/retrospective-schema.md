@@ -44,6 +44,31 @@ Dated files enable trend tracking and recommendation follow-up via unique IDs.
 save_path: <vault_path>/Retrospectives/YYYY-MM-DD-retrospective.md
 ```
 
+(Home mode only. See `session_window_external` / `save_path (external)` below for external mode.)
+
+## session_window_external
+
+Same shape as `session_window`, but for external-mode retrospectives (used by
+`branches/external-mode.md`'s "External retrospective" section — see that file, not
+`branches/retrospective.md`, which stays home-mode-only). Lower default than home mode's 20, since
+external projects log fewer sessions.
+
+```
+session_window_external: 10
+```
+
+Per-project override: `retro_threshold` in `~/.config/deus/projects/<hash>.json` (read the same way
+`/project-settings` reads its other fields).
+
+## save_path (external)
+
+```
+save_path_external: <vault_path>/Retrospectives/external/<project-name>/YYYY-MM-DD-retrospective.md
+```
+
+`<project-name>` = basename of the repo root. This directory's existence is also the external mode
+opt-in gate — see `branches/external-mode.md`.
+
 ## reading_hints
 
 - `Session-Logs/` contains both flat files and subdirectory-per-day layouts.
