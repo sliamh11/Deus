@@ -188,6 +188,36 @@ TrueCourse flagged 13 `security/deterministic/sql-injection` HIGHs in `evolution
 
 PR #11 audited the remaining 10 non-evolution `sql-injection` HIGHs in `scripts/bench/store.py`, `scripts/memory_indexer.py`, and `scripts/memory_tree.py`; all confirmed structural-safe (vec0 dims from module int constants, ALTER TABLE col/coltype from literal tuple-lists, WHERE clauses joined from local literal-string fragments, DELETE FROM iterating a hard-coded schema list). Annotated with `# safe: <reason>` per the PR #9 convention. SQL injection backlog from the TrueCourse 2026-04-19 scan is closed.
 
+### Issue #220: provider-package plain-Error exemption
+
+LIA-359/LIA-360 (silent channel-send failures) converted every silent-loss
+`return` in `packages/mcp-telegram/src/telegram.ts`,
+`packages/mcp-discord/src/discord.ts`, `packages/mcp-gmail/src/gmail.ts`,
+`packages/mcp-outlook/src/outlook.ts`, and `packages/mcp-teams/src/teams.ts`
+into a throw. The ADR's Scope line lists `packages/*` as in-scope for the
+error taxonomy, but these 5 files throw plain `Error`, not a
+`RetryableError`/`UserError`/`FatalError` subclass, for the same reason
+`container/agent-runner/` (Issue #218 above) can't import `src/bootstrap.ts`:
+each package's `tsconfig.json` sets `rootDir: "./src"` with no path to the
+main `src/` tree, so `src/errors/index.ts` isn't reachable from `packages/*`.
+
+This isn't a new carve-out invented for this PR — all 5 files already threw
+plain `Error` for connection/config failures before this change (e.g.
+`telegram.ts:82`, `discord.ts:73`, `gmail.ts:228/256/285/311`). The new throw
+sites just extend that existing local convention to the previously-silent
+paths. Each new site carries a one-line comment pointing back to this
+addendum so the next reader doesn't mistake it for an oversight.
+
+A shared throwable-error primitive in `packages/mcp-channel-core` (which all
+5 packages already depend on via `@deus-ai/channel-core`) was considered and
+rejected as premature: `mcp-channel-core/src/response.ts` already exports a
+return-value-based error shape (`mcpError`/`McpErrorCode`/`withMcpError`) for
+MCP tool responses, but that's orthogonal to a *thrown* class for a
+provider's internal method — introducing one now for 5 call sites, with no
+second consumer, is the same YAGNI call the PR #6 addendum made for the
+stream-error installer. If a future change needs a shared thrown-error type
+across `packages/*`, add it then.
+
 ### Issue #218: bootstrap mirror discipline
 
 PR #2 (#215) shipped `src/bootstrap.ts`. PR #3 (#219) wired it into the agent-runner entry point — but `container/agent-runner/` has its own `tsconfig.json` and `node_modules` and cannot import from `src/`. The harness was duplicated as `container/agent-runner/src/bootstrap.ts`, with the only divergence being the logger: pino + `FatalError` discrimination in the main process, plain `console.error` in the container (which has no pino dep). Issue #218 was opened to track extracting both copies into a shared `packages/bootstrap` workspace.

@@ -493,7 +493,8 @@ export class TelegramProvider implements ChannelProvider {
   }
 
   async sendMessage(chatId: string, text: string): Promise<void> {
-    if (!this.bot) return;
+    // plain Error: packages/* cannot import src/errors/ (see error-discipline.md Issue #220); matches this file's existing plain-Error convention
+    if (!this.bot) throw new Error('Telegram bot not initialized');
     try {
       const numericId = chatId.replace(/^tg:/, '');
       if (text.length <= MAX_MESSAGE_LENGTH) {
@@ -508,7 +509,11 @@ export class TelegramProvider implements ChannelProvider {
         }
       }
     } catch (err) {
-      logger.error({ chatId, err }, 'Failed to send Telegram message');
+      logger.debug(
+        { chatId, err },
+        'Telegram send failed, rethrowing to caller',
+      );
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 

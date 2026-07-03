@@ -95,12 +95,27 @@ describe('TeamsProvider', () => {
     });
   });
 
-  describe('sendMessage', () => {
-    it('is a no-op when no conversation reference exists', async () => {
-      // No prior inbound → no stored reference → log + skip, no throw.
+  describe('sendMessage failure propagation', () => {
+    it('throws when no conversation reference exists', async () => {
+      // No prior inbound → no stored reference — must throw, not swallow.
       await expect(
         provider.sendMessage('teams:conv-1', 'hello'),
-      ).resolves.toBeUndefined();
+      ).rejects.toThrow('No conversation reference for reply');
+    });
+
+    it('throws when the underlying send fails', async () => {
+      (provider as any).adapter = {
+        continueConversationAsync: vi
+          .fn()
+          .mockRejectedValue(new Error('bot framework error')),
+      };
+      (provider as any).conversationRefs.set('conv-1', {
+        conversation: { id: 'c1' },
+      });
+
+      await expect(
+        provider.sendMessage('teams:conv-1', 'hello'),
+      ).rejects.toThrow('bot framework error');
     });
   });
 

@@ -134,17 +134,14 @@ export class GmailProvider implements ChannelProvider {
   }
 
   async sendMessage(chatId: string, text: string): Promise<void> {
-    if (!this.gmail) {
-      logger.warn('Gmail not initialized');
-      return;
-    }
+    // plain Error: packages/* cannot import src/errors/ (see error-discipline.md Issue #220); matches this file's existing plain-Error convention
+    if (!this.gmail) throw new Error('Gmail not initialized');
 
     const threadId = chatId.replace(/^gmail:/, '');
     const meta = this.threadMeta.get(threadId);
 
     if (!meta) {
-      logger.warn({ chatId }, 'No thread metadata for reply, cannot send');
-      return;
+      throw new Error(`No thread metadata for reply, cannot send: ${chatId}`);
     }
 
     const subject = meta.subject.startsWith('Re:')
@@ -178,7 +175,8 @@ export class GmailProvider implements ChannelProvider {
       });
       logger.info({ to: meta.sender, threadId }, 'Gmail reply sent');
     } catch (err) {
-      logger.error({ chatId, err }, 'Failed to send Gmail reply');
+      logger.debug({ chatId, err }, 'Gmail send failed, rethrowing to caller');
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 
