@@ -291,6 +291,7 @@ function makeQueue() {
     closeStdin: vi.fn(),
     notifyIdle: vi.fn(),
     enqueueMessageCheck: vi.fn(),
+    enqueueTask: vi.fn(),
     sendMessage: vi.fn(() => false as boolean),
     registerProcess: vi.fn(),
   };
@@ -763,6 +764,36 @@ describe('processGroupMessages', () => {
       'group@g.us',
       'ts-1',
     );
+  });
+});
+
+// ── Auto-compact dispatch (LIA-367) ──────────────────────────────────────────
+// `result.contextStats`/`result.compactionEvent` never reach this callback in
+// production today — ContainerRuntime.runTurn's onOutput only forwards
+// output_text/activity/session/error/turn_complete, and RuntimeEvent has no
+// variant carrying them. This test pins that today's real event pipeline
+// never triggers the auto-compact dispatch (dead-code regression guard); the
+// serialization mechanism itself (enqueueTask dedup/queue/drain ordering) is
+// covered separately in group-queue.test.ts, where it's actually reachable.
+describe('auto-compact dispatch (LIA-367)', () => {
+  it('never calls queue.enqueueTask via the real event pipeline (contextStats is not forwarded)', async () => {
+    const state = makeState(MAIN_GROUP, 'ts-prev');
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    mockGetMessagesSince.mockReturnValue([makeMsg({ timestamp: 'ts-1' })]);
+    const queue = makeQueue();
+
+    // defaultRunTurn is used (output_text + session + turn_complete) — the
+    // real shape the event pipeline can produce today.
+    const orchestrator = createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    await orchestrator.processGroupMessages('group@g.us');
+    expect(queue.enqueueTask).not.toHaveBeenCalled();
   });
 });
 

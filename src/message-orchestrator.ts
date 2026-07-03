@@ -84,7 +84,6 @@ export interface OrchestratorDeps {
 export function createMessageOrchestrator(deps: OrchestratorDeps) {
   const { state, queue, registry, channels, ingressCaps } = deps;
   let messageLoopRunning = false;
-  const autoCompactFired = new Set<string>();
 
   async function runAgent(
     group: RegisteredGroup,
@@ -129,7 +128,6 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         }
         clearSession(group.folder, backend);
         state.clearSession(group.folder, backend);
-        autoCompactFired.delete(group.folder);
         sessionRef = undefined;
       }
     }
@@ -494,6 +492,7 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
     await channel.setTyping?.(chatJid, true);
     let hadError = false;
     let outputSentToUser = false;
+    let pendingAutoCompact = false;
 
     // Swallow channel send failures so they never propagate as an onOutput
     // rejection (LIA-286); logs with orchestrator-layer context. The boolean
@@ -692,29 +691,18 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
         if (result.compactionEvent) {
           const resolvedBackend = registry.resolve(group);
           setLastCompactedAt(group.folder, resolvedBackend.name());
+          pendingAutoCompact = false;
         }
 
         if (
           result.contextStats?.autoCompact &&
           !result.compactionEvent &&
-          !autoCompactFired.has(group.folder)
+          !pendingAutoCompact
         ) {
-          autoCompactFired.add(group.folder);
+          pendingAutoCompact = true;
           logger.info(
             { group: group.name, pct: result.contextStats.pct },
-            'Auto-compact threshold reached, dispatching /compact',
-          );
-          runAgent(group, '/compact', chatJid, [], async () => {}).then(
-            () => {
-              autoCompactFired.delete(group.folder);
-            },
-            (err) => {
-              autoCompactFired.delete(group.folder);
-              logger.warn(
-                { group: group.name, err },
-                'Auto-compact dispatch failed',
-              );
-            },
+            'Auto-compact threshold reached, will dispatch /compact after this turn',
           );
         }
 
@@ -730,6 +718,16 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
 
     await channel.setTyping?.(chatJid, false);
     if (idleTimer) clearTimeout(idleTimer);
+
+    // Deferred until the primary turn has fully returned (LIA-367): dispatching
+    // here — instead of un-awaited inside the onOutput callback above — means
+    // GroupQueue.enqueueTask always queues (state.active is still true) rather
+    // than racing a second container against this one on the same IPC dir.
+    if (pendingAutoCompact) {
+      queue.enqueueTask(chatJid, 'auto-compact', async () => {
+        await runAgent(group, '/compact', chatJid, [], async () => {});
+      });
+    }
 
     if (output === 'error' || hadError) {
       // If we already sent output to the user, don't roll back the cursor —

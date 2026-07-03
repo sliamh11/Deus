@@ -278,6 +278,40 @@ describe('GroupQueue', () => {
     expect(taskCallCount).toBe(1);
   });
 
+  // --- Pending-queue task dedup (LIA-367: auto-compact self-dispatch) ---
+
+  it('rejects duplicate enqueue of a task already pending (not yet running)', async () => {
+    let resolveMessages: () => void;
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveMessages = resolve;
+      });
+      return true;
+    });
+    queue.setProcessMessagesFn(processMessages);
+
+    // Take the group's only slot with a message run, so a subsequently
+    // enqueued task goes onto pendingTasks rather than running immediately.
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+
+    const firstFn = vi.fn(async () => {});
+    queue.enqueueTask('group1@g.us', 'auto-compact', firstFn);
+
+    // A second enqueue with the same taskId while the first is still only
+    // pending (never ran) must be dropped, not queued twice.
+    const dupFn = vi.fn(async () => {});
+    queue.enqueueTask('group1@g.us', 'auto-compact', dupFn);
+
+    // Let the message run finish and the pending task drain.
+    resolveMessages!();
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(firstFn).toHaveBeenCalledTimes(1);
+    expect(dupFn).not.toHaveBeenCalled();
+  });
+
   // --- Idle preemption ---
 
   it('does NOT preempt active container when not idle', async () => {
