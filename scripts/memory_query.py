@@ -123,6 +123,7 @@ def _log_retrieval(
     query: str,
     result: dict,
     source: str,
+    context_chars: int = 0,
 ) -> None:
     prompt_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
     entry = {
@@ -132,6 +133,10 @@ def _log_retrieval(
         "fell_back": result["fell_back"],
         "paths": [r["path"] for r in result["results"]],
         "source": source,
+        # LIA-354: size of the FINAL formatted context (post-truncation) —
+        # `paths` reflects pre-truncation results, so without this a silent
+        # max_context_chars regression is invisible in the production log.
+        "context_chars": context_chars,
     }
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -349,6 +354,7 @@ def recall(
     concepts: list[str] | None = None,
     exclude_kinds: set[str] | None = None,
     max_context_chars: int | None = None,
+    exclude_paths: set[str] | None = None,
 ) -> dict:
     """Retrieve memory context for a query.
 
@@ -394,11 +400,23 @@ def recall(
         else:
             raw["trace"].append("intent_gate:unavailable")
 
+    # LIA-354: per-surface path blocklist (the container bridge passes the vault
+    # index files, which are useless to a container as fragments). Presentation-
+    # level filter: drops from the injected context AND the retrieval log (which
+    # records injected paths). No k-backfill; confidence stays as computed from
+    # the pre-filter result set. Ordering: intent gate first, blocklist second —
+    # a third results-filter belongs after this one.
+    if exclude_paths and raw["results"]:
+        kept = [r for r in raw["results"] if r["path"] not in exclude_paths]
+        if len(kept) < len(raw["results"]):
+            raw["trace"].append(f"path_blocklist:dropped={len(raw['results']) - len(kept)}")
+            raw["results"] = kept
+
     if raw["fell_back"]:
         atom_context = _atom_fallback(query, k, max_context_chars=max_context_chars)
         if atom_context:
             raw["atom_fallback"] = True
-            _log_retrieval(query, raw, source)
+            _log_retrieval(query, raw, source, context_chars=len(atom_context))
             return {
                 "context": atom_context,
                 "paths": [],
@@ -419,7 +437,7 @@ def recall(
         "fell_back": raw["fell_back"],
     }
 
-    _log_retrieval(query, raw, source)
+    _log_retrieval(query, raw, source, context_chars=len(context))
 
     return out
 
@@ -438,9 +456,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source", default="cli", help="Source identifier for logging")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--context-only", action="store_true", help="Output only the context block")
+    parser.add_argument(
+        "--max-context-chars", type=int, default=None,
+        help="Head-truncate the formatted context to this many chars (default: uncapped)",
+    )
+    parser.add_argument(
+        "--exclude-paths", default="",
+        help="Comma-separated vault-relative paths to drop from results (default: none)",
+    )
 
     args = parser.parse_args(argv)
-    result = recall(args.query, k=args.k, abstain_threshold=args.abstain, source=args.source)
+    exclude = {p.strip() for p in args.exclude_paths.split(",") if p.strip()} or None
+    result = recall(
+        args.query,
+        k=args.k,
+        abstain_threshold=args.abstain,
+        source=args.source,
+        max_context_chars=args.max_context_chars,
+        exclude_paths=exclude,
+    )
 
     if args.context_only:
         print(result["context"])

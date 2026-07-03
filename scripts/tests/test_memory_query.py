@@ -266,6 +266,18 @@ class TestLogging:
         assert "ts" in entries[0]
         assert "prompt_hash" in entries[0]
 
+    def test_log_records_final_context_chars(self, log_file, fake_vault):
+        # LIA-354: `paths` reflects pre-truncation results, so context_chars is
+        # the only production-auditable evidence that the cap actually applied.
+        with patch.object(mt, "retrieve", return_value=FAKE_RETRIEVE_HIT), \
+             patch.object(mt, "open_db") as mock_db:
+            mock_db.return_value.close = lambda: None
+            result = mq.recall("what timezone?", source="mcp")
+
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["context_chars"] == len(result["context"])
+        assert entry["context_chars"] > 0
+
     def test_log_survives_write_failure(self, monkeypatch):
         monkeypatch.setattr(mq, "LOG_FILE", Path("/nonexistent/dir/log.jsonl"))
         with patch.object(mt, "retrieve", return_value=FAKE_RETRIEVE_HIT), \
@@ -663,3 +675,70 @@ class TestAtomFallbackCap:
         assert "=== [truncated] ===" in out
         assert out.count("<<<UNTRUSTED-MEMORY-") == 3  # framing survives
         assert len(out) < 1200
+
+
+class TestPathBlocklist:
+    """LIA-354: per-surface exclude_paths filter (the container bridge drops the
+    vault index files, which are useless to a container as fragments)."""
+
+    def _run(self, fake, **kw):
+        with patch.object(mt, "retrieve", return_value=fake), \
+             patch.object(mt, "open_db") as mock_db:
+            mock_db.return_value.close = lambda: None
+            return mq.recall("any query", source="test", **kw)
+
+    def test_excluded_path_dropped_from_context_paths_and_log(self, fake_vault, log_file):
+        fake = _fake_retrieve(FAKE_RETRIEVE_HIT["results"])
+        result = self._run(fake, exclude_paths={"CLAUDE.md"})
+        assert result["paths"] == ["INFRA.md"]
+        assert "name: Liam" not in result["context"]
+        assert "memory: vault" in result["context"]
+        assert "path_blocklist:dropped=1" in fake["trace"]
+        # The retrieval log records the paths actually injected (post-filter).
+        entry = json.loads(log_file.read_text().strip())
+        assert entry["paths"] == ["INFRA.md"]
+
+    def test_all_excluded_yields_empty_context_not_fallback(self, fake_vault):
+        fake = _fake_retrieve(FAKE_RETRIEVE_HIT["results"])
+        result = self._run(fake, exclude_paths={"CLAUDE.md", "INFRA.md"})
+        assert result["context"] == ""
+        assert result["paths"] == []
+        assert not result["fell_back"]
+
+    def test_default_none_keeps_everything(self, fake_vault):
+        fake = _fake_retrieve(FAKE_RETRIEVE_HIT["results"])
+        result = self._run(fake)
+        assert result["paths"] == ["CLAUDE.md", "INFRA.md"]
+        assert not any(t.startswith("path_blocklist") for t in fake["trace"])
+
+
+class TestCLIBounds:
+    """LIA-354: the --max-context-chars / --exclude-paths flags the bridge passes."""
+
+    def test_max_context_chars_truncates_with_framing_intact(self, capsys, fake_vault):
+        fake = _fake_retrieve(FAKE_RETRIEVE_HIT["results"])
+        with patch.object(mt, "retrieve", return_value=fake), \
+             patch.object(mt, "open_db") as mock_db, \
+             patch.object(mq, "_read_node_file", return_value="z" * 3000):
+            mock_db.return_value.close = lambda: None
+            code = mq.main(["test query", "--context-only", "--max-context-chars", "200"])
+
+        assert code == 0
+        out = capsys.readouterr().out
+        # LIA-335: head-truncation — framing header + both sentinels survive.
+        assert out.startswith("=== Auto-retrieved memory")
+        assert out.count("<<<UNTRUSTED-MEMORY-") == 3  # header mention + open + close
+        assert "=== [truncated] ===" in out
+
+    def test_exclude_paths_flag_parsed_and_applied(self, capsys, fake_vault):
+        fake = _fake_retrieve(FAKE_RETRIEVE_HIT["results"])
+        with patch.object(mt, "retrieve", return_value=fake), \
+             patch.object(mt, "open_db") as mock_db:
+            mock_db.return_value.close = lambda: None
+            # Spaces around commas are tolerated (the parser strips them).
+            code = mq.main(["test query", "--json", "--exclude-paths", "CLAUDE.md, INFRA.md"])
+
+        assert code == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["paths"] == []
+        assert out["context"] == ""

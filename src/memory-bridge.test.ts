@@ -185,6 +185,10 @@ describe('memory bridge — POST /memory/query', () => {
         'bridge',
         '-k',
         '3',
+        '--max-context-chars',
+        '8192',
+        '--exclude-paths',
+        'CLAUDE.md,INFRA.md',
       ]),
       expect.objectContaining({ timeout: 4_000 }),
       expect.any(Function),
@@ -346,6 +350,81 @@ describe('memory bridge — POST /memory/query', () => {
       expect.arrayContaining(['--source', 'telegram', '-k', '10']),
       expect.objectContaining({ timeout: 4_000 }),
       expect.any(Function),
+    );
+  });
+
+  /* ── LIA-354: server-side recall cap + index-file blocklist ────────── */
+
+  function lastExecFileArgs(): string[] {
+    return mockExecFile.mock.lastCall?.[1] as string[];
+  }
+
+  it('respects env overrides for the cap and blocklist (LIA-354)', async () => {
+    vi.stubEnv('DEUS_BRIDGE_RECALL_MAX_CHARS', '4096');
+    vi.stubEnv('DEUS_BRIDGE_RECALL_EXCLUDE', 'STUDY.md');
+    try {
+      await memoryRequest(proxyPort, JSON.stringify({ query: 'test' }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(lastExecFileArgs()).toEqual(
+      expect.arrayContaining([
+        '--max-context-chars',
+        '4096',
+        '--exclude-paths',
+        'STUDY.md',
+      ]),
+    );
+  });
+
+  it('invalid cap env falls back to the 8192 default (LIA-354)', async () => {
+    vi.stubEnv('DEUS_BRIDGE_RECALL_MAX_CHARS', 'abc');
+    try {
+      await memoryRequest(proxyPort, JSON.stringify({ query: 'test' }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(lastExecFileArgs()).toEqual(
+      expect.arrayContaining(['--max-context-chars', '8192']),
+    );
+  });
+
+  it('empty blocklist env omits --exclude-paths but keeps the cap (LIA-354)', async () => {
+    vi.stubEnv('DEUS_BRIDGE_RECALL_EXCLUDE', '');
+    try {
+      await memoryRequest(proxyPort, JSON.stringify({ query: 'test' }));
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    const args = lastExecFileArgs();
+    expect(args).toEqual(
+      expect.arrayContaining(['--max-context-chars', '8192']),
+    );
+    expect(args).not.toContain('--exclude-paths');
+  });
+
+  it('client body cannot lift the cap or blocklist (LIA-354)', async () => {
+    await memoryRequest(
+      proxyPort,
+      JSON.stringify({
+        query: 'test',
+        max_context_chars: 999999,
+        maxContextChars: 999999,
+        exclude_paths: '',
+      }),
+    );
+
+    // Server-side values, regardless of what the container sent.
+    expect(lastExecFileArgs()).toEqual(
+      expect.arrayContaining([
+        '--max-context-chars',
+        '8192',
+        '--exclude-paths',
+        'CLAUDE.md,INFRA.md',
+      ]),
     );
   });
 });
