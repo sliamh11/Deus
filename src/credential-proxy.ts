@@ -77,13 +77,15 @@ const MEMORY_QUERY_DEFAULT_MAX_CHARS = 8192;
 // ROOT. A vault reorg that moves them silently un-blocks them (no error).
 const MEMORY_QUERY_DEFAULT_EXCLUDE = 'CLAUDE.md,INFRA.md';
 
-/** Extra memory_query.py args enforcing the bridge cap + index-file blocklist. */
+/** Extra memory_query.py args enforcing the bridge cap + index-file blocklist (LIA-354). */
 function bridgeRecallBoundArgs(): string[] {
+  // LIA-354: config plumbing with a validated fallback, not a feature gate.
   const rawCap = Number(process.env.DEUS_BRIDGE_RECALL_MAX_CHARS);
   const cap =
     Number.isInteger(rawCap) && rawCap > 0
       ? rawCap
       : MEMORY_QUERY_DEFAULT_MAX_CHARS;
+  // LIA-354: per-surface blocklist override, same config-plumbing shape.
   const exclude = (
     process.env.DEUS_BRIDGE_RECALL_EXCLUDE ?? MEMORY_QUERY_DEFAULT_EXCLUDE
   ).trim();
