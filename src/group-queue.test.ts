@@ -1,11 +1,22 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
 import { GroupQueue } from './group-queue.js';
+import { logger } from './logger.js';
 
 // Mock config to control concurrency limit
 vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/deus-test-data',
   MAX_CONCURRENT_CONTAINERS: 2,
+}));
+
+vi.mock('./logger.js', () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+  },
 }));
 
 // Mock fs operations used by sendMessage/closeStdin
@@ -184,6 +195,7 @@ describe('GroupQueue', () => {
 
   it('stops retrying after MAX_RETRIES and resets', async () => {
     let callCount = 0;
+    const onTerminalFailure = vi.fn();
 
     const processMessages = vi.fn(async () => {
       callCount++;
@@ -191,24 +203,65 @@ describe('GroupQueue', () => {
     });
 
     queue.setProcessMessagesFn(processMessages);
+    queue.setOnTerminalFailure(onTerminalFailure);
     queue.enqueueMessageCheck('group1@g.us');
 
     // Run through all 5 retries (MAX_RETRIES = 5)
     // Initial call
     await vi.advanceTimersByTimeAsync(10);
     expect(callCount).toBe(1);
+    expect(onTerminalFailure).not.toHaveBeenCalled();
 
     // Retry 1: 5000ms, Retry 2: 10000ms, Retry 3: 20000ms, Retry 4: 40000ms, Retry 5: 80000ms
     const retryDelays = [5000, 10000, 20000, 40000, 80000];
     for (let i = 0; i < retryDelays.length; i++) {
       await vi.advanceTimersByTimeAsync(retryDelays[i] + 10);
       expect(callCount).toBe(i + 2);
+      if (i < retryDelays.length - 1) {
+        expect(onTerminalFailure).not.toHaveBeenCalled();
+      }
     }
+
+    // Terminal failure notice fires exactly once, on the 6th (final) call.
+    expect(onTerminalFailure).toHaveBeenCalledTimes(1);
+    expect(onTerminalFailure).toHaveBeenCalledWith('group1@g.us');
 
     // After 5 retries (6 total calls), should stop — no more retries
     const countAfterMaxRetries = callCount;
     await vi.advanceTimersByTimeAsync(200000); // Wait a long time
     expect(callCount).toBe(countAfterMaxRetries);
+    expect(onTerminalFailure).toHaveBeenCalledTimes(1); // still just once
+  });
+
+  it('does not propagate if onTerminalFailure callback throws', async () => {
+    const processMessages = vi.fn(async () => false);
+    queue.setProcessMessagesFn(processMessages);
+    queue.setOnTerminalFailure(() => {
+      throw new Error('boom');
+    });
+    queue.enqueueMessageCheck('group1@g.us');
+
+    await vi.advanceTimersByTimeAsync(10);
+    const delays = [5000, 10000, 20000, 40000, 80000];
+    for (const d of delays) {
+      await vi.advanceTimersByTimeAsync(d + 10);
+    }
+
+    // Discriminates the actual try/catch in scheduleRetry: without it, an
+    // uncaught throw is absorbed by runForGroup's outer catch instead, which
+    // logs a different message ('Error processing messages for group') and
+    // silently kicks off a fresh retry cycle rather than completing the
+    // terminal-retry branch cleanly.
+    expect(logger.error).toHaveBeenCalledWith(
+      { groupJid: 'group1@g.us', err: expect.any(Error) },
+      'onTerminalFailure callback threw',
+    );
+
+    // The group must remain usable after a throwing callback — a fresh
+    // message check starts a new retry cycle rather than being wedged.
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+    expect(processMessages).toHaveBeenCalledTimes(7); // 6 + 1 fresh call
   });
 
   // --- Waiting groups get drained when slots free up ---

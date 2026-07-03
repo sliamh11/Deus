@@ -83,6 +83,29 @@ export interface OrchestratorDeps {
 
 export function createMessageOrchestrator(deps: OrchestratorDeps) {
   const { state, queue, registry, channels, ingressCaps } = deps;
+
+  queue.setOnTerminalFailure((groupJid) => {
+    const channel = findChannel(channels, groupJid);
+    if (!channel) {
+      logger.warn(
+        { groupJid },
+        'No channel owns JID, cannot send terminal-failure notice',
+      );
+      return;
+    }
+    channel
+      .sendMessage(
+        groupJid,
+        'I hit an error processing that — please try again.',
+      )
+      .catch((err) =>
+        logger.warn(
+          { groupJid, err },
+          'Failed to send terminal-failure notice',
+        ),
+      );
+  });
+
   let messageLoopRunning = false;
 
   async function runAgent(

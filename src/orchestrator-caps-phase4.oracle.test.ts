@@ -349,6 +349,7 @@ function makeQueue() {
     enqueueMessageCheck: vi.fn(),
     sendMessage: vi.fn(() => false as boolean),
     registerProcess: vi.fn(),
+    setOnTerminalFailure: vi.fn(),
   };
 }
 

@@ -16,6 +16,7 @@ import type {
   RunResult,
   RuntimeEventSink,
 } from './agent-runtimes/types.js';
+import { logger } from './logger.js';
 
 // ── Module mocks (hoisted) ───────────────────────────────────────────────────
 
@@ -294,6 +295,7 @@ function makeQueue() {
     enqueueTask: vi.fn(),
     sendMessage: vi.fn(() => false as boolean),
     registerProcess: vi.fn(),
+    setOnTerminalFailure: vi.fn(),
   };
 }
 
@@ -794,6 +796,53 @@ describe('auto-compact dispatch (LIA-367)', () => {
 
     await orchestrator.processGroupMessages('group@g.us');
     expect(queue.enqueueTask).not.toHaveBeenCalled();
+  });
+});
+
+describe('terminal-failure notice wiring', () => {
+  it('wires queue.setOnTerminalFailure to send a notice via the resolved channel', async () => {
+    const state = makeState(MAIN_GROUP);
+    const channel = makeChannel();
+    mockFindChannel.mockReturnValue(channel as unknown as Channel);
+    const queue = makeQueue();
+
+    createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [channel as unknown as Channel],
+    });
+
+    expect(queue.setOnTerminalFailure).toHaveBeenCalledTimes(1);
+    const registeredCallback = queue.setOnTerminalFailure.mock.calls[0][0];
+
+    await registeredCallback('group@g.us');
+
+    expect(mockFindChannel).toHaveBeenCalledWith([channel], 'group@g.us');
+    expect(channel.sendMessage).toHaveBeenCalledWith(
+      'group@g.us',
+      'I hit an error processing that — please try again.',
+    );
+  });
+
+  it('is a no-op when no channel owns the JID', async () => {
+    const state = makeState(MAIN_GROUP);
+    mockFindChannel.mockReturnValue(undefined);
+    const queue = makeQueue();
+
+    createMessageOrchestrator({
+      registry: makeRegistry(),
+      state: state as unknown as RouterState,
+      queue: queue as unknown as GroupQueue,
+      channels: [],
+    });
+
+    const registeredCallback = queue.setOnTerminalFailure.mock.calls[0][0];
+    expect(() => registeredCallback('group@g.us')).not.toThrow();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { groupJid: 'group@g.us' },
+      'No channel owns JID, cannot send terminal-failure notice',
+    );
   });
 });
 
