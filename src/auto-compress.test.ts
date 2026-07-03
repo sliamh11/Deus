@@ -19,9 +19,16 @@ vi.mock('./solutions/index.js', () => ({
 }));
 
 const mockGetMessagesSince = vi.fn<() => NewMessage[]>();
+const mockGetAutoCompressWatermark = vi.fn<() => string | undefined>();
+const mockSetAutoCompressWatermark = vi.fn();
 vi.mock('./db.js', async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
-  return { ...actual, getMessagesSince: mockGetMessagesSince };
+  return {
+    ...actual,
+    getMessagesSince: mockGetMessagesSince,
+    getAutoCompressWatermark: mockGetAutoCompressWatermark,
+    setAutoCompressWatermark: mockSetAutoCompressWatermark,
+  };
 });
 
 const mockFireAndForget = vi.fn();
@@ -66,6 +73,11 @@ function makeMessage(overrides: Partial<NewMessage> = {}): NewMessage {
 describe('autoCompressSession', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // vi.restoreAllMocks() (afterEach below) only restores vi.spyOn mocks to
+    // their original implementation — it doesn't clear a custom
+    // mockImplementation set on a plain vi.fn() like mockWriteFileSync, so a
+    // throwing override from one test can otherwise leak into the next.
+    mockWriteFileSync.mockReset();
   });
 
   afterEach(() => {
@@ -158,6 +170,71 @@ describe('autoCompressSession', () => {
     await expect(
       autoCompressSession(makeGroup(), 'test@jid', 8),
     ).rejects.toThrow('EACCES: permission denied');
+  });
+
+  it('anchors to lastUsed - 2x idle hours when no watermark exists yet (bootstrap fallback)', async () => {
+    mockResolveVaultPath.mockReturnValue('/tmp/vault');
+    mockGetAutoCompressWatermark.mockReturnValue(undefined);
+    mockGetMessagesSince.mockReturnValue([makeMessage()]);
+
+    const lastUsed = '2026-05-10T00:00:00.000Z';
+    const idleHours = 8;
+    await autoCompressSession(makeGroup(), 'test@jid', idleHours, lastUsed);
+
+    const expectedSince = new Date(
+      new Date(lastUsed).getTime() - idleHours * 2 * 3_600_000,
+    ).toISOString();
+    expect(mockGetMessagesSince).toHaveBeenCalledWith(
+      'test@jid',
+      expectedSince,
+      expect.any(String),
+      500,
+      true,
+    );
+  });
+
+  it('anchors to the persisted watermark when one exists, ignoring lastUsed', async () => {
+    mockResolveVaultPath.mockReturnValue('/tmp/vault');
+    const watermark = '2026-06-01T12:00:00.000Z';
+    mockGetAutoCompressWatermark.mockReturnValue(watermark);
+    mockGetMessagesSince.mockReturnValue([makeMessage()]);
+
+    await autoCompressSession(
+      makeGroup(),
+      'test@jid',
+      8,
+      '2026-01-01T00:00:00.000Z',
+    );
+
+    expect(mockGetMessagesSince).toHaveBeenCalledWith(
+      'test@jid',
+      watermark,
+      expect.any(String),
+      500,
+      true,
+    );
+  });
+
+  it('advances the watermark to the max captured message timestamp minus 1 second', async () => {
+    mockResolveVaultPath.mockReturnValue('/tmp/vault');
+    mockGetAutoCompressWatermark.mockReturnValue(undefined);
+    // getMessagesSince always re-sorts ascending (db.ts) before returning —
+    // reflect that real contract here rather than scrambled order.
+    mockGetMessagesSince.mockReturnValue([
+      makeMessage({ timestamp: '2026-05-12T09:00:00.000Z' }),
+      makeMessage({ timestamp: '2026-05-12T10:00:00.000Z' }),
+      makeMessage({ timestamp: '2026-05-12T10:05:00.000Z' }),
+    ]);
+
+    await autoCompressSession(makeGroup(), 'test@jid', 8);
+
+    const expectedWatermark = new Date(
+      new Date('2026-05-12T10:05:00.000Z').getTime() - 1_000,
+    ).toISOString();
+    expect(mockSetAutoCompressWatermark).toHaveBeenCalledWith(
+      'test@jid',
+      expectedWatermark,
+    );
   });
 });
 

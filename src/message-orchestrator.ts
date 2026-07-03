@@ -115,7 +115,12 @@ export function createMessageOrchestrator(deps: OrchestratorDeps) {
           'Session idle too long — starting fresh',
         );
         try {
-          await autoCompressSession(group, chatJid, effectiveIdleHours);
+          await autoCompressSession(
+            group,
+            chatJid,
+            effectiveIdleHours,
+            lastUsed,
+          );
         } catch (err) {
           logger.warn(
             { group: group.name, err },
