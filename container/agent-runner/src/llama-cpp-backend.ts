@@ -27,6 +27,12 @@ import { fileURLToPath } from 'url';
 import { loadRegisteredContextFiles } from './context-registry.js';
 import { fetchMemoryContext } from './memory-retrieval-hook.js';
 import { DoomLoopDetector, normalizeArgs } from './doom-loop-detector.js';
+import {
+  maskStaleToolResults,
+  maskingEnabled,
+  maskKeepTurns,
+  maskMinBytes,
+} from './observation-masking.js';
 import { dispatchPreToolUseGate } from './pre-tool-use-hook.js';
 import {
   type AgentRuntimeId,
@@ -499,6 +505,17 @@ export async function runLlamaCppConversation(
       : prompt;
 
     try {
+      // Observation masking (LIA-378): the gentler lever runs BEFORE the
+      // token estimate, so proactive compaction (destructive) evaluates
+      // post-mask sizes and triggers less often. Dark by default.
+      if (maskingEnabled()) {
+        const { masked } = maskStaleToolResults(messages, {
+          keepRecentTurns: maskKeepTurns(),
+          minBytes: maskMinBytes(),
+        });
+        if (masked > 0)
+          log(`Observation masking: ${masked} stale tool result(s) masked`);
+      }
       const estTokens = estimateTokens(messages);
       const estPct = Math.round((estTokens / LLAMA_CPP_CONTEXT_WINDOW) * 100);
       if (estPct >= AUTO_COMPACT_PCT && messages.length > 2) {
