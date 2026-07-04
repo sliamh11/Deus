@@ -231,14 +231,14 @@ def _intent_timeout() -> float:
 def _intent_keep_alive() -> str:
     """Resolve the intent-classify keep_alive duration (Ollama duration string).
 
-    DEUS_INTENT_KEEP_ALIVE overrides; default 10m. This classify path is the
-    only caller of gemma4:e2b, so unrelated Ollama model churn (e.g. a local
-    benchmark loading other models) evicts it between calls, paying a ~9-11s
-    cold-load tax on nearly every invocation (LIA-377). 10m survives typical
-    inter-query gaps without pinning long enough to raise eviction odds for
-    concurrent consumers on this shared machine.
+    DEUS_INTENT_KEEP_ALIVE (LIA-377) overrides; default 10m. This classify
+    path is the only caller of gemma4:e2b, so unrelated Ollama model churn
+    (e.g. a local benchmark loading other models) evicts it between calls,
+    paying a ~9-11s cold-load tax on nearly every invocation. 10m survives
+    typical inter-query gaps without pinning long enough to raise eviction
+    odds for concurrent consumers on this shared machine.
     """
-    return os.environ.get("DEUS_INTENT_KEEP_ALIVE", "").strip() or "10m"
+    return os.environ.get("DEUS_INTENT_KEEP_ALIVE", "").strip() or "10m"  # LIA-377
 
 
 def _classify_ollama(query: str, model: str) -> str | None:
