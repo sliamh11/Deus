@@ -2894,6 +2894,84 @@ VERDICT_RE = re.compile(
 WARDEN_SUBAGENT_TYPES = frozenset({"plan-reviewer", "code-reviewer", "threat-modeler", "verification-gate", "ai-eng-warden"})
 
 
+def _worktree_from_prompt(tool_input: dict[str, Any], repo_root: Path) -> Path | None:
+    """Resolve the single registered worktree a warden dispatch prompt names, if any.
+
+    The harness's Agent PostToolUse event carries the launch-dir cwd, not the
+    session's current (EnterWorktree'd) cwd, so the event alone cannot route a
+    captured verdict to the bucket the edit/commit gates will read (LIA-376).
+    Dispatch prompts conventionally name the worktree under review; use that.
+    Candidates come from the live ``git worktree list`` registry — no path-prefix
+    assumption, since worktrees live under .claude/worktrees/, data/worktrees/,
+    or anywhere else. Routes ONLY on an unambiguous single match: zero or 2+
+    distinct registered worktrees named in the prompt return None (today's
+    flat behavior — never credit the wrong worktree's gate).
+
+    Scope limit (deliberate): the MAIN checkout is never a candidate. Every
+    linked worktree path contains the main root as a "/"-continued prefix, so
+    admitting it would make any prompt that names a repo file — or any
+    worktree — ambiguous and disable routing wholesale. A main-targeted
+    review dispatched from a worktree-launched session therefore falls back
+    to the event-cwd bucket (unchanged current behavior); the canonical
+    recipe remains committing main-targeted work from a main-cwd session.
+
+    Precondition: dispatch prompts are self-authored by the main session.
+    If a future pipeline interpolates external text (issue/PR bodies) into a
+    warden dispatch prompt, keep the worktree-path declaration outside that
+    content — a forwarded absolute path could otherwise steer routing.
+    """
+    prompt = str(tool_input.get("prompt") or "")
+    if not prompt:
+        return None
+    listing = _git(repo_root, "worktree", "list", "--porcelain")
+    if not listing:
+        return None
+
+    # An occurrence counts only at a PATH BOUNDARY: followed by end-of-prompt,
+    # "/" (a file inside the worktree), or a non-path character. A path
+    # character continuation means a LONGER sibling path (wt-a-extended,
+    # registered or not) — never credit wt-a for it. "." is a path char only
+    # when itself followed by another path char (wt-a.backup), so a sentence
+    # ending right after the path still counts as naming it.
+    path_char = re.compile(r"[A-Za-z0-9_+~-]")
+
+    def _named(form: str) -> bool:
+        start = 0
+        while (idx := prompt.find(form, start)) != -1:
+            end = idx + len(form)
+            if end >= len(prompt):
+                return True
+            nxt = prompt[end]
+            if nxt == "/":
+                return True
+            if not path_char.match(nxt) and not (
+                nxt == "." and end + 1 < len(prompt)
+                and (path_char.match(prompt[end + 1]) or prompt[end + 1] == "/")
+            ):
+                return True
+            start = idx + 1
+        return False
+
+    root = repo_root.resolve(strict=False)
+    matches: set[Path] = set()
+    for line in listing.splitlines():
+        if not line.startswith("worktree "):
+            continue
+        raw = line[len("worktree "):].strip()
+        if not raw:
+            continue
+        resolved = Path(raw).resolve(strict=False)
+        if resolved == root:
+            continue
+        if _named(raw) or _named(str(resolved)):
+            matches.add(resolved)
+    if len(matches) == 1:
+        return next(iter(matches))
+    if len(matches) > 1:
+        _debug(f"verdict-tracker: ambiguous worktree refs in prompt ({len(matches)}); flat-only")
+    return None
+
+
 def run_verdict_tracker(event: dict[str, Any], repo_root: Path) -> int:
     tool_input = event.get("tool_input")
     if not isinstance(tool_input, dict):
@@ -2902,13 +2980,22 @@ def run_verdict_tracker(event: dict[str, Any], repo_root: Path) -> int:
     if subagent not in WARDEN_SUBAGENT_TYPES:
         return 0
 
+    def _blocks_text(blocks: list[Any]) -> str:
+        return "\n".join(
+            str(item.get("text", "")) if isinstance(item, dict) else str(item)
+            for item in blocks
+        )
+
     response = event.get("tool_response")
     if isinstance(response, dict):
-        text = str(response.get("content") or response.get("response") or response.get("text") or "")
+        inner = response.get("content") or response.get("response") or response.get("text") or ""
+        # The live harness sends content as a list of text blocks; str() on it
+        # would repr-escape newlines and defeat the ^-anchored verdict regex.
+        text = _blocks_text(inner) if isinstance(inner, list) else str(inner)
     elif isinstance(response, str):
         text = response
     elif isinstance(response, list):
-        text = "\n".join(str(item.get("text", "")) if isinstance(item, dict) else str(item) for item in response)
+        text = _blocks_text(response)
     else:
         return 0
 
@@ -2917,6 +3004,28 @@ def run_verdict_tracker(event: dict[str, Any], repo_root: Path) -> int:
         return 0
 
     verdict = match.group(1).upper()
+
+    # LIA-376: the Agent PostToolUse event carries the launch-dir cwd, so when
+    # the dispatch prompt names a (single) registered worktree whose bucket
+    # differs from the event-cwd bucket, the verdict belongs to THAT worktree's
+    # gate — write it there INSTEAD of the event-cwd bucket. Crediting the
+    # launch bucket with a verdict about another worktree's diff would let a
+    # SHIP satisfy a gate for changes the reviewer never saw (wrong-credit).
+    # No worktree named (or ambiguous): event-cwd bucket, today's behavior.
+    wt = _worktree_from_prompt(tool_input, repo_root)
+    if wt is not None:
+        current_bucket = _claude_marker_dir(repo_root)
+        with worktree_override(wt):
+            if _claude_marker_dir(repo_root) != current_bucket:
+                _write_verdict(
+                    repo_root,
+                    subagent,
+                    verdict,
+                    f"{subagent} returned {verdict} (routed to reviewed worktree {wt})",
+                    source="agent",
+                )
+                _debug(f"verdict-tracker: {subagent} → {verdict} routed to {wt}")
+                return 0
     _write_verdict(repo_root, subagent, verdict, f"{subagent} returned {verdict}", source="agent")
     _debug(f"verdict-tracker: {subagent} → {verdict}")
     return 0

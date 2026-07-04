@@ -1357,6 +1357,228 @@ def test_verdict_tracker_ignores_non_warden_agents(tmp_path):
     assert not (repo / ".claude" / ".warden-verdicts.json").exists()
 
 
+def _repo_with_worktree(tmp_path: Path, name: str = "wt-a", subdir: str = ".claude/worktrees") -> tuple[Path, Path]:
+    """A git repo with one commit and one linked worktree under ``subdir``."""
+    repo = git_repo(tmp_path)
+    (repo / "README.md").write_text("seed\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init", "--no-verify"],
+        cwd=repo, check=True, stdout=subprocess.DEVNULL,
+    )
+    wt = repo / subdir / name
+    wt.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "worktree", "add", str(wt), "-b", f"branch-{name}"],
+        cwd=repo, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    return repo, wt.resolve()
+
+
+def _bucket_dir(repo: Path, wt: Path) -> Path:
+    import hashlib
+
+    wt_id = hashlib.sha1(str(wt.resolve()).encode()).hexdigest()[:12]
+    return repo / ".claude" / "worktree-markers" / wt_id
+
+
+def test_verdict_tracker_parses_dict_content_block_list(tmp_path):
+    # Live-harness shape: tool_response.content is a LIST of text blocks.
+    # str() on it repr-escapes newlines and the ^-anchored verdict regex never
+    # matches — verified live 2026-07-04 (real dispatch captured by the bash
+    # hook but missed by this tracker).
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+
+    event = {
+        "cwd": str(repo),
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "code-reviewer"},
+        "tool_response": {
+            "content": [{"type": "text", "text": "## Verdict: SHIP\n\nNo blocking issues."}]
+        },
+    }
+    hooks.run_verdict_tracker(event, repo)
+
+    verdicts = json.loads((repo / ".claude" / ".warden-verdicts.json").read_text())
+    assert verdicts["code-reviewer"]["verdict"] == "SHIP"
+
+
+def test_worktree_from_prompt_single_match(tmp_path):
+    hooks = load_hooks()
+    repo, wt = _repo_with_worktree(tmp_path)
+    tool_input = {"subagent_type": "code-reviewer", "prompt": f"Review the diff in the worktree at {wt}."}
+    assert hooks._worktree_from_prompt(tool_input, repo) == wt
+
+
+def test_worktree_from_prompt_no_path_returns_none(tmp_path):
+    hooks = load_hooks()
+    repo, _ = _repo_with_worktree(tmp_path)
+    tool_input = {"subagent_type": "code-reviewer", "prompt": "Review the working-tree diff."}
+    assert hooks._worktree_from_prompt(tool_input, repo) is None
+
+
+def test_worktree_from_prompt_ambiguous_returns_none(tmp_path):
+    hooks = load_hooks()
+    repo, wt_a = _repo_with_worktree(tmp_path)
+    wt_b = repo / ".claude" / "worktrees" / "wt-b"
+    subprocess.run(
+        ["git", "worktree", "add", str(wt_b), "-b", "branch-wt-b"],
+        cwd=repo, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    prompt = f"Compare the worktree at {wt_a} against the one at {wt_b.resolve()}."
+    tool_input = {"subagent_type": "code-reviewer", "prompt": prompt}
+    assert hooks._worktree_from_prompt(tool_input, repo) is None
+
+
+def test_worktree_from_prompt_unregistered_path_returns_none(tmp_path):
+    hooks = load_hooks()
+    repo, _ = _repo_with_worktree(tmp_path)
+    fake = repo / ".claude" / "worktrees" / "not-registered"
+    tool_input = {"subagent_type": "code-reviewer", "prompt": f"Review the worktree at {fake}."}
+    assert hooks._worktree_from_prompt(tool_input, repo) is None
+
+
+def test_worktree_from_prompt_prefix_sibling_not_ambiguous(tmp_path):
+    # gpt round-1 finding: wt-a is a string prefix of wt-a-extended; a prompt
+    # naming ONLY the longer path must route to it, not report ambiguity.
+    hooks = load_hooks()
+    repo, _wt_a = _repo_with_worktree(tmp_path, name="wt-a")
+    wt_ext = repo / ".claude" / "worktrees" / "wt-a-extended"
+    subprocess.run(
+        ["git", "worktree", "add", str(wt_ext), "-b", "branch-wt-a-extended"],
+        cwd=repo, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    tool_input = {
+        "subagent_type": "code-reviewer",
+        "prompt": f"Review the diff in the worktree at {wt_ext.resolve()}.",
+    }
+    assert hooks._worktree_from_prompt(tool_input, repo) == wt_ext.resolve()
+
+
+def test_worktree_from_prompt_unregistered_longer_sibling_not_credited(tmp_path):
+    # gpt round-2 finding: a prompt naming an UNREGISTERED longer sibling
+    # (wt-a-extended when only wt-a is registered) must not credit wt-a —
+    # the reviewed tree was never wt-a. Boundary check, not registry shadowing.
+    hooks = load_hooks()
+    repo, wt_a = _repo_with_worktree(tmp_path, name="wt-a")
+    ghost = f"{wt_a}-extended"
+    tool_input = {
+        "subagent_type": "code-reviewer",
+        "prompt": f"Review the diff in the worktree at {ghost}.",
+    }
+    assert hooks._worktree_from_prompt(tool_input, repo) is None
+
+
+def test_worktree_from_prompt_dotted_sibling_not_credited(tmp_path):
+    # wt-a.backup must not credit wt-a ("." followed by a path char is a
+    # continuation), while a sentence-ending period is a boundary.
+    hooks = load_hooks()
+    repo, wt_a = _repo_with_worktree(tmp_path, name="wt-a")
+    tool_input = {
+        "subagent_type": "code-reviewer",
+        "prompt": f"Compare against the snapshot at {wt_a}.backup for context.",
+    }
+    assert hooks._worktree_from_prompt(tool_input, repo) is None
+
+
+def test_worktree_from_prompt_file_inside_worktree_counts(tmp_path):
+    hooks = load_hooks()
+    repo, wt = _repo_with_worktree(tmp_path)
+    tool_input = {
+        "subagent_type": "code-reviewer",
+        "prompt": f"Look at {wt}/scripts/foo.py in that worktree.",
+    }
+    assert hooks._worktree_from_prompt(tool_input, repo) == wt
+
+
+def test_worktree_from_prompt_outside_claude_worktrees(tmp_path):
+    # Round-1 plan-review regression case: worktrees are NOT all under
+    # .claude/worktrees/ (e.g. data/worktrees/LIA-124 in the live repo).
+    hooks = load_hooks()
+    repo, wt = _repo_with_worktree(tmp_path, name="LIA-124", subdir="data/worktrees")
+    tool_input = {"subagent_type": "code-reviewer", "prompt": f"Review the diff in the worktree at {wt}."}
+    assert hooks._worktree_from_prompt(tool_input, repo) == wt
+
+
+def test_verdict_tracker_routes_to_prompt_worktree_exclusively(tmp_path):
+    # gpt round-3 finding: crediting the event-cwd bucket with a verdict about
+    # ANOTHER worktree's diff is wrong-credit — the routed bucket is the ONLY
+    # write when the prompt names a different worktree.
+    hooks = load_hooks()
+    repo, wt = _repo_with_worktree(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True, exist_ok=True)
+
+    event = {
+        "cwd": str(repo),
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Agent",
+        "tool_input": {
+            "subagent_type": "code-reviewer",
+            "prompt": f"Review the working-tree diff in the worktree at {wt}.",
+        },
+        "tool_response": "## Verdict: SHIP\n\nNo blocking issues.",
+    }
+    hooks.run_verdict_tracker(event, repo)
+
+    routed = json.loads((_bucket_dir(repo, wt) / ".warden-verdicts.json").read_text())
+    assert routed["code-reviewer"]["verdict"] == "SHIP"
+    assert "routed to reviewed worktree" in routed["code-reviewer"]["reason"]
+    assert not (repo / ".claude" / ".warden-verdicts.json").exists()
+
+
+def test_verdict_tracker_never_credits_unnamed_worktree(tmp_path):
+    # ai-eng finding: a prompt naming ONLY worktree B must not credit worktree
+    # A (the launch cwd) — gate isolation for the bucket the event cwd is in.
+    hooks = load_hooks()
+    repo, wt_a = _repo_with_worktree(tmp_path, name="wt-a")
+    wt_b = repo / ".claude" / "worktrees" / "wt-b"
+    subprocess.run(
+        ["git", "worktree", "add", str(wt_b), "-b", "branch-wt-b"],
+        cwd=repo, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    wt_b = wt_b.resolve()
+    (repo / ".claude" / "wardens").mkdir(parents=True, exist_ok=True)
+
+    event = {
+        "cwd": str(wt_a),
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Agent",
+        "tool_input": {
+            "subagent_type": "code-reviewer",
+            "prompt": f"Review the diff in the worktree at {wt_b}.",
+        },
+        "tool_response": "## Verdict: SHIP\n\nNo blocking issues.",
+    }
+    hooks.run_verdict_tracker(event, repo)
+
+    routed = json.loads((_bucket_dir(repo, wt_b) / ".warden-verdicts.json").read_text())
+    assert routed["code-reviewer"]["verdict"] == "SHIP"
+    assert not (_bucket_dir(repo, wt_a) / ".warden-verdicts.json").exists()
+    assert not (repo / ".claude" / ".warden-verdicts.json").exists()
+
+
+def test_verdict_tracker_flat_only_without_prompt_worktree(tmp_path):
+    hooks = load_hooks()
+    repo, wt = _repo_with_worktree(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True, exist_ok=True)
+
+    event = {
+        "cwd": str(repo),
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Agent",
+        "tool_input": {"subagent_type": "code-reviewer", "prompt": "Review the working-tree diff."},
+        "tool_response": "## Verdict: SHIP\n\nNo blocking issues.",
+    }
+    hooks.run_verdict_tracker(event, repo)
+
+    flat = json.loads((repo / ".claude" / ".warden-verdicts.json").read_text())
+    assert flat["code-reviewer"]["verdict"] == "SHIP"
+    assert not (_bucket_dir(repo, wt) / ".warden-verdicts.json").exists()
+
+
 def test_plan_review_gate_shows_revise_escalation(tmp_path, capsys):
     hooks = load_hooks()
     repo = git_repo(tmp_path)
