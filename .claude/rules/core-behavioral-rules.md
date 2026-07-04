@@ -34,6 +34,7 @@
 - Before parallelizing, map independent vs dependent subtasks. Fan out only the independent ones with explicit output contracts and a reconcile step; never parallelize a dependency chain — plan→review→implement→test is sequential by necessity, agents on stale inputs produce stale outputs, and a subtask without full interface context hallucinates its contracts.
 - Default subagent model is Sonnet. Escalate to Opus only with stated reason.
 - Default to cross-platform. Flag OS-specific code loudly in PRs.
+- During planned implementation, log each forced deviation from the plan (edge case, wrong assumption, changed approach) as a `Deviation:` note in the session as it happens — each is a discovered unknown; capture at discovery, don't reconstruct later.
 - Chat responses always in English. Hebrew only inside artifacts.
 
 ## Code Exploration
