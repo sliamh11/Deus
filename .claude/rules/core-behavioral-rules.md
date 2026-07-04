@@ -1,5 +1,5 @@
 # Core Behavioral Rules
-# Always loaded. 800-token budget. Domain-specific rules are hook-retrieved.
+# Always loaded — keep it lean. Domain-specific rules are hook-retrieved.
 # Each rule: what + why. Adding a rule requires justification in the PR.
 
 ## Data & Security
