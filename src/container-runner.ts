@@ -174,6 +174,12 @@ export function buildContainerArgs(
     '-e',
     `DEUS_CONTEXT_AUTO_COMPACT_PCT=${CONTEXT_AUTO_COMPACT_PCT}`,
   );
+  // Forward the memory-injection dedup kill-switch (LIA-355) — the container
+  // env is enumerated, not inherited, so without this the in-container
+  // dedup toggle would read undefined and could never be turned off.
+  if (process.env.DEUS_MEMORY_DEDUP) {
+    args.push('-e', `DEUS_MEMORY_DEDUP=${process.env.DEUS_MEMORY_DEDUP}`); // LIA-355
+  }
 
   // R2 (LIA-315): never inject raw secrets into a webhook (publicIngress) container.
   // Curated actions that need Linear run host-brokered through the tool-proxy with
