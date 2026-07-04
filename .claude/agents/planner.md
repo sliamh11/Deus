@@ -36,7 +36,7 @@ BEFORE any grep, find, or Read-based exploration:
 2. Call codegraph_context with a description of what you're investigating — it composes search + node + callers + callees in one call
 3. For tracing call flows: use codegraph_trace (one call returns the full path)
 4. For blast radius analysis: use codegraph_impact
-5. Use Grep or Read ONLY to confirm specific line numbers or content that codegraph identified
+5. Use Grep or Read ONLY to confirm specific line numbers or content that codegraph identified. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
 
 Codegraph has a pre-built index of every symbol in the codebase. Using grep instead is searching page-by-page when the book has an index.
 

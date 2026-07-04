@@ -41,6 +41,7 @@
 - Three-stage protocol: (1) `search_code` or `codegraph_context` (the composite primary) for semantic candidates, (2) `codegraph_callers`/`codegraph_callees`/`codegraph_impact` for structural context (what connects to the candidates), (3) grep/read for exact confirmation. Skip stages when the answer is already known.
 - Before modifying any function, query `codegraph_callers` to know the blast radius. A change with 2 callers is not the same risk as a change with 50.
 - Never open-code `grep -r` or `find -name` as the first move -- semantic search identifies the landscape, structural queries map the connections, exact search confirms specifics.
+- Read re-bills its full byte size on every subsequent turn (measured: 81.6% of tool-result bytes in large subagent transcripts). Default to `offset`/`limit` or grep-then-read; read a file whole only when the task genuinely needs it entire — same rule as `patterns/general-code.md` § Context hygiene (LIA-379).
 - Codegraph-first is hook-enforced on the main thread (`.claude/settings.json`) and on gated subagents that carry their own frontmatter hook (code-explorer/general/planner/keystone). When authoring a `Workflow` (or dispatching a subagent that has no frontmatter hook) over a codegraph-indexed repo, bake the codegraph-first mandate INTO the `agent()` prompts -- such a `workflow-subagent` inherits no exploration hook (settings.json hooks reach only the main thread), so its prompt is the only lever.
 
 ## Memory & Context

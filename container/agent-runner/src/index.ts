@@ -39,6 +39,12 @@ import { createToolCallLogHook } from './tool-call-log.js';
 import { writeAvailableTools } from './available-tools-log.js';
 import { buildAllowedTools, computeTeamsNeeded } from './allowed-tools.js';
 import { subagentNudgeAppend } from './subagent-nudge.js';
+import { readDisciplineNudgeAppend } from './read-discipline-nudge.js';
+import {
+  ReadOversizeNudgeTracker,
+  createReadOversizeNudgeHook,
+  readOversizeMaxNudges,
+} from './read-oversize-nudge.js';
 import type { AgentRuntimeId } from './tool-broker.js';
 import { resolveGroupAttachmentPath } from './tool-broker.js';
 import { HookDispatchService } from './hook-dispatch-service.js';
@@ -835,6 +841,11 @@ async function runQuery(
   }
 
   const doomDetector = new DoomLoopDetector();
+  // Per-turn rate-limit state for the oversize-Read advisory (same lifecycle
+  // as doomDetector: fresh per runQuery call). LIA-379
+  const readOversizeTracker = new ReadOversizeNudgeTracker(
+    readOversizeMaxNudges(),
+  );
 
   // The OFFERED tool manifest for this dispatch (Claude backend). Hoisted to a
   // const so it can be both passed to query() AND captured for evolution
@@ -872,7 +883,14 @@ async function runQuery(
     hasProject,
     toolProfile,
   });
-  const fullSystemAppend = [systemAppend, subagentNudge]
+  // Read-discipline nudge: engineering context only, but NOT toolProfile-gated —
+  // Read exists on the webhook profile too and the measured cost is read volume,
+  // not the Task tool. Runtime kill-switch: DEUS_READ_DISCIPLINE_NUDGE=0.
+  const readDisciplineNudge = readDisciplineNudgeAppend({
+    enabled: process.env.DEUS_READ_DISCIPLINE_NUDGE !== '0', // LIA-379
+    hasProject,
+  });
+  const fullSystemAppend = [systemAppend, subagentNudge, readDisciplineNudge]
     .filter(Boolean)
     .join('\n\n');
 
@@ -1012,6 +1030,9 @@ async function runQuery(
           hooks.push(createDoomLoopHook(doomDetector));
           if (process.env.DEUS_TOOL_SIZE_LOG !== '0')
             hooks.push(createToolSizeLogHook());
+          if (process.env.DEUS_READ_OVERSIZE_NUDGE !== '0')
+            // LIA-379
+            hooks.push(createReadOversizeNudgeHook(readOversizeTracker));
           // LIA-154: structured per-call capture for evolution tool observability
           if (process.env.DEUS_TOOL_CALL_LOG !== '0')
             hooks.push(createToolCallLogHook());
@@ -1055,8 +1076,7 @@ async function runQuery(
         const evType = ev?.type as string | undefined;
         if (evType === 'content_block_delta') {
           const delta = ev?.delta as
-            | { type?: string; text?: string }
-            | undefined;
+            { type?: string; text?: string } | undefined;
           if (delta?.type === 'text_delta' && delta.text)
             pushPartial(delta.text);
         } else if (evType === 'content_block_start') {

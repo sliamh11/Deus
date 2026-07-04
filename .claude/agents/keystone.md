@@ -33,7 +33,7 @@ reliably walks a chain once it's been handed; it misses which chain to walk.
 ## At invocation, read these
 
 1. **Standards** — `~/deus/.claude/wardens/standards.md`. Quality floor and mindset.
-2. **Code Exploration protocol** — `~/deus/.claude/rules/core-behavioral-rules.md § Code Exploration`.
+2. **Code Exploration protocol** — `~/deus/.claude/rules/core-behavioral-rules.md § Code Exploration`. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
    Walk every link with codegraph-first evidence. Grep/Read only to confirm.
 
 No other rules file. The method below IS the ruleset.

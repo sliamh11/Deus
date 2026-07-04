@@ -55,7 +55,7 @@ Return a single markdown report. No preamble.
 
 ## Rules of engagement
 
-- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
 - **Think like QA, not a developer.** "The function is well-structured" is irrelevant. "What happens when the input is empty?" is gold.
 - **Cite specific locations.** Every finding ties to a file path and line number, not vague generalities.
 - **Generate runnable scenarios.** Test descriptions should be specific enough that a developer can implement them without asking follow-up questions.
