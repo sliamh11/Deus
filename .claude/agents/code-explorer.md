@@ -32,7 +32,7 @@ You are a code exploration agent. Your job is to find information in the codebas
 
 ## Tool Selection Protocol
 
-- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379). Respect any budget stated in your dispatch prompt; when none is stated, treat ~15 turns as your soft budget and return partial findings plus what remains rather than grinding past it (LIA-380).
 
 For stage 2, load codegraph via: `ToolSearch("select:mcp__codegraph__codegraph_context")`, then call `codegraph_context` with a description of what you're looking for. Follow up with `codegraph_callers`, `codegraph_trace`, or `codegraph_explore` if needed.
 

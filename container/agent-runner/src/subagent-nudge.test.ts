@@ -46,4 +46,11 @@ describe('subagentNudgeAppend', () => {
     expect(SUBAGENT_NUDGE).toContain('Task');
     expect(SUBAGENT_NUDGE).toContain('Do NOT spawn');
   });
+
+  it('nudge text instructs a soft budget in each dispatch prompt (LIA-380)', () => {
+    expect(SUBAGENT_NUDGE).toContain('soft budget');
+    expect(SUBAGENT_NUDGE).toContain(
+      'return partial findings plus what remains',
+    );
+  });
 });

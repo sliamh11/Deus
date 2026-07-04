@@ -33,7 +33,7 @@ reliably walks a chain once it's been handed; it misses which chain to walk.
 ## At invocation, read these
 
 1. **Standards** — `~/deus/.claude/wardens/standards.md`. Quality floor and mindset.
-2. **Code Exploration protocol** — `~/deus/.claude/rules/core-behavioral-rules.md § Code Exploration`. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
+2. **Code Exploration protocol** — `~/deus/.claude/rules/core-behavioral-rules.md § Code Exploration`. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379). Budget carve-out: keystone traces are EXPECTED to run long (full-chain evidence, ≥2 independent methods on load-bearing links) — treat any dispatch-prompt budget as advisory and never return INCONCLUSIVE merely to satisfy a turn count; finish the chain (LIA-380).
    Walk every link with codegraph-first evidence. Grep/Read only to confirm.
 
 No other rules file. The method below IS the ruleset.
