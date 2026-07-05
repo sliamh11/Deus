@@ -225,6 +225,24 @@ describe('TelegramProvider', () => {
     });
   });
 
+  describe('sendMessage failure propagation', () => {
+    it('throws when the bot is not initialized', async () => {
+      await expect(provider.sendMessage('tg:123', 'hi')).rejects.toThrow(
+        'Telegram bot not initialized',
+      );
+    });
+
+    it('throws when the underlying send fails', async () => {
+      await provider.connect();
+      const bot = (provider as any).bot;
+      bot.api.sendMessage.mockRejectedValue(new Error('network down'));
+
+      await expect(provider.sendMessage('tg:123', 'hi')).rejects.toThrow(
+        'network down',
+      );
+    });
+  });
+
   describe('basic operations', () => {
     it('reports connected after successful connect', async () => {
       await provider.connect();

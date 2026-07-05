@@ -99,4 +99,35 @@ describe('GmailProvider', () => {
       expect(chats).toEqual([]);
     });
   });
+
+  describe('sendMessage failure propagation', () => {
+    it('throws when gmail is not initialized', async () => {
+      await expect(provider.sendMessage('gmail:abc', 'hi')).rejects.toThrow(
+        'Gmail not initialized',
+      );
+    });
+
+    it('throws when there is no thread metadata for the reply', async () => {
+      (provider as any).gmail = { users: { messages: { send: vi.fn() } } };
+
+      await expect(provider.sendMessage('gmail:abc', 'hi')).rejects.toThrow(
+        'No thread metadata for reply',
+      );
+    });
+
+    it('throws when the underlying send fails', async () => {
+      const send = vi.fn().mockRejectedValue(new Error('quota exceeded'));
+      (provider as any).gmail = { users: { messages: { send } } };
+      (provider as any).threadMeta.set('abc', {
+        sender: 'a@b.com',
+        senderName: 'A',
+        subject: 'hi',
+        messageId: '<id@b.com>',
+      });
+
+      await expect(provider.sendMessage('gmail:abc', 'hi')).rejects.toThrow(
+        'quota exceeded',
+      );
+    });
+  });
 });

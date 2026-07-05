@@ -93,12 +93,34 @@ describe('OutlookProvider', () => {
     });
   });
 
-  describe('sendMessage', () => {
-    it('is a no-op when not connected (no graph client)', async () => {
-      // No throw, no send — there is no conversation metadata and no client.
+  describe('sendMessage failure propagation', () => {
+    it('throws when not connected (no graph client)', async () => {
       await expect(
         provider.sendMessage('outlook:conv-123', 'hello'),
-      ).resolves.toBeUndefined();
+      ).rejects.toThrow('Outlook not initialized');
+    });
+
+    it('throws when there is no conversation metadata for the reply', async () => {
+      (provider as any).graph = { api: vi.fn() };
+
+      await expect(
+        provider.sendMessage('outlook:conv-123', 'hello'),
+      ).rejects.toThrow('No conversation metadata for reply');
+    });
+
+    it('throws when the underlying send fails', async () => {
+      const post = vi.fn().mockRejectedValue(new Error('graph API error'));
+      (provider as any).graph = { api: vi.fn(() => ({ post })) };
+      (provider as any).convMeta.set('conv-123', {
+        messageId: 'msg-1',
+        sender: 'a@b.com',
+        senderName: 'A',
+        subject: 'hi',
+      });
+
+      await expect(
+        provider.sendMessage('outlook:conv-123', 'hello'),
+      ).rejects.toThrow('graph API error');
     });
   });
 

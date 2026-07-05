@@ -33,6 +33,7 @@ export class GroupQueue {
   private waitingGroups: string[] = [];
   private processMessagesFn: ((groupJid: string) => Promise<boolean>) | null =
     null;
+  private onTerminalFailureFn: ((groupJid: string) => void) | null = null;
   private shuttingDown = false;
 
   private getGroup(groupJid: string): GroupState {
@@ -57,6 +58,10 @@ export class GroupQueue {
 
   setProcessMessagesFn(fn: (groupJid: string) => Promise<boolean>): void {
     this.processMessagesFn = fn;
+  }
+
+  setOnTerminalFailure(fn: (groupJid: string) => void): void {
+    this.onTerminalFailureFn = fn;
   }
 
   enqueueMessageCheck(groupJid: string): void {
@@ -268,6 +273,11 @@ export class GroupQueue {
         'Max retries exceeded, dropping messages (will retry on next incoming message)',
       );
       state.retryCount = 0;
+      try {
+        this.onTerminalFailureFn?.(groupJid);
+      } catch (err) {
+        logger.error({ groupJid, err }, 'onTerminalFailure callback threw');
+      }
       return;
     }
 

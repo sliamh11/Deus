@@ -176,13 +176,12 @@ export class TeamsProvider implements ChannelProvider {
     // KNOWN LIMITATION: Bot Framework proactive messaging needs a stored
     // conversation reference, captured only from a prior inbound activity. With
     // no reference (no prior inbound seen) there is no way to address the
-    // conversation, so we log and skip rather than fail loudly.
+    // conversation, so we throw rather than fail silently.
+    // plain Error: packages/* cannot import src/errors/ (see error-discipline.md Issue #220); matches this file's existing plain-Error convention
     if (!this.adapter || !ref) {
-      logger.warn(
-        { chatId },
-        'No conversation reference for reply, cannot send (no prior inbound seen)',
+      throw new Error(
+        `No conversation reference for reply, cannot send (no prior inbound seen): ${chatId}`,
       );
-      return;
     }
 
     try {
@@ -195,7 +194,8 @@ export class TeamsProvider implements ChannelProvider {
       );
       logger.info({ chatId }, 'Teams message sent');
     } catch (err) {
-      logger.error({ chatId, err }, 'Failed to send Teams message');
+      logger.debug({ chatId, err }, 'Teams send failed, rethrowing to caller');
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 

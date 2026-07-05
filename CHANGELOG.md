@@ -4,6 +4,26 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.25.0](https://github.com/sliamh11/Deus/compare/v1.24.0...v1.25.0) (2026-07-01)
+
+
+### Features
+
+* **agent-runner:** nudge parallel subagent fan-out in engineering context (LIA-343) ([#965](https://github.com/sliamh11/Deus/issues/965)) ([7d34909](https://github.com/sliamh11/Deus/commit/7d349093b96cedef0fd1dc6bcd6abe12e62c38d9))
+* **cli:** add deus preflight subcommand for concurrent-session detection (LIA-284) ([#963](https://github.com/sliamh11/Deus/issues/963)) ([901e014](https://github.com/sliamh11/Deus/commit/901e0141c3ca3e4cc1dcfa7d8a3e47a4c6eb51ac))
+* **memory:** procedure-memory works in external projects (seamless, default-on) ([#967](https://github.com/sliamh11/Deus/issues/967)) ([552dc96](https://github.com/sliamh11/Deus/commit/552dc96b3884eb59beaaee5f3c636ab0e77b410c))
+* **multi-agent:** real-container E2E harness for dispatch (LIA-127 [#9](https://github.com/sliamh11/Deus/issues/9)) ([#960](https://github.com/sliamh11/Deus/issues/960)) ([aab4e31](https://github.com/sliamh11/Deus/commit/aab4e31a911db7f9cd0afd05c492fd0bc0ba29c9))
+* **preflight:** SessionStart hook warns on concurrent-session collisions (LIA-284) ([#964](https://github.com/sliamh11/Deus/issues/964)) ([61da659](https://github.com/sliamh11/Deus/commit/61da6593ae20f648971bd59b5a43dc3205c2b34d))
+* **scripts:** subagent fan-out measurement report (LIA-343 validation) ([#974](https://github.com/sliamh11/Deus/issues/974)) ([29eca53](https://github.com/sliamh11/Deus/commit/29eca539fb52b5f6f66ce7c6431c41613f988402))
+
+
+### Bug Fixes
+
+* **agent-runner:** measure model-facing tool-output size, not SDK internals (LIA-347) ([#976](https://github.com/sliamh11/Deus/issues/976)) ([9744b9b](https://github.com/sliamh11/Deus/commit/9744b9b37ecea9677ade1317eaeef137bad4f828))
+* **cli:** auto-start fcc-server on deus provider/model switch (LIA-345) ([#978](https://github.com/sliamh11/Deus/issues/978)) ([e2b46a2](https://github.com/sliamh11/Deus/commit/e2b46a24da01f098562551ad2b9fd04a6aa077bf))
+* **memory:** atomic, lock-serialized previous: write to end the /compress race (LIA-284) ([#966](https://github.com/sliamh11/Deus/issues/966)) ([8061bfb](https://github.com/sliamh11/Deus/commit/8061bfb646a5370127d9d4be32cc01aecbdbd996))
+* **memory:** cap MCP memory_recall payload server-side (LIA-344) ([#975](https://github.com/sliamh11/Deus/issues/975)) ([d6f0884](https://github.com/sliamh11/Deus/commit/d6f08841659651b138af3a94953151435ac46369))
+
 ## [1.24.0](https://github.com/sliamh11/Deus/compare/v1.23.0...v1.24.0) (2026-06-27)
 
 

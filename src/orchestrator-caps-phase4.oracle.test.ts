@@ -79,6 +79,8 @@ vi.mock('./db.js', () => ({
   setRegisteredGroup: vi.fn(),
   getLastCompactedAt: vi.fn(() => undefined),
   setLastCompactedAt: vi.fn(),
+  getAutoCompressWatermark: vi.fn(() => undefined),
+  setAutoCompressWatermark: vi.fn(),
 }));
 
 vi.mock('./container-runner.js', () => ({
@@ -347,6 +349,7 @@ function makeQueue() {
     enqueueMessageCheck: vi.fn(),
     sendMessage: vi.fn(() => false as boolean),
     registerProcess: vi.fn(),
+    setOnTerminalFailure: vi.fn(),
   };
 }
 

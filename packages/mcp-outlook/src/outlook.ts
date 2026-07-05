@@ -216,10 +216,8 @@ export class OutlookProvider implements ChannelProvider {
   }
 
   async sendMessage(chatId: string, text: string): Promise<void> {
-    if (!this.graph) {
-      logger.warn('Outlook not initialized');
-      return;
-    }
+    // plain Error: packages/* cannot import src/errors/ (see error-discipline.md Issue #220); matches this file's existing plain-Error convention
+    if (!this.graph) throw new Error('Outlook not initialized');
 
     const conversationId = chatId.replace(/^outlook:/, '');
     const meta = this.convMeta.get(conversationId);
@@ -227,13 +225,11 @@ export class OutlookProvider implements ChannelProvider {
     // KNOWN LIMITATION: the reply target (a messageId in the conversation) is
     // populated only after a poll cycle has seen that conversation. A reply to a
     // thread received before this process started has no stored messageId, so we
-    // log and skip rather than send into the void.
+    // throw rather than send into the void.
     if (!meta) {
-      logger.warn(
-        { chatId },
-        'No conversation metadata for reply, cannot send (no prior inbound seen)',
+      throw new Error(
+        `No conversation metadata for reply, cannot send (no prior inbound seen): ${chatId}`,
       );
-      return;
     }
 
     try {
@@ -242,7 +238,11 @@ export class OutlookProvider implements ChannelProvider {
         .post({ comment: text });
       logger.info({ to: meta.sender, conversationId }, 'Outlook reply sent');
     } catch (err) {
-      logger.error({ chatId, err }, 'Failed to send Outlook reply');
+      logger.debug(
+        { chatId, err },
+        'Outlook send failed, rethrowing to caller',
+      );
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 

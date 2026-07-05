@@ -10,6 +10,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { LoggingMessageNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 
+import { RetryableError } from '../errors/index.js';
 import { logger } from '../logger.js';
 import type {
   Channel,
@@ -139,10 +140,18 @@ export class McpChannelAdapter implements Channel {
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
-    await this.client.callTool({
+    const result = await this.client.callTool({
       name: 'send_message',
       arguments: { chat_id: jid, text },
     });
+    if (result.isError) {
+      const msg = Array.isArray(result.content)
+        ? result.content.map((c) => ('text' in c ? c.text : '')).join(' ')
+        : 'unknown error';
+      throw new RetryableError(`send_message failed: ${msg}`, {
+        context: { jid, channel: this.name },
+      });
+    }
   }
 
   isConnected(): boolean {

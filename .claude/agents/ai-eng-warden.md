@@ -76,7 +76,7 @@ Return a single markdown report. No preamble.
 - **Think like a token accountant for efficiency rules.** Estimate token cost of prompt changes. Flag gratuitous context.
 - **Tight output.** Target ≤60 lines in diff mode, ≤120 lines in audit mode. Focus on high-signal findings.
 - **Fail-closed on missing rules file.** If rules file doesn't exist, report "rules file missing" and stop.
-- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
 
 ## Dismissal feedback
 

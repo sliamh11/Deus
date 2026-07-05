@@ -138,6 +138,12 @@ Common traps:
 **Check:** For each function the plan references, has the actual signature been read and verified? Do the parameter names, types, and return types match what the plan assumes?
 **Rule:** Plans must verify the API surface they depend on by reading the source. Wrong method signatures, dead parameters, and phantom APIs are the #1 cause of multi-round plan-reviewer cycles. Read the function, then write the plan — not the reverse.
 
+## taste-pass
+**Severity:** warning
+**Applies when:** Plan changes product user-facing surfaces — chat/channel message formatting or templates, TUI panels, CLI/command output, web UI, or user-facing HTML artifacts. Repo documentation (README, CONTRIBUTING, `docs/`) is excluded — prose quality there is copy-writer territory, not taste elicitation.
+**Check:** Does the plan include a cheap reaction step — 3-4 divergent throwaway variants (mock, HTML artifact, sample output) for the user to react to — before committing to one design?
+**Rule:** For look-and-feel work, elicit taste before implementation: generate divergent variants at prototype cost, let the user react, then implement only the chosen direction. Skip when the change is backend-only, a mechanical refactor, or the user already specified the exact design.
+
 ---
 
 ## Remediation Details
@@ -214,3 +220,7 @@ Common traps:
 ### api-surface-verification
 **Cite:** RETRO-2026-05-11-02; Phase 5-6 postmortem (6 rounds caused by RuntimeRegistry.resolve() wrong signature, GroupQueue dead parameter)
 **Remediation:** For each referenced function, open the source file and read the actual signature. Update the plan to match the real parameter names, types, and return types. Add a "Verified signatures" note citing the file and line number for each function.
+
+### taste-pass
+**Cite:** map-vs-territory analysis (2026-07-04; durable copy in Session-Logs/2026-07-04/ after /compress) — unknown knowns (taste the user only recognizes on sight) are cheapest converted at prototype cost, not one-violation-each through the evolution feedback loop.
+**Remediation:** Add a pre-implementation step: produce 3-4 divergent throwaway variants of the user-facing surface (fake data is fine), present them for reaction, record the pick and why, then implement only the winner. The variants are disposable — do not wire up backend state to render them.

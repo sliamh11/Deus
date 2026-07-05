@@ -485,19 +485,30 @@ describe('DiscordProvider', () => {
       expect(mockChannelFetch).toHaveBeenCalledWith('9876543210');
     });
 
-    it('handles send failure gracefully', async () => {
+    it('throws on send failure instead of swallowing it', async () => {
       await provider.connect();
 
       mockChannelFetch.mockRejectedValueOnce(new Error('Channel not found'));
 
       await expect(
         provider.sendMessage('dc:1234567890123456', 'Will fail'),
-      ).resolves.toBeUndefined();
+      ).rejects.toThrow('Channel not found');
     });
 
-    it('does nothing when client is not initialized', async () => {
-      await provider.sendMessage('dc:1234567890123456', 'No client');
-      // No error, no API call
+    it('throws when the channel is not found or not text-based', async () => {
+      await provider.connect();
+
+      mockChannelFetch.mockResolvedValueOnce(null);
+
+      await expect(
+        provider.sendMessage('dc:1234567890123456', 'no channel'),
+      ).rejects.toThrow('Discord channel not found or not text-based');
+    });
+
+    it('throws when the client is not initialized', async () => {
+      await expect(
+        provider.sendMessage('dc:1234567890123456', 'No client'),
+      ).rejects.toThrow('Discord client not initialized');
       expect(mockChannelFetch).not.toHaveBeenCalled();
     });
 

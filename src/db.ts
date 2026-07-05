@@ -280,6 +280,16 @@ function createSchema(database: Database.Database): void {
     );
   `);
 
+  // Auto-compress capture watermark, keyed by chat — advanced from actual
+  // captured message timestamps (LIA-373), not session lifecycle or turn
+  // timing, so it has no dependency on how long an agent turn runs.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS auto_compress_state (
+      chat_jid TEXT PRIMARY KEY,
+      last_captured_at TEXT NOT NULL
+    );
+  `);
+
   // Add allow_external_push column to projects (migration for existing DBs).
   // Default 0 = external projects cannot push/merge unless explicitly allowlisted.
   try {
@@ -925,6 +935,22 @@ export function getLastCompactedAt(
           .get(groupFolder)
   ) as { last_compacted_at: string | null } | undefined;
   return row?.last_compacted_at ?? undefined;
+}
+
+export function getAutoCompressWatermark(chatJid: string): string | undefined {
+  const row = db
+    .prepare(
+      'SELECT last_captured_at FROM auto_compress_state WHERE chat_jid = ?',
+    )
+    .get(chatJid) as { last_captured_at: string } | undefined;
+  return row?.last_captured_at;
+}
+
+export function setAutoCompressWatermark(chatJid: string, ts: string): void {
+  db.prepare(
+    `INSERT INTO auto_compress_state (chat_jid, last_captured_at) VALUES (?, ?)
+     ON CONFLICT(chat_jid) DO UPDATE SET last_captured_at = excluded.last_captured_at`,
+  ).run(chatJid, ts);
 }
 
 export function getAllSessions(): Record<string, RuntimeSession> {

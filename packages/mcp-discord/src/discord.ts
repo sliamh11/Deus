@@ -232,14 +232,16 @@ export class DiscordProvider implements ChannelProvider {
   }
 
   async sendMessage(chatId: string, text: string): Promise<void> {
-    if (!this.client) return;
+    // plain Error: packages/* cannot import src/errors/ (see error-discipline.md Issue #220); matches this file's existing plain-Error convention
+    if (!this.client) throw new Error('Discord client not initialized');
     try {
       const channelId = chatId.replace(/^dc:/, '');
       const channel = await this.client.channels.fetch(channelId);
 
       if (!channel || !('send' in channel)) {
-        logger.warn({ chatId }, 'Discord channel not found or not text-based');
-        return;
+        throw new Error(
+          `Discord channel not found or not text-based: ${chatId}`,
+        );
       }
 
       const textChannel = channel as TextChannel;
@@ -252,7 +254,11 @@ export class DiscordProvider implements ChannelProvider {
         }
       }
     } catch (err) {
-      logger.error({ chatId, err }, 'Failed to send Discord message');
+      logger.debug(
+        { chatId, err },
+        'Discord send failed, rethrowing to caller',
+      );
+      throw err instanceof Error ? err : new Error(String(err));
     }
   }
 

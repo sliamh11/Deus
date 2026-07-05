@@ -1,5 +1,5 @@
 # Core Behavioral Rules
-# Always loaded. 800-token budget. Domain-specific rules are hook-retrieved.
+# Always loaded — keep it lean. Domain-specific rules are hook-retrieved.
 # Each rule: what + why. Adding a rule requires justification in the PR.
 
 ## Data & Security
@@ -34,12 +34,14 @@
 - Before parallelizing, map independent vs dependent subtasks. Fan out only the independent ones with explicit output contracts and a reconcile step; never parallelize a dependency chain — plan→review→implement→test is sequential by necessity, agents on stale inputs produce stale outputs, and a subtask without full interface context hallucinates its contracts.
 - Default subagent model is Sonnet. Escalate to Opus only with stated reason.
 - Default to cross-platform. Flag OS-specific code loudly in PRs.
+- During planned implementation, log each forced deviation from the plan (edge case, wrong assumption, changed approach) as a `Deviation:` note in the session as it happens — each is a discovered unknown; capture at discovery, don't reconstruct later.
 - Chat responses always in English. Hebrew only inside artifacts.
 
 ## Code Exploration
 - Three-stage protocol: (1) `search_code` or `codegraph_explore` (the composite primary) for semantic candidates, (2) `codegraph_callers`/`codegraph_callees`/`codegraph_impact` for structural context (what connects to the candidates), (3) grep/read for exact confirmation. Skip stages when the answer is already known.
 - Before modifying any function, query `codegraph_callers` to know the blast radius. A change with 2 callers is not the same risk as a change with 50.
 - Never open-code `grep -r` or `find -name` as the first move -- semantic search identifies the landscape, structural queries map the connections, exact search confirms specifics.
+- Read re-bills its full byte size on every subsequent turn (measured: 81.6% of tool-result bytes in large subagent transcripts). Default to `offset`/`limit` or grep-then-read; read a file whole only when the task genuinely needs it entire — same rule as `patterns/general-code.md` § Context hygiene (LIA-379).
 - Codegraph-first is hook-enforced on the main thread (`.claude/settings.json`) and on gated subagents that carry their own frontmatter hook (code-explorer/general/planner/keystone). When authoring a `Workflow` (or dispatching a subagent that has no frontmatter hook) over a codegraph-indexed repo, bake the codegraph-first mandate INTO the `agent()` prompts -- such a `workflow-subagent` inherits no exploration hook (settings.json hooks reach only the main thread), so its prompt is the only lever.
 
 ## Memory & Context

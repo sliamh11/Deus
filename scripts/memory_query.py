@@ -28,6 +28,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 import memory_tree as mt  # noqa: E402
 from auto_memory_dir import resolve_auto_memory_dir  # noqa: E402
+from injection_dedup import block_key, load_seen, save_seen  # noqa: E402
 
 LOG_FILE = Path(os.environ.get(
     "DEUS_RETRIEVAL_LOG",
@@ -87,6 +88,15 @@ def _wrap_untrusted(body: str, *, label: str) -> str:
     ])
 
 
+# LIA-355: conservative upper bound on _wrap_untrusted's added chars (framing
+# header + 2 sentinel lines + footer; actual ≈406). Callers that must keep the
+# WRAPPED output under an external cap (memory_retrieval_hook's 4096 slice)
+# subtract this from their budget so their own truncation is a true no-op —
+# otherwise an external cut could chop content whose dedup keys were already
+# persisted (mark-only-what-survives would be violated at the boundary).
+WRAP_OVERHEAD_CHARS = 512
+
+
 def _truncate_body(body: str, max_context_chars: int | None) -> str:
     """Head-truncate a to-be-wrapped body to a char budget.
 
@@ -101,13 +111,23 @@ def _truncate_body(body: str, max_context_chars: int | None) -> str:
 
 
 def _format_context(
-    results: list[dict], fell_back: bool, *, max_context_chars: int | None = None
+    results: list[dict],
+    fell_back: bool,
+    *,
+    max_context_chars: int | None = None,
+    bodies: dict[str, str] | None = None,
 ) -> str:
     if fell_back or not results:
         return ""
     body_lines: list[str] = []
     for r in results:
-        content = _read_node_file(r["path"])
+        # `bodies` is a read CACHE from the dedup filter (LIA-355), not an
+        # authority: on a cache miss (e.g. the pre-read transiently failed),
+        # fall back to reading the file — never silently drop a block the
+        # non-dedup path would have rendered.
+        content = (bodies.get(r["path"]) if bodies is not None else None) or (
+            _read_node_file(r["path"])
+        )
         if content:
             body_lines.append(f"--- {r['path']} (score: {r['score']:.4f}) ---")
             body_lines.append(content)
@@ -123,6 +143,8 @@ def _log_retrieval(
     query: str,
     result: dict,
     source: str,
+    context_chars: int = 0,
+    deduped: str | None = None,
 ) -> None:
     prompt_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
     entry = {
@@ -132,7 +154,16 @@ def _log_retrieval(
         "fell_back": result["fell_back"],
         "paths": [r["path"] for r in result["results"]],
         "source": source,
+        # LIA-354: size of the FINAL formatted context (post-truncation) —
+        # `paths` reflects pre-truncation results, so without this a silent
+        # max_context_chars regression is invisible in the production log.
+        "context_chars": context_chars,
     }
+    # LIA-355: post-filter observability — `paths` above is already the
+    # post-dedup list (the filter mutates result["results"]); `deduped`
+    # records dropped_of_total so the filter's effect is visible in the log.
+    if deduped is not None:
+        entry["deduped"] = deduped
     try:
         LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(LOG_FILE, "a", encoding="utf-8") as f:
@@ -223,6 +254,25 @@ def _intent_timeout() -> float:
     return v if v > 0 else 10.0
 
 
+def _intent_keep_alive() -> str:
+    """Resolve the intent-classify keep_alive duration (Ollama duration string).
+
+    DEUS_INTENT_KEEP_ALIVE (LIA-377) overrides; default 1h. This classify
+    path is the only caller of gemma4:e2b, so unrelated Ollama model churn
+    (e.g. a local benchmark loading other models) evicts it between calls,
+    paying a ~9-11s cold-load tax on nearly every invocation. Ollama's
+    scheduler evicts resident models under real system-memory pressure
+    regardless of keep_alive (verified via /opt/homebrew/var/log/ollama.log:
+    "predicted to exceed available memory, evicting", gated on system_free,
+    not on any per-model reservation) -- keep_alive only prevents this
+    classify path's own idle-timeout self-unload. A long window costs
+    nothing extra against pressure-driven eviction, and this path fires on
+    nearly every prompt while procedure-memory is on, so 1h effectively
+    keeps it resident for the life of an active session.
+    """
+    return os.environ.get("DEUS_INTENT_KEEP_ALIVE", "").strip() or "1h"  # LIA-377
+
+
 def _classify_ollama(query: str, model: str) -> str | None:
     """Classify a query as 'procedural'/'factual' via one local Ollama model.
 
@@ -251,6 +301,7 @@ def _classify_ollama(query: str, model: str) -> str | None:
         "stream": False,
         "think": False,  # gemma4 returns empty under a JSON schema without this (ollama-quirks.md)
         "options": {"temperature": 0},
+        "keep_alive": _intent_keep_alive(),
     }).encode()
 
     try:
@@ -349,6 +400,8 @@ def recall(
     concepts: list[str] | None = None,
     exclude_kinds: set[str] | None = None,
     max_context_chars: int | None = None,
+    exclude_paths: set[str] | None = None,
+    dedup_store: str | None = None,
 ) -> dict:
     """Retrieve memory context for a query.
 
@@ -394,11 +447,49 @@ def recall(
         else:
             raw["trace"].append("intent_gate:unavailable")
 
+    # LIA-354: per-surface path blocklist (the container bridge passes the vault
+    # index files, which are useless to a container as fragments). Presentation-
+    # level filter: drops from the injected context AND the retrieval log (which
+    # records injected paths). No k-backfill; confidence stays as computed from
+    # the pre-filter result set. Ordering: intent gate first, blocklist second —
+    # a third results-filter belongs after this one.
+    if exclude_paths and raw["results"]:
+        kept = [r for r in raw["results"] if r["path"] not in exclude_paths]
+        if len(kept) < len(raw["results"]):
+            raw["trace"].append(f"path_blocklist:dropped={len(raw['results']) - len(kept)}")
+            raw["results"] = kept
+
+    # LIA-355: session-scoped dedup — third results-filter, after the blocklist.
+    # Drops results whose exact content was already injected this session (key =
+    # path + body hash, so a changed file re-injects). Bodies are read once here
+    # and passed through to formatting. Unreadable results are never hashed or
+    # marked (same silent skip as formatting applies). Fail-open: a missing or
+    # corrupt store means "nothing seen".
+    _dedup_bodies: dict[str, str] = {}
+    _dedup_seen: set[str] = set()
+    _deduped_note: str | None = None
+    if dedup_store and raw["results"] and not raw["fell_back"]:
+        _dedup_seen = load_seen(Path(dedup_store))
+        total = len(raw["results"])
+        kept = []
+        for r in raw["results"]:
+            body = _read_node_file(r["path"])
+            if body:
+                _dedup_bodies[r["path"]] = body
+                if block_key(r["path"], body) in _dedup_seen:
+                    continue
+            kept.append(r)
+        dropped = total - len(kept)
+        if dropped:
+            raw["trace"].append(f"dedup:dropped={dropped}")
+        raw["results"] = kept
+        _deduped_note = f"{dropped}_of_{total}"
+
     if raw["fell_back"]:
         atom_context = _atom_fallback(query, k, max_context_chars=max_context_chars)
         if atom_context:
             raw["atom_fallback"] = True
-            _log_retrieval(query, raw, source)
+            _log_retrieval(query, raw, source, context_chars=len(atom_context))
             return {
                 "context": atom_context,
                 "paths": [],
@@ -408,9 +499,35 @@ def recall(
             }
 
     context = _format_context(
-        raw["results"], raw["fell_back"], max_context_chars=max_context_chars
+        raw["results"],
+        raw["fell_back"],
+        max_context_chars=max_context_chars,
+        bodies=_dedup_bodies or None,
     )
     paths = [r["path"] for r in raw["results"]] if not raw["fell_back"] else []
+
+    # LIA-355 mark-only-what-survives: persist keys ONLY for blocks that fully
+    # fit inside the truncation cutoff, computed POSITIONALLY (cumulative block
+    # lengths in render order — mirrors _format_context's join + _truncate_body
+    # head-cut exactly). Never a substring search: identical or crafted bodies
+    # (LIA-334 procedure nodes are attacker-authorable) can appear inside OTHER
+    # blocks and must not fake survival for a block that was itself cut.
+    if dedup_store and _deduped_note is not None and not raw["fell_back"]:
+        cutoff = max_context_chars if max_context_chars is not None else float("inf")
+        pos = 0
+        new_keys = set()
+        for r in raw["results"]:
+            body = _dedup_bodies.get(r["path"])
+            if body is None:
+                continue
+            # Rendered length of this block within the joined body: delimiter
+            # line + "\n" + body (+ "\n" joiner before the next block).
+            rendered_len = len(f"--- {r['path']} (score: {r['score']:.4f}) ---") + 1 + len(body)
+            if pos + rendered_len <= cutoff:
+                new_keys.add(block_key(r["path"], body))
+            pos += rendered_len + 1
+        if new_keys:
+            save_seen(Path(dedup_store), _dedup_seen | new_keys)
 
     out = {
         "context": context,
@@ -419,7 +536,9 @@ def recall(
         "fell_back": raw["fell_back"],
     }
 
-    _log_retrieval(query, raw, source)
+    _log_retrieval(
+        query, raw, source, context_chars=len(context), deduped=_deduped_note
+    )
 
     return out
 
@@ -436,11 +555,33 @@ def main(argv: list[str] | None = None) -> int:
         help=f"Abstain threshold (default: {mt.DEFAULT_ABSTAIN_THRESHOLD})",
     )
     parser.add_argument("--source", default="cli", help="Source identifier for logging")
+    parser.add_argument(
+        "--dedup-store",
+        default=None,
+        help="Path to a session seen-store; drops already-shown blocks (LIA-355)",
+    )
     parser.add_argument("--json", action="store_true", help="Output as JSON")
     parser.add_argument("--context-only", action="store_true", help="Output only the context block")
+    parser.add_argument(
+        "--max-context-chars", type=int, default=None,
+        help="Head-truncate the formatted context to this many chars (default: uncapped)",
+    )
+    parser.add_argument(
+        "--exclude-paths", default="",
+        help="Comma-separated vault-relative paths to drop from results (default: none)",
+    )
 
     args = parser.parse_args(argv)
-    result = recall(args.query, k=args.k, abstain_threshold=args.abstain, source=args.source)
+    exclude = {p.strip() for p in args.exclude_paths.split(",") if p.strip()} or None
+    result = recall(
+        args.query,
+        k=args.k,
+        abstain_threshold=args.abstain,
+        source=args.source,
+        max_context_chars=args.max_context_chars,
+        exclude_paths=exclude,
+        dedup_store=args.dedup_store,
+    )
 
     if args.context_only:
         print(result["context"])

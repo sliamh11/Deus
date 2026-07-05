@@ -31,9 +31,13 @@ vi.mock('./solutions/index.js', () => ({
 }));
 
 const mockGetMessagesSince = vi.fn<() => NewMessage[]>();
+const mockGetAutoCompressWatermark = vi.fn<() => string | undefined>();
+const mockSetAutoCompressWatermark = vi.fn();
 vi.mock('./db.js', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
   getMessagesSince: mockGetMessagesSince,
+  getAutoCompressWatermark: mockGetAutoCompressWatermark,
+  setAutoCompressWatermark: mockSetAutoCompressWatermark,
 }));
 
 vi.mock('./logger.js', () => ({

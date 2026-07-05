@@ -7,6 +7,7 @@ import {
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
+  getAutoCompressWatermark,
   getConsecutiveFailCount,
   getLastFailTime,
   getMessagesSince,
@@ -18,6 +19,7 @@ import {
   logPipelineEvent,
   insertPipelineEventRow,
   getPipelineEvents,
+  setAutoCompressWatermark,
   setSession,
   setRegisteredGroup,
   storeChatMetadata,
@@ -941,5 +943,39 @@ describe('circuit breaker', () => {
       expect(lastTime).not.toBeNull();
       expect(getConsecutiveFailCount('issue-1', 'automerge_failed')).toBe(1);
     });
+  });
+});
+
+describe('auto-compress watermark', () => {
+  it('returns undefined for a chat with no watermark yet', () => {
+    expect(getAutoCompressWatermark('never-compressed@jid')).toBeUndefined();
+  });
+
+  it('round-trips a stored watermark', () => {
+    setAutoCompressWatermark('test@jid', '2026-05-12T10:00:00.000Z');
+    expect(getAutoCompressWatermark('test@jid')).toBe(
+      '2026-05-12T10:00:00.000Z',
+    );
+  });
+
+  it('overwrites rather than duplicates on repeated writes for the same chat_jid (ON CONFLICT upsert)', () => {
+    setAutoCompressWatermark('test@jid', '2026-05-12T10:00:00.000Z');
+    setAutoCompressWatermark('test@jid', '2026-05-12T11:00:00.000Z');
+
+    expect(getAutoCompressWatermark('test@jid')).toBe(
+      '2026-05-12T11:00:00.000Z',
+    );
+  });
+
+  it('keeps watermarks independent across different chat_jids', () => {
+    setAutoCompressWatermark('chat-a@jid', '2026-05-12T10:00:00.000Z');
+    setAutoCompressWatermark('chat-b@jid', '2026-05-12T20:00:00.000Z');
+
+    expect(getAutoCompressWatermark('chat-a@jid')).toBe(
+      '2026-05-12T10:00:00.000Z',
+    );
+    expect(getAutoCompressWatermark('chat-b@jid')).toBe(
+      '2026-05-12T20:00:00.000Z',
+    );
   });
 });

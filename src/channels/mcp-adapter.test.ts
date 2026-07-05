@@ -160,6 +160,29 @@ describe('McpChannelAdapter', () => {
     });
   });
 
+  it('should throw a RetryableError when send_message returns isError', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      isError: true,
+      content: [{ type: 'text', text: 'provider not connected' }],
+    });
+
+    const adapter = new McpChannelAdapter(makeOpts());
+    await expect(adapter.sendMessage('123@c.us', 'hi')).rejects.toThrow(
+      'send_message failed: provider not connected',
+    );
+  });
+
+  it('should resolve when send_message succeeds', async () => {
+    mockCallTool.mockResolvedValueOnce({
+      content: [{ type: 'text', text: 'Message sent.' }],
+    });
+
+    const adapter = new McpChannelAdapter(makeOpts());
+    await expect(
+      adapter.sendMessage('123@c.us', 'hi'),
+    ).resolves.toBeUndefined();
+  });
+
   it('should handle disconnect gracefully', async () => {
     const adapter = new McpChannelAdapter(makeOpts());
     await adapter.connect();

@@ -128,6 +128,7 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 |----------|---------|-------------|
 | `DEUS_VAULT_PATH` | — | Vault directory path for session logs and memory |
 | `DEUS_DB` | `~/.deus/memory.db` | Memory indexer SQLite database override |
+| `DEUS_TRANSCRIPT_ARCHIVE_DIR` | `~/.deus/archive/transcripts` | Content-addressed cold store for /compress source-transcript archives (LIA-374) |
 | `DEUS_MEMORY_TREE` | `0` | Enable memory-tree hooks/context loading when set to `1` |
 | `DEUS_MEMORY_TREE_DB` | `~/.deus/memory_tree.db` | Memory-tree SQLite database override |
 | `DEUS_AUTO_MEMORY_DIR` | — | Optional external auto-memory directory indexed under `auto-memory/` |

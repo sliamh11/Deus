@@ -2,7 +2,11 @@ import path from 'path';
 
 import { ASSISTANT_NAME } from './config.js';
 import { consolidateSessionLog } from './consolidation-core.js';
-import { getMessagesSince } from './db.js';
+import {
+  getAutoCompressWatermark,
+  getMessagesSince,
+  setAutoCompressWatermark,
+} from './db.js';
 import { logger } from './logger.js';
 import { resolveVaultPath } from './solutions/index.js';
 import type { RegisteredGroup } from './types.js';
@@ -22,6 +26,7 @@ export async function autoCompressSession(
   group: RegisteredGroup,
   chatJid: string,
   effectiveIdleHours: number,
+  lastUsed?: string,
 ): Promise<void> {
   // Short-circuit before the DB query when there is nowhere to write.
   if (!resolveVaultPath()) {
@@ -29,10 +34,16 @@ export async function autoCompressSession(
     return;
   }
 
-  // 2× the idle window captures the full session including pre-idle activity
-  const sinceTimestamp = new Date(
-    Date.now() - effectiveIdleHours * 2 * 3_600_000,
-  ).toISOString();
+  // Anchor to the persisted watermark (last successful capture), not
+  // `now()`; only a chat with no prior capture falls back to the pre-fix
+  // `lastUsed - 2x idle` heuristic as a one-time bootstrap.
+  const watermark = getAutoCompressWatermark(chatJid);
+  const anchor = watermark
+    ? new Date(watermark).getTime()
+    : lastUsed
+      ? new Date(lastUsed).getTime() - effectiveIdleHours * 2 * 3_600_000
+      : Date.now() - effectiveIdleHours * 2 * 3_600_000;
+  const sinceTimestamp = new Date(anchor).toISOString();
 
   const messages = getMessagesSince(
     chatJid,
@@ -43,6 +54,10 @@ export async function autoCompressSession(
   );
 
   if (messages.length === 0) {
+    logger.info(
+      { group: group.name, chatJid },
+      'Auto-compress: no messages in window',
+    );
     return;
   }
 
@@ -83,6 +98,15 @@ tldr: |
   });
 
   if (savedPath) {
+    // WhatsApp message timestamps are second-resolution (whatsapp.ts:362),
+    // so subtract 1s to avoid excluding a same-second sibling message on the
+    // next capture. getMessagesSince re-sorts ascending, so the last element
+    // is the max timestamp.
+    const maxCapturedTs = messages[messages.length - 1].timestamp;
+    const newWatermark = new Date(
+      new Date(maxCapturedTs).getTime() - 1_000,
+    ).toISOString();
+    setAutoCompressWatermark(chatJid, newWatermark);
     logger.info(
       { group: group.name, path: savedPath },
       'Auto-compress: session saved',

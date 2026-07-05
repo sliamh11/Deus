@@ -67,6 +67,33 @@ const MEMORY_QUERY_SCRIPT = path.join(
 );
 const MEMORY_QUERY_TIMEOUT_MS = 4_000;
 
+// LIA-354: server-side recall bounds for the container bridge — never read
+// from the request body (containers must not be able to lift their own cap).
+// 8192 mirrors the MCP server's _MAX_CONTEXT_CHARS (memory_mcp_server.py,
+// LIA-344 sizing). Env-read is lazy (per request) so overrides are testable
+// without module re-import; the cost is negligible next to the execFile.
+const MEMORY_QUERY_DEFAULT_MAX_CHARS = 8192;
+// Exact vault-relative paths — coupled to the index files living at the vault
+// ROOT. A vault reorg that moves them silently un-blocks them (no error).
+const MEMORY_QUERY_DEFAULT_EXCLUDE = 'CLAUDE.md,INFRA.md';
+
+/** Extra memory_query.py args enforcing the bridge cap + index-file blocklist (LIA-354). */
+function bridgeRecallBoundArgs(): string[] {
+  // LIA-354: config plumbing with a validated fallback, not a feature gate.
+  const rawCap = Number(process.env.DEUS_BRIDGE_RECALL_MAX_CHARS);
+  const cap =
+    Number.isInteger(rawCap) && rawCap > 0
+      ? rawCap
+      : MEMORY_QUERY_DEFAULT_MAX_CHARS;
+  // LIA-354: per-surface blocklist override, same config-plumbing shape.
+  const exclude = (
+    process.env.DEUS_BRIDGE_RECALL_EXCLUDE ?? MEMORY_QUERY_DEFAULT_EXCLUDE
+  ).trim();
+  const args = ['--max-context-chars', String(cap)];
+  if (exclude) args.push('--exclude-paths', exclude);
+  return args;
+}
+
 /* ── Rate limiter (in-process, keyed per authenticated group) ──────── */
 
 // 20/min per group: the /memory/query bucket is keyed on the authenticated
@@ -322,6 +349,7 @@ export function startCredentialProxy(
             sourceArg,
             '-k',
             kArg,
+            ...bridgeRecallBoundArgs(),
           ];
 
           execFile(
