@@ -487,6 +487,17 @@ describe('buildScopedIssuePrompt XML escaping (LIA-113)', () => {
     );
   });
 
+  it('states the soft turn budget in the instructions block (LIA-380)', () => {
+    const prompt = buildScopedIssuePrompt('Title', 'LIA-1', 'desc', []);
+    const instructionsIdx = prompt.indexOf('<instructions>');
+    const budgetIdx = prompt.indexOf('soft budget of ~60 turns');
+    expect(instructionsIdx).toBeGreaterThanOrEqual(0);
+    expect(budgetIdx).toBeGreaterThan(instructionsIdx);
+    expect(prompt).toContain(
+      'report what remains rather than grinding past it',
+    );
+  });
+
   it('escapes the extracted scope block (markers are not authenticated)', () => {
     // extractScopeBlock returns the content between markers, but the markers are
     // a plain string match — the issue author can forge them. So the extracted

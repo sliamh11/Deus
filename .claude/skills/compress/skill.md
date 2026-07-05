@@ -152,6 +152,17 @@ After saving the session log:
    Run: `python3 ~/deus/scripts/memory_indexer.py --extract "<full path to saved log>"`
    If the script fails, skip silently.
 
+4b. **Archive the source transcript + stamp the backlink** (always, best-effort — LIA-374):
+   Run: `python3 ~/deus/scripts/transcript_archive.py --cwd "$PWD" --json --best-effort`
+   - On `"ok": true`: append `source_transcript: <sha256>` as a new frontmatter line in the
+     just-saved session log (before the closing `---`). Idempotent: if the log already has a
+     `source_transcript:` line, leave it unchanged (safe on /compress retries).
+   - On `"ok": false`: do NOT block the flow — but surface it in the final Confirm line
+     (alongside the indexing/atom-extraction results, which already report operational
+     outcomes), e.g. `⚠ source transcript NOT archived: <error>`. Never silently swallow
+     the failure. (The Decision Receipt itself stays a pure rendering of saved data.)
+   - Restore later via `deus recall --source "<session-log path>"` (byte-exact source).
+
 5. **Delete today's checkpoint** (always):
    Run: `find "$VAULT/Checkpoints" -name "$(date +%Y-%m-%d)-*.md" -delete 2>/dev/null`
 
@@ -177,4 +188,4 @@ After saving the session log:
    `decisions[]` recorded AND no PR/merge this session; in that case the Confirm line still
    reports the save. This is the comprehension digest; the operational Confirm line is separate.
 
-Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, and whether a session retrospective was triggered (home mode only — report "retrospective triggered (background)" or "retrospective skipped: <reason>").
+Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, source-transcript archival status if it failed, and whether a session retrospective was triggered (home mode only — report "retrospective triggered (background)" or "retrospective skipped: <reason>").

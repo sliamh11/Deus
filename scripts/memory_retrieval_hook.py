@@ -55,6 +55,20 @@ def main() -> None:
     _proc_on = os.environ.get("DEUS_PROCEDURE_MEMORY", "").strip() == "1"
     exclude_kinds: set[str] | None = {"standard"} if _proc_on else None
 
+    # LIA-355: session-scoped dedup of injections. When enabled, recall becomes
+    # the single truncation point: we pass our cap MINUS the wrapper overhead
+    # (_wrap_untrusted adds ~406 chars AFTER recall's body truncation), so the
+    # wrapped output is provably <= MAX_CONTEXT_CHARS and the post-hoc slice
+    # below is a true no-op — otherwise our cut could chop content whose dedup
+    # keys recall already persisted (mark-only-what-survives boundary).
+    dedup_store: str | None = None
+    dedup_max_chars: int | None = None
+    if session_id and os.environ.get("DEUS_MEMORY_DEDUP", "") != "0":  # LIA-355
+        import injection_dedup as idd
+
+        dedup_store = str(idd.store_path_for_session(session_id))
+        dedup_max_chars = MAX_CONTEXT_CHARS - mq.WRAP_OVERHEAD_CHARS
+
     result = mq.recall(
         prompt,
         k=TOP_K,
@@ -62,6 +76,8 @@ def main() -> None:
         source="repo-hook",
         concepts=concepts,
         exclude_kinds=exclude_kinds,
+        max_context_chars=dedup_max_chars,
+        dedup_store=dedup_store,
     )
 
     context = result["context"]

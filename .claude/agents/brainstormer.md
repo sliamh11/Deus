@@ -26,7 +26,7 @@ Novelty > completeness. One surprising, well-reasoned idea is worth more than fi
 
 ### Step 2: Research
 
-1. **Internal:** Follow the three-stage code exploration protocol from `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage. Understand what's already built.
+1. **Internal:** Follow the three-stage code exploration protocol from `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage. Understand what's already built. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
 2. **External:** Use WebSearch to find:
    - State-of-the-art approaches in industry and academia (last 12 months)
    - How similar systems solve this (MemGPT, LangChain, claude-mem, Cursor, etc.)

@@ -1287,6 +1287,12 @@ $STARTUP_INSTRUCTION"
     shift
     exec python3 "$SCRIPT_DIR/scripts/analyze_token_efficiency.py" "$@"
     ;;
+  recall)
+    # Decompress-back-to-source for a /compress session log (LIA-374):
+    # deus recall --source <session-log.md|sha256> [--out <path>]
+    shift
+    exec python3 "$SCRIPT_DIR/scripts/recall_source.py" "$@"
+    ;;
   preflight)
     # Read-only concurrent-session collision check for the current git tree
     # (LIA-284). Pure pass-through to the detector: exec inherits PWD so it

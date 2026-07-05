@@ -58,7 +58,7 @@ Return a single markdown report. No preamble.
 
 ## Rules of engagement
 
-- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` or `codegraph_context` (the composite primary) for semantic candidates, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` or `codegraph_context` (the composite primary) for semantic candidates, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
 - **Architecture only.** Code-level findings (injection in a specific function, missing sanitization) go to code-reviewer, not this report.
 - **STRIDE is the frame.** Every threat maps to: Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, or Elevation of Privilege.
 - **Cite rule ids.** Every Blocking Gap ties to a specific rule from the rules file.

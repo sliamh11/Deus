@@ -9,6 +9,9 @@
  * empty string. Silent degradation, never crashes the agent.
  */
 
+import { dedupMemoryPayload } from './memory-dedup.js';
+// (dedup is applied inside fetchMemoryContext below — see LIA-355)
+
 const BRIDGE_TIMEOUT_MS = 4000;
 
 interface MemoryBridgeResponse {
@@ -50,7 +53,12 @@ export async function fetchMemoryContext(
     if (!res.ok) return '';
 
     const data = (await res.json()) as MemoryBridgeResponse;
-    return data.context || '';
+    if (!data.context) return '';
+    // LIA-355: dedup at the single choke point so EVERY backend consuming
+    // this function (Claude hook, OpenAI, llama-cpp) gets session dedup.
+    // paths is the bridge's authoritative block list — the parser fails open
+    // on any mismatch. '' when every block was already injected this session.
+    return dedupMemoryPayload(data.context, data.paths);
   } catch {
     return '';
   } finally {
@@ -65,6 +73,8 @@ export function createMemoryRetrievalHook() {
     const prompt = input.prompt;
     if (!prompt) return {};
 
+    // Dedup happens inside fetchMemoryContext (LIA-355) — shared with the
+    // OpenAI/llama-cpp backends that call it directly.
     const context = await fetchMemoryContext(prompt, 'container-claude');
     if (!context) return {};
 

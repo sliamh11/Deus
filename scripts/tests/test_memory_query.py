@@ -444,9 +444,10 @@ class _FakeResp:
 class _FakeConn:
     def __init__(self, resp):
         self._resp = resp
+        self.sent_body = None
 
     def request(self, *a, **k):
-        pass
+        self.sent_body = k.get("body")
 
     def getresponse(self):
         return self._resp
@@ -481,6 +482,14 @@ class TestClassifyIntent:
     def test_unknown_label_returns_none(self):
         assert self._classify(200, _ollama_body({"intent": "banana"})) is None
 
+    def test_payload_includes_keep_alive(self, monkeypatch):
+        monkeypatch.delenv("DEUS_INTENT_KEEP_ALIVE", raising=False)
+        conn = _FakeConn(_FakeResp(200, _ollama_body({"intent": "factual"})))
+        with patch("http.client.HTTPConnection", return_value=conn):
+            mq.classify_intent("does not matter")
+        sent = json.loads(conn.sent_body)
+        assert sent["keep_alive"] == mq._intent_keep_alive()
+
 
 class TestIntentTimeout:
     def test_default_when_unset(self, monkeypatch):
@@ -498,6 +507,22 @@ class TestIntentTimeout:
     def test_valid_override(self, monkeypatch):
         monkeypatch.setenv("DEUS_INTENT_TIMEOUT", "3.5")
         assert mq._intent_timeout() == 3.5
+
+
+class TestIntentKeepAlive:
+    """LIA-377: keep_alive pin for the intent-classify models."""
+
+    def test_default_when_unset(self, monkeypatch):
+        monkeypatch.delenv("DEUS_INTENT_KEEP_ALIVE", raising=False)
+        assert mq._intent_keep_alive() == "10m"
+
+    def test_blank_falls_back(self, monkeypatch):
+        monkeypatch.setenv("DEUS_INTENT_KEEP_ALIVE", "   ")
+        assert mq._intent_keep_alive() == "10m"
+
+    def test_valid_override(self, monkeypatch):
+        monkeypatch.setenv("DEUS_INTENT_KEEP_ALIVE", "5m")
+        assert mq._intent_keep_alive() == "5m"
 
 
 class TestIntentModels:

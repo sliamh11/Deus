@@ -517,7 +517,7 @@ export function buildScopedIssuePrompt(
   }
 
   parts.push(
-    `<instructions>\n${contextBlock}Read the scope block in the task description. Follow the implementation plan and satisfy all acceptance criteria.\n</instructions>`,
+    `<instructions>\n${contextBlock}Read the scope block in the task description. Follow the implementation plan and satisfy all acceptance criteria. Work within a soft budget of ~60 turns; if the task genuinely needs more, finish the current coherent step, commit what is done, and report what remains rather than grinding past it.\n</instructions>`,
   );
   return parts.join('\n\n');
 }

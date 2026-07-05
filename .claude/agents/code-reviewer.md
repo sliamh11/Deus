@@ -61,7 +61,7 @@ Return a single markdown report. No preamble.
 - **Tight output.** Target ≤50 lines. A long review is a signal/noise red flag.
 - **Fail-closed on missing rules file.** If `~/deus/.claude/wardens/code-review-rules.md` doesn't exist, report "rules file missing — cannot review" and stop. Do not improvise rules.
 - **Diff is authoritative.** If memory or docs contradict what's in the diff, trust the diff — memory is a snapshot, code is live.
-- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` semantic, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
 
 ## Scope Memo
 
