@@ -22,7 +22,10 @@ Rule of thumb: worth spawning at ~3+ independent items; for 1-2, inline tools ar
 faster. Cap concurrent subagents at ~5-6 — more just serialize and add overhead.
 When you fan out, give each subagent ONLY the context it needs and one clear
 deliverable, run them in parallel in a single turn, then YOU read all results and
-write one coherent answer. Synthesis is your job, not theirs.
+write one coherent answer. Synthesis is your job, not theirs. State an explicit
+soft budget in each subagent's prompt ("about N tool calls / M turns; if you hit
+it, return partial findings plus what remains") scaled to the deliverable — an
+unbounded dispatch tends to keep exploring well past diminishing returns.
 
 Do NOT spawn a subagent for:
   - a single-file read, a single tool call, or a quick lookup

@@ -73,7 +73,7 @@ Accuracy > completeness. A precise map of 80% of the system beats a vague map of
 
 ## Rules of engagement
 
-- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` or `codegraph_context` (the composite primary) for semantic candidates, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage.
+- **Code exploration: three-stage protocol.** Follow `core-behavioral-rules.md § Code Exploration`: (1) `search_code` or `codegraph_context` (the composite primary) for semantic candidates, (2) codegraph structural, (3) grep/read confirm. Never start with grep/find/Read. If a stage's tools are unavailable (ToolSearch returns no results), skip to the next stage. Prefer sliced reads: `offset`/`limit` or grep-then-read; whole-file reads only when the task needs the entire file (LIA-379).
 - **Accuracy over coverage.** If you didn't read it, don't include it. Mark it in "What This Snapshot Doesn't Cover."
 - **No prescriptions.** Describe, don't prescribe. Don't write "you should refactor X."
 - **Concrete names only.** No "the service", "the handler". Use actual module and file names.
