@@ -514,11 +514,11 @@ class TestIntentKeepAlive:
 
     def test_default_when_unset(self, monkeypatch):
         monkeypatch.delenv("DEUS_INTENT_KEEP_ALIVE", raising=False)
-        assert mq._intent_keep_alive() == "10m"
+        assert mq._intent_keep_alive() == "1h"
 
     def test_blank_falls_back(self, monkeypatch):
         monkeypatch.setenv("DEUS_INTENT_KEEP_ALIVE", "   ")
-        assert mq._intent_keep_alive() == "10m"
+        assert mq._intent_keep_alive() == "1h"
 
     def test_valid_override(self, monkeypatch):
         monkeypatch.setenv("DEUS_INTENT_KEEP_ALIVE", "5m")

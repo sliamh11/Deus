@@ -231,14 +231,20 @@ def _intent_timeout() -> float:
 def _intent_keep_alive() -> str:
     """Resolve the intent-classify keep_alive duration (Ollama duration string).
 
-    DEUS_INTENT_KEEP_ALIVE (LIA-377) overrides; default 10m. This classify
+    DEUS_INTENT_KEEP_ALIVE (LIA-377) overrides; default 1h. This classify
     path is the only caller of gemma4:e2b, so unrelated Ollama model churn
     (e.g. a local benchmark loading other models) evicts it between calls,
-    paying a ~9-11s cold-load tax on nearly every invocation. 10m survives
-    typical inter-query gaps without pinning long enough to raise eviction
-    odds for concurrent consumers on this shared machine.
+    paying a ~9-11s cold-load tax on nearly every invocation. Ollama's
+    scheduler evicts resident models under real system-memory pressure
+    regardless of keep_alive (verified via /opt/homebrew/var/log/ollama.log:
+    "predicted to exceed available memory, evicting", gated on system_free,
+    not on any per-model reservation) -- keep_alive only prevents this
+    classify path's own idle-timeout self-unload. A long window costs
+    nothing extra against pressure-driven eviction, and this path fires on
+    nearly every prompt while procedure-memory is on, so 1h effectively
+    keeps it resident for the life of an active session.
     """
-    return os.environ.get("DEUS_INTENT_KEEP_ALIVE", "").strip() or "10m"  # LIA-377
+    return os.environ.get("DEUS_INTENT_KEEP_ALIVE", "").strip() or "1h"  # LIA-377
 
 
 def _classify_ollama(query: str, model: str) -> str | None:
