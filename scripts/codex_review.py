@@ -208,6 +208,46 @@ def _classify_failure(stderr: str) -> str:
     return ""
 
 
+def check_codex_available() -> tuple[bool, str]:
+    """Proactive preflight for the GPT co-gate (RETRO-2026-07-06-04): PATH + auth
+    freshness, BEFORE spending any effort on a Claude Agent warden dispatch that
+    plans to run the GPT backend alongside it.
+
+    Reuses ``scripts/maintenance/credential_probe.check_codex`` (JWT-expiry-aware,
+    already tested) rather than a fresh live ``codex login status`` probe — see
+    that module for the expiry-window rationale. `scripts/maintenance/` can't be
+    imported as ``maintenance.credential_probe``: `scripts/maintenance.py` (a
+    module file) shadows the `scripts/maintenance/` directory on sys.path, so the
+    subdirectory itself is added to the path and the leaf module imported flat.
+
+    Deliberately does NOT check remaining subscription credit/quota — no `codex`
+    CLI surface exposes that, and a preflight that spends quota to check quota
+    would be self-defeating. Quota exhaustion is only catchable reactively, on a
+    real call, via `scripts/cogate.py`'s existing loud non-zero exit (4/5/7) —
+    this function is a complementary, cheaper, EARLIER check for the OTHER
+    failure mode (expired/missing auth), not a replacement for that reactive path.
+    """
+    import shutil
+
+    if shutil.which("codex") is None:
+        return False, "codex CLI not found on PATH"
+
+    maintenance_dir = Path(__file__).resolve().parent / "maintenance"
+    sys.path.insert(0, str(maintenance_dir))
+    import credential_probe  # noqa: E402  (path inserted just above)
+
+    status, detail = credential_probe.check_codex(
+        credential_probe.DEFAULT_CODEX,
+        credential_probe.DEFAULT_GRACE_MIN * 60_000,
+        int(time.time() * 1000),
+    )
+    if status == "OK":
+        return True, f"codex GPT backend available ({detail})"
+    if status == "SKIP":
+        return False, f"codex not configured: {detail}"
+    return False, f"codex GPT backend NOT available: {detail}"
+
+
 def call_codex_exec(prompt: str, cfg: "CodexReviewConfig", cwd: str) -> CodexResult:
     """Run `codex exec` over `prompt`, returning the parsed structured findings.
 
@@ -506,7 +546,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--compact", action="store_true",
                     help="compact JSON (strip nulls, truncate long fields)")
     ap.add_argument("--select", help="comma-separated dot-paths to project from the JSON")
+    ap.add_argument("--check-availability", action="store_true",
+                    help="preflight only: PATH + auth-freshness check for the codex GPT "
+                         "backend (RETRO-2026-07-06-04), then exit -- no review is run")
     args = ap.parse_args(argv)
+
+    if args.check_availability:
+        available, message = check_codex_available()
+        print(message)
+        return SUCCESS if available else 1
 
     try:
         root = cfr.repo_root()
