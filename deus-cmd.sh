@@ -31,6 +31,18 @@ _file_mtime() {
   fi
 }
 
+# `--print-identity`: print the same system-prompt string that would
+# otherwise go to `claude --append-system-prompt` and exit, with no
+# interactive launch. Checked on both sides of the backend-prefix block below
+# so both `deus --print-identity` and `deus claude/codex/fcc --print-identity`
+# work. Lets an external tool (e.g. a VS Code Claude Code process wrapper)
+# capture Deus's identity/vault-context prompt without spawning a session.
+PRINT_IDENTITY_ONLY=false
+if [ "$1" = "--print-identity" ]; then
+  PRINT_IDENTITY_ONLY=true
+  shift
+fi
+
 # Prefix selection changes both the foreground CLI and runtime backend for this
 # invocation. Plain `deus` still defaults to Claude unless env/config says
 # otherwise.
@@ -46,6 +58,19 @@ if [ "$1" = "codex" ] || [ "$1" = "claude" ] || [ "$1" = "fcc" ]; then
     export DEUS_AGENT_BACKEND="openai"
   fi
   shift
+fi
+
+if [ "$1" = "--print-identity" ]; then
+  PRINT_IDENTITY_ONLY=true
+  shift
+fi
+
+if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
+  # Stash the real stdout on fd 3; the identity/vault-loading path below
+  # writes ~8 scattered `printf "...\r"` progress indicators to stdout that
+  # would otherwise corrupt the captured text. The final print (below) writes
+  # to fd 3 directly.
+  exec 3>&1 1>/dev/null
 fi
 
 _read_config_key() {
@@ -821,7 +846,13 @@ sys.exit(1)
       export DEUS_TUI_BACKEND="$CLI_AGENT"
       exec "$tui_bin"
     }
-    TOKEN=$(python3 -c '
+    # print-identity mode never launches claude, so it needs neither an OAuth
+    # token nor the com.deus service kickstart below — skip both. Otherwise
+    # a VS Code process wrapper calling this on every panel/session open
+    # would kill-and-restart com.deus (`-k`) every time, and hard-fail on any
+    # transient token-resolution hiccup for no reason.
+    if [ "$PRINT_IDENTITY_ONLY" != "true" ]; then
+      TOKEN=$(python3 -c '
 import json, os, subprocess, sys
 # Try file first
 try:
@@ -838,16 +869,17 @@ try:
 except Exception: pass
 sys.exit(1)
 ' 2>/dev/null)
-    if [ -z "$TOKEN" ]; then
-      echo "Error: no OAuth token found in ~/.claude/.credentials.json or macOS Keychain"
-      echo "Run: claude auth login"
-      exit 1
+      if [ -z "$TOKEN" ]; then
+        echo "Error: no OAuth token found in ~/.claude/.credentials.json or macOS Keychain"
+        echo "Run: claude auth login"
+        exit 1
+      fi
+      # Do NOT export CLAUDE_CODE_OAUTH_TOKEN — the Claude CLI reads
+      # ~/.claude/.credentials.json directly and auto-refreshes on /login.
+      # Exporting a frozen token causes 401s after token rotation because
+      # the CLI prioritizes the env var over the credentials file.
+      [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     fi
-    # Do NOT export CLAUDE_CODE_OAUTH_TOKEN — the Claude CLI reads
-    # ~/.claude/.credentials.json directly and auto-refreshes on /login.
-    # Exporting a frozen token causes 401s after token rotation because
-    # the CLI prioritizes the env var over the credentials file.
-    [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     # Launch claude with bypass mode; fall back to normal mode if user declines
     launch_claude() {
       claude $CHROME_FLAG --dangerously-skip-permissions "$@"
@@ -983,9 +1015,23 @@ $user_prompt"
 
 	      PROJECT_CONFIG=$(_read_project_config "$CURRENT_DIR")
 	      if [ -z "$PROJECT_CONFIG" ]; then
-	        _run_onboarding "$CURRENT_DIR"
-	        PROJECT_CONFIG=$(_read_project_config "$CURRENT_DIR")
-	        JUST_ONBOARDED="true"
+	        if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
+	          # Never run interactive onboarding for a bare identity print — a
+	          # non-interactive caller (e.g. a VS Code process wrapper) would
+	          # hang on _run_onboarding's `read`. Leave PROJECT_CONFIG empty;
+	          # MEMORY_LEVEL falls back to "standard" below, same as it does
+	          # for any other empty/unparseable PROJECT_CONFIG. Still set
+	          # JUST_ONBOARDED=true so the downstream IS_RETURNING/greeting
+	          # choice matches what a real launch would produce after
+	          # actually onboarding (first-run greeting, not the returning-
+	          # user git-status greeting) — keeps the printed prompt
+	          # consistent with what would actually be launched.
+	          JUST_ONBOARDED="true"
+	        else
+	          _run_onboarding "$CURRENT_DIR"
+	          PROJECT_CONFIG=$(_read_project_config "$CURRENT_DIR")
+	          JUST_ONBOARDED="true"
+	        fi
 	      else
 	        _update_project_access "$CURRENT_DIR"
 	      fi
@@ -1033,6 +1079,10 @@ Additional instructions from the user: $PREFS_PERSONA"
     # the working directory and the startup instruction.
     if [ -z "$VAULT" ]; then
       echo "Warning: No vault configured. Set DEUS_VAULT_PATH or vault_path in ~/.config/deus/config.json"
+      if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
+        printf '%s\n' "$DEUS_IDENTITY" >&3
+        exit 0
+      fi
       if [ "$CURRENT_DIR" != "$DEUS_HOME" ]; then
         launch_agent --append-system-prompt "$DEUS_IDENTITY"
         exit $?
@@ -1198,6 +1248,10 @@ $STARTUP_INSTRUCTION"
         FULL_PROMPT="$STARTUP_INSTRUCTION"
       fi
 
+      if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
+        printf '%s\n' "$FULL_PROMPT" >&3
+        exit 0
+      fi
       if [ "$TUI_DEFAULT" = "true" ]; then
         cd "$CURRENT_DIR" && _launch_tui_with_context "$FULL_PROMPT" "" "external"
       fi
@@ -1243,6 +1297,10 @@ $STARTUP_INSTRUCTION"
       INITIAL_MSG="Catch me up."
     fi
 
+    if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
+      printf '%s\n' "$FULL_PROMPT" >&3
+      exit 0
+    fi
     if [ "$TUI_DEFAULT" = "true" ]; then
       cd "$HOME/deus" && _launch_tui_with_context "$FULL_PROMPT" "$INITIAL_MSG" "home"
     fi
