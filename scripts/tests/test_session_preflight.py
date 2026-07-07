@@ -163,6 +163,91 @@ class TestProbeBranchWorktree:
         assert sp.probe_branch_in_another_worktree(_ctx()) == []
 
 
+# ── summarize_sibling_worktrees ──────────────────────────────────────────────
+class TestSummarizeSiblingWorktrees:
+    def _porcelain(self, *blocks):
+        return "\n\n".join(blocks) + "\n"
+
+    def _fake_run_git(self, worktree_stdout, log_stdout="subject\x1f2 hours ago"):
+        returns = {
+            "worktree": (0, worktree_stdout, ""),
+            "log": (0, log_stdout, ""),
+        }
+
+        def fake(args, **kwargs):
+            return returns[args[0]]
+
+        return fake
+
+    def test_multiple_siblings_listed(self, monkeypatch):
+        text = self._porcelain(
+            f"worktree {TOP}\nbranch refs/heads/main",
+            "worktree /repo/wt2\nbranch refs/heads/feat/a",
+            "worktree /repo/wt3\nbranch refs/heads/feat/b",
+        )
+        monkeypatch.setattr(sp, "_run_git", self._fake_run_git(text))
+        out = sp.summarize_sibling_worktrees(_ctx())
+        assert len(out) == 2
+        paths = {w["path"] for w in out}
+        assert paths == {os.path.realpath("/repo/wt2"), os.path.realpath("/repo/wt3")}
+        for w in out:
+            assert w["last_commit_subject"] == "subject"
+            assert w["last_commit_age"] == "2 hours ago"
+        branches = {w["branch"] for w in out}
+        assert branches == {"feat/a", "feat/b"}
+
+    def test_self_excluded(self, monkeypatch):
+        text = self._porcelain(f"worktree {TOP}\nbranch refs/heads/main")
+        monkeypatch.setattr(sp, "_run_git", self._fake_run_git(text))
+        assert sp.summarize_sibling_worktrees(_ctx()) == []
+
+    def test_detached_head_sibling_branch_none(self, monkeypatch):
+        text = self._porcelain(
+            f"worktree {TOP}\nbranch refs/heads/main",
+            "worktree /repo/wt2\ndetached",
+        )
+        monkeypatch.setattr(sp, "_run_git", self._fake_run_git(text))
+        out = sp.summarize_sibling_worktrees(_ctx())
+        assert len(out) == 1
+        assert out[0]["branch"] is None
+
+    def test_bare_repo_entry_no_branch_line_no_crash(self, monkeypatch):
+        text = self._porcelain(
+            f"worktree {TOP}\nbranch refs/heads/main",
+            "worktree /repo/bare.git\nbare",
+        )
+        monkeypatch.setattr(sp, "_run_git", self._fake_run_git(text))
+        out = sp.summarize_sibling_worktrees(_ctx())
+        assert len(out) == 1
+        assert out[0]["branch"] is None
+
+    def test_locked_prunable_lines_ignored(self, monkeypatch):
+        text = self._porcelain(
+            f"worktree {TOP}\nbranch refs/heads/main",
+            "worktree /repo/wt2\nbranch refs/heads/feat/a\nlocked\nprunable gone",
+        )
+        monkeypatch.setattr(sp, "_run_git", self._fake_run_git(text))
+        out = sp.summarize_sibling_worktrees(_ctx())
+        assert len(out) == 1
+        assert out[0]["branch"] == "feat/a"
+
+    def test_git_worktree_list_failure_yields_empty(self, monkeypatch):
+        monkeypatch.setattr(sp, "_run_git", lambda *a, **k: (1, "", "boom"))
+        assert sp.summarize_sibling_worktrees(_ctx()) == []
+
+    def test_log_failure_still_returns_entry_with_nulls(self, monkeypatch):
+        text = self._porcelain(
+            f"worktree {TOP}\nbranch refs/heads/main",
+            "worktree /repo/wt2\nbranch refs/heads/feat/a",
+        )
+        returns = {"worktree": (0, text, ""), "log": (1, "", "boom")}
+        monkeypatch.setattr(sp, "_run_git", lambda args, **k: returns[args[0]])
+        out = sp.summarize_sibling_worktrees(_ctx())
+        assert len(out) == 1
+        assert out[0]["last_commit_subject"] is None
+        assert out[0]["last_commit_age"] is None
+
+
 # ── probe_open_pr_for_branch ─────────────────────────────────────────────────
 class TestProbeOpenPr:
     def _patch_gh(self, monkeypatch, returncode=0, stdout="[]", raises=None):
@@ -307,6 +392,37 @@ class TestMainContract:
         assert sp.main([]) == CONFLICT
         text = capsys.readouterr().out
         assert "CONFLICT" in text and "exit 6" in text
+
+    def test_include_worktrees_flag_adds_key_without_changing_exit_code(
+        self, monkeypatch, capsys
+    ):
+        fixed = [{"path": "/repo/wt2", "branch": "feat/a",
+                   "last_commit_subject": "s", "last_commit_age": "1 day ago"}]
+        self._patch_main(monkeypatch, [sp.Finding(sp.WARNING, "w", "d")])
+        monkeypatch.setattr(sp, "summarize_sibling_worktrees", lambda ctx: list(fixed))
+
+        code_without = sp.main(["--json"])
+        payload_without = json.loads(capsys.readouterr().out)
+
+        code_with = sp.main(["--json", "--include-worktrees"])
+        payload_with = json.loads(capsys.readouterr().out)
+
+        assert code_with == code_without
+        assert payload_with["status"] == payload_without["status"]
+        assert payload_with["exit_code"] == payload_without["exit_code"]
+        assert "sibling_worktrees" not in payload_without
+        assert payload_with["sibling_worktrees"] == fixed
+
+    def test_include_worktrees_human_output_appends_lines(self, monkeypatch, capsys):
+        fixed = [{"path": "/repo/wt2", "branch": "feat/a",
+                   "last_commit_subject": "s", "last_commit_age": "1 day ago"}]
+        self._patch_main(monkeypatch, [])
+        monkeypatch.setattr(sp, "summarize_sibling_worktrees", lambda ctx: list(fixed))
+        monkeypatch.setenv("DEUS_AGENT_NATIVE", "0")
+        assert sp.main(["--include-worktrees"]) == SUCCESS
+        text = capsys.readouterr().out
+        assert "Sibling worktrees:" in text
+        assert "/repo/wt2" in text and "feat/a" in text
 
 
 # ── --critical-only probe selection ──────────────────────────────────────────

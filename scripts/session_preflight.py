@@ -216,6 +216,49 @@ def probe_live_session_same_tree(ctx: Context) -> list[Finding]:
     return findings
 
 
+def _parse_worktree_porcelain(text: str) -> list[dict]:
+    """Parse `git worktree list --porcelain` output into structured entries.
+
+    Each entry: ``{"path": str, "branch": str | None, "detached": bool, "bare": bool}``.
+    ``branch`` is None for a detached HEAD or a bare repo's entry -- both are raw
+    facts, not errors. ``locked``/``locked <reason>``/``prunable <reason>``/``HEAD
+    <sha>`` lines are recognized-but-ignored: no current caller needs those fields,
+    add them here if one does, rather than adding a second parser.
+
+    Single source of truth for this format -- consumed by both
+    ``probe_branch_in_another_worktree`` and ``summarize_sibling_worktrees`` so a
+    future porcelain-format change only needs fixing once.
+    """
+    entries: list[dict] = []
+    path: str | None = None
+    branch: str | None = None
+    detached = False
+    bare = False
+    for line in text.splitlines() + [""]:
+        if line.startswith("worktree "):
+            path = line[len("worktree ") :]
+            branch = None
+            detached = False
+            bare = False
+        elif line.startswith("branch "):
+            ref = line[len("branch ") :]
+            branch = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+        elif line == "detached":
+            detached = True
+        elif line == "bare":
+            bare = True
+        elif line == "":
+            if path is not None:
+                entries.append(
+                    {"path": path, "branch": branch, "detached": detached, "bare": bare}
+                )
+            path = None
+            branch = None
+            detached = False
+            bare = False
+    return entries
+
+
 def probe_branch_in_another_worktree(ctx: Context) -> list[Finding]:
     """The current branch is checked out in a worktree other than this one."""
     if not ctx.branch:
@@ -224,26 +267,53 @@ def probe_branch_in_another_worktree(ctx: Context) -> list[Finding]:
     if rc != 0:
         return []
     findings: list[Finding] = []
-    path: str | None = None
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            path = line[len("worktree ") :]
-        elif line.startswith("branch "):
-            ref = line[len("branch ") :]
-            branch = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
-            if path and branch == ctx.branch:
-                rp = os.path.realpath(path)
-                if rp != ctx.toplevel:
-                    findings.append(
-                        Finding(
-                            CRITICAL,
-                            "branch_in_other_worktree",
-                            f"branch '{ctx.branch}' is checked out at {rp}",
-                        )
+    for entry in _parse_worktree_porcelain(out):
+        if entry["branch"] == ctx.branch:
+            rp = os.path.realpath(entry["path"])
+            if rp != ctx.toplevel:
+                findings.append(
+                    Finding(
+                        CRITICAL,
+                        "branch_in_other_worktree",
+                        f"branch '{ctx.branch}' is checked out at {rp}",
                     )
-        elif line == "":
-            path = None
+                )
     return findings
+
+
+def summarize_sibling_worktrees(ctx: Context) -> list[dict]:
+    """List every OTHER worktree for this repo: branch + last commit subject/age.
+
+    Local-only (no network/gh calls) -- deliberately fast and simple, matching
+    the explicit "raw facts, no matching" design: this does NOT fuzzy-match
+    against a task description and does NOT call `gh` per worktree (unbounded
+    network calls for N worktrees). Pure information for a human/agent to
+    eyeball, not a Finding -- no severity, never affects exit_code or status.
+    """
+    rc, out, _ = _run_git(["worktree", "list", "--porcelain"], cwd=ctx.toplevel)
+    if rc != 0:
+        return []
+    worktrees: list[dict] = []
+    for entry in _parse_worktree_porcelain(out):
+        rp = os.path.realpath(entry["path"])
+        if rp == ctx.toplevel:
+            continue
+        rc2, out2, _ = _run_git(["log", "-1", "--format=%s\x1f%cr"], cwd=entry["path"])
+        subject, age = "", ""
+        if rc2 == 0 and out2:
+            parts = out2.strip().split("\x1f", 1)
+            subject = parts[0]
+            age = parts[1] if len(parts) > 1 else ""
+        worktrees.append(
+            {
+                "path": rp,
+                # None for a detached HEAD or a bare entry -- raw fact, not an error.
+                "branch": entry["branch"],
+                "last_commit_subject": subject or None,
+                "last_commit_age": age or None,
+            }
+        )
+    return worktrees
 
 
 def probe_open_pr_for_branch(ctx: Context) -> list[Finding]:
@@ -403,6 +473,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Run only the CRITICAL (blocking) probes; skip advisory WARNING probes "
         "(notably the network gh-PR check). Used by the session-start hook.",
     )
+    parser.add_argument(
+        "--include-worktrees",
+        action="store_true",
+        help="Also list sibling worktrees (branch + last commit) as pure info -- "
+        "local-only, no network calls, never affects exit_code/status.",
+    )
     parser.add_argument("--json", action="store_true", help="Emit JSON output")
     parser.add_argument("--compact", action="store_true", help="Compact JSON (strip nulls)")
     parser.add_argument("--select", default=None, help="Comma-separated field projection")
@@ -440,8 +516,25 @@ def main(argv: list[str] | None = None) -> int:
         "findings": [f.as_dict() for f in findings],
     }
 
+    siblings: list[dict] = []
+    if args.include_worktrees:
+        siblings = summarize_sibling_worktrees(ctx)
+        payload["sibling_worktrees"] = siblings
+
     out = agent_output(payload, use_json=use_json, compact=args.compact, select=args.select)
-    print(out if out is not None else _render_human(status, exit_code, findings))
+    if out is not None:
+        print(out)
+    else:
+        human = _render_human(status, exit_code, findings)
+        if args.include_worktrees and siblings:
+            lines = [human, "", "Sibling worktrees:"]
+            for w in siblings:
+                branch_label = w["branch"] or "<detached HEAD>"
+                subject = w["last_commit_subject"] or "(no commits)"
+                age = f" ({w['last_commit_age']})" if w["last_commit_age"] else ""
+                lines.append(f"  {w['path']}  [{branch_label}]  {subject}{age}")
+            human = "\n".join(lines)
+        print(human)
     return exit_code
 
 
