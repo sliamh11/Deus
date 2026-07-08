@@ -1540,6 +1540,51 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     ):
         return 0
 
+    # Resolve scope ONCE, before branching on marker presence (2026-07-07 fix).
+    # Previously the marker-present branch below skipped straight to the model
+    # co-gate check with NO scoping at all, so once any `.plan-reviewed` marker
+    # existed, every subsequent Edit/Write/MultiEdit/apply_patch in the SESSION
+    # got gated — including files with zero relation to this repo (e.g. a vault
+    # note), because a project-scoped hook fires on every matching tool call in
+    # the session regardless of which file it targets. The marker-absent branch
+    # already computed this correctly; this hoist makes both branches share it.
+    #
+    # `_managed_paths` returns `(None, [])` outside every worktree;
+    # otherwise `(worktree, paths_after_filtering)`. Empty `paths` after
+    # filtering must NOT bypass the gate (the pre-fix `not paths` short-
+    # circuit was the ExitPlanMode enforcement gap, PR #430).
+    #
+    # Scope note (LIA-77): this Python gate is intentionally scoped to deus
+    # worktrees. Edits in non-git directories (vault, scratch, config files)
+    # are covered by the user-level bash hook at ~/.claude/hooks/plan-review-gate.sh,
+    # which falls back to the deus marker when not in a wardens-enabled repo.
+    #
+    # ExitPlanMode has no file paths — skip _managed_paths (which would
+    # escape via the empty-paths short-circuit) and treat it as always
+    # in-scope: it's a session-level action for whatever repo this hook is
+    # registered against, not tied to a specific file.
+    if tool_name == "ExitPlanMode":
+        paths: list[Path] = []
+        in_scope = True
+    else:
+        worktree, paths = _managed_paths(event, repo_root)
+        if worktree is None:
+            in_scope = False
+        elif paths:
+            in_scope = True
+        else:
+            # Disambiguate empty-paths: (a) all targets outside worktree →
+            # out of scope; (b) in-worktree targets filtered by
+            # `_is_excluded`/`_git_ignored` → still in scope, gate still applies.
+            cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+            in_scope = any(
+                _is_relative_to(p, worktree)
+                for p in _event_paths(event, cwd)
+            )
+
+    if not in_scope:
+        return 0
+
     # Claude side = the .plan-reviewed marker (its lifecycle is unchanged: SessionStart and /plan
     # both clear it to force re-review). Phase 3 (LIA-303) layers the co-gate ON TOP: when the
     # marker is present, every configured MODEL backend (e.g. gpt) must also be SHIP. Marker-absent
@@ -1553,8 +1598,8 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
         _block_pre_tool(_warden_backends_block_message("plan-reviewer", model_blocking, repo_root))
         return 0
 
-    # ExitPlanMode has no file paths — skip _managed_paths (which would
-    # escape via the empty-paths short-circuit) and block on marker alone.
+    # ExitPlanMode has no file paths — block on marker alone (scope already
+    # resolved to in_scope=True above).
     if tool_name == "ExitPlanMode":
         mark_cmd = (
             f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
@@ -1578,32 +1623,9 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
         _block_pre_tool(reason)
         return 0
 
-    # `_managed_paths` returns `(None, [])` outside every worktree;
-    # otherwise `(worktree, paths_after_filtering)`. Empty `paths` after
-    # filtering must NOT bypass the gate (the pre-fix `not paths` short-
-    # circuit was the ExitPlanMode enforcement gap, PR #430).
-    #
-    # Scope note (LIA-77): this Python gate is intentionally scoped to deus
-    # worktrees. Edits in non-git directories (vault, scratch, config files)
-    # are covered by the user-level bash hook at ~/.claude/hooks/plan-review-gate.sh,
-    # which falls back to the deus marker when not in a wardens-enabled repo.
-    worktree, paths = _managed_paths(event, repo_root)
-    if worktree is None:
-        return 0
-
-    # Disambiguate empty-paths: (a) all targets outside worktree → return 0;
-    # (b) in-worktree targets filtered by `_is_excluded`/`_git_ignored` → BLOCK.
-    if not paths:
-        cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
-        any_in_worktree = any(
-            _is_relative_to(p, worktree)
-            for p in _event_paths(event, cwd)
-        )
-        if not any_in_worktree:
-            return 0
-
-    # BLOCK: in-worktree edit without marker. `paths` may still be empty
-    # here when all targets were filtered (PR #430 invariant preserved).
+    # BLOCK: in-worktree edit without marker (scope already resolved above).
+    # `paths` may still be empty here when all targets were filtered
+    # (PR #430 invariant preserved).
     if paths:
         target_list = "\n".join(f"  - {path}" for path in paths[:5])
     else:

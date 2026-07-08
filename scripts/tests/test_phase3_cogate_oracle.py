@@ -173,6 +173,68 @@ def test_cogate_plan_gpt_could_not_run_fails_open(repo, blocks):
     )
 
 
+# ── Contract D: marker-present co-gate must still respect worktree scope ─────
+#
+# Regression (found live, 2026-07-07): the marker-present branch used to call
+# _evaluate_backends and BLOCK without ever consulting _managed_paths. A
+# project-scoped hook fires on every matching tool call in the SESSION
+# regardless of which file it targets, so once ANY .plan-reviewed marker
+# existed, a blocking model-backend verdict gated every subsequent Edit/Write
+# in the session — including files with zero relation to this repo (e.g. an
+# unrelated personal vault note). Fixed by hoisting scope resolution above
+# the marker-present branch, so both branches share the same in/out-of-scope
+# determination the marker-absent path already had.
+
+def test_cogate_plan_marker_present_gpt_blocking_but_target_outside_worktree_allows(
+    repo, blocks,
+):
+    # @oracle: Contract D — marker present + GPT REVISE, but the edited file
+    # is OUTSIDE this worktree → ALLOW (out of scope), never BLOCK. On the
+    # pre-fix implementation this incorrectly blocks: scope is never checked
+    # once a marker exists.
+    _config(repo, {_PLAN_ROLE: {"backends": ["claude", "gpt"]}})
+    _marker_path = h._marker(repo, ".plan-reviewed")
+    _marker_path.parent.mkdir(parents=True, exist_ok=True)
+    _marker_path.touch()
+    _set(repo, _GPT_KEY, "REVISE")  # would incorrectly BLOCK if scope were skipped
+
+    outside_event = {
+        "tool_name": "Edit",
+        "cwd": str(repo),
+        "tool_input": {
+            "file_path": "/tmp/totally-unrelated-vault-note.md",
+            "old_string": "a",
+            "new_string": "b",
+        },
+    }
+    h.run_plan_review_gate(outside_event, repo)
+    assert blocks == [], (
+        "gate must ALLOW an edit to a file outside this worktree even when the "
+        ".plan-reviewed marker exists and a model-backend verdict is blocking — "
+        "scope must be resolved BEFORE the co-gate check, not skipped once any "
+        "marker exists"
+    )
+
+
+def test_cogate_plan_marker_present_gpt_blocking_and_target_inside_worktree_still_blocks(
+    repo, blocks,
+):
+    # @oracle: Contract D counterpart — same setup, but the target IS inside
+    # the worktree → co-gate still fires normally. Pins that the scope hoist
+    # does not weaken the existing co-gate for genuinely in-scope edits.
+    _config(repo, {_PLAN_ROLE: {"backends": ["claude", "gpt"]}})
+    _marker_path = h._marker(repo, ".plan-reviewed")
+    _marker_path.parent.mkdir(parents=True, exist_ok=True)
+    _marker_path.touch()
+    _set(repo, _GPT_KEY, "REVISE")
+    h.run_plan_review_gate(_plan_edit_event(repo), repo)
+    assert blocks, (
+        "gate must still BLOCK an in-worktree edit when the marker exists but "
+        "the model-backend verdict is blocking — the scope hoist must not "
+        "weaken the co-gate for in-scope edits"
+    )
+
+
 # ── Contract B: /plan invalidation clears BOTH marker AND GPT verdict ─────────
 #
 # The discriminating shape: seed marker-present + stale GPT SHIP, fire the
