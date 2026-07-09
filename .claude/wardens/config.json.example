@@ -55,5 +55,21 @@
   "placement-guard": {
     "enabled": true,
     "custom_instructions": null
+  },
+  "product-manager": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "technical-manager": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "devops-reviewer": {
+    "enabled": true,
+    "custom_instructions": null
+  },
+  "copy-writer": {
+    "enabled": true,
+    "custom_instructions": null
   }
 }

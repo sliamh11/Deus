@@ -27,7 +27,7 @@ dist/
 .claude/.co-gate-loop-*.bak-*
 # Plan revise log + scratch plan docs (host-local working notes)
 .claude/plan-revise-log.jsonl
-.claude/.plan-*.md
+.claude/.*-scope.md
 # One-time migration nudge flag (host-local)
 .claude/.migration-nudged
 

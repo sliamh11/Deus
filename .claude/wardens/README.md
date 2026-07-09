@@ -14,6 +14,10 @@ Specialized review agents that guard the codebase. Validator wardens check corre
 | **ux-reviewer** | Validator | Sonnet | `ux-review-rules.md` | Manual: invoke after user-facing changes to TUI, chat formatting, CLI output, or channel templates |
 | **verification-gate** | Validator | Sonnet | `verification-rules.md` | Gate: PreToolUse on Bash blocks commit/PR commands until evidence-before-claims passes (`warden-shim.sh verification-gate`) |
 | **session-retrospective** | Generator | Opus | `retrospective-schema.md` | Manual (also auto-triggered by /compress when opt-in gate passes): `Agent(subagent_type="session-retrospective", prompt="retrospective for last 20 sessions")` |
+| **product-manager** | Validator | Opus | `product-review-rules.md` | Manual: invoke after drafting or revising a product scope/PRD/business-requirements document, before it's sent for stakeholder approval |
+| **technical-manager** | Validator | Opus | `technical-review-rules.md` | Manual: invoke after drafting or revising a technical plan/architecture doc/ADR, before it's ratified or infra work starts against it |
+| **devops-reviewer** | Validator | Opus | `devops-review-rules.md` | Manual: invoke before an apply/merge that changes infrastructure (Terraform/CloudFormation, CI/CD deploy workflows) |
+| **copy-writer** | Validator | Opus | `copy-review-rules.md` | Manual: invoke after drafting any substantial prose document (scope docs, PRDs, ADRs, READMEs, plans, proposals), before it goes to its real audience |
 
 ## Directory
 
