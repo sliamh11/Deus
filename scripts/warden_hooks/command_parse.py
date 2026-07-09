@@ -69,6 +69,177 @@ def _is_admin_merge_command(command: str) -> bool:
     return False
 
 
+#: git global flags that take a value, checked before the subcommand verb.
+#: Known git 2.x global flags -- not exhaustive of every future addition; an
+#: unrecognized flag causes `_parse_git_invocation` to fail to identify the
+#: verb position for that one invocation (same fail-mode as the old
+#: `GIT_COMMIT_RE` regex on any exotic flag it didn't anticipate either -- not
+#: a regression). Extend if a gap surfaces, per feedback_no_speculative_hardening.
+#: Deliberately NOT gh's flag set (`-R`/`--repo`/`--hostname` are wrong here).
+_GIT_GLOBAL_FLAGS_WITH_VALUE = (
+    "-C", "-c", "--exec-path", "--html-path", "--man-path", "--info-path",
+    "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
+)
+_GIT_GLOBAL_FLAGS_BARE = (
+    "-p", "--paginate", "--no-pager", "--no-replace-objects", "--bare",
+    "--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs",
+    "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs",
+)
+
+
+def _is_git_executable(token: str) -> bool:
+    token = token.strip("\"'")
+    names = {Path(token).name.lower(), PureWindowsPath(token).name.lower()}
+    return bool(names & {"git", "git.exe"})
+
+
+def _split_shell_commands(command: str) -> list[str]:
+    """Best-effort split of `command` into independent shell invocations on
+    unquoted `;`, `&&`, `||`, `|`, `&`, and newlines (`\\n`/`\\r`).
+
+    Hand-rolled quote-tracking state machine rather than `shlex` -- shlex
+    treats newline as ordinary whitespace (no way to distinguish "there was a
+    boundary" from "which character it was"), and this function needs
+    newline to behave as a real separator (a `git commit` on its own line
+    within a multi-line Bash tool call is a routine, non-adversarial shape,
+    not just a decoy pattern) while still NEVER splitting inside a quoted
+    string -- e.g. `git commit -m "line1\\nline2"` must stay ONE sub-command.
+
+    Respects single/double quotes and a leading backslash escape. A
+    backslash immediately followed by a newline is treated as a line
+    continuation (both characters are dropped, no split, no literal chars
+    added) matching real shell semantics; any other backslash-escaped
+    character is copied through literally without being treated as an
+    operator. NOT a full shell grammar -- subshells (`$(...)`, backticks),
+    here-docs, and other advanced constructs are not specially handled. An
+    imperfect split only ever affects trigger/widening correctness in the
+    safe direction documented on `_resolve_commit_target` (in
+    codex_warden_hooks.py) and the callers of this function -- never a
+    security bypass by itself.
+    """
+    pieces: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(command)
+    while i < n:
+        ch = command[i]
+        if quote is not None:
+            current.append(ch)
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+            current.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            nxt = command[i + 1]
+            if nxt == "\n":
+                i += 2
+                continue
+            if nxt == "\r" and i + 2 < n and command[i + 2] == "\n":
+                i += 3
+                continue
+            current.append(ch)
+            current.append(nxt)
+            i += 2
+            continue
+        if ch in ("\n", "\r", ";"):
+            pieces.append("".join(current))
+            current = []
+            i += 1
+            continue
+        if ch == "|":
+            pieces.append("".join(current))
+            current = []
+            i += 2 if i + 1 < n and command[i + 1] == "|" else 1
+            continue
+        if ch == "&":
+            pieces.append("".join(current))
+            current = []
+            i += 2 if i + 1 < n and command[i + 1] == "&" else 1
+            continue
+        current.append(ch)
+        i += 1
+    pieces.append("".join(current))
+    return [p.strip() for p in pieces if p.strip()]
+
+
+def _parse_git_invocation(sub_command: str, cwd: Path) -> tuple[bool, Path | None]:
+    """Parse ONE already-isolated shell invocation (no unquoted `&&`/`;`/`|`
+    in it -- see `_split_shell_commands`). Returns `(is_commit, dash_c_target)`.
+
+    `dash_c_target` is None when this invocation has no `-C` of its own (the
+    caller should use `cwd` unchanged in that case) or isn't a git invocation
+    at all -- callers must check `is_commit` before using a None target as
+    meaningful, since "not a commit" and "a commit with no -C" both yield
+    `dash_c_target is None`. Composes multiple `-C` flags on the SAME
+    invocation cumulatively left-to-right against `cwd`, matching git's real
+    semantics (safe to do within one invocation since they all genuinely
+    apply to the same process; a DIFFERENT invocation's `-C` is never
+    consulted here -- that isolation is what `_split_shell_commands` exists
+    to provide).
+    """
+    tokens = _shell_tokens(sub_command)
+    for index, token in enumerate(tokens):
+        if not _is_git_executable(token):
+            continue
+        i = index + 1
+        target = cwd
+        saw_c = False
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok in _GIT_GLOBAL_FLAGS_BARE:
+                i += 1
+                continue
+            if tok == "-C" and i + 1 < len(tokens):
+                # .expanduser(): a real shell tilde-expands an UNQUOTED `~/x`
+                # before git ever sees the argument -- shlex does not, so
+                # without this an unquoted `git -C ~/repo commit` (the common
+                # real-world form) would be misresolved as the literal
+                # relative path `cwd/~/repo` instead of the user's actual
+                # home directory (code-reviewer finding). Known, accepted
+                # incompleteness: a QUOTED `"~/repo"` is NOT shell-expanded by
+                # a real shell (git would receive the literal string), but
+                # `_shell_tokens` (shlex) already discards quote-boundary
+                # information by the time we see plain string tokens, so this
+                # can't distinguish quoted from unquoted post-hoc -- rare
+                # form, low-severity divergence (best-effort widening only,
+                # not a security boundary by itself; the ambiguity/fail-closed
+                # checks elsewhere are the actual backstop).
+                candidate = Path(tokens[i + 1]).expanduser()
+                target = candidate if candidate.is_absolute() else (target / candidate)
+                saw_c = True
+                i += 2
+                continue
+            if any(tok == f or tok.startswith(f + "=") for f in _GIT_GLOBAL_FLAGS_WITH_VALUE):
+                i += 1
+                if "=" not in tok and i < len(tokens):
+                    i += 1
+                continue
+            break
+        is_commit = i < len(tokens) and tokens[i] == "commit"
+        return is_commit, (target.resolve(strict=False) if saw_c else None)
+    return False, None
+
+
+def _is_git_commit_command(command: str) -> bool:
+    """TRIGGER predicate -- replaces the old `GIT_COMMIT_RE` regex. Broad on
+    purpose: ANY sub-invocation identified as a commit triggers the caller to
+    care (more scrutiny is always safe). Ambiguity/ordering across multiple
+    commit sub-invocations doesn't matter here -- that's only relevant for
+    the stricter `_resolve_commit_target` in codex_warden_hooks.py, which
+    decides WHICH worktree's verdict to check, not WHETHER to check one."""
+    placeholder_cwd = Path(".")
+    return any(
+        _parse_git_invocation(sub, placeholder_cwd)[0]
+        for sub in _split_shell_commands(command)
+    )
+
+
 def _extract_pr_ref(command: str) -> str | None:
     """Return the PR number, URL, or branch from a ``gh pr merge`` command.
 

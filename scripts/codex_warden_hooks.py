@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 # Warden-review layer constants (zero-dependency leaf module — safe on the hot hook path).
 # Centralizes backend ids / verdict-state keys / file-name formats used by the co-gate.
@@ -43,7 +43,10 @@ from warden_hooks.command_parse import (  # noqa: E402
     _gh_command_index_after_global_flags,
     _is_admin_merge_command,
     _is_gh_executable,
+    _is_git_commit_command,
+    _parse_git_invocation,
     _shell_tokens,
+    _split_shell_commands,
 )
 from warden_hooks.globs import _glob_match, _glob_to_regex  # noqa: E402
 from warden_hooks import verdict_store as _verdict_store  # noqa: E402
@@ -238,7 +241,6 @@ HOOK_SPECS: tuple[HookSpec, ...] = (
 )
 
 PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULTILINE)
-GIT_COMMIT_RE = re.compile(r"(^|[;&|]\s*)git(?:\s+-C\s+\S+)?\s+commit(\s|$)")
 SECURITY_PATH_RE = re.compile(
     r"(auth|session|credential|token|oauth|secret|proxy|security|trust|encrypt|decrypt|permission)",
     re.IGNORECASE,
@@ -486,6 +488,102 @@ def worktree_override(worktree: Path):
         yield
     finally:
         _WORKTREE_OVERRIDE = prev
+
+
+class _CommitTargetResolution(NamedTuple):
+    """Result of `_resolve_commit_target`.
+
+    ``target`` -- the effective directory to use for `worktree_override`
+    purposes: the single distinct commit target when unambiguous, else
+    ``cwd`` (used only for OTHER, non-commit-ambiguity-sensitive behaviors'
+    bucket resolution -- the 3 gates that care about commit-target ambiguity
+    check ``ambiguous`` themselves and block before ever reading a verdict
+    from that bucket).
+    ``ambiguous`` -- True iff 2+ DISTINCT resolved commit targets were found
+    in the same command (after normalizing a commit invocation with no `-C`
+    of its own to ``cwd`` BEFORE deduplication, so `git commit` and
+    `git -C <that-same-cwd-path> commit` correctly collapse to one target,
+    not two).
+    ``distinct_targets`` -- populated only when ``ambiguous`` is True, for
+    building a block message.
+    """
+
+    target: Path
+    ambiguous: bool
+    distinct_targets: tuple[Path, ...]
+
+
+def _resolve_commit_target(event: dict[str, Any], cwd: Path) -> _CommitTargetResolution:
+    """The effective directory the command's identified git-commit
+    invocation(s) actually operate against.
+
+    If the command contains exactly ONE distinct resolved commit target
+    (after None-defaults-to-cwd normalization), that target is authoritative
+    -- returned regardless of cwd, since a `-C` on the specific commit
+    invocation is git's own deterministic statement of where it operates, not
+    a guess. If the command contains NO commit sub-invocation, returns cwd
+    unchanged (ambiguous=False) -- identical to today's behavior. If it
+    contains 2+ DISTINCT commit targets, returns cwd for the ``target`` field
+    (harmless -- only used by non-ambiguity-aware callers) but sets
+    ``ambiguous=True`` so gate callers can block explicitly rather than
+    silently reading one target's verdict while another rides along
+    unreviewed.
+    """
+    if event.get("tool_name") != "Bash":
+        return _CommitTargetResolution(cwd, False, ())
+    tool_input = event.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, dict) else None
+    if not isinstance(command, str):
+        return _CommitTargetResolution(cwd, False, ())
+    resolved: list[Path] = []
+    for sub in _split_shell_commands(command):
+        is_commit, target = _parse_git_invocation(sub, cwd)
+        if is_commit:
+            resolved.append(target if target is not None else cwd)
+    if not resolved:
+        return _CommitTargetResolution(cwd, False, ())
+    distinct = sorted({p.resolve(strict=False) for p in resolved}, key=str)
+    if len(distinct) == 1:
+        return _CommitTargetResolution(distinct[0], False, ())
+    return _CommitTargetResolution(cwd, True, tuple(distinct))
+
+
+def _ambiguous_commit_block_message(distinct_targets: tuple[Path, ...]) -> str:
+    targets_list = ", ".join(str(p) for p in distinct_targets)
+    return (
+        "[gate-scope] This command contains commits targeting multiple distinct "
+        f"repos/worktrees ({targets_list}). This gate can't safely attribute one "
+        "review verdict to a multi-target commit -- split into separate commands "
+        "so each can be reviewed independently."
+    )
+
+
+def _effective_worktree(event: dict[str, Any], repo_root: Path) -> Path | None:
+    """The actual worktree this dispatch is operating against -- the single
+    source of truth the scope decision, any downstream per-worktree check
+    (e.g. `_diff_touches_llm_files`), AND the verdict read must all share via
+    `worktree_override`, so none of them can disagree (two rounds of
+    code-reviewer findings: first, that scope and the diff check could
+    diverge if computed independently; second, that even after unifying
+    those two, the verdict-read machinery still independently re-resolved
+    ITS OWN bucket via the ambient `_WORKTREE_OVERRIDE`/`os.getcwd()` unless
+    a caller also pins the override around the read -- which every one of
+    the 3 target gates now does with this function's result).
+
+    Prefers the live `_WORKTREE_OVERRIDE` when `run()` has already set one
+    (meaning `run()` determined -- via cwd or `_resolve_commit_target` --
+    that this dispatch is in scope, and pinned it for the whole call).
+    Otherwise re-derives via `_resolve_commit_target` itself (NOT raw cwd --
+    a call outside the `run()` dispatcher with no override active must still
+    resolve scope from the identified commit's own -C when present, or
+    `git -C /unrelated-repo commit` run from a cwd that happens to sit inside
+    a deus worktree would incorrectly resolve to THIS repo for a commit that
+    actually lands somewhere else entirely)."""
+    if _WORKTREE_OVERRIDE is not None:
+        return _WORKTREE_OVERRIDE
+    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+    effective_target = _resolve_commit_target(event, cwd).target
+    return _worktree_for_cwd(effective_target, repo_root)
 
 
 def _current_worktree(repo_root: Path) -> Path:
@@ -1677,19 +1775,25 @@ _AI_ENG_BASENAMES = {
 _AI_ENG_DIR_PREFIXES = ("evolution/", ".claude/agents/")
 
 
-def _diff_touches_llm_files(repo_root: Path) -> bool:
-    """Check if staged/unstaged changes touch LLM-related files. Fail-closed."""
+def _diff_touches_llm_files(worktree: Path) -> bool:
+    """Check if staged/unstaged changes touch LLM-related files. Fail-closed.
+
+    ``worktree`` must be the actual worktree the commit under review targets
+    (pass ``_WORKTREE_OVERRIDE or repo_root`` from the caller) -- NOT
+    hardcoded to ``repo_root``, since a commit dispatched via a `-C`-targeted
+    worktree other than ``repo_root`` would otherwise have its diff evaluated
+    against the wrong checkout entirely."""
     try:
         result = subprocess.run(
             ["git", "diff", "--name-only", "HEAD"],
-            capture_output=True, text=True, cwd=repo_root, timeout=10,
+            capture_output=True, text=True, cwd=worktree, timeout=10,
         )
         if result.returncode != 0:
             return True
         files = result.stdout.strip().split("\n") if result.stdout.strip() else []
         result2 = subprocess.run(
             ["git", "diff", "--cached", "--name-only"],
-            capture_output=True, text=True, cwd=repo_root, timeout=10,
+            capture_output=True, text=True, cwd=worktree, timeout=10,
         )
         if result2.returncode != 0:
             return True
@@ -1705,27 +1809,66 @@ def _diff_touches_llm_files(repo_root: Path) -> bool:
     return False
 
 
+def _blocking_ambiguity(
+    event: dict[str, Any], repo_root: Path, cwd: Path
+) -> _CommitTargetResolution | None:
+    """Returns the resolution IFF it's ambiguous AND at least one of the
+    distinct commit targets is actually an in-scope worktree -- else None.
+
+    Checked BEFORE the `_effective_worktree` scope check, not after: if cwd
+    itself is out of scope (the original Bug #1 drift scenario) and no
+    `_WORKTREE_OVERRIDE` is set, that check alone would short-circuit to
+    "not in scope, allow" without ever inspecting the command -- silently
+    letting an ambiguous multi-target commit that names a REAL in-scope
+    worktree ride through with zero review (code-reviewer finding on the
+    first cut of this fix).
+    Blocking is conditioned on "at least one target in scope" so this never
+    fires for a command genuinely unrelated to any deus worktree (both/all
+    targets outside every worktree) -- that stays a no-op, matching today's
+    behavior for out-of-scope work.
+    """
+    resolution = _resolve_commit_target(event, cwd)
+    if not resolution.ambiguous:
+        return None
+    if any(_worktree_for_cwd(t, repo_root) is not None for t in resolution.distinct_targets):
+        return resolution
+    return None
+
+
 def run_ai_eng_gate(event: dict[str, Any], repo_root: Path) -> int:
     config = _wardens_config(repo_root)
     if not _warden_enabled(config, "ai-eng-warden"):
         return 0
 
-    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
-    if _worktree_for_cwd(cwd, repo_root) is None:
-        return 0
-
     tool_input = event.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
-    if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
-        return 0
-    if not _diff_touches_llm_files(repo_root):
+    if not isinstance(command, str) or not _is_git_commit_command(command):
         return 0
 
-    # Co-gate across every configured backend (Phase 3, LIA-303). Mirrors code-reviewer:
-    # the Claude verdict is read from the store under "ai-eng-warden" and model backends via
-    # store_key. The diff-touches-LLM-files trigger above is ai-eng-specific, so it stays here;
-    # the generic gate handles the strict-AND verdict combination + block messaging.
-    return run_warden_backends_gate("ai-eng-warden", event, repo_root)
+    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+    blocking = _blocking_ambiguity(event, repo_root, cwd)
+    if blocking is not None:
+        _block_pre_tool(_ambiguous_commit_block_message(blocking.distinct_targets))
+        return 0
+
+    # Computed once and PINNED via worktree_override for everything below --
+    # the diff check, AND the verdict read inside run_warden_backends_gate's
+    # delegation, must all share this exact value (code-reviewer finding:
+    # a direct call with no override pre-pinned could otherwise diff-check
+    # the right worktree but verdict-check a different, wrong bucket).
+    worktree = _effective_worktree(event, repo_root)
+    if worktree is None:
+        return 0
+
+    with worktree_override(worktree):
+        if not _diff_touches_llm_files(worktree):
+            return 0
+
+        # Co-gate across every configured backend (Phase 3, LIA-303). Mirrors code-reviewer:
+        # the Claude verdict is read from the store under "ai-eng-warden" and model backends via
+        # store_key. The diff-touches-LLM-files trigger above is ai-eng-specific, so it stays here;
+        # the generic gate handles the strict-AND verdict combination + block messaging.
+        return run_warden_backends_gate("ai-eng-warden", event, repo_root)
 
 
 def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
@@ -1733,45 +1876,64 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
     if not _warden_enabled(config, "verification-gate"):
         return 0
 
-    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
-    if _worktree_for_cwd(cwd, repo_root) is None:
-        return 0
-
     tool_input = event.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
-    if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
-        return 0
-    if _read_verdict("verified", repo_root) == "SHIP":
+    if not isinstance(command, str) or not _is_git_commit_command(command):
         return 0
 
-    mark_cmd = (
-        f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
-        f"mark verified SHIP \"reason\""
-    )
+    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+    blocking = _blocking_ambiguity(event, repo_root, cwd)
+    if blocking is not None:
+        _block_pre_tool(_ambiguous_commit_block_message(blocking.distinct_targets))
+        return 0
 
-    if _last_verdict_is_blocking(repo_root, "verification-gate"):
-        last = _last_verdict(repo_root, "verification-gate")
-        reason = (
-            f"[verification-gate] BLOCKED: last verification-gate verdict was {last}.\n\n"
-            "Re-run the verification-gate after fixing the issues. Trivial bypass is "
-            f"not permitted after {last} — no exceptions.\n\n"
-            f"After SHIP:\n{mark_cmd}"
-        )
-    else:
-        reason = (
-            "[verification-gate] BLOCKED: no verification-gate approval marker.\n\n"
-            "Before committing Deus changes, run the verification-gate Warden "
-            "(subagent_type=\"verification-gate\") and wait for VERDICT: SHIP. "
-            "The verification-gate confirms all task requirements were actually "
-            "implemented with evidence. Pass the plan from .claude/.plan-reviewed "
-            "(if present) or the commit message as requirements context.\n\n"
-            f"After SHIP:\n{mark_cmd}\n\n"
-            "Trivial-commit bypass (typos, deps, config-only):\n"
+    # Computed once and PINNED for the verdict read below via worktree_override --
+    # not just consulted as a bool. Code-reviewer finding: _effective_worktree
+    # alone deciding "in scope" wasn't enough while the verdict read
+    # (_read_verdict -> _claude_marker_dir) independently re-resolved its OWN
+    # bucket via the ambient _WORKTREE_OVERRIDE (or os.getcwd() if unset) --
+    # a direct call with no override pre-pinned could read a SHIP verdict
+    # from the wrong bucket even after correctly identifying the right
+    # worktree for scope purposes. Pinning here makes all three (scope,
+    # any downstream diff check, and this verdict read) share one value,
+    # regardless of whether this call arrived via run()'s own pinning or
+    # directly with no override active.
+    worktree = _effective_worktree(event, repo_root)
+    if worktree is None:
+        return 0
+
+    with worktree_override(worktree):
+        if _read_verdict("verified", repo_root) == "SHIP":
+            return 0
+
+        mark_cmd = (
             f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
-            f"mark verified TRIVIAL \"reason\""
+            f"mark verified SHIP \"reason\""
         )
-    _block_pre_tool(reason)
-    return 0
+
+        if _last_verdict_is_blocking(repo_root, "verification-gate"):
+            last = _last_verdict(repo_root, "verification-gate")
+            reason = (
+                f"[verification-gate] BLOCKED: last verification-gate verdict was {last}.\n\n"
+                "Re-run the verification-gate after fixing the issues. Trivial bypass is "
+                f"not permitted after {last} — no exceptions.\n\n"
+                f"After SHIP:\n{mark_cmd}"
+            )
+        else:
+            reason = (
+                "[verification-gate] BLOCKED: no verification-gate approval marker.\n\n"
+                "Before committing Deus changes, run the verification-gate Warden "
+                "(subagent_type=\"verification-gate\") and wait for VERDICT: SHIP. "
+                "The verification-gate confirms all task requirements were actually "
+                "implemented with evidence. Pass the plan from .claude/.plan-reviewed "
+                "(if present) or the commit message as requirements context.\n\n"
+                f"After SHIP:\n{mark_cmd}\n\n"
+                "Trivial-commit bypass (typos, deps, config-only):\n"
+                f"  python3 {shlex.quote(str(_active_script_path(repo_root)))} "
+                f"mark verified TRIVIAL \"reason\""
+            )
+        _block_pre_tool(reason)
+        return 0
 
 
 def run_verification_invalidator(event: dict[str, Any], repo_root: Path) -> int:
@@ -3000,19 +3162,30 @@ def run_warden_backends_gate(role: str, event: dict[str, Any], repo_root: Path) 
     config = _wardens_config(repo_root)
     if not _warden_enabled(config, role):
         return 0
-    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
-    if _worktree_for_cwd(cwd, repo_root) is None:
-        return 0
     tool_input = event.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
-    if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
+    if not isinstance(command, str) or not _is_git_commit_command(command):
         return 0
 
-    blocking = _evaluate_backends(role, config, repo_root)
-    if not blocking:
+    cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
+    blocking = _blocking_ambiguity(event, repo_root, cwd)
+    if blocking is not None:
+        _block_pre_tool(_ambiguous_commit_block_message(blocking.distinct_targets))
         return 0
-    _block_pre_tool(_warden_backends_block_message(role, blocking, repo_root))
-    return 0
+
+    # Pinned via worktree_override so the verdict read below shares the exact
+    # same worktree the scope decision already resolved (code-reviewer
+    # finding -- see run_verification_gate's identical comment).
+    worktree = _effective_worktree(event, repo_root)
+    if worktree is None:
+        return 0
+
+    with worktree_override(worktree):
+        blocking_backends = _evaluate_backends(role, config, repo_root)
+        if not blocking_backends:
+            return 0
+        _block_pre_tool(_warden_backends_block_message(role, blocking_backends, repo_root))
+        return 0
 
 
 def cross_review_override(repo_root: Path, role: str, reason: str) -> int:
@@ -3963,8 +4136,17 @@ def run(args: argparse.Namespace) -> int:
     # the two can differ, so without this a worktree's verdict-tracker writes
     # land in a different bucket than the gates read. worktree_override pins
     # _claude_marker_dir to that worktree's bucket for every runner.
+    #
+    # _resolve_commit_target: for a Bash tool call with exactly one
+    # identified git-commit invocation, its own `-C` target (when present) is
+    # authoritative over cwd -- git's own deterministic statement of where it
+    # operates, not a guess (LIA gate-scope centralization fix). Falls back
+    # to cwd unchanged for every other case (no commit, no -C on it, or 2+
+    # distinct commit targets -- the ambiguous case is handled by the 3
+    # target gates blocking explicitly, not by this dispatcher).
     cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
-    wt = _worktree_for_cwd(cwd, repo_root)
+    effective_target = _resolve_commit_target(event, cwd).target
+    wt = _worktree_for_cwd(effective_target, repo_root)
     if wt is None:
         return RUNNERS[args.behavior](event, repo_root)
     with worktree_override(wt):

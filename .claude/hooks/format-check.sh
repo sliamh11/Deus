@@ -18,17 +18,35 @@ if ! printf '%s' "$CMD" | grep -qE '(^|[;&|]\s*)git(\s+(-C\s+\S+|--\S+))*\s+comm
   exit 0
 fi
 
-TOPLEVEL=$(git rev-parse --show-toplevel 2>/dev/null || true)
+# Use the SAME repo the actual command targets (via its own -C, if any) for
+# our own git queries below -- not this hook process's ambient cwd, which may
+# differ (e.g. `git -C <worktree> commit` run from the main repo session).
+# Best-effort, last -C wins: adequate for this non-gating formatting check
+# (worst case on a mis-parse is a skipped or wrong-repo format check, not a
+# review bypass -- see scripts/warden_hooks/command_parse.py's
+# _parse_git_invocation for the rigorous version used by the actual commit
+# review gates).
+GIT_C_PATH=$(printf '%s' "$CMD" | grep -oE '\-C[[:space:]]+[^[:space:]]+' | tail -1 | sed -E 's/^-C[[:space:]]+//') || true
+
+git_query() {
+  if [ -n "$GIT_C_PATH" ]; then
+    git -C "$GIT_C_PATH" "$@" 2>/dev/null
+  else
+    git "$@" 2>/dev/null
+  fi
+}
+
+TOPLEVEL=$(git_query rev-parse --show-toplevel || true)
 [ -n "$TOPLEVEL" ] || exit 0
 
-PROJECT_ROOT="$(cd "$(dirname "$(git rev-parse --git-common-dir 2>/dev/null)")" && pwd)" 2>/dev/null || exit 0
+PROJECT_ROOT="$(cd "$(dirname "$(git_query rev-parse --git-common-dir)")" && pwd)" 2>/dev/null || exit 0
 
 case "$TOPLEVEL" in
   "$PROJECT_ROOT"|"$PROJECT_ROOT/.claude/worktrees/"*) ;;
   *) exit 0 ;;
 esac
 
-STAGED_TS=$(git diff --cached --name-only --diff-filter=ACMR -- '*.ts' 2>/dev/null)
+STAGED_TS=$(git_query diff --cached --name-only --diff-filter=ACMR -- '*.ts')
 [ -n "$STAGED_TS" ] || exit 0
 
 PRETTIER="$PROJECT_ROOT/node_modules/.bin/prettier"

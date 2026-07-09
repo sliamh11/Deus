@@ -2955,6 +2955,539 @@ def test_match_pattern_docs_returns_most_specific_first(tmp_path):
     assert matched[1].stem == "general"
 
 
+# --- Gate-scope centralization: _parse_git_invocation / _split_shell_commands
+# --- / _is_git_commit_command (pure string parsing, no git repo needed) ---
+
+
+def test_parse_git_invocation_no_c_on_commit():
+    hooks = load_hooks()
+    is_commit, target = hooks._parse_git_invocation("git commit -m test", Path("/cwd"))
+    assert is_commit is True
+    assert target is None
+
+
+def test_parse_git_invocation_absolute_c_on_commit():
+    hooks = load_hooks()
+    is_commit, target = hooks._parse_git_invocation(
+        "git -C /some/repo commit -m test", Path("/cwd")
+    )
+    assert is_commit is True
+    assert target == Path("/some/repo")
+
+
+def test_parse_git_invocation_relative_c_composes_against_cwd():
+    hooks = load_hooks()
+    is_commit, target = hooks._parse_git_invocation(
+        "git -C sub commit -m test", Path("/cwd")
+    )
+    assert is_commit is True
+    assert target == Path("/cwd/sub")
+
+
+def test_parse_git_invocation_c_on_non_commit_not_flagged_as_commit():
+    hooks = load_hooks()
+    is_commit, target = hooks._parse_git_invocation("git -C /wtA status", Path("/cwd"))
+    assert is_commit is False
+    assert target == Path("/wtA")  # target still parsed; caller must check is_commit
+
+
+def test_parse_git_invocation_absolute_path_git_executable():
+    hooks = load_hooks()
+    is_commit, target = hooks._parse_git_invocation(
+        "/usr/bin/git -C /some/repo commit -m test", Path("/cwd")
+    )
+    assert is_commit is True
+    assert target == Path("/some/repo")
+
+
+def test_parse_git_invocation_env_git_executable():
+    hooks = load_hooks()
+    is_commit, _ = hooks._parse_git_invocation("env git commit -m test", Path("/cwd"))
+    assert is_commit is True
+
+
+def test_parse_git_invocation_value_flag_skip_correctness():
+    hooks = load_hooks()
+    is_commit, target = hooks._parse_git_invocation(
+        "git -c core.foo=bar commit -m test", Path("/cwd")
+    )
+    assert is_commit is True
+    assert target is None
+
+
+def test_parse_git_invocation_multi_c_composes_cumulatively():
+    hooks = load_hooks()
+    is_commit, target = hooks._parse_git_invocation(
+        "git -C /a -C sub commit -m test", Path("/cwd")
+    )
+    assert is_commit is True
+    assert target == Path("/a/sub")
+
+
+def test_parse_git_invocation_not_git_at_all():
+    hooks = load_hooks()
+    is_commit, target = hooks._parse_git_invocation("ls -la", Path("/cwd"))
+    assert is_commit is False
+    assert target is None
+
+
+def test_split_shell_commands_semicolon_and_chaining_operators():
+    hooks = load_hooks()
+    assert hooks._split_shell_commands("git status; git commit -m x") == [
+        "git status",
+        "git commit -m x",
+    ]
+    assert hooks._split_shell_commands("git add -A && git commit -m x") == [
+        "git add -A",
+        "git commit -m x",
+    ]
+    assert hooks._split_shell_commands("git commit -m x || echo fail") == [
+        "git commit -m x",
+        "echo fail",
+    ]
+    assert hooks._split_shell_commands("git log | head") == ["git log", "head"]
+
+
+def test_split_shell_commands_newline_separator():
+    hooks = load_hooks()
+    assert hooks._split_shell_commands("echo foo\ngit commit -m evil") == [
+        "echo foo",
+        "git commit -m evil",
+    ]
+
+
+def test_split_shell_commands_does_not_split_inside_double_quotes():
+    hooks = load_hooks()
+    # Semicolon inside a quoted argument must not be treated as a separator.
+    assert hooks._split_shell_commands('git commit -m "a; b"') == [
+        'git commit -m "a; b"'
+    ]
+
+
+def test_split_shell_commands_does_not_split_at_newline_inside_quotes():
+    hooks = load_hooks()
+    # A literal newline inside a quoted commit message must stay ONE
+    # sub-command -- the exact regression both plan-reviewer and
+    # threat-modeler flagged for the \n/\r separator addition.
+    multiline_msg = 'git commit -m "line1\nline2"'
+    result = hooks._split_shell_commands(multiline_msg)
+    assert result == [multiline_msg]
+    is_commit, _ = hooks._parse_git_invocation(result[0], Path("/cwd"))
+    assert is_commit is True
+
+
+def test_split_shell_commands_backslash_newline_continuation_joins():
+    hooks = load_hooks()
+    result = hooks._split_shell_commands("git commit \\\n-m test")
+    assert result == ["git commit -m test"]
+
+
+def test_is_git_commit_command_superset_of_old_regex_forms():
+    """Regression guard: every form the deleted GIT_COMMIT_RE regex matched
+    must still be detected by the tokenized replacement."""
+    hooks = load_hooks()
+    for cmd in (
+        "git commit -m test",
+        "git commit -m x",
+        "git -C /some/repo commit -m x",
+        "cd /repo && git commit -m x",
+        "git add -A; git commit -m x",
+        "git status | cat && git commit -m x",
+    ):
+        assert hooks._is_git_commit_command(cmd) is True, cmd
+
+
+def test_is_git_commit_command_adversarial_forms():
+    """Threat-modeler-recommended hardening: real commit invocations that a
+    naive/narrower tokenizer (or the old regex) could plausibly miss."""
+    hooks = load_hooks()
+    for cmd in (
+        "env git commit -m x",
+        "/usr/bin/git commit -m x",
+        "x=1 git commit -m x",
+        "git\tcommit -m x",
+        "foo&&git commit -m x",
+        "echo hi\ngit commit -m x",
+        "git commit \\\n-m x",
+    ):
+        assert hooks._is_git_commit_command(cmd) is True, cmd
+
+
+def test_is_git_commit_command_false_for_non_commit():
+    hooks = load_hooks()
+    assert hooks._is_git_commit_command("git status") is False
+    assert hooks._is_git_commit_command("git push origin main") is False
+    assert hooks._is_git_commit_command("ls -la") is False
+
+
+# --- Gate-scope centralization: _resolve_commit_target + the 3 target gates
+# --- (real git worktrees -- the actual regression this PR fixes) ---
+
+
+def _ship(hooks, main_repo: Path, worktree: Path, role: str) -> None:
+    """Write a SHIP verdict into `worktree`'s bucket -- `_write_verdict` must
+    be called with the actual main repo_root (never the worktree itself),
+    while `_WORKTREE_OVERRIDE` is pinned to `worktree`, matching how
+    `_claude_marker_dir` resolves the per-worktree bucket in production."""
+    with hooks.worktree_override(worktree):
+        hooks._write_verdict(main_repo, role, "SHIP", "reviewed", "test")
+        marker_names = {
+            "verification-gate": ".verified",
+            "code-reviewer": ".code-reviewed",
+            "ai-eng-warden": ".ai-eng-reviewed",
+        }
+        name = marker_names.get(role)
+        if name:
+            hooks._marker(main_repo, name).touch()
+
+
+def test_resolve_commit_target_no_c_returns_cwd_unchanged(tmp_path):
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    event = bash_event(main_repo, "git commit -m test")
+    resolution = hooks._resolve_commit_target(event, main_repo)
+    assert resolution.ambiguous is False
+    assert resolution.target == main_repo.resolve()
+
+
+def test_resolve_commit_target_cwd_in_scope_but_c_names_different_worktree(tmp_path):
+    """THE regression this PR fixes (GPT-found v4 gap): cwd already resolves
+    to worktree A, but the identified commit's own -C names a DIFFERENT
+    worktree B -- must resolve to B, not silently trust A."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_b = tmp_path / "wt-b"
+    git_worktree(main_repo, wt_b)
+
+    event = bash_event(main_repo, f"git -C {wt_b} commit -m test")
+    resolution = hooks._resolve_commit_target(event, main_repo)
+    assert resolution.ambiguous is False
+    assert resolution.target == wt_b.resolve()
+
+
+def test_resolve_commit_target_v1_decoy_ignored(tmp_path):
+    """v1 threat-modeler BLOCK scenario: a decoy -C on a NON-commit
+    sub-command must never affect resolution -- only the identified commit
+    invocation's own -C counts."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    event = bash_event(main_repo, "git -C /tmp status && git commit -m evil")
+    resolution = hooks._resolve_commit_target(event, main_repo)
+    assert resolution.ambiguous is False
+    assert resolution.target == main_repo.resolve()  # decoy ignored, falls back to cwd
+
+
+def test_resolve_commit_target_v3_decoy_resolves_to_the_real_commit_target(tmp_path):
+    """v3/v4 threat-modeler finding: `git -C wtA status && git -C wtB commit`
+    -- only ONE sub-command is actually a commit, so this is NOT ambiguous;
+    it correctly resolves to wtB (objectively where the commit lands)."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_a = tmp_path / "wt-a"
+    wt_b = tmp_path / "wt-b"
+    git_worktree(main_repo, wt_a, branch="feat/wt-a")
+    git_worktree(main_repo, wt_b, branch="feat/wt-b")
+
+    event = bash_event(main_repo, f"git -C {wt_a} status && git -C {wt_b} commit -m x")
+    resolution = hooks._resolve_commit_target(event, main_repo)
+    assert resolution.ambiguous is False
+    assert resolution.target == wt_b.resolve()
+
+
+def test_resolve_commit_target_genuinely_ambiguous_two_distinct_commits(tmp_path):
+    """GPT plan-reviewer v5 finding: TWO distinct commit sub-invocations with
+    different targets cannot be safely resolved to one -- must report
+    ambiguous rather than silently picking (or falling back to) either."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_a = tmp_path / "wt-a"
+    wt_b = tmp_path / "wt-b"
+    git_worktree(main_repo, wt_a, branch="feat/wt-a")
+    git_worktree(main_repo, wt_b, branch="feat/wt-b")
+
+    event = bash_event(
+        main_repo, f"git -C {wt_a} commit -m x && git -C {wt_b} commit -m y"
+    )
+    resolution = hooks._resolve_commit_target(event, main_repo)
+    assert resolution.ambiguous is True
+    assert set(resolution.distinct_targets) == {wt_a.resolve(), wt_b.resolve()}
+
+
+def test_resolve_commit_target_same_target_twice_not_ambiguous(tmp_path):
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_a = tmp_path / "wt-a"
+    git_worktree(main_repo, wt_a)
+
+    event = bash_event(main_repo, f"git -C {wt_a} commit -m x && git -C {wt_a} commit -m y")
+    resolution = hooks._resolve_commit_target(event, main_repo)
+    assert resolution.ambiguous is False
+    assert resolution.target == wt_a.resolve()
+
+
+def test_resolve_commit_target_none_normalizes_to_cwd_before_dedup(tmp_path):
+    """Claude plan-reviewer v6 finding: a commit invocation with no -C of its
+    own (defaults to cwd) and one explicitly naming that SAME cwd path must
+    collapse to one target, not be flagged as two distinct ones."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+
+    event = bash_event(main_repo, f"git commit -m x && git -C {main_repo} commit -m y")
+    resolution = hooks._resolve_commit_target(event, main_repo)
+    assert resolution.ambiguous is False
+    assert resolution.target == main_repo.resolve()
+
+
+def test_gate_blocks_ambiguous_multi_target_even_when_cwd_itself_is_out_of_scope(
+    tmp_path, capsys
+):
+    """Code-reviewer finding on the first cut of this fix: the ambiguity
+    block must fire even when cwd itself is OUTSIDE any worktree (the
+    original Bug #1 drift scenario) and no _WORKTREE_OVERRIDE was set --
+    checking the _effective_worktree scope resolution first would
+    short-circuit to "not in scope, allow" without ever inspecting the
+    command, letting an ambiguous
+    multi-target commit naming two REAL in-scope worktrees ride through
+    with zero review."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_a = tmp_path / "wt-a"
+    wt_b = tmp_path / "wt-b"
+    git_worktree(main_repo, wt_a, branch="feat/wt-a")
+    git_worktree(main_repo, wt_b, branch="feat/wt-b")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    event = bash_event(outside, f"git -C {wt_a} commit -m x && git -C {wt_b} commit -m y")
+    rc = hooks.run_verification_gate(event, main_repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    specific = output["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert "multiple distinct" in specific["permissionDecisionReason"]
+
+
+def test_gate_allows_ambiguous_commit_when_no_target_is_in_scope(tmp_path, capsys):
+    """Regression guard for the block condition itself: an ambiguous
+    multi-target command where NEITHER the cwd NOR either -C target has any
+    relation to a deus worktree (a command genuinely unrelated to this repo)
+    must stay a no-op -- this gate has no business blocking work that has
+    nothing to do with it."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    unrelated_a = tmp_path / "unrelated-a"
+    unrelated_b = tmp_path / "unrelated-b"
+    unrelated_a.mkdir()
+    unrelated_b.mkdir()
+
+    event = bash_event(
+        outside, f"git -C {unrelated_a} commit -m x && git -C {unrelated_b} commit -m y"
+    )
+    rc = hooks.run_verification_gate(event, main_repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_gate_in_scope_uses_resolved_commit_target_not_raw_cwd(tmp_path, capsys):
+    """Code-reviewer finding: git -C <unrelated-repo> commit run from a cwd
+    that happens to sit INSIDE a deus worktree must not check/apply this
+    repo's own verdict to a commit that actually lands somewhere else
+    entirely -- _effective_worktree's no-override fallback must resolve via
+    _resolve_commit_target, not raw cwd."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    unrelated = tmp_path / "unrelated-repo"
+    unrelated.mkdir()
+
+    # cwd is INSIDE the deus repo, but the command's own -C targets a
+    # completely unrelated directory -- must resolve scope to `unrelated`
+    # (out of scope for main_repo), not fall back to cwd (which IS main_repo).
+    event = bash_event(main_repo, f"git -C {unrelated} commit -m test")
+    rc = hooks.run_verification_gate(event, main_repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""  # no verdict check ran against main_repo at all
+
+
+def test_parse_git_invocation_expands_tilde_in_c_path():
+    """Code-reviewer finding: an unquoted `-C ~/repo` is tilde-expanded by a
+    real shell before git ever sees it -- shlex does not do this, so without
+    .expanduser() it would be misresolved as the literal relative path
+    `cwd/~/repo` instead of the user's actual home directory."""
+    hooks = load_hooks()
+    is_commit, target = hooks._parse_git_invocation(
+        "git -C ~/somerepo commit -m test", Path("/cwd")
+    )
+    assert is_commit is True
+    assert target == Path.home() / "somerepo"
+
+
+def test_gate_blocks_on_ambiguous_multi_target_instead_of_riding_on_cwd_ship(
+    tmp_path, capsys
+):
+    """Fix C, the actual regression: from a legitimately-reviewed worktree A,
+    a command that ALSO commits to a different, unreviewed worktree B must
+    not be silently allowed via A's real SHIP -- it must block outright."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_a = tmp_path / "wt-a"
+    wt_b = tmp_path / "wt-b"
+    git_worktree(main_repo, wt_a, branch="feat/wt-a")
+    git_worktree(main_repo, wt_b, branch="feat/wt-b")
+    _ship(hooks, main_repo, wt_a, "verification-gate")
+
+    event = bash_event(wt_a, f"git -C {wt_a} commit -m x && git -C {wt_b} commit -m y")
+    with hooks.worktree_override(wt_a):
+        rc = hooks.run_verification_gate(event, main_repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    specific = output["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert "multiple distinct" in specific["permissionDecisionReason"]
+    assert str(wt_b.resolve()) in specific["permissionDecisionReason"]
+
+
+def test_verification_gate_fires_when_cwd_out_of_scope_but_c_targets_in_scope_worktree(
+    tmp_path, capsys
+):
+    """THE regression, at the gate level (not just _resolve_commit_target in
+    isolation): cwd outside any worktree, but the command's own -C names an
+    in-scope worktree -- the gate must now fire against THAT worktree's
+    bucket, not silently allow because raw cwd resolution failed."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_b = tmp_path / "wt-b"
+    git_worktree(main_repo, wt_b)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    event = bash_event(outside, f"git -C {wt_b} commit -m test")
+    cwd = Path(str(event["cwd"]))
+    resolution = hooks._resolve_commit_target(event, cwd)
+    wt = hooks._worktree_for_cwd(resolution.target, main_repo)
+    assert wt is not None
+    with hooks.worktree_override(wt):
+        rc = hooks.run_verification_gate(event, main_repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert "verification-gate" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_admin_merge_gate_unaffected_by_widened_override_for_other_gates(
+    tmp_path, monkeypatch, capsys
+):
+    """Fix B (corrected reasoning): run_admin_merge_gate re-derives its own
+    scope from cwd directly and never consults _WORKTREE_OVERRIDE. Dispatch
+    under a LIVE override (as run() would set for the other 3 gates) to
+    prove the override doesn't leak in -- not a vacuous direct call with no
+    override active."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_other = tmp_path / "wt-other"
+    git_worktree(main_repo, wt_other)
+
+    def fake_ci_status(ref, timeout=3):
+        return hooks._CI_STATUS_GREEN, "all required checks passed"
+
+    monkeypatch.setattr(hooks, "_check_ci_status", fake_ci_status)
+
+    event = bash_event(
+        main_repo, f"git -C {wt_other} commit -m x && gh pr merge --admin 5"
+    )
+    # Simulate run()'s dispatch: it would resolve _resolve_commit_target for
+    # THIS event, find the lone commit sub-invocation names wt_other, and pin
+    # the override there for whichever behavior it dispatches -- including if
+    # admin-merge-gate happened to be the dispatched behavior.
+    with hooks.worktree_override(wt_other):
+        rc = hooks.run_admin_merge_gate(event, main_repo)
+
+    assert rc == 0
+    output_text = capsys.readouterr().out
+    # No per-command approval marker exists for this exact command -> BLOCKED,
+    # same as today's baseline (proves the gate ran its OWN normal cwd-based
+    # logic, unaffected by the live wt_other override).
+    if output_text:
+        output = json.loads(output_text)
+        assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_diff_touches_llm_files_uses_the_override_worktree_not_repo_root(
+    tmp_path, capsys
+):
+    """Fix 4 integration (through the REAL caller, not the function in
+    isolation), called DIRECTLY with no pre-set override -- the exact
+    scenario a GPT code-reviewer pass flagged: resolving scope alone (via
+    _effective_worktree) wasn't enough, since _diff_touches_llm_files could
+    still silently fall back to repo_root if nothing had pinned
+    _WORKTREE_OVERRIDE. An LLM-file change staged ONLY in the -C-targeted
+    worktree (not in repo_root) must still fire run_ai_eng_gate -- proving
+    _effective_worktree is what both the scope check AND the diff check
+    actually share, not two independently-computed values that could
+    disagree. (A THIRD round of review then found the verdict READ itself
+    had the identical gap one layer deeper -- see the worktree_override wrap
+    now inside run_ai_eng_gate/run_verification_gate/run_warden_backends_gate.)
+    """
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_b = tmp_path / "wt-b"
+    git_worktree(main_repo, wt_b)
+
+    (wt_b / "evolution").mkdir(exist_ok=True)
+    (wt_b / "evolution" / "judge.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=wt_b, check=True, stdout=subprocess.DEVNULL)
+
+    event = bash_event(main_repo, f"git -C {wt_b} commit -m test")
+    rc = hooks.run_ai_eng_gate(event, main_repo)  # no override pre-set
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    assert "ai-eng-warden" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_gate_verdict_read_uses_effective_worktree_not_flat_bucket(tmp_path, capsys):
+    """The oracle the second code-reviewer round asked for: a stale SHIP in
+    the FLAT/cwd bucket must NOT clear a commit whose real diff lives in an
+    unreviewed -C-targeted worktree. Called DIRECTLY with no pre-set
+    override -- the exact reachability the finding was premised on. Before
+    the worktree_override wrap around the verdict read, this test would have
+    passed for the WRONG reason: run_ai_eng_gate would resolve scope/diff
+    correctly to wt_b (no SHIP there -> blocks) by coincidence, since there
+    was no LLM-file diff in the flat bucket either -- so this test alone
+    isolates the verdict-READ divergence specifically by giving the FLAT
+    bucket a real SHIP and confirming it's still ignored."""
+    hooks = load_hooks()
+    main_repo = git_repo(tmp_path)
+    wt_b = tmp_path / "wt-b"
+    git_worktree(main_repo, wt_b)
+
+    # SHIP in the flat/main_repo bucket -- a real, legitimate verdict, but
+    # for a DIFFERENT diff than what's about to be committed.
+    hooks._write_verdict(main_repo, "ai-eng-warden", "SHIP", "reviewed", "test")
+
+    # The REAL diff (LLM-related file) lives ONLY in wt_b, which has NO SHIP.
+    (wt_b / "evolution").mkdir(exist_ok=True)
+    (wt_b / "evolution" / "judge.py").write_text("x = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=wt_b, check=True, stdout=subprocess.DEVNULL)
+
+    event = bash_event(main_repo, f"git -C {wt_b} commit -m test")
+    rc = hooks.run_ai_eng_gate(event, main_repo)  # no override pre-set
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    specific = output["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny", (
+        "must block using wt_b's (unreviewed) verdict, not silently allow "
+        "via main_repo's flat SHIP for an unrelated diff"
+    )
+    assert "ai-eng-warden" in specific["permissionDecisionReason"]
+
+
 # --- Worktree path resolution tests (LIA-70) ---
 
 
