@@ -1,6 +1,6 @@
 # Deus Design System — UX/UI Reference
 
-> Loaded by ux-reviewer and copy-writer wardens alongside their rules files.
+> Loaded by ux-reviewer and ui-copy-writer wardens alongside their rules files.
 > Living document — updated with every UX review, user bug report, and competitive insight.
 
 ## Brand Personality

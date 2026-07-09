@@ -45,7 +45,7 @@ export const WARDEN_DESCRIPTIONS: Record<string, string> = {
   'verification-gate':
     'Evidence-before-claims gate before completion/commit claims',
   'qa-tester': 'Test coverage and edge-case gap reviewer (advisory)',
-  'copy-writer':
+  'ui-copy-writer':
     'Reviews user-facing text for clarity, tone, and actionability (advisory)',
   'ux-reviewer':
     'Post-implementation UX audit of user-facing changes (advisory)',
@@ -60,7 +60,7 @@ export const WARDEN_TYPES: Record<string, string> = {
   'ai-eng-warden': 'Validator (blocking)',
   'verification-gate': 'Validator (blocking)',
   'qa-tester': 'Validator (manual)',
-  'copy-writer': 'Validator (manual)',
+  'ui-copy-writer': 'Validator (manual)',
   'ux-reviewer': 'Validator (manual)',
 };
 

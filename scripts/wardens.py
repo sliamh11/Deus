@@ -26,7 +26,7 @@ WARDEN_DESCRIPTIONS: dict[str, str] = {
     "ai-eng-warden": "AI engineering review of LLM interactions, prompts, context, and AI security",
     "verification-gate": "Evidence-before-claims gate before completion/commit claims",
     "qa-tester": "Test coverage and edge-case gap reviewer (advisory)",
-    "copy-writer": "Reviews user-facing text for clarity, tone, and actionability (advisory)",
+    "ui-copy-writer": "Reviews user-facing text for clarity, tone, and actionability (advisory)",
     "ux-reviewer": "Post-implementation UX audit of user-facing changes (advisory)",
 }
 
@@ -234,7 +234,7 @@ WARDEN_TYPES: dict[str, str] = {
     "ai-eng-warden": "Validator (blocking)",
     "verification-gate": "Validator (blocking)",
     "qa-tester": "Validator (manual)",
-    "copy-writer": "Validator (manual)",
+    "ui-copy-writer": "Validator (manual)",
     "ux-reviewer": "Validator (manual)",
 }
 

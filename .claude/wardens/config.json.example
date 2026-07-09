@@ -36,7 +36,7 @@
     "enabled": true,
     "custom_instructions": null
   },
-  "copy-writer": {
+  "ui-copy-writer": {
     "enabled": true,
     "custom_instructions": null
   },

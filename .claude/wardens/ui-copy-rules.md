@@ -1,6 +1,6 @@
-# Copy Rules — Wardens/copy-writer
+# Copy Rules — Wardens/ui-copy-writer
 
-> Rules the `copy-writer` agent checks against AFTER implementation.
+> Rules the `ui-copy-writer` agent checks against AFTER implementation.
 > Add a new rule by appending a section. No agent edit needed.
 >
 > Format per rule: `Severity`, `Applies when`, `Check`, `Rule`, `Cite`.

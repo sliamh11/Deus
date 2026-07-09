@@ -140,7 +140,7 @@ Common traps:
 
 ## taste-pass
 **Severity:** warning
-**Applies when:** Plan changes product user-facing surfaces — chat/channel message formatting or templates, TUI panels, CLI/command output, web UI, or user-facing HTML artifacts. Repo documentation (README, CONTRIBUTING, `docs/`) is excluded — prose quality there is copy-writer territory, not taste elicitation.
+**Applies when:** Plan changes product user-facing surfaces — chat/channel message formatting or templates, TUI panels, CLI/command output, web UI, or user-facing HTML artifacts. Repo documentation (README, CONTRIBUTING, `docs/`) is excluded — prose quality there is copywriter territory, not taste elicitation.
 **Check:** Does the plan include a cheap reaction step — 3-4 divergent throwaway variants (mock, HTML artifact, sample output) for the user to react to — before committing to one design?
 **Rule:** For look-and-feel work, elicit taste before implementation: generate divergent variants at prototype cost, let the user react, then implement only the chosen direction. Skip when the change is backend-only, a mechanical refactor, or the user already specified the exact design.
 
