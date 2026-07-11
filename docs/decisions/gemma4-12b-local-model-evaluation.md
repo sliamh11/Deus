@@ -165,3 +165,64 @@ Ollama or judge construction raises (swallowed on the async hot path).
 **Decision: unchanged default, new opt-in lever.** Item 1 holds (e4b default). Operators may A/B
 `gemma4:12b` on the judge via `EVOLUTION_OLLAMA_JUDGE_MODEL=gemma4:12b`, weighed against the documented
 costs. Do not use 26b (regresses). Evidence: PR #713; `Research/2026-06-07-*` (vault).
+
+---
+
+## Addendum (2026-07-05): gemma4:12b-mlx evaluation + judge re-benchmark
+
+**New model.** Pulled `gemma4:12b-mlx` (Ollama). Verified via `ollama show`:
+
+```
+$ ollama show gemma4:12b-mlx
+  architecture   gemma4_unified   parameters  12.4B   quantization  nvfp4   requires 0.31.0
+  capabilities: completion, tools, thinking   (no vision, no audio)
+
+$ ollama show gemma4:12b
+  architecture   gemma4           parameters  11.9B   quantization  Q4_K_M  requires 0.30.5
+  capabilities: completion, vision, audio, tools, thinking
+```
+
+This is a genuinely different build from `gemma4:12b`, not an MLX repack of it.
+
+**Re-ran the full judge-surface benchmark** (`benchmark_judge.py --fixture
+finetune/judge-bench/fixture-v1.jsonl`, n=200, matched sampling temp=0/think=false, digest-symmetric)
+against every locally-installed gemma4 variant:
+
+| model | composite Pearson [95% CI] | threshold F1 | latency/call | paired vs e4b |
+|---|---|---|---|---|
+| `gemma4:e4b` (default) | 0.668 [0.590, 0.737] | 0.76 | 5.6s | — |
+| `gemma4:12b` | 0.680 [0.584, 0.758] | 0.81 | 10.9s | median +0.016, CI [-0.084, +0.112] |
+| `gemma4:12b-mlx` | **0.686 [0.607, 0.755]** | 0.80 | 8.7s | median +0.020, CI [-0.070, +0.107] |
+| `gemma4:12b-it-qat` | 0.671 | composite 0.830* | 11.4s | not paired |
+| `gemma4:26b` | 0.578 | composite 0.790* | 5.0s | regresses (consistent with #713) |
+| `gemma4:e2b` | 0.409 [0.295, 0.516] | 0.54 | 2.7s | refuted — consistent with prior finding (`reference_e2b_judge_refuted`, vault) |
+| `gemma4:31b` | N/A — untestable | N/A | N/A | repeated Ollama load failures/crashes on this 36GB-RAM host across 8+ attempts |
+
+*`gemma4:12b-it-qat` and `gemma4:26b` were run solo (not in the same multi-model invocation as the
+other rows), so `benchmark_judge.py` did not emit the cross-model "threshold@0.6" P/R/F1 section for
+them — the value shown is the tool's own single-model `Composite` ranking score (Pearson- and
+latency-weighted), not a directly comparable threshold F1.
+
+**Discrepancy with #713's original finding.** PR #713 measured a *decisive* gap for `12b` vs
+`e4b` (+0.088, CI [+0.026, +0.151], P=1.00). This re-run on the same fixture found a much weaker,
+non-decisive gap (+0.016, CI [-0.084, +0.112]). Cause not diagnosed (possible fixture/judge
+run-to-run variance, or genuine drift) — flagged here rather than silently overwritten, per
+`judge-model-ab-fixture` procedure discipline. Neither `12b` nor `12b-mlx` clears the decisive-swap
+bar (paired CI excludes zero AND Δcomposite ≥ +0.05) against `e4b` in this run.
+
+**Decision: default unchanged, opt-in lever repointed to `gemma4:12b-mlx`.** `e4b` stays the
+production default — no candidate cleared the decisive bar. Of the two 12b-class opt-in candidates,
+`gemma4:12b-mlx` is strictly preferable to `gemma4:12b`: statistically indistinguishable accuracy,
+~20% lower latency, and better personalization-dimension agreement (0.431 vs 0.376). Operators
+opting in should use `EVOLUTION_OLLAMA_JUDGE_MODEL=gemma4:12b-mlx` rather than `gemma4:12b`.
+Do not use `26b` or `31b` on this host. Evidence: local session, 2026-07 (Deus vault).
+
+**Mechanism note.** No file under `evolution/` calls `load_dotenv()` — Python only sees `.env`
+values if something else exports them into the process environment first (`evolution/config.py`'s
+own `.env` handling is special-cased to `GEMINI_API_KEY` only). `evolution/config.py:39,47` reads
+`OLLAMA_MODEL` / `EVOLUTION_OLLAMA_JUDGE_MODEL` directly from `os.environ`. The Node.js side has
+its own separate reader (`src/linear-notifications.ts:142`:
+`process.env.OLLAMA_MODEL || 'gemma4:e4b'`) — also `process.env`-only, not `.env`-file-parsing.
+So placing the override in `.env` alone is a no-op for both the Python judge and this Node reader;
+operators must export it in their shell profile or the relevant launchd plist's
+`EnvironmentVariables`.
