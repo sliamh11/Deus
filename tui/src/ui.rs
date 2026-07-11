@@ -239,7 +239,7 @@ fn render_session_picker(frame: &mut Frame, app: &App, area: Rect) {
         let label = Span::styled(
             format!(
                 " {} {} ",
-                &session.label,
+                session.label,
                 crate::app::model_display(&session.model)
             ),
             if is_selected {
