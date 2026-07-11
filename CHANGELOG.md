@@ -4,6 +4,32 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.26.0](https://github.com/sliamh11/Deus/compare/v1.25.0...v1.26.0) (2026-07-11)
+
+
+### Features
+
+* **agent-runner:** observation masking for Deus-owned loops + Claude-path spike (LIA-378) ([#995](https://github.com/sliamh11/Deus/issues/995)) ([715c4f9](https://github.com/sliamh11/Deus/commit/715c4f92842166e93378adb498f24f5728a88184))
+* **agent-runner:** read-discipline nudges — sliced reads over full-file re-bills (LIA-379) ([#991](https://github.com/sliamh11/Deus/issues/991)) ([8b3f250](https://github.com/sliamh11/Deus/commit/8b3f2506949c1c1268f29f311179748a5ca028ad))
+* **cmd:** --print-identity flag for deus-cmd.sh (VS Code Claude Code integration) ([#1010](https://github.com/sliamh11/Deus/issues/1010)) ([a56137b](https://github.com/sliamh11/Deus/commit/a56137b1e5281a051365c3d01fba880326a17ab0))
+* **dispatch:** soft turn budgets in delegated-agent prompts (LIA-380) ([#992](https://github.com/sliamh11/Deus/issues/992)) ([6b1bb6e](https://github.com/sliamh11/Deus/commit/6b1bb6e486e23218a7a35c47dcad31eb0dfd7cd2))
+* **memory:** cap the container /memory/query bridge (LIA-354) ([#980](https://github.com/sliamh11/Deus/issues/980)) ([6e431d6](https://github.com/sliamh11/Deus/commit/6e431d65e79c36fac9ed001093b23940ececee80))
+* **memory:** cold-source retention + summary-to-source backlink (LIA-374) ([#994](https://github.com/sliamh11/Deus/issues/994)) ([b368376](https://github.com/sliamh11/Deus/commit/b36837629965dffbf3c5601d4868f6a509d5251e))
+* **memory:** session-scoped dedup of memory-hook injections (LIA-355) ([#993](https://github.com/sliamh11/Deus/issues/993)) ([84af0b1](https://github.com/sliamh11/Deus/commit/84af0b15e3bc49316843ce0ef3963990f6434606))
+
+
+### Bug Fixes
+
+* **auto-compress:** anchor capture window to a persisted watermark, not now() ([#982](https://github.com/sliamh11/Deus/issues/982)) ([a03915e](https://github.com/sliamh11/Deus/commit/a03915e19d82233e208a3281c8ffa5f28931256a))
+* **channels:** throw on send failure instead of swallowing it (LIA-359, LIA-360) ([#983](https://github.com/sliamh11/Deus/issues/983)) ([e32c83f](https://github.com/sliamh11/Deus/commit/e32c83f79c37367671a9bf5d6e21c06cdc37a02a))
+* **evolution:** eval-loop dormancy — empty GEMINI_API_KEY= value + Gemini model-id leak ([#1008](https://github.com/sliamh11/Deus/issues/1008)) ([7d5a3f6](https://github.com/sliamh11/Deus/commit/7d5a3f670ba37b962978914674bb5ad00b8810c4))
+* **memory:** bump intent-classify keep_alive default 10m -&gt; 1h (LIA-377) ([#996](https://github.com/sliamh11/Deus/issues/996)) ([79da470](https://github.com/sliamh11/Deus/commit/79da470dc5a5cce0bd275361e2c82ad46b400233))
+* **memory:** pin intent-classify models with keep_alive (LIA-377) ([#988](https://github.com/sliamh11/Deus/issues/988)) ([e970526](https://github.com/sliamh11/Deus/commit/e970526058580583694383c7fbb291704e03d7f1))
+* **orchestrator:** serialize auto-compact self-dispatch via GroupQueue.enqueueTask (LIA-367) ([#985](https://github.com/sliamh11/Deus/issues/985)) ([feb4683](https://github.com/sliamh11/Deus/commit/feb468301e6f9376122552b6e7fd9ba641e854cd))
+* **orchestrator:** surface terminal agent-run failures to the chat user (LIA-371) ([#984](https://github.com/sliamh11/Deus/issues/984)) ([a5ac51d](https://github.com/sliamh11/Deus/commit/a5ac51dc2910f45571e917efe2528be55eefb05c))
+* **tui:** remove redundant borrow in format! arg (clippy 1.97) ([#1007](https://github.com/sliamh11/Deus/issues/1007)) ([432d817](https://github.com/sliamh11/Deus/commit/432d8179290cd04a42e53a007ce74c5932f055c2))
+* **wardens:** route agent verdicts to the reviewed worktree bucket ([#989](https://github.com/sliamh11/Deus/issues/989)) ([420f756](https://github.com/sliamh11/Deus/commit/420f7563f681c0dca0a155520937f372dc6dcd86))
+
 ## [1.25.0](https://github.com/sliamh11/Deus/compare/v1.24.0...v1.25.0) (2026-07-01)
 
 
