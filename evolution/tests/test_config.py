@@ -72,6 +72,45 @@ def test_all_sources_missing_raises(tmp_path, monkeypatch):
     assert "env var" in msg
 
 
+def test_empty_value_line_raises(tmp_path, monkeypatch):
+    """Case 6: .env has `GEMINI_API_KEY=` (empty value), nothing else → RuntimeError.
+
+    Regression: an empty value used to be returned as "", letting providers
+    claim availability with an unusable key (silent eval-loop dormancy).
+    """
+    repo_env = tmp_path / ".env"
+    repo_env.write_text("GEMINI_API_KEY=\n")
+    user_env = tmp_path / "missing" / ".env"
+
+    monkeypatch.setattr(config_mod, "_ENV_SEARCH_PATHS", [repo_env, user_env])
+
+    with pytest.raises(RuntimeError):
+        load_api_key()
+
+
+def test_empty_value_line_falls_through_to_user(tmp_path, monkeypatch):
+    """Case 7: repo .env has empty value, user-level .env has a real key → user-level wins."""
+    repo_env = tmp_path / ".env"
+    repo_env.write_text("GEMINI_API_KEY=\n")
+    user_env = tmp_path / "user" / ".env"
+    _write_env(user_env, "user-real-key")
+
+    monkeypatch.setattr(config_mod, "_ENV_SEARCH_PATHS", [repo_env, user_env])
+
+    assert load_api_key() == "user-real-key"
+
+
+def test_empty_value_line_falls_through_to_env_var(tmp_path, monkeypatch):
+    """Case 8: .env has empty value, env var set → env var wins."""
+    repo_env = tmp_path / ".env"
+    repo_env.write_text("GEMINI_API_KEY=\n")
+
+    monkeypatch.setattr(config_mod, "_ENV_SEARCH_PATHS", [repo_env])
+    monkeypatch.setenv("GEMINI_API_KEY", "envvar-real-key")
+
+    assert load_api_key() == "envvar-real-key"
+
+
 def test_repo_env_no_key_falls_through_to_user(tmp_path, monkeypatch):
     """Case 5: Repo .env exists but has no GEMINI_API_KEY, user-level .env has it → user-level wins."""
     repo_env = tmp_path / ".env"

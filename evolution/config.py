@@ -173,7 +173,12 @@ def load_api_key() -> str:
         if path.exists():
             for line in path.read_text().splitlines():
                 if line.startswith("GEMINI_API_KEY="):
-                    return line.split("=", 1)[1].strip()
+                    value = line.split("=", 1)[1].strip()
+                    # An empty value must behave exactly like an absent key:
+                    # returning "" here makes providers claim availability with
+                    # an unusable key and fail silently downstream.
+                    if value:
+                        return value
     key = os.environ.get("GEMINI_API_KEY", "")
     if not key:
         checked = ", ".join(str(p) for p in _ENV_SEARCH_PATHS)
