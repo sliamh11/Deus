@@ -45,6 +45,8 @@ One line per decision. Load the full file only when the topic is directly releva
 | [whatsapp-notification-strategy.md](whatsapp-notification-strategy.md) | whatsapp / notifications / channels | Two independent push gaps. **Inbound** (others' messages suppressed while Deus "online"): fixed by `markOnlineOnConnect: false` + on-connect `sendPresenceUpdate('unavailable')` — PR #879. **Reply** (`fromMe` messages never push): **DROP any alert relay** — it's a server-side WhatsApp rule, unfixable by presence/library. CallMeBot rejected (third-party learns number/timing), self-mention refuted on-device, cross-channel (ntfy/Telegram) out-of-domain. Revisit only if a dedicated number appears |
 | [procedure-memory-default-on.md](procedure-memory-default-on.md) | memory / procedures / MCP / setup | Procedure recall is **on by default** on the `deus-memory` MCP path (reverses LIA-334 dormant-by-default); kill-switch is an explicit `DEUS_PROCEDURE_MEMORY=0`. `/setup` auto-registers `deus-memory` **only if absent** (never clobbers a deliberate disable). Intentional divergence: the host `memory_retrieval_hook.py` stays opt-in/default-off (it auto-injects every prompt). Evidence = LIA-337 intent gate (100% recall / 94% veto); `deus sweep` is blind to the change (sweeps `retrieve()`, not `memory_recall`) |
 
+| [ci-rust-toolchain-lint-policy.md](ci-rust-toolchain-lint-policy.md) | CI / Rust / clippy | Floating `stable` toolchain + `-D warnings` stays; new-lint breakage gets its own minimal fix-forward PR (never merged over, never bundled); `#[allow]` only for documented false positives; CI clippy is bin-only (`--all-targets` gap accepted) |
+
 ## Related documentation
 
 | File | Purpose |
