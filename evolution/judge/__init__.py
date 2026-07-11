@@ -13,8 +13,16 @@ from typing import Optional
 
 
 def make_runtime_judge(model: Optional[str] = None, provider: Optional[str] = None) -> BaseJudge:
-    """Resolve best provider and return a runtime judge."""
-    return JudgeRegistry.default().resolve(provider).make_runtime_judge(model)
+    """Resolve best provider and return a runtime judge.
+
+    When EVOLUTION_OBSERVERS is configured the judge is wrapped for
+    observability (see evolution/observability.py); otherwise it is returned
+    unwrapped — zero overhead for the default case.
+    """
+    from ..observability import wrap_judge
+
+    resolved = JudgeRegistry.default().resolve(provider)
+    return wrap_judge(resolved.make_runtime_judge(model), provider_name=resolved.name)
 
 
 __all__ = [

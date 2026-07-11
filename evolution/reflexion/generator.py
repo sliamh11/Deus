@@ -29,6 +29,30 @@ Reply in this exact format (under 100 words, agent-fixable issues only):
 """
 
 
+def _observed_generate(formatted: str, model, *, kind: str, extract) -> str:
+    """Run generate() and emit a ReflectionEvent (see evolution/observability.py).
+
+    Observability is a no-op unless EVOLUTION_OBSERVERS is configured; errors
+    are emitted then re-raised unchanged.
+    """
+    import time
+
+    from ..observability import ReflectionEvent, emit_reflection
+
+    t0 = time.perf_counter()
+    try:
+        text = generate(formatted, model=model)
+    except Exception as exc:
+        emit_reflection(ReflectionEvent(
+            kind=kind, prompt_excerpt=formatted[:500], output=None, category=None,
+            model=model, latency_ms=(time.perf_counter() - t0) * 1000.0, error=repr(exc)))
+        raise
+    emit_reflection(ReflectionEvent(
+        kind=kind, prompt_excerpt=formatted[:500], output=text, category=extract(text),
+        model=model, latency_ms=(time.perf_counter() - t0) * 1000.0))
+    return text
+
+
 def _format_metrics_section(metrics: Optional[dict]) -> str:
     """One-line metrics anchor for the reflection prompts; empty when absent."""
     if not metrics:
@@ -67,7 +91,7 @@ def generate_reflection(
         metrics_section=_format_metrics_section(metrics),
     )
 
-    text = generate(formatted, model=model)
+    text = _observed_generate(formatted, model, kind="reflection", extract=_extract_category)
     category = _extract_category(text)
     return text, category
 
@@ -117,7 +141,7 @@ def generate_positive_reflection(
         metrics_section=_format_metrics_section(metrics),
     )
 
-    text = generate(formatted, model=model)
+    text = _observed_generate(formatted, model, kind="positive", extract=_extract_positive_category)
     category = _extract_positive_category(text)
     return text, category
 
