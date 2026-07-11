@@ -58,6 +58,7 @@ At minimum, run TypeScript checks plus targeted backend/session/auth/container t
 | Surface | Claude Default | OpenAI/Codex Opt-In | Llama.cpp Local Opt-In |
 |---|---|---|---|
 | Selection | Fallback/default backend | `DEUS_AGENT_BACKEND=openai`, group override, or task override | `DEUS_AGENT_BACKEND=llama-cpp`, group override, or task override |
+| Global CLI `--print-identity` | Prints the identity/vault `--append-system-prompt` payload (assembly is backend-independent) | Same payload, same flag | Same payload, same flag (`deus-cmd.sh` only; ps1 parity tracked as AAG-013) |
 | Sessions | Existing Claude session ids wrapped as backend refs | Responses id stored as an OpenAI backend ref | Client-side messages array (no server-side response state); synthetic session id |
 | Backend mismatch | Starts fresh instead of resuming wrong backend | Starts fresh instead of resuming wrong backend | Starts fresh instead of resuming wrong backend |
 | Credentials | Placeholder Anthropic credentials via proxy | Placeholder OpenAI credentials via `/openai` proxy route | Placeholder `LLAMA_CPP_API_KEY` injected; no proxy hop (llama-server has no auth) |
