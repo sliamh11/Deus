@@ -95,3 +95,62 @@ def test_generate_positive_reflection_includes_metrics(capture_prompt):
         metrics={"tests_passed": 12},
     )
     assert 'Task metrics: {"tests_passed": 12}' in capture_prompt[0]
+
+
+def test_reflection_model_defaults_to_provider_choice(monkeypatch):
+    """Regression: the default model must be None (provider picks its own).
+
+    Previously defaulted to JUDGE_MODEL - a Gemini model id - which leaked into
+    whichever generative provider resolved; Ollama 404'd on it and every
+    reflection generation failed.
+    """
+    from evolution.reflexion import generator as gen_mod
+
+    captured = {}
+
+    def fake_generate(prompt, model=None):
+        captured["model"] = model
+        return "- What went wrong: x\n- Next time: y\n- Category: style"
+
+    monkeypatch.setattr(gen_mod, "generate", fake_generate)
+
+    content, category = gen_mod.generate_reflection(
+        prompt="p", response="r", score=0.2,
+    )
+    assert captured["model"] is None
+    assert category == "style"
+
+
+def test_positive_reflection_model_defaults_to_provider_choice(monkeypatch):
+    """Same regression guard for the positive-pattern path."""
+    from evolution.reflexion import generator as gen_mod
+
+    captured = {}
+
+    def fake_generate(prompt, model=None):
+        captured["model"] = model
+        return "- What worked: x\n- Pattern to replicate: y\n- Category: positive_pattern"
+
+    monkeypatch.setattr(gen_mod, "generate", fake_generate)
+
+    content, category = gen_mod.generate_positive_reflection(
+        prompt="p", response="r", score=0.95,
+    )
+    assert captured["model"] is None
+    assert category == "positive_pattern"
+
+
+def test_explicit_model_still_passes_through(monkeypatch):
+    """An explicitly requested model must reach the generative layer unchanged."""
+    from evolution.reflexion import generator as gen_mod
+
+    captured = {}
+
+    def fake_generate(prompt, model=None):
+        captured["model"] = model
+        return "- Category: reasoning"
+
+    monkeypatch.setattr(gen_mod, "generate", fake_generate)
+
+    gen_mod.generate_reflection(prompt="p", response="r", score=0.2, model="my-model")
+    assert captured["model"] == "my-model"

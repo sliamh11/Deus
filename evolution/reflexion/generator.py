@@ -8,7 +8,6 @@ import json
 import re
 from typing import Optional
 
-from ..config import JUDGE_MODEL
 from ..generative import generate
 
 _REFLECTION_PROMPT = """Analyze this low-scoring AI interaction and extract an actionable lesson.
@@ -48,7 +47,10 @@ def generate_reflection(
     dims: Optional[dict] = None,
     rationale: str = "",
     tools_used: Optional[list[str]] = None,
-    model: str = JUDGE_MODEL,
+    # None lets the resolved generative provider use its own default model.
+    # Defaulting to a provider-specific name (previously JUDGE_MODEL, a Gemini
+    # id) breaks whenever a different provider wins resolution (Ollama 404s).
+    model: Optional[str] = None,
     metrics: Optional[dict] = None,
 ) -> tuple[str, str]:
     """
@@ -96,7 +98,9 @@ def generate_positive_reflection(
     dims: Optional[dict] = None,
     rationale: str = "",
     tools_used: Optional[list[str]] = None,
-    model: str = JUDGE_MODEL,
+    # None lets the resolved generative provider use its own default model
+    # (see generate_reflection above).
+    model: Optional[str] = None,
     metrics: Optional[dict] = None,
 ) -> tuple[str, str]:
     """
