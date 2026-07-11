@@ -95,3 +95,64 @@ def test_generate_positive_reflection_includes_metrics(capture_prompt):
         metrics={"tests_passed": 12},
     )
     assert 'Task metrics: {"tests_passed": 12}' in capture_prompt[0]
+
+
+# ── Model default pass-through (issue #1006) ─────────────────────────────────
+
+
+@pytest.fixture
+def capture_model(monkeypatch):
+    """Replace the LLM call with a capture that records the model kwarg."""
+    captured = []
+
+    def fake_generate(prompt, **kwargs):
+        captured.append(kwargs.get("model", "MISSING"))
+        return "- What went wrong: x\n- Next time: y\n- Category: reasoning"
+
+    monkeypatch.setattr("evolution.reflexion.generator.generate", fake_generate)
+    return captured
+
+
+def test_generate_reflection_default_model_is_none(capture_model):
+    """Regression #1006: no Gemini model id may leak to non-Gemini providers."""
+    from evolution.reflexion.generator import generate_reflection
+
+    generate_reflection(prompt="p", response="r", score=0.3)
+    assert capture_model == [None]
+
+
+def test_generate_positive_reflection_default_model_is_none(capture_model):
+    from evolution.reflexion.generator import generate_positive_reflection
+
+    generate_positive_reflection(prompt="p", response="r", score=0.9)
+    assert capture_model == [None]
+
+
+def test_generate_reflection_explicit_model_passes_through(capture_model):
+    from evolution.reflexion.generator import generate_reflection
+
+    generate_reflection(prompt="p", response="r", score=0.3, model="my-model")
+    assert capture_model == ["my-model"]
+
+
+def test_extract_principles_default_model_is_none(monkeypatch):
+    """Regression #1006: extract_principles shares the same generate() path and
+    must not default to a Gemini model id either."""
+    import evolution.reflexion.principles as principles_mod
+
+    captured = []
+
+    def fake_generate(prompt, **kwargs):
+        captured.append(kwargs.get("model", "MISSING"))
+        return "1. Always test the fallthrough path with a mocked provider chain."
+
+    fake_row = {"prompt": "p", "response": "r", "judge_score": 0.9}
+    monkeypatch.setattr(principles_mod, "generate", fake_generate)
+    monkeypatch.setattr(principles_mod, "get_recent", lambda **kw: [dict(fake_row)] * 3)
+    monkeypatch.setattr(principles_mod, "save_reflection", lambda **kw: None)
+    monkeypatch.setattr(principles_mod, "_record_extraction", lambda *a, **kw: None)
+
+    result = principles_mod.extract_principles(force=True)
+
+    assert result is not None
+    assert captured == [None]

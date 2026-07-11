@@ -12,7 +12,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from ..config import JUDGE_MODEL
 from ..generative import generate
 from ..ilog.interaction_log import get_recent
 from ..storage import get_storage
@@ -54,7 +53,7 @@ Write 3-5 numbered principles (under 200 words total). Each must be: one sentenc
 def extract_principles(
     domain: Optional[str] = None,
     top_k: int = 5,
-    model: str = JUDGE_MODEL,
+    model: Optional[str] = None,
     min_new: int = 5,
     force: bool = False,
 ) -> Optional[str]:

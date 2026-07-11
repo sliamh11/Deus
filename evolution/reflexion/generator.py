@@ -8,7 +8,6 @@ import json
 import re
 from typing import Optional
 
-from ..config import JUDGE_MODEL
 from ..generative import generate
 
 _REFLECTION_PROMPT = """Analyze this low-scoring AI interaction and extract an actionable lesson.
@@ -48,12 +47,15 @@ def generate_reflection(
     dims: Optional[dict] = None,
     rationale: str = "",
     tools_used: Optional[list[str]] = None,
-    model: str = JUDGE_MODEL,
+    model: Optional[str] = None,
     metrics: Optional[dict] = None,
 ) -> tuple[str, str]:
     """
     Generate a reflection for a low-scoring interaction.
     Returns (content, category).
+
+    ``model=None`` defers to the winning generative provider's own default —
+    a hardcoded Gemini id here 404s on non-Gemini providers (Ollama etc.).
     """
     formatted = _REFLECTION_PROMPT.format(
         prompt=prompt[:1500],
@@ -96,12 +98,15 @@ def generate_positive_reflection(
     dims: Optional[dict] = None,
     rationale: str = "",
     tools_used: Optional[list[str]] = None,
-    model: str = JUDGE_MODEL,
+    model: Optional[str] = None,
     metrics: Optional[dict] = None,
 ) -> tuple[str, str]:
     """
     Generate a positive pattern reflection for a high-scoring interaction.
     Returns (content, category).
+
+    ``model=None`` defers to the winning provider's default model (see
+    ``generate_reflection``).
     """
     formatted = _POSITIVE_PROMPT.format(
         prompt=prompt[:1500],
