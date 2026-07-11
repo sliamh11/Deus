@@ -85,3 +85,60 @@ def test_repo_env_no_key_falls_through_to_user(tmp_path, monkeypatch):
     monkeypatch.setattr(config_mod, "_ENV_SEARCH_PATHS", [repo_env, user_env])
 
     assert load_api_key() == "user-fallback-key"
+
+
+def test_empty_value_falls_through_to_user_env(tmp_path, monkeypatch):
+    """Case 6: Empty `GEMINI_API_KEY=` in repo .env, real key in user-level .env → user-level wins.
+
+    Regression for issue #1006: an empty value was returned as "" instead of
+    falling through, silently disabling the eval loop.
+    """
+    repo_env = tmp_path / ".env"
+    _write_env(repo_env, "")
+
+    user_env = tmp_path / "user" / ".env"
+    _write_env(user_env, "user-real-key")
+
+    monkeypatch.setattr(config_mod, "CONFIG_ENV", repo_env)
+    monkeypatch.setattr(config_mod, "USER_CONFIG_ENV", user_env)
+    monkeypatch.setattr(config_mod, "_ENV_SEARCH_PATHS", [repo_env, user_env])
+
+    assert load_api_key() == "user-real-key"
+
+
+def test_empty_value_falls_through_to_env_var(tmp_path, monkeypatch):
+    """Case 7: Empty value in both .env files, env var set → env-var value returned."""
+    repo_env = tmp_path / ".env"
+    _write_env(repo_env, "")
+    user_env = tmp_path / "user" / ".env"
+    _write_env(user_env, "")
+
+    monkeypatch.setattr(config_mod, "_ENV_SEARCH_PATHS", [repo_env, user_env])
+    monkeypatch.setenv("GEMINI_API_KEY", "envvar-real-key")
+
+    assert load_api_key() == "envvar-real-key"
+
+
+def test_empty_value_everywhere_raises(tmp_path, monkeypatch):
+    """Case 8: Empty value in repo .env, nothing else → RuntimeError (same as absent)."""
+    repo_env = tmp_path / ".env"
+    _write_env(repo_env, "")
+    user_env = tmp_path / "missing" / ".env"
+
+    monkeypatch.setattr(config_mod, "_ENV_SEARCH_PATHS", [repo_env, user_env])
+
+    with pytest.raises(RuntimeError):
+        load_api_key()
+
+
+def test_whitespace_only_value_treated_as_empty(tmp_path, monkeypatch):
+    """Case 9: Whitespace-only value strips to empty → same fallthrough as Case 6."""
+    repo_env = tmp_path / ".env"
+    _write_env(repo_env, "   ")
+
+    user_env = tmp_path / "user" / ".env"
+    _write_env(user_env, "user-ws-key")
+
+    monkeypatch.setattr(config_mod, "_ENV_SEARCH_PATHS", [repo_env, user_env])
+
+    assert load_api_key() == "user-ws-key"
