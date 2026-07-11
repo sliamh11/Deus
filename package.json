@@ -60,7 +60,7 @@
     "@eslint/js": "^10.0.1",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^25.9.3",
-    "@vitest/coverage-v8": "^4.1.8",
+    "@vitest/coverage-v8": "^4.1.10",
     "@whiskeysockets/baileys": "^7.0.0-rc13",
     "dotenv-cli": "^11.0.0",
     "eslint": "^10.5.0",
