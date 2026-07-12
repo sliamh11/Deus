@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Cross-family code-review ADVISORY via OpenAI GPT (codex CLI, subscription-billed).
 
-A different-family second opinion for a human reviewer — NOT a gate. Drives GPT-5.5
-through `codex exec` (read-only sandbox) over a diff, with the Deus code-review rules as
-instructions and a strict `--output-schema` for structured per-file findings. Nothing
+A different-family second opinion for a human reviewer — NOT a gate. Drives GPT (see
+DEFAULT_MODEL below for the current default) through `codex exec` (read-only sandbox)
+over a diff, with the Deus code-review rules as instructions and a strict
+`--output-schema` for structured per-file findings. Nothing
 auto-applies, auto-posts, or blocks a commit. (Rationale/alternatives: the plan
 fluttering-seeking-elephant.md and Research/2026-06-15-gpt-cross-family-review-integration.md.)
 
@@ -53,12 +54,12 @@ from _exit_codes import (  # noqa: E402
 )
 
 # ── Defaults ────────────────────────────────────────────────────────────────────
-DEFAULT_MODEL = "gpt-5.5"          # codex's own config.toml default; -m can override
+DEFAULT_MODEL = "gpt-5.6-sol"       # explicit default, independent of ~/.codex/config.toml (which may differ per machine); -m can override
 DEFAULT_SANDBOX = "read-only"       # never workspace-write / danger-full-access here
 DEFAULT_TIMEOUT = 300.0             # codex exec at high reasoning effort is slow
 DEFAULT_MAX_FILES = 20
 # Above this total diff size we fan out to one codex call per file instead of one
-# whole-diff call (a rough guard; GPT-5.5's context is large, so this is high).
+# whole-diff call (a rough guard; GPT's context is large, so this is high).
 WHOLE_DIFF_CHAR_LIMIT = 200_000
 # Synthetic path for non-diff content (cfg.is_diff=False): there is no real file path, but
 # the per-file results/merge keep keying on one. Wrapped in <> so it can't collide with a
@@ -291,7 +292,7 @@ def call_codex_exec(prompt: str, cfg: "CodexReviewConfig", cwd: str) -> CodexRes
             return CodexResult(
                 False, wall_s=cfg.timeout,
                 error=f"codex exec timed out after {cfg.timeout:.0f}s "
-                      "(GPT-5.5 high reasoning is slow; raise --timeout).",
+                      "(high reasoning effort is slow; raise --timeout).",
             )
         wall = round(time.time() - t0, 2)
 
@@ -479,8 +480,9 @@ def review(diff: str, cfg: CodexReviewConfig, cwd: str, cross_context: str = "")
 # ── Human-readable rendering (the default; --json is the agent-native path) ───────
 BANNER = (
     "═══ ADVISORY: cross-family GPT second opinion — NOT a gate ═══\n"
-    "GPT-5.5 via your ChatGPT subscription (codex, read-only sandbox). LLM reviewers "
-    "false-flag often; a human must triage every finding. Never auto-apply or gate on this."
+    "GPT via your ChatGPT subscription (codex, read-only sandbox; see the Model: line below "
+    "for the exact model used). LLM reviewers false-flag often; a human must triage every "
+    "finding. Never auto-apply or gate on this."
 )
 
 
