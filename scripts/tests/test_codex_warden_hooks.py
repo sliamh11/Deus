@@ -1743,6 +1743,35 @@ def test_verification_gate_allows_after_marker(tmp_path, capsys):
     assert capsys.readouterr().out == ""
 
 
+def test_verification_gate_allows_trivial_marker(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # TRIVIAL is the human bypass the gate's own block message instructs;
+    # it must pass exactly like SHIP.
+    hooks._write_verdict(repo, "verification-gate", "TRIVIAL", "one-char fix", "mark")
+    (repo / ".claude" / ".verified").touch()
+
+    rc = hooks.run_verification_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_verified_trivial_mark_refused_after_revise(tmp_path, capsys, monkeypatch):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    monkeypatch.chdir(repo)
+    # The gate relies on mark-time enforcement for no-TRIVIAL-after-REVISE:
+    # a TRIVIAL mark must be refused while the agent verdict is blocking,
+    # leaving the store on REVISE (so the gate keeps blocking).
+    hooks._write_verdict(repo, "verification-gate", "REVISE", "incomplete", "agent")
+
+    rc = hooks.mark_warden("verified", "TRIVIAL", "just a typo", repo)
+
+    assert rc == 2
+    assert hooks._last_verdict(repo, "verification-gate") == "REVISE"
+
+
 def test_verification_gate_shows_revise_escalation(tmp_path, capsys):
     hooks = load_hooks()
     repo = git_repo(tmp_path)

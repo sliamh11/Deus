@@ -1903,7 +1903,14 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
         return 0
 
     with worktree_override(worktree):
-        if _read_verdict("verified", repo_root) == "SHIP":
+        # TRIVIAL passes like SHIP: it is the human trivial-commit bypass this
+        # gate's own block message instructs. No REVISE guard needed here —
+        # mark_warden is the enforcement site (refuses TRIVIAL after a blocking
+        # verdict and in background sessions; pinned by
+        # test_verified_trivial_mark_refused_after_revise), and both reads
+        # resolve to the same store key, so TRIVIAL can never coexist with a
+        # later REVISE (last write wins).
+        if _read_verdict("verified", repo_root) in ("SHIP", "TRIVIAL"):
             return 0
 
         mark_cmd = (
