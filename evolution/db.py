@@ -109,6 +109,13 @@ def _migrate(db: sqlite3.Connection) -> None:
         ("domain_presets", "TEXT"),    # JSON array: '["marketing","writing"]'
         ("user_signal", "TEXT"),       # "positive"|"negative"|null
         ("parse_error", "INTEGER DEFAULT 0"),  # 1 if judge score is a parse-failure fallback
+        # LIA-109: external-origin ref + human ground-truth feedback (mirror of
+        # the storage provider's DDL — see storage/providers/sqlite.py).
+        ("source_ref", "TEXT"),
+        ("human_score", "REAL"),
+        ("human_comment", "TEXT"),
+        ("human_scored_at", "TEXT"),
+        ("human_processed_at", "TEXT"),
     ]:
         try:
             # safe: col + coltype come from the literal tuple-list above —
@@ -125,6 +132,13 @@ def _migrate(db: sqlite3.Connection) -> None:
     # Reflection lifecycle: soft-delete archival column (added in v1.5)
     try:
         db.execute("ALTER TABLE reflections ADD COLUMN archived_at TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    # LIA-109: persisted reflection polarity ('corrective' | 'positive';
+    # NULL = predates the column, exempt from zone-alignment archival).
+    try:
+        db.execute("ALTER TABLE reflections ADD COLUMN polarity TEXT")
     except sqlite3.OperationalError:
         pass  # Column already exists
 

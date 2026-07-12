@@ -93,6 +93,11 @@ REFLECTION_THRESHOLD = float(os.environ.get("EVOLUTION_REFLECTION_THRESHOLD", "0
 # Interactions scoring above this threshold trigger positive pattern extraction.
 POSITIVE_THRESHOLD = float(os.environ.get("EVOLUTION_POSITIVE_THRESHOLD", "0.85"))
 MAX_REFLECTIONS_PER_QUERY = int(os.environ.get("EVOLUTION_MAX_REFLECTIONS", "3"))
+# Minimum |human_score - judge_score| for a high human score to override a
+# judge false-negative with a positive reflection (process_human_feedback).
+HUMAN_DISAGREEMENT_THRESHOLD = float(
+    os.environ.get("EVOLUTION_HUMAN_DISAGREEMENT_THRESHOLD", "0.3")
+)
 REFLECTION_DEDUP_L2 = float(os.environ.get("EVOLUTION_REFLECTION_DEDUP_L2", "0.4"))
 # Experiment: how many reflections to generate per interaction (default=1, existing behavior).
 # Set to 2-3 to test whether more reflections per interaction improves retrieval quality.

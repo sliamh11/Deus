@@ -414,6 +414,7 @@ def run_cc_backfill(
                             score_at_gen=composite,
                             interaction_id=iid,
                             group_folder=pair["group_folder"],
+                            polarity="corrective",
                         )
                         stats["reflections_generated"] += 1
                         if verbose:
@@ -437,6 +438,7 @@ def run_cc_backfill(
                             score_at_gen=composite,
                             interaction_id=iid,
                             group_folder=pair["group_folder"],
+                            polarity="positive",
                         )
                         stats["reflections_generated"] += 1
                         if verbose:

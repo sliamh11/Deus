@@ -35,12 +35,15 @@ def save_reflection(
     score_at_gen: float,
     interaction_id: Optional[str] = None,
     group_folder: Optional[str] = None,
+    polarity: Optional[str] = None,
 ) -> Optional[str]:
     """
     Embed and persist a reflection.  Returns the reflection ID, or None if the
     content is corrupted (LIA-213 save-time validation) or a semantically
     similar reflection already exists.
     group_folder=None means the reflection applies cross-group.
+    polarity ('corrective' | 'positive') records which generator produced the
+    lesson; None-polarity rows are exempt from zone-alignment archival.
     """
     # LIA-213: validate before the expensive embed; see validation.py.
     ok, reason = is_valid_reflection(content)
@@ -66,6 +69,7 @@ def save_reflection(
         embedding=serialize_vec(vec),
         interaction_id=interaction_id,
         group_folder=group_folder,
+        polarity=polarity,
     )
     return rid
 

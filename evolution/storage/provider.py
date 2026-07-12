@@ -61,15 +61,17 @@ class StorageProvider(ABC):
         available_tools: Optional[str] = None,
         metrics: Optional[str] = None,
         retrieved_reflection_ids: Optional[str] = None,
+        source_ref: Optional[str] = None,
     ) -> str:
         """Persist one agent interaction. Returns the interaction ID.
 
         When a row with the same ID already exists, all fields are overwritten
-        EXCEPT metrics and retrieved_reflection_ids: a None value for either
-        preserves the previously stored value (COALESCE upsert), so post-hoc
-        metric updates and the retrieved-reflection IDs (needed at scoring time)
-        survive re-logging. credited_at is never written here — see
-        claim_interaction_credit (LIA-214).
+        EXCEPT metrics, retrieved_reflection_ids, and source_ref: a None value
+        for any of these preserves the previously stored value (COALESCE
+        upsert), so post-hoc metric updates, the retrieved-reflection IDs
+        (needed at scoring time), and the set-once external-origin ref
+        (e.g. "tracing:trace:abc123") survive re-logging. credited_at is never
+        written here — see claim_interaction_credit (LIA-214).
         """
         ...
 
@@ -172,8 +174,16 @@ class StorageProvider(ABC):
         embedding: bytes,
         interaction_id: Optional[str] = None,
         group_folder: Optional[str] = None,
+        polarity: Optional[str] = None,
     ) -> str:
-        """Persist a reflection with its embedding. Returns the reflection ID."""
+        """Persist a reflection with its embedding. Returns the reflection ID.
+
+        *polarity* ('corrective' | 'positive') records which generator produced
+        the lesson. Persisted, never inferred: category values overlap between
+        generators and score_at_gen can be decoupled from polarity (user-signal
+        writer, env-tunable thresholds). None (unknown) rows are exempt from
+        zone-alignment archival.
+        """
         ...
 
     @abstractmethod
@@ -227,6 +237,37 @@ class StorageProvider(ABC):
         archived or does not exist. Idempotent.
         """
         ...
+
+    def update_human_feedback(
+        self, interaction_id: str, score: float, comment: Optional[str] = None,
+    ) -> bool:
+        """Record a human ground-truth score (0.0-1.0) for an interaction.
+
+        Must clear human_processed_at only when the (score, comment) pair
+        actually changed, with NULL-safe comment comparison. Returns True when
+        the interaction exists. Default: unsupported.
+        """
+        raise NotImplementedError
+
+    def get_interaction_by_source_ref(self, source_ref: str) -> Optional[dict]:
+        """Look up an interaction by its external-origin ref. Default: unsupported."""
+        raise NotImplementedError
+
+    def get_unprocessed_human_feedback(self, limit: int = 50) -> list[dict]:
+        """Interactions with human feedback awaiting processing (judge-scored only)."""
+        raise NotImplementedError
+
+    def mark_human_feedback_processed(self, interaction_id: str) -> None:
+        """Stamp human_processed_at for an interaction."""
+        raise NotImplementedError
+
+    def archive_reflections_for_interaction(
+        self, interaction_id: str, polarities: list[str],
+    ) -> int:
+        """Zone-alignment archival: soft-delete the interaction's non-archived
+        reflections whose polarity is in *polarities*. NULL-polarity rows are
+        never archived. Returns the number archived."""
+        raise NotImplementedError
 
     @abstractmethod
     def count_stale_reflections(self, days: int) -> int:

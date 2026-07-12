@@ -29,10 +29,15 @@ def log_interaction(
     available_tools: Optional[list[str]] = None,
     metrics: Optional[dict] = None,
     retrieved_reflection_ids: Optional[list[str]] = None,
+    source_ref: Optional[str] = None,
 ) -> str:
     """
     Persist one agent interaction.  Returns the interaction ID.
     Judge score is written later by update_score().
+
+    source_ref is an opaque external-origin ref ("<system>:<kind>:<id>", e.g.
+    "tracing:trace:abc123") for exact lookup by an external ingestion source.
+    Set-once: re-logs never clear or change an existing ref (COALESCE upsert).
 
     metrics is a flat dict of task metrics (see evolution.metrics) — validated
     here so a malformed payload fails loudly at log time, not at analysis time.
@@ -77,8 +82,28 @@ def log_interaction(
             if retrieved_reflection_ids
             else None
         ),
+        source_ref=source_ref,
     )
     return iid
+
+
+def update_human_feedback(
+    interaction_id: str, score: float, comment: Optional[str] = None,
+) -> bool:
+    """Record a human ground-truth score (0.0-1.0) for an interaction.
+
+    Idempotent: an identical (score, comment) re-write leaves
+    human_processed_at untouched; any actual change clears it so the
+    maintenance pass reprocesses the row. Returns True when the row exists.
+    """
+    if not 0.0 <= score <= 1.0:
+        raise ValueError(f"human score must be in [0.0, 1.0], got {score}")
+    return get_storage().update_human_feedback(interaction_id, score, comment)
+
+
+def get_interaction_by_source_ref(source_ref: str) -> Optional[dict]:
+    """Look up an interaction by its external-origin ref (exact match)."""
+    return get_storage().get_interaction_by_source_ref(source_ref)
 
 
 def update_score(

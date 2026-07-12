@@ -281,6 +281,17 @@ class SQLiteStorageProvider(StorageProvider):
             # log_interaction upsert (like judge_score) so a NULL re-log cannot
             # clobber the guard back to NULL.
             ("credited_at", "TEXT"),
+            # LIA-109: opaque external-origin ref ("<system>:<kind>:<id>", e.g.
+            # "tracing:trace:abc123") for exact matching against an external
+            # ingestion source. Set-once: COALESCE-preserved in the upsert.
+            ("source_ref", "TEXT"),
+            # LIA-109: human ground-truth feedback. human_processed_at is the
+            # one-shot guard for process_human_feedback(); cleared only when the
+            # (score, comment) pair actually changes (NULL-safe comparison).
+            ("human_score", "REAL"),
+            ("human_comment", "TEXT"),
+            ("human_scored_at", "TEXT"),
+            ("human_processed_at", "TEXT"),
         ]:
             try:
                 # safe: col + coltype come from the literal tuple-list
@@ -293,6 +304,21 @@ class SQLiteStorageProvider(StorageProvider):
             CREATE INDEX IF NOT EXISTS ix_interactions_domain
                 ON interactions(domain_presets) WHERE domain_presets IS NOT NULL
         """)
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS ix_interactions_source_ref
+                ON interactions(source_ref) WHERE source_ref IS NOT NULL
+        """)
+
+        # LIA-109: persisted reflection polarity ('corrective' | 'positive';
+        # NULL for rows predating the column). Persisted — never inferred:
+        # category values collide between the corrective and positive
+        # generators, and score_at_gen is decoupled from polarity by the
+        # user-signal writer and env-tunable thresholds. NULL rows are never
+        # archived by zone-alignment (conservative default).
+        try:
+            db.execute("ALTER TABLE reflections ADD COLUMN polarity TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
         # Reflection lifecycle: soft-delete archival column (added in v1.5)
         try:
@@ -346,6 +372,7 @@ class SQLiteStorageProvider(StorageProvider):
         available_tools: Optional[str] = None,
         metrics: Optional[str] = None,
         retrieved_reflection_ids: Optional[str] = None,
+        source_ref: Optional[str] = None,
     ) -> str:
         db = self._connect()
         # Upsert instead of INSERT OR REPLACE: REPLACE deletes the existing row
@@ -361,8 +388,8 @@ class SQLiteStorageProvider(StorageProvider):
                 (id, timestamp, group_folder, prompt, response, tools_used,
                  latency_ms, eval_suite, session_id, domain_presets, user_signal,
                  context_tokens, has_code, tool_calls, available_tools, metrics,
-                 retrieved_reflection_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 retrieved_reflection_ids, source_ref)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 timestamp       = excluded.timestamp,
                 group_folder    = excluded.group_folder,
@@ -382,14 +409,15 @@ class SQLiteStorageProvider(StorageProvider):
                 retrieved_reflection_ids = COALESCE(
                     excluded.retrieved_reflection_ids,
                     interactions.retrieved_reflection_ids
-                )
+                ),
+                source_ref = COALESCE(interactions.source_ref, excluded.source_ref)
             """,
             (
                 interaction_id, timestamp, group_folder, prompt, response,
                 tools_used, latency_ms, eval_suite, session_id,
                 domain_presets, user_signal, context_tokens, has_code,
                 tool_calls, available_tools, metrics,
-                retrieved_reflection_ids,
+                retrieved_reflection_ids, source_ref,
             ),
         )
         db.commit()
@@ -638,17 +666,18 @@ class SQLiteStorageProvider(StorageProvider):
         embedding: bytes,
         interaction_id: Optional[str] = None,
         group_folder: Optional[str] = None,
+        polarity: Optional[str] = None,
     ) -> str:
         db = self._connect()
         db.execute(
             """
             INSERT INTO reflections
                 (id, interaction_id, timestamp, group_folder, content,
-                 category, score_at_gen)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 category, score_at_gen, polarity)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (reflection_id, interaction_id, timestamp, group_folder,
-             content, category, score_at_gen),
+             content, category, score_at_gen, polarity),
         )
         row = db.execute(
             "SELECT rowid FROM reflections WHERE id = ?", [reflection_id],
@@ -791,6 +820,102 @@ class SQLiteStorageProvider(StorageProvider):
             db.commit()
         db.close()
         return count
+
+    def update_human_feedback(
+        self, interaction_id: str, score: float, comment: Optional[str] = None,
+    ) -> bool:
+        """Record a human ground-truth score for an interaction.
+
+        Clears human_processed_at ONLY when the (score, comment) pair actually
+        changed, so identical re-writes are no-ops (no reprocessing storm).
+        Comment comparison uses IS NOT (SQLite's IS DISTINCT FROM): a plain !=
+        is NULL-poisoned and would miss none<->comment transitions.
+        Returns True when the row exists and was updated.
+        """
+        db = self._connect()
+        cur = db.execute(
+            """
+            UPDATE interactions SET
+                human_score        = ?,
+                human_comment      = ?,
+                human_scored_at    = datetime('now'),
+                human_processed_at = CASE
+                    WHEN human_score IS ? AND human_comment IS ?
+                    THEN human_processed_at
+                    ELSE NULL
+                END
+            WHERE id = ?
+            """,
+            (score, comment, score, comment, interaction_id),
+        )
+        changed = cur.rowcount > 0
+        db.commit()
+        db.close()
+        return changed
+
+    def get_interaction_by_source_ref(self, source_ref: str) -> Optional[dict]:
+        db = self._connect()
+        row = db.execute(
+            "SELECT * FROM interactions WHERE source_ref = ? LIMIT 1",
+            [source_ref],
+        ).fetchone()
+        db.close()
+        return dict(row) if row else None
+
+    def get_unprocessed_human_feedback(self, limit: int = 50) -> list[dict]:
+        """Interactions with fresh human feedback awaiting processing.
+
+        judge_score IS NOT NULL: the human/judge comparison needs both sides;
+        unjudged rows are picked up on a later pass once the judge loop runs.
+        """
+        db = self._connect()
+        rows = db.execute(
+            """
+            SELECT * FROM interactions
+            WHERE human_score IS NOT NULL
+              AND human_processed_at IS NULL
+              AND judge_score IS NOT NULL
+            ORDER BY human_scored_at ASC
+            LIMIT ?
+            """,
+            [limit],
+        ).fetchall()
+        db.close()
+        return [dict(r) for r in rows]
+
+    def mark_human_feedback_processed(self, interaction_id: str) -> None:
+        db = self._connect()
+        db.execute(
+            "UPDATE interactions SET human_processed_at = datetime('now') WHERE id = ?",
+            [interaction_id],
+        )
+        db.commit()
+        db.close()
+
+    def archive_reflections_for_interaction(
+        self, interaction_id: str, polarities: list[str],
+    ) -> int:
+        """Zone-alignment archival: soft-delete an interaction's reflections
+        whose persisted polarity is in *polarities*. Rows with polarity NULL
+        (predating the column, or an unthreaded writer) are never matched by
+        IN — conservative: unclassifiable rows are never archived."""
+        if not polarities:
+            return 0
+        ph = ",".join("?" * len(polarities))
+        db = self._connect()
+        cur = db.execute(
+            f"""
+            UPDATE reflections SET archived_at = datetime('now')
+            WHERE interaction_id = ?
+              AND archived_at IS NULL
+              AND polarity IN ({ph})
+            """,
+            [interaction_id, *polarities],
+        )
+        n = cur.rowcount
+        db.commit()
+        db.close()
+        return n
 
     def archive_reflection_by_id(self, reflection_id: str) -> bool:
         db = self._connect()
