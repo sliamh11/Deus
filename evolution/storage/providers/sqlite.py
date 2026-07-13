@@ -14,7 +14,7 @@ import re
 import sqlite3
 import struct
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 import sqlite_vec
 
@@ -443,6 +443,42 @@ class SQLiteStorageProvider(StorageProvider):
         )
         db.commit()
         db.close()
+
+    def retag_infra_errors(
+        self, matcher: Callable[[Optional[str]], bool], suite: str
+    ) -> list[str]:
+        """Retag interactions whose response is a harness/infra-error stub.
+
+        *matcher* is a callable(response) -> bool (the ingest_filter detector,
+        injected so this storage layer stays logic-free). For each match, sets
+        eval_suite=*suite* and NULLs judge_score/judge_dims (the score was
+        derived from a non-agent stub — meaningless). One transaction. Returns
+        the list of retagged interaction ids (so the caller can audit-log exactly
+        which rows had a score nulled — the recurring sweep has no DB backup, so a
+        false-positive null must be recoverable from the log). Idempotent:
+        already-tagged rows are pre-filtered out, so a second run retags nothing.
+        The pre-filter bounds the per-cycle scan to not-yet-tagged rows (a NULL
+        suite is a real untagged candidate here — distinct from the judge gate,
+        where NULL cannot occur).
+        """
+        db = self._connect()
+        rows = db.execute(
+            "SELECT id, response FROM interactions "
+            "WHERE eval_suite IS NULL OR eval_suite != ?",
+            (suite,),
+        ).fetchall()
+        retagged: list[str] = []
+        for r in rows:
+            if matcher(r["response"]):
+                db.execute(
+                    "UPDATE interactions SET eval_suite = ?, judge_score = NULL, "
+                    "judge_dims = NULL WHERE id = ?",
+                    (suite, r["id"]),
+                )
+                retagged.append(r["id"])
+        db.commit()
+        db.close()
+        return retagged
 
     def claim_interaction_credit(self, interaction_id: str) -> bool:
         """Atomically claim the one-shot reflection-credit slot for an interaction.
@@ -1217,6 +1253,8 @@ class SQLiteStorageProvider(StorageProvider):
             SELECT * FROM interactions
             WHERE judge_score IS NULL
               AND eval_suite != 'maintenance'
+              -- infra-error stubs (harness/proxy failures) are not gradeable
+              AND eval_suite != 'infra_error'
               AND group_folder != '__maintenance__'
             ORDER BY timestamp ASC
             LIMIT ?

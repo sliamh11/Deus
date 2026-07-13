@@ -30,6 +30,7 @@ from typing import Iterator, Optional
 
 from .config import REFLECTION_THRESHOLD, POSITIVE_THRESHOLD
 from .ilog.interaction_log import log_interaction, update_score
+from .ingest_filter import INFRA_ERROR_SUITE, is_infra_error
 from .storage import get_storage
 
 # Default: all Claude Code sessions for all projects
@@ -344,17 +345,24 @@ def run_cc_backfill(
             preview = pair["prompt"].replace("\n", " ")[:60]
             print(f"[{i+1}/{len(pairs)}] score {iid[:12]}... | {pair['group_folder']} | {preview!r}")
 
-        # Always log the interaction
-        tools_json = json.dumps(pair["tools"]) if pair["tools"] else None
+        # Always log the interaction. A harness/proxy error stub (LIA-109) is
+        # not gradeable agent work — tag it infra_error so the judge gate skips
+        # it, and don't run the inline judge on it below.
+        infra = is_infra_error(pair["response"])
         log_interaction(
             prompt=pair["prompt"],
             response=pair["response"],
             group_folder=pair["group_folder"],
             session_id=pair["session_id"],
-            eval_suite="claude_code",
+            eval_suite=INFRA_ERROR_SUITE if infra else "claude_code",
             interaction_id=iid,
             tools_used=pair["tools"],
         )
+        if infra:
+            stats["processed"] += 1
+            if verbose:
+                print(f"  infra-error stub — tagged {INFRA_ERROR_SUITE}, not judged")
+            continue
 
         # Judge if available
         if judge:

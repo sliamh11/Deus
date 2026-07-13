@@ -366,6 +366,30 @@ def process_human_feedback(limit: int = 50) -> int:
     return processed
 
 
+def retag_infra_error_interactions() -> int:
+    """Retag harness/infra-error stubs (LIA-109). Runs every maintenance cycle as
+    a self-healing sweep (idempotent; pre-filtered to not-yet-tagged rows).
+
+    Interactions whose response is a proxy/harness error stub would be scored by
+    the judge as if they were agent work (a meaningless floor score). This tags
+    matches eval_suite='infra_error' (so the judge gate skips them) and NULLs
+    their derived judge_score/judge_dims. Reuses the single ingest_filter
+    detector, so no SQL/Python drift. Returns the number retagged.
+    """
+    from .ingest_filter import INFRA_ERROR_SUITE, is_infra_error
+    from .storage import get_storage
+
+    retagged = get_storage().retag_infra_errors(is_infra_error, INFRA_ERROR_SUITE)
+    if retagged:
+        # Audit the exact ids: the recurring sweep NULLs judge scores with no DB
+        # backup, so a false-positive retag must be recoverable from the log.
+        log.info(
+            "Retagged %d infra-error interaction(s) as %s: %s",
+            len(retagged), INFRA_ERROR_SUITE, ", ".join(retagged),
+        )
+    return len(retagged)
+
+
 def _truncation_fallback(prompt_snippet: str, tools_info: str, score_info: str) -> str:
     """Build a compact summary from truncated prompt + metadata when no LLM is available."""
     parts = [prompt_snippet[:200]]
@@ -483,23 +507,29 @@ def run_maintenance(*, days: int = ARCHIVE_AFTER_DAYS, force: bool = False) -> d
     ran_at = datetime.now(timezone.utc).isoformat()
     log.info("Running evolution maintenance (total_interactions=%d)", total)
 
-    # 1. Judge pending interactions (before compaction so newly-judged entries
+    # 1. Retag harness/infra-error stubs BEFORE judging: a self-healing sweep so
+    #    any stub that slipped past ingestion is excluded from this cycle's judge
+    #    pass (idempotent; pre-filtered to not-yet-tagged rows). Count surfaces in
+    #    the return dict; retag_infra_error_interactions logs the detail.
+    retagged = retag_infra_error_interactions()
+
+    # 2. Judge pending interactions (before compaction so newly-judged entries
     #    aren't immediately compacted)
     judged = judge_pending_interactions()
     if judged:
         log.info("Batch-judged %d pending interaction(s)", judged)
 
-    # 1b. Process human ground-truth feedback (after judging: the routing
-    #     needs both scores, and rows judged moments ago become eligible)
+    # 3. Process human ground-truth feedback (after judging: the routing
+    #    needs both scores, and rows judged moments ago become eligible)
     human_processed = process_human_feedback()
     if human_processed:
         log.info("Processed %d human feedback row(s)", human_processed)
 
-    # 2. Archive stale reflections
+    # 4. Archive stale reflections
     archived = archive_stale_reflections(days=days)
     log.info("Archived %d stale reflection(s) (threshold: %d days)", archived, days)
 
-    # 3. Compact old interactions
+    # 5. Compact old interactions
     compacted = compact_old_interactions()
     if compacted:
         log.info("Compacted %d old interaction(s)", compacted)
@@ -530,6 +560,7 @@ def run_maintenance(*, days: int = ARCHIVE_AFTER_DAYS, force: bool = False) -> d
         log.warning("Could not record maintenance timestamp: %s", exc)
 
     return {
+        "infra_errors_retagged": retagged,
         "judged_interactions": judged,
         "human_feedback_processed": human_processed,
         "archived_reflections": archived,

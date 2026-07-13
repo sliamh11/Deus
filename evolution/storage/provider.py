@@ -5,7 +5,7 @@ Each backend (SQLite, future Postgres/DuckDB) implements StorageProvider.
 StorageRegistry resolves the best available backend at runtime.
 """
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Callable, Optional
 
 
 class NoStorageProviderError(RuntimeError):
@@ -267,6 +267,15 @@ class StorageProvider(ABC):
         """Zone-alignment archival: soft-delete the interaction's non-archived
         reflections whose polarity is in *polarities*. NULL-polarity rows are
         never archived. Returns the number archived."""
+        raise NotImplementedError
+
+    def retag_infra_errors(
+        self, matcher: Callable[[Optional[str]], bool], suite: str
+    ) -> list[str]:
+        """Retag interactions whose response matches *matcher* (an infra-error
+        detector) to eval_suite=*suite*, NULLing their derived judge score.
+        Returns the list of retagged ids (for audit logging — the sweep has no
+        backup). Default: unsupported."""
         raise NotImplementedError
 
     @abstractmethod
