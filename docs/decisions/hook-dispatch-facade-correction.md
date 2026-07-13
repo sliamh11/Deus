@@ -7,6 +7,12 @@
 **Relates to:** [backend-neutral-agent-runtime.md](backend-neutral-agent-runtime.md), [facade-prevention-mechanism.md](facade-prevention-mechanism.md), [tui-permission-bridge.md](tui-permission-bridge.md)
 **Deciders:** Deus Engineering
 
+> **FORWARD POINTER (2026-07-13):** the remediation this ADR left "deferred, not greenlit" is now
+> selected and in progress — [deus-v2-langchain-runtime.md](deus-v2-langchain-runtime.md). This
+> file's finding (hooks fire only via the Claude Code CLI; non-Claude backends run unguarded)
+> remains an accurate historical record of the gap being closed, not erased by the forward
+> pointer.
+
 ---
 
 ## Context

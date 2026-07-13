@@ -7,6 +7,14 @@
 > Hooks/wardens fire ONLY via the Claude Code CLI today; non-Claude backends run
 > unguarded. Retained as the **reference design**, not shipped architecture. See
 > [hook-dispatch-facade-correction.md](hook-dispatch-facade-correction.md).
+>
+> **FORWARD POINTER (2026-07-13):** [deus-v2-langchain-runtime.md](deus-v2-langchain-runtime.md)
+> is the selected implementation path. Its disposition table splits this design's two layers:
+> tool-call interception (PreToolUse/PostToolUse-equivalent) transitions to Implemented-via-V2
+> when MC (LIA-409..414) ships and the live hook inventory is re-verified; session lifecycle
+> (SessionStart/UserPromptSubmit/Stop-equivalent, host-enforced per this design) is an open
+> question owned by B3 (LIA-403). This file's Status flips to Implemented-via-V2 only when both
+> rows ship and verify — not yet.
 
 **Status:** Accepted but Not Implemented (facade) — see [hook-dispatch-facade-correction.md](hook-dispatch-facade-correction.md)
 **Date:** 2026-05-14

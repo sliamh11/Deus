@@ -4,6 +4,13 @@
 **Date:** 2026-04-23
 **Scope:** `src/agent-runtimes/`, `container/agent-runner/`, `deus-cmd.sh`, `deus-cmd.ps1`, `AGENTS.md`, `AI_AGENT_GUIDELINES.md`
 
+> **FORWARD POINTER (2026-07-13):** the "Claude is the default and compatibility baseline" ruling
+> below is target-state superseded by [deus-v2-langchain-runtime.md](deus-v2-langchain-runtime.md)
+> — Claude becomes an optional Tier-2 dev CLI once that migration's cutover ships — but remains
+> operationally in force until then. This ADR's other rulings (credential-proxy routing,
+> backend-scoped sessions, parity-matrix discipline) are unaffected and are inherited by the new
+> runtime unchanged.
+
 ## Context
 
 Deus began as a harness around Claude Code. That kept the first version small and powerful, but it made the core assistant runtime depend on Claude-specific sessions, tools, credentials, and prompt loading. The product goal has changed: the user should be able to switch interface/backend tools while everything around Deus stays the same — memory, tone, personal context, chat commands, vault rules, scheduled tasks, and channel behavior.

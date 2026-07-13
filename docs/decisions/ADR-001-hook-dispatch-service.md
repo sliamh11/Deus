@@ -8,6 +8,12 @@
 > `PreToolUse` cannot `deny`, but the shipped `pre-tool-use-hook.ts` (L54–63)
 > DOES forward `decision: "block"` — the implementation chose blocking. See
 > [hook-dispatch-facade-correction.md](hook-dispatch-facade-correction.md).
+>
+> **FORWARD POINTER (2026-07-13):** planned retirement in milestone F2
+> ([deus-v2-langchain-runtime.md](deus-v2-langchain-runtime.md), LIA-424 "Consolidate tool
+> enforcement in `wrapToolCall`") — this `:3002` service is retired from active enforcement when
+> F2 ships. Status remains Accepted until then; this banner will be updated again, not just the
+> new ADR, when F2 actually ships.
 
 **Status:** Accepted
 **Date:** 2026-05-23
