@@ -222,6 +222,14 @@ export function startToolProxy(
   return new Promise((resolve, reject) => {
     const server = createServer((req, res) => {
       const chunks: Buffer[] = [];
+      // A client that disconnects mid-upload (container killed mid-tool-call,
+      // docker stop, agent timeout) emits 'error' on the request stream; an
+      // unhandled stream 'error' is a fatal uncaught exception that would take
+      // down the whole host process, so swallow it here (LIA-362, mirrors the
+      // credential-proxy fix for LIA-236).
+      req.on('error', (err) => {
+        logger.debug({ err, url: req.url }, 'tool-proxy: request stream error');
+      });
       req.on('data', (c) => chunks.push(c));
       req.on('end', () => {
         // ── Resolve caller's group folder ─────────────────────────────────

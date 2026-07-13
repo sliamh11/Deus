@@ -314,6 +314,62 @@ describe('container-runner timeout behavior', () => {
 });
 
 // ---------------------------------------------------------------------------
+// container.stdin 'error' must not crash the host (LIA-385). stdin is a stream
+// distinct from the ChildProcess, so container.on('error') does not catch it;
+// an unhandled 'error' (EPIPE when the child exits before/while we write the
+// input) is a fatal uncaughtException that would take down the whole daemon.
+// The handler must log-and-swallow only — never abort a run that may be fine.
+// ---------------------------------------------------------------------------
+describe('container stdin error resilience (LIA-385)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a stdin EPIPE does not throw and the run still resolves from close', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // Let async setup (spawn + listener attach) run, as it would before a real
+    // child EPIPE.
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Child exits early: stdin emits 'error'. With no listener this is an
+    // uncaughtException; the fix attaches one, so this must be inert.
+    expect(() =>
+      fakeProc.stdin.emit(
+        'error',
+        Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }),
+      ),
+    ).not.toThrow();
+
+    // The run still completes via the normal output + close path with its
+    // true status — swallowing the stdin error must not abort or wedge it.
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Done despite early stdin close',
+      newSessionId: 'session-epipe',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+    expect(result.newSessionId).toBe('session-epipe');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parseBuffer must stay bounded (LIA-234). stdout/stderr accumulators are
 // capped at CONTAINER_MAX_OUTPUT_SIZE, but the stream parser's buffer was not:
 // a torn frame (START, never an END) or marker-free stdout noise could grow

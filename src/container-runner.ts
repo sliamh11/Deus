@@ -517,6 +517,21 @@ export async function runContainerAgent(
     let stdoutTruncated = false;
     let stderrTruncated = false;
 
+    // If the child exits before/while we write the input JSON, stdin emits
+    // 'error' (EPIPE). container.stdin is a separate stream from the
+    // ChildProcess, so container.on('error') does NOT catch it; an unhandled
+    // stream 'error' is a fatal uncaught exception that would crash the whole
+    // host daemon (LIA-385). Log and swallow only: an early exit is not
+    // necessarily a failed run (a healthy agent-runner can exit early on an
+    // input parse error), and the existing 'close'/timeout handlers already
+    // resolve the run with its true status.
+    container.stdin.on('error', (err) => {
+      logger.warn(
+        { group: group.name, containerId: containerName, err },
+        'Container stdin write error (child likely exited early)',
+      );
+    });
+
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
 
