@@ -49,16 +49,120 @@ function validateArg(arg: string): string | null {
   return null;
 }
 
-/** `gh` global flags that consume the following token as their value. */
-const GH_FLAGS_WITH_VALUE = new Set(['-R', '--repo', '--hostname']);
+/**
+ * `gh` global flags that consume the following token as their value. `-X` /
+ * `--method` are included so a method verb (e.g. the `PUT` in `-X PUT`) is not
+ * mistaken for a positional subcommand when reading the subcommand path.
+ */
+const GH_FLAGS_WITH_VALUE = new Set([
+  '-R',
+  '--repo',
+  '--hostname',
+  '-X',
+  '--method',
+]);
 
 /**
- * True if this tool invocation pushes to / publishes on a remote (git push, or
- * `gh pr merge`/`gh pr create`/`gh merge`). Detection is by SUBCOMMAND POSITION,
- * not substring — so `gh pr merge --help` or a branch literally named "push"
+ * `gh` subcommand paths that are known-safe READS: a first-position subcommand
+ * mapped to the exact set of allowed second-position subcommands. Anything not
+ * listed here is treated as gated — an allowlist, not a denylist, so a new or
+ * unknown `gh` subcommand (or an unknown `gh search` target) fails closed.
+ */
+const GH_READ_SUBCOMMANDS: Record<string, ReadonlySet<string>> = {
+  pr: new Set(['view', 'list', 'diff', 'status', 'checks']),
+  issue: new Set(['view', 'list', 'status']),
+  repo: new Set(['view', 'list']),
+  release: new Set(['view', 'list']),
+  run: new Set(['view', 'list']),
+  workflow: new Set(['view', 'list']),
+  search: new Set(['code', 'commits', 'issues', 'prs', 'repos']),
+};
+
+/**
+ * `gh api` shorthand flags that consume a value — either glued into the same
+ * token or taken from the following token. Needed to walk POSIX shorthand
+ * clusters (pflag): `-if k=v` means `-i -f k=v`, so a value flag hidden behind
+ * a boolean shorthand like `-i`/`--include` must not be missed. `X`=method,
+ * `f`/`F`=body param, `H`=header (mutation-relevant); `q`/`p`/`t`=read-only
+ * filters (they consume a value but do not mutate).
+ */
+const GH_API_VALUE_SHORTHANDS = new Set(['X', 'f', 'F', 'H', 'q', 'p', 't']);
+
+/**
+ * True if a `gh api` invocation can mutate GitHub state (so it must be gated).
+ * `gh api` defaults to GET (a read) and switches to POST when body params are
+ * added; an explicit method flag can select any verb. Fail-closed: anything not
+ * provably a plain GET is treated as mutating. A real shorthand-cluster walk
+ * (not string-prefix sniffing) handles glued (`-XPUT`), `=`-form
+ * (`--method=PUT`), dangling, AND POSIX-clustered (`-if k=v`, `-iX PUT`) forms,
+ * and scans every `-H`/`--header` value for an `X-HTTP-Method-Override`
+ * (defense-in-depth; GitHub REST v3 does not honor it, but the check is cheap).
+ */
+function ghApiIsMutating(args: string[]): boolean {
+  const isMutatingMethod = (v: string | undefined): boolean =>
+    v === undefined || v.trim().toUpperCase() !== 'GET';
+
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+
+    // --- long forms: --method / --field / --raw-field / --input / --header ---
+    if (a === '--method' || a.startsWith('--method=')) {
+      const v = a === '--method' ? args[++i] : a.slice('--method='.length);
+      if (isMutatingMethod(v)) return true;
+      continue;
+    }
+    if (
+      a === '--field' ||
+      a.startsWith('--field=') ||
+      a === '--raw-field' ||
+      a.startsWith('--raw-field=') ||
+      a === '--input' ||
+      a.startsWith('--input=')
+    ) {
+      return true; // request body present
+    }
+    if (a === '--header' || a.startsWith('--header=')) {
+      const v = a === '--header' ? args[++i] : a.slice('--header='.length);
+      if (v !== undefined && /method-override/i.test(v)) return true;
+      continue;
+    }
+
+    // --- POSIX shorthand cluster: -i, -X, -f, -if, -iX, -ifk=v, ... ---
+    if (a.length >= 2 && a[0] === '-' && a[1] !== '-') {
+      for (let j = 1; j < a.length; j++) {
+        const ch = a[j];
+        if (!GH_API_VALUE_SHORTHANDS.has(ch)) continue; // boolean flag (e.g. i)
+        // Value = rest of this token after ch, else the next token (consumed).
+        const glued = a.slice(j + 1);
+        const val = glued.length > 0 ? glued : args[++i];
+        if (ch === 'X') {
+          if (isMutatingMethod(val)) return true;
+        } else if (ch === 'f' || ch === 'F') {
+          return true; // request body present
+        } else if (ch === 'H') {
+          if (val !== undefined && /method-override/i.test(val)) return true;
+        }
+        // q/p/t are read-only filters; their value is consumed above. Either
+        // way the token's remainder was this flag's value — stop walking it.
+        break;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * True if this tool invocation must be gated as publish/mutate/execute-capable
+ * for an untrusted external project — i.e. it could push, merge, publish, mutate
+ * GitHub state, or execute code using the host's GitHub credentials. Detection
+ * is by SUBCOMMAND POSITION, not substring, so a branch literally named "push"
  * does not false-trip. Platform-neutral (tool names + arg tokens only).
  *
- * Note: `gh pr close` is NOT a merge (it closes without merging) and is allowed.
+ * Fail-closed allowlist for `gh`: only the read subcommands in
+ * `GH_READ_SUBCOMMANDS` (and a non-mutating `gh api` GET) are allowed through;
+ * every other subcommand — including `alias`/`extension` (which can persist an
+ * alias or install code that later runs with host creds), `secret`, `release`,
+ * `repo`, `pr merge|create|close`, and anything unknown — is gated (LIA-361).
  */
 export function isPushOrMergeTool(toolName: string, args: string[]): boolean {
   // The dedicated push tool is always a push.
@@ -76,8 +180,12 @@ export function isPushOrMergeTool(toolName: string, args: string[]): boolean {
       positional.push(a);
     }
     const [c0, c1] = positional;
-    if (c0 === 'merge') return true; // `gh merge` top-level alias
-    if (c0 === 'pr' && (c1 === 'merge' || c1 === 'create')) return true;
+    if (c0 === 'api') return ghApiIsMutating(args); // read GET allowed
+    const reads = c0 ? GH_READ_SUBCOMMANDS[c0] : undefined;
+    if (reads && c1 !== undefined && reads.has(c1)) {
+      return false; // known safe read
+    }
+    return true; // fail closed: unknown / mutating / exec-capable subcommand
   }
   return false;
 }
