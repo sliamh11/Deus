@@ -654,6 +654,66 @@ describe('credential-proxy', () => {
         restore();
       }
     });
+
+    // Regression for LIA-363: the EADDRINUSE retry loop calls server.close()
+    // before re-listening. If the 'close' cleanup listener is registered before
+    // the first bind attempt, that retry-close clears proactiveRefreshTimer, so
+    // the proxy binds on a later attempt with proactive refresh permanently dead.
+    it('does NOT clear the proactive timer when a port conflict forces a retry', async () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          claudeAiOauth: {
+            accessToken: 'dynamic-creds-token-valid-test',
+            refreshToken: 'dynamic-refresh',
+            expiresAt: Date.now() + 60 * 60 * 1000,
+          },
+        }),
+      );
+
+      // Occupy an ephemeral port so the proxy's first bind attempt hits
+      // EADDRINUSE and enters the retry path.
+      const blocker = http.createServer();
+      const busyPort = await new Promise<number>((resolve) => {
+        blocker.listen(0, '127.0.0.1', () =>
+          resolve((blocker.address() as AddressInfo).port),
+        );
+      });
+
+      const { restore, calls } = collectIntervals();
+      const clearSpy = vi.spyOn(global, 'clearInterval');
+      try {
+        // Start the proxy on the occupied port (do not await — it will not
+        // resolve until we free the port and its retry binds).
+        const proxyPromise = startCredentialProxy(busyPort);
+
+        // Free the port shortly after the first (failing) bind attempt so the
+        // 2s retry succeeds.
+        await new Promise<void>((resolve) => setTimeout(resolve, 200));
+        await new Promise<void>((resolve) => blocker.close(() => resolve()));
+
+        const server = await proxyPromise;
+        proxyServer = server;
+
+        const proactive = calls.find((c) => c.delay === PROACTIVE_INTERVAL_MS);
+        expect(proactive).toBeDefined();
+
+        // The retry's server.close() must NOT have cleared the proactive timer.
+        const clearedDuringRetry = clearSpy.mock.calls.map((c) => c[0]);
+        expect(clearedDuringRetry).not.toContain(proactive!.handle);
+
+        // And a real shutdown still clears it.
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        proxyServer = undefined;
+        const clearedAfterClose = clearSpy.mock.calls.map((c) => c[0]);
+        expect(clearedAfterClose).toContain(proactive!.handle);
+      } finally {
+        clearSpy.mockRestore();
+        restore();
+        if (blocker.listening) {
+          await new Promise<void>((resolve) => blocker.close(() => resolve()));
+        }
+      }
+    }, 10000);
   });
 
   describe('request bounds (LIA-236)', () => {
