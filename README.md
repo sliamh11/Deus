@@ -20,7 +20,7 @@ A personal AI that understands you - not just recalls things you've said. It lea
 
 3. **Picks up where you left off** - Context carries over between sessions. Start a project Monday, come back Thursday, and it knows where you left off.
 
-4. **Lives where you already are** - WhatsApp, Telegram, Slack, Discord, Gmail. Add only the ones you need. Your memory follows you across all of them.
+4. **Lives where you already are** - WhatsApp, Telegram, Slack, Discord, Gmail, Teams, Outlook. Add only the ones you need. Your memory follows you across all of them.
 
 5. **Private by default** - Runs on your machine in isolated containers. No cloud sync, no tracking, no data leaving your computer.
 
@@ -288,7 +288,7 @@ Select review wardens (`plan-reviewer`, `code-reviewer`, `ai-eng-warden`) can ru
 |---|---|---|---|---|---|
 | **Memory** | Understands you - indexes facts by meaning, recalls in context | Markdown files | Via OpenClaw | Full-text search + preference profiling | Conversation only |
 | **Learning** | Adapts at the personality level - tone, judgment, suggestions | No | No | Auto-creates & refines skills | No |
-| **Channels** | 5 (WhatsApp, Telegram, Slack, Discord, Gmail) | 10+ | Via OpenClaw | 15+ (WhatsApp, Telegram, Signal, Matrix...) | None |
+| **Channels** | 7 (WhatsApp, Telegram, Slack, Discord, Gmail, Teams, Outlook) | 10+ | Via OpenClaw | 15+ (WhatsApp, Telegram, Signal, Matrix...) | None |
 | **Isolation** | Container per conversation | Opt-in Docker | Landlock + seccomp | Per-session | None |
 | **LLM support** | Claude default, OpenAI/llama.cpp opt-in | Any provider | Any (via OpenClaw) | Any (10+ providers) | Claude only |
 | **Setup** | ~5 min | ~15 min | ~20 min | ~10 min | N/A |
