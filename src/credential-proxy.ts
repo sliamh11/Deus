@@ -25,6 +25,7 @@ import { envPositiveInt } from './env-utils.js';
 import { validateGroupToken } from './group-tokens.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+import { createRateLimiter } from './rate-limiter.js';
 import {
   AuthProviderRegistry,
   AnthropicAuthProvider,
@@ -105,45 +106,21 @@ function bridgeRecallBoundArgs(): string[] {
 const RATE_LIMIT_MAX = 20;
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
-interface RateBucket {
-  timestamps: number[];
-}
-
-const rateBuckets = new Map<string, RateBucket>();
-
-/** Prune expired entries periodically to prevent unbounded growth. */
-const rateLimitCleanupInterval = setInterval(() => {
-  const now = Date.now();
-  for (const [key, bucket] of rateBuckets) {
-    bucket.timestamps = bucket.timestamps.filter(
-      (t) => now - t < RATE_LIMIT_WINDOW_MS,
-    );
-    if (bucket.timestamps.length === 0) rateBuckets.delete(key);
-  }
-}, RATE_LIMIT_WINDOW_MS);
-
-// Prevent the cleanup timer from keeping Node alive after tests/shutdown
-rateLimitCleanupInterval.unref();
+// Cleanup interval prunes expired entries periodically to prevent unbounded
+// growth; registered at module scope (not inside startCredentialProxy/
+// tryListen) so it is created exactly once at import, never recreated on an
+// EADDRINUSE retry (LIA-363).
+const limiter = createRateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS, {
+  cleanupInterval: true,
+});
 
 /** @internal exposed for testing only */
 export function _resetRateLimiterForTest(): void {
-  rateBuckets.clear();
+  limiter.resetForTest();
 }
 
 function isRateLimited(sourceKey: string): boolean {
-  const now = Date.now();
-  let bucket = rateBuckets.get(sourceKey);
-  if (!bucket) {
-    bucket = { timestamps: [] };
-    rateBuckets.set(sourceKey, bucket);
-  }
-  // Prune expired timestamps for this source
-  bucket.timestamps = bucket.timestamps.filter(
-    (t) => now - t < RATE_LIMIT_WINDOW_MS,
-  );
-  if (bucket.timestamps.length >= RATE_LIMIT_MAX) return true;
-  bucket.timestamps.push(now);
-  return false;
+  return limiter.isRateLimited(sourceKey);
 }
 
 /**
@@ -497,7 +474,7 @@ export function startCredentialProxy(
         // binds on a later attempt with proactive OAuth refresh permanently
         // dead — the exact "next-morning 401" class the timer prevents (LIA-363).
         server.on('close', () => {
-          clearInterval(rateLimitCleanupInterval);
+          limiter.dispose();
           if (proactiveRefreshTimer) clearInterval(proactiveRefreshTimer);
         });
         logger.info(
