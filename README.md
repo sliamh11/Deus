@@ -29,7 +29,7 @@ A personal AI that understands you - not just recalls things you've said. It lea
 <details>
 <summary>And more</summary>
 
-- **Web UI** - Talk to Deus from a browser. `deus web` launches a local Open WebUI front-end - no chat platform required.
+- **Web UI** - Talk to Deus from a browser. `deus web` launches a local Open WebUI front-end - no chat platform required. The launcher itself lives in `deus-cmd.sh` (shell, not `src/`) and talks to Deus over an OpenAI-compatible `/v1/chat/completions` SSE endpoint (`src/odysseus-server.ts`).
 - **Voice** - Send a voice message and it transcribes and responds. Runs locally on Apple Silicon.
 - **Vision** - Send a photo or screenshot and it sees and responds to it.
 - **Calendar** - Reads and manages your Google Calendar. Ask what's coming up, or tell it to book something.
