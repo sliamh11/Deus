@@ -185,6 +185,8 @@ renaming a repo-owned skill, update this table in the same change.
 | `/grill-with-docs` | Grill a plan and capture decisions as ADRs + glossary as you go |
 | `/grilling` | The relentless plan/design interview engine (used by `/grill-me` and `/grill-with-docs`) |
 | `/handoff` | Write a structured handoff document so the next agent starts with context |
+| `/improve-codebase-architecture` | Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick |
+| `/learn-procedure` | Capture a repeatable task procedure from just-completed work as a durable, queryable memory node so the steps are recalled automatically next time |
 | `/learn-this` | Teach a topic and persist it as queryable vault memory, grounded in NotebookLM (vault-native companion to `/teach`) |
 | `/linear-slice` | Decompose a plan into dependency-ordered Linear issues (tracer-bullet slices) and release them into the dispatch pipeline |
 | `/onboard` | Onboard the current project into Deus code intelligence (codegraph + code_search indexing) |
@@ -192,6 +194,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/preserve` | Save durable memories from the current conversation |
 | `/project-settings` | View or modify external project memory settings |
 | `/prototype` | Build a throwaway prototype to validate a state model or UI direction |
+| `/quiz-me` | Use right after writing or editing code to quiz the user on what was just built and confirm they understand it |
 | `/resolving-merge-conflicts` | Disciplined resolution of an in-progress git merge/rebase conflict |
 | `/resume` | Load recent work and memory context |
 | `/review-logs` | Review Deus system health logs |
