@@ -34,6 +34,7 @@ if _scripts_dir not in sys.path:
 from _time import local_now, utc_now  # noqa: E402
 from _exit_codes import SUCCESS, ABSTAIN, USAGE_ERROR, NOT_FOUND, AUTH_ERROR, INTERNAL_ERROR
 from _agent_io import is_agent_context, compact_json, select_fields
+from _gemini_quota import is_quota_error
 
 import sqlite_vec
 from google import genai
@@ -1930,12 +1931,6 @@ def _extract_content_for_llm(content: str, max_chars: int = 6000) -> str:
     return trimmed[:max_chars]
 
 
-def _is_quota_error(exc: Exception) -> bool:
-    """Return True if `exc` looks like a Gemini per-minute / per-day quota error."""
-    msg = str(exc)
-    return "429" in msg or "RESOURCE_EXHAUSTED" in msg
-
-
 def _generate_with_fallback(
     prompt,
     *,
@@ -1969,7 +1964,7 @@ def _generate_with_fallback(
             try:
                 return client.models.generate_content(model=model, **kwargs)
             except Exception as exc:
-                if _is_quota_error(exc):
+                if is_quota_error(exc):
                     if attempt == 1:
                         # brief within-model backoff — helps per-minute RPM caps
                         time.sleep(1)
