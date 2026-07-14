@@ -146,7 +146,6 @@ renaming a repo-owned skill, update this table in the same change.
 | Skill | When to Use |
 |---|---|
 | `/add-asana` | Add Asana project management MCP integration (read/write tasks & projects) |
-| `/add-claude-context` | Deprecated — replaced by `scripts/code_search.py`; do not use |
 | `/add-codex` | Add OpenAI/Codex as a backend |
 | `/add-compact` | Add the backend-neutral `/compact` session command |
 | `/add-discord` | Add Discord as a channel |
