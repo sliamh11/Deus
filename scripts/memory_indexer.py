@@ -1200,6 +1200,7 @@ def _fts_query(db: sqlite3.Connection, query: str, k: int) -> list[tuple[str, in
             JOIN entries e ON e.id = entries_fts.rowid
             WHERE entries_fts MATCH ?
               AND e.type != 'atom'
+              AND e.orphaned_at IS NULL
             ORDER BY entries_fts.rank
             LIMIT ?
             """,

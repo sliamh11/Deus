@@ -372,6 +372,36 @@ def test_soft_delete_entries_marks_orphaned(mi):
     db.close()
 
 
+def test_fts_query_excludes_orphaned_entries(mi):
+    """LIA-370 (query-time bug): _fts_query must not return soft-deleted entries.
+
+    The non-atom FTS path filtered only `type != 'atom'`. A soft-delete leaves the
+    entries_fts row in place (the write-path drift fixed separately in PR-E), so an
+    orphaned entry surfaced as a live search result. Filtering `orphaned_at IS NULL`
+    fixes it at query time.
+    """
+    db = mi.open_db()
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type) VALUES (?, ?, ?, ?)",
+        ["/test/orphan.md", "2024-01-01", "unmistakable zebra content", "frontmatter"],
+    )
+    rowid = cur.lastrowid
+    db.execute(
+        "INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)",
+        [rowid, "unmistakable zebra content"],
+    )
+    db.commit()
+    # Present while active.
+    assert any(p == "/test/orphan.md" for p, _ in mi._fts_query(db, "zebra", 10))
+    # soft_delete leaves the entries_fts row (current write-path behaviour), so this
+    # isolates the query-time filter: the orphaned entry must no longer surface.
+    mi.soft_delete_entries(db, "/test/orphan.md", reason="test")
+    assert all(
+        p != "/test/orphan.md" for p, _ in mi._fts_query(db, "zebra", 10)
+    ), "orphaned entry must not be returned by _fts_query"
+    db.close()
+
+
 # ── cmd_recent ───────────────────────────────────────────────────────────
 
 
