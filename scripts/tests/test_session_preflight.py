@@ -344,6 +344,37 @@ class TestPidAliveCrossPlatform:
         assert sp._pid_alive(1) is True
 
 
+# ── _build_context env self-exclusion ────────────────────────────────────────
+class TestBuildContextEnvSid:
+    def _build(self, monkeypatch):
+        import argparse
+
+        monkeypatch.setattr(sp, "_git_toplevel", lambda path: TOP)
+        monkeypatch.setattr(sp, "_run_git", lambda *a, **k: (0, "main\n", ""))
+        # "self" collides with Namespace.__init__'s own first arg, even via
+        # **kwargs -- set it with setattr like argparse itself does.
+        args = argparse.Namespace(self_pid=None, window_min=None)
+        setattr(args, "self", None)
+        return sp._build_context(args)
+
+    def test_claude_code_session_id_lands_in_self_ids(self, monkeypatch):
+        # CLAUDE_CODE_SESSION_ID is the variable Claude Code actually exports;
+        # it must feed the self-exclusion set.
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "me-primary")
+        assert "me-primary" in self._build(monkeypatch).self_session_ids
+
+    def test_legacy_claude_session_id_still_honored(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.setenv("CLAUDE_SESSION_ID", "me-legacy")
+        assert "me-legacy" in self._build(monkeypatch).self_session_ids
+
+    def test_no_env_yields_empty_self_ids(self, monkeypatch):
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        assert self._build(monkeypatch).self_session_ids == set()
+
+
 # ── exit-code contract + agent-native output via main() ──────────────────────
 class TestMainContract:
     def _patch_main(self, monkeypatch, findings):

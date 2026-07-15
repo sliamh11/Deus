@@ -125,8 +125,10 @@ class TestResolve:
     def test_claude_session_id_wins_over_registry_and_mtime(
         self, tmp_path, monkeypatch
     ):
-        # Concurrent same-cwd sessions: CLAUDE_SESSION_ID must pin OUR
-        # transcript even when a sibling session's file is newer / registered.
+        # Concurrent same-cwd sessions: CLAUDE_CODE_SESSION_ID (the variable
+        # Claude Code actually exports) must pin OUR transcript even when a
+        # sibling session's file is newer / registered. The legacy
+        # CLAUDE_SESSION_ID name is honored as a fallback.
         sessions = tmp_path / "sessions"
         projects = tmp_path / "projects"
         sessions.mkdir()
@@ -141,8 +143,14 @@ class TestResolve:
         )
         monkeypatch.setattr(ta, "_sessions_dir", lambda: sessions)
         monkeypatch.setattr(ta, "_projects_dir", lambda: projects)
+        monkeypatch.delenv("CLAUDE_SESSION_ID", raising=False)
+        monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "ours")
+        assert ta.resolve_transcript(cwd) == tdir / "ours.jsonl"
+        # Legacy name alone still pins.
+        monkeypatch.delenv("CLAUDE_CODE_SESSION_ID")
         monkeypatch.setenv("CLAUDE_SESSION_ID", "ours")
         assert ta.resolve_transcript(cwd) == tdir / "ours.jsonl"
+        # Neither set -> registry/mtime fallback picks the sibling.
         monkeypatch.delenv("CLAUDE_SESSION_ID")
         assert ta.resolve_transcript(cwd) == tdir / "sibling.jsonl"
 

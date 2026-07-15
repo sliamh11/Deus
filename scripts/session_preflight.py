@@ -18,7 +18,8 @@ Cross-platform: liveness uses session ``updatedAt`` freshness (portable) plus, o
 ``os.kill(pid, 0)`` to confirm the pid is alive. On non-POSIX the pid check is skipped
 (liveness = updatedAt-only, slightly weaker, no functional loss). Self-exclusion uses
 ``os.getpid()`` / ``os.getppid()`` (stdlib, identical on every platform) plus
---self / --self-pid / CLAUDE_SESSION_ID -- deliberately NO /proc or sysctl ancestor walk
+--self / --self-pid / CLAUDE_CODE_SESSION_ID (legacy CLAUDE_SESSION_ID honored as a
+fallback) -- deliberately NO /proc or sysctl ancestor walk
 (those are Linux-only / macOS-only and not portable).
 
 Design: a table-driven probe pipeline. Each probe is a pure function
@@ -422,7 +423,9 @@ def _build_context(args) -> Context:
     self_ids: set[str] = set()
     if args.self:
         self_ids.add(args.self)
-    env_sid = os.environ.get("CLAUDE_SESSION_ID")
+    env_sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or os.environ.get(
+        "CLAUDE_SESSION_ID"
+    )
     if env_sid:
         self_ids.add(env_sid)
     self_pids = {os.getpid(), os.getppid()}

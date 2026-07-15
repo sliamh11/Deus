@@ -1357,8 +1357,9 @@ $STARTUP_INSTRUCTION"
     # checks the invocation directory, forwards all flags, and propagates the
     # detector's exit code (CONFLICT=6 on a CRITICAL collision, 2 if not a git
     # repo, 0 otherwise). $SCRIPT_DIR (not $HOME/deus) so it works from any
-    # install path / worktree. The detector self-excludes via CLAUDE_SESSION_ID
-    # when set; pass --self <id> explicitly when running inside a session.
+    # install path / worktree. The detector self-excludes via CLAUDE_CODE_SESSION_ID
+    # (legacy CLAUDE_SESSION_ID also honored) when set; pass --self <id>
+    # explicitly when running inside a session.
     shift
     exec python3 "$SCRIPT_DIR/scripts/session_preflight.py" "$@"
     ;;

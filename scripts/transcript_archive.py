@@ -64,9 +64,11 @@ def _zstd_bin() -> str | None:
 def resolve_transcript(cwd: str) -> Path | None:
     """Locate the current session's transcript for `cwd`.
 
-    Ordered fallback chain: (0) `CLAUDE_SESSION_ID` env → that exact
-    transcript (the repo's established disambiguator for concurrent
-    same-cwd sessions — see session_preflight's self-exclusion); (1) newest
+    Ordered fallback chain: (0) `CLAUDE_CODE_SESSION_ID` env (the variable
+    Claude Code actually exports; legacy `CLAUDE_SESSION_ID` honored as a
+    fallback) → that exact transcript (the repo's established disambiguator
+    for concurrent same-cwd sessions — see session_preflight's
+    self-exclusion); (1) newest
     session-registry entry whose cwd matches → `<projects>/<slug>/
     <sessionId>.jsonl`; (2) newest `*.jsonl` in the slug dir. None when
     nothing matches. Without (0), two live sessions on one cwd could get a
@@ -79,7 +81,10 @@ def resolve_transcript(cwd: str) -> Path | None:
     slug = re.sub(r"[^A-Za-z0-9-]", "-", cwd)
     slug_dir = _projects_dir() / slug
 
-    own_session = os.environ.get("CLAUDE_SESSION_ID", "").strip()
+    own_session = (
+        os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+        or os.environ.get("CLAUDE_SESSION_ID", "").strip()
+    )
     if own_session:
         own = slug_dir / f"{own_session}.jsonl"
         if own.is_file():
