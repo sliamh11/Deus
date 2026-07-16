@@ -2,6 +2,7 @@
 
 - **Status:** accepted
 - **Date:** 2026-07-15
+- **Scope:** `src/cli/deus-native-chat.ts`, `src/cli/deus-native-chat-server.ts`, `src/cli/deus-native-chat-client.ts`, `src/index.ts` (server startup/shutdown wiring), `src/odysseus-server.ts` (exports two existing auth helpers for reuse), `deus-cmd.sh`, `deus-cmd.ps1`
 - **Ticket:** LIA-428 (G1)
 - **Related:** `deus-v2-langchain-runtime.md`, `deus-v2-replay-safety.md`,
   `backend-neutral-agent-runtime.md`
