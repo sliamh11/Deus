@@ -172,6 +172,16 @@ web_fetch}` and remains the operative boundary; B7 added an authorization
   existing memory slot only: it does not reopen this ADR's runtime choice and
   claims no broader hook-pipeline parity (the general host `HookPipeline`
   remains unimplemented per `hook-dispatch-facade-correction.md`).
+- **Update (B8/LIA-408):** nested subagent dispatch has since landed — see
+  `deus-v2-subagent-dispatch.md` for the in-process, one-shot nested
+  `createAgent` dispatch primitive and its `dispatch_nested_agent` tool. It
+  is governed as an EXTENSION of this ADR's `runTurn()` loop, not a
+  parallel agent-execution path: a dispatched child receives a fresh
+  instance of the SAME conservative web-only tool surface this ADR
+  establishes (Decision 3), the same credential-proxy routing (Decision 4),
+  and never receives `dispatch_nested_agent` itself (no recursive nesting).
+  `SAFE_TOOL_NAMES` remains unchanged and is still the operative tool-surface
+  boundary for every child, exactly as it is for the parent.
 
 ## Rollback
 

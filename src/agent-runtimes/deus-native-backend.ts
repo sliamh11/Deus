@@ -58,7 +58,15 @@
  *   (wardens -> hook-dispatch-facade-correction.md's deferred remediation
  *   options, telemetry -> real usage accounting).
  * - Replay-safety auditing (B5/LIA-405), token/usage accounting events
- *   (B6/LIA-406), nested subagent dispatch (B8/LIA-408).
+ *   (B6/LIA-406).
+ * - Nested subagent dispatch (B8/LIA-408) is now real: `runTurn()` builds a
+ *   `dispatch_nested_agent` tool (`nested-dispatch-tool.ts`) so the parent
+ *   agent can delegate a self-contained, contract-validated subtask to a
+ *   one-shot, in-process child `createAgent` with its own independently
+ *   selected model. This is NOT `src/multi-agent/orchestrator.ts`'s
+ *   container-based `SubagentTask[]` scheduler — that primitive is
+ *   unchanged; see docs/decisions/deus-v2-subagent-dispatch.md for how the
+ *   two coexist.
  * - Consuming the middleware stack's inspectable `logs` output (added per
  *   ai-eng-warden review). `buildMiddlewareStack(...).logs` is discarded
  *   here (only `middleware` is destructured) -- each layer's log becomes a
@@ -69,10 +77,7 @@
 
 import crypto from 'crypto';
 
-import { ChatAnthropic } from '@langchain/anthropic';
 import { createAgent, type AgentMiddleware } from 'langchain';
-import type { UsageMetadata } from '@langchain/core/messages';
-import Anthropic from '@anthropic-ai/sdk';
 
 import type {
   AgentRuntime,
@@ -98,10 +103,12 @@ import {
   type PromptEventRecord,
 } from './lifecycle-events.js';
 import { getCheckpointer } from './checkpointer.js';
-import { PROXY_BIND_HOST } from '../container-runtime.js';
-import { CREDENTIAL_PROXY_PORT } from '../config.js';
-import { detectAuthMode } from '../credential-proxy.js';
-import { getOrCreateGroupToken } from '../group-tokens.js';
+import {
+  buildProxyRoutedChatAnthropic,
+  PARENT_DEFAULT_MODEL,
+} from './deus-native-model.js';
+import { createTurnUsageCollector } from './deus-native-usage.js';
+import { buildNestedDispatchTool } from './nested-dispatch-tool.js';
 
 // capabilities() — each flag has an inline rationale, matching
 // llama-cpp-backend.ts's existing comment convention.
@@ -159,58 +166,6 @@ function buildToolBrokerContext(runContext: RunContext): ToolBrokerContext {
       isControlGroup: runContext.isControlGroup,
     },
   };
-}
-
-/**
- * Builds a ChatAnthropic client routed through the live credential proxy at
- * PROXY_BIND_HOST:CREDENTIAL_PROXY_PORT — NOT a hardcoded 127.0.0.1 (bare-
- * metal Linux binds the proxy to the docker0 bridge, not loopback; see
- * docs/decisions/deus-v2-langchain-runtime.md). Branches on detectAuthMode()
- * to build either an API-key-mode or OAuth-mode client via a `createClient`
- * override — same escape-hatch shape as A4's spike
- * (buildProxyRoutedChatAnthropic in
- * scripts/spikes/lia397_credential_proxy_billing_spike.ts), but branching on
- * the REAL auth mode rather than hardcoding OAuth like that spike does. This
- * is architecturally distinct from A4's spike: that spike deliberately used
- * an isolated, throwaway proxy child; deus-native hits the real production
- * daemon at its real bind address with a real per-group token.
- */
-function buildProxyRoutedChatAnthropic(runContext: RunContext): ChatAnthropic {
-  const baseURL = `http://${PROXY_BIND_HOST}:${CREDENTIAL_PROXY_PORT}`;
-  const proxyToken = getOrCreateGroupToken(runContext.groupFolder);
-  const authMode = detectAuthMode();
-
-  return new ChatAnthropic({
-    // Fixed at the top model tier for this milestone (ai-eng-warden review:
-    // runContext.effort, ContainerRuntime's per-turn tier signal, is not yet
-    // honored here). Deliberately deferred, not an oversight -- effort-aware
-    // model selection is a real enhancement but not one of B1's stated ACs,
-    // and every deus-native turn is already gated behind explicit
-    // DEUS_AGENT_BACKEND=deus-native opt-in, not default traffic.
-    model: 'claude-opus-4-8',
-    createClient: (options) =>
-      authMode === 'oauth'
-        ? new Anthropic({
-            baseURL: options.baseURL ?? baseURL,
-            authToken: 'placeholder',
-            apiKey: null,
-            // Plain `authToken` never populates the SDK's own OAuth credential
-            // state, so it never auto-appends this beta header — add it
-            // explicitly, or the upstream OAuth-authenticated request can be
-            // rejected (matches A4's own header-injection reasoning).
-            defaultHeaders: {
-              'anthropic-beta': 'oauth-2025-04-20',
-              'x-deus-proxy-token': proxyToken,
-            },
-          })
-        : new Anthropic({
-            baseURL: options.baseURL ?? baseURL,
-            apiKey: 'placeholder',
-            defaultHeaders: {
-              'x-deus-proxy-token': proxyToken,
-            },
-          }),
-  });
 }
 
 export class DeusNativeRuntime implements AgentRuntime {
@@ -319,12 +274,11 @@ export class DeusNativeRuntime implements AgentRuntime {
         ? (await loadSessionOpenContext(runContext)).systemMessage
         : undefined;
 
-      const model = buildProxyRoutedChatAnthropic(runContext);
-      const toolCtx = buildToolBrokerContext(runContext);
-      const tools = await buildSafeTools(
-        toolCtx,
-        resolveAllowedWebFetchHosts(),
+      const model = buildProxyRoutedChatAnthropic(
+        runContext,
+        PARENT_DEFAULT_MODEL,
       );
+      const toolCtx = buildToolBrokerContext(runContext);
 
       // B2 (LIA-402): ordered, per-layer-toggleable middleware stack —
       // permissions -> wardens -> memory -> telemetry (index 0 outermost).
@@ -341,6 +295,13 @@ export class DeusNativeRuntime implements AgentRuntime {
       // (unknown name, non-string) THROWS here — before createAgent — and
       // surfaces as this turn's normal status:'error' RunResult rather than
       // silently weakening the requested restriction.
+      //
+      // B8 (LIA-408): resolved ONCE here (not re-derived further down)
+      // because both the parent's own middleware stack AND every
+      // nested-dispatch child's fresh middleware stack (rebuilt per-dispatch
+      // by buildNestedDispatchTool's `buildChildMiddleware`) select the SAME
+      // named profile — a child never runs under a looser policy than its
+      // parent.
       const rawPermissionProfile =
         runContext.backendConfig?.['permissionProfile'];
       if (
@@ -376,6 +337,65 @@ export class DeusNativeRuntime implements AgentRuntime {
             : {}),
         },
       );
+
+      // B8 (LIA-408): turn-scoped usage collector, created once
+      // outgoingSessionId is known and shared by the parent's own
+      // per-AIMessage usage recording below AND every nested-dispatch
+      // child's `onUsage` callback — one code path builds every 'usage'
+      // event and the combined RunResult.usage aggregate, whether the
+      // AIMessage came from the parent or from a dispatched child.
+      const usageCollector = createTurnUsageCollector({
+        sessionId: outgoingSessionId,
+        eventSink,
+      });
+
+      // B8 (LIA-408): the parent-facing dispatch_nested_agent tool. Every
+      // factory below runs AGAIN, fresh, on each individual dispatch (never
+      // once here) — resolveModel constructs an independently selected
+      // client per dispatch's requested model id (AC4); buildChildTools/
+      // buildChildMiddleware build fresh tool/middleware instances per
+      // dispatch, so no child ever shares the parent's (or a sibling
+      // child's) object by reference, and the child list is a strict subset
+      // of the parent's (the child never receives this dispatch tool
+      // itself, so recursive nesting is not introduced by this factory
+      // alone). onUsage folds every child AIMessage into the SAME
+      // usageCollector the parent uses below, using the parent's
+      // outgoingSessionId and the child's own resolved model id.
+      const dispatchTool = buildNestedDispatchTool({
+        // KNOWN GAP (ai-eng-warden review; tracked in
+        // docs/decisions/deus-v2-subagent-dispatch.md's Risks section, NOT
+        // fixed by this ticket): `modelId` is a raw string the PARENT model
+        // supplies via its own tool-call arguments, routed straight into
+        // the real credential proxy with no server-side allowlist and no
+        // per-turn dispatch cap. This does not cross the credential-proxy
+        // boundary (single provider, same group token) but is a real,
+        // currently uncapped cost-escalation surface — a compromised or
+        // misdirected parent can select an expensive model on an unbounded
+        // number of dispatches within one turn. A model-id allowlist plus a
+        // per-turn dispatch budget is real future work, not silently
+        // deferred.
+        resolveModel: (modelId) =>
+          buildProxyRoutedChatAnthropic(runContext, modelId),
+        buildChildTools: () =>
+          buildSafeTools(toolCtx, resolveAllowedWebFetchHosts()),
+        buildChildMiddleware: () =>
+          buildMiddlewareStack(resolveMiddlewareStackConfig(), {
+            permissionProfile: rawPermissionProfile,
+          }).middleware,
+        parentSessionId: outgoingSessionId,
+        provider: 'anthropic',
+        onUsage: async (observation) => {
+          await usageCollector.record([observation.message], {
+            provider: 'anthropic',
+            model: observation.model,
+          });
+        },
+      });
+
+      const tools = [
+        ...(await buildSafeTools(toolCtx, resolveAllowedWebFetchHosts())),
+        dispatchTool,
+      ];
 
       // B3 (LIA-403): the prompt-lifecycle hook is a SEPARATE, small
       // middleware APPENDED after B2's stack — never prepended or inserted,
@@ -430,12 +450,6 @@ export class DeusNativeRuntime implements AgentRuntime {
       // session (or a pre-B4 row with no real checkpoint) the count is 0 and
       // every message is processed — identical to pre-B4 behavior.
       const messages = (result.messages ?? []).slice(priorMessageCount);
-      // B6 (LIA-406): turn-level usage aggregate — summed across only the
-      // AIMessages that DID carry usage_metadata; stays undefined (and the
-      // RunResult.usage field is omitted) when none did.
-      let turnUsage:
-        | { inputTokens: number; outputTokens: number; totalTokens: number }
-        | undefined;
       for (const message of messages) {
         const m = message as {
           tool_calls?: Array<{ name?: string; args?: unknown }>;
@@ -450,48 +464,27 @@ export class DeusNativeRuntime implements AgentRuntime {
             });
           }
         }
-
-        // B6 (LIA-406): one 'usage' event per AIMessage, UNCONDITIONALLY —
-        // identified via the `type: 'ai'` discriminator (a plain readonly
-        // field on the concrete AIMessage class), NOT `instanceof AIMessage`
-        // (would need a runtime class import purely for type-narrowing,
-        // unlike the type-only `UsageMetadata` import above, which is erased
-        // at compile time) and NOT duck-typing on usage_metadata presence,
-        // which cannot
-        // distinguish an AIMessage lacking usage data (which must still
-        // emit, with undefined counts) from a Human/ToolMessage (which must
-        // never emit — those aren't a completed model request). When
-        // usage_metadata is absent the token fields are undefined — explicit
-        // absence, never fabricated zeros.
-        if (message.type === 'ai') {
-          const usage = (message as { usage_metadata?: UsageMetadata })
-            .usage_metadata;
-          await eventSink({
-            type: 'usage',
-            sessionId: outgoingSessionId,
-            // Hardcoded because buildProxyRoutedChatAnthropic is the only
-            // model-construction path today (single-provider). If a second
-            // provider path is added, this must become a function of which
-            // client was actually built — it will not track `model` below
-            // automatically.
-            provider: 'anthropic',
-            // Read off the already-constructed ChatAnthropic instance — not
-            // re-hardcoded, so it can't drift if the model tier changes.
-            model: model.model,
-            inputTokens: usage?.input_tokens,
-            outputTokens: usage?.output_tokens,
-            totalTokens: usage?.total_tokens,
-          });
-          if (usage) {
-            turnUsage = {
-              inputTokens: (turnUsage?.inputTokens ?? 0) + usage.input_tokens,
-              outputTokens:
-                (turnUsage?.outputTokens ?? 0) + usage.output_tokens,
-              totalTokens: (turnUsage?.totalTokens ?? 0) + usage.total_tokens,
-            };
-          }
-        }
       }
+
+      // B6 (LIA-406) + B8 (LIA-408): one 'usage' event per PARENT AIMessage
+      // this turn, via the shared collector (identical unconditional-emit/
+      // never-fabricate-zeros semantics as pre-B8 — see
+      // deus-native-usage.ts). Any nested-dispatch child's usage was already
+      // folded into the SAME collector by the dispatch tool's `onUsage`
+      // callback during `agent.invoke()` above, so `aggregate()` below is
+      // the combined parent-plus-every-child total for RunResult.usage —
+      // never just the parent's own local total.
+      // Hardcoded 'anthropic' because buildProxyRoutedChatAnthropic is the
+      // only model-construction path today (single-provider). If a second
+      // provider path is added, this must become a function of which client
+      // was actually built.
+      await usageCollector.record(messages, {
+        provider: 'anthropic',
+        // Read off the already-constructed ChatAnthropic instance — not
+        // re-hardcoded, so it can't drift if the model tier changes.
+        model: model.model,
+      });
+      const turnUsage = usageCollector.aggregate();
 
       const last = messages[messages.length - 1] as
         { content?: unknown } | undefined;

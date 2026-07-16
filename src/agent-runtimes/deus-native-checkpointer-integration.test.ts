@@ -30,6 +30,7 @@ import { getCheckpointer } from './checkpointer.js';
 import { defaultSession } from './types.js';
 import type { RuntimeEvent, RunContext } from './types.js';
 import type { ContainerRuntimeDeps } from './container-backend.js';
+import { DISPATCH_NESTED_AGENT_TOOL_NAME } from './nested-dispatch-tool.js';
 
 // ---------------------------------------------------------------------------
 // Shared mutable harness (hoisted so the module mocks below can reach it) —
@@ -660,5 +661,225 @@ describe('same-thread re-invoke (B5 AC4: exactly one session row, id stable, las
     expect(secondRow.orphaned_at).toBeNull();
     // last_used_at advanced (ISO-8601 strings compare lexicographically).
     expect(secondRow.last_used_at! > firstRow.last_used_at!).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// B8 (LIA-408) — nested subagent dispatch: usage/session reconciliation.
+// Dispatches a REAL nested-dispatch child (through the production
+// dispatch_nested_agent tool `deus-native-backend.ts` now wires into every
+// parent tool list) from a scripted parent tool call, and proves: the
+// child's usage is attributed to the PARENT session id (never a separate
+// child thread/session — children get no checkpointer at all), reconciled
+// into the combined RunResult.usage even when the parent itself reports no
+// usage, and the tool result visible to the parent carries traceable
+// agent/model/provider/parent-session metadata (AC5). Only TWO createAgent
+// graphs exist for this whole turn — the parent's (created once in
+// deus-native-backend.ts's runTurn) and the ONE dispatched child's (created
+// inside nested-dispatch.ts's dispatch() call) — so harness.makeModel is
+// called exactly twice: once per createAgent() invocation, not once per
+// individual model generation.
+// ---------------------------------------------------------------------------
+describe('nested dispatch (B8 LIA-408): parent-to-child usage and session reconciliation', () => {
+  const CHILD_MODEL_ID = 'child-model-xyz';
+  const CHILD_USAGE = { input_tokens: 7, output_tokens: 3, total_tokens: 10 };
+
+  const DISPATCH_OUTPUT_CONTRACT = {
+    name: 'dispatch-result',
+    schema: {
+      type: 'object',
+      properties: { answer: { type: 'string', minLength: 1 } },
+      required: ['answer'],
+      additionalProperties: false,
+    },
+  };
+
+  /** Stamps a fixed final-content string onto every generated AIMessage,
+   *  surviving createAgent's internal bindTools rebind — same technique as
+   *  nested-dispatch.test.ts's own modelReturning helper (createAgent always
+   *  rebinds tools, and FakeToolCallingModel.bindTools constructs a fresh
+   *  instance on rebind, silently discarding an un-decorated override). */
+  function modelReturningContent(content: string): FakeToolCallingModel {
+    const decorate = (model: FakeToolCallingModel): FakeToolCallingModel => {
+      const originalGenerate = model._generate.bind(model);
+      model._generate = async (
+        ...args: Parameters<FakeToolCallingModel['_generate']>
+      ) => {
+        const result = await originalGenerate(...args);
+        const generation = result.generations[0];
+        if (generation) {
+          generation.text = content;
+          generation.message.content = content;
+        }
+        return result;
+      };
+      const originalBindTools = model.bindTools.bind(model);
+      model.bindTools = (
+        ...args: Parameters<FakeToolCallingModel['bindTools']>
+      ) => {
+        const bound = originalBindTools(...args);
+        return bound instanceof FakeToolCallingModel ? decorate(bound) : bound;
+      };
+      return model;
+    };
+    return decorate(new FakeToolCallingModel({ toolCalls: [[]] }));
+  }
+
+  /** Stamps arbitrary usage_metadata (parametrized, unlike this file's own
+   *  `withKnownUsage`, which is fixed to KNOWN_USAGE) onto every generated
+   *  AIMessage, surviving bindTools rebind the same way. */
+  function withUsage(
+    model: FakeToolCallingModel,
+    usage: {
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+    },
+  ): FakeToolCallingModel {
+    const originalGenerate = model._generate.bind(model);
+    model._generate = async (
+      ...args: Parameters<FakeToolCallingModel['_generate']>
+    ) => {
+      const result = await originalGenerate(...args);
+      (
+        result.generations[0].message as { usage_metadata?: typeof usage }
+      ).usage_metadata = { ...usage };
+      return result;
+    };
+    const originalBindTools = model.bindTools.bind(model);
+    model.bindTools = (
+      ...args: Parameters<FakeToolCallingModel['bindTools']>
+    ) => {
+      const bound = originalBindTools(...args);
+      return bound instanceof FakeToolCallingModel
+        ? withUsage(bound, usage)
+        : bound;
+    };
+    return model;
+  }
+
+  /** The parent's model: one dispatch tool call, then a plain final answer
+   *  — no usage_metadata scripted on either step, so the turn's aggregate
+   *  usage (asserted below) can ONLY have come from the dispatched child. */
+  function parentDispatchingModel(): FakeToolCallingModel {
+    return new FakeToolCallingModel({
+      toolCalls: [
+        [
+          {
+            name: DISPATCH_NESTED_AGENT_TOOL_NAME,
+            args: {
+              agentId: 'helper',
+              model: CHILD_MODEL_ID,
+              prompt: 'help with the task',
+              outputContract: DISPATCH_OUTPUT_CONTRACT,
+            },
+            id: 'dispatch_call_1',
+          },
+        ],
+        [],
+      ],
+    });
+  }
+
+  it("folds a nested child dispatch's usage into RunResult.usage under the PARENT session id, and surfaces traceable metadata to the parent", async () => {
+    const runtime = createDeusNativeRuntime(stubDeps);
+
+    // Exactly two createAgent() graphs exist this turn: the parent's (1st
+    // call) and the ONE dispatched child's (2nd call, made from inside the
+    // dispatch_nested_agent tool's execution).
+    let createAgentCallCount = 0;
+    harness.makeModel = () => {
+      createAgentCallCount += 1;
+      if (createAgentCallCount === 2) {
+        return withUsage(
+          modelReturningContent(JSON.stringify({ answer: 'child says hi' })),
+          CHILD_USAGE,
+        );
+      }
+      return parentDispatchingModel();
+    };
+
+    const events: RuntimeEvent[] = [];
+    const result = await runtime.runTurn(
+      runCtx('dispatchgroup', 'please delegate this'),
+      defaultSession('', 'deus-native'),
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    expect(result.status).toBe('success');
+    const sessionId = result.sessionRef?.session_id as string;
+    expect(sessionId).toMatch(UUID_PATTERN);
+
+    // AC1/AC4/AC5: the dispatch fired against an independently selected
+    // child model, and the child's usage event used the PARENT's session
+    // id — a dispatched child never gets a session/thread of its own.
+    const usageEvents = events.filter(
+      (e): e is Extract<RuntimeEvent, { type: 'usage' }> => e.type === 'usage',
+    );
+    const childUsageEvent = usageEvents.find((e) => e.model === CHILD_MODEL_ID);
+    expect(childUsageEvent).toBeDefined();
+    expect(childUsageEvent?.sessionId).toBe(sessionId);
+    expect(childUsageEvent?.provider).toBe('anthropic');
+    expect(childUsageEvent).toMatchObject({
+      inputTokens: CHILD_USAGE.input_tokens,
+      outputTokens: CHILD_USAGE.output_tokens,
+      totalTokens: CHILD_USAGE.total_tokens,
+    });
+
+    // The parent's own two model calls carried no scripted usage_metadata
+    // (undefined token fields, per the unconditional-emit contract) — so
+    // the turn-level aggregate is EXACTLY the child's contribution. This
+    // directly falsifies the regression where a child's usage never
+    // reaches RunResult.usage at all.
+    expect(result.usage).toEqual({
+      inputTokens: CHILD_USAGE.input_tokens,
+      outputTokens: CHILD_USAGE.output_tokens,
+      totalTokens: CHILD_USAGE.total_tokens,
+    });
+
+    // AC5: the tool result visible to the parent (embedded in the
+    // checkpointed transcript's ToolMessage content) carries traceable
+    // agent/model/provider/parent-session metadata — a failed OR successful
+    // dispatch remains identifiable from the parent's own transcript.
+    const tuple = await getCheckpointer().getTuple({
+      configurable: { thread_id: sessionId },
+    });
+    const channelMessages = (
+      tuple?.checkpoint.channel_values as { messages?: unknown[] }
+    ).messages as unknown[];
+    // The success-path content is wrapped in a `<nested-dispatch-output>`
+    // prompt-injection boundary (nested-dispatch-tool.ts, added after
+    // ai-eng-warden review — the child shares the parent's web_search/
+    // web_fetch surface, so its validated output can carry untrusted
+    // external content); the raw result JSON is the one line inside that
+    // wrapper, never the whole message content string.
+    const dispatchResultText = messageTexts(channelMessages).find((t) =>
+      t.includes('"status":"success"'),
+    );
+    expect(dispatchResultText).toBeDefined();
+    expect(dispatchResultText).toContain('<nested-dispatch-output');
+    const jsonLine = (dispatchResultText as string)
+      .split('\n')
+      .find((line) => line.trim().startsWith('{'));
+    expect(jsonLine).toBeDefined();
+    const dispatchResultPayload = JSON.parse(jsonLine as string);
+    expect(dispatchResultPayload).toMatchObject({
+      status: 'success',
+      output: { answer: 'child says hi' },
+      metadata: {
+        agentId: 'helper',
+        model: CHILD_MODEL_ID,
+        provider: 'anthropic',
+        parentSessionId: sessionId,
+      },
+    });
+
+    // Only ONE thread exists for this session — the dispatched child never
+    // created a checkpoint/thread of its own (nested-dispatch.ts's child
+    // `createAgent({model, tools, middleware})` call carries no
+    // `checkpointer` field at all).
+    expect(tuple).toBeDefined();
   });
 });
