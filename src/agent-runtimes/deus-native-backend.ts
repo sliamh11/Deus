@@ -48,15 +48,17 @@
  *   only — SAFE_TOOL_NAMES is unchanged and widening the live tool surface
  *   still requires its own isolation review plus the replay-safety contract
  *   (docs/decisions/deus-v2-replay-safety.md).
- * - Middleware layer SUBSTANCE beyond permissions and memory. The ordered/
- *   configurable middleware stack itself landed with B2/LIA-402, B7 made
- *   the permissions layer real, and D1/LIA-415 made the memory layer real
+ * - Middleware layer SUBSTANCE beyond permissions, memory, and wardens. The
+ *   ordered/configurable middleware stack itself landed with B2/LIA-402, B7
+ *   made the permissions layer real, D1/LIA-415 made the memory layer real
  *   for CONTROL-GROUP turns (one beforeModel retrieval per turn through the
  *   unchanged scripts/memory_retrieval_hook.py — non-control groups keep
  *   the pass-through observer on group-scoping safety grounds, tracked as
- *   AAG-014). The remaining layers are explicit observe-only placeholders
- *   (wardens -> hook-dispatch-facade-correction.md's deferred remediation
- *   options, telemetry -> real usage accounting).
+ *   AAG-014), and C1/LIA-409 made the wardens layer real (the unchanged
+ *   `scripts/codex_warden_hooks.py` plan-review/code-review/ai-eng/
+ *   verification gates now run over the deus-native `wrapToolCall` path).
+ *   Telemetry remains the sole explicit observe-only placeholder (-> real
+ *   usage accounting).
  * - Replay-safety auditing (B5/LIA-405), token/usage accounting events
  *   (B6/LIA-406).
  * - Nested subagent dispatch (B8/LIA-408) is now real: `runTurn()` builds a
@@ -76,6 +78,7 @@
  */
 
 import crypto from 'crypto';
+import path from 'node:path';
 
 import { createAgent, type AgentMiddleware } from 'langchain';
 
@@ -285,9 +288,11 @@ export class DeusNativeRuntime implements AgentRuntime {
       // B7 (LIA-407): the permissions layer is REAL — a declarative
       // first-match-wins rule engine (permission-rules.ts) selected by the
       // named profile below. D1 (LIA-415): the memory layer is REAL for
-      // control-group turns (see memoryRequest below); wardens/telemetry
-      // remain observe-only placeholders (see middleware-stack.ts for each
-      // layer's caveat).
+      // control-group turns (see memoryRequest below). C1 (LIA-409): the
+      // wardens layer is REAL — it invokes the unchanged
+      // `scripts/codex_warden_hooks.py` gate runners over the `wardenCwd`
+      // resolved below. Telemetry remains the sole observe-only placeholder
+      // (see middleware-stack.ts for its caveat).
       //
       // Profile selection: runContext.backendConfig.permissionProfile.
       // Omitted => 'default' (allow-all — today's behavior, unchanged);
@@ -301,7 +306,10 @@ export class DeusNativeRuntime implements AgentRuntime {
       // nested-dispatch child's fresh middleware stack (rebuilt per-dispatch
       // by buildNestedDispatchTool's `buildChildMiddleware`) select the SAME
       // named profile — a child never runs under a looser policy than its
-      // parent.
+      // parent. C1 (LIA-409): `wardenCwd` below is resolved once for the
+      // same reason and threaded into both call sites — a nested-dispatch
+      // child's wardens gate must resolve the same worktree/repo-root as
+      // the parent's, never silently default to `process.cwd()`.
       const rawPermissionProfile =
         runContext.backendConfig?.['permissionProfile'];
       if (
@@ -313,10 +321,21 @@ export class DeusNativeRuntime implements AgentRuntime {
             `profile name, got ${typeof rawPermissionProfile}`,
         );
       }
+      // Warden event cwd: `worktreePath` wins because autonomous pipeline
+      // runs already identify their checked-out worktree explicitly; `cwd`
+      // is the normal group/project fallback; `process.cwd()` preserves the
+      // existing `buildToolBrokerContext` fallback when neither optional
+      // field is present. Always made absolute so the serialized PreToolUse
+      // event's `cwd` and the resolved warden repo root are unambiguous
+      // regardless of what relative path a caller supplied.
+      const wardenCwd = path.resolve(
+        runContext.worktreePath ?? runContext.cwd ?? process.cwd(),
+      );
       const { middleware } = buildMiddlewareStack(
         resolveMiddlewareStackConfig(),
         {
           permissionProfile: rawPermissionProfile,
+          wardenCwd,
           // D1 (LIA-415): the memory layer's retrieval input — the submitted
           // prompt plus the backend-scoped session id (computed above; it
           // drives the hook's session-concept expansion and injection
@@ -378,9 +397,17 @@ export class DeusNativeRuntime implements AgentRuntime {
           buildProxyRoutedChatAnthropic(runContext, modelId),
         buildChildTools: () =>
           buildSafeTools(toolCtx, resolveAllowedWebFetchHosts()),
+        // C1 (LIA-409): thread the SAME resolved `wardenCwd` into every
+        // nested-dispatch child's fresh middleware stack — a child's wardens
+        // layer must resolve the same worktree/repo-root as the parent's,
+        // never silently fall back to `process.cwd()` (this factory runs
+        // inside the same process, so an unset wardenCwd wouldn't throw or
+        // even look wrong in isolation — it would just gate the wrong
+        // worktree).
         buildChildMiddleware: () =>
           buildMiddlewareStack(resolveMiddlewareStackConfig(), {
             permissionProfile: rawPermissionProfile,
+            wardenCwd,
           }).middleware,
         parentSessionId: outgoingSessionId,
         provider: 'anthropic',

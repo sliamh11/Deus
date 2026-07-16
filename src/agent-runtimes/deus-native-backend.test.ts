@@ -1,3 +1,5 @@
+import { execFile } from 'node:child_process';
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type { ContainerRuntimeDeps } from './container-backend.js';
@@ -20,6 +22,7 @@ const {
   invokeMock,
   checkpointerStub,
   buildMiddlewareStackSpy,
+  buildNestedDispatchToolMock,
 } = vi.hoisted(() => ({
   createAgentMock: vi.fn(),
   invokeMock: vi.fn(),
@@ -30,6 +33,15 @@ const {
   // without changing any behavior. Use mockClear() only, never
   // mockReset() — reset would drop the real implementation.
   buildMiddlewareStackSpy: vi.fn(),
+  // C1 (LIA-409): a stub (never delegates to the real nested-dispatch
+  // machinery — no live dispatcher needed for any test in this file) that
+  // records the CreateNestedDispatcherDeps runTurn supplies, so a test can
+  // call `buildChildMiddleware()` directly and inspect the REAL wardens
+  // middleware it returns, proving `wardenCwd` reaches nested-dispatch
+  // children too.
+  buildNestedDispatchToolMock: vi.fn((_deps?: unknown) => ({
+    name: 'dispatch_nested_agent',
+  })),
 }));
 
 vi.mock('langchain', async (importOriginal) => {
@@ -104,6 +116,33 @@ vi.mock('./middleware-stack.js', async (importOriginal) => {
   buildMiddlewareStackSpy.mockImplementation(actual.buildMiddlewareStack);
   return { ...actual, buildMiddlewareStack: buildMiddlewareStackSpy };
 });
+
+// C1 (LIA-409): the real `wardens` middleware built inside `runTurn` resolves
+// its repo root via a REAL `git rev-parse --git-common-dir` call (left
+// unmocked here — this worktree genuinely is a linked worktree, so the real
+// call is fast, deterministic, and exercises the actual production
+// behavior). Only `execFile` (the Python gate subprocess) is replaced with a
+// controllable fake — no test in this file exercises a real `apply_patch`/
+// commit-shaped-`Bash` wardens trigger except the dedicated test below,
+// which sets its own implementation.
+vi.mock('node:child_process', async () => {
+  const actual =
+    await vi.importActual<typeof import('node:child_process')>(
+      'node:child_process',
+    );
+  return {
+    ...actual,
+    execFile: vi.fn(),
+  };
+});
+
+// C1 (LIA-409): stub out the real nested-dispatch tool builder (see the
+// hoisted `buildNestedDispatchToolMock` above) — no test in this file needs
+// a live dispatcher, only the `CreateNestedDispatcherDeps` runTurn supplies
+// it with.
+vi.mock('./nested-dispatch-tool.js', () => ({
+  buildNestedDispatchTool: buildNestedDispatchToolMock,
+}));
 
 const { createDeusNativeRuntime } = await import('./deus-native-backend.js');
 
@@ -704,5 +743,170 @@ describe('DeusNativeBackend — activity broadcaster decorator integration (LIA-
       groupFolder: 'nonexistent',
       chatJid: 'test@g.us',
     });
+  });
+});
+
+// ── C1 (LIA-409): wardens layer — real repo-root/cwd wiring at the
+// PRODUCTION call site ───────────────────────────────────────────────────
+//
+// buildWardensMiddleware itself is unit-tested in middleware-stack.test.ts;
+// this proves runTurn threads the RIGHT cwd into it — `worktreePath` ahead
+// of `cwd` — the same worktreePath-wins seam the permissions-profile block
+// above proves for `backendConfig.permissionProfile`.
+
+describe('DeusNativeBackend — wardens cwd wiring (C1/LIA-409)', () => {
+  const backend = createDeusNativeRuntime(stubDeps);
+  const execFileMock = vi.mocked(execFile);
+
+  beforeEach(() => {
+    createAgentMock.mockReset();
+    invokeMock.mockReset();
+    detectAuthModeMock.mockReturnValue('api-key');
+    getOrCreateGroupTokenMock.mockReset();
+    getOrCreateGroupTokenMock.mockReturnValue('fake-proxy-token');
+    execFileMock.mockReset();
+  });
+
+  function capturedWardensMiddleware() {
+    const args = createAgentMock.mock.calls[0]?.[0] as {
+      middleware?: Array<{ name: string; wrapToolCall?: unknown }>;
+    };
+    const wardens = args.middleware?.[1];
+    expect(wardens?.name).toBe('wardens');
+    return wardens as { name: string; wrapToolCall?: unknown };
+  }
+
+  it('threads the absolute worktreePath ahead of cwd into wardens stdin events', async () => {
+    let capturedStdin = '';
+    execFileMock.mockImplementation(((
+      _cmd: string,
+      _args: readonly string[],
+      _options: unknown,
+      callback: (err: null, stdout: string) => void,
+    ) => {
+      const child = {
+        stdin: {
+          on: () => child.stdin,
+          end: (data: string) => {
+            capturedStdin = data;
+            queueMicrotask(() => callback(null, ''));
+          },
+        },
+      };
+      return child as unknown as ReturnType<typeof execFile>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any);
+
+    createAgentMock.mockReturnValue({ invoke: invokeMock });
+    invokeMock.mockResolvedValue({ messages: [{ content: 'ok' }] });
+
+    // worktreePath is THIS worktree's real root (a genuine git repo, so the
+    // production repo-root resolution succeeds for real); cwd is a
+    // deliberately different, never-consulted value proving worktreePath
+    // wins outright.
+    const worktreePath = process.cwd();
+    const result = await backend.runTurn(
+      {
+        prompt: 'test',
+        groupFolder: 'test-folder',
+        chatJid: 'test@g.us',
+        isControlGroup: false,
+        cwd: '/definitely/not/the/worktree/path',
+        worktreePath,
+      },
+      { backend: 'deus-native', session_id: '' },
+      () => {},
+    );
+
+    expect(result.status).toBe('success');
+
+    const wardens = capturedWardensMiddleware();
+    const handler = vi.fn(
+      () => new ToolMessage({ content: 'ok', tool_call_id: 'call_wiring_1' }),
+    );
+    await invokeWrapToolCall(
+      wardens,
+      makeToolCallRequest('apply_patch', { patch: 'x' }),
+      handler,
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const event = JSON.parse(capturedStdin) as { cwd: string };
+    expect(event.cwd).toBe(worktreePath);
+    expect(event.cwd).not.toBe('/definitely/not/the/worktree/path');
+  });
+
+  it('threads the SAME resolved wardenCwd into a nested-dispatch child middleware stack (B8/LIA-408 integration)', async () => {
+    let capturedStdin = '';
+    execFileMock.mockImplementation(((
+      _cmd: string,
+      _args: readonly string[],
+      _options: unknown,
+      callback: (err: null, stdout: string) => void,
+    ) => {
+      const child = {
+        stdin: {
+          on: () => child.stdin,
+          end: (data: string) => {
+            capturedStdin = data;
+            queueMicrotask(() => callback(null, ''));
+          },
+        },
+      };
+      return child as unknown as ReturnType<typeof execFile>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any);
+
+    createAgentMock.mockReturnValue({ invoke: invokeMock });
+    invokeMock.mockResolvedValue({ messages: [{ content: 'ok' }] });
+    buildNestedDispatchToolMock.mockClear();
+
+    const worktreePath = process.cwd();
+    const result = await backend.runTurn(
+      {
+        prompt: 'test',
+        groupFolder: 'test-folder',
+        chatJid: 'test@g.us',
+        isControlGroup: false,
+        cwd: '/definitely/not/the/worktree/path',
+        worktreePath,
+      },
+      { backend: 'deus-native', session_id: '' },
+      () => {},
+    );
+    expect(result.status).toBe('success');
+
+    // The real `CreateNestedDispatcherDeps` runTurn supplies to
+    // buildNestedDispatchTool (stubbed at the module boundary — see the
+    // hoisted mock — so no live dispatcher is needed here).
+    expect(buildNestedDispatchToolMock).toHaveBeenCalledTimes(1);
+    const deps = buildNestedDispatchToolMock.mock.calls[0]?.[0] as {
+      buildChildMiddleware?: () => Array<{
+        name: string;
+        wrapToolCall?: unknown;
+      }>;
+    };
+    expect(deps.buildChildMiddleware).toBeDefined();
+
+    // Calling the REAL factory produces a REAL wardens middleware — same
+    // pattern as capturedWardensMiddleware() above, just for the child
+    // stack instead of the parent's.
+    const childMiddleware = deps.buildChildMiddleware!();
+    const childWardens = childMiddleware[1];
+    expect(childWardens?.name).toBe('wardens');
+
+    const handler = vi.fn(
+      () => new ToolMessage({ content: 'ok', tool_call_id: 'call_wiring_1' }),
+    );
+    await invokeWrapToolCall(
+      childWardens,
+      makeToolCallRequest('apply_patch', { patch: 'x' }),
+      handler,
+    );
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    const event = JSON.parse(capturedStdin) as { cwd: string };
+    expect(event.cwd).toBe(worktreePath);
+    expect(event.cwd).not.toBe('/definitely/not/the/worktree/path');
   });
 });

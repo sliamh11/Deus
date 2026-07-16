@@ -24,15 +24,26 @@
  * the pass-through observer — AAG-014), and D3/LIA-417 adds a post-success
  * `wrapToolCall` re-embedding mechanism through the unchanged
  * `scripts/memory_tree_hook.py`. The latter is currently dormant because the
- * live deus-native tool surface contains no supported edit tool. The wardens
- * and telemetry layers remain explicit observe-only placeholders — each
- * factory's doc comment names the future work that replaces its substance. In
- * particular, the wardens layer
- * deliberately does NOT call `codex_warden_hooks.py`: wiring real gates into
- * a non-Claude backend's live tool-call path is exactly the remediation that
- * the Accepted ADR docs/decisions/hook-dispatch-facade-correction.md holds
- * as "deferred — NOT greenlit" pending its own separately-approved decision.
+ * live deus-native tool surface contains no supported edit tool. The WARDENS
+ * layer is real as of C1/LIA-409: `buildWardensMiddleware` now invokes the
+ * unchanged `scripts/codex_warden_hooks.py` gate runners (plan-review-gate,
+ * code-review-gate, ai-eng-gate, verification-gate) over the exact
+ * `apply_patch`/commit-shaped-`Bash` tool contract the independent oracle
+ * (`middleware-stack.warden-gates.oracle.test.ts`) pins — this is the exact
+ * remediation the Accepted ADR
+ * docs/decisions/hook-dispatch-facade-correction.md previously held as
+ * "deferred — NOT greenlit" pending its own separately-approved decision,
+ * which LIA-409 is. Like D3's re-embedding mechanism, the wardens trigger is
+ * currently dormant in production: `apply_patch`/`Bash` are never registered
+ * on the live `deus-native` tool surface (`SAFE_TOOL_NAMES`), so it activates
+ * automatically once a future, separately-reviewed ticket widens that
+ * surface. TELEMETRY remains an explicit observe-only placeholder — its
+ * factory's doc comment names the future work that replaces its substance.
  */
+
+import { execFile, execFileSync } from 'node:child_process';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { createMiddleware, type AgentMiddleware } from 'langchain';
 import { HumanMessage, ToolMessage } from '@langchain/core/messages';
@@ -97,15 +108,18 @@ export interface OrderMarker {
 /** One observed tool-call decision — permissions/wardens log. */
 export interface ToolCallDecisionRecord {
   toolName: string;
-  /** The permissions layer records real allow/deny outcomes (B7/LIA-407);
-   *  the wardens placeholder still only ever records 'allow'. */
+  /** Both the permissions layer (B7/LIA-407) and the wardens layer
+   *  (C1/LIA-409) record real allow/deny outcomes. */
   decision: 'allow' | 'deny';
   /** Evaluation provenance (AC1): 'rule' for an explicit rule match,
-   *  'default' for the policy fallback. Populated by the permissions layer;
-   *  absent for the wardens placeholder. */
+   *  'default' for the policy fallback. Populated by the permissions layer
+   *  only; the wardens layer's decision comes from an external gate process,
+   *  not a rule/default distinction, so this stays absent there. */
   source?: 'rule' | 'default';
   /** Model-safe evaluation reason — never includes tool-call arguments.
-   *  Populated by the permissions layer; absent for the wardens placeholder. */
+   *  Populated by the permissions layer (policy reason) and the wardens
+   *  layer (the Python gate's exact `permissionDecisionReason`, or the
+   *  sanitized fail-closed REVISE message on an infrastructure failure). */
   reason?: string;
 }
 
@@ -258,24 +272,305 @@ export function buildPermissionsMiddleware(
 }
 
 /**
- * Wardens layer — PLACEHOLDER, same allow-all + log shape as permissions
- * but a structurally distinct instance (separate middleware, separate log,
- * separate toggle) so a future real implementation replaces ONE layer
- * without touching the other. Deliberately does NOT call
- * `codex_warden_hooks.py`: real non-Claude-backend guardrails are exactly
- * what docs/decisions/hook-dispatch-facade-correction.md (Accepted) lists
- * under "Remediation options (deferred — NOT greenlit)", pending a
- * separate approval — likely alongside/after B7 once deus-native has
- * file-editing tools for a gate to meaningfully check.
+ * The Python `GIT_COMMIT_RE` prefilter, mirrored exactly
+ * (`scripts/codex_warden_hooks.py:241`). This is a cheap TypeScript-side
+ * prefilter only — the unchanged Python runners repeat the authoritative
+ * check themselves (`scripts/codex_warden_hooks.py:1577`, `:1600`), so a
+ * false positive here can never force an allow. A future regex edit must
+ * update both copies together (see PLAN.md's commit-prefilter-drift risk).
+ */
+const GIT_COMMIT_RE = /(^|[;&|]\s*)git(?:\s+-C\s+\S+)?\s+commit(\s|$)/;
+
+/** Commit-path behaviors, in the exact order `.claude/settings.json`'s
+ *  `Bash` matcher wires them (`code-review-gate`, `ai-eng-gate`,
+ *  `verification-gate`) — a fixed tuple so dispatch is constant bounded
+ *  work and order is never accidentally reshuffled. */
+const COMMIT_BEHAVIORS = [
+  'code-review-gate',
+  'ai-eng-gate',
+  'verification-gate',
+] as const;
+
+/** The plan-review behavior, triggered by the exact (unchanged, untranslated)
+ *  `apply_patch` tool name — `codex_warden_hooks.py`'s own
+ *  `run_plan_review_gate` matcher list already recognizes this literal tool
+ *  name (`scripts/codex_warden_hooks.py:1417-1420`). */
+const PLAN_REVIEW_BEHAVIOR = 'plan-review-gate';
+
+/**
+ * Selects which unchanged Python gate behaviors apply to a native tool call,
+ * in dispatch order. Returns an empty array for any tool call outside the
+ * frozen oracle's exact trigger contract — no `write_file`/`edit_file` →
+ * `Write`/`Edit` translation and no `bash_exec` → `Bash` translation (PLAN.md
+ * Non-Goals): those names are simply not in scope, so they fall through to
+ * the empty-array (no gate invocation, single delegate) path below.
+ */
+function selectWardenBehaviors(
+  toolName: string,
+  toolInput: Record<string, unknown>,
+): readonly string[] {
+  if (toolName === 'apply_patch') {
+    return [PLAN_REVIEW_BEHAVIOR];
+  }
+  if (toolName === 'Bash') {
+    const command = toolInput['command'];
+    if (typeof command === 'string' && GIT_COMMIT_RE.test(command)) {
+      return COMMIT_BEHAVIORS;
+    }
+  }
+  return [];
+}
+
+/**
+ * Resolves the shared `.claude/wardens/` repo root from the warden event
+ * `cwd`, following the exact worktree-safe authority `.claude/hooks/
+ * warden-shim.sh` already uses (its own comment: "When Claude Code runs
+ * inside a git worktree, CLAUDE_PROJECT_DIR points to the worktree path, not
+ * the main repo root. Hooks and wardens need the main repo root..."):
+ * `git rev-parse --path-format=absolute --git-common-dir`, then the parent
+ * directory of that path. This is a structured, cross-platform Git query —
+ * no shell string parsing, no `sed`.
+ *
+ * Falls back to the old module-relative computation
+ * (`fileURLToPath(new URL('../..', import.meta.url))`) only when `cwd` is
+ * not inside any Git repository or Git itself is unavailable; the frozen
+ * oracle never exercises this fallback. A bad fallback path cannot silently
+ * allow a protected tool: a missing/wrong script path becomes an `execFile`
+ * spawn failure, which `runWardenBehavior` below treats as a fail-closed
+ * gate infrastructure error, never an allow.
+ *
+ * Resolved once per `buildWardensMiddleware` construction (i.e. once per
+ * `runTurn` in production, not once per tool call) and closed over for the
+ * lifetime of that middleware instance — never re-queried per protected
+ * call.
+ */
+function resolveWardenRepoRoot(wardenCwd: string): string {
+  try {
+    const commonGitDir = execFileSync(
+      'git',
+      ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+      { cwd: wardenCwd, encoding: 'utf8', timeout: 5000 },
+    ).trim();
+    if (commonGitDir === '') {
+      throw new Error('git rev-parse --git-common-dir returned empty output');
+    }
+    return dirname(commonGitDir);
+  } catch {
+    // Non-git cwd, or git unavailable: explicit non-git fallback. Both
+    // src/agent-runtimes and dist/agent-runtimes sit two directories below
+    // the checkout root today.
+    return fileURLToPath(new URL('../..', import.meta.url));
+  }
+}
+
+/** The two possible outcomes `codex_warden_hooks.py` can ever produce for
+ *  these four runners, per `_block_pre_tool`
+ *  (`scripts/codex_warden_hooks.py:405-414`) and each runner's early-return
+ *  no-op path — plus a third, TypeScript-side-only outcome for anything that
+ *  doesn't fit that two-outcome contract (subprocess failure, malformed
+ *  stdout, or protocol drift), which fails closed exactly like a real deny. */
+type WardenGateOutcome =
+  | { readonly kind: 'allow' }
+  | { readonly kind: 'deny'; readonly reason: string }
+  | { readonly kind: 'error' };
+
+/**
+ * Extracts the deny reason from parsed stdout JSON, or `undefined` if the
+ * object doesn't match the exact `_block_pre_tool` deny contract — malformed
+ * JSON, arrays/primitives, a deny without a usable reason, or any other
+ * unexpected non-empty object all return `undefined` here and are treated as
+ * protocol drift by the caller, never silently accepted as an allow.
+ */
+function extractDenyReason(parsed: unknown): string | undefined {
+  if (typeof parsed !== 'object' || parsed === null) return undefined;
+  const hookSpecificOutput = (parsed as Record<string, unknown>)[
+    'hookSpecificOutput'
+  ];
+  if (typeof hookSpecificOutput !== 'object' || hookSpecificOutput === null) {
+    return undefined;
+  }
+  const record = hookSpecificOutput as Record<string, unknown>;
+  const decision = record['permissionDecision'];
+  const reason = record['permissionDecisionReason'];
+  if (decision === 'deny' && typeof reason === 'string' && reason !== '') {
+    return reason;
+  }
+  return undefined;
+}
+
+/**
+ * Invokes one unchanged Python gate behavior over stdin, following
+ * `src/evolution-client.ts:_runPython`'s `execFile` shape
+ * (`src/evolution-client.ts:248-259`) while adding stdin because this CLI
+ * reads the event with `_read_stdin_json()`
+ * (`scripts/codex_warden_hooks.py:272-280`). Never inspects stderr or the
+ * exit code to infer allow/deny: all four relevant gate functions return 0
+ * unconditionally (`scripts/codex_warden_hooks.py:3795-3810`) — the stdout
+ * JSON is the only deny signal (empty stdout is allow/no-op).
+ *
+ * Any `execFile` callback error (spawn failure, missing `python3`, non-zero
+ * exit, timeout, max-buffer overrun), any stdin transport error (e.g. an
+ * early child exit producing EPIPE), and any non-empty stdout that isn't
+ * exactly the deny contract, all resolve to `{ kind: 'error' }` — fail
+ * closed, never a silent allow. A single-settlement guard means a stdin
+ * error and a callback error can never both resolve this promise.
+ */
+function runWardenBehavior(
+  behavior: string,
+  event: { cwd: string; tool_name: string; tool_input: unknown },
+  repoRoot: string,
+): Promise<WardenGateOutcome> {
+  return new Promise((settlePromise) => {
+    // Named `settlePromise`, not `resolve`: this file also imports `resolve`
+    // from `node:path` for wardenCwd normalization, and reusing that name
+    // here would shadow it — harmless (JS scoping still resolves correctly)
+    // but a needless trap for a future edit in this exact function.
+    let settled = false;
+    const settle = (outcome: WardenGateOutcome) => {
+      if (settled) return;
+      settled = true;
+      settlePromise(outcome);
+    };
+
+    // Node's child_process methods essentially never throw synchronously for
+    // valid string/array args, but this try/catch guarantees the graceful
+    // fail-closed `{ kind: 'error' }` path even in that case — a thrown
+    // exception here would otherwise reject this Promise directly (an
+    // unhandled-rejection risk) instead of resolving through `settle` like
+    // every other failure mode in this function.
+    try {
+      const scriptPath = join(repoRoot, 'scripts', 'codex_warden_hooks.py');
+      const child = execFile(
+        'python3',
+        [scriptPath, 'run', behavior, '--repo-root', repoRoot],
+        { timeout: 5000, maxBuffer: 64 * 1024 },
+        (err, stdout) => {
+          if (err) {
+            settle({ kind: 'error' });
+            return;
+          }
+          const trimmed = stdout.trim();
+          if (trimmed === '') {
+            settle({ kind: 'allow' });
+            return;
+          }
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(trimmed);
+          } catch {
+            settle({ kind: 'error' });
+            return;
+          }
+          const reason = extractDenyReason(parsed);
+          if (reason === undefined) {
+            settle({ kind: 'error' });
+            return;
+          }
+          settle({ kind: 'deny', reason });
+        },
+      );
+
+      child.stdin?.on('error', () => {
+        settle({ kind: 'error' });
+      });
+
+      child.stdin?.end(JSON.stringify(event));
+    } catch {
+      settle({ kind: 'error' });
+    }
+  });
+}
+
+/** The stable, sanitized fail-closed feedback for a gate infrastructure
+ *  failure — deliberately excludes stderr, stack traces, tool arguments,
+ *  patch contents, and the attempted shell command. The layer-wide
+ *  `wardens: false` toggle is the explicit operational recovery switch;
+ *  this message must never invent an implicit bypass. */
+function fallbackRevisedMessage(behavior: string): string {
+  return (
+    `[${behavior}] REVISE: the warden gate could not be evaluated; the ` +
+    `protected action was not executed. Restore the gate runner and retry.`
+  );
+}
+
+/**
+ * Wardens layer — REAL enforcement (C1/LIA-409). A `wrapToolCall` adapter
+ * over the unchanged `scripts/codex_warden_hooks.py` gate runners:
+ * - `selectWardenBehaviors` recognizes exactly two frozen-oracle trigger
+ *   shapes: literal `apply_patch` (→ `plan-review-gate`) and commit-shaped
+ *   literal `Bash` (→ `code-review-gate`, `ai-eng-gate`, `verification-gate`
+ *   in that fixed order). Every other tool call produces no gate invocation
+ *   and delegates exactly once with the ORIGINAL request object — same
+ *   no-rewrite guarantee `buildPermissionsMiddleware` already follows.
+ * - The serialized event's `tool_name`/`tool_input` are value-equal to the
+ *   native call's `toolCall.name`/`toolCall.args` — no renaming, no field
+ *   filtering. The Python gate logic remains the sole authority for
+ *   worktree membership, per-warden configuration, review-marker state,
+ *   LLM-diff detection, and allow/deny reasons.
+ * - Selected behaviors run sequentially; an allow/no-op continues to the
+ *   next one, while the first deny or infrastructure failure stops
+ *   immediately (the protected action is already blocked) and returns a
+ *   synthetic error-status `ToolMessage` — the handler is never invoked on
+ *   either kind of block. A genuine Python deny returns its exact
+ *   `permissionDecisionReason` verbatim; an infrastructure/protocol failure
+ *   returns the stable sanitized `REVISE` message instead — both fail
+ *   closed, unlike best-effort memory retrieval.
+ * - On complete allow (including the trivial zero-behavior case), one
+ *   aggregate `{ toolName, decision: 'allow' }` record is logged and
+ *   `handler(request)` is called exactly once with the original request.
  */
 export function buildWardensMiddleware(
+  wardenCwd?: string,
   orderMarkers?: OrderMarker[],
 ): BuiltLayer<ToolCallDecisionRecord> {
   const log: ToolCallDecisionRecord[] = [];
+  // Normalized here (not just at the deus-native-backend.ts call site):
+  // buildWardensMiddleware/buildMiddlewareStack are public entry points, and
+  // a relative wardenCwd would otherwise serialize a relative `cwd` into the
+  // PreToolUse event — violating the Python hook's absolute-path contract
+  // and potentially misdirecting worktree/config resolution — even though
+  // today's one production caller already resolves it first.
+  const resolvedCwd = resolve(wardenCwd ?? process.cwd());
+  const repoRoot = resolveWardenRepoRoot(resolvedCwd);
+
   const middleware = createMiddleware({
     name: 'wardens',
-    wrapToolCall: (request, handler) => {
-      log.push({ toolName: request.toolCall.name, decision: 'allow' });
+    wrapToolCall: async (request, handler) => {
+      const toolName = request.toolCall.name;
+      const toolInput = request.toolCall.args;
+      const behaviors = selectWardenBehaviors(toolName, toolInput);
+
+      if (behaviors.length === 0) {
+        log.push({ toolName, decision: 'allow' });
+        // AC5-style no-rewrite guarantee: the original request object,
+        // delegated exactly once.
+        return handler(request);
+      }
+
+      const event = {
+        cwd: resolvedCwd,
+        tool_name: toolName,
+        tool_input: toolInput,
+      };
+
+      for (const behavior of behaviors) {
+        const outcome = await runWardenBehavior(behavior, event, repoRoot);
+        if (outcome.kind === 'allow') continue;
+
+        const reason =
+          outcome.kind === 'deny'
+            ? outcome.reason
+            : fallbackRevisedMessage(behavior);
+        log.push({ toolName, decision: 'deny', reason });
+        return new ToolMessage({
+          tool_call_id: request.toolCall.id ?? '',
+          name: toolName,
+          status: 'error',
+          content: reason,
+        });
+      }
+
+      log.push({ toolName, decision: 'allow' });
       return handler(request);
     },
     ...orderMarkerHooks('wardens', orderMarkers),
@@ -437,6 +732,12 @@ export interface BuildMiddlewareStackDeps {
   /** D3 (LIA-417): test-only override of the post-success edit
    *  re-embedding adapter. Omit in production. */
   memoryReembedAdapter?: MemoryReembedAdapter;
+  /** The `cwd` serialized into every wardens-layer PreToolUse event and used
+   *  to resolve the shared `.claude/wardens/` repo root (C1/LIA-409).
+   *  Omitted => `process.cwd()`, matching the frozen oracle's own default.
+   *  Production wiring resolves this from `runContext.worktreePath ??
+   *  runContext.cwd ?? process.cwd()` (see `deus-native-backend.ts`). */
+  wardenCwd?: string;
 }
 
 export interface MiddlewareStackResult {
@@ -480,7 +781,7 @@ export function buildMiddlewareStack(
         break;
       }
       case 'wardens': {
-        const built = buildWardensMiddleware(deps.orderMarkers);
+        const built = buildWardensMiddleware(deps.wardenCwd, deps.orderMarkers);
         middleware.push(built.middleware);
         logs.wardens = built.log;
         break;
