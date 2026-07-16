@@ -1,249 +1,147 @@
-# LIA-428 — Build `deus` CLI chat on `deus-native`
+# LIA-432 — Stream Odysseus activity over SSE
 
-## Goal and constraints
+## File map and responsibilities
 
-Add a new `deus chat` subcommand that opens an interactive terminal conversation backed specifically by the registered `deus-native` `AgentRuntime`. Preserve the existing meanings of bare `deus`, `deus claude`, `deus codex`, and `deus openai`; they continue to launch the existing development CLIs. The new chat must survive at least two turns, persist and resume its backend-scoped LangGraph session across CLI processes, render normalized human-facing output rather than `RuntimeEvent`/transport frames, close cleanly, and expose the backend and session id through `/status`.
+| File | Change and responsibility |
+| ---- | ------------------------- |
+| `src/agent-runtimes/activity-broadcaster.ts` (new) | Define the exported activity envelope, process-local fan-out broadcaster, documented no-throw lifecycle, and `deus-native` runtime decorator so every registry-resolved caller shares one ordered event stream. |
+| `src/agent-runtimes/activity-broadcaster.test.ts` (new) | Unit-test schema mapping, global ordering, fan-out/isolation, decorator transparency, and broadcaster lifecycle, including safe publication after close. |
+| `src/odysseus-activity-stream.test.ts` (new) | Exercise the authenticated `/v1/activity` route over real HTTP streams, including multi-event/multi-client delivery, admission limits, abort cleanup, Odysseus-only shutdown, cross-cutting broadcaster ownership, keepalives, and reconnect-without-replay behavior. |
+| `src/odysseus-server.ts` (edited) | Add broadcaster dependency injection, the activity route and SSE formatter, independent activity-stream accounting, per-connection cleanup, and an explicit Odysseus stop helper that owns only the HTTP server and its activity-route subscriptions. |
+| `src/index.ts` (edited) | Construct and inject the shared broadcaster, decorate only the registered `deus-native` runtime, give the Odysseus server a single shutdown owner outside the generic webhook-server loop, and close the process-wide broadcaster only at the true end of shutdown. |
+| `src/agent-runtimes/deus-native-backend.test.ts` (extended) | Lock the decorator integration behavior for a `deus-native` error result that does not emit its own `error` event, without changing the downstream sink or `RunResult`. |
 
-This is a source-code feature rather than a skill because it must enter the host-owned `AgentRuntime`, credential-proxy, database-session, and CLI-launcher paths. The implementation must follow the backend-neutral UX rules in `AI_AGENT_GUIDELINES.md`: present as Deus, keep provider details out of ordinary chat output, preserve backend-scoped session semantics, and never move credentials into the client process.
+## 1. Scope summary
 
-## Decisions
+G5 adds an authenticated, localhost-only Odysseus SSE subscription that exposes live events emitted by `deus-native` turns, regardless of whether the turn originated from Odysseus chat, a normal channel handled by `src/message-orchestrator.ts`, a scheduled task in `src/task-scheduler.ts`, a Linear run in `src/linear-dispatcher.ts`, or the multi-agent path in `src/multi-agent/orchestrator.ts`. It defines a stable event contract, fans each event out to all connected clients, and handles disconnect/reconnect and shutdown cleanup. It does not build the Companion app or an activity-monitor UI; those remain separate tickets.
 
-### 1. CLI entry point: additive `deus chat`
+For LIA-352's Companion voice overlay, the `deus-native` `activity`, `tool_call`, `output_text`, `turn_complete`, and `error` events are sufficient to drive the progress/“thinking” animation states and completion signal, so G5 is a full, direct unblock. For LIA-64's activity-monitor TUI tab, the same stream supplies current activity text, tool invocations, usage, run/group identity, and completion/failure state for `deus-native` turns specifically, providing real and useful data to build the tab against; it does not supply “container status” for container-backed Claude, OpenAI, or llama-cpp turns because `deus-native` is a host-side, zero-container execution path and G5 intentionally does not instrument those runtimes (see Non-goals). The intended ticket reading is therefore that G5 ships `deus-native`-only activity now; if LIA-64 is later scoped to require container status or other activity for non-`deus-native` backends, that requires its own follow-up ticket and ADR against the container-backed runtime path and is explicitly not part of what G5 unblocks.
 
-Add a `chat)` dispatch arm to `deus-cmd.sh` near the existing compiled-TypeScript subcommands (`pipeline`, `solution`, and `tui`, currently around lines 1507–1530). It will execute `node "$SCRIPT_DIR/dist/cli/deus-native-chat-client.js"` without changing directory, so the client retains the user's original `process.cwd()` for `RunContext.cwd`. Update the usage block around lines 1730–1766. Mirror the same `chat` dispatch and help text in `deus-cmd.ps1` (its command switch starts around line 490) because repo-owned CLI commands are a cross-backend/cross-platform contract.
+Operationally, because Claude remains the default backend and `deus-native` is opt-in via `DEUS_AGENT_BACKEND`, `/v1/activity` is expected to remain silent for any group/session not running on `deus-native`; consumers for LIA-352 or LIA-64 must distinguish that expected backend-not-selected state from a broken stream.
 
-The command is named `deus chat`, not bare `deus` and not a new package `bin`, because:
+## 2. Event schema
 
-- bare `deus` and the `claude`/`codex` prefixes already have stable, unrelated meanings in `deus-cmd.sh` (prefix handling at lines 29–44 and the home launch arm at lines 788+);
-- `package.json` has no installed `bin` and the live command is the symlinked shell/PowerShell launcher, so adding an npm-only entry point would not satisfy “from the `deus` CLI”;
-- an options-object seam on the TypeScript client lets G2 add model-selection flags and G3 add a plan-mode toggle later without changing this dispatch shape.
+Add the exported contract beside the new broadcaster in a new `src/agent-runtimes/activity-broadcaster.ts` module. Keep it separate from the OpenAI-compatible `chunkFrame()` / `completionFrame()` schema in `src/odysseus-server.ts`: `/v1/chat/completions` must remain wire-compatible with OpenAI, while the activity endpoint is a Deus-owned observational contract.
 
-`deus chat` resumes the one recorded `deus-native` CLI thread by default. No new-session/session-picker command is part of LIA-428.
+Each SSE message will carry both an SSE `id:` line and an SSE `event:` line, followed by one JSON `data:` object with this shape:
 
-### 2. Architecture: thin client; runtime remains in the daemon
+| Field       | Shape                                                                                | Contract                                                                                                                                                                                             |
+| ----------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`        | string                                                                               | `${streamId}:${sequence}`; exactly matches the SSE `id:` line.                                                                                                                                       |
+| `streamId`  | UUID string                                                                          | Random once per `RuntimeActivityBroadcaster` instance/process epoch. A change tells a reconnecting client that the server restarted and sequence values are from a new epoch.                        |
+| `sequence`  | positive integer                                                                     | Allocated once by the broadcaster before fan-out, monotonically increasing across every published activity event in that process. It is global to the broadcaster, not per client or per turn.       |
+| `type`      | `output_text \| activity \| tool_call \| usage \| session \| turn_complete \| error` | The discriminant and the value used in the SSE `event:` line.                                                                                                                                        |
+| `timestamp` | ISO-8601 string                                                                      | Server publication time, generated once before fan-out so all clients receive the same timestamp. Ordering is defined by `sequence`, not wall-clock time.                                            |
+| `runId`     | UUID string                                                                          | Minted once by the runtime decorator for each `AgentRuntime.runTurn()` call and reused for all of that turn's events, so consumers can correlate interleaved groups and identify the terminal event. |
+| `source`    | object                                                                               | `{ backend: 'deus-native', groupFolder: string, chatJid: string }`, taken from `AgentRuntime.name()` and `RunContext.groupFolder` / `RunContext.chatJid`; no prompt or filesystem path is exposed.   |
+| `payload`   | object                                                                               | Variant-specific fields copied from the existing `RuntimeEvent` without adding provider-specific frame fields.                                                                                       |
 
-Do **not** instantiate `DeusNativeRuntime`, `startCredentialProxy`, or `startToolProxy` in the short-lived CLI process. `src/index.ts:101–166` proves that the daemon initializes the database, starts the sole credential proxy, creates the shared in-memory group-token map indirectly used by the runtime, and registers `deus-native` with its live dependencies. A second process would mint a token in a different `src/group-tokens.ts` map, which the daemon proxy would reject, while starting a second proxy on fixed port 3001 would collide with the daemon. Booting the full host just to chat would also duplicate channels, schedulers, webhooks, and IPC watchers.
+The `RuntimeEvent` mapping from `src/agent-runtimes/types.ts` is exhaustive:
 
-Instead, add a small daemon-owned, loopback-only chat server after the runtime registry is initialized. On every daemon start it will:
+| `RuntimeEvent` variant | SSE `type`      | `payload`                                                                                                                                                                     |
+| ---------------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `output_text`          | `output_text`   | `{ text }`                                                                                                                                                                    |
+| `activity`             | `activity`      | `{ text }`                                                                                                                                                                    |
+| `tool_call`            | `tool_call`     | `{ name, arguments }`                                                                                                                                                         |
+| `usage`                | `usage`         | `{ sessionId, provider, model, inputTokens, outputTokens, totalTokens }`; preserve `undefined` token semantics by omitting those keys in JSON rather than fabricating zeroes. |
+| `session`              | `session`       | `{ sessionRef }`                                                                                                                                                              |
+| `turn_complete`        | `turn_complete` | `{}`                                                                                                                                                                          |
+| `error`                | `error`         | `{ error }`                                                                                                                                                                   |
 
-1. generate a cryptographically random bearer token;
-2. listen on `127.0.0.1` with port `0` (an OS-assigned ephemeral port, so no new fixed-port/config/startup-collision surface is created);
-3. atomically write `{ version, pid, host, port, token }` to a discovery file under `CONFIG_DIR`, with user-only permissions (`0600`) and no token logging;
-4. accept only the exact versioned chat routes and require a constant-time bearer-token match, following the security pattern already used by `src/odysseus-server.ts:124–139, 300–335`;
-5. remove only its own discovery record and close the server during the existing `src/index.ts:168–176` graceful shutdown path.
+Only `deus-native` turns are included. Although `RuntimeEventSink` is shared by the Claude, OpenAI, llama-cpp, and deus-native implementations, the ticket explicitly asks for “deus-native activity,” and expanding this external contract to all backends would be backend-wide observability scope not required by G5. Coverage is nevertheless channel-agnostic: every group and invocation path using the `deus-native` registry entry is included. The event set does not expose prompt bodies or wire the test-only `ToolCallDecisionRecord`, `MemoryPassRecord`, `ModelCallRecord`, `SessionOpenRecord`, or `PromptEventRecord` arrays from `src/agent-runtimes/middleware-stack.ts` and `src/agent-runtimes/lifecycle-events.ts` into a new public contract.
 
-The client reads that discovery record and sends authenticated loopback requests. A missing/stale record, refused connection, protocol-version mismatch, or authentication failure becomes a concise “Deus service/chat endpoint is unavailable; rebuild/restart the service” message and a non-zero exit. There is deliberately no unsafe fallback that starts another proxy or reads provider credentials.
+For LIA-352, the `activity`, `tool_call`, `output_text`, `turn_complete`, and `error` variants are sufficient for the Companion voice overlay's progress/“thinking” states and completion signal, making this a full, direct unblock. For LIA-64, the schema provides current activity text, tool invocations, usage, response text, group/run identity, and completion/failure for `deus-native` turns only, which is a useful dataset for building the activity-monitor tab but cannot provide the ticket's “container status” for Claude/OpenAI/llama-cpp turns. G5 intentionally ships this `deus-native`-only contract now; any later requirement for container-backend activity or status belongs in a follow-up ticket and ADR for that runtime path, not in G5.
 
-The transport uses one request per turn and a newline-delimited JSON response internally, so normalized events can be delivered incrementally when a runtime provides them. Protocol JSON is an implementation detail and is never written directly to stdout/stderr. `deus-native` currently reports `tool_streaming: false` and emits its answer after buffered `agent.invoke()` processing (`deus-native-backend.ts:360–492`), so LIA-428 must not claim token-level streaming that does not exist today; the transport and renderer will still consume incremental events correctly when the runtime begins emitting them.
+The process-wide `streamId` plus broadcaster-wide `sequence` is stable across reconnects to the same running host because an event is numbered once, before every subscriber receives the identical envelope. A per-connection counter would not satisfy this: two clients or a reconnect could assign different IDs to the same runtime event. JavaScript's safe-integer range is ample for a process-lifetime counter; guard against overflow by refusing publication with a logged error rather than silently wrapping and violating ordering.
 
-### 3. Stable chat seam for G2/G3
+## 3. Fan-out mechanism
 
-**Design:** use an Adapter (`NativeChatSessionStore`) to isolate the existing `db.getSession`/`db.setSession` persistence API, a Facade/Controller to keep readline/HTTP concerns separate from `AgentRuntime` turn orchestration, and an anti-corruption/normalization boundary that converts `RuntimeEvent` into terminal-safe display events. These are structural seams, not algorithmic machinery: the controller reads and caches one backend-scoped session row, so there is no collection-processing or algorithmic-complexity tradeoff.
+Create `RuntimeActivityBroadcaster` in the new `src/agent-runtimes/activity-broadcaster.ts`. It will own a Node `EventEmitter`, `streamId`, the next sequence, and a closed flag. Its small API is `publish(runId: string, source: RuntimeActivitySource, event: RuntimeEvent): void`, `subscribe(handler: (envelope: RuntimeActivityEnvelope) => void): () => void`, `subscriberCount(): number` for lifecycle assertions, and idempotent `close(): void`. The decorator signature is `withRuntimeActivityBroadcast(runtime: AgentRuntime, broadcaster: RuntimeActivityBroadcaster): AgentRuntime`. This is the Observer pattern: the process-wide broadcaster is the subject, and each activity-route connection is an independently removable observer. Publication is O(number of current subscribers), which is the necessary cost of delivering one immutable envelope to every live client; lookup/removal state remains process-local and bounded by the five-connection admission cap.
 
-`src/cli/deus-native-chat.ts` will expose a testable controller rather than embedding readline, HTTP, database access, and runtime calls in one function:
+`publish()` constructs one immutable envelope and synchronously emits it to a snapshot of subscribers; subscription wrappers isolate listener/write failures so one disconnected client cannot throw into `AgentRuntime.runTurn()` or prevent delivery to other clients. Its exported doc comment must guarantee that `publish()` never throws because the broadcaster is closed: after `close()` marks the instance closed and removes its listeners, every later `publish()` is a safe no-op that allocates no ID/sequence and invokes no subscriber. A post-close `subscribe()` is likewise inert and returns a no-op unsubscribe. Sequence-overflow refusal logs metadata but does not throw into a producer. These shutdown semantics are defense in depth for a late event from a detached turn and preserve the decorator's downstream sink even after process-wide observation has ended. There is no external broker because Deus is a single host process and the consumers are HTTP connections in that same process.
 
-```ts
-export interface DeusNativeChatOptions {
-  cwd: string;
-  resume: true;
-}
+Do not extend `src/events/bus.ts` for this ticket. `EventBus.emit()` is an asynchronously and sequentially awaited pipeline-reaction bus with the `DeusEvent` taxonomy from `src/events/types.ts`; making every runtime token/tool event flow through it would let an SSE listener back-pressure the agent and would conflate the accepted pipeline event-hub contract in `docs/decisions/event-hub.md` with a high-frequency transport stream. The dedicated broadcaster is a best-effort observation seam with different lifecycle and delivery semantics.
 
-export interface NativeChatSessionStore {
-  get(groupFolder: string, backend: AgentRuntimeId): RuntimeSession | undefined;
-  set(groupFolder: string, session: RuntimeSession): void;
-}
+Add a `withRuntimeActivityBroadcast(runtime, broadcaster)` decorator in the same new module. In `src/index.ts`, construct one broadcaster at the composition root, wrap only `createDeusNativeRuntime(backendDeps)`, and register that decorated runtime through the existing `RuntimeRegistry.register()` call. Pass the same broadcaster through `OdysseusServerDeps` to `startOdysseusServer()`. The decorator creates a `runId` per `runTurn()`, tees every existing event to `publish()` before invoking the caller's original `RuntimeEventSink`, and otherwise preserves `name()`, `capabilities()`, `startOrResume()`, `close()`, downstream sink ordering, and the returned `RunResult`.
 
-export function createDeusNativeChatController(deps: {
-  runtime: AgentRuntime;
-  sessions: NativeChatSessionStore;
-}): DeusNativeChatController;
-```
+This single registry-boundary decorator covers the existing sinks in `message-orchestrator.ts`, `task-scheduler.ts`, `linear-dispatcher.ts`, `multi-agent/orchestrator.ts`, and `odysseus-server.ts` without editing each caller. Track whether an `error` event was observed; if the wrapped deus-native call returns `RunResult.status === 'error'` without emitting one (the current `DeusNativeRuntime.runTurn()` catch path does this), publish one broadcaster-only `RuntimeEvent`-shaped `error` envelope using `RunResult.error`. Do not inject that synthetic event into the caller's sink, which would change existing channel behavior. If the wrapped call unexpectedly throws, publish the same terminal error and rethrow so existing caller semantics remain intact.
 
-The controller takes a single `DeusNativeChatOptions` object and builds `RunContext` in one place. G2 can extend that object with its model selection and translate it into the runtime-supported model configuration; G3 can add a typed mode field and translate it into the runtime contract. LIA-428 will not add placeholder `model`, `planMode`, or arbitrary client-controlled `backendConfig` fields. This prevents premature UX and avoids exposing security-sensitive runtime configuration merely for future-proofing.
+## 4. New route
 
-Use fixed internal identity constants such as `CLI_CHAT_GROUP_FOLDER = "deus-native-cli"` and `CLI_CHAT_JID = "cli:deus-native"`. The group folder is synthetic and unregistered; `DeusNativeRuntime.runTurn` only uses `resolveGroup` for the `publicIngress` refusal (`deus-native-backend.ts:253–262`), so `undefined` follows the safe non-public-ingress path. The synthetic identity also prevents the CLI session from overwriting a channel group's backend-scoped session row. `isControlGroup` remains `false`; this ticket does not grant the terminal client control-group privileges.
+Add exactly one route to the `createOdysseusServer()` router in `src/odysseus-server.ts`:
 
-Add the same top-of-file non-goals style used by `deus-native-backend.ts:1–70` to the chat controller and server modules. The comment must name the deferred G2 model-selection UX and G3 plan-mode toggle explicitly and warn contributors not to add them in this ticket.
+- `GET /v1/activity` — long-lived deus-native activity SSE subscription.
 
-## Files and responsibilities
+All other methods on `/v1/activity` return the same `405` JSON shape as the existing route method gates. The route participates in the existing method-before-auth routing discipline, then reuses `extractBearer()` and `timingSafeEqualStr()` against the same validated `ODYSSEUS_HTTP_TOKEN`; no query-string token, cookie, alternate credential, or auth bypass is added. It remains reachable only through the existing `127.0.0.1` bind in `startOdysseusServer()`.
 
-### New source files
+Apply the existing module-level `isRateLimited(remoteAddr)` check to each initial connection and reconnection, just as for `/v1/models` and `/v1/chat/completions`; keepalives and delivered activity events do not consume additional rate-limit entries. Advertise a 15-second SSE retry delay so a single normally reconnecting client stays below `RATE_LIMIT_MAX = 5` per 60 seconds when it is not also making other Odysseus requests.
 
-- `src/cli/deus-native-chat.ts`
-  - Own `DeusNativeChatOptions`, fixed CLI identity constants, the injectable session-store interface, `createDeusNativeChatController`, and the normalized display-event type.
-  - Implement `start()`, `runTurn(prompt, options)`, `status()`, and `close()` around the real `AgentRuntime` contract.
-  - Convert every `RuntimeEvent` variant into a bounded, UI-safe display event; never expose the runtime union itself to the terminal module.
-  - Keep per-turn/session state in the controller only as a cache of the authoritative SQLite row; do not create a second persistence mechanism.
+Use a separate `activeActivitySse` counter, but cap it with the existing `MAX_CONCURRENT_SSE` value. Do not share the current `activeSse` counter: `/v1/activity` connections are intentionally long-lived, so five monitor clients could otherwise consume every slot indefinitely and make unrelated `/v1/chat/completions` streaming turns return `503`. The separate counter still bounds activity sockets to five without adding a new config surface. Reset it in `_resetServerStateForTest()` alongside `activeSse`, and return the existing `503 { error: 'too many concurrent streams' }` shape when its cap is reached.
 
-- `src/cli/deus-native-chat-server.ts`
-  - Start the authenticated ephemeral loopback server inside the daemon, manage the discovery file, validate method/path/body/version/auth, cap request size, and serialize a single in-flight turn for the fixed CLI session (reject a competing turn rather than interleave prompts in one LangGraph thread).
-  - Resolve `registry.get("deus-native")` explicitly rather than `registry.resolve(...)`; `deus chat` is this ticket's native surface and must not silently follow the channel/global default backend.
-  - Adapt `db.getSession`/`db.setSession` to `NativeChatSessionStore`, stream the controller's normalized display events, expose status, and call controller close on the close route.
-  - Export a server factory that listens on an injected/ephemeral port for hermetic tests; keep process exit and logging out of the core handler.
+The activity route only subscribes; it does not resolve a group, enqueue a `GroupQueue` task, touch `inFlight`, or trigger a turn.
 
-- `src/cli/deus-native-chat-client.ts`
-  - Be the compiled executable invoked by the shell/PowerShell launchers.
-  - Parse only LIA-428's current options, construct a `DeusNativeChatOptions` object with `cwd`, open a readline loop, and send non-empty prompts sequentially.
-  - Recognize local commands `/status`, `/exit`, and `/quit`. `/status` fetches diagnostic state; `/exit`, `/quit`, EOF/Ctrl-D, and SIGINT stop accepting input, make a best-effort authenticated close request, restore terminal state, and exit without clearing the stored session.
-  - Render only normalized display events and terminal prompts; never log request/response objects, bearer tokens, `RuntimeEvent.type`, `sessionRef`, or NDJSON framing.
+## 5. Connect, multiple events, and clean disconnect
 
-### Modified runtime/CLI files
+On admission, write status 200 with the existing SSE headers used by `handleChatCompletion()` — `Content-Type: text/event-stream`, `Cache-Control: no-cache`, and `Connection: keep-alive` — then write `retry: 15000\n\n` to flush headers and establish the reconnect delay. Register the response with the broadcaster only after admission and header setup. Each published envelope is written with a dedicated activity-frame formatter that emits `id:`, `event:`, and JSON `data:` lines; do not reuse `writeSse()`, whose `data:`-only assumption and OpenAI frame input belong to `/v1/chat/completions`.
 
-- `src/index.ts`
-  - Start the native chat server after `registry.register(createDeusNativeRuntime(...))` at current lines 147–166, when the database, credential proxy, shared group-token state, queue dependencies, and registry are all live.
-  - Retain the returned server handle, close it/remove its discovery record in the existing signal shutdown function, and include startup failures in the daemon's normal fatal startup handling. Do not start any duplicate proxy or a second runtime registry.
+Reuse `KEEPALIVE_MS = 20_000`, but keep the activity timer running for the entire subscription and write the same comment frame `: ping\n\n` whenever the response remains writable. This differs from the chat path at `src/odysseus-server.ts:591-594`, which pings only until `firstTokenSeen` because that response ends with the turn. The activity stream may be quiet between unrelated turns and must keep intermediaries from treating that silence as a dead connection. Call `unref()` on the interval so it cannot pin process exit.
 
-- `deus-cmd.sh`
-  - Add the `deus chat` dispatch to the compiled client and update help. Preserve the original cwd and all existing prefix/home behavior.
+Give each connection one idempotent `finalize()` closure with a once flag, mirroring the `releaseSlot()` / `finalize()` discipline around `src/odysseus-server.ts:520-568`. In one place it must clear and null the keepalive interval, invoke and clear the broadcaster unsubscribe function, remove the response from the server's active-activity set, decrement `activeActivitySse` exactly once, detach any explicitly installed close/error handlers if needed, and optionally call `res.end()` only when the server is ending a still-writable response. Register client abort with `res.once('close', finalize)`; request/response error handling remains guarded by the server's existing handlers.
 
-- `deus-cmd.ps1`
-  - Add the equivalent `chat` dispatch/help entry so the source feature remains buildable and reachable on the Windows launcher as required by `docs/CROSS_PLATFORM.md`.
+For explicit shutdown, make the server own an idempotent `closeActivityStreams()` cleanup registered by `createOdysseusServer()`, and expose an idempotent `stopOdysseusServer(server): Promise<void>` helper that calls that cleanup before `server.close()` and resolves when the server close callback completes. Track the per-server cleanup/stop promise in module-private state rather than adding methods to Node's public `Server` type. Each active response receives a final SSE comment such as `: server shutdown\n\n`, then `res.end()`; its normal `close` event may call `finalize()` again, but the once flag makes that harmless. Also invoke the same activity-stream cleanup as a server `close` backstop. Draining those permanent responses before `server.close()` avoids waiting forever for long-lived SSE sockets.
 
-### Documentation required by the repo update rule
+Draining `/v1/activity` responses is not sufficient on its own: Node's `server.close()` callback does not fire until every open connection ends, including a still-streaming `/v1/chat/completions` turn (bounded elsewhere only by the 10-minute `ABSOLUTE_TURN_MS`). Since `stopOdysseusServer()` is now awaited in `src/index.ts`'s `shutdown()` before the queue/channel drain (see below), an unbounded wait here could starve that drain for far longer than typical process-manager grace periods. `stopOdysseusServer()` therefore races `server.close()`'s callback against a `ODYSSEUS_STOP_GRACE_MS = 10_000` timeout; if the grace period elapses first, it force-closes any remaining sockets via `server.closeIdleConnections()` / `closeAllConnections()` (Node >=18.2 APIs; this repo requires Node >=20) so the close callback — and therefore `stopOdysseusServer()` — resolves promptly regardless of what else is still open.
 
-- `AGENTS.md`
-  - Add `deus chat` to the stable Commands and Skills list and add the native CLI controller/server entry point to the architecture table so later agents do not rediscover the transport.
+Give the Odysseus server exactly one HTTP-server shutdown owner in `src/index.ts`: the live wiring declares `webhookServers: Server[]` at `src/index.ts:139`, closes every member in the generic loop at `src/index.ts:172`, pushes the ingress gateway and standalone Linear webhook servers at `src/index.ts:363` and `src/index.ts:562`, creates `odysseusServer` at `src/index.ts:476`, and currently pushes that same instance at `src/index.ts:481`. Remove/replace the `webhookServers.push(odysseusServer)` wiring at line 481 so the array contains only the other webhook servers; in `shutdown()`, `await stopOdysseusServer(odysseusServer)` when it exists before the generic `webhookServers` loop, and do not close that instance again in the loop. `stopOdysseusServer()` is therefore the sole closer of the Odysseus `Server`, avoiding a double `server.close()` while preserving generic shutdown for the gateway and Linear servers. Crucially, neither `closeActivityStreams()` nor `stopOdysseusServer()` closes the injected `RuntimeActivityBroadcaster`; they remove only activity-route subscriptions and close the Odysseus HTTP resource.
 
-- `docs/AGENT_DEUS_101.md`
-  - Add the client → authenticated daemon endpoint → `deus-native` controller → runtime/session-store flow to the detailed entrypoint map.
+The process-wide broadcaster remains owned by the `src/index.ts` composition root. Preserve the live shutdown sequence at `src/index.ts:171-178`, with this precise extension: stop Linear admission; await the dedicated Odysseus stop; close the other `webhookServers`; stop the ingress tunnel and proxy servers; `await queue.shutdown(10000)`; await every `channel.disconnect()`; then call `activityBroadcaster.close()` immediately before `process.exit(0)`. This is the latest process-wide shutdown boundary, after channels, scheduled work admitted through the queue, Linear dispatch, and channel-owned multi-agent work have all had their available shutdown/drain window. It matters because `GroupQueue.shutdown(_gracePeriodMs)` at `src/group-queue.ts:366-383` only sets `shuttingDown` and reports detached containers; it does not use the grace-period argument or await in-flight turns. Closing the broadcaster inside the earlier Odysseus stop would therefore let a non-Odysseus turn call the decorator's tee against a closed shared dependency during channel disconnection. Moving `close()` to the process tail preserves observation throughout that window, while the documented post-close no-op prevents any still-late detached turn from throwing or disrupting its original sink after the final close.
 
-- `docs/decisions/deus-native-cli-chat.md` and `docs/decisions/INDEX.md`
-  - Record the thin-client decision, why a second in-process CLI runtime/proxy is invalid, the ephemeral authenticated loopback/discovery-file boundary, the fixed synthetic session identity, and rollback (remove launcher arms, server startup, and discovery file handling). This is an architectural entrypoint and credential-boundary decision, so it should not live only in code comments.
+## 6. Reconnection behavior
 
-### Tests
+Choose fire-and-forward-only delivery: the server does not replay missed events and does not retain a ring buffer. A reconnect starts receiving events published after its new subscription. `Last-Event-ID` is accepted as an ordinary request header but deliberately ignored; clients compare their last `{ streamId, sequence }` with the next envelope. A matching `streamId` and a jump in `sequence` proves a gap; a changed `streamId` proves the host restarted and began a new ordering epoch. This meets the acceptance criterion, which requires documented and tested reconnection behavior but does not require lossless delivery, while avoiding in-memory retention of potentially sensitive `tool_call.arguments` and avoiding a new history-size/config contract.
 
-- `src/cli/deus-native-chat.test.ts`
-  - Controller and renderer unit tests with an injected fake runtime/session store.
+Document this behavior in the exported contract doc comment on `RuntimeActivityEnvelope` / `RuntimeActivityBroadcaster` in the new module and in the `handleActivityStream()` route doc comment in `src/odysseus-server.ts`. A new ADR is not required for this bounded, process-local transport addition: `docs/decisions/event-hub.md` already establishes the single-process boundary, and this plan explicitly preserves rather than changes that bus's semantics. If a later consumer requires durable replay across process restarts, that is a materially different persistence/privacy decision and should get its own ticket and ADR.
 
-- `src/cli/deus-native-chat-server.test.ts`
-  - Real ephemeral HTTP server tests with temporary discovery paths and fake controller/runtime dependencies.
+Set `retry: 15000` on connect as the server's SSE reconnection hint. Authentication remains mandatory on every reconnect; a client that cannot resend the bearer header will receive `401`, and the server must never fall back to query credentials.
 
-- `src/cli/deus-native-chat-client.test.ts`
-  - Scripted input/output tests against a fake transport for two prompts, status, EOF/SIGINT-safe cleanup behavior, and framing-free output.
+## 7. Test plan
 
-- `src/cli/deus-native-chat.integration.test.ts`
-  - Reuse the hermetic fake-model/real-checkpointer approach from `src/agent-runtimes/deus-native-checkpointer-integration.test.ts` and the dependency mocking conventions from `src/agent-runtimes/deus-native-backend.test.ts`; do not make live provider/network calls.
+Split HTTP coverage into a new sibling `src/odysseus-activity-stream.test.ts` rather than growing the already 927-line `src/odysseus-server.test.ts`. Follow the current test's style: mock the same side-effecting modules, call `createOdysseusServer(deps, TOKEN)`, listen on an ephemeral `127.0.0.1` port, and use real `http.request()` / `http.get()` streams. Give each test a fresh injected `RuntimeActivityBroadcaster`; teardown must stop the server/route subscriptions first and close the process-wide broadcaster last, matching production ownership. Add focused unit coverage in a new `src/agent-runtimes/activity-broadcaster.test.ts`, and extend the existing `src/agent-runtimes/deus-native-backend.test.ts` only for the registry/decorator integration behavior.
 
-- `scripts/tests/test_deus_cmd_native_chat.py`
-  - Structural launcher test proving `deus chat` reaches the compiled client and that existing bare/prefixed branches remain present. Follow the existing `scripts/tests/test_deus_cmd_backend_prefix.py`/`test_deus_cmd_print_identity.py` style rather than invoking the live daemon.
+Concrete cases, mapped to the acceptance criteria:
 
-If the PowerShell launcher has no comparable test harness, cover its dispatch text in the TypeScript/structural test or add a small platform-neutral source assertion alongside the shell assertion; do not require a live Windows service in CI.
+1. **Endpoint/auth/method contract (AC: endpoint exposed).** `GET /v1/activity` without or with an invalid bearer returns `401`; an authenticated non-GET returns `405`; an authenticated GET returns 200 with `text/event-stream`, `no-cache`, and `keep-alive`, plus the 15-second retry directive. Assert the same bearer token path is used and no query token is accepted.
+2. **Schema and global ordering (AC: documented schema/stable ordering).** Publish scripted `tool_call`, `usage`, `output_text`, and `turn_complete` events through the broadcaster. Parse SSE frames and assert exhaustive field shape, identical `id:`/JSON `id`, ISO timestamp, `backend: 'deus-native'`, group folder, JID, shared `runId`, one `streamId`, strictly increasing `sequence`, and correct variant payloads. A unit test publishes from two run IDs/groups and proves the single broadcaster sequence still establishes total publication order.
+3. **Multiple events on one connection (AC: receive multiple runtime events).** Hold one real GET open, publish at least three events after subscription, and resolve the test as soon as three complete SSE frames have arrived rather than waiting for connection end. Assert delivery order matches publication order.
+4. **Multi-client fan-out (AC: live fan-out).** Connect two authenticated clients before publishing, emit two events, and assert both clients receive byte-equivalent IDs/envelopes in the same order. Abort one, publish a third, and assert the remaining client still receives it while the aborted client has been unsubscribed.
+5. **Only deus-native, all deus-native callers (AC: data sufficient for LIA-352/LIA-64).** Unit-test `withRuntimeActivityBroadcast()` with a fake deus-native runtime: its downstream sink receives the original events unchanged and in order, while the broadcaster adds source/run metadata. Verify the production composition in `src/index.ts` wraps only the `createDeusNativeRuntime()` registration, leaving the Claude/OpenAI/llama-cpp registrations undecorated. In `deus-native-backend.test.ts`, cover a returned error with no emitted `error` and assert the broadcaster receives one terminal error without changing the original downstream sink or `RunResult`.
+6. **Client abort cleanup (AC: disconnect cleanly).** Spy on the activity keepalive's `clearInterval`, connect, assert `broadcaster.subscriberCount() === 1`, destroy the client request, wait for the response `close`, then assert subscriber count is zero, the interval was cleared, and a later publish causes no write/error. Reconnect and disconnect five-plus times sequentially to prove the separate activity admission counter is released rather than eventually returning `503`.
+7. **Server shutdown cleanup (AC: disconnect cleanly).** Keep two clients connected, `await stopOdysseusServer(server)`, and assert both clients observe end/close, the broadcaster has zero route subscribers, all keepalive handles were cleared, and the server close callback completes. Assert the broadcaster itself remains open; this catches both the otherwise easy deadlock where `server.close()` waits on permanent SSE responses and an accidental return to Odysseus-owned broadcaster shutdown.
+8. **Shared-broadcaster shutdown ordering (cross-cutting lifecycle oracle).** Subscribe a non-SSE recorder to the shared broadcaster, stop the Odysseus server, and then run a decorated fake deus-native runtime with a channel/task/Linear-shaped `RunContext` rather than an SSE client. Assert its events still publish to the recorder and its original downstream sink/`RunResult` remain unchanged during the window after `stopOdysseusServer()` resolves but before process-wide `close()`. Then close the broadcaster and run/publish again: assert no exception, no subscriber invocation or new envelope, and unchanged downstream sink/`RunResult`. In `activity-broadcaster.test.ts`, independently call `close()` twice followed by `publish()` and assert the same documented safe no-op guarantee. This directly proves both the ownership reordering and its defense-in-depth fallback for a detached late producer.
+9. **Fire-and-forward reconnection (AC: reconnection documented and tested).** Connect client A, receive sequence N, disconnect it, publish N+1 while no client is present, then reconnect client B with `Last-Event-ID: <streamId>:N`. Assert N+1 is not replayed; publish N+2 and assert B's first data event is N+2 with the same stream ID, making the gap detectable. A second test constructs a new broadcaster and proves its changed `streamId` identifies a restart epoch even though its numeric sequence restarts.
+10. **Keepalive behavior.** With fake timers or a captured interval callback, advance `KEEPALIVE_MS` both before and after a data event and assert `: ping` is written in both cases, then disconnect and prove advancing again writes nothing. This locks the intentional difference from chat's `!firstTokenSeen` keepalive condition.
+11. **Admission/rate behavior.** Assert reconnects consume the existing rate bucket, delivered events/pings do not, and the activity cap uses its own counter. Where the sixth same-address request is intercepted first by the five-per-minute rate limiter, unit-test the activity admission helper/counter directly or reset only the rate bucket between admissions; do not weaken or reorder auth/rate limiting merely to make the cap easier to test.
 
-## Turn and session lifecycle
+Run at minimum `npx vitest run src/agent-runtimes/activity-broadcaster.test.ts src/agent-runtimes/deus-native-backend.test.ts src/odysseus-server.test.ts src/odysseus-activity-stream.test.ts`, `npm run typecheck`, `npm run build`, and `git diff --check`. The implementation reviewer should also inspect the final producer-to-consumer wiring in `src/index.ts` so passing unit tests cannot mask an unwired facade.
 
-For each prompt, `DeusNativeChatController.runTurn` performs this exact sequence:
+## 8. Non-goals and explicit exclusions
 
-1. Build a `RunContext` with the prompt, client cwd, fixed synthetic `groupFolder` and `chatJid`, `isControlGroup: false`, and `stream: true`. No G2/G3 fields are supplied.
-2. Read `sessions.get(CLI_CHAT_GROUP_FOLDER, "deus-native")`, which the production adapter implements with `db.getSession(groupFolder, backend)` (`src/db.ts:757–789`). The explicit backend argument is load-bearing: sessions are backend-scoped and the CLI must never select the most-recent Claude/OpenAI row.
-3. When no row exists, call `runtime.startOrResume(runContext)`. Today this returns `defaultSession("", "deus-native")` (`deus-native-backend.ts:225–232`); passing that empty id into `runTurn` lets the runtime mint the real `crypto.randomUUID()` LangGraph `thread_id` (`deus-native-backend.ts:264–304`). Do not mint a competing CLI id.
-4. Call `runtime.runTurn(runContext, sessionRef, eventSink)`. Keep the returned/current `RuntimeSession` in memory for the next prompt in the same CLI process.
-5. If the sink receives a `session` event, immediately validate that its backend is `deus-native`, update current state, and persist it with `db.setSession(CLI_CHAT_GROUP_FOLDER, sessionRef)`. This matches the canonical event handling in `message-orchestrator.ts:191–207`.
-6. After `runTurn` returns success, validate and persist `RunResult.sessionRef` as well, matching the success path in `message-orchestrator.ts:268–271`. This second path is required today because `DeusNativeRuntime` echoes its minted/resumed id in `RunResult.sessionRef` (`deus-native-backend.ts:485–492`) and does not currently emit a `session` event.
-7. On the second prompt, reuse that non-empty `RuntimeSession`; the id doubles as the checkpointer `thread_id`, so LangGraph loads the first exchange. `db.setSession`'s same-id path updates `last_used_at` rather than creating a duplicate active row (`src/db.ts:791+`).
-8. On `/exit`, `/quit`, EOF, or SIGINT, the close route reloads the current `deus-native` row if necessary and calls `runtime.close(sessionRef)`. It does **not** call `db.clearSession`; `clearSession` soft-orphans rows (`src/db.ts:895+`) and would break resume. A later `deus chat` process repeats step 2, passes the stored id to `runTurn`, and resumes the same checkpointed message history.
+- No Companion application work, views, notifications, or client state management from LIA-352.
+- No activity-monitor UI, filtering UI, persistence, or visualization from LIA-64.
+- No replay database, ring buffer, durable event history, cross-process broker, or delivery guarantee beyond live best-effort fan-out.
+- No new authentication mode, token transport, config variable, non-local bind, CORS change, or query-string credential.
+- No changes to the existing `/v1/chat/completions` OpenAI chunk schema or conversation/session behavior from LIA-294/LIA-295.
+- No activity from Claude, OpenAI, or llama-cpp turns in G5.
+- No expansion of `RuntimeEvent`, no new tools, no prompt/body capture, and no promotion of middleware/lifecycle test records into public telemetry.
+- No change to GroupQueue serialization, scheduled-task behavior, Linear dispatch behavior, or existing channel sinks.
 
-If `runTurn` returns `status: "error"`, render a user-facing error and do not replace a valid stored session with an empty/foreign ref. If a session event was already persisted before a later failure, retain it: it remains the runtime's authoritative continuity marker. Transport disconnect after the daemon accepted a prompt does not cancel or roll back the host turn; if the turn finishes, its session result is persisted and the next invocation can resume, even if the departed client missed the output.
+**Rollback:** This is a single additive PR: the new module, route, and counter are additive, and the only production-sequencing change is moving Odysseus HTTP-server shutdown ownership out of the generic `webhookServers` loop into a dedicated `stopOdysseusServer()` call in `src/index.ts`; that ownership change reverts cleanly with a single-commit revert because nothing else depends on the new ownership shape.
 
-## Runtime-event and terminal rendering
+## 9. Open questions and risks
 
-The controller exhaustively switches on the `RuntimeEvent` union in `src/agent-runtimes/types.ts:62–88` and emits a smaller display-event union. The client exhaustively renders that display union:
-
-- `output_text`: write assistant text as chat content, preserving incremental chunks and adding terminal separation only at turn completion. Never print `{ type: "output_text", ... }` or JSON-stringify the event.
-- `tool_call`: render a compact feedback line such as `Using web_search…` or `Using web_fetch…`. Optionally include a single bounded, escaped summary of useful arguments (query/URL), but never dump arbitrary argument JSON; redact keys matching token/auth/secret/password and cap length. The current runtime emits tool invocations after its buffered invoke and has no tool-result event in the `RuntimeEvent` contract, so LIA-428 renders the available invocation feedback and does not invent tool-result semantics.
-- `activity`: render the supplied human-readable text as a subdued progress line, bounded to prevent terminal flooding. Do not expose it as a reasoning/protocol object.
-- `usage`: accumulate the latest provider/model/token values for diagnostics, but keep provider/model accounting out of ordinary assistant output. Undefined token counts remain “unavailable,” never fabricated as zero.
-- `session`: persist/update controller state; do not print it during ordinary turns. `/status` is the intentional diagnostic surface.
-- `turn_complete`: finish the assistant block, clear temporary activity state, and return to the prompt. Do not print an event name or sentinel.
-- `error`: emit one sanitized `Error: …` line to stderr and retain detailed structured data only in daemon logs. Do not dump stack traces, response bodies, proxy tokens, or transport frames.
-
-The internal daemon response may contain NDJSON records, but client tests must assert that output contains neither raw JSON/event discriminants (for example `{"type":`, `output_text`, `turn_complete`, or `sessionRef`) nor SSE/NDJSON delimiters. This directly enforces acceptance criterion 3 rather than relying on visual inspection.
-
-## Diagnostics/status
-
-Use `/status` as the explicit in-chat diagnostic command because it is discoverable during a session, does not overload the existing service-level `deus status` command on PowerShell, and keeps identifiers out of normal responses. The daemon status route returns structured internal data; the client renders only:
-
-```text
-Backend: deus-native
-Session: <full session id, or “not started” before the first successful turn>
-State:   resumed | new
-Output:  buffered | streaming
-```
-
-“Resumed” means a backend-matching row was loaded from SQLite at controller start; “new” means no row existed then. `Output` derives from `runtime.capabilities().tool_streaming`/the actual event mode and must report the current buffered limitation honestly. The full id is shown because the AC explicitly requires session identifiers through diagnostics; the startup banner may show only a short resume notice and must direct the user to `/status` for the full values.
-
-This exact text format and the compact tool-feedback line intentionally skip a throwaway visual-variant/reaction pass: they are minimal, plain functional terminal output with no visual hierarchy or high-cost design decision. Keep them unstyled beyond ordinary terminal separation; if G2/G3 later introduces interactive selection or mode affordances, those richer UX surfaces should receive their own taste pass.
-
-## Acceptance-criterion mapping
-
-| Acceptance criterion | Concrete implementation and proof |
-| --- | --- |
-| A user can start a deus-native chat from the `deus` CLI. | `deus-cmd.sh`/`deus-cmd.ps1` route `deus chat` to `src/cli/deus-native-chat-client.ts`; the daemon server resolves `registry.get("deus-native")`, whose live registration is in `src/index.ts:162–165`. Launcher/server tests prove the path is connected rather than a tested-but-unwired facade. |
-| At least two consecutive turns in one session. | The readline loop remains open; `createDeusNativeChatController.runTurn` caches and reuses the first `RunResult.sessionRef`. The integration test sends two prompts and asserts call 2 receives the same UUID and its real checkpointer state contains both messages, following the existing checkpointer integration assertions around lines 282–328. |
-| Model output and tool feedback are rendered without protocol framing. | The exhaustive runtime-event normalizer in `deus-native-chat.ts` and renderer in `deus-native-chat-client.ts` handle output/tool/activity/usage/session/complete/error separately. Renderer tests feed every variant and assert no raw event or transport JSON appears. |
-| The user can exit cleanly and resume the recorded session. | `/exit`, `/quit`, EOF, and SIGINT call the daemon close route and restore readline without `clearSession`. `db.getSession(..., "deus-native")` reloads the stored row on a new client/controller. The integration test closes, reconstructs controller/client state, sends a third prompt, and proves the same checkpointer thread resumes. |
-| Backend and session identifiers are available through diagnostics or status output. | `/status` calls the daemon status route and renders full `Backend: deus-native` and `Session: <id>` values; tests cover pre-first-turn and persisted/resumed states. |
-
-## Test plan and verification
-
-### Unit tests
-
-1. Controller start with no row calls `startOrResume`, passes its empty native ref to `runTurn`, persists the result ref, and reports “new.”
-2. A second `runTurn` on the same controller gets the first result's exact session id; reconstructing the controller over the same store loads that id and reports “resumed.”
-3. Both the `session` event path and final `RunResult.sessionRef` path persist; same-id writes are harmless; foreign-backend/empty result refs are rejected rather than corrupting the native row.
-4. `close()` calls the runtime with the current/persisted ref and never clears the store.
-5. Every `RuntimeEvent` variant maps exhaustively to the intended display behavior; usage absence remains unknown; tool arguments are bounded/redacted.
-6. Client loop handles two prompts, `/status`, `/exit`, EOF, and interrupt without overlapping requests or leaving the terminal prompt active.
-7. Server rejects wrong method/path/auth/version, oversized/malformed bodies, and concurrent turns; it never logs/returns the bearer token; discovery-file cleanup cannot delete a successor daemon's record. Because this endpoint can drive the host-side agent loop, derive the missing-token, wrong-token, and stale-discovery-record rejection cases independently from the security/transport specification through the repo's `oracle-author` gate and tag those cases `@oracle`; the implementation author must not weaken or rewrite those assertions to match the handler. Ordinary implementer-authored tests remain appropriate for low-blast-radius method/version/body validation.
-
-### Integration tests
-
-1. Start the daemon server factory on an ephemeral port with a real `DeusNativeRuntime` wired to the hermetic model/checkpointer harness used by `deus-native-checkpointer-integration.test.ts`; use a temporary/in-memory database.
-2. Client A sends turn 1 and turn 2. Assert the same runtime UUID is persisted and the second model boundary sees both user messages.
-3. Client A closes. Client B reads the same stored native row, `/status` reports resumed/backend/id, and turn 3 reaches the same checkpointer thread.
-4. Have the fake model produce a tool call. Assert the terminal sees readable tool feedback and assistant output, while raw `RuntimeEvent` and NDJSON strings never appear.
-5. Run the launcher structural test to prove the live `deus chat` command reaches the compiled client and the existing bare/Claude/Codex branches are unchanged.
-
-### Commands before claiming implementation complete
-
-```bash
-npx vitest run src/cli/deus-native-chat.test.ts src/cli/deus-native-chat-server.test.ts src/cli/deus-native-chat-client.test.ts src/cli/deus-native-chat.integration.test.ts
-npx vitest run src/agent-runtimes/deus-native-backend.test.ts src/agent-runtimes/deus-native-checkpointer-integration.test.ts
-python3 -m pytest scripts/tests/test_deus_cmd_native_chat.py scripts/tests/test_deus_cmd_backend_prefix.py scripts/tests/test_deus_cmd_print_identity.py
-zsh -n deus-cmd.sh
-npm run typecheck
-npm run build
-npm run lint
-npm test
-npm run drift-check
-git diff --check
-```
-
-On a machine with the configured Anthropic credential path and the service rebuilt/restarted, perform one manual smoke test: run `deus chat`, ask a tool-free question, ask a follow-up that depends on turn 1, run `/status`, exit, relaunch `deus chat`, and ask a resume-dependent question. Confirm daemon logs contain no discovery bearer token. Live-provider verification supplements but does not replace the hermetic tests.
-
-`patterns/general-code.md` was read from the repo-root `patterns/` directory as selected by `.mex/ROUTER.md`. Its implementation requirements are reflected here: every new TypeScript source file has an alongside unit test, the architectural/credential-boundary change is documented through the ADR index, commits use `type(scope): description` Conventional Commit format (for example `feat(cli): add deus-native chat`), and `npm run drift-check` runs before push. Implementation must begin on a feature branch, remain one logical PR, and must not commit or push without the user-approved commit message required by `AGENTS.md`.
-
-## Explicit non-goals
-
-The new module comments and implementation must state these non-goals in the same prominent style as `deus-native-backend.ts`:
-
-- No G2 model-selection UX: no `--model`, picker, model persistence, or provider switching.
-- No G3 plan-mode toggle: no `--plan`, `/plan`, mode prompt, or permission-profile change.
-- No change to bare `deus`, `deus claude`, `deus codex`, `deus openai`, `DEUS_CLI_AGENT`, or `DEUS_AGENT_BACKEND` behavior.
-- No new backend/runtime interface, no changes to `DeusNativeRuntime` session-minting/checkpointer semantics, and no second database/session store.
-- No expansion of the `deus-native` tool surface, shell/filesystem access, permission policy, control-group privilege, context loading, session compaction, or checkpoint cleanup.
-- No invented tool-result event or fake token streaming; render only the normalized events the runtime contract supplies today.
-- No multi-session picker, named conversations, `/new`, transcript export, history UI, or concurrent clients sharing one CLI thread.
-- No reuse/change of the Odysseus `/v1/chat/completions` semantics: that endpoint intentionally uses fresh non-persisted sessions and a control group (`src/odysseus-server.ts:527+`), which conflicts with LIA-428's persisted synthetic CLI session.
-
-## Risks and resolved/open questions
-
-- **Credential-proxy ownership — resolved:** use the already-running daemon. A separate CLI runtime is invalid because group tokens are process-local and port 3001 is already owned.
-- **CLI naming/compatibility — resolved:** additive `deus chat`; bare and prefixed commands remain unchanged.
-- **Transport authorization — implementation risk:** loopback alone is insufficient because another local process can connect. Use a fresh high-entropy bearer token, constant-time comparison, user-only discovery file, no token logging, request caps, and exact routes. The implementation needs security review because this endpoint can drive the host-side agent loop; widening native tools later must re-evaluate this boundary.
-- **Discovery-file races/staleness — implementation risk:** write atomically after listen, include pid/version/token, validate before use, and remove only a record still owned by the shutting-down server. A stale or mismatched record fails closed with an actionable error.
-- **Interrupted clients — known behavior:** the host turn may complete and persist after the terminal disconnects. This is preferable to corrupting/checkpoint-cancelling a LangGraph turn; tell the user on reconnect that the persisted session was resumed.
-- **Tool feedback granularity — contract limitation:** today's `RuntimeEvent` union exposes a tool invocation but not a separate tool-result event, and `deus-native` emits after buffered invoke. LIA-428 can truthfully show which tool was used, not live execution/result phases. Changing that contract belongs to a separately reviewed runtime ticket.
-- **One global CLI thread — deliberate LIA-428 limit:** the fixed synthetic group folder yields one resumable native CLI session. Named/multiple sessions and cwd-scoped session keys are future UX decisions; silently keying by cwd now would make resume behavior surprising and constrain G2/G3.
-- **Daemon availability/version skew — implementation risk:** the client cannot work safely without the daemon endpoint. Fail closed and tell the user to rebuild/restart; do not bootstrap a partial host or read credentials as a fallback.
-- **Platform file permissions — verification item:** use `CONFIG_DIR`/`path.join` and Node's user-only create mode; verify POSIX `0600` in tests and document that Windows relies on the user's profile-directory ACL plus the random token. If review finds that insufficient, replace only the transport/discovery implementation with a same-user named-pipe ACL without changing the controller/client options seam.
-- **Router/pattern compliance — resolved:** `.mex/ROUTER.md` resolves `patterns/general-code.md` relative to the repo root; that file is present and was read. Its alongside-unit-test, ADR-gate, Conventional Commit, one-logical-PR, and pre-push `npm run drift-check` requirements are captured in the file map, verification commands, and implementation-workflow note above.
+1. **Resolved scope limitation: backend-neutral observability.** G5 is `deus-native`-only. It fully unblocks LIA-352's progress/“thinking” and completion cues, while LIA-64 receives useful activity data only for `deus-native` turns; LIA-64's “container status” for container-backed Claude/OpenAI/llama-cpp turns is out of scope and requires a follow-up ticket and ADR if later required.
+2. **Emission timing in the current backend.** `DeusNativeRuntime.runTurn()` currently emits `tool_call`, `usage`, `output_text`, and `turn_complete` while processing the completed `agent.invoke()` result, so G5 forwards each event immediately when emitted but does not make LangGraph produce those events earlier during a long model/tool execution. Wiring `middleware-stack.ts` hooks into real-time progress would expand the runtime contract and is intentionally excluded; the plan reviewer should decide whether the ticket's word “live” requires a prerequisite/follow-up for earlier backend emission.
+3. **Browser client bearer headers.** Native `EventSource` cannot set an `Authorization` header in ordinary browsers. A Companion web renderer would need an authenticated `fetch()` streaming client or a trusted native/main-process bridge. Query tokens are not an acceptable workaround because they leak through URLs and would weaken the existing auth model.
+4. **Tool argument sensitivity and slow clients.** `tool_call.arguments` may contain user data. The localhost bearer boundary matches the existing Odysseus security model, and no replay buffer reduces retention, but implementation should close a client whose socket remains back-pressured rather than accumulating an unbounded Node response buffer. That disconnect is best-effort transport behavior and should be logged without the event payload.
+5. **Dedicated broadcaster versus `EventBus`.** The live tree has `src/events/bus.ts` even though there is no runtime-activity fan-out today. The dedicated broadcaster is intentional because its synchronous best-effort/high-frequency semantics differ from `EventBus.emit()`'s sequential awaited pipeline reactions. The reviewer should confirm this separation is preferable to broadening the accepted event-hub ADR before implementation.
+6. **Documentation durability.** This plan uses source contract comments rather than a new ADR because replay is explicitly absent and no cross-process architecture is introduced. If LIA-352/LIA-64 will be developed outside this repository or the schema is treated as a long-lived public API, promote the same contract into a dedicated docs page or ADR in that later consumer ticket without changing G5's runtime scope.

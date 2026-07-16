@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type { ContainerRuntimeDeps } from './container-backend.js';
 import type { RuntimeEvent } from './types.js';
+import {
+  RuntimeActivityBroadcaster,
+  withRuntimeActivityBroadcast,
+  type RuntimeActivityEnvelope,
+} from './activity-broadcaster.js';
 
 // Hoisted mocks — no live network call, no live model call anywhere in this
 // file, matching every other spike/adapter test's hermeticity convention.
@@ -627,5 +632,77 @@ describe('DeusNativeBackend — memory retrieval wiring (D1/LIA-415)', () => {
       'telemetry',
       'prompt-lifecycle',
     ]);
+  });
+});
+
+// ── Activity broadcaster decorator integration (LIA-432/G5) ────────────────
+//
+// The decorator itself (event tee order, synthetic-error rules, downstream
+// sink transparency) is unit-tested against a FAKE runtime in
+// activity-broadcaster.test.ts. This block locks the one piece that requires
+// the REAL DeusNativeRuntime: its catch-path returns `RunResult.status ===
+// 'error'` WITHOUT ever calling `eventSink` with a `type: 'error'` event (see
+// the "runTurn returns error when the proxy token mint fails" case above) —
+// proving `withRuntimeActivityBroadcast` synthesizes exactly one terminal
+// broadcaster-only error for that real shape, without altering the original
+// downstream sink or RunResult.
+describe('DeusNativeBackend — activity broadcaster decorator integration (LIA-432/G5)', () => {
+  beforeEach(() => {
+    createAgentMock.mockReset();
+    invokeMock.mockReset();
+    detectAuthModeMock.mockReturnValue('api-key');
+    getOrCreateGroupTokenMock.mockReset();
+    getOrCreateGroupTokenMock.mockReturnValue('fake-proxy-token');
+  });
+
+  it('publishes one terminal broadcaster-only error envelope for a returned error with no emitted error event, without changing the downstream sink or RunResult', async () => {
+    getOrCreateGroupTokenMock.mockImplementation(() => {
+      throw new Error(
+        'getOrCreateGroupToken: folder is a publicIngress folder',
+      );
+    });
+
+    const backend = createDeusNativeRuntime(stubDeps);
+    const broadcaster = new RuntimeActivityBroadcaster();
+    const received: RuntimeActivityEnvelope[] = [];
+    broadcaster.subscribe((e) => received.push(e));
+    const decorated = withRuntimeActivityBroadcast(backend, broadcaster);
+
+    const events: RuntimeEvent[] = [];
+    const result = await decorated.runTurn(
+      {
+        prompt: 'test',
+        groupFolder: 'nonexistent',
+        chatJid: 'test@g.us',
+        isControlGroup: false,
+      },
+      { backend: 'deus-native', session_id: '' },
+      (event) => {
+        events.push(event);
+      },
+    );
+
+    // RunResult is unchanged from the undecorated behavior asserted above.
+    expect(result.status).toBe('error');
+    expect(result.result).toBeNull();
+    expect(result.error).toContain('publicIngress');
+    // DeusNativeRuntime's catch path never calls eventSink — the original
+    // downstream sink still sees zero events, decorator or not.
+    expect(events).toHaveLength(0);
+    expect(createAgentMock).not.toHaveBeenCalled();
+
+    // The broadcaster received exactly one synthetic terminal error, never
+    // injected into the caller's own sink (the empty `events` array above
+    // already proves the latter).
+    expect(received).toHaveLength(1);
+    expect(received[0].type).toBe('error');
+    expect(received[0].payload).toMatchObject({
+      error: expect.stringContaining('publicIngress'),
+    });
+    expect(received[0].source).toEqual({
+      backend: 'deus-native',
+      groupFolder: 'nonexistent',
+      chatJid: 'test@g.us',
+    });
   });
 });

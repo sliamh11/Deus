@@ -31,6 +31,10 @@ import {
   RuntimeEventSink,
   defaultSession,
 } from './agent-runtimes/types.js';
+import type {
+  RuntimeActivityBroadcaster,
+  RuntimeActivityEnvelope,
+} from './agent-runtimes/activity-broadcaster.js';
 import {
   INJECTION_SCANNER_CONFIG,
   ODYSSEUS_HTTP_ENABLED,
@@ -77,6 +81,12 @@ const rateLimitCleanupInterval = setInterval(() => {
 rateLimitCleanupInterval.unref();
 
 let activeSse = 0;
+// Separate from `activeSse` on purpose (LIA-432/G5): `/v1/activity` connections
+// are intentionally long-lived, so up to MAX_CONCURRENT_SSE monitor clients
+// could otherwise consume every slot indefinitely and make unrelated
+// `/v1/chat/completions` streaming turns return 503. Bounds activity sockets
+// to MAX_CONCURRENT_SSE without adding a new config surface.
+let activeActivitySse = 0;
 /** main jid → true while a turn is queued/running (one in-flight per jid). */
 const inFlight = new Set<string>();
 
@@ -99,12 +109,18 @@ export function _resetServerStateForTest(): void {
   rateBuckets.clear();
   inFlight.clear();
   activeSse = 0;
+  activeActivitySse = 0;
 }
 
 export interface OdysseusServerDeps {
   queue: GroupQueue;
   registry: RuntimeRegistry;
   registeredGroups: () => Record<string, RegisteredGroup>;
+  // LIA-432/G5: shared, process-wide broadcaster injected from the
+  // composition root (src/index.ts) — the same instance the
+  // `deus-native` runtime decorator publishes into. `/v1/activity`
+  // subscribes to it; it never owns or closes it (see stopOdysseusServer).
+  activityBroadcaster: RuntimeActivityBroadcaster;
 }
 
 /**
@@ -150,6 +166,22 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
 function writeSse(res: ServerResponse, frame: Record<string, unknown>): void {
   if (!res.writable) return;
   res.write(`data: ${JSON.stringify(frame)}\n\n`);
+}
+
+// LIA-432/G5: dedicated activity-frame formatter — deliberately NOT writeSse()
+// above, whose `data:`-only assumption and OpenAI chunk/completion frame input
+// belong to `/v1/chat/completions`. Every published RuntimeActivityEnvelope
+// carries both an SSE `id:` line and an `event:` line (the envelope's `type`)
+// in addition to the JSON `data:` line, per the activity contract documented
+// in src/agent-runtimes/activity-broadcaster.ts.
+function writeActivityFrame(
+  res: ServerResponse,
+  envelope: RuntimeActivityEnvelope,
+): void {
+  if (!res.writable) return;
+  res.write(`id: ${envelope.id}\n`);
+  res.write(`event: ${envelope.type}\n`);
+  res.write(`data: ${JSON.stringify(envelope)}\n\n`);
 }
 
 const MODELS_RESPONSE = {
@@ -281,6 +313,138 @@ export function buildConversationPrompt(body: unknown): string {
   );
 }
 
+// ── `/v1/activity` shutdown bookkeeping (LIA-432/G5) ────────────────────────
+//
+// Per-server state tracked in module-private WeakMaps (rather than adding
+// methods to Node's public `Server` type). Each entry in `responses` IS the
+// connection's own idempotent `finalize` closure (see `handleActivityStream`)
+// — storing the closure itself (not a wrapper) means `closeActivityStreamsFor`
+// and the connection's own `res.once('close', ...)` both ultimately invoke the
+// exact same once-guarded function, so no separate double-cleanup bookkeeping
+// is needed.
+interface ActivityStreamState {
+  responses: Set<(endResponse: boolean) => void>;
+  closed: boolean;
+}
+
+const activityStateByServer = new WeakMap<Server, ActivityStreamState>();
+const stopPromiseByServer = new WeakMap<Server, Promise<void>>();
+
+/** Idempotent: writes a final `: server shutdown` comment + ends every still-
+ * active `/v1/activity` response, then marks the per-server state closed so a
+ * later call (including the server's own `close` backstop) is a safe no-op. */
+function closeActivityStreamsFor(state: ActivityStreamState): void {
+  if (state.closed) return;
+  state.closed = true;
+  // Snapshot first: each `finalize(true)` call synchronously deletes itself
+  // from `state.responses`, so iterating the live Set while mutating it is
+  // avoided entirely.
+  for (const finalize of [...state.responses]) {
+    finalize(true);
+  }
+}
+
+/**
+ * `GET /v1/activity` — long-lived, authenticated deus-native activity SSE
+ * subscription (LIA-432/G5). Fans out every `RuntimeActivityEnvelope`
+ * published by the shared `RuntimeActivityBroadcaster` (see
+ * `src/agent-runtimes/activity-broadcaster.ts`) to every connected client for
+ * as long as the process/broadcaster stay alive. The route only subscribes —
+ * it never resolves a group, enqueues a `GroupQueue` task, touches
+ * `inFlight`, or triggers a turn, and it is reachable only through the same
+ * `127.0.0.1`-bound, bearer-authenticated server as every other Odysseus
+ * route (auth + rate limiting happen in the caller, before this is invoked).
+ *
+ * Delivery is fire-and-forward only: no replay buffer, no ring buffer. A
+ * reconnecting client receives only events published after its new
+ * subscription. `retry: 15000` (written on admission) is the server's SSE
+ * reconnect hint; `Last-Event-ID` is accepted as an ordinary request header
+ * but deliberately ignored — a client instead compares its last observed
+ * `{ streamId, sequence }` against the next envelope to detect a gap (same
+ * `streamId`, a jump in `sequence`) or a host restart (changed `streamId`).
+ *
+ * Keepalive intentionally differs from `/v1/chat/completions`'s
+ * `!firstTokenSeen`-gated ping (this file's `handleChatCompletion`, whose
+ * pings stop once the turn starts streaming because that response ends with
+ * the turn): the activity stream may sit quiet between unrelated turns and
+ * must keep intermediaries from treating that silence as a dead connection,
+ * so its keepalive runs unconditionally for the entire subscription.
+ */
+function handleActivityStream(
+  deps: OdysseusServerDeps,
+  res: ServerResponse,
+  state: ActivityStreamState,
+): void {
+  if (activeActivitySse >= MAX_CONCURRENT_SSE) {
+    writeJson(res, 503, { error: 'too many concurrent streams' });
+    return;
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  // Flush headers and establish the reconnect delay before registering with
+  // the broadcaster (admission + header setup happen first, per contract).
+  res.write('retry: 15000\n\n');
+
+  activeActivitySse++;
+  let sseCounted = true;
+
+  // Reused KEEPALIVE_MS, but — unlike the chat path — this timer runs for the
+  // ENTIRE subscription (never gated on "first event seen"). unref() so it
+  // can never pin process exit.
+  let keepaliveTimer: ReturnType<typeof setInterval> | null = setInterval(
+    () => {
+      if (res.writable) res.write(': ping\n\n');
+    },
+    KEEPALIVE_MS,
+  );
+  keepaliveTimer.unref();
+
+  // Registered only after admission + header setup, per contract.
+  let unsubscribe: (() => void) | null = deps.activityBroadcaster.subscribe(
+    (envelope) => writeActivityFrame(res, envelope),
+  );
+
+  // One idempotent finalize() per connection, mirroring the releaseSlot()/
+  // finalize() discipline `handleChatCompletion` already uses below. In one
+  // place it clears+nulls the keepalive interval, invokes+clears the
+  // broadcaster unsubscribe, removes itself from the server's active-activity
+  // set, and decrements activeActivitySse exactly once. `endResponse` is true
+  // only for the explicit-shutdown path (closeActivityStreamsFor), where a
+  // still-writable response is ended with a final comment frame.
+  let finalized = false;
+  const finalize = (endResponse: boolean): void => {
+    if (finalized) return;
+    finalized = true;
+    if (keepaliveTimer) {
+      clearInterval(keepaliveTimer);
+      keepaliveTimer = null;
+    }
+    if (unsubscribe) {
+      unsubscribe();
+      unsubscribe = null;
+    }
+    state.responses.delete(finalize);
+    if (sseCounted) {
+      activeActivitySse = Math.max(0, activeActivitySse - 1);
+      sseCounted = false;
+    }
+    if (endResponse && res.writable) {
+      res.write(': server shutdown\n\n');
+      res.end();
+    }
+  };
+
+  state.responses.add(finalize);
+  // Client abort (or any other socket close) → finalize without ending an
+  // already-dead response. Request/response error handling remains guarded
+  // by the server's existing top-level res/req 'error' handlers.
+  res.once('close', () => finalize(false));
+}
+
 /**
  * Build the configured (not-yet-listening) HTTP server. Exported so tests drive
  * the handler directly on an ephemeral port without the enabled-gate.
@@ -289,7 +453,12 @@ export function createOdysseusServer(
   deps: OdysseusServerDeps,
   token: string,
 ): Server {
-  return createServer((req, res) => {
+  const activityState: ActivityStreamState = {
+    responses: new Set(),
+    closed: false,
+  };
+
+  const server = createServer((req, res) => {
     // Sub-tick TOCTOU guard: the socket can die between a res.writable check
     // and the synchronous write; an unhandled 'error' would crash the host.
     res.on('error', (err) =>
@@ -307,9 +476,10 @@ export function createOdysseusServer(
 
     const isChat = url === '/v1/chat/completions';
     const isModels = url === '/v1/models';
+    const isActivity = url === '/v1/activity';
 
     // Method gate BEFORE auth (closes OPTIONS/HEAD presence-leak).
-    if (!isChat && !isModels) {
+    if (!isChat && !isModels && !isActivity) {
       writeJson(res, 404, { error: 'not found' });
       return;
     }
@@ -321,8 +491,14 @@ export function createOdysseusServer(
       writeJson(res, 405, { error: 'method not allowed' });
       return;
     }
+    if (isActivity && method !== 'GET') {
+      writeJson(res, 405, { error: 'method not allowed' });
+      return;
+    }
 
-    // Auth — all routes, constant-time.
+    // Auth — all routes, constant-time. Same ODYSSEUS_HTTP_TOKEN bearer path
+    // as every other route; no query-string token, cookie, or alternate
+    // credential is accepted (LIA-432/G5 adds no new auth mode).
     const bearer = extractBearer(req);
     if (!bearer || !timingSafeEqualStr(bearer, token)) {
       logger.warn({ remoteAddr, url, status: 401 }, 'Odysseus auth rejected');
@@ -330,6 +506,10 @@ export function createOdysseusServer(
       return;
     }
 
+    // Same rate bucket as every other route, applied to every initial
+    // connection AND every reconnection; delivered activity events/pings are
+    // plain writes on an already-admitted connection and consume no
+    // additional rate-limit entries.
     if (isRateLimited(remoteAddr)) {
       writeJson(res, 429, { error: 'rate limit exceeded' });
       return;
@@ -337,6 +517,11 @@ export function createOdysseusServer(
 
     if (isModels) {
       writeJson(res, 200, MODELS_RESPONSE);
+      return;
+    }
+
+    if (isActivity) {
+      handleActivityStream(deps, res, activityState);
       return;
     }
 
@@ -367,6 +552,15 @@ export function createOdysseusServer(
       handleChatCompletion(deps, body, res, remoteAddr);
     });
   });
+
+  activityStateByServer.set(server, activityState);
+  // Backstop: if something ends the server directly (bypassing
+  // stopOdysseusServer), still drain any live /v1/activity responses instead
+  // of leaving them dangling — closeActivityStreamsFor's own `closed` guard
+  // makes this a no-op when stopOdysseusServer already ran it.
+  server.on('close', () => closeActivityStreamsFor(activityState));
+
+  return server;
 }
 
 /**
@@ -409,6 +603,75 @@ export function startOdysseusServer(
       resolve(server);
     });
   });
+}
+
+// Bounds how long stopOdysseusServer() can be blocked by a connection OTHER
+// than a drained /v1/activity stream — chiefly a still-open /v1/chat/completions
+// turn, which ABSOLUTE_TURN_MS otherwise only bounds at 10 minutes. Node's
+// `server.close()` callback does not fire until every open connection ends,
+// so without this bound, `await stopOdysseusServer()` in src/index.ts's
+// shutdown() (which now runs BEFORE the queue/channel drain — see PLAN.md §5)
+// could starve the rest of graceful shutdown for up to that long. Previously
+// (`webhookServers.push(odysseusServer)` + fire-and-forget `.close()`),
+// shutdown never awaited this at all, so this bound keeps the new behavior
+// strictly better than before rather than introducing a new hang risk.
+const ODYSSEUS_STOP_GRACE_MS = 10_000;
+
+/**
+ * Idempotent Odysseus HTTP-server shutdown owner (LIA-432/G5). Drains every
+ * live `/v1/activity` response (final `: server shutdown` comment + `res.end()`)
+ * BEFORE `server.close()`, so `server.close()`'s own callback isn't left
+ * waiting forever on a permanent SSE socket — then resolves once that close
+ * callback completes, or after `ODYSSEUS_STOP_GRACE_MS` elapses, whichever is
+ * first. If the grace period elapses first (a connection other than a drained
+ * activity stream is still open — e.g. a live `/v1/chat/completions` turn),
+ * this force-closes remaining sockets via `closeIdleConnections()`/
+ * `closeAllConnections()` (Node >=18.2; this repo requires Node >=20) so the
+ * rest of process-wide shutdown (queue/channel drain in `src/index.ts`) is
+ * never starved by one in-flight streaming turn. This is the SOLE closer of
+ * the Odysseus `Server`; the generic `webhookServers` shutdown loop in
+ * `src/index.ts` must not also call `.close()` on the same instance (double
+ * `server.close()`).
+ *
+ * Crucially, this closes only the Odysseus HTTP resource and its
+ * `/v1/activity` route subscriptions — it never closes the injected
+ * `RuntimeActivityBroadcaster` itself. That broadcaster is process-wide,
+ * owned by the `src/index.ts` composition root, and stays open through the
+ * rest of shutdown so a `deus-native` turn still in flight elsewhere
+ * (channel/task/Linear) can keep publishing until the process-wide
+ * `activityBroadcaster.close()` call at the true tail of shutdown.
+ *
+ * Repeated calls (including a redundant call after the server already closed
+ * some other way) return the SAME promise/resolution rather than re-invoking
+ * `server.close()`, which would reject on an already-closed server.
+ */
+export function stopOdysseusServer(server: Server): Promise<void> {
+  const cached = stopPromiseByServer.get(server);
+  if (cached) return cached;
+
+  const stopPromise = (async () => {
+    const state = activityStateByServer.get(server);
+    if (state) closeActivityStreamsFor(state);
+
+    const closePromise = new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+
+    const forceTimer = setTimeout(() => {
+      server.closeIdleConnections?.();
+      server.closeAllConnections?.();
+    }, ODYSSEUS_STOP_GRACE_MS);
+    forceTimer.unref();
+
+    try {
+      await closePromise;
+    } finally {
+      clearTimeout(forceTimer);
+    }
+  })();
+
+  stopPromiseByServer.set(server, stopPromise);
+  return stopPromise;
 }
 
 function handleChatCompletion(

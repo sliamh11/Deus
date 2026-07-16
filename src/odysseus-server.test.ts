@@ -48,9 +48,11 @@ import {
   buildConversationPrompt,
   validateOdysseusToken,
   _resetServerStateForTest,
+  stopOdysseusServer,
   type OdysseusServerDeps,
 } from './odysseus-server.js';
 import type { RuntimeEventSink, RunResult } from './agent-runtimes/types.js';
+import { RuntimeActivityBroadcaster } from './agent-runtimes/activity-broadcaster.js';
 import type { RegisteredGroup } from './types.js';
 
 const TOKEN = 'a'.repeat(48); // valid (>= 32)
@@ -107,6 +109,11 @@ function makeDeps(opts?: {
       resolve: () => backend,
     } as unknown as OdysseusServerDeps['registry'],
     registeredGroups: () => groups,
+    // LIA-432/G5: OdysseusServerDeps now requires an injected broadcaster.
+    // This file doesn't exercise /v1/activity (see the dedicated
+    // odysseus-activity-stream.test.ts sibling) — a fresh instance per
+    // makeDeps() call is enough to satisfy the type.
+    activityBroadcaster: new RuntimeActivityBroadcaster(),
   };
 }
 
@@ -567,6 +574,71 @@ describe('SSE streaming', () => {
     expect(closeStdin).not.toHaveBeenCalled(); // 10s timer still pending
     await vi.advanceTimersByTimeAsync(10_001); // fire scheduleClose
     expect(closeStdin).toHaveBeenCalledWith(MAIN_JID);
+    vi.useRealTimers();
+  });
+});
+
+// ── stopOdysseusServer bounded force-close (LIA-432/G5) ─────────────────────
+// Node's `server.close()` callback does not fire until every open connection
+// ends — not just drained `/v1/activity` streams. Without a bound,
+// `stopOdysseusServer()` could hang on a still-open `/v1/chat/completions`
+// turn for up to ABSOLUTE_TURN_MS (10 minutes), starving the rest of
+// src/index.ts's shutdown() sequence (queue/channel drain), which now runs
+// AFTER the awaited Odysseus stop. This proves the grace-period force-close
+// keeps that bounded instead.
+describe('stopOdysseusServer — bounded force-close of a still-open chat stream', () => {
+  it('does not resolve while a /v1/chat/completions turn is still streaming, then force-closes and resolves once the grace period elapses', async () => {
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'],
+    });
+    let releaseHang: () => void = () => {};
+    const hang = new Promise<void>((r) => {
+      releaseHang = r;
+    });
+    const turn: TurnDriver = async (sink) => {
+      await sink({ type: 'output_text', text: 'partial' });
+      await hang; // never resolves on its own — models a live long-running turn
+      return { status: 'success', result: 'unreachable in this test' };
+    };
+    await listen(makeDeps({ turn }));
+
+    // Real socket I/O (only timer fns are faked, matching the container
+    // wind-down test above) — open the stream and wait for the first
+    // streamed chunk so the connection is genuinely established and open.
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request(
+        {
+          method: 'POST',
+          path: '/v1/chat/completions',
+          hostname: '127.0.0.1',
+          port,
+          headers: authHeaders,
+        },
+        (res) => {
+          res.once('data', () => resolve());
+          res.on('error', () => {});
+        },
+      );
+      req.on('error', reject);
+      req.end(chatBody());
+    });
+
+    let stopSettled = false;
+    const stopPromise = stopOdysseusServer(server).then(() => {
+      stopSettled = true;
+    });
+
+    // Flush microtasks without advancing fake timers — the chat connection
+    // is still open, so server.close()'s callback must not have fired yet.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(stopSettled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(10_001); // elapse ODYSSEUS_STOP_GRACE_MS
+    await stopPromise;
+    expect(stopSettled).toBe(true);
+
+    releaseHang();
     vi.useRealTimers();
   });
 });
