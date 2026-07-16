@@ -48,12 +48,15 @@
  *   only — SAFE_TOOL_NAMES is unchanged and widening the live tool surface
  *   still requires its own isolation review plus the replay-safety contract
  *   (docs/decisions/deus-v2-replay-safety.md).
- * - Middleware layer SUBSTANCE beyond permissions. The ordered/configurable
- *   middleware stack itself landed with B2/LIA-402 and B7 made the
- *   permissions layer real; the remaining layers are explicit observe-only
- *   placeholders (wardens -> hook-dispatch-facade-correction.md's deferred
- *   remediation options, memory -> group-scoping safety, telemetry -> real
- *   usage accounting).
+ * - Middleware layer SUBSTANCE beyond permissions and memory. The ordered/
+ *   configurable middleware stack itself landed with B2/LIA-402, B7 made
+ *   the permissions layer real, and D1/LIA-415 made the memory layer real
+ *   for CONTROL-GROUP turns (one beforeModel retrieval per turn through the
+ *   unchanged scripts/memory_retrieval_hook.py — non-control groups keep
+ *   the pass-through observer on group-scoping safety grounds, tracked as
+ *   AAG-014). The remaining layers are explicit observe-only placeholders
+ *   (wardens -> hook-dispatch-facade-correction.md's deferred remediation
+ *   options, telemetry -> real usage accounting).
  * - Replay-safety auditing (B5/LIA-405), token/usage accounting events
  *   (B6/LIA-406), nested subagent dispatch (B8/LIA-408).
  * - Consuming the middleware stack's inspectable `logs` output (added per
@@ -323,8 +326,10 @@ export class DeusNativeRuntime implements AgentRuntime {
       // permissions -> wardens -> memory -> telemetry (index 0 outermost).
       // B7 (LIA-407): the permissions layer is REAL — a declarative
       // first-match-wins rule engine (permission-rules.ts) selected by the
-      // named profile below; the other layers remain observe-only
-      // placeholders (see middleware-stack.ts for each layer's caveat).
+      // named profile below. D1 (LIA-415): the memory layer is REAL for
+      // control-group turns (see memoryRequest below); wardens/telemetry
+      // remain observe-only placeholders (see middleware-stack.ts for each
+      // layer's caveat).
       //
       // Profile selection: runContext.backendConfig.permissionProfile.
       // Omitted => 'default' (allow-all — today's behavior, unchanged);
@@ -345,7 +350,27 @@ export class DeusNativeRuntime implements AgentRuntime {
       }
       const { middleware } = buildMiddlewareStack(
         resolveMiddlewareStackConfig(),
-        { permissionProfile: rawPermissionProfile },
+        {
+          permissionProfile: rawPermissionProfile,
+          // D1 (LIA-415): the memory layer's retrieval input — the submitted
+          // prompt plus the backend-scoped session id (computed above; it
+          // drives the hook's session-concept expansion and injection
+          // dedup). CONTROL-GROUP TURNS ONLY: memory_retrieval_hook.py reads
+          // the user's PERSONAL vault and is not group-scoped, so supplying
+          // it for arbitrary groups would leak personal context across
+          // unrelated conversations — exactly the deferral reason the old
+          // placeholder documented. Non-control groups keep the layer as a
+          // pass-through observer (parity gap tracked as AAG-014 in
+          // docs/agent-agnostic-debt.md).
+          ...(runContext.isControlGroup
+            ? {
+                memoryRequest: {
+                  prompt: runContext.prompt,
+                  sessionId: outgoingSessionId,
+                },
+              }
+            : {}),
+        },
       );
 
       // B3 (LIA-403): the prompt-lifecycle hook is a SEPARATE, small

@@ -159,6 +159,19 @@ web_fetch}` and remains the operative boundary; B7 added an authorization
 - Session persistence (`persistent_sessions: false`) and Deus context loading
   are deferred to B4 and B2/B3 respectively — `deus-native` is a roadmap
   vehicle, not yet a parity backend.
+- **Update (D1/LIA-415):** the middleware stack's memory slot is now filled
+  for CONTROL-GROUP turns: `buildMemoryMiddleware` performs one `beforeModel`
+  retrieval per turn through a narrow subprocess adapter
+  (`src/agent-runtimes/memory-retrieval.ts`) over the byte-for-byte unchanged
+  `scripts/memory_retrieval_hook.py`, appending non-empty recalled context to
+  the model input as a user-role message and failing open (no context, turn
+  proceeds) on empty/malformed output, timeout, or process failure.
+  Non-control groups deliberately keep the pass-through observer — the hook
+  reads the user's personal vault and is not group-scoped; that parity gap is
+  tracked as `AAG-014` in `docs/agent-agnostic-debt.md`. This fills the
+  existing memory slot only: it does not reopen this ADR's runtime choice and
+  claims no broader hook-pipeline parity (the general host `HookPipeline`
+  remains unimplemented per `hook-dispatch-facade-correction.md`).
 
 ## Rollback
 

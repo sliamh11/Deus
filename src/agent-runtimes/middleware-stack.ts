@@ -18,9 +18,14 @@
  * The PERMISSIONS layer is real as of B7/LIA-407: a declarative first-match-
  * wins rule engine (permission-rules.ts) evaluated inside `wrapToolCall`,
  * with named profiles (`default` allow-all, `read-only` fail-closed) selected
- * via `BuildMiddlewareStackDeps.permissionProfile`. The OTHER layers remain
- * explicit observe-only placeholders — each factory's doc comment names the
- * future work that replaces its substance. In particular, the wardens layer
+ * via `BuildMiddlewareStackDeps.permissionProfile`. The MEMORY layer is real
+ * for control-group turns as of D1/LIA-415: one `beforeModel` retrieval per
+ * turn through the unchanged `scripts/memory_retrieval_hook.py` (see
+ * memory-retrieval.ts and buildMemoryMiddleware's doc comment; other groups
+ * keep the pass-through observer — AAG-014). The wardens and telemetry
+ * layers remain explicit observe-only placeholders — each factory's doc
+ * comment names the future work that replaces its substance. In particular,
+ * the wardens layer
  * deliberately does NOT call `codex_warden_hooks.py`: wiring real gates into
  * a non-Claude backend's live tool-call path is exactly the remediation that
  * the Accepted ADR docs/decisions/hook-dispatch-facade-correction.md holds
@@ -28,12 +33,17 @@
  */
 
 import { createMiddleware, type AgentMiddleware } from 'langchain';
-import { ToolMessage } from '@langchain/core/messages';
+import { HumanMessage, ToolMessage } from '@langchain/core/messages';
 
 import {
   evaluatePermission,
   resolvePermissionProfile,
 } from './permission-rules.js';
+import {
+  retrieveMemoryContext,
+  type MemoryRetrievalAdapter,
+  type MemoryRetrievalRequest,
+} from './memory-retrieval.js';
 
 /** The four supported middleware layers, by canonical position. */
 export type MiddlewareLayerName =
@@ -91,7 +101,9 @@ export interface ToolCallDecisionRecord {
   reason?: string;
 }
 
-/** One memory-layer pass-through observation (no-op beforeModel/afterModel). */
+/** One memory-layer hook firing. Records every beforeModel/afterModel pass
+ *  (unchanged shape from the B2 placeholder era — D1's retrieval substance
+ *  kept the record contract intact). */
 export interface MemoryPassRecord {
   hook: 'beforeModel' | 'afterModel';
 }
@@ -228,24 +240,61 @@ export function buildWardensMiddleware(
 }
 
 /**
- * Memory layer — PLACEHOLDER. No-op pass-through beforeModel/afterModel
- * that records each firing. Real substance (beforeModel/dynamicPrompt
- * retrieval) is deferred on group-scoping safety grounds: the host's
- * `scripts/memory_retrieval_hook.py` is the user's PERSONAL vault retrieval
- * (opt-in/default-off per the procedure-memory-default-on ADR precedent)
- * and is not group-scoped, while deus-native serves arbitrary groups with
- * isolated memory — wiring it in today would leak personal context across
- * unrelated conversations. Matches B1's precedent of deferring
- * context-loading substance explicitly rather than silently.
+ * Memory layer — REAL for control-group turns as of D1/LIA-415. On the
+ * FIRST `beforeModel` firing of a turn that supplied `memoryRequest`, it
+ * runs one retrieval through the unchanged `scripts/memory_retrieval_hook.py`
+ * (via the subprocess adapter in memory-retrieval.ts) and, when the hook
+ * returns non-empty context, appends ONE user-role context message through
+ * LangGraph's default messages append-reducer — so the recalled context is
+ * visible in the model input for this and every later cycle of the turn.
+ *
+ * Deliberate constraints, each load-bearing:
+ * - One retrieval per turn (closure-local boolean): `buildMiddlewareStack`
+ *   is constructed once per `runTurn`, so tool-driven follow-up model
+ *   cycles retain the injected message but never rerun retrieval or the
+ *   hook's session-concept/dedup side effects.
+ * - A user-role message, NEVER a SystemMessage: `beforeModel` message
+ *   updates APPEND after the user message, and Anthropic's payload
+ *   converter rejects a system message outside position zero (see
+ *   lifecycle-events.ts's module doc for the verified failure mode). The
+ *   hook's own untrusted-memory framing stays intact inside the content.
+ * - Fail-open (AC4): an absent `memoryRequest`, an empty result, or an
+ *   adapter failure all leave the model input unchanged and never fail
+ *   the turn.
+ * - Group scoping: the hook reads the user's PERSONAL vault and is not
+ *   group-scoped, so the caller (deus-native-backend.ts) supplies
+ *   `memoryRequest` only for control-group turns; every other group keeps
+ *   the pass-through observer behavior. The remaining non-control-group
+ *   parity gap is tracked as AAG-014 in docs/agent-agnostic-debt.md.
  */
 export function buildMemoryMiddleware(
+  memoryRequest?: MemoryRetrievalRequest,
+  retrievalAdapter: MemoryRetrievalAdapter = retrieveMemoryContext,
   orderMarkers?: OrderMarker[],
 ): BuiltLayer<MemoryPassRecord> {
   const log: MemoryPassRecord[] = [];
+  // One-shot gate: this factory runs once per turn, so a plain closure
+  // boolean is the whole "first applicable firing" mechanism.
+  let retrievalAttempted = false;
   const middleware = createMiddleware({
     name: 'memory',
-    beforeModel: () => {
+    beforeModel: async () => {
       log.push({ hook: 'beforeModel' });
+      if (memoryRequest === undefined || retrievalAttempted) return;
+      retrievalAttempted = true;
+      let context: string;
+      try {
+        context = await retrievalAdapter(memoryRequest);
+      } catch {
+        // The production adapter never rejects by contract; this guard
+        // keeps the AC4 never-fail-the-turn invariant independent of any
+        // injected adapter's behavior.
+        context = '';
+      }
+      if (context === '') return;
+      // Appended via the default messages reducer — lands AFTER the user's
+      // message, before this cycle's model call.
+      return { messages: [new HumanMessage(context)] };
     },
     afterModel: () => {
       log.push({ hook: 'afterModel' });
@@ -304,6 +353,15 @@ export interface BuildMiddlewareStackDeps {
    *  stack construction — before any agent exists — rather than silently
    *  weakening the requested restriction. */
   permissionProfile?: string;
+  /** D1 (LIA-415): the submitted prompt + backend-scoped session id for the
+   *  memory layer's one-per-turn retrieval. Supplied by deus-native's
+   *  runTurn ONLY for control-group turns (the retrieval hook reads the
+   *  user's personal vault and is not group-scoped — see AAG-014). Omitted
+   *  => the memory layer stays a pass-through observer. */
+  memoryRequest?: MemoryRetrievalRequest;
+  /** Test-only override of the memory retrieval adapter — hermetic doubles
+   *  instead of the real Python subprocess. Omit in production. */
+  memoryRetrievalAdapter?: MemoryRetrievalAdapter;
 }
 
 export interface MiddlewareStackResult {
@@ -353,7 +411,11 @@ export function buildMiddlewareStack(
         break;
       }
       case 'memory': {
-        const built = buildMemoryMiddleware(deps.orderMarkers);
+        const built = buildMemoryMiddleware(
+          deps.memoryRequest,
+          deps.memoryRetrievalAdapter,
+          deps.orderMarkers,
+        );
         middleware.push(built.middleware);
         logs.memory = built.log;
         break;

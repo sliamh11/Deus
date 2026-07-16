@@ -1,5 +1,11 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { createAgent, tool, FakeToolCallingModel } from 'langchain';
+import {
+  createAgent,
+  createMiddleware,
+  tool,
+  FakeToolCallingModel,
+  type AgentMiddleware,
+} from 'langchain';
 import { ToolMessage } from '@langchain/core/messages';
 
 import {
@@ -11,6 +17,7 @@ import {
   type MiddlewareLayerName,
   type OrderMarker,
 } from './middleware-stack.js';
+import type { MemoryRetrievalRequest } from './memory-retrieval.js';
 
 /** Middleware instance names equal their layer names, so ordering
  *  assertions read directly against CANONICAL_MIDDLEWARE_ORDER. */
@@ -487,5 +494,200 @@ describe('permissions middleware — compliant (allowed) flows are not impeded t
         reason: expect.stringContaining('web_search'),
       },
     ]);
+  });
+});
+
+// ── D1 (LIA-415): memory layer retrieval injection over a REAL createAgent
+// turn ────────────────────────────────────────────────────────────────────
+//
+// The adapter is an injected hermetic double (no Python, vault, or Ollama);
+// what these tests prove is the MIDDLEWARE contract: one retrieval per turn
+// for the submitted prompt, non-empty context visible in the model input
+// (AC3) after the original prompt, and the empty-result path leaving the
+// model input unchanged without failing the turn (AC4). The subprocess
+// boundary itself is pinned down in memory-retrieval.test.ts.
+
+const MEMORY_FIXTURE_REQUEST: MemoryRetrievalRequest = {
+  prompt: 'call the echo tool once',
+  sessionId: 'session-fixture-d1',
+};
+
+const RECALLED_CONTEXT =
+  '=== UNTRUSTED RECALLED MEMORY (fixture) ===\nrecalled fixture context';
+
+/** Innermost capture middleware: records each model request's message
+ *  contents exactly as the (fake) model is about to receive them — the
+ *  "visible in the model input" oracle. Appended AFTER the stack, mirroring
+ *  how runTurn appends its prompt-lifecycle middleware. */
+function buildModelInputCapture(captured: string[][]): AgentMiddleware {
+  return createMiddleware({
+    name: 'model-input-capture',
+    wrapModelCall: (request, handler) => {
+      captured.push(
+        request.messages.map((m) =>
+          typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        ),
+      );
+      return handler(request);
+    },
+  });
+}
+
+describe('memory middleware — beforeModel retrieval injection (D1/LIA-415)', () => {
+  it('injects non-empty retrieved context into the model input after the prompt, retrieving exactly once across a two-cycle turn (AC1/AC3/AC5)', async () => {
+    const adapterCalls: MemoryRetrievalRequest[] = [];
+    const { middleware } = buildMiddlewareStack(
+      {},
+      {
+        memoryRequest: MEMORY_FIXTURE_REQUEST,
+        memoryRetrievalAdapter: async (request) => {
+          adapterCalls.push(request);
+          return RECALLED_CONTEXT;
+        },
+      },
+    );
+
+    const captured: string[][] = [];
+    // Explicit AgentMiddleware[] annotation — same reason as runTurn's own
+    // allMiddleware: the mixed array literal otherwise infers a shape that
+    // misses createAgent's overloads.
+    const allMiddleware: AgentMiddleware[] = [
+      ...middleware,
+      buildModelInputCapture(captured),
+    ];
+    const agent = createAgent({
+      model: scriptedModel(),
+      tools: [ECHO_TOOL],
+      middleware: allMiddleware,
+    });
+    const result = await agent.invoke({
+      messages: [{ role: 'user', content: MEMORY_FIXTURE_REQUEST.prompt }],
+    });
+
+    // AC1: retrieval ran BEFORE the first model request — the injected
+    // context is already in that request's input. AC3: it appears after the
+    // original prompt (appended via the messages reducer, never position 0).
+    expect(captured[0]).toEqual([
+      MEMORY_FIXTURE_REQUEST.prompt,
+      RECALLED_CONTEXT,
+    ]);
+
+    // One retrieval for the submitted prompt, despite TWO model cycles
+    // (tool-call cycle + final cycle) — the closure gate held.
+    expect(captured).toHaveLength(2);
+    expect(adapterCalls).toEqual([MEMORY_FIXTURE_REQUEST]);
+
+    // The injected message is retained state: the second cycle still sees it.
+    expect(captured[1]).toContain(RECALLED_CONTEXT);
+
+    // The turn completed normally with a final model answer.
+    expect((result as { messages: unknown[] }).messages.length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it('an empty retrieval result leaves the model input unchanged and does not fail the turn (AC4/AC5)', async () => {
+    const adapter = vi.fn(async () => '');
+    const { middleware } = buildMiddlewareStack(
+      {},
+      {
+        memoryRequest: MEMORY_FIXTURE_REQUEST,
+        memoryRetrievalAdapter: adapter,
+      },
+    );
+
+    const captured: string[][] = [];
+    // Explicit AgentMiddleware[] annotation — same reason as runTurn's own
+    // allMiddleware: the mixed array literal otherwise infers a shape that
+    // misses createAgent's overloads.
+    const allMiddleware: AgentMiddleware[] = [
+      ...middleware,
+      buildModelInputCapture(captured),
+    ];
+    const agent = createAgent({
+      model: scriptedModel(),
+      tools: [ECHO_TOOL],
+      middleware: allMiddleware,
+    });
+    const result = await agent.invoke({
+      messages: [{ role: 'user', content: MEMORY_FIXTURE_REQUEST.prompt }],
+    });
+
+    // Retrieval WAS attempted (once)...
+    expect(adapter).toHaveBeenCalledTimes(1);
+    // ...but the model input is byte-identical to a no-injection turn.
+    expect(captured[0]).toEqual([MEMORY_FIXTURE_REQUEST.prompt]);
+    // The turn still ran to completion — two cycles, final answer present.
+    expect(captured).toHaveLength(2);
+    expect((result as { messages: unknown[] }).messages.length).toBeGreaterThan(
+      0,
+    );
+  });
+
+  it('a rejecting adapter is contained: model input unchanged, turn completes (AC4 hardening)', async () => {
+    const adapter = vi.fn(async () => {
+      throw new Error('injected adapter failure');
+    });
+    const { middleware } = buildMiddlewareStack(
+      {},
+      {
+        memoryRequest: MEMORY_FIXTURE_REQUEST,
+        memoryRetrievalAdapter: adapter,
+      },
+    );
+
+    const captured: string[][] = [];
+    // Explicit AgentMiddleware[] annotation — same reason as runTurn's own
+    // allMiddleware: the mixed array literal otherwise infers a shape that
+    // misses createAgent's overloads.
+    const allMiddleware: AgentMiddleware[] = [
+      ...middleware,
+      buildModelInputCapture(captured),
+    ];
+    const agent = createAgent({
+      model: scriptedModel(),
+      tools: [ECHO_TOOL],
+      middleware: allMiddleware,
+    });
+    await agent.invoke({
+      messages: [{ role: 'user', content: MEMORY_FIXTURE_REQUEST.prompt }],
+    });
+
+    expect(adapter).toHaveBeenCalledTimes(1);
+    expect(captured[0]).toEqual([MEMORY_FIXTURE_REQUEST.prompt]);
+    expect(captured).toHaveLength(2);
+  });
+
+  it('without memoryRequest the layer stays a pass-through observer — the adapter is never invoked', async () => {
+    const adapter = vi.fn(async () => RECALLED_CONTEXT);
+    const { middleware, logs } = buildMiddlewareStack(
+      {},
+      { memoryRetrievalAdapter: adapter },
+    );
+
+    const captured: string[][] = [];
+    // Explicit AgentMiddleware[] annotation — same reason as runTurn's own
+    // allMiddleware: the mixed array literal otherwise infers a shape that
+    // misses createAgent's overloads.
+    const allMiddleware: AgentMiddleware[] = [
+      ...middleware,
+      buildModelInputCapture(captured),
+    ];
+    const agent = createAgent({
+      model: scriptedModel(),
+      tools: [ECHO_TOOL],
+      middleware: allMiddleware,
+    });
+    await agent.invoke({
+      messages: [{ role: 'user', content: MEMORY_FIXTURE_REQUEST.prompt }],
+    });
+
+    expect(adapter).not.toHaveBeenCalled();
+    expect(captured[0]).toEqual([MEMORY_FIXTURE_REQUEST.prompt]);
+    // The observational log still records every firing — record contract
+    // unchanged from the placeholder era.
+    expect(logs.memory?.filter((r) => r.hook === 'beforeModel')).toHaveLength(
+      2,
+    );
   });
 });

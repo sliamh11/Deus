@@ -10,10 +10,21 @@ import type { RuntimeEvent } from './types.js';
 // exercised through the REAL LangGraph engine, which this file mocks away
 // via createAgentMock). A single hoisted instance so the createAgent-wiring
 // assertion below can prove the EXACT object was passed through.
-const { createAgentMock, invokeMock, checkpointerStub } = vi.hoisted(() => ({
+const {
+  createAgentMock,
+  invokeMock,
+  checkpointerStub,
+  buildMiddlewareStackSpy,
+} = vi.hoisted(() => ({
   createAgentMock: vi.fn(),
   invokeMock: vi.fn(),
   checkpointerStub: { getTuple: async () => undefined },
+  // D1 (LIA-415): a pass-through SPY (implementation assigned in the
+  // module mock below — always the REAL buildMiddlewareStack), so tests
+  // can inspect the deps runTurn supplies (memoryRequest presence/shape)
+  // without changing any behavior. Use mockClear() only, never
+  // mockReset() — reset would drop the real implementation.
+  buildMiddlewareStackSpy: vi.fn(),
 }));
 
 vi.mock('langchain', async (importOriginal) => {
@@ -78,6 +89,16 @@ vi.mock('./tool-broker-langchain-adapter.js', () => ({
 vi.mock('./checkpointer.js', () => ({
   getCheckpointer: () => checkpointerStub,
 }));
+
+// D1 (LIA-415): keep the real module (real createMiddleware-built layers,
+// real config parsing) and swap ONLY buildMiddlewareStack for a delegating
+// spy — production behavior is unchanged, but the deps runTurn passes
+// (memoryRequest for control-group turns) become inspectable.
+vi.mock('./middleware-stack.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./middleware-stack.js')>();
+  buildMiddlewareStackSpy.mockImplementation(actual.buildMiddlewareStack);
+  return { ...actual, buildMiddlewareStack: buildMiddlewareStackSpy };
+});
 
 const { createDeusNativeRuntime } = await import('./deus-native-backend.js');
 
@@ -502,5 +523,109 @@ describe('DeusNativeBackend — permission profile wiring (B7/LIA-407)', () => {
       'backendConfig.permissionProfile must be a string',
     );
     expect(createAgentMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── D1 (LIA-415): memory retrieval wiring at the PRODUCTION call site ─────
+//
+// buildMiddlewareStack is a delegating spy over the REAL implementation
+// (see the module mock at the top of this file), so these tests inspect the
+// genuine deps runTurn supplies: a control-group turn must carry the
+// submitted prompt plus the backend-scoped session id into the memory
+// layer, and a non-control-group turn must omit memoryRequest entirely
+// (personal-vault isolation — the placeholder seam's documented leak
+// concern). No live model, Python, vault, or Ollama call happens anywhere
+// here: createAgent is mocked, so no beforeModel hook (and therefore no
+// real subprocess adapter) ever fires.
+
+import type { BuildMiddlewareStackDeps } from './middleware-stack.js';
+
+describe('DeusNativeBackend — memory retrieval wiring (D1/LIA-415)', () => {
+  const backend = createDeusNativeRuntime(stubDeps);
+
+  beforeEach(() => {
+    createAgentMock.mockReset();
+    invokeMock.mockReset();
+    detectAuthModeMock.mockReturnValue('api-key');
+    getOrCreateGroupTokenMock.mockReset();
+    getOrCreateGroupTokenMock.mockReturnValue('fake-proxy-token');
+    // mockClear, NOT mockReset — the spy must keep delegating to the real
+    // buildMiddlewareStack.
+    buildMiddlewareStackSpy.mockClear();
+  });
+
+  async function runTurnAs(isControlGroup: boolean) {
+    createAgentMock.mockReturnValue({ invoke: invokeMock });
+    invokeMock.mockResolvedValue({ messages: [{ content: 'ok' }] });
+    return backend.runTurn(
+      {
+        prompt: 'a generic fixture prompt about testing',
+        groupFolder: 'test-folder',
+        chatJid: 'test@g.us',
+        isControlGroup,
+      },
+      { backend: 'deus-native', session_id: '' },
+      () => {},
+    );
+  }
+
+  function suppliedDeps(): BuildMiddlewareStackDeps {
+    expect(buildMiddlewareStackSpy).toHaveBeenCalledTimes(1);
+    // Guard before the cast: a future arg-order change to
+    // buildMiddlewareStack must fail loudly here, not produce undefined
+    // deps and vacuously-passing assertions downstream.
+    const deps = buildMiddlewareStackSpy.mock.calls[0]?.[1];
+    expect(deps).toBeDefined();
+    return deps as BuildMiddlewareStackDeps;
+  }
+
+  it('a control-group turn supplies memoryRequest with the submitted prompt and the backend-scoped session id', async () => {
+    const result = await runTurnAs(true);
+    expect(result.status).toBe('success');
+
+    const deps = suppliedDeps();
+    expect(deps.memoryRequest).toEqual({
+      prompt: 'a generic fixture prompt about testing',
+      // The SAME id the RunResult.sessionRef carries — the checkpointer
+      // thread_id computed at the top of the turn, so the hook's
+      // session-concept/dedup state keys to the real session.
+      sessionId: result.sessionRef?.session_id,
+    });
+    // No test-only adapter override leaks into production wiring.
+    expect(deps.memoryRetrievalAdapter).toBeUndefined();
+
+    // Middleware ordering is untouched by the new dep (B2's locked order +
+    // B3's appended prompt-lifecycle).
+    const createAgentArgs = createAgentMock.mock.calls[0]?.[0] as {
+      middleware?: Array<{ name: string }>;
+    };
+    expect(createAgentArgs.middleware?.map((m) => m.name)).toEqual([
+      'permissions',
+      'wardens',
+      'memory',
+      'telemetry',
+      'prompt-lifecycle',
+    ]);
+  });
+
+  it('a non-control-group turn omits memoryRequest entirely (personal-vault isolation, AAG-014)', async () => {
+    const result = await runTurnAs(false);
+    expect(result.status).toBe('success');
+
+    const deps = suppliedDeps();
+    expect(deps.memoryRequest).toBeUndefined();
+    expect('memoryRequest' in deps).toBe(false);
+
+    // Ordering unchanged here too.
+    const createAgentArgs = createAgentMock.mock.calls[0]?.[0] as {
+      middleware?: Array<{ name: string }>;
+    };
+    expect(createAgentArgs.middleware?.map((m) => m.name)).toEqual([
+      'permissions',
+      'wardens',
+      'memory',
+      'telemetry',
+      'prompt-lifecycle',
+    ]);
   });
 });
