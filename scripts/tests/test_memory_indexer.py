@@ -372,6 +372,105 @@ def test_soft_delete_entries_marks_orphaned(mi):
     db.close()
 
 
+# ── LIA-370: entries_fts write-path repair ──────────────────────────────────
+
+def test_cmd_extract_indexes_atom_into_fts(mi, fresh_vault, monkeypatch):
+    """LIA-370(a): a newly extracted atom must land in entries_fts so the BM25
+    keyword-rescue path can find it. The extract path previously skipped it."""
+    session = fresh_vault / "Session-Logs" / "2024-01-01" / "t.md"
+    session.parent.mkdir(parents=True, exist_ok=True)
+    session.write_text(
+        "---\ntype: session\ndate: 2024-01-01\ntldr: t\n---\n## Decisions Made\n- x\n"
+    )
+    monkeypatch.setattr(
+        mi, "extract_atoms", lambda c: [{"text": "unmistakable zebra fact", "category": "fact"}]
+    )
+    monkeypatch.setattr(mi, "embed", lambda t: [0.1] * 768)
+    # no_contradict=True keeps the test provider-independent (skips the
+    # detect_contradictions LLM path explicitly, not just incidentally).
+    mi.cmd_extract(str(session), no_contradict=True)
+    # Query via a RAW connection — mi.open_db() runs _backfill_fts, which would
+    # insert the atom itself and mask a missing direct insert. This isolates the
+    # extract-path insert (fix a), not the backfill (fix c).
+    import sqlite3 as _sqlite3
+
+    raw = _sqlite3.connect(mi.DB_PATH)
+    atom_id = raw.execute("SELECT id FROM entries WHERE type='atom' LIMIT 1").fetchone()[0]
+    assert (
+        raw.execute("SELECT COUNT(*) FROM entries_fts WHERE rowid = ?", [atom_id]).fetchone()[0]
+        == 1
+    ), "extracted atom must be indexed into entries_fts by cmd_extract itself"
+    raw.close()
+
+
+def test_soft_delete_removes_fts_row(mi):
+    """LIA-370(b): soft_delete_entries must remove the entry's entries_fts row."""
+    db = mi.open_db()
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type) VALUES (?,?,?,?)",
+        ["/x/y.md", "2024-01-01", "some chunk", "frontmatter"],
+    )
+    rowid = cur.lastrowid
+    db.execute("INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)", [rowid, "some chunk"])
+    db.commit()
+    assert db.execute("SELECT COUNT(*) FROM entries_fts WHERE rowid=?", [rowid]).fetchone()[0] == 1
+    mi.soft_delete_entries(db, "/x/y.md", reason="test")
+    assert db.execute("SELECT COUNT(*) FROM entries_fts WHERE rowid=?", [rowid]).fetchone()[0] == 0
+    db.close()
+
+
+def test_backfill_fts_fires_despite_inflated_count(mi):
+    """LIA-370(c): _backfill_fts must fire when an active entry is missing from
+    FTS even though stale (orphaned) fts rows inflate the total count — the old
+    count-only guard would skip it."""
+    db = mi.open_db()
+    active = db.execute(
+        "INSERT INTO entries (path, date, chunk, type) VALUES (?,?,?,?)",
+        ["/active.md", "2024-01-01", "active chunk", "frontmatter"],
+    ).lastrowid
+    orphan = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, orphaned_at) VALUES (?,?,?,?,?)",
+        ["/orphan.md", "2024-01-01", "orphan chunk", "frontmatter", "2020-01-01 00:00:00"],
+    ).lastrowid
+    db.execute("INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)", [orphan, "orphan chunk"])
+    db.commit()
+    assert db.execute("SELECT COUNT(*) FROM entries_fts WHERE rowid=?", [active]).fetchone()[0] == 0
+    mi._backfill_fts(db)
+    assert (
+        db.execute("SELECT COUNT(*) FROM entries_fts WHERE rowid=?", [active]).fetchone()[0] == 1
+    ), "active entry missing from FTS must be backfilled despite inflated count"
+    db.close()
+
+
+def test_gc_fts_sweeps_orphaned_fts_rows(mi):
+    """LIA-370(b) backfill: gc_fts removes EXISTING stale fts rows, backs up
+    first, and is idempotent."""
+    db = mi.open_db()
+    orphan = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, orphaned_at) VALUES (?,?,?,?,?)",
+        ["/o.md", "2024-01-01", "o", "frontmatter", "2020-01-01 00:00:00"],
+    ).lastrowid
+    active = db.execute(
+        "INSERT INTO entries (path, date, chunk, type) VALUES (?,?,?,?)",
+        ["/a.md", "2024-01-01", "a", "frontmatter"],
+    ).lastrowid
+    db.execute("INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)", [orphan, "o"])
+    db.execute("INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)", [active, "a"])
+    db.commit()
+    db.close()
+
+    result = mi.gc_fts()
+    assert result["ok"] and result["fts_deleted"] == 1
+    from pathlib import Path as _P
+    assert _P(result["backup"]).exists()
+
+    db = mi.open_db()
+    rows = [r[0] for r in db.execute("SELECT rowid FROM entries_fts").fetchall()]
+    assert active in rows and orphan not in rows
+    db.close()
+    assert mi.gc_fts()["fts_deleted"] == 0  # idempotent
+
+
 def test_fts_query_excludes_orphaned_entries(mi):
     """LIA-370 (query-time bug): _fts_query must not return soft-deleted entries.
 
@@ -1341,8 +1440,15 @@ def test_fts_populated_on_add(mi, tmp_path, monkeypatch):
     assert fts_count >= entries_count
 
 
-def test_soft_delete_preserves_fts_rows(mi, tmp_path, monkeypatch):
-    """soft_delete_entries keeps FTS5 rows (they're derived, filtered via entry join)."""
+def test_soft_delete_removes_fts_rows(mi, tmp_path, monkeypatch):
+    """soft_delete_entries REMOVES the derived FTS5 rows (LIA-370(b)).
+
+    Previously they were left in place ('filtered at query time'), but the FTS
+    query path had no orphan filter (LIA-370 bonus), so stale rows surfaced as
+    live results AND inflated the _backfill_fts guard. Per the no-db-deletion
+    ADR (Rule 6, amended) the derived index rows are hard-deleted; the entries
+    rows keep their orphaned_at audit trail.
+    """
     session = tmp_path / "vault" / "Session-Logs" / "del-session.md"
     _make_session_file(session)
     monkeypatch.setattr(mi, "embed", lambda text: [0.0] * mi.EMBED_DIM)
@@ -1351,11 +1457,11 @@ def test_soft_delete_preserves_fts_rows(mi, tmp_path, monkeypatch):
 
     db = mi.open_db()
     before = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
+    assert before > 0
     mi.soft_delete_entries(db, str(session), reason="test")
     after = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
-    # FTS rows preserved — orphaned entries are filtered at query time, not at delete time
-    assert after == before
-    # Entry is soft-deleted
+    assert after < before  # the soft-deleted entry's FTS rows are gone
+    # Entry itself is soft-deleted (row preserved with orphaned_at).
     assert not mi.entry_exists(db, str(session))
 
 

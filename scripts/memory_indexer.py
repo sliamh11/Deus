@@ -290,10 +290,20 @@ def _backfill_fts(db: sqlite3.Connection) -> None:
     Silently skips if FTS5 is unavailable.
     """
     try:
-        fts_count = db.execute("SELECT COUNT(*) FROM entries_fts").fetchone()[0]
-        entries_count = db.execute("SELECT COUNT(*) FROM entries WHERE orphaned_at IS NULL").fetchone()[0]
-        if fts_count < entries_count:
-            # Insert active entries rows that don't yet have an FTS5 counterpart
+        # LIA-370(c): the old guard compared COUNT(entries_fts) < COUNT(active
+        # entries). Because stale rows from since-orphaned entries were never
+        # removed from entries_fts (fixed in (b)), fts_count stayed inflated and
+        # could sit >= the shrinking active count forever — so the guard never
+        # fired even when live atoms were genuinely missing from FTS. Gate on the
+        # real gap (active entries with no fts counterpart) instead.
+        missing = db.execute(
+            """
+            SELECT COUNT(*) FROM entries e
+            WHERE e.orphaned_at IS NULL
+            AND e.id NOT IN (SELECT rowid FROM entries_fts)
+            """
+        ).fetchone()[0]
+        if missing:
             db.execute("""
                 INSERT INTO entries_fts(rowid, chunk)
                 SELECT e.id, e.chunk FROM entries e
@@ -526,14 +536,80 @@ def entry_exists(db: sqlite3.Connection, path: str) -> bool:
     return row is not None
 
 
+def _fts_delete_entry(db: sqlite3.Connection, entry_id: int) -> None:
+    """Remove an entry's row from the derived entries_fts index (LIA-370(b)).
+
+    entries_fts is fts5 (no orphaned_at column), and the FTS search path had no
+    orphan filter, so a soft-deleted entry whose fts row lingered kept surfacing
+    as a live result and inflating the _backfill_fts count-guard. Per the
+    no-db-deletion ADR (Rule 6, amended) a derived index row may be hard-deleted
+    per-row; the entries row keeps its orphaned_at audit trail. Silent on missing
+    fts table.
+    """
+    try:
+        db.execute("DELETE FROM entries_fts WHERE rowid = ?", [entry_id])
+    except sqlite3.OperationalError:
+        pass
+
+
 def soft_delete_entries(db: sqlite3.Connection, path: str, reason: str = "re-indexed"):
     """Mark entries for a path as orphaned (soft-delete). See ADR: no-db-deletion.md."""
     now = utc_now().strftime("%Y-%m-%d %H:%M:%S")
+    ids = [
+        r[0]
+        for r in db.execute(
+            "SELECT id FROM entries WHERE path = ? AND orphaned_at IS NULL", [path]
+        ).fetchall()
+    ]
     db.execute(
         "UPDATE entries SET orphaned_at = ?, orphan_reason = ? WHERE path = ? AND orphaned_at IS NULL",
         [now, reason, path],
     )
+    for entry_id in ids:
+        _fts_delete_entry(db, entry_id)
     db.commit()
+
+
+def gc_fts(db_path: Path = None) -> dict:
+    """One-time sweep of stale entries_fts rows for already-orphaned entries
+    (LIA-370(b) backfill). The forward fix stops NEW stale rows; this removes the
+    EXISTING ones. Backs up the DB first — WAL-checkpointed so the .bak captures
+    uncheckpointed commits (the -wal/-shm sidecars aren't copied). Idempotent: a
+    clean index deletes 0.
+    """
+    dbp = db_path or DB_PATH
+    if not dbp.exists():
+        return {"ok": False, "message": "no db"}
+    import shutil
+
+    ck = sqlite3.connect(dbp)
+    try:
+        ck.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        ck.close()
+    # Nanosecond-precision suffix so a quick idempotent rerun can't overwrite the
+    # pre-sweep backup (which holds the only rollback snapshot).
+    backup = dbp.with_suffix(
+        dbp.suffix + f".bak-{local_now().strftime('%Y%m%d-%H%M%S')}-{time.time_ns()}"
+    )
+    shutil.copy2(dbp, backup)
+
+    db = sqlite3.connect(dbp)
+    try:
+        cur = db.execute(
+            "DELETE FROM entries_fts WHERE rowid IN "
+            "(SELECT id FROM entries WHERE orphaned_at IS NOT NULL)"
+        )
+        deleted = cur.rowcount
+        db.commit()
+    except sqlite3.OperationalError:
+        # FTS5 unavailable — same condition the other entries_fts guards handle.
+        return {"ok": False, "backup": str(backup), "message": "no fts table"}
+    finally:
+        db.close()
+    return {"ok": True, "backup": str(backup), "fts_deleted": deleted}
 
 
 # ── Parsing ───────────────────────────────────────────────────────────────────
@@ -3600,6 +3676,14 @@ def cmd_extract(session_path: str, no_contradict: bool = False):
             )
             db.execute("INSERT INTO embeddings(rowid, embedding) VALUES (?, ?)",
                        [cur.lastrowid, serialize(vec)])
+            # LIA-370(a): the extract path was missing the entries_fts insert the
+            # non-extract path does (:747), so extracted atoms were never keyword-
+            # indexed — invisible to the BM25 keyword-rescue retrieval path.
+            try:
+                db.execute("INSERT INTO entries_fts(rowid, chunk) VALUES (?, ?)",
+                           [cur.lastrowid, atom["text"]])
+            except sqlite3.OperationalError:
+                pass
             new_atom_ids.append((cur.lastrowid, atom["text"], vec))
             new_count += 1
             print(f"  new atom [{domain}]: {atom['text'][:70]}")
@@ -4160,6 +4244,7 @@ def cmd_prune(dry_run: bool = False):
                     "UPDATE entries SET orphaned_at = ?, orphan_reason = ? WHERE id = ?",
                     [now, "file_deleted", entry_id],
                 )
+                _fts_delete_entry(db, entry_id)  # LIA-370(b)
             orphans += 1
 
     if not dry_run:
@@ -4438,6 +4523,8 @@ def main() -> int:
     group.add_argument("--health", action="store_true",
                        help="Print memory health report (atom quality, confidence, coverage trends) "
                             "and save a daily snapshot to ~/.deus/memory_health.jsonl (no API call)")
+    group.add_argument("--gc-fts", action="store_true",
+                       help="Sweep stale entries_fts rows for already-orphaned entries (LIA-370 backfill; backs up first)")
     group.add_argument("--prune", action="store_true",
                        help="Enforce TTL expiry + clean orphan DB rows (no API call)")
     group.add_argument("--invalidate", metavar="PATH",
@@ -4547,6 +4634,9 @@ def main() -> int:
         return
     if args.health:
         cmd_health(save=not args.no_save)
+        return
+    if args.gc_fts:
+        print(json.dumps(gc_fts(), indent=2))
         return
     if args.prune:
         cmd_prune(dry_run=args.dry_run)
