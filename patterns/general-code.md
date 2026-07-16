@@ -1,5 +1,5 @@
 ---
-last_verified: "2026-07-15" # auto-bump @1784088960
+last_verified: "2026-07-16" # re-reviewed against deus-v2-subagent-dispatch.md (LIA-408); no drift
 governs:
   - src/
   - evolution/
