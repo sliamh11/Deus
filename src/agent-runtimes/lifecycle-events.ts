@@ -5,17 +5,22 @@
  * `runTurn`-level LIFECYCLE (session-open / per-prompt / turn-complete), not
  * tool/model-call middleware substance. Two concerns live here:
  *
- * 1. **Session-open context loading** (`loadSessionOpenContext`): reads the
- *    group's own `groups/<folder>/CLAUDE.md` (and `groups/global/CLAUDE.md`
- *    for non-control groups, mirroring the container path's own main-vs-other
+ * 1. **Session-open context loading** (`loadSessionOpenContext`): composes
+ *    vault context (LIA-416/D2 — control group only, via
+ *    `vault-context.ts`'s `loadVaultContext` facade) with the group's own
+ *    `groups/<folder>/CLAUDE.md` (and `groups/global/CLAUDE.md` for
+ *    non-control groups, mirroring the container path's own main-vs-other
  *    distinction — `container-mounter.ts` mounts `/workspace/global`
  *    read-only only for non-main groups, and the container-side reader is
  *    `context-registry.ts`'s `GLOBAL RULES: CLAUDE.md` entry with
  *    `skipForControlGroup: true`). Called ONLY when the caller (`runTurn`)
- *    has already determined this is a genuinely NEW session
- *    (`sessionRef.session_id === ''`) — literal once-per-session gating: it
- *    runs once when a new runtime session opens and never repeats for the
- *    same open lifecycle. A resumed turn never calls this at all.
+ *    has already determined this is a genuinely NEW session — since
+ *    B4/LIA-404 that signal is REAL checkpointer-tuple existence
+ *    (`priorTuple === undefined` for the outgoing thread_id), NOT the
+ *    pre-B4 `sessionRef.session_id === ''` string check — literal
+ *    once-per-session gating: it runs once when a new runtime session opens
+ *    and never repeats for the same open lifecycle. A resumed turn (an
+ *    existing checkpointer tuple) never calls this at all.
  *
  * 2. **Prompt lifecycle hook** (`buildPromptLifecycleHook`): ONE middleware,
  *    TWO hooks with split responsibilities:
@@ -64,6 +69,7 @@ import {
 
 import type { RunContext } from './types.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
+import { loadVaultContext, type VaultContextRecord } from './vault-context.js';
 
 /**
  * One inspectable record per session-open event, matching the
@@ -79,6 +85,11 @@ export interface SessionOpenRecord {
   /** Whether `groups/global/CLAUDE.md` was included (non-control groups
    *  only, and only when present with non-empty content). */
   globalClaudeMdLoaded: boolean;
+  /** LIA-416 (D2): outcome metadata from the vault-context surface —
+   *  eligibility/skip reason, vault availability, and WHICH ordered sections
+   *  and configured filenames contributed. Identifiers and booleans only,
+   *  never vault contents. */
+  vaultContext: VaultContextRecord;
   timestamp: number;
 }
 
@@ -96,31 +107,51 @@ function readContextFileIfPresent(filePath: string): string | undefined {
 
 /**
  * Loads the session-open context for a genuinely NEW session (the caller —
- * `runTurn` — decides that; this function is never called on a resumed
- * turn). Joins the present files into one system-role message string, or
- * returns `undefined` when neither exists — session-open injection is gated
- * on CONTENT PRESENCE as well as new-vs-resumed status.
+ * `runTurn` — decides that via checkpointer-tuple existence; this function is
+ * never called on a resumed turn). Joins the present parts into one
+ * system-role message string, or returns `undefined` when none exists —
+ * session-open injection is gated on CONTENT PRESENCE as well as
+ * new-vs-resumed status.
  *
- * Scope is deliberately group-scoped CLAUDE.md ONLY: `groups/<folder>/` is
- * the real, group-scoped source the container path bind-mounts as
- * `/workspace/group`, so reading it for THAT group's own session cannot leak
- * into another group's session. `groups/global/CLAUDE.md` is deliberately
- * shared across all non-main groups by the EXISTING container path's own
- * design — an existing pattern mirrored, not a new risk. AGENTS.md/
- * AI_AGENT_GUIDELINES.md/persona context and full `context-registry.ts`
- * parity stay explicitly out of scope (see deus-native-backend.ts's
- * non-goals).
+ * Composition order (LIA-416/D2) is general-before-specific: vault context
+ * first (personal identity/health/recent-memory — control group only, see
+ * vault-context.ts's eligibility rationale), then global CLAUDE.md
+ * (non-control groups only, unchanged), then group CLAUDE.md (most
+ * specific, unchanged). The vault content already carries the reference
+ * hook's own `=== ... ===` headers, so no wrapper header is added.
+ *
+ * Async solely because the vault pipeline's recent-sessions provider spawns
+ * `memory_indexer.py` asynchronously — the await occurs only on a genuine
+ * session open, and the existing global/group reads stay sync.
+ *
+ * Beyond vault context, scope is deliberately group-scoped CLAUDE.md ONLY:
+ * `groups/<folder>/` is the real, group-scoped source the container path
+ * bind-mounts as `/workspace/group`, so reading it for THAT group's own
+ * session cannot leak into another group's session. `groups/global/CLAUDE.md`
+ * is deliberately shared across all non-main groups by the EXISTING container
+ * path's own design — an existing pattern mirrored, not a new risk.
+ * AGENTS.md/AI_AGENT_GUIDELINES.md/persona context and full
+ * `context-registry.ts` parity stay explicitly out of scope (see
+ * deus-native-backend.ts's non-goals).
  */
-export function loadSessionOpenContext(runContext: RunContext): {
+export async function loadSessionOpenContext(runContext: RunContext): Promise<{
   systemMessage: string | undefined;
   record: SessionOpenRecord;
-} {
+}> {
   // Reused, not reimplemented: path-traversal-safe by construction
   // (ensureWithinBase inside group-folder.ts).
   const groupDir = resolveGroupFolderPath(runContext.groupFolder);
   const parts: string[] = [];
   let globalClaudeMdLoaded = false;
   let groupClaudeMdLoaded = false;
+
+  // Vault context FIRST (most general). The facade owns ALL eligibility/
+  // skip/fail-soft semantics — here it is one awaited call whose content is
+  // included only when non-empty, exactly like the file parts below.
+  const vault = await loadVaultContext(runContext);
+  if (vault.content !== undefined) {
+    parts.push(vault.content);
+  }
 
   // Global rules first (general), group rules second (specific) — non-control
   // groups only, mirroring container-mounter.ts's main-vs-other mounting
@@ -151,6 +182,7 @@ export function loadSessionOpenContext(runContext: RunContext): {
       sessionOpened: true,
       groupClaudeMdLoaded,
       globalClaudeMdLoaded,
+      vaultContext: vault.record,
       timestamp: Date.now(),
     },
   };

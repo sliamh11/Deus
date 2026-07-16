@@ -39,8 +39,20 @@ export interface VolumeMount {
 /**
  * Resolve the vault path from env var or config file.
  * Returns null if no vault is configured.
+ *
+ * Exported for reuse by the deus-native session-open vault-context loader
+ * (LIA-416, src/agent-runtimes/vault-context.ts) — one resolver, one
+ * precedence order, no duplication.
+ *
+ * `config` (optional): an already-parsed config object (e.g. from
+ * `readDeusConfig()`), so a caller that has read the config once can reuse
+ * that consistent snapshot. When omitted, the config file is read from disk
+ * exactly as before — existing callers are unchanged. Environment precedence
+ * (`DEUS_VAULT_PATH` first) is preserved in both modes.
  */
-function resolveVaultPath(): string | null {
+export function resolveVaultPath(
+  config?: Record<string, unknown>,
+): string | null {
   // 1. Environment variable
   const envPath = process.env.DEUS_VAULT_PATH;
   if (envPath) {
@@ -49,19 +61,25 @@ function resolveVaultPath(): string | null {
       : envPath;
     return path.resolve(resolved);
   }
-  // 2. Config file
-  const configPath = path.join(CONFIG_DIR, 'config.json');
-  try {
-    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-    if (cfg.vault_path) {
-      const vp = cfg.vault_path as string;
-      const resolved = vp.startsWith('~')
-        ? path.join(HOME_DIR, vp.slice(1))
-        : vp;
-      return path.resolve(resolved);
+  // 2. Config (injected snapshot, or read from disk when not supplied)
+  let cfg: Record<string, unknown>;
+  if (config !== undefined) {
+    cfg = config;
+  } else {
+    const configPath = path.join(CONFIG_DIR, 'config.json');
+    try {
+      cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch {
+      // No config file or parse error
+      return null;
     }
-  } catch {
-    // No config file or parse error
+  }
+  const vp = cfg['vault_path'];
+  // A truthy non-string vault_path previously threw inside the try block and
+  // resolved to null — the type guard keeps that observable null result.
+  if (typeof vp === 'string' && vp) {
+    const resolved = vp.startsWith('~') ? path.join(HOME_DIR, vp.slice(1)) : vp;
+    return path.resolve(resolved);
   }
   return null;
 }

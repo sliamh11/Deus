@@ -17,6 +17,8 @@ import {
   buildPromptLifecycleHook,
   type PromptEventRecord,
 } from './lifecycle-events.js';
+import { loadVaultContext } from './vault-context.js';
+import type { VaultContextResult } from './vault-context.js';
 import { defaultSession } from './types.js';
 import type {
   RuntimeEvent,
@@ -48,6 +50,11 @@ const harness = vi.hoisted(() => ({
   makeModel: null as null | (() => unknown),
   tools: [] as unknown[],
   captured: [] as Array<{ systemMessage: unknown; systemPrompt: unknown }>,
+  // LIA-416 (D2): what the mocked vault facade returns for a CONTROL-group
+  // call. undefined => "eligible, vault unavailable, no content" (the
+  // hermetic default — real config/vault/DB/subprocess must never be touched
+  // from this file). Non-control calls always get the real skip shape.
+  vaultContent: undefined as string | undefined,
 }));
 
 // Real langchain everywhere (createMiddleware, FakeToolCallingModel, tool,
@@ -111,6 +118,39 @@ vi.mock('./checkpointer.js', async (importOriginal) => {
   return {
     ...actual,
     getCheckpointer: () => actual.getCheckpointer(harness.checkpointerDbPath),
+  };
+});
+
+// LIA-416 (D2): hermetic vault-context facade — real config/vault/DB/
+// subprocess access must never happen from this file. A non-control call
+// delegates to the REAL loadVaultContext, which exits on the
+// non-control-group check before any I/O (verified: vault-context.ts's
+// eligibility exits run strictly before readConfig/resolveVault/fs/spawn),
+// so that branch stays genuinely hermetic. A control-group call returns
+// harness.vaultContent instead of touching the real vault. Wrapped in
+// `vi.fn` so tests can assert call counts directly (AC1/AC3/AC4).
+vi.mock('./vault-context.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./vault-context.js')>();
+  return {
+    ...actual,
+    loadVaultContext: vi.fn(
+      async (runContext: RunContext): Promise<VaultContextResult> => {
+        if (!runContext.isControlGroup) {
+          return actual.loadVaultContext(runContext);
+        }
+        const hasContent = harness.vaultContent !== undefined;
+        return {
+          content: harness.vaultContent,
+          record: {
+            eligible: true,
+            vaultAvailable: hasContent,
+            contextLoaded: hasContent,
+            loadedSections: hasContent ? (['vault-files'] as const) : [],
+            loadedVaultFiles: [],
+          },
+        };
+      },
+    ),
   };
 });
 
@@ -217,6 +257,8 @@ beforeEach(() => {
   harness.makeModel = singleCycleModel;
   harness.tools = [];
   harness.captured.length = 0;
+  harness.vaultContent = undefined;
+  vi.mocked(loadVaultContext).mockClear();
 });
 
 afterEach(() => {
@@ -412,6 +454,85 @@ describe('runTurn session-open lifecycle (AC1/AC4)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// LIA-416 (D2) — literal AC1/AC3/AC4 for the vault-context surface, through
+// REAL runTurn calls (the mocked loadVaultContext from './vault-context.js'
+// above, driven by harness.vaultContent — never the real vault/config/DB/
+// subprocess).
+// ---------------------------------------------------------------------------
+describe('runTurn vault-context session-open lifecycle (LIA-416 AC1/AC3/AC4)', () => {
+  it('invokes the vault surface once on a new control-group session and includes its content before the model call (AC1)', async () => {
+    const runtime = createDeusNativeRuntime(stubDeps);
+    harness.vaultContent = '=== VAULT: CLAUDE.md ===\nVault identity content.';
+
+    const result = await runtime.runTurn(
+      runCtx('vaultgroup', true),
+      defaultSession('', 'deus-native'),
+      () => {},
+    );
+
+    expect(result.status).toBe('success');
+    expect(vi.mocked(loadVaultContext)).toHaveBeenCalledTimes(1);
+    expect(harness.captured.length).toBeGreaterThan(0);
+    for (const call of harness.captured) {
+      expect(msgText(call.systemMessage)).toContain('Vault identity content.');
+    }
+  });
+
+  it('does not re-invoke the vault surface or re-inject its content on the resumed turn (AC4)', async () => {
+    const runtime = createDeusNativeRuntime(stubDeps);
+    harness.vaultContent = '=== VAULT: CLAUDE.md ===\nVault identity content.';
+
+    const result1 = await runtime.runTurn(
+      runCtx('vaultgroup', true),
+      defaultSession('', 'deus-native'),
+      () => {},
+    );
+    expect(vi.mocked(loadVaultContext)).toHaveBeenCalledTimes(1);
+    const sessionId1 = result1.sessionRef?.session_id;
+    expect(sessionId1).toBeTruthy();
+
+    harness.captured.length = 0;
+    const result2 = await runtime.runTurn(
+      runCtx('vaultgroup', true),
+      { backend: 'deus-native', session_id: sessionId1 as string },
+      () => {},
+    );
+
+    expect(result2.status).toBe('success');
+    // Literal once-per-session gating (AC3): the resumed turn must NOT call
+    // the facade again.
+    expect(vi.mocked(loadVaultContext)).toHaveBeenCalledTimes(1);
+    expect(harness.captured.length).toBeGreaterThan(0);
+    for (const call of harness.captured) {
+      expect(msgText(call.systemMessage)).not.toContain(
+        'Vault identity content.',
+      );
+    }
+  });
+
+  it('delegates to the real (ineligible) facade for a non-control group and injects no vault content', async () => {
+    const runtime = createDeusNativeRuntime(stubDeps);
+    harness.vaultContent = '=== VAULT: CLAUDE.md ===\nVault identity content.';
+
+    const result = await runtime.runTurn(
+      runCtx('nonvaultgroup', false),
+      defaultSession('', 'deus-native'),
+      () => {},
+    );
+
+    expect(result.status).toBe('success');
+    // The mock still records the call (it delegates to the real early-exit
+    // for non-control groups), but the delegated real facade must report
+    // ineligibility rather than the harness's fixture content leaking in.
+    for (const call of harness.captured) {
+      expect(msgText(call.systemMessage)).not.toContain(
+        'Vault identity content.',
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // AC2 — prompt middleware fires (and records) once per submitted prompt /
 // model-decision cycle, before the model call.
 // ---------------------------------------------------------------------------
@@ -474,9 +595,11 @@ describe('turn-complete lifecycle event (AC3)', () => {
 // fixture groups/ dir.
 // ---------------------------------------------------------------------------
 describe('loadSessionOpenContext (AC5)', () => {
-  it('loads a present group CLAUDE.md and records it', () => {
+  it('loads a present group CLAUDE.md and records it', async () => {
     writeGroupClaudeMd('groupa', 'Rule A content.');
-    const { systemMessage, record } = loadSessionOpenContext(runCtx('groupa'));
+    const { systemMessage, record } = await loadSessionOpenContext(
+      runCtx('groupa'),
+    );
     expect(systemMessage).toContain('Rule A content.');
     expect(record.sessionOpened).toBe(true);
     expect(record.groupClaudeMdLoaded).toBe(true);
@@ -484,8 +607,8 @@ describe('loadSessionOpenContext (AC5)', () => {
     expect(typeof record.timestamp).toBe('number');
   });
 
-  it('returns undefined cleanly (no throw) when no CLAUDE.md exists', () => {
-    const { systemMessage, record } = loadSessionOpenContext(
+  it('returns undefined cleanly (no throw) when no CLAUDE.md exists', async () => {
+    const { systemMessage, record } = await loadSessionOpenContext(
       runCtx('missinggroup'),
     );
     expect(systemMessage).toBeUndefined();
@@ -493,20 +616,22 @@ describe('loadSessionOpenContext (AC5)', () => {
     expect(record.globalClaudeMdLoaded).toBe(false);
   });
 
-  it('includes global CLAUDE.md for a non-main group (matching the container path’s main-vs-other mounting distinction)', () => {
+  it('includes global CLAUDE.md for a non-main group (matching the container path’s main-vs-other mounting distinction)', async () => {
     writeGroupClaudeMd('groupb', 'Group B rules.');
     writeGlobalClaudeMd('Global shared rules.');
-    const { systemMessage, record } = loadSessionOpenContext(runCtx('groupb'));
+    const { systemMessage, record } = await loadSessionOpenContext(
+      runCtx('groupb'),
+    );
     expect(systemMessage).toContain('Global shared rules.');
     expect(systemMessage).toContain('Group B rules.');
     expect(record.globalClaudeMdLoaded).toBe(true);
     expect(record.groupClaudeMdLoaded).toBe(true);
   });
 
-  it('EXCLUDES global CLAUDE.md for the main/control group', () => {
+  it('EXCLUDES global CLAUDE.md for the main/control group', async () => {
     writeGroupClaudeMd('maingroup', 'Main group rules.');
     writeGlobalClaudeMd('Global shared rules.');
-    const { systemMessage, record } = loadSessionOpenContext(
+    const { systemMessage, record } = await loadSessionOpenContext(
       runCtx('maingroup', true),
     );
     expect(systemMessage).toContain('Main group rules.');
@@ -514,9 +639,11 @@ describe('loadSessionOpenContext (AC5)', () => {
     expect(record.globalClaudeMdLoaded).toBe(false);
   });
 
-  it('global-only content still produces a session-open message for a non-main group', () => {
+  it('global-only content still produces a session-open message for a non-main group', async () => {
     writeGlobalClaudeMd('Global-only rules.');
-    const { systemMessage, record } = loadSessionOpenContext(runCtx('groupc'));
+    const { systemMessage, record } = await loadSessionOpenContext(
+      runCtx('groupc'),
+    );
     expect(systemMessage).toContain('Global-only rules.');
     expect(record.globalClaudeMdLoaded).toBe(true);
     expect(record.groupClaudeMdLoaded).toBe(false);

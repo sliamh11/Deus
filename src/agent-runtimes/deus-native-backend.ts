@@ -307,12 +307,16 @@ export class DeusNativeRuntime implements AgentRuntime {
 
       // Session-open injection fires only on a genuinely NEW session (once
       // per open lifecycle — a resumed turn never even calls
-      // loadSessionOpenContext) AND only when the group actually has
-      // CLAUDE.md content (systemMessage stays undefined otherwise). The
-      // returned SessionOpenRecord is an inspectable log consumed by tests,
-      // matching B2's own discarded-logs precedent here.
+      // loadSessionOpenContext) AND only when session-open content actually
+      // exists (systemMessage stays undefined otherwise). Awaited (LIA-416/
+      // D2): the loader now composes vault context whose recent-sessions
+      // provider is an async subprocess — the await occurs ONLY on this
+      // new-session branch, bounded by the vault pipeline's 5s subprocess
+      // timeout, and never blocks the process-wide event loop. The returned
+      // SessionOpenRecord is an inspectable log consumed by tests, matching
+      // B2's own discarded-logs precedent here.
       const sessionOpenMessage = isNewSession
-        ? loadSessionOpenContext(runContext).systemMessage
+        ? (await loadSessionOpenContext(runContext)).systemMessage
         : undefined;
 
       const model = buildProxyRoutedChatAnthropic(runContext);
