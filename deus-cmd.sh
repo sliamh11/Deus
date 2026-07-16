@@ -31,18 +31,6 @@ _file_mtime() {
   fi
 }
 
-# `--print-identity`: print the same system-prompt string that would
-# otherwise go to `claude --append-system-prompt` and exit, with no
-# interactive launch. Checked on both sides of the backend-prefix block below
-# so both `deus --print-identity` and `deus claude/codex/fcc --print-identity`
-# work. Lets an external tool (e.g. a VS Code Claude Code process wrapper)
-# capture Deus's identity/vault-context prompt without spawning a session.
-PRINT_IDENTITY_ONLY=false
-if [ "$1" = "--print-identity" ]; then
-  PRINT_IDENTITY_ONLY=true
-  shift
-fi
-
 # Prefix selection changes both the foreground CLI and runtime backend for this
 # invocation. Plain `deus` still defaults to Claude unless env/config says
 # otherwise.
@@ -58,19 +46,6 @@ if [ "$1" = "codex" ] || [ "$1" = "claude" ] || [ "$1" = "fcc" ]; then
     export DEUS_AGENT_BACKEND="openai"
   fi
   shift
-fi
-
-if [ "$1" = "--print-identity" ]; then
-  PRINT_IDENTITY_ONLY=true
-  shift
-fi
-
-if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
-  # Stash the real stdout on fd 3; the identity/vault-loading path below
-  # writes ~8 scattered `printf "...\r"` progress indicators to stdout that
-  # would otherwise corrupt the captured text. The final print (below) writes
-  # to fd 3 directly.
-  exec 3>&1 1>/dev/null
 fi
 
 _read_config_key() {
@@ -154,8 +129,15 @@ _deploy_plan() {
 _deus_freshness_check() {
   [[ "$OSTYPE" == darwin* || "$OSTYPE" == linux* ]] || return 0
   # Skip for sync/deploy (both do their own fetch + reporting), help/no-arg paths,
-  # and `root` (a pure query used by skills — must stay side-effect-free, no fetch).
-  case "$1" in sync|deploy|root|""|-h|--help|help) return 0 ;; esac
+  # and pure query flags — `root` (used by skills) and `--print-identity` (used
+  # by external wrappers, e.g. the VS Code shim) must stay side-effect-free.
+  case "$1" in sync|deploy|root|--print-identity|""|-h|--help|help) return 0 ;; esac
+  # `--print-identity` may follow another arg (`deus home --print-identity`) —
+  # the purity contract covers every position, not just $1.
+  local _fc_arg
+  for _fc_arg in "$@"; do
+    [ "$_fc_arg" = "--print-identity" ] && return 0
+  done
   git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1 || return 0
 
   local stamp_dir="$HOME/.config/deus" stamp now last
@@ -407,7 +389,7 @@ _ensure_portable_skills() {
 }
 
 # Nudge if the live tree has drifted off/behind main (warn-only, throttled).
-_deus_freshness_check "$1"
+_deus_freshness_check "$@"
 
 case "$1" in
   init|onboard)
@@ -803,11 +785,14 @@ sys.exit(1)
     echo "  Stop it with:  pkill -f 'open-webui serve'   (log: $LOG)"
     ( sleep 1; python3 -m webbrowser "$WEBUI_URL" >/dev/null 2>&1 ) &
     ;;
-  home|"")
+  home|""|--print-identity)
     # Bare `deus` / `deus home`. Optional --chrome / TUI via config keys.
+    # `--print-identity` runs the same launch branch but prints the exact
+    # --append-system-prompt payload instead of launching (GH #1004).
     CHROME_FLAG=""
     TUI_DEFAULT="false"
     AGENTS_MODE="false"
+    PRINT_IDENTITY="false"
     if [ "$(_read_config_key chrome_default)" = "true" ]; then
       CHROME_FLAG="--chrome"
     fi
@@ -817,11 +802,19 @@ sys.exit(1)
     for _arg in "$@"; do
       if [ "$_arg" = "--agents" ]; then
         AGENTS_MODE="true"
-        break
+      fi
+      if [ "$_arg" = "--print-identity" ]; then
+        PRINT_IDENTITY="true"
       fi
     done
-    if [ "$AGENTS_MODE" = "true" ]; then
+    # Print mode must never exec an interactive UI — the query flag wins.
+    if [ "$AGENTS_MODE" = "true" ] && [ "$PRINT_IDENTITY" != "true" ]; then
       exec claude agents
+    fi
+    # Keep captured stdout pure in print mode: progress noise ("Reading
+    # vault...", "✓ Ready.") goes to stderr; only the payload hits fd 3.
+    if [ "$PRINT_IDENTITY" = "true" ]; then
+      exec 3>&1 1>&2
     fi
 
     _launch_tui_with_context() {
@@ -846,13 +839,10 @@ sys.exit(1)
       export DEUS_TUI_BACKEND="$CLI_AGENT"
       exec "$tui_bin"
     }
-    # print-identity mode never launches claude, so it needs neither an OAuth
-    # token nor the com.deus service kickstart below — skip both. Otherwise
-    # a VS Code process wrapper calling this on every panel/session open
-    # would kill-and-restart com.deus (`-k`) every time, and hard-fail on any
-    # transient token-resolution hiccup for no reason.
-    if [ "$PRINT_IDENTITY_ONLY" != "true" ]; then
-      TOKEN=$(python3 -c '
+    # Print mode is a pure query: no credential access, no service restart —
+    # a VS Code panel may call --print-identity on every session open.
+    if [ "$PRINT_IDENTITY" != "true" ]; then
+    TOKEN=$(python3 -c '
 import json, os, subprocess, sys
 # Try file first
 try:
@@ -869,16 +859,16 @@ try:
 except Exception: pass
 sys.exit(1)
 ' 2>/dev/null)
-      if [ -z "$TOKEN" ]; then
-        echo "Error: no OAuth token found in ~/.claude/.credentials.json or macOS Keychain"
-        echo "Run: claude auth login"
-        exit 1
-      fi
-      # Do NOT export CLAUDE_CODE_OAUTH_TOKEN — the Claude CLI reads
-      # ~/.claude/.credentials.json directly and auto-refreshes on /login.
-      # Exporting a frozen token causes 401s after token rotation because
-      # the CLI prioritizes the env var over the credentials file.
-      [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
+    if [ -z "$TOKEN" ]; then
+      echo "Error: no OAuth token found in ~/.claude/.credentials.json or macOS Keychain"
+      echo "Run: claude auth login"
+      exit 1
+    fi
+    # Do NOT export CLAUDE_CODE_OAUTH_TOKEN — the Claude CLI reads
+    # ~/.claude/.credentials.json directly and auto-refreshes on /login.
+    # Exporting a frozen token causes 401s after token rotation because
+    # the CLI prioritizes the env var over the credentials file.
+    [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
     fi
     # Launch claude with bypass mode; fall back to normal mode if user declines
     launch_claude() {
@@ -1010,22 +1000,21 @@ $user_prompt"
 	    if [ "$CURRENT_DIR" != "$DEUS_HOME" ]; then
 	      EXTERNAL_MODE="true"
 
-	      # Ensure portable skills are symlinked before onboarding.
-	      _ensure_portable_skills
+	      # Ensure portable skills are symlinked before onboarding. Print mode
+	      # skips this: it mutates ~/.claude/skills, and a wrapper polling
+	      # --print-identity must stay side-effect-free (the payload does not
+	      # depend on skill symlinks).
+	      [ "$PRINT_IDENTITY" != "true" ] && _ensure_portable_skills
 
 	      PROJECT_CONFIG=$(_read_project_config "$CURRENT_DIR")
 	      if [ -z "$PROJECT_CONFIG" ]; then
-	        if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
-	          # Never run interactive onboarding for a bare identity print — a
-	          # non-interactive caller (e.g. a VS Code process wrapper) would
-	          # hang on _run_onboarding's `read`. Leave PROJECT_CONFIG empty;
-	          # MEMORY_LEVEL falls back to "standard" below, same as it does
-	          # for any other empty/unparseable PROJECT_CONFIG. Still set
-	          # JUST_ONBOARDED=true so the downstream IS_RETURNING/greeting
-	          # choice matches what a real launch would produce after
-	          # actually onboarding (first-run greeting, not the returning-
-	          # user git-status greeting) — keeps the printed prompt
-	          # consistent with what would actually be launched.
+	        if [ "$PRINT_IDENTITY" = "true" ]; then
+	          # Print mode must not hang on the interactive onboarding `read`
+	          # under a non-interactive spawn. PROJECT_CONFIG stays empty, so
+	          # the MEMORY_LEVEL pipeline below yields "" and the
+	          # `[ -z "$MEMORY_LEVEL" ] && MEMORY_LEVEL="standard"` fallback
+	          # normalizes it to "standard"; JUST_ONBOARDED=true keeps the
+	          # printed greeting identical to a real post-onboarding launch.
 	          JUST_ONBOARDED="true"
 	        else
 	          _run_onboarding "$CURRENT_DIR"
@@ -1033,7 +1022,9 @@ $user_prompt"
 	          JUST_ONBOARDED="true"
 	        fi
 	      else
-	        _update_project_access "$CURRENT_DIR"
+	        # Print-polls are automation, not user sessions — don't rewrite
+	        # last_accessed in the project registry.
+	        [ "$PRINT_IDENTITY" != "true" ] && _update_project_access "$CURRENT_DIR"
 	      fi
 
 	      MEMORY_LEVEL=$(echo "$PROJECT_CONFIG" | python3 -c "import sys,json; print(json.load(sys.stdin).get('memory_level','standard'))" 2>/dev/null)
@@ -1079,14 +1070,18 @@ Additional instructions from the user: $PREFS_PERSONA"
     # the working directory and the startup instruction.
     if [ -z "$VAULT" ]; then
       echo "Warning: No vault configured. Set DEUS_VAULT_PATH or vault_path in ~/.config/deus/config.json"
-      if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
-        printf '%s\n' "$DEUS_IDENTITY" >&3
-        exit 0
-      fi
       if [ "$CURRENT_DIR" != "$DEUS_HOME" ]; then
+        if [ "$PRINT_IDENTITY" = "true" ]; then
+          printf '%s' "$DEUS_IDENTITY" >&3
+          exit 0
+        fi
         launch_agent --append-system-prompt "$DEUS_IDENTITY"
         exit $?
       else
+        if [ "$PRINT_IDENTITY" = "true" ]; then
+          printf '%s' "$DEUS_IDENTITY" >&3
+          exit 0
+        fi
         cd "$HOME/deus" && launch_agent --append-system-prompt "$DEUS_IDENTITY"
         exit $?
       fi
@@ -1248,8 +1243,10 @@ $STARTUP_INSTRUCTION"
         FULL_PROMPT="$STARTUP_INSTRUCTION"
       fi
 
-      if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
-        printf '%s\n' "$FULL_PROMPT" >&3
+      # Print mode exits here — before the TUI check, which is therefore
+      # unreachable when PRINT_IDENTITY=true.
+      if [ "$PRINT_IDENTITY" = "true" ]; then
+        printf '%s' "$FULL_PROMPT" >&3
         exit 0
       fi
       if [ "$TUI_DEFAULT" = "true" ]; then
@@ -1260,7 +1257,8 @@ $STARTUP_INSTRUCTION"
     fi
 
     # ─── HOME MODE ───
-    _ensure_portable_skills
+    # Skipped in print mode: mutates ~/.claude/skills (see external-mode note).
+    [ "$PRINT_IDENTITY" != "true" ] && _ensure_portable_skills
 
     # Running from ~/deus — full startup with optional catch-me-up greeting.
     if [ "$PREFS_CATCH_ME_UP" = "false" ]; then
@@ -1297,8 +1295,11 @@ $STARTUP_INSTRUCTION"
       INITIAL_MSG="Catch me up."
     fi
 
-    if [ "$PRINT_IDENTITY_ONLY" = "true" ]; then
-      printf '%s\n' "$FULL_PROMPT" >&3
+    # Print mode exits here — before the TUI check (unreachable in print
+    # mode). Home FULL_PROMPT may be empty (no vault context): printed as-is;
+    # the consuming wrapper fails open to plain claude on empty output.
+    if [ "$PRINT_IDENTITY" = "true" ]; then
+      printf '%s' "$FULL_PROMPT" >&3
       exit 0
     fi
     if [ "$TUI_DEFAULT" = "true" ]; then
@@ -1728,7 +1729,7 @@ $STARTUP_INSTRUCTION"
     esac
     ;;
   *)
-    echo "Usage: deus [claude|codex] [home|init|arch|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|preflight|solution|sweep|tui] [--agents]"
+    echo "Usage: deus [claude|codex] [home|init|arch|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|preflight|solution|sweep|tui] [--agents] [--print-identity]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -1762,5 +1763,7 @@ $STARTUP_INSTRUCTION"
     echo ""
     echo "Flags:"
     echo "  --agents        Open the claude agents preview UI (append to any launch command)"
+    echo "  --print-identity  Print the identity/vault system prompt (the exact --append-system-prompt"
+    echo "                    payload) and exit — for external wrappers, e.g. a VS Code claudeProcessWrapper shim"
     ;;
 esac

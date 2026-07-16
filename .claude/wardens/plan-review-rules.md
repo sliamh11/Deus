@@ -208,7 +208,7 @@ Common traps:
 
 ### independent-oracle-high-blast-radius
 **Cite:** independence principle (test author ≠ implementer); `oracle-rules.md`; double-entry-bookkeeping analogy. Commit-side companion: `code-review-rules.md` `oracle-integrity`.
-**Remediation:** Before implementing, invoke `Agent(subagent_type="oracle-author")` with the spec to author the failing, `@oracle`-tagged test; implement against it without weakening it. If no executable oracle is possible, state the judge/human check and that it is the weaker fallback. For changes below the blast-radius threshold, skip — the `verification-strategy` Proportionality clause applies.
+**Remediation:** Before implementing, dispatch the oracle-author role with the spec to author the failing, `@oracle`-tagged test; implement against it without weakening it. As of 2026-07-15, dispatch via `scripts/dispatch-oracle-author.sh <worktree-path> <task-brief-file>` (runs on GPT-5.6-Sol for model diversity from the implementer — see `.claude/agents/oracle-author.md`'s dispatch note); fall back to `Agent(subagent_type="oracle-author")` only if the script or `codex` CLI is unavailable in the current environment. If no executable oracle is possible, state the judge/human check and that it is the weaker fallback. For changes below the blast-radius threshold, skip — the `verification-strategy` Proportionality clause applies.
 
 ### file-map-first
 **Cite:** Superpowers writing-plans "File Structure" section

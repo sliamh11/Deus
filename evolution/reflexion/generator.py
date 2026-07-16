@@ -80,6 +80,9 @@ def generate_reflection(
     """
     Generate a reflection for a low-scoring interaction.
     Returns (content, category).
+
+    ``model=None`` defers to the winning generative provider's own default —
+    a hardcoded Gemini id here 404s on non-Gemini providers (Ollama etc.).
     """
     formatted = _REFLECTION_PROMPT.format(
         prompt=prompt[:1500],
@@ -130,6 +133,9 @@ def generate_positive_reflection(
     """
     Generate a positive pattern reflection for a high-scoring interaction.
     Returns (content, category).
+
+    ``model=None`` defers to the winning provider's default model (see
+    ``generate_reflection``).
     """
     formatted = _POSITIVE_PROMPT.format(
         prompt=prompt[:1500],

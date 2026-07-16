@@ -485,17 +485,21 @@ export function startCredentialProxy(
       });
     });
 
-    server.on('close', () => {
-      clearInterval(rateLimitCleanupInterval);
-      if (proactiveRefreshTimer) clearInterval(proactiveRefreshTimer);
-    });
-
     let retries = 0;
     const maxRetries = 10;
     const retryDelay = 2000;
 
     const tryListen = () => {
       server.listen(port, host, () => {
+        // Register the shutdown cleanup only AFTER a successful bind. Doing it
+        // earlier means the EADDRINUSE retry's server.close() (below) fires the
+        // 'close' listener and clears proactiveRefreshTimer, so the proxy then
+        // binds on a later attempt with proactive OAuth refresh permanently
+        // dead — the exact "next-morning 401" class the timer prevents (LIA-363).
+        server.on('close', () => {
+          clearInterval(rateLimitCleanupInterval);
+          if (proactiveRefreshTimer) clearInterval(proactiveRefreshTimer);
+        });
         logger.info(
           { port, host, authMode, credentialsPath: CREDENTIALS_PATH },
           'Credential proxy started',

@@ -623,11 +623,36 @@ def _index_file(
     if existing and existing[0] == file_hash:
         return 0, 1  # unchanged
 
-    # Soft-delete old chunks for this file
+    # Soft-delete old chunks for this file, and hard-delete their now-orphaned
+    # rows from the DERIVED index tables (LIA-368). chunks_vec/chunks_fts have no
+    # orphaned_at column and the search path draws its top-k*3 candidate pool
+    # straight from them BEFORE the orphan filter runs, so leaving stale rowids
+    # there means ~2/3 of every candidate list is dead. Per the no-db-deletion
+    # ADR (Rule 6, amended 2026-07-15) derived index tables may be hard-deleted
+    # per-row; the chunks row keeps its orphaned_at audit trail.
+    stale_rowids = [
+        r[0]
+        for r in db.execute(
+            "SELECT rowid FROM chunks WHERE file_path = ? AND orphaned_at IS NULL",
+            (rel_path,),
+        ).fetchall()
+    ]
     db.execute(
         "UPDATE chunks SET orphaned_at = ? WHERE file_path = ? AND orphaned_at IS NULL",
         (time.strftime("%Y-%m-%dT%H:%M:%S"), rel_path),
     )
+    if stale_rowids:
+        placeholders = ",".join("?" * len(stale_rowids))
+        if _fts_available(db):
+            db.execute(
+                f"DELETE FROM chunks_fts WHERE rowid IN ({placeholders})",
+                stale_rowids,
+            )
+        if sqlite_vec is not None:
+            db.execute(
+                f"DELETE FROM chunks_vec WHERE rowid IN ({placeholders})",
+                stale_rowids,
+            )
 
     chunks = chunk_file(content, rel_path)
     if not chunks:
@@ -1100,6 +1125,58 @@ ABSTAIN_QUERIES_NEAR = [
 ]
 
 
+def gc_index(project_dir: Path | str | None = None) -> dict[str, Any]:
+    """Sweep orphaned rowids from the derived index tables (LIA-368 backfill).
+
+    The forward fix in ``_index_file`` stops NEW orphans accumulating; this
+    one-time (idempotent) sweep removes the EXISTING dead rowids in
+    ``chunks_vec``/``chunks_fts`` whose ``chunks`` row is orphaned or gone. A
+    timestamped ``.bak`` is written first (no-db-deletion ADR: backup before a
+    bulk derived-table operation). Safe to re-run — a clean index deletes 0.
+    """
+    dbp = _resolve_db_path(project_dir)
+    # Migrate a matching legacy shared DB into the per-project location first, as
+    # status()/search()/reindex() do — otherwise a user with an old index gets a
+    # false "No index found" and their stale derived rows go unswept. Key the
+    # migration root to the SAME project_dir _resolve_db_path used (reindex does
+    # this too) so a non-cwd project_dir arg migrates against the matching root.
+    _migrate_legacy_if_match(_project_root(project_dir), dbp)
+    if not dbp.exists():
+        return {"ok": False, "message": "No index found"}
+
+    # WAL-checkpoint before copying so the .bak captures uncheckpointed commits
+    # (shutil.copy2 copies only the main .db, not the -wal/-shm sidecars).
+    ck = sqlite3.connect(dbp)
+    try:
+        ck.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except sqlite3.OperationalError:
+        pass
+    finally:
+        ck.close()
+    # Nanosecond-precision suffix so a quick idempotent rerun can't overwrite
+    # the pre-sweep backup (which holds the only rollback snapshot).
+    backup = dbp.with_suffix(
+        dbp.suffix + f".bak-{time.strftime('%Y%m%dT%H%M%S')}-{time.time_ns()}"
+    )
+    shutil.copy2(dbp, backup)
+
+    db = _init_db(dbp)
+    result: dict[str, Any] = {"ok": True, "backup": str(backup)}
+    try:
+        # Live rowids = chunks rows that are still active.
+        live = "SELECT rowid FROM chunks WHERE orphaned_at IS NULL"
+        if _fts_available(db):
+            cur = db.execute(f"DELETE FROM chunks_fts WHERE rowid NOT IN ({live})")
+            result["fts_deleted"] = cur.rowcount
+        if sqlite_vec is not None:
+            cur = db.execute(f"DELETE FROM chunks_vec WHERE rowid NOT IN ({live})")
+            result["vec_deleted"] = cur.rowcount
+        db.commit()
+    finally:
+        db.close()
+    return result
+
+
 def generate_fixture(
     repo_dir: str | Path,
     output: str | Path | None = None,
@@ -1387,6 +1464,10 @@ def main() -> None:
     p_search.add_argument("-k", type=int, default=DEFAULT_TOP_K)
 
     sub.add_parser("status", help="Show index status")
+    sub.add_parser(
+        "gc-index",
+        help="Sweep orphaned rowids from the derived vec/fts index tables (LIA-368)",
+    )
 
     p_fixture = sub.add_parser("generate-fixture", help="Generate benchmark fixture from codebase")
     p_fixture.add_argument("directory", nargs="?", default=".")
@@ -1412,6 +1493,8 @@ def main() -> None:
         print(json.dumps(results, indent=2))
     elif args.command == "status":
         print(json.dumps(status(), indent=2))
+    elif args.command == "gc-index":
+        print(json.dumps(gc_index(), indent=2))
     elif args.command == "generate-fixture":
         items = generate_fixture(args.directory, output=args.output)
         print(json.dumps({"count": len(items), "output": args.output}, indent=2))

@@ -373,6 +373,58 @@ class TestBuild:
         counts2 = mt.build_tree(fake_vault, tmp_db)
         assert counts2["embedded"] == 0  # content_hash unchanged
 
+    @pytest.mark.skipif(mt.sqlite_vec is None, reason="sqlite_vec not available")
+    def test_embed_failure_retries_on_next_build(self, tmp_db, fake_vault, monkeypatch):
+        # LIA-369: a transient embed failure must not permanently exclude a node
+        # from vector recall — the next build must retry. Against the pre-fix code
+        # (need_embed keyed on content_hash only) the hash advances on failure and
+        # the retry never fires, so c2["embedded"] would be 0.
+        def boom(_text):
+            raise RuntimeError("ollama down")
+
+        monkeypatch.setattr(mt, "embed_text", boom)
+        c1 = mt.build_tree(fake_vault, tmp_db)
+        assert c1["embedded"] == 0
+        assert tmp_db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 0
+
+        monkeypatch.setattr(mt, "embed_text", StubEmbed())
+        c2 = mt.build_tree(fake_vault, tmp_db)
+        assert c2["embedded"] == 4  # the fix: every node re-embeds
+        assert tmp_db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 4
+
+    @pytest.mark.skipif(mt.sqlite_vec is None, reason="sqlite_vec not available")
+    def test_embed_failure_on_content_change_drops_stale_and_retries(
+        self, tmp_db, fake_vault, stub_embed, monkeypatch
+    ):
+        # LIA-369 (content-changed case): a node whose content changed and whose
+        # re-embed then fails must NOT keep serving its stale (old-content) vector
+        # forever. The fix deletes the stale embedding row on failure so the node
+        # both stops serving a wrong-content vector AND retries next build.
+        mt.build_tree(fake_vault, tmp_db)  # stub_embed succeeds → 4 embeddings
+        assert tmp_db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 4
+
+        movies = fake_vault / "Persona" / "taste" / "movies.md"
+        movies.write_text(
+            movies.read_text().replace(
+                "Liam's film taste — stylish crime, Nolan, Fincher; watches with roommates.",
+                "Completely different film taste description to change the content hash.",
+            ),
+            encoding="utf-8",
+        )
+
+        def boom(_text):
+            raise RuntimeError("ollama down")
+
+        monkeypatch.setattr(mt, "embed_text", boom)
+        mt.build_tree(fake_vault, tmp_db)
+        # Stale row for the changed node deleted → 3 remain (pre-fix: stays 4).
+        assert tmp_db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 3
+
+        monkeypatch.setattr(mt, "embed_text", StubEmbed())
+        c = mt.build_tree(fake_vault, tmp_db)
+        assert c["embedded"] == 1  # the changed node re-embeds (pre-fix: 0)
+        assert tmp_db.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0] == 4
+
     def test_rebuild_orphans_all(self, tmp_db, fake_vault, stub_embed, tmp_path, monkeypatch):
         # Redirect DB_PATH so _backup_db targets the temp file.
         monkeypatch.setattr(mt, "DB_PATH", Path(tmp_db.execute("PRAGMA database_list").fetchone()[2]))

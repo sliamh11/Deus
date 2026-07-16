@@ -97,60 +97,62 @@ def test_generate_positive_reflection_includes_metrics(capture_prompt):
     assert 'Task metrics: {"tests_passed": 12}' in capture_prompt[0]
 
 
-def test_reflection_model_defaults_to_provider_choice(monkeypatch):
-    """Regression: the default model must be None (provider picks its own).
-
-    Previously defaulted to JUDGE_MODEL - a Gemini model id - which leaked into
-    whichever generative provider resolved; Ollama 404'd on it and every
-    reflection generation failed.
-    """
-    from evolution.reflexion import generator as gen_mod
-
-    captured = {}
-
-    def fake_generate(prompt, model=None):
-        captured["model"] = model
-        return "- What went wrong: x\n- Next time: y\n- Category: style"
-
-    monkeypatch.setattr(gen_mod, "generate", fake_generate)
-
-    content, category = gen_mod.generate_reflection(
-        prompt="p", response="r", score=0.2,
-    )
-    assert captured["model"] is None
-    assert category == "style"
+# ── Model default pass-through (issue #1006) ─────────────────────────────────
 
 
-def test_positive_reflection_model_defaults_to_provider_choice(monkeypatch):
-    """Same regression guard for the positive-pattern path."""
-    from evolution.reflexion import generator as gen_mod
+@pytest.fixture
+def capture_model(monkeypatch):
+    """Replace the LLM call with a capture that records the model kwarg."""
+    captured = []
 
-    captured = {}
+    def fake_generate(prompt, **kwargs):
+        captured.append(kwargs.get("model", "MISSING"))
+        return "- What went wrong: x\n- Next time: y\n- Category: reasoning"
 
-    def fake_generate(prompt, model=None):
-        captured["model"] = model
-        return "- What worked: x\n- Pattern to replicate: y\n- Category: positive_pattern"
-
-    monkeypatch.setattr(gen_mod, "generate", fake_generate)
-
-    content, category = gen_mod.generate_positive_reflection(
-        prompt="p", response="r", score=0.95,
-    )
-    assert captured["model"] is None
-    assert category == "positive_pattern"
+    monkeypatch.setattr("evolution.reflexion.generator.generate", fake_generate)
+    return captured
 
 
-def test_explicit_model_still_passes_through(monkeypatch):
-    """An explicitly requested model must reach the generative layer unchanged."""
-    from evolution.reflexion import generator as gen_mod
+def test_generate_reflection_default_model_is_none(capture_model):
+    """Regression #1006: no Gemini model id may leak to non-Gemini providers."""
+    from evolution.reflexion.generator import generate_reflection
 
-    captured = {}
+    generate_reflection(prompt="p", response="r", score=0.3)
+    assert capture_model == [None]
 
-    def fake_generate(prompt, model=None):
-        captured["model"] = model
-        return "- Category: reasoning"
 
-    monkeypatch.setattr(gen_mod, "generate", fake_generate)
+def test_generate_positive_reflection_default_model_is_none(capture_model):
+    from evolution.reflexion.generator import generate_positive_reflection
 
-    gen_mod.generate_reflection(prompt="p", response="r", score=0.2, model="my-model")
-    assert captured["model"] == "my-model"
+    generate_positive_reflection(prompt="p", response="r", score=0.9)
+    assert capture_model == [None]
+
+
+def test_generate_reflection_explicit_model_passes_through(capture_model):
+    from evolution.reflexion.generator import generate_reflection
+
+    generate_reflection(prompt="p", response="r", score=0.3, model="my-model")
+    assert capture_model == ["my-model"]
+
+
+def test_extract_principles_default_model_is_none(monkeypatch):
+    """Regression #1006: extract_principles shares the same generate() path and
+    must not default to a Gemini model id either."""
+    import evolution.reflexion.principles as principles_mod
+
+    captured = []
+
+    def fake_generate(prompt, **kwargs):
+        captured.append(kwargs.get("model", "MISSING"))
+        return "1. Always test the fallthrough path with a mocked provider chain."
+
+    fake_row = {"prompt": "p", "response": "r", "judge_score": 0.9}
+    monkeypatch.setattr(principles_mod, "generate", fake_generate)
+    monkeypatch.setattr(principles_mod, "get_recent", lambda **kw: [dict(fake_row)] * 3)
+    monkeypatch.setattr(principles_mod, "save_reflection", lambda **kw: None)
+    monkeypatch.setattr(principles_mod, "_record_extraction", lambda *a, **kw: None)
+
+    result = principles_mod.extract_principles(force=True)
+
+    assert result is not None
+    assert captured == [None]

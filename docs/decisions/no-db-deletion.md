@@ -2,6 +2,8 @@
 
 **Status:** Accepted
 **Date:** 2026-04-13
+**Amended:** 2026-07-15 — Rule 6 clarified to permit per-row deletes from derived
+index tables outside `--rebuild` (motivated by LIA-368/LIA-370).
 **Scope:** All database operations across the entire codebase
 
 ## Context
@@ -25,13 +27,13 @@ Root cause: the codebase treated "repopulate" as "delete then recreate" when it 
 
 5. **Orphan cleanup (`cmd_prune`) = soft-delete.** When an atom file is deleted from disk, the DB row is marked `orphaned_at = now`, not deleted.
 
-6. **Derived tables are exempt during rebuild only.** Tables that are fully derived from primary data (entities, relationships, atom_entities, embeddings, entries_fts) may use `DELETE FROM` during `--rebuild` because:
+6. **Derived tables may use per-row `DELETE FROM` — including outside `--rebuild`.** Tables that are fully derived from primary data (entities, relationships, atom_entities, embeddings, `entries_fts`, `chunks_vec`, `chunks_fts`) may use `DELETE FROM` — both the bulk clear during `--rebuild` AND targeted per-row deletes during incremental reindex / soft-delete — because:
    - They contain no primary user data
-   - They are fully rebuildable from atoms/entries
-   - Adding soft-delete to virtual tables (vec0, fts5) is not supported
-   - The source entries (with soft-delete) provide the audit trail
+   - They are fully rebuildable from atoms/entries/chunks
+   - Adding soft-delete to virtual tables (vec0, fts5) is not supported — they have no arbitrary columns, so a stale derived row can only be removed by a hard `DELETE`
+   - The source row (with its `orphaned_at` soft-delete) provides the audit trail
 
-   Outside of rebuild, individual derived rows should still be preserved where possible.
+   Amended 2026-07-15 (LIA-368/LIA-370): the previous wording exempted derived-table deletes "during rebuild only" and said individual rows "should still be preserved where possible" outside rebuild. That left stale rowids in the `vec0`/`fts5` indexes forever (measured: ~69% dead rows in code-search, and orphaned entries surfacing as live memory results), because a per-file reindex / soft-delete has no `--rebuild` to piggyback on. Per-row derived-index deletes keyed on the primary row's id/rowid are now explicitly permitted at any time. **This carve-out applies ONLY to derived index tables** — primary tables (`entries`, `chunks`, `atoms`, `nodes`) remain strictly soft-delete (Rule 1), never hard-deleted.
 
 7. **Backup before rebuild is mandatory.** A timestamped `.bak` copy of the database is always created before any rebuild operation. This is a safety net, not a replacement for soft-delete.
 

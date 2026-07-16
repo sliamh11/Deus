@@ -1193,7 +1193,27 @@ def build_tree(
         ).fetchone()
         # On rebuild, embeddings were just DELETEd — re-embed even if the
         # content_hash is unchanged, otherwise the vec table stays empty.
-        need_embed = rebuild or existing is None or existing[0] != ch
+        #
+        # LIA-369: also re-embed any node that has NO embedding row, regardless
+        # of content_hash. A transient embed failure otherwise leaves the node
+        # with an advanced content_hash but no embedding; keying need_embed on the
+        # hash alone would see existing[0] == ch next run and never retry, hiding
+        # the node from vector recall forever. Checking the embedding row directly
+        # covers both a failed embed and an unchanged node whose embed failed
+        # mid-rebuild, without corrupting content_hash (the atom->node join at
+        # ~:1376 depends on it).
+        has_embedding = True
+        if sqlite_vec is not None and existing is not None:
+            has_embedding = (
+                db.execute(
+                    "SELECT 1 FROM embeddings WHERE rowid = ?",
+                    (_rowid_for(entry["id"]),),
+                ).fetchone()
+                is not None
+            )
+        need_embed = (
+            rebuild or existing is None or existing[0] != ch or not has_embedding
+        )
         vec = None
         if need_embed and not skip_embed:
             try:
@@ -1202,6 +1222,18 @@ def build_tree(
             except Exception as exc:
                 print(f"WARN: embed failed for {entry['path']}: {exc}", file=sys.stderr)
                 vec = None
+                # LIA-369: drop any stale embedding row on failure. upsert_node
+                # only replaces the vec row when a NEW embedding is supplied, so
+                # for a content-CHANGED node whose embed fails the old row would
+                # otherwise persist — has_embedding would stay true, the retry
+                # would never fire, and a wrong-content vector would keep serving.
+                # Deleting it makes has_embedding false next run (guaranteed retry)
+                # and removes the stale vector.
+                if sqlite_vec is not None and existing is not None:
+                    db.execute(
+                        "DELETE FROM embeddings WHERE rowid = ?",
+                        (_rowid_for(entry["id"]),),
+                    )
         upsert_node(
             db,
             node_id=entry["id"],
