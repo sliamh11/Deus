@@ -52,7 +52,7 @@ import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
 import { loadSkillIpcHandlers } from './skills/index.js';
 import { createMessageOrchestrator } from './message-orchestrator.js';
-import { startOdysseusServer } from './odysseus-server.js';
+import { startOdysseusServer, stopOdysseusServer } from './odysseus-server.js';
 import { nativeChatDiscoveryPath } from './cli/deus-native-chat.js';
 import {
   startNativeChatServer,
@@ -86,6 +86,10 @@ import { createClaudeRuntime } from './agent-runtimes/claude-backend.js';
 import { createOpenAIRuntime } from './agent-runtimes/openai-backend.js';
 import { createLlamaCppRuntime } from './agent-runtimes/llama-cpp-backend.js';
 import { createDeusNativeRuntime } from './agent-runtimes/deus-native-backend.js';
+import {
+  RuntimeActivityBroadcaster,
+  withRuntimeActivityBroadcast,
+} from './agent-runtimes/activity-broadcaster.js';
 import {
   initLinearContext,
   startLinearDispatcher,
@@ -142,6 +146,18 @@ async function main(): Promise<void> {
 
   const channels: Channel[] = [];
   const webhookServers: Server[] = [];
+  // LIA-432/G5: the Odysseus server has its OWN shutdown owner
+  // (stopOdysseusServer, below) — deliberately never pushed into
+  // `webhookServers`. A holder object (rather than a forward-declared `let`)
+  // so shutdown() can close over a mutable `.server` field: the closure is
+  // DEFINED before the server exists but only ever RUNS on a later signal,
+  // after `.server` is assigned further down — `let` here would satisfy that
+  // same ordering but trips `prefer-const` (assigned exactly once, so ESLint
+  // can't see the assignment must stay separate from the closure's earlier
+  // definition).
+  const odysseusServerHolder: { server: Server | undefined } = {
+    server: undefined,
+  };
   // Mutable shared registry: the ingress gateway dispatches by these handlers.
   // Empty in Phase 1 (gateway serves /health + 404s, no dispatch path); the
   // Phase-4 webhook channel (LIA-315) pushes its route after the gateway listens.
@@ -164,10 +180,23 @@ async function main(): Promise<void> {
       groupFolder: string,
     ) => queue.registerProcess(chatJid, proc, containerName, groupFolder),
   };
+  // LIA-432/G5: shared, process-wide activity broadcaster — constructed once
+  // at the composition root and wired ONLY into the deus-native registration
+  // below (Claude/OpenAI/llama-cpp stay undecorated; see PLAN.md §3). Also
+  // passed through OdysseusServerDeps below so `/v1/activity` subscribes to
+  // this SAME instance. Owned here for its whole lifetime — closed only at
+  // the true tail of shutdown(), after channels/queue/Linear have drained.
+  const activityBroadcaster = new RuntimeActivityBroadcaster();
+
   registry.register(createClaudeRuntime(backendDeps));
   registry.register(createOpenAIRuntime(backendDeps));
   registry.register(createLlamaCppRuntime(backendDeps));
-  registry.register(createDeusNativeRuntime(backendDeps));
+  registry.register(
+    withRuntimeActivityBroadcast(
+      createDeusNativeRuntime(backendDeps),
+      activityBroadcaster,
+    ),
+  );
   logger.info({ backends: registry.list() }, 'Backend registry initialized');
 
   // LIA-428 (G1): daemon-owned loopback endpoint for `deus chat`. The
@@ -191,6 +220,12 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     stopLinearDispatcher();
+    // LIA-432/G5: the Odysseus server's SOLE closer — stops it (draining any
+    // live /v1/activity responses first) before the generic webhookServers
+    // loop, which never contains this instance (see wiring below).
+    if (odysseusServerHolder.server) {
+      await stopOdysseusServer(odysseusServerHolder.server);
+    }
     for (const srv of webhookServers) srv.close();
     ingressTunnel?.stop();
     proxyServer.close();
@@ -199,6 +234,12 @@ async function main(): Promise<void> {
     await nativeChatServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
+    // Latest process-wide shutdown boundary — after channels, scheduled work
+    // admitted through the queue, Linear dispatch, and channel-owned
+    // multi-agent work have all had their available shutdown/drain window
+    // (PLAN.md §5). The documented post-close no-op on the broadcaster
+    // protects any still-late detached turn from throwing here.
+    activityBroadcaster.close();
     process.exit(0);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
@@ -497,12 +538,15 @@ async function main(): Promise<void> {
   // Start the Odysseus /v1 web channel (no-op unless ODYSSEUS_HTTP_ENABLED=1).
   // Each web turn runs on its own fresh session (LIA-294); serializes through
   // GroupQueue on the main jid like the scheduler.
-  const odysseusServer = await startOdysseusServer({
+  odysseusServerHolder.server = await startOdysseusServer({
     queue,
     registry,
     registeredGroups: () => state.registeredGroups,
+    activityBroadcaster,
   });
-  if (odysseusServer) webhookServers.push(odysseusServer);
+  // LIA-432/G5: deliberately NOT pushed into `webhookServers` — stopOdysseusServer()
+  // in shutdown() above is this instance's sole closer, avoiding a double
+  // `server.close()` (see the `odysseusServerHolder` declaration earlier).
 
   // Start Linear subsystems (no-op if LINEAR_API_KEY not configured)
   const linearEnv = readEnvFile([
