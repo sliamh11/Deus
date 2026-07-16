@@ -71,6 +71,14 @@ Backend neutrality starts at the host runtime:
   resolution as interactive turns.
 - `container/agent-runner/src/openai-backend.ts` is the OpenAI/Codex adapter.
 - `container/agent-runner/src/index.ts` keeps Claude as the compatibility path.
+- `deus chat` (LIA-428) flow: `src/cli/deus-native-chat-client.ts` (thin
+  terminal client, compiled to `dist/cli/`) → discovery record under
+  `~/.config/deus/native-chat.json` → authenticated loopback endpoint inside
+  the daemon (`src/cli/deus-native-chat-server.ts`, started by
+  `src/index.ts`) → `src/cli/deus-native-chat.ts` controller →
+  `registry.get('deus-native')` runtime + backend-scoped `db` session store.
+  The client never instantiates a runtime or reads provider credentials; see
+  `docs/decisions/deus-native-cli-chat.md`.
 
 Never resume a session across backend mismatch. Starting fresh is better than
 cross-contaminating vendor session state; re-load Deus memory/context instead.
@@ -104,6 +112,8 @@ CLI interface choices:
 - `deus openai` (alias for `deus codex`)
 - `DEUS_CLI_AGENT=claude|codex`
 - `DEUS_AGENT_BACKEND=claude|openai`
+- `deus chat` (deus-native terminal chat; `/status`, `/exit`, `/quit` inside
+  the session)
 
 Chat/channel commands must not depend on backend:
 

@@ -1514,6 +1514,14 @@ $STARTUP_INSTRUCTION"
     shift
     exec node "$SCRIPT_DIR/dist/solutions/cli.js" "$@"
     ;;
+  chat)
+    # LIA-428: deus-native terminal chat (thin client; the daemon owns the
+    # runtime). Deliberately NO cd — the client forwards the user's original
+    # cwd to the daemon (RunContext.cwd), and its discovery record lives
+    # under ~/.config/deus, not the repo.
+    shift
+    exec node "$SCRIPT_DIR/dist/cli/deus-native-chat-client.js" "$@"
+    ;;
   sweep)
     shift
     local bench_file="${1:-$SCRIPT_DIR/scripts/tests/fixtures/memory_tree_queries.jsonl}"
@@ -1728,7 +1736,7 @@ $STARTUP_INSTRUCTION"
     esac
     ;;
   *)
-    echo "Usage: deus [claude|codex] [home|init|arch|auth|build|web|backend|gcal|listen|logs|model|provider|pipeline|preflight|solution|sweep|tui] [--agents] [--print-identity]"
+    echo "Usage: deus [claude|codex] [home|init|arch|auth|build|chat|web|backend|gcal|listen|logs|model|provider|pipeline|preflight|solution|sweep|tui] [--agents] [--print-identity]"
     echo ""
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -1759,6 +1767,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus solution   Manage solution atoms (list|search|add)"
     echo "  deus sweep      Run threshold calibration sweep against benchmark queries"
     echo "  deus tui        Interactive terminal UI (set tui_default=true in config to use by default)"
+    echo "  deus chat       Terminal chat on the deus-native backend (/status, /exit; resumes your last CLI conversation)"
     echo ""
     echo "Flags:"
     echo "  --agents        Open the claude agents preview UI (append to any launch command)"

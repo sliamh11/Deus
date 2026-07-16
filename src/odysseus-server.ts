@@ -121,7 +121,9 @@ export function validateOdysseusToken(token: string | undefined): {
   return { ok: true };
 }
 
-function timingSafeEqualStr(a: string, b: string): boolean {
+// Exported for reuse by the native-chat loopback server (LIA-428), which
+// follows this module's bearer-auth pattern — one implementation, two callers.
+export function timingSafeEqualStr(a: string, b: string): boolean {
   const ab = Buffer.from(a);
   const bb = Buffer.from(b);
   // Length check first — timingSafeEqual throws on length mismatch. NB: this
@@ -131,7 +133,8 @@ function timingSafeEqualStr(a: string, b: string): boolean {
   return crypto.timingSafeEqual(ab, bb);
 }
 
-function extractBearer(req: IncomingMessage): string | null {
+// Exported for reuse by the native-chat loopback server (LIA-428).
+export function extractBearer(req: IncomingMessage): string | null {
   const h = req.headers['authorization'];
   if (typeof h !== 'string') return null;
   const m = h.match(/^Bearer\s+(.+)$/i);

@@ -53,6 +53,11 @@ import { startIpcWatcher } from './ipc.js';
 import { loadSkillIpcHandlers } from './skills/index.js';
 import { createMessageOrchestrator } from './message-orchestrator.js';
 import { startOdysseusServer } from './odysseus-server.js';
+import { nativeChatDiscoveryPath } from './cli/deus-native-chat.js';
+import {
+  startNativeChatServer,
+  createDbSessionStore,
+} from './cli/deus-native-chat-server.js';
 import { findChannel, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -165,6 +170,23 @@ async function main(): Promise<void> {
   registry.register(createDeusNativeRuntime(backendDeps));
   logger.info({ backends: registry.list() }, 'Backend registry initialized');
 
+  // LIA-428 (G1): daemon-owned loopback endpoint for `deus chat`. The
+  // short-lived CLI client must reuse THIS process's credential proxy and
+  // group-token state — it never boots its own runtime (see
+  // docs/decisions/deus-native-cli-chat.md). Started here because the
+  // database, credential proxy, and registry are all live; a startup
+  // failure is fatal like any other daemon subsystem.
+  const nativeChatServer = await startNativeChatServer({
+    registry,
+    sessions: createDbSessionStore(),
+    discoveryPath: nativeChatDiscoveryPath(),
+    log: (message) => logger.info(message),
+  });
+  logger.info(
+    { port: nativeChatServer.port },
+    'Native chat server listening (loopback)',
+  );
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
@@ -173,6 +195,8 @@ async function main(): Promise<void> {
     ingressTunnel?.stop();
     proxyServer.close();
     toolProxyServer.close();
+    // Closes the loopback chat endpoint and removes only OUR discovery record.
+    await nativeChatServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);

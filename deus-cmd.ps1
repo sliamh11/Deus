@@ -633,8 +633,17 @@ switch ($Command.ToLower()) {
         & node "$DeusHome\dist\deus-listen.js" @remaining
     }
 
+    "chat" {
+        # LIA-428: deus-native terminal chat (thin client; the daemon owns the
+        # runtime). No Set-Location -- the client forwards the user's original
+        # cwd to the daemon; discovery lives under the user profile's
+        # .config\deus, not the repo.
+        & node "$DeusHome\dist\cli\deus-native-chat-client.js" @args
+        exit $LASTEXITCODE
+    }
+
     default {
-        Write-Host "Usage: deus [claude|codex] [home|auth|status|backend|logs|listen]"
+        Write-Host "Usage: deus [claude|codex] [home|auth|status|backend|chat|logs|listen]"
         Write-Host ""
         Write-Host "  deus            Launch in current directory (external project mode if not ~\deus)"
         Write-Host "  deus codex      Launch with Codex (OpenAI) for this session"
@@ -644,5 +653,6 @@ switch ($Command.ToLower()) {
         Write-Host "  deus backend    Manage default AI backend and model (show|set|model|list)"
         Write-Host "  deus logs       Review system health logs (rotate|review|summary|pinned)"
         Write-Host "  deus listen     Record from mic, transcribe, and copy to clipboard"
+        Write-Host "  deus chat       Terminal chat on the deus-native backend (/status, /exit)"
     }
 }
