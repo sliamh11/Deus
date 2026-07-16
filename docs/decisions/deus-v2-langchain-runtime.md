@@ -182,6 +182,19 @@ web_fetch}` and remains the operative boundary; B7 added an authorization
   and never receives `dispatch_nested_agent` itself (no recursive nesting).
   `SAFE_TOOL_NAMES` remains unchanged and is still the operative tool-surface
   boundary for every child, exactly as it is for the parent.
+- **Update (D3/LIA-417):** that same memory middleware now also contains a
+  post-success `wrapToolCall` mechanism for edit-triggered re-embedding. It
+  maps supported broker-shaped (`write_file`/`edit_file`) and existing-hook-
+  shaped (`Write`/`Edit`/`MultiEdit`) calls onto the unchanged
+  `scripts/memory_tree_hook.py` PostToolUse protocol, invokes the hook only
+  after the delegated tool succeeds, and fails open if hook launch fails.
+  This mechanism is unit-complete but currently dormant: `SAFE_TOOL_NAMES`
+  still exposes only `web_search` and `web_fetch`, so no live `deus-native`
+  tool can activate it. If a separately reviewed future decision widens that
+  inclusion set to supported filesystem edit tools, the middleware branch
+  becomes live automatically; LIA-417 neither authorizes nor implements that
+  widening. The `claude` backend is unchanged and continues to re-embed
+  independently through its existing `Write|Edit|MultiEdit` PostToolUse hook.
 
 ## Rollback
 

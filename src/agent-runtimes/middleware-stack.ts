@@ -18,14 +18,16 @@
  * The PERMISSIONS layer is real as of B7/LIA-407: a declarative first-match-
  * wins rule engine (permission-rules.ts) evaluated inside `wrapToolCall`,
  * with named profiles (`default` allow-all, `read-only` fail-closed) selected
- * via `BuildMiddlewareStackDeps.permissionProfile`. The MEMORY layer is real
- * for control-group turns as of D1/LIA-415: one `beforeModel` retrieval per
- * turn through the unchanged `scripts/memory_retrieval_hook.py` (see
- * memory-retrieval.ts and buildMemoryMiddleware's doc comment; other groups
- * keep the pass-through observer — AAG-014). The wardens and telemetry
- * layers remain explicit observe-only placeholders — each factory's doc
- * comment names the future work that replaces its substance. In particular,
- * the wardens layer
+ * via `BuildMiddlewareStackDeps.permissionProfile`. The MEMORY layer is real:
+ * D1/LIA-415 performs one `beforeModel` retrieval per control-group turn
+ * through the unchanged `scripts/memory_retrieval_hook.py` (other groups keep
+ * the pass-through observer — AAG-014), and D3/LIA-417 adds a post-success
+ * `wrapToolCall` re-embedding mechanism through the unchanged
+ * `scripts/memory_tree_hook.py`. The latter is currently dormant because the
+ * live deus-native tool surface contains no supported edit tool. The wardens
+ * and telemetry layers remain explicit observe-only placeholders — each
+ * factory's doc comment names the future work that replaces its substance. In
+ * particular, the wardens layer
  * deliberately does NOT call `codex_warden_hooks.py`: wiring real gates into
  * a non-Claude backend's live tool-call path is exactly the remediation that
  * the Accepted ADR docs/decisions/hook-dispatch-facade-correction.md holds
@@ -44,6 +46,12 @@ import {
   type MemoryRetrievalAdapter,
   type MemoryRetrievalRequest,
 } from './memory-retrieval.js';
+import {
+  triggerMemoryReembed,
+  type MemoryReembedAdapter,
+  type MemoryReembedRequest,
+  type MemoryReembedToolName,
+} from './memory-reembed.js';
 
 /** The four supported middleware layers, by canonical position. */
 export type MiddlewareLayerName =
@@ -106,6 +114,42 @@ export interface ToolCallDecisionRecord {
  *  kept the record contract intact). */
 export interface MemoryPassRecord {
   hook: 'beforeModel' | 'afterModel';
+}
+
+/**
+ * Maps supported broker-shaped and existing-hook-shaped edit calls onto the
+ * singular canonical PostToolUse request understood by memory_tree_hook.py.
+ * Accepted path values are preserved exactly; blank or non-string values do
+ * not qualify as edits.
+ */
+function memoryReembedRequestForToolCall(toolCall: {
+  name: string;
+  args: unknown;
+}): MemoryReembedRequest | undefined {
+  const mapping: Record<
+    string,
+    { toolName: MemoryReembedToolName; pathKey: 'path' | 'file_path' }
+  > = {
+    write_file: { toolName: 'Write', pathKey: 'path' },
+    edit_file: { toolName: 'Edit', pathKey: 'path' },
+    Write: { toolName: 'Write', pathKey: 'file_path' },
+    Edit: { toolName: 'Edit', pathKey: 'file_path' },
+    MultiEdit: { toolName: 'MultiEdit', pathKey: 'file_path' },
+  };
+  const supported = mapping[toolCall.name];
+  if (supported === undefined) return;
+  if (
+    typeof toolCall.args !== 'object' ||
+    toolCall.args === null ||
+    Array.isArray(toolCall.args)
+  ) {
+    return;
+  }
+  const filePath = (toolCall.args as Record<string, unknown>)[
+    supported.pathKey
+  ];
+  if (typeof filePath !== 'string' || filePath.trim() === '') return;
+  return { toolName: supported.toolName, filePath };
 }
 
 /** One observed model call — telemetry log (matches A3's inspectable
@@ -240,13 +284,21 @@ export function buildWardensMiddleware(
 }
 
 /**
- * Memory layer — REAL for control-group turns as of D1/LIA-415. On the
- * FIRST `beforeModel` firing of a turn that supplied `memoryRequest`, it
- * runs one retrieval through the unchanged `scripts/memory_retrieval_hook.py`
- * (via the subprocess adapter in memory-retrieval.ts) and, when the hook
- * returns non-empty context, appends ONE user-role context message through
- * LangGraph's default messages append-reducer — so the recalled context is
- * visible in the model input for this and every later cycle of the turn.
+ * Memory layer — REAL retrieval for control-group turns as of D1/LIA-415,
+ * plus a unit-complete but currently unreachable edit re-embedding mechanism
+ * as of D3/LIA-417. On the FIRST `beforeModel` firing of a turn that supplied
+ * `memoryRequest`, it runs one retrieval through the unchanged
+ * `scripts/memory_retrieval_hook.py` (via memory-retrieval.ts) and, when the
+ * hook returns non-empty context, appends ONE user-role context message
+ * through LangGraph's default messages append-reducer — so the recalled
+ * context is visible in the model input for this and every later cycle.
+ *
+ * `wrapToolCall` separately recognizes supported broker/hook edit names,
+ * delegates the original request exactly once, and invokes the unchanged
+ * `scripts/memory_tree_hook.py` protocol only after a successful result. The
+ * live deus-native inclusion filter still exposes only web_search/web_fetch,
+ * so no production tool can currently activate that branch; direct tests pin
+ * the mechanism while deus-native-tool-scope.oracle.test.ts pins reachability.
  *
  * Deliberate constraints, each load-bearing:
  * - One retrieval per turn (closure-local boolean): `buildMiddlewareStack`
@@ -266,10 +318,14 @@ export function buildWardensMiddleware(
  *   `memoryRequest` only for control-group turns; every other group keeps
  *   the pass-through observer behavior. The remaining non-control-group
  *   parity gap is tracked as AAG-014 in docs/agent-agnostic-debt.md.
+ * - Re-embedding is independent of `memoryRequest`: memory_tree_hook.py owns
+ *   vault membership checks, while D1's control-group restriction governs
+ *   personal-memory retrieval only.
  */
 export function buildMemoryMiddleware(
   memoryRequest?: MemoryRetrievalRequest,
   retrievalAdapter: MemoryRetrievalAdapter = retrieveMemoryContext,
+  reembedAdapter: MemoryReembedAdapter = triggerMemoryReembed,
   orderMarkers?: OrderMarker[],
 ): BuiltLayer<MemoryPassRecord> {
   const log: MemoryPassRecord[] = [];
@@ -278,6 +334,22 @@ export function buildMemoryMiddleware(
   let retrievalAttempted = false;
   const middleware = createMiddleware({
     name: 'memory',
+    wrapToolCall: async (request, handler) => {
+      const reembedRequest = memoryReembedRequestForToolCall(request.toolCall);
+      const result = await handler(request);
+      if (ToolMessage.isInstance(result) && result.status === 'error') {
+        return result;
+      }
+      if (reembedRequest !== undefined) {
+        try {
+          await reembedAdapter(reembedRequest);
+        } catch {
+          // The production adapter never rejects; keep post-success
+          // re-embedding fail-open even for an injected adapter.
+        }
+      }
+      return result;
+    },
     beforeModel: async () => {
       log.push({ hook: 'beforeModel' });
       if (memoryRequest === undefined || retrievalAttempted) return;
@@ -362,6 +434,9 @@ export interface BuildMiddlewareStackDeps {
   /** Test-only override of the memory retrieval adapter — hermetic doubles
    *  instead of the real Python subprocess. Omit in production. */
   memoryRetrievalAdapter?: MemoryRetrievalAdapter;
+  /** D3 (LIA-417): test-only override of the post-success edit
+   *  re-embedding adapter. Omit in production. */
+  memoryReembedAdapter?: MemoryReembedAdapter;
 }
 
 export interface MiddlewareStackResult {
@@ -414,6 +489,7 @@ export function buildMiddlewareStack(
         const built = buildMemoryMiddleware(
           deps.memoryRequest,
           deps.memoryRetrievalAdapter,
+          deps.memoryReembedAdapter,
           deps.orderMarkers,
         );
         middleware.push(built.middleware);

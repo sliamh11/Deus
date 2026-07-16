@@ -10,6 +10,7 @@ import { ToolMessage } from '@langchain/core/messages';
 
 import {
   CANONICAL_MIDDLEWARE_ORDER,
+  buildMemoryMiddleware,
   buildMiddlewareStack,
   buildPermissionsMiddleware,
   parseMiddlewareStackConfig,
@@ -18,6 +19,10 @@ import {
   type OrderMarker,
 } from './middleware-stack.js';
 import type { MemoryRetrievalRequest } from './memory-retrieval.js';
+import type {
+  MemoryReembedAdapter,
+  MemoryReembedRequest,
+} from './memory-reembed.js';
 
 /** Middleware instance names equal their layer names, so ordering
  *  assertions read directly against CANONICAL_MIDDLEWARE_ORDER. */
@@ -494,6 +499,228 @@ describe('permissions middleware — compliant (allowed) flows are not impeded t
         reason: expect.stringContaining('web_search'),
       },
     ]);
+  });
+});
+
+// ── D3 (LIA-417): dormant post-success memory re-embedding mechanism ────
+//
+// These tests deliberately invoke the memory middleware's wrapToolCall hook
+// directly. No supported edit tool is currently supplied to the production
+// deus-native agent; deus-native-tool-scope.oracle.test.ts remains the
+// separate standing proof of that live reachability boundary.
+
+function successfulToolMessage(id = 'call_edit_1'): ToolMessage {
+  return new ToolMessage({ content: 'edited', tool_call_id: id });
+}
+
+describe('memory middleware — post-success edit re-embedding (D3/LIA-417)', () => {
+  it('delegates a recognized edit once with the original request, then re-embeds with the canonical name and exact path', async () => {
+    const adapterCalls: MemoryReembedRequest[] = [];
+    const reembedAdapter: MemoryReembedAdapter = async (request) => {
+      adapterCalls.push(request);
+    };
+    const { middleware: stack } = buildMiddlewareStack(
+      {},
+      { memoryReembedAdapter: reembedAdapter },
+    );
+    const middleware = stack.find((layer) => layer.name === 'memory');
+    if (middleware === undefined) throw new Error('memory layer not built');
+    const args = Object.freeze({ path: '/workspace/project/example.ts' });
+    const request = makeToolCallRequest('edit_file', args, 'call_edit_1');
+    const handlerResult = successfulToolMessage();
+    const handler = vi.fn(() => handlerResult);
+
+    const result = await invokeWrapToolCall(middleware, request, handler);
+
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler).toHaveBeenCalledWith(request);
+    expect(adapterCalls).toEqual([
+      { toolName: 'Edit', filePath: '/workspace/project/example.ts' },
+    ]);
+    expect(result).toBe(handlerResult);
+  });
+
+  it('does not re-embed when a recognized edit returns an error-status ToolMessage', async () => {
+    const reembedAdapter = vi.fn<MemoryReembedAdapter>();
+    const { middleware } = buildMemoryMiddleware(
+      undefined,
+      undefined,
+      reembedAdapter,
+    );
+    const request = makeToolCallRequest('write_file', {
+      path: '/workspace/project/example.ts',
+    });
+    const handlerResult = new ToolMessage({
+      content: 'write failed',
+      tool_call_id: 'call_direct_1',
+      status: 'error',
+    });
+
+    const result = await invokeWrapToolCall(
+      middleware,
+      request,
+      () => handlerResult,
+    );
+
+    expect(reembedAdapter).not.toHaveBeenCalled();
+    expect(result).toBe(handlerResult);
+  });
+
+  it('preserves a rejected handler failure and does not invoke the adapter', async () => {
+    const reembedAdapter = vi.fn<MemoryReembedAdapter>();
+    const { middleware } = buildMemoryMiddleware(
+      undefined,
+      undefined,
+      reembedAdapter,
+    );
+    const request = makeToolCallRequest('edit_file', {
+      path: '/workspace/project/example.ts',
+    });
+    const handlerFailure = new Error('edit failed');
+
+    await expect(
+      invokeWrapToolCall(middleware, request, () =>
+        Promise.reject(handlerFailure),
+      ),
+    ).rejects.toBe(handlerFailure);
+    expect(reembedAdapter).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'read_file',
+    'grep_files',
+    'glob_files',
+    'bash_exec',
+    'web_search',
+    'web_fetch',
+    'unknown_tool',
+  ])(
+    'delegates successful non-edit tool %s without re-embedding',
+    async (name) => {
+      const reembedAdapter = vi.fn<MemoryReembedAdapter>();
+      const { middleware } = buildMemoryMiddleware(
+        undefined,
+        undefined,
+        reembedAdapter,
+      );
+      const request = makeToolCallRequest(name, {
+        path: '/workspace/project/example.ts',
+        file_path: '/workspace/project/example.ts',
+      });
+      const handlerResult = successfulToolMessage();
+      const handler = vi.fn(() => handlerResult);
+
+      const result = await invokeWrapToolCall(middleware, request, handler);
+
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(handler).toHaveBeenCalledWith(request);
+      expect(reembedAdapter).not.toHaveBeenCalled();
+      expect(result).toBe(handlerResult);
+    },
+  );
+
+  it.each([
+    ['missing', {}],
+    ['non-string', { path: 42 }],
+    ['empty', { path: '' }],
+    ['whitespace-only', { path: '   \t' }],
+  ])('ignores a supported broker edit with a %s path', async (_label, args) => {
+    const reembedAdapter = vi.fn<MemoryReembedAdapter>();
+    const { middleware } = buildMemoryMiddleware(
+      undefined,
+      undefined,
+      reembedAdapter,
+    );
+
+    await invokeWrapToolCall(
+      middleware,
+      makeToolCallRequest('edit_file', args),
+      () => successfulToolMessage(),
+    );
+
+    expect(reembedAdapter).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Write', 'Write'],
+    ['Edit', 'Edit'],
+    ['MultiEdit', 'MultiEdit'],
+  ] as const)(
+    'reads file_path from hook-shaped %s and preserves its canonical name',
+    async (toolName, expectedToolName) => {
+      const reembedAdapter = vi.fn<MemoryReembedAdapter>();
+      const { middleware } = buildMemoryMiddleware(
+        undefined,
+        undefined,
+        reembedAdapter,
+      );
+
+      await invokeWrapToolCall(
+        middleware,
+        makeToolCallRequest(toolName, {
+          file_path: ' /workspace/vault/exact path.md ',
+          path: '/wrong/path',
+        }),
+        () => successfulToolMessage(),
+      );
+
+      expect(reembedAdapter).toHaveBeenCalledWith({
+        toolName: expectedToolName,
+        filePath: ' /workspace/vault/exact path.md ',
+      });
+    },
+  );
+
+  it.each([
+    ['write_file', 'Write'],
+    ['edit_file', 'Edit'],
+  ] as const)(
+    'reads path from broker-shaped %s and maps it to %s',
+    async (toolName, expectedToolName) => {
+      const reembedAdapter = vi.fn<MemoryReembedAdapter>();
+      const { middleware } = buildMemoryMiddleware(
+        undefined,
+        undefined,
+        reembedAdapter,
+      );
+
+      await invokeWrapToolCall(
+        middleware,
+        makeToolCallRequest(toolName, {
+          path: '/workspace/project/exact.ts',
+          file_path: '/wrong/path',
+        }),
+        () => successfulToolMessage(),
+      );
+
+      expect(reembedAdapter).toHaveBeenCalledWith({
+        toolName: expectedToolName,
+        filePath: '/workspace/project/exact.ts',
+      });
+    },
+  );
+
+  it('contains an injected adapter rejection and returns the successful result unchanged', async () => {
+    const reembedAdapter = vi.fn<MemoryReembedAdapter>(async () => {
+      throw new Error('injected re-embed failure');
+    });
+    const { middleware } = buildMemoryMiddleware(
+      undefined,
+      undefined,
+      reembedAdapter,
+    );
+    const handlerResult = successfulToolMessage();
+
+    const result = await invokeWrapToolCall(
+      middleware,
+      makeToolCallRequest('edit_file', {
+        path: '/workspace/project/example.ts',
+      }),
+      () => handlerResult,
+    );
+
+    expect(reembedAdapter).toHaveBeenCalledTimes(1);
+    expect(result).toBe(handlerResult);
   });
 });
 
