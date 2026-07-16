@@ -36,7 +36,13 @@ def _ctx(**over):
 
 
 def _session(**over):
-    s = dict(sessionId="other-sid", pid=4242, cwd="/repo/top", updatedAt=NOW_MS - 1000)
+    s = dict(
+        sessionId="other-sid",
+        pid=4242,
+        cwd="/repo/top",
+        updatedAt=NOW_MS - 1000,
+        status="busy",
+    )
     s.update(over)
     return s
 
@@ -131,6 +137,32 @@ class TestProbeLiveSession:
     def test_missing_keys_skipped(self, monkeypatch):
         self._patch(monkeypatch, [{"sessionId": "x"}, {"cwd": "/repo/top"}])  # no cwd / no updatedAt
         assert sp.probe_live_session_same_tree(_ctx()) == []
+
+    def test_idle_sibling_not_flagged(self, monkeypatch):
+        # The false-positive class this probe exists to fix: an idle sibling's
+        # heartbeat/mtime stays fresh just from being open, with no actual
+        # concurrent editing happening.
+        self._patch(monkeypatch, [_session(status="idle")])
+        assert sp.probe_live_session_same_tree(_ctx()) == []
+
+    def test_waiting_sibling_is_critical(self, monkeypatch):
+        self._patch(monkeypatch, [_session(status="waiting")])
+        out = sp.probe_live_session_same_tree(_ctx())
+        assert len(out) == 1 and out[0].severity == sp.CRITICAL
+
+    def test_missing_status_is_critical(self, monkeypatch):
+        s = _session()
+        del s["status"]
+        self._patch(monkeypatch, [s])
+        out = sp.probe_live_session_same_tree(_ctx())
+        assert len(out) == 1 and out[0].severity == sp.CRITICAL
+
+    def test_unknown_status_is_critical(self, monkeypatch):
+        # Fail toward still-flagging: an exact idle-only exclusion, not an
+        # allowlist, so any future/unrecognized status still counts.
+        self._patch(monkeypatch, [_session(status="zombie")])
+        out = sp.probe_live_session_same_tree(_ctx())
+        assert len(out) == 1 and out[0].severity == sp.CRITICAL
 
 
 # ── probe_branch_in_another_worktree ─────────────────────────────────────────

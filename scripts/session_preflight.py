@@ -194,6 +194,15 @@ def probe_live_session_same_tree(ctx: Context) -> list[Finding]:
             continue
         if isinstance(pid, int) and pid in ctx.self_pids:
             continue
+        # Idle sessions still get their heartbeat/mtime refreshed just by staying
+        # open, so they'd otherwise look "fresh" indefinitely without doing any
+        # actual concurrent editing -- exact match only, so a missing/non-string/
+        # differently-cased/future/unknown status still counts as CRITICAL
+        # (fail toward still-flagging, not toward silently allowing). Checked
+        # before _git_toplevel (which spawns a git subprocess) since idle is
+        # the common case and this is a pure dict lookup.
+        if s.get("status") == "idle":
+            continue
         if _git_toplevel(cwd) != ctx.toplevel:
             continue
         # Freshness = the more recent of the status timestamp and the heartbeat mtime
@@ -207,11 +216,12 @@ def probe_live_session_same_tree(ctx: Context) -> list[Finding]:
             continue
         age_s = max(0, age_ms // 1000)
         sid_disp = (sid or "?")[:8]
+        status_disp = s.get("status") or "?"
         findings.append(
             Finding(
                 CRITICAL,
                 "live_session_same_tree",
-                f"session {sid_disp} (pid {pid}) live on this tree, updated {age_s}s ago",
+                f"session {sid_disp} (pid {pid}, status={status_disp}) live on this tree, updated {age_s}s ago",
             )
         )
     return findings
