@@ -291,7 +291,7 @@ def process_human_feedback(eps: float = 0.05) -> dict:
         PR (the external-trace ingester and write-back caller are
         explicitly deferred -- see docs/KNOWN_LIMITATIONS.md), so no row
         can actually reach human_score IS NOT NULL today. Flagged as a
-        requirement for whichever follow-up issue wires the producer.
+        requirement for LIA-443, which wires the producer.
 
     Returns counters: {"corrective": int, "positive": int, "skipped": int, "errored": int}.
     """
@@ -366,7 +366,8 @@ def process_human_feedback(eps: float = 0.05) -> dict:
             store.update_interaction(row["id"], processed_at=now)
 
             # Counter increment happens ONLY after the row is fully committed
-            # (processed_at set) -- see round-7 fix note above.
+            # (processed_at set), so a mid-row failure lands in `errored`
+            # alone -- never double-counted into a success bucket too.
             if reflection_id is not None:
                 counters[direction] += 1
             else:

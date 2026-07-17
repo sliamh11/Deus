@@ -171,10 +171,9 @@ def test_mid_range_score_is_skipped(monkeypatch):
 
 
 def test_direction_none_write_failure_counts_errored_not_skipped(monkeypatch):
-    """GPT round-6 finding: the direction-is-None early-skip branch's
-    update_interaction call must be inside the try/except too. A failure
-    there must land in `errored`, never `skipped`, and must not abort the
-    rest of the batch."""
+    """The direction-is-None early-skip branch's update_interaction call
+    must be inside the try/except too. A failure there must land in
+    `errored`, never `skipped`, and must not abort the rest of the batch."""
     store = _FakeHFStore([_row("mid", human_score=0.7), _row("clean", human_score=0.2)])
     store.fail_update_interaction_for.add("mid")
     _install_store(monkeypatch, store)
@@ -263,10 +262,9 @@ def test_same_polarity_reflection_not_archived(monkeypatch):
 
 
 def test_archival_failure_does_not_abort_batch_frozen_counters(monkeypatch):
-    """Claude round-6 finding, fixed in round-7: if archive_reflection_by_id
-    raises after a successful save, the row must land in `errored` ONLY --
-    NOT also increment its direction bucket -- and the rest of the batch
-    must still process."""
+    """If archive_reflection_by_id raises after a successful save, the row
+    must land in `errored` ONLY -- NOT also increment its direction bucket
+    -- and the rest of the batch must still process."""
     reflections = {"row1": [{"id": "existing-positive", "polarity": "positive"}]}
     store = _FakeHFStore(
         [_row("row1", human_score=0.2), _row("row2", human_score=0.2)],
