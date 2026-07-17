@@ -376,22 +376,8 @@ def process_human_feedback(eps: float = 0.05) -> dict:
                 interaction_id=row["id"], group_folder=row.get("group_folder"), polarity=direction,
             )
 
-            # Zone-alignment archival: archive the CONTRADICTING polarity
-            # only once an active same-polarity (`direction`) reflection is
-            # CONFIRMED to represent the zone. On a fresh save, reflection_id
-            # itself is that confirmation. On a dedup rejection
-            # (reflection_id is None), save_reflection's dedup check
-            # (reflexion/store.py's check_reflection_duplicate) matches by
-            # embedding similarity within group_folder only -- NOT scoped to
-            # this interaction or polarity -- so the match could be against
-            # this interaction's own CONTRADICTING reflection (or an
-            # unrelated one elsewhere). Confirm a same-polarity reflection
-            # already existed BEFORE this attempt (the pre-generation
-            # snapshot) before trusting the dedup as "zone already covered";
-            # otherwise skip archival rather than risk leaving the
-            # interaction with zero active reflections. NULL-polarity legacy
-            # rows never archived (verbatim per original issue #1011 spec;
-            # documented in docs/KNOWN_LIMITATIONS.md).
+            # Zone-alignment archival, gated on zone confirmation -- see
+            # docstring's "After a fresh-generation attempt" note for why.
             contradicting = "positive" if direction == "corrective" else "corrective"
             zone_confirmed = reflection_id is not None or any(
                 r.get("polarity") == direction for r in existing_reflections
