@@ -24,6 +24,8 @@ import type {
   PreToolUseHookInput,
 } from '@anthropic-ai/claude-agent-sdk';
 
+import { withAbortTimeout } from './with-abort-timeout.js';
+
 const DISPATCH_TIMEOUT_MS = 4000;
 
 /**
@@ -74,53 +76,50 @@ export async function dispatchPreToolUseGate(
   const token = args.token ?? process.env.DEUS_PROXY_TOKEN;
   const url = `http://${host}:${port}/hooks/PreToolUse`;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DISPATCH_TIMEOUT_MS);
-
   try {
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-    };
-    if (token) headers['x-deus-proxy-token'] = token;
-
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        // Hardcoded — this gate only ever serves PreToolUse. Keeps the body
-        // byte-identical to the Claude SDK hook's so an observer reading
-        // payload.hook_event_name sees the same value on every backend.
-        hook_event_name: 'PreToolUse',
-        tool_name: args.toolName,
-        tool_input: args.toolInput,
-        tool_use_id: args.toolUseId,
-        session_id: args.sessionId,
-      }),
-      signal: controller.signal,
-    });
-
-    if (!res.ok) return { block: false };
-
-    const data = (await res.json()) as Record<string, unknown>;
-
-    if (data.decision === 'block') {
-      return {
-        block: true,
-        reason:
-          typeof data.reason === 'string'
-            ? data.reason
-            : 'Blocked by PreToolUse observer',
+    return await withAbortTimeout(DISPATCH_TIMEOUT_MS, async (signal) => {
+      const headers: Record<string, string> = {
+        'content-type': 'application/json',
       };
-    }
+      if (token) headers['x-deus-proxy-token'] = token;
 
-    return { block: false, response: data };
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          // Hardcoded — this gate only ever serves PreToolUse. Keeps the body
+          // byte-identical to the Claude SDK hook's so an observer reading
+          // payload.hook_event_name sees the same value on every backend.
+          hook_event_name: 'PreToolUse',
+          tool_name: args.toolName,
+          tool_input: args.toolInput,
+          tool_use_id: args.toolUseId,
+          session_id: args.sessionId,
+        }),
+        signal,
+      });
+
+      if (!res.ok) return { block: false };
+
+      const data = (await res.json()) as Record<string, unknown>;
+
+      if (data.decision === 'block') {
+        return {
+          block: true,
+          reason:
+            typeof data.reason === 'string'
+              ? data.reason
+              : 'Blocked by PreToolUse observer',
+        };
+      }
+
+      return { block: false, response: data };
+    });
   } catch {
     console.warn(
       '[pre-tool-use-hook] HookDispatchService unreachable, skipping',
     );
     return { block: false };
-  } finally {
-    clearTimeout(timer);
   }
 }
 

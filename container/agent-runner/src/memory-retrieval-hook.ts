@@ -10,6 +10,7 @@
  */
 
 import { dedupMemoryPayload } from './memory-dedup.js';
+import { withAbortTimeout } from './with-abort-timeout.js';
 // (dedup is applied inside fetchMemoryContext below — see LIA-355)
 
 const BRIDGE_TIMEOUT_MS = 4000;
@@ -35,34 +36,32 @@ export async function fetchMemoryContext(
   const url = getBridgeUrl();
   if (!url) return '';
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), BRIDGE_TIMEOUT_MS);
-
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-deus-proxy-token': process.env.DEUS_PROXY_TOKEN!,
-        'x-deus-source': source,
-      },
-      body: JSON.stringify({ query, source }),
-      signal: controller.signal,
+    return await withAbortTimeout(BRIDGE_TIMEOUT_MS, async (signal) => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-deus-proxy-token': process.env.DEUS_PROXY_TOKEN!,
+          'x-deus-source': source,
+        },
+        body: JSON.stringify({ query, source }),
+        signal,
+      });
+
+      if (!res.ok) return '';
+
+      const data = (await res.json()) as MemoryBridgeResponse;
+      if (!data.context) return '';
+      // LIA-355: dedup at the single choke point so EVERY backend consuming
+      // this function (Claude hook, OpenAI, llama-cpp) gets session dedup.
+      // paths is the bridge's authoritative block list — the parser fails
+      // open on any mismatch. '' when every block was already injected this
+      // session.
+      return dedupMemoryPayload(data.context, data.paths);
     });
-
-    if (!res.ok) return '';
-
-    const data = (await res.json()) as MemoryBridgeResponse;
-    if (!data.context) return '';
-    // LIA-355: dedup at the single choke point so EVERY backend consuming
-    // this function (Claude hook, OpenAI, llama-cpp) gets session dedup.
-    // paths is the bridge's authoritative block list — the parser fails open
-    // on any mismatch. '' when every block was already injected this session.
-    return dedupMemoryPayload(data.context, data.paths);
   } catch {
     return '';
-  } finally {
-    clearTimeout(timer);
   }
 }
 
