@@ -43,6 +43,7 @@ class FakeStorageProvider(StorageProvider):
     def log_interaction(self, **kw): ...
     def update_interaction(self, *a, **kw): ...
     def claim_interaction_credit(self, *a): return False
+    def record_human_feedback(self, *a, **kw): return False
     def get_interaction(self, *a): ...
     def get_recent_interactions(self, **kw): return []
     def get_metrics_rows(self, **kw): return []
@@ -81,6 +82,7 @@ class FakeStorageProvider(StorageProvider):
     def get_compactable_interactions(self, *a, **kw): return []
     def compact_interaction(self, *a, **kw): ...
     def get_unjudged_interactions(self, *a, **kw): return []
+    def get_unprocessed_human_feedback(self, *a, **kw): return []
 
 
 def _serialize_vec(vec: list[float]) -> bytes:
@@ -325,6 +327,120 @@ class TestSQLiteInteractionCRUD:
         )
         assert sqlite_provider.count_interactions(eval_suite="runtime") == 1
         assert sqlite_provider.count_interactions(eval_suite="backfill") == 0
+
+
+class TestSQLiteSourceRefUpsert:
+    """LIA-1011: source_ref is set-once via a reversed-operand COALESCE upsert."""
+
+    def test_source_ref_persists_on_first_write(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="sr1",
+            source_ref="ext:trace-1",
+        )
+        row = sqlite_provider.get_interaction("sr1")
+        assert row["source_ref"] == "ext:trace-1"
+
+    def test_relog_with_different_source_ref_does_not_clobber(self, sqlite_provider):
+        """Discriminating case: a SECOND write with a DIFFERENT non-NULL
+        source_ref must NOT overwrite the first writer's value -- this is
+        the opposite COALESCE operand order from metrics/retrieved_reflection_ids."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="sr2",
+            source_ref="ext:first",
+        )
+        sqlite_provider.log_interaction(
+            prompt="p2", response="r2", group_folder="g",
+            timestamp="2024-01-02T00:00:00Z", interaction_id="sr2",
+            source_ref="ext:second",
+        )
+        row = sqlite_provider.get_interaction("sr2")
+        assert row["source_ref"] == "ext:first"
+        assert row["prompt"] == "p2"  # non-source_ref columns still overwritten
+
+    def test_relog_without_source_ref_preserves_existing(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="sr3",
+            source_ref="ext:keep-me",
+        )
+        sqlite_provider.log_interaction(
+            prompt="p2", response="r2", group_folder="g",
+            timestamp="2024-01-02T00:00:00Z", interaction_id="sr3",
+        )
+        row = sqlite_provider.get_interaction("sr3")
+        assert row["source_ref"] == "ext:keep-me"
+
+    def test_duplicate_source_ref_across_interactions_raises(self, sqlite_provider):
+        """The partial unique index rejects two different interactions
+        claiming the same non-NULL source_ref."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="sr4a",
+            source_ref="ext:shared",
+        )
+        with pytest.raises(Exception):
+            sqlite_provider.log_interaction(
+                prompt="p", response="r", group_folder="g",
+                timestamp="2024-01-01T00:00:00Z", interaction_id="sr4b",
+                source_ref="ext:shared",
+            )
+
+    def test_null_source_ref_unconstrained(self, sqlite_provider):
+        """Multiple interactions with source_ref=None (the default) never
+        collide -- the unique index is partial (WHERE source_ref IS NOT NULL)."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="sr5a",
+        )
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="sr5b",
+        )
+        assert sqlite_provider.get_interaction("sr5a")["source_ref"] is None
+        assert sqlite_provider.get_interaction("sr5b")["source_ref"] is None
+
+
+class TestRecordHumanFeedback:
+    """LIA-1011: record_human_feedback is a one-shot, idempotent claim."""
+
+    def test_records_score_comment_and_scored_at(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="hf1",
+        )
+        ok = sqlite_provider.record_human_feedback(
+            "hf1", human_score=0.9, human_comment="great job", scored_at="2024-01-02T00:00:00Z",
+        )
+        assert ok is True
+        row = sqlite_provider.get_interaction("hf1")
+        assert abs(row["human_score"] - 0.9) < 1e-9
+        assert row["human_comment"] == "great job"
+        assert row["scored_at"] == "2024-01-02T00:00:00Z"
+
+    def test_second_write_is_rejected(self, sqlite_provider):
+        """One-shot semantics: WHERE human_score IS NULL guards the UPDATE."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="hf2",
+        )
+        first = sqlite_provider.record_human_feedback(
+            "hf2", human_score=0.2, human_comment="first", scored_at="2024-01-02T00:00:00Z",
+        )
+        second = sqlite_provider.record_human_feedback(
+            "hf2", human_score=0.8, human_comment="second", scored_at="2024-01-03T00:00:00Z",
+        )
+        assert first is True
+        assert second is False
+        row = sqlite_provider.get_interaction("hf2")
+        assert abs(row["human_score"] - 0.2) < 1e-9
+        assert row["human_comment"] == "first"
+
+    def test_missing_interaction_returns_false(self, sqlite_provider):
+        assert sqlite_provider.record_human_feedback(
+            "missing", human_score=0.5, human_comment=None, scored_at="2024-01-01T00:00:00Z",
+        ) is False
 
 
 class TestSQLiteMetrics:
@@ -626,10 +742,47 @@ class TestSQLiteReflectionCRUD:
             timestamp="2024-01-01T00:00:00Z",
             embedding=_serialize_vec(self.VECTOR_A),
             interaction_id="ix1",
+            polarity="corrective",
         )
         refs = sqlite_provider.get_reflections_for_interaction("ix1")
         assert len(refs) == 1
         assert refs[0]["id"] == "ref_ix"
+        assert refs[0]["polarity"] == "corrective"
+
+    def test_get_reflections_for_interaction_null_polarity(self, sqlite_provider):
+        """Legacy/cross-group writers that never pass polarity round-trip as None."""
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="ix2",
+        )
+        sqlite_provider.save_reflection(
+            reflection_id="ref_ix2",
+            content="Legacy reflection",
+            category="style",
+            score_at_gen=0.3,
+            timestamp="2024-01-01T00:00:00Z",
+            embedding=_serialize_vec(self.VECTOR_A),
+            interaction_id="ix2",
+        )
+        refs = sqlite_provider.get_reflections_for_interaction("ix2")
+        assert len(refs) == 1
+        assert refs[0]["polarity"] is None
+
+    def test_save_reflection_polarity_round_trip(self, sqlite_provider):
+        sqlite_provider.save_reflection(
+            reflection_id="pol1",
+            content="Positive pattern",
+            category="tool_use",
+            score_at_gen=0.9,
+            timestamp="2024-01-01T00:00:00Z",
+            embedding=_serialize_vec(self.VECTOR_A),
+            polarity="positive",
+        )
+        conn_row = None
+        db = sqlite_provider._connect()
+        conn_row = db.execute("SELECT polarity FROM reflections WHERE id = ?", ["pol1"]).fetchone()
+        db.close()
+        assert conn_row["polarity"] == "positive"
 
     def test_check_reflection_duplicate(self, sqlite_provider):
         vec = self.VECTOR_A
@@ -872,6 +1025,54 @@ class TestSQLiteCompactionAndBatchJudge:
             )
         results = sqlite_provider.get_unjudged_interactions(limit=3)
         assert len(results) == 3
+
+
+class TestGetUnprocessedHumanFeedback:
+    """LIA-1011: get_unprocessed_human_feedback() feeds maintenance.process_human_feedback()."""
+
+    def test_returns_scored_unprocessed_rows(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="uhf1",
+        )
+        sqlite_provider.record_human_feedback(
+            "uhf1", human_score=0.9, human_comment=None, scored_at="2024-01-02T00:00:00Z",
+        )
+        results = sqlite_provider.get_unprocessed_human_feedback()
+        assert len(results) == 1
+        assert results[0]["id"] == "uhf1"
+
+    def test_skips_rows_without_human_score(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="uhf2",
+        )
+        assert sqlite_provider.get_unprocessed_human_feedback() == []
+
+    def test_skips_already_processed_rows(self, sqlite_provider):
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="uhf3",
+        )
+        sqlite_provider.record_human_feedback(
+            "uhf3", human_score=0.9, human_comment=None, scored_at="2024-01-02T00:00:00Z",
+        )
+        sqlite_provider.update_interaction("uhf3", processed_at="2024-01-03T00:00:00Z")
+        assert sqlite_provider.get_unprocessed_human_feedback() == []
+
+
+class TestFakeStorageProviderInstantiation:
+    """LIA-1011 added two new abstract methods (record_human_feedback,
+    get_unprocessed_human_feedback) to StorageProvider. If FakeStorageProvider
+    (used throughout the registry tests above) didn't get matching stubs,
+    every test in this module would fail at collection/fixture time with
+    TypeError: Can't instantiate abstract class. This test pins that
+    instantiation explicitly instead of relying on it being incidental."""
+
+    def test_fake_storage_provider_instantiates(self):
+        p = FakeStorageProvider("fake", priority=1)
+        assert p.record_human_feedback("x", human_score=0.5, human_comment=None, scored_at="t") is False
+        assert p.get_unprocessed_human_feedback() == []
 
 
 class TestBuiltInProviders:

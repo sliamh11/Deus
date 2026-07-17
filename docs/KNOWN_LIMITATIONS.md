@@ -35,3 +35,7 @@ While Linux is supported, several features work best on macOS:
 - **Vault sync** — assumes local filesystem access
 
 Linux users can use Docker and skip voice transcription if Whisper Metal isn't available.
+
+## Human Feedback Zone-Alignment Archival (LIA-1011)
+
+NULL-polarity legacy rows never archived — `maintenance.process_human_feedback()`'s zone-alignment archival only reconsiders reflections with a `polarity` value; pre-migration reflections predate the `polarity` column and are never targeted, retroactively or otherwise. This is deliberate, per the original issue's spec, not an oversight.

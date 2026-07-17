@@ -320,6 +320,7 @@ def run_backfill(
                         score_at_gen=result.score,
                         interaction_id=iid,
                         group_folder=pair["group_folder"],
+                        polarity="corrective",
                     )
                     if saved:
                         stats["reflections_generated"] += 1

@@ -148,6 +148,7 @@ def _reflect_single(scored: dict, config: dict) -> bool:
                     score_at_gen=scored["score"],
                     interaction_id=row["id"],
                     group_folder=row.get("group_folder"),
+                    polarity="corrective",
                 )
         elif scored["score"] >= config["positive_threshold"]:
             generated_contents = set()
@@ -170,6 +171,7 @@ def _reflect_single(scored: dict, config: dict) -> bool:
                     score_at_gen=scored["score"],
                     interaction_id=row["id"],
                     group_folder=row.get("group_folder"),
+                    polarity="positive",
                 )
         return True
     except Exception as exc:
@@ -237,6 +239,123 @@ def judge_pending_interactions() -> int:
             list(pool.map(lambda s: _reflect_single(s, config), needs_reflection))
 
     return len(scored_results) + parse_errors
+
+
+def process_human_feedback(eps: float = 0.05) -> dict:
+    """
+    Route human-scored interactions (record_human_feedback writers) into
+    corrective/positive reflections, mirroring judge-driven reflection
+    generation but keyed on a human_score instead of a judge score.
+
+    For each unprocessed row (human_score IS NOT NULL, processed_at IS NULL):
+      - human_score <= REFLECTION_THRESHOLD -> corrective reflection.
+      - human_score >= POSITIVE_THRESHOLD - eps AND the judge disagreed
+        (judge_score < POSITIVE_THRESHOLD) -> positive reflection. Requiring
+        judge disagreement avoids a redundant positive reflection when the
+        judge already scored the interaction as positive. A missing
+        judge_score (judge never ran) is treated as an optimistic 1.0 --
+        NOT disagreement -- so an unjudged high-human-score row is skipped
+        rather than generating a possibly-redundant positive reflection.
+      - otherwise -> skipped (no reflection warranted).
+
+    Zone-alignment archival: once a reflection is generated (or dedups
+    against an existing one) for a row, any EXISTING reflection on the same
+    interaction with the CONTRADICTING polarity is archived — the
+    human-verified zone is now authoritative. NULL-polarity legacy rows are
+    never archived (deliberate; see docs/KNOWN_LIMITATIONS.md).
+
+    The try/except wraps the ENTIRE per-row body, including the
+    direction-is-None early-skip branch, so ANY database write failure for a
+    row (mark-processed, generation, save, or archival) lands uniformly in
+    `errored` and never aborts the rest of the batch. Every counter
+    increment happens strictly AFTER its row's corresponding
+    store.update_interaction(processed_at=now) call succeeds, so a mid-row
+    failure can only ever land in `errored` -- never double-counted into a
+    success bucket too (LIA-1011, rounds 5-7).
+
+    Returns counters: {"corrective": int, "positive": int, "skipped": int, "errored": int}.
+    """
+    from .config import REFLECTION_THRESHOLD, POSITIVE_THRESHOLD
+    from .metrics import parse_metrics
+    from .reflexion.generator import generate_reflection, generate_positive_reflection
+    from .reflexion.sanitize_human_comment import sanitize_human_comment
+    from .reflexion.store import archive_reflection_by_id, save_reflection
+    from .reflexion.validation import is_valid_reflection
+    from .storage import get_storage
+
+    store = get_storage()
+    rows = store.get_unprocessed_human_feedback()
+    now = datetime.now(timezone.utc).isoformat()
+    counters = {"corrective": 0, "positive": 0, "skipped": 0, "errored": 0}
+
+    for row in rows:
+        try:
+            judge_score = row.get("judge_score")
+            judge_score = 1.0 if judge_score is None else judge_score
+
+            if row["human_score"] <= REFLECTION_THRESHOLD:
+                direction = "corrective"
+            elif row["human_score"] >= POSITIVE_THRESHOLD - eps and judge_score < POSITIVE_THRESHOLD:
+                direction = "positive"
+            else:
+                direction = None
+
+            if direction is None:
+                store.update_interaction(row["id"], processed_at=now)
+                counters["skipped"] += 1
+                continue
+
+            rationale = sanitize_human_comment(row.get("human_comment"))
+            metrics = parse_metrics(row.get("metrics"))
+            gen_fn = generate_reflection if direction == "corrective" else generate_positive_reflection
+            content, category = gen_fn(
+                prompt=row["prompt"], response=row.get("response") or "",
+                score=row["human_score"], rationale=rationale,
+                tools_used=row.get("tools_used"), metrics=metrics,
+            )
+            ok, reason = is_valid_reflection(content)
+            if not ok:
+                log.warning("Generated reflection failed validation for %s (%s); leaving unprocessed for retry next cycle", row["id"], reason)
+                counters["errored"] += 1
+                continue  # processed_at NOT set -- validation failure not stable, retry may pass next cycle
+
+            reflection_id = save_reflection(
+                content=content, category=category, score_at_gen=row["human_score"],
+                interaction_id=row["id"], group_folder=row.get("group_folder"), polarity=direction,
+            )
+
+            # Zone-alignment archival: runs whenever content passed validation
+            # (fresh save OR dedup against an existing reflection) -- the
+            # human-verified zone is established either way. NULL-polarity
+            # legacy rows never archived (verbatim per original issue #1011
+            # spec; documented in docs/KNOWN_LIMITATIONS.md).
+            contradicting = "positive" if direction == "corrective" else "corrective"
+            for r in store.get_reflections_for_interaction(row["id"]):
+                if r.get("polarity") == contradicting:
+                    archive_reflection_by_id(r["id"])  # soft-delete, ADR-compliant
+
+            store.update_interaction(row["id"], processed_at=now)
+
+            # Counter increment happens ONLY after the row is fully committed
+            # (processed_at set) -- see round-7 fix note above.
+            if reflection_id is not None:
+                counters[direction] += 1
+            else:
+                # content already confirmed valid above -> None here can only
+                # be the dedup branch -- stable, correctly permanent.
+                counters["skipped"] += 1
+        except Exception as exc:
+            # Accepted limitation: a row that always raises (generation OR
+            # archival OR either update_interaction call) is retried every
+            # cycle forever -- no attempts cap (would need a new schema
+            # column, judged not cheap relative to this plan's existing
+            # 5-column migration; deferred). Reprocessing stays visible via
+            # the errored counter + this warning log. Exactly one counter
+            # bucket is ever incremented per row -- see fix note above.
+            log.warning("Failed to process human feedback for %s: %s", row["id"], exc)
+            counters["errored"] += 1
+            continue
+    return counters
 
 
 def _truncation_fallback(prompt_snippet: str, tools_info: str, score_info: str) -> str:
@@ -321,12 +440,15 @@ def run_maintenance(*, days: int = ARCHIVE_AFTER_DAYS, force: bool = False) -> d
 
     Tasks performed:
       1. Judge pending interactions (catch up on unjudged entries).
+      1.5. Process human feedback (route human-scored interactions into
+           corrective/positive reflections; LIA-1011).
       2. Archive stale reflections (never retrieved, older than ``days`` days).
       3. Compact old interactions (replace full text with summary).
 
     Returns a summary dict:
         {
           "judged_interactions": int,
+          "human_feedback_processed": dict,  # {"corrective", "positive", "skipped", "errored"}
           "archived_reflections": int,
           "compacted_interactions": int,
           "ran_at": ISO-8601 timestamp,
@@ -347,6 +469,7 @@ def run_maintenance(*, days: int = ARCHIVE_AFTER_DAYS, force: bool = False) -> d
         log.debug("Maintenance skipped — not due yet (total=%d)", total)
         return {
             "judged_interactions": 0,
+            "human_feedback_processed": {"corrective": 0, "positive": 0, "skipped": 0, "errored": 0},
             "archived_reflections": 0,
             "compacted_interactions": 0,
             "ran_at": None,
@@ -361,6 +484,11 @@ def run_maintenance(*, days: int = ARCHIVE_AFTER_DAYS, force: bool = False) -> d
     judged = judge_pending_interactions()
     if judged:
         log.info("Batch-judged %d pending interaction(s)", judged)
+
+    # 1.5. Process human feedback (LIA-1011)
+    human_feedback_processed = process_human_feedback()
+    if any(human_feedback_processed.values()):
+        log.info("Processed human feedback: %s", human_feedback_processed)
 
     # 2. Archive stale reflections
     archived = archive_stale_reflections(days=days)
@@ -398,6 +526,7 @@ def run_maintenance(*, days: int = ARCHIVE_AFTER_DAYS, force: bool = False) -> d
 
     return {
         "judged_interactions": judged,
+        "human_feedback_processed": human_feedback_processed,
         "archived_reflections": archived,
         "compacted_interactions": compacted,
         "ran_at": ran_at,
