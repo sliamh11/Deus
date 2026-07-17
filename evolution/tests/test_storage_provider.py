@@ -749,6 +749,34 @@ class TestSQLiteReflectionCRUD:
         assert refs[0]["id"] == "ref_ix"
         assert refs[0]["polarity"] == "corrective"
 
+    def test_get_reflections_for_interaction_excludes_archived(self, sqlite_provider):
+        """An archived reflection is inactive/superseded and must not be
+        returned -- callers (record_feedback_tool's credit path,
+        process_human_feedback's redundancy check) both need only ACTIVE
+        reflections, or an archived positive reflection would incorrectly
+        suppress generating a fresh one (LIA-1011, round-5 code review)."""
+        from evolution.reflexion.store import archive_reflection_by_id
+
+        sqlite_provider.log_interaction(
+            prompt="p", response="r", group_folder="g",
+            timestamp="2024-01-01T00:00:00Z", interaction_id="ix3",
+        )
+        sqlite_provider.save_reflection(
+            reflection_id="ref_ix3",
+            content="Superseded reflection",
+            category="style",
+            score_at_gen=0.3,
+            timestamp="2024-01-01T00:00:00Z",
+            embedding=_serialize_vec(self.VECTOR_A),
+            interaction_id="ix3",
+            polarity="positive",
+        )
+        with patch("evolution.reflexion.store.get_storage", return_value=sqlite_provider):
+            archive_reflection_by_id("ref_ix3")
+
+        refs = sqlite_provider.get_reflections_for_interaction("ix3")
+        assert refs == []
+
     def test_get_reflections_for_interaction_null_polarity(self, sqlite_provider):
         """Legacy/cross-group writers that never pass polarity round-trip as None."""
         sqlite_provider.log_interaction(

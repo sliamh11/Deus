@@ -278,7 +278,7 @@ class StorageProvider(ABC):
 
     @abstractmethod
     def get_reflections_for_interaction(self, interaction_id: str) -> list[dict]:
-        """Get all reflections linked to a specific interaction."""
+        """Get active (non-archived) reflections linked to a specific interaction."""
         ...
 
     @abstractmethod

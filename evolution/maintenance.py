@@ -301,20 +301,9 @@ def process_human_feedback(eps: float = 0.05) -> dict:
 
     for row in rows:
         try:
-            # Fetch existing reflections for this interaction ONCE per row,
-            # reused below both for the redundancy check (positive branch)
-            # and the zone-alignment archival step later. A judge_score
-            # value is NOT a reliable proxy for "a positive reflection
-            # already exists": judge_pending_interactions() persists
-            # judge_score via update_score() in one pass, then generates the
-            # reflection via _reflect_single() in a SEPARATE pass -- if
-            # generation, validation, or save fails there (_reflect_single's
-            # own except-catch logs and returns False without reverting
-            # judge_score), a high judge_score can exist with NO actual
-            # reflection saved. Checking reality (does a positive reflection
-            # genuinely exist?) instead of the score avoids permanently
-            # discarding a human-positive signal whenever the judge-driven
-            # generation silently failed.
+            # Fetched ONCE per row, reused below for both the redundancy
+            # check and the archival step (see docstring for why this
+            # checks actual reflection existence rather than judge_score).
             existing_reflections = store.get_reflections_for_interaction(row["id"])
             has_existing_positive = any(r.get("polarity") == "positive" for r in existing_reflections)
 

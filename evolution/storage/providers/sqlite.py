@@ -911,8 +911,14 @@ class SQLiteStorageProvider(StorageProvider):
 
     def get_reflections_for_interaction(self, interaction_id: str) -> list[dict]:
         db = self._connect()
+        # Excludes archived reflections (LIA-1011): a prior positive/corrective
+        # reflection that was already archived is inactive and should not
+        # count as "existing" for either the record_feedback_tool credit
+        # path (mcp_server.py) or process_human_feedback's redundancy check
+        # (maintenance.py) -- crediting or treating a superseded reflection
+        # as still-live would be wrong for both callers.
         rows = db.execute(
-            "SELECT id, polarity FROM reflections WHERE interaction_id = ?",
+            "SELECT id, polarity FROM reflections WHERE interaction_id = ? AND archived_at IS NULL",
             [interaction_id],
         ).fetchall()
         db.close()
