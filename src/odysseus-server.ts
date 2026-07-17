@@ -43,6 +43,7 @@ import { GroupQueue } from './group-queue.js';
 import { scanForInjection } from './guardrails/injection-scanner.js';
 import { logger } from './logger.js';
 import { messageText } from './openai-messages.js';
+import { createRateLimiter } from './rate-limiter.js';
 import { getAvailableGroups } from './router-state.js';
 import { RegisteredGroup } from './types.js';
 import { consolidateWebConversation } from './webui-consolidation.js';
@@ -62,41 +63,27 @@ const MAX_HISTORY_CHARS = (() => {
   return Number.isFinite(n) && n > 0 ? n : 24000;
 })();
 
-/* ── Rate limiter (mirrors credential-proxy.ts:69-113) ─────────────────── */
+/* ── Rate limiter (shared implementation — src/rate-limiter.ts) ────────── */
 const RATE_LIMIT_MAX = 5;
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const rateBuckets = new Map<string, number[]>();
-const rateLimitCleanupInterval = setInterval(() => {
-  const now = Date.now();
-  for (const [key, ts] of rateBuckets) {
-    const kept = ts.filter((t) => now - t < RATE_LIMIT_WINDOW_MS);
-    if (kept.length === 0) rateBuckets.delete(key);
-    else rateBuckets.set(key, kept);
-  }
-}, RATE_LIMIT_WINDOW_MS);
-rateLimitCleanupInterval.unref();
+// Registered at module scope (not inside startOdysseusServer) so the cleanup
+// interval is created exactly once at import (LIA-363 lesson: avoid a timer
+// created/leaked on every retry of a listen-success path).
+const limiter = createRateLimiter(RATE_LIMIT_MAX, RATE_LIMIT_WINDOW_MS, {
+  cleanupInterval: true,
+});
 
 let activeSse = 0;
 /** main jid → true while a turn is queued/running (one in-flight per jid). */
 const inFlight = new Set<string>();
 
 function isRateLimited(key: string): boolean {
-  const now = Date.now();
-  const ts = (rateBuckets.get(key) ?? []).filter(
-    (t) => now - t < RATE_LIMIT_WINDOW_MS,
-  );
-  if (ts.length >= RATE_LIMIT_MAX) {
-    rateBuckets.set(key, ts);
-    return true;
-  }
-  ts.push(now);
-  rateBuckets.set(key, ts);
-  return false;
+  return limiter.isRateLimited(key);
 }
 
 /** @internal exposed for testing only */
 export function _resetServerStateForTest(): void {
-  rateBuckets.clear();
+  limiter.resetForTest();
   inFlight.clear();
   activeSse = 0;
 }
@@ -396,7 +383,7 @@ export function startOdysseusServer(
 
   return new Promise((resolve, reject) => {
     const server = createOdysseusServer(deps, token);
-    server.on('close', () => clearInterval(rateLimitCleanupInterval));
+    server.on('close', () => limiter.dispose());
     server.on('error', (err: NodeJS.ErrnoException) => reject(err));
     server.listen(ODYSSEUS_HTTP_PORT, ODYSSEUS_BIND_HOST, () => {
       logger.info(

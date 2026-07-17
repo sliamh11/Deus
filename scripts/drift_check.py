@@ -37,6 +37,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from _gemini_quota import is_quota_error
+
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
@@ -841,8 +843,7 @@ def check_validate(project_root: Path, pattern_filter: str | None = None) -> int
                 )
                 return (response.text or "").strip()
             except Exception as e:
-                err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                if is_quota_error(e):
                     continue
                 print(f"  WARN: Gemini error ({model}): {e}", file=sys.stderr)
                 return None
@@ -1047,8 +1048,7 @@ def check_validate_router(project_root: Path, pattern_filter: str | None = None)
                 )
                 return (response.text or "").strip()
             except Exception as e:
-                err = str(e)
-                if "429" in err or "RESOURCE_EXHAUSTED" in err:
+                if is_quota_error(e):
                     continue
                 print(f"  WARN: Gemini error ({model}): {e}", file=sys.stderr)
                 return None
@@ -1195,8 +1195,7 @@ def check_contradictions(project_root: Path, pattern_filter: str | None = None) 
             response_text = (response.text or "").strip()
             break
         except Exception as e:
-            err = str(e)
-            if "429" in err or "RESOURCE_EXHAUSTED" in err:
+            if is_quota_error(e):
                 continue
             print(f"WARN: Gemini error ({model}): {e}", file=sys.stderr)
             return 0

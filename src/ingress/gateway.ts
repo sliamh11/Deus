@@ -14,6 +14,7 @@ import {
   type ServerResponse,
 } from 'http';
 import { logger } from '../logger.js';
+import { createRateLimiter } from '../rate-limiter.js';
 import type { VerifyResult } from './hmac.js';
 
 /**
@@ -78,26 +79,13 @@ function forwardedFor(req: IncomingMessage): string | undefined {
   return undefined;
 }
 
-/** Sliding-window per-key rate limiter (same shape as odysseus-server.ts:83-95). */
-function makeRateLimiter(max: number, windowMs: number) {
-  const buckets = new Map<string, number[]>();
-  return function isRateLimited(key: string, now: number): boolean {
-    const ts = (buckets.get(key) ?? []).filter((t) => now - t < windowMs);
-    if (ts.length >= max) {
-      buckets.set(key, ts);
-      return true;
-    }
-    ts.push(now);
-    buckets.set(key, ts);
-    return false;
-  };
-}
-
 /** Build (but do not start) the gateway server. Exposed for tests. */
 export function createIngressGateway(deps: GatewayDeps): Server {
   const { handlers, config } = deps;
   const allow = new Set(config.ipAllowlist);
-  const isRateLimited = makeRateLimiter(
+  // No cleanupInterval — gateway.ts prunes inline during isRateLimited only,
+  // matching its behavior before the shared-limiter consolidation.
+  const limiter = createRateLimiter(
     config.rateLimitMax,
     config.rateLimitWindowMs,
   );
@@ -131,7 +119,7 @@ export function createIngressGateway(deps: GatewayDeps): Server {
     }
 
     // 2) Rate limit per peer IP.
-    if (isRateLimited(ip, started)) {
+    if (limiter.isRateLimited(ip, started)) {
       writeStatus(res, 429, 'rate limited');
       return;
     }
