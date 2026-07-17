@@ -43,6 +43,7 @@ from .validation import _BANNED_PATTERNS, _BANNED_SUBSTRINGS
 
 log = logging.getLogger(__name__)
 
+# LIA-1011: cap for the wrapped/sanitized human_comment body.
 MAX_HUMAN_COMMENT_CHARS = int(os.environ.get("DEUS_HUMAN_COMMENT_MAX_CHARS", "1000"))
 
 
