@@ -10,6 +10,12 @@ updates:
       - dependencies
     commit-message:
       prefix: "chore(deps):"
+    ignore:
+      # LIA-437: 21.2.0+ pulls in an ESM-only conventional-changelog-conventionalcommits
+      # (10.x line) that breaks commitlint's CJS require.resolve extends-loader under
+      # Node 22, blocking every commit. Pinned to 21.1.0 until upstream fixes CJS resolution.
+      - dependency-name: "@commitlint/config-conventional"
+        versions: [">=21.2.0"]
 
   - package-ecosystem: github-actions
     directory: /
