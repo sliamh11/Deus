@@ -2030,9 +2030,32 @@ def _make_gh_run(checks: list[dict] | None = None, returncode: int = 0, stderr: 
     return fake_run
 
 
-def _make_gh_run_split(required_checks, all_checks, *, required_rc=0, all_rc=0):
+_PROTECTION_NOT_PLAN_LIMITED = (
+    '{"message": "Branch not protected", "status": "404"}'
+)
+_PROTECTION_PLAN_LIMITED = (
+    '{"message": "Upgrade to GitHub Pro or make this repository public '
+    'to enable this feature.", "status": "403"}'
+)
+_PROTECTION_AUTH_DENIED = (
+    '{"message": "Resource not accessible by integration", "status": "403"}'
+)
+
+
+def _make_gh_run_split(
+    required_checks,
+    all_checks,
+    *,
+    required_rc=0,
+    all_rc=0,
+    protection_stdout=_PROTECTION_NOT_PLAN_LIMITED,
+    protection_rc=1,
+):
     """Fake ``subprocess.run`` returning different ``gh pr checks`` results for
-    the ``--required`` query vs the unfiltered query (LIA-144 fail-closed path).
+    the ``--required`` query vs the unfiltered query (LIA-144 fail-closed path),
+    plus a ``gh api .../protection`` intercept (defaults to a non-plan-limited
+    404 so any test reaching the branch-protection probe still fails closed
+    unless it opts into a plan-limited response).
     """
 
     def fake_run(cmd, *args, **kwargs):
@@ -2049,6 +2072,15 @@ def _make_gh_run_split(required_checks, all_checks, *, required_rc=0, all_rc=0):
                 payload, rc = all_checks, all_rc
             stdout = json.dumps(payload) if payload is not None else ""
             return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 2
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "api"
+        ):
+            return subprocess.CompletedProcess(
+                cmd, protection_rc, stdout=protection_stdout, stderr=""
+            )
         return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
 
     return fake_run
@@ -2177,7 +2209,10 @@ def test_check_ci_status_required_pending_blocks(monkeypatch):
 
 def test_check_ci_status_no_required_but_checks_present_fails_closed(monkeypatch):
     # --required returns nothing, but the PR has (advisory) checks → ambiguous →
-    # NO_REQUIRED, which must block (fail closed).
+    # NO_REQUIRED, which must block (fail closed). Branch protection responds
+    # with a genuine, non-plan-limited 404 (full-featured repo, no protection
+    # configured) — proves the non-plan-limited ambiguous case is unaffected
+    # by the plan-limited fallback added below.
     hooks = load_hooks()
     monkeypatch.setattr(
         hooks.subprocess,
@@ -2185,12 +2220,110 @@ def test_check_ci_status_no_required_but_checks_present_fails_closed(monkeypatch
         _make_gh_run_split(
             required_checks=None,
             all_checks=[{"bucket": "pass", "name": "advisory-only"}],
+            protection_stdout=_PROTECTION_NOT_PLAN_LIMITED,
+            protection_rc=1,
         ),
     )
     status, detail = hooks._check_ci_status("123")
     assert status == hooks._CI_STATUS_NO_REQUIRED
     assert "none are branch-protection-required" in detail
     assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_check_ci_status_plan_limited_all_green_becomes_green(monkeypatch):
+    # Private repo without GitHub Pro: branch protection 403s in the known
+    # plan-limitation shape. Unfiltered checks are all green → the gate must
+    # fall back to GREEN instead of failing closed on NO_REQUIRED.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "pass", "name": "ci"}],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_GREEN
+    assert "plan-limited fallback" in detail
+
+
+def test_check_ci_status_plan_limited_red_still_blocks(monkeypatch):
+    # Same plan-limited repo, but a real check is failing — must still block.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "fail", "name": "ci"}],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_RED
+    assert "plan-limited fallback" in detail
+    assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_check_ci_status_plan_limited_pending_blocks(monkeypatch):
+    # Plan-limited repo, a check still running — must still block as pending.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "pending", "name": "ci"}],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_PENDING
+    assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_check_ci_status_non_matching_403_stays_fail_closed(monkeypatch):
+    # A 403 that is NOT the plan-limitation shape (e.g. a real auth/permission
+    # denial) must NOT be treated as plan-limited — the substring gate must
+    # reject it, preserving today's fail-closed NO_REQUIRED behavior.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "pass", "name": "ci"}],
+            protection_stdout=_PROTECTION_AUTH_DENIED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_NO_REQUIRED
+    assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_branch_protection_plan_limited_probe_error_fails_closed(monkeypatch):
+    # If the branch-protection probe itself can't be run (gh missing, e.g.),
+    # the helper must return False so the caller keeps failing closed.
+    hooks = load_hooks()
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 2
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "api"
+        ):
+            raise FileNotFoundError("gh not found")
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    assert hooks._branch_protection_plan_limited(None, "main") is False
 
 
 def test_check_ci_status_no_checks_anywhere_does_not_block(monkeypatch):
