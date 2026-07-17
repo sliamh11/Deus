@@ -349,6 +349,7 @@ def _handle_user_signal(
         score_at_gen=resolved_score,
         interaction_id=prev["id"],
         group_folder=prev.get("group_folder"),
+        polarity="positive" if user_signal == "positive" else "corrective",
     )
 
 
@@ -476,6 +477,7 @@ def cmd_reflect(interaction_id: str) -> None:
         score_at_gen=row.get("judge_score") or 0.5,
         interaction_id=interaction_id,
         group_folder=row.get("group_folder"),
+        polarity="corrective",
     )
     print(f"Reflection saved: {rid}")
     print(f"Category: {category}")
@@ -588,6 +590,7 @@ def cmd_dismiss_warden_finding(json_str: str) -> None:
             score_at_gen=0.3,  # Low score = negative signal
             interaction_id=None,
             group_folder=group_folder,
+            polarity="corrective",
         )
     except Exception as exc:
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}))

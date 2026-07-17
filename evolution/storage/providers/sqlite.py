@@ -45,6 +45,11 @@ _UPDATABLE_INTERACTION_COLS = frozenset({
     "correction_mined_at",
     "judge_schema_version",
     "metrics",
+    # LIA-1011: set by maintenance.process_human_feedback() once a row has
+    # been routed (skipped, errored-and-retriable-next-cycle excluded, or
+    # generated+saved). human_score/human_comment/scored_at/source_ref are
+    # deliberately NOT here -- see record_human_feedback() and log_interaction().
+    "processed_at",
 })
 
 # Guard against concurrent schema migrations from multiple threads
@@ -281,6 +286,18 @@ class SQLiteStorageProvider(StorageProvider):
             # log_interaction upsert (like judge_score) so a NULL re-log cannot
             # clobber the guard back to NULL.
             ("credited_at", "TEXT"),
+            # LIA-1011: human feedback / external-trace annotation substrate.
+            # source_ref is set-once (COALESCE upsert in log_interaction, never
+            # in _UPDATABLE_INTERACTION_COLS) so the first writer's external
+            # reference can never be clobbered by a later re-log. human_score/
+            # human_comment/scored_at are written only via the guarded
+            # record_human_feedback() UPDATE. processed_at is set by
+            # maintenance.process_human_feedback() once a row has been routed.
+            ("source_ref", "TEXT"),
+            ("human_score", "REAL"),
+            ("human_comment", "TEXT"),
+            ("scored_at", "TEXT"),
+            ("processed_at", "TEXT"),
         ]:
             try:
                 # safe: col + coltype come from the literal tuple-list
@@ -294,9 +311,27 @@ class SQLiteStorageProvider(StorageProvider):
                 ON interactions(domain_presets) WHERE domain_presets IS NOT NULL
         """)
 
+        # LIA-1011: source_ref is set-once per interaction; the partial unique
+        # index enforces that at the DB layer (NULLs are unconstrained, so
+        # interactions without an external source are unaffected).
+        db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_interactions_source_ref
+                ON interactions(source_ref) WHERE source_ref IS NOT NULL
+        """)
+
         # Reflection lifecycle: soft-delete archival column (added in v1.5)
         try:
             db.execute("ALTER TABLE reflections ADD COLUMN archived_at TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        # LIA-1011: polarity records which "zone" (corrective vs positive) a
+        # reflection was generated for, so process_human_feedback() can
+        # archive a reflection that contradicts a later human-verified zone.
+        # NULL for legacy/pre-migration rows and for principles.py's
+        # cross-group writer (never zone-keyed) -- see docs/KNOWN_LIMITATIONS.md.
+        try:
+            db.execute("ALTER TABLE reflections ADD COLUMN polarity TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
 
@@ -346,6 +381,7 @@ class SQLiteStorageProvider(StorageProvider):
         available_tools: Optional[str] = None,
         metrics: Optional[str] = None,
         retrieved_reflection_ids: Optional[str] = None,
+        source_ref: Optional[str] = None,
     ) -> str:
         db = self._connect()
         # Upsert instead of INSERT OR REPLACE: REPLACE deletes the existing row
@@ -355,14 +391,22 @@ class SQLiteStorageProvider(StorageProvider):
         # previously-stored value (post-hoc metrics; the IDs needed at scoring
         # time). credited_at is intentionally absent — written only via
         # claim_interaction_credit (LIA-214).
+        #
+        # source_ref uses the REVERSED COALESCE operand order vs metrics/
+        # retrieved_reflection_ids above: COALESCE(interactions.source_ref,
+        # excluded.source_ref) is existing-value-first, so the FIRST writer's
+        # external reference is authoritative and can never be clobbered by a
+        # later re-log (set-once semantics; LIA-1011). The unique partial
+        # index ix_interactions_source_ref additionally guards against two
+        # different interactions claiming the same source_ref.
         db.execute(
             """
             INSERT INTO interactions
                 (id, timestamp, group_folder, prompt, response, tools_used,
                  latency_ms, eval_suite, session_id, domain_presets, user_signal,
                  context_tokens, has_code, tool_calls, available_tools, metrics,
-                 retrieved_reflection_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 retrieved_reflection_ids, source_ref)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 timestamp       = excluded.timestamp,
                 group_folder    = excluded.group_folder,
@@ -382,14 +426,15 @@ class SQLiteStorageProvider(StorageProvider):
                 retrieved_reflection_ids = COALESCE(
                     excluded.retrieved_reflection_ids,
                     interactions.retrieved_reflection_ids
-                )
+                ),
+                source_ref      = COALESCE(interactions.source_ref, excluded.source_ref)
             """,
             (
                 interaction_id, timestamp, group_folder, prompt, response,
                 tools_used, latency_ms, eval_suite, session_id,
                 domain_presets, user_signal, context_tokens, has_code,
                 tool_calls, available_tools, metrics,
-                retrieved_reflection_ids,
+                retrieved_reflection_ids, source_ref,
             ),
         )
         db.commit()
@@ -431,6 +476,29 @@ class SQLiteStorageProvider(StorageProvider):
             "UPDATE interactions SET credited_at = datetime('now') "
             "WHERE id = ? AND credited_at IS NULL",
             [interaction_id],
+        )
+        db.commit()
+        claimed = cur.rowcount == 1
+        db.close()
+        return claimed
+
+    def record_human_feedback(
+        self, interaction_id: str, *, human_score: float,
+        human_comment: Optional[str], scored_at: str,
+    ) -> bool:
+        """Record a human-supplied score/comment for an interaction, once.
+
+        Mirrors claim_interaction_credit's connection lifecycle + WHERE ...
+        IS NULL guard pattern: the UPDATE only applies when human_score is
+        currently NULL, so a second call for the same interaction is a no-op.
+        Returns True for the single writer that won the claim, False
+        otherwise (already scored, or the row is missing). LIA-1011.
+        """
+        db = self._connect()
+        cur = db.execute(
+            """UPDATE interactions SET human_score = ?, human_comment = ?, scored_at = ?
+               WHERE id = ? AND human_score IS NULL""",
+            [human_score, human_comment, scored_at, interaction_id],
         )
         db.commit()
         claimed = cur.rowcount == 1
@@ -638,17 +706,18 @@ class SQLiteStorageProvider(StorageProvider):
         embedding: bytes,
         interaction_id: Optional[str] = None,
         group_folder: Optional[str] = None,
+        polarity: Optional[str] = None,
     ) -> str:
         db = self._connect()
         db.execute(
             """
             INSERT INTO reflections
                 (id, interaction_id, timestamp, group_folder, content,
-                 category, score_at_gen)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                 category, score_at_gen, polarity)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (reflection_id, interaction_id, timestamp, group_folder,
-             content, category, score_at_gen),
+             content, category, score_at_gen, polarity),
         )
         row = db.execute(
             "SELECT rowid FROM reflections WHERE id = ?", [reflection_id],
@@ -842,8 +911,14 @@ class SQLiteStorageProvider(StorageProvider):
 
     def get_reflections_for_interaction(self, interaction_id: str) -> list[dict]:
         db = self._connect()
+        # Excludes archived reflections (LIA-1011): a prior positive/corrective
+        # reflection that was already archived is inactive and should not
+        # count as "existing" for either the record_feedback_tool credit
+        # path (mcp_server.py) or process_human_feedback's redundancy check
+        # (maintenance.py) -- crediting or treating a superseded reflection
+        # as still-live would be wrong for both callers.
         rows = db.execute(
-            "SELECT id FROM reflections WHERE interaction_id = ?",
+            "SELECT id, polarity FROM reflections WHERE interaction_id = ? AND archived_at IS NULL",
             [interaction_id],
         ).fetchall()
         db.close()
@@ -1094,6 +1169,26 @@ class SQLiteStorageProvider(StorageProvider):
               AND eval_suite != 'maintenance'
               AND group_folder != '__maintenance__'
             ORDER BY timestamp ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        db.close()
+        return [dict(r) for r in rows]
+
+    def get_unprocessed_human_feedback(self, limit: int = 50) -> list[dict]:
+        """Fetch human-scored interactions not yet routed by process_human_feedback.
+
+        LIA-1011: human_score IS NOT NULL means record_human_feedback() wrote
+        a score; processed_at IS NULL means maintenance.process_human_feedback()
+        has not yet consumed this row.
+        """
+        db = self._connect()
+        rows = db.execute(
+            """
+            SELECT * FROM interactions
+            WHERE human_score IS NOT NULL AND processed_at IS NULL
+            ORDER BY scored_at ASC
             LIMIT ?
             """,
             (limit,),

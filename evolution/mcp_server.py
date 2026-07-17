@@ -226,6 +226,7 @@ async def _async_judge_and_reflect(
                     score_at_gen=result.score,
                     interaction_id=interaction_id,
                     group_folder=group_folder,
+                    polarity="corrective",
                 )
     except Exception as exc:
         log.error(
