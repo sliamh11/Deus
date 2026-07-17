@@ -249,16 +249,17 @@ def process_human_feedback(eps: float = 0.05) -> dict:
 
     For each unprocessed row (human_score IS NOT NULL, processed_at IS NULL):
       - human_score <= REFLECTION_THRESHOLD -> corrective reflection.
-      - human_score >= POSITIVE_THRESHOLD - eps AND (judge_score is None OR
-        judge_score < POSITIVE_THRESHOLD) -> positive reflection. Only an
-        EXISTING judge_score that already meets POSITIVE_THRESHOLD suppresses
-        this -- that reflection already exists, so generating another would
-        be redundant. A missing judge_score means judging hasn't happened
-        yet (delayed, backlogged past this cycle's limit, or the interaction
-        was never queued for judging) -- there is no existing reflection to
-        be redundant with, so the human's positive signal proceeds now
-        rather than being silently and permanently discarded pending a judge
-        score that may never arrive in time.
+      - human_score >= POSITIVE_THRESHOLD - eps AND no existing reflection on
+        this interaction already has polarity="positive" -> positive
+        reflection. The redundancy check is against ACTUAL reflection
+        existence, not judge_score: judge_pending_interactions() persists
+        judge_score via update_score() and generates the reflection via
+        _reflect_single() in a separate pass that can independently fail
+        (logged, not re-raised) without reverting judge_score -- so a high
+        judge_score does not reliably imply a positive reflection was
+        actually saved. Checking reality avoids permanently discarding a
+        human-positive signal whenever judge-driven generation silently
+        failed, or judging is merely delayed/backlogged.
       - otherwise -> skipped (no reflection warranted).
 
     Zone-alignment archival: once a reflection is generated (or dedups
@@ -275,30 +276,11 @@ def process_human_feedback(eps: float = 0.05) -> dict:
     failure can only ever land in `errored` -- never double-counted into a
     success bucket too.
 
-    Known limitations (accepted, not fixed here):
-      - No atomic per-row claim before processing. run_maintenance() is
-        invoked inline from the fire-and-forget per-interaction path
-        (cli.py cmd_log_interaction), so overlapping invocations are
-        possible if multiple interactions land concurrently across
-        channels. A race produces a duplicate generate_reflection call on
-        the same row at minimum; save_reflection's dedup check-then-insert
-        is not itself atomic (two concurrent calls can both see "no
-        duplicate yet" and both insert), so an actual duplicate reflection
-        row -- not just wasted LLM compute -- is possible under a genuine
-        race, not merely a risk this function's own retry-safety absorbs.
-        This is the same
-        unaddressed architectural gap judge_pending_interactions() already
-        has (no atomic claim there either) -- not novel to this function,
-        and out of scope to fix in isolation here.
-      - is_maintenance_due()'s due-check is driven by new-interaction count
-        delta only; record_human_feedback() (an UPDATE on an existing row)
-        does not bump that counter, so a feedback row written with no new
-        interactions following it would not trigger maintenance. This has
-        no live effect yet: record_human_feedback() has no caller in this
-        PR (the external-trace ingester and write-back caller are
-        explicitly deferred -- see docs/KNOWN_LIMITATIONS.md), so no row
-        can actually reach human_score IS NOT NULL today. Flagged as a
-        requirement for LIA-443, which wires the producer.
+    Known limitations: no atomic per-row claim (concurrent maintenance runs
+    can duplicate work), and the maintenance due-check doesn't account for
+    pending feedback (currently unreachable, no producer yet). See
+    docs/KNOWN_LIMITATIONS.md ("Human Feedback Storage Substrate") for the
+    full explanation and LIA-443 tracking.
 
     Returns counters: {"corrective": int, "positive": int, "skipped": int, "errored": int}.
     """
@@ -319,23 +301,27 @@ def process_human_feedback(eps: float = 0.05) -> dict:
 
     for row in rows:
         try:
-            judge_score = row.get("judge_score")
+            # Fetch existing reflections for this interaction ONCE per row,
+            # reused below both for the redundancy check (positive branch)
+            # and the zone-alignment archival step later. A judge_score
+            # value is NOT a reliable proxy for "a positive reflection
+            # already exists": judge_pending_interactions() persists
+            # judge_score via update_score() in one pass, then generates the
+            # reflection via _reflect_single() in a SEPARATE pass -- if
+            # generation, validation, or save fails there (_reflect_single's
+            # own except-catch logs and returns False without reverting
+            # judge_score), a high judge_score can exist with NO actual
+            # reflection saved. Checking reality (does a positive reflection
+            # genuinely exist?) instead of the score avoids permanently
+            # discarding a human-positive signal whenever the judge-driven
+            # generation silently failed.
+            existing_reflections = store.get_reflections_for_interaction(row["id"])
+            has_existing_positive = any(r.get("polarity") == "positive" for r in existing_reflections)
 
             if row["human_score"] <= REFLECTION_THRESHOLD:
                 direction = "corrective"
-            elif row["human_score"] >= POSITIVE_THRESHOLD - eps and (
-                judge_score is None or judge_score < POSITIVE_THRESHOLD
-            ):
-                # judge_score is None means the judge hasn't scored this
-                # interaction yet -- there is no existing positive reflection
-                # to be redundant with, so proceed. Only a judge_score that
-                # ALREADY meets POSITIVE_THRESHOLD suppresses the override
-                # (that reflection already exists). Treating a merely-pending
-                # judge_score as "optimistically high" (suppress) instead of
-                # "not yet known" (proceed) would silently and permanently
-                # discard a human-verified positive signal if judging is
-                # delayed or backlogged past this maintenance cycle.
-                direction = "positive"
+            elif row["human_score"] >= POSITIVE_THRESHOLD - eps:
+                direction = None if has_existing_positive else "positive"
             else:
                 direction = None
 
@@ -374,9 +360,13 @@ def process_human_feedback(eps: float = 0.05) -> dict:
             # (fresh save OR dedup against an existing reflection) -- the
             # human-verified zone is established either way. NULL-polarity
             # legacy rows never archived (verbatim per original issue #1011
-            # spec; documented in docs/KNOWN_LIMITATIONS.md).
+            # spec; documented in docs/KNOWN_LIMITATIONS.md). Reuses the
+            # pre-generation snapshot fetched above -- the just-saved
+            # reflection carries `direction`'s own polarity, never the
+            # CONTRADICTING one this loop targets, so staleness from the
+            # generate/save call in between doesn't affect correctness here.
             contradicting = "positive" if direction == "corrective" else "corrective"
-            for r in store.get_reflections_for_interaction(row["id"]):
+            for r in existing_reflections:
                 if r.get("polarity") == contradicting:
                     archive_reflection_by_id(r["id"])  # soft-delete, ADR-compliant
 

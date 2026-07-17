@@ -117,7 +117,7 @@ def test_low_human_score_routes_corrective(monkeypatch):
     assert store._rows["r1"]["processed_at"] is not None
 
 
-def test_high_score_with_judge_disagreement_routes_positive(monkeypatch):
+def test_high_score_with_no_existing_positive_reflection_routes_positive(monkeypatch):
     store = _install_store(
         monkeypatch, _FakeHFStore([_row("r2", human_score=0.95, judge_score=0.5)]),
     )
@@ -129,51 +129,41 @@ def test_high_score_with_judge_disagreement_routes_positive(monkeypatch):
     assert calls["save"][0]["polarity"] == "positive"
 
 
-def test_judge_score_zero_is_not_treated_as_missing(monkeypatch):
-    """judge_score=0.0 is falsy but must NOT be overridden to 1.0 -- an
-    explicit None-check, not truthiness."""
+def test_judge_score_is_not_a_reliable_redundancy_proxy(monkeypatch):
+    """A high judge_score does NOT reliably imply a positive reflection was
+    actually saved: judge_pending_interactions() persists judge_score via
+    update_score() and generates the reflection in a SEPARATE pass
+    (_reflect_single) that can independently fail (logged, not re-raised)
+    without reverting judge_score. The redundancy check must be against
+    ACTUAL reflection existence, not the score -- so a high judge_score with
+    no existing positive reflection still proceeds as positive."""
     store = _install_store(
-        monkeypatch, _FakeHFStore([_row("r3", human_score=0.9, judge_score=0.0)]),
-    )
-    _patch_generation(monkeypatch)
-
-    counters = process_human_feedback()
-
-    assert counters["positive"] == 1
-    assert counters["skipped"] == 0
-
-
-def test_judge_score_none_proceeds_as_positive(monkeypatch):
-    """A high human_score with no judge_score at all (judging hasn't
-    happened yet -- delayed, backlogged, or never queued) proceeds as a
-    positive reflection rather than being silently discarded: a missing
-    judge_score means no existing reflection could be redundant with, unlike
-    an existing judge_score that already meets POSITIVE_THRESHOLD."""
-    store = _install_store(
-        monkeypatch, _FakeHFStore([_row("r4", human_score=0.9, judge_score=None)]),
+        monkeypatch,
+        _FakeHFStore([_row("r3", human_score=0.9, judge_score=0.95)], reflections={}),
     )
     _patch_generation(monkeypatch)
 
     counters = process_human_feedback()
 
     assert counters == {"corrective": 0, "positive": 1, "skipped": 0, "errored": 0}
-    assert store._rows["r4"]["processed_at"] is not None
 
 
-def test_judge_score_already_positive_suppresses_redundant_reflection(monkeypatch):
-    """An EXISTING judge_score that already meets POSITIVE_THRESHOLD means a
-    judge-driven positive reflection already exists -- the human's
-    corroborating high score is skipped rather than generating a
-    redundant duplicate."""
+def test_existing_positive_reflection_suppresses_redundant_generation(monkeypatch):
+    """When a positive reflection genuinely already exists for this
+    interaction (regardless of judge_score, or even with no judge_score at
+    all), the human's corroborating high score is skipped rather than
+    generating a redundant duplicate."""
+    reflections = {"r4": [{"id": "existing-pos", "polarity": "positive"}]}
     store = _install_store(
-        monkeypatch, _FakeHFStore([_row("r4b", human_score=0.9, judge_score=0.9)]),
+        monkeypatch,
+        _FakeHFStore([_row("r4", human_score=0.9, judge_score=None)], reflections=reflections),
     )
     _patch_generation(monkeypatch)
 
     counters = process_human_feedback()
 
     assert counters == {"corrective": 0, "positive": 0, "skipped": 1, "errored": 0}
-    assert store._rows["r4b"]["processed_at"] is not None
+    assert store._rows["r4"]["processed_at"] is not None
 
 
 def test_mid_range_score_is_skipped(monkeypatch):
