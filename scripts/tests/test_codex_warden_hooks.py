@@ -2287,6 +2287,87 @@ def test_check_ci_status_plan_limited_pending_blocks(monkeypatch):
     assert hooks._ci_block_reason("123", status, detail) is not None
 
 
+def test_check_ci_status_plan_limited_advisory_only_failure_is_excluded(monkeypatch):
+    # The discriminating case: a plan-limited repo where the ONLY non-green
+    # check is a known-advisory one (TrueCourse, cancelled — bucket "cancel",
+    # which is in _BUCKET_FAIL). Before the advisory-exclusion fallback this
+    # would incorrectly block; after it, the excluded check must not count.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[
+                {"bucket": "cancel", "name": "TrueCourse --diff vs main"},
+                {"bucket": "pass", "name": "ci"},
+            ],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_GREEN
+    assert "plan-limited fallback" in detail
+
+
+def test_check_ci_status_plan_limited_advisory_exclusion_does_not_mask_real_failure(
+    monkeypatch,
+):
+    # @oracle: authored blind to the implementation from the ticket spec —
+    # excluding a known-advisory check must never mask a genuinely failing
+    # non-advisory check. A wrong GREEN here would let a merge land over red
+    # CI, so this is the dangerous-direction discriminator.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[
+                {"bucket": "cancel", "name": "TrueCourse --diff vs main"},
+                {"bucket": "fail", "name": "ci"},
+            ],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_RED
+    assert "ci" in detail
+
+
+def test_check_ci_status_plan_limited_only_check_is_advisory_is_no_checks(monkeypatch):
+    # A PR whose ONLY check is the excluded advisory one — filtering must not
+    # produce a vacuous GREEN (set() <= _BUCKET_PASS is trivially true on an
+    # empty bucket set); it must classify as NO_CHECKS instead.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "cancel", "name": "TrueCourse --diff vs main"}],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_NO_CHECKS
+    assert hooks._ci_block_reason("123", status, detail) is None
+
+
+def test_classify_checks_default_exclude_names_unchanged(monkeypatch):
+    # Regression guard: _classify_checks with exclude_names unset must be
+    # byte-identical to classifying the raw list (no filtering).
+    hooks = load_hooks()
+    checks = [{"bucket": "pass", "name": "ci"}, {"bucket": "fail", "name": "lint"}]
+    status, message, n = hooks._classify_checks(checks)
+    assert status == hooks._CI_STATUS_RED
+    assert "lint" in message
+    assert n == 2
+
+
 def test_check_ci_status_non_matching_403_stays_fail_closed(monkeypatch):
     # A 403 that is NOT the plan-limitation shape (e.g. a real auth/permission
     # denial) must NOT be treated as plan-limited — the substring gate must
