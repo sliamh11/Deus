@@ -247,26 +247,35 @@ def process_human_feedback(eps: float = 0.05) -> dict:
     corrective/positive reflections, mirroring judge-driven reflection
     generation but keyed on a human_score instead of a judge score.
 
-    For each unprocessed row (human_score IS NOT NULL, processed_at IS NULL):
-      - human_score <= REFLECTION_THRESHOLD -> corrective reflection.
-      - human_score >= POSITIVE_THRESHOLD - eps AND no existing reflection on
-        this interaction already has polarity="positive" -> positive
-        reflection. The redundancy check is against ACTUAL reflection
-        existence, not judge_score: judge_pending_interactions() persists
-        judge_score via update_score() and generates the reflection via
-        _reflect_single() in a separate pass that can independently fail
-        (logged, not re-raised) without reverting judge_score -- so a high
-        judge_score does not reliably imply a positive reflection was
-        actually saved. Checking reality avoids permanently discarding a
-        human-positive signal whenever judge-driven generation silently
-        failed, or judging is merely delayed/backlogged.
-      - otherwise -> skipped (no reflection warranted).
+    For each unprocessed row (human_score IS NOT NULL, processed_at IS NULL),
+    the human_score establishes a "zone":
+      - human_score <= REFLECTION_THRESHOLD -> corrective zone.
+      - human_score >= POSITIVE_THRESHOLD - eps -> positive zone.
+      - otherwise -> no zone; skipped, no reflection warranted, no archival.
 
-    Zone-alignment archival: once a reflection is generated (or dedups
-    against an existing one) for a row, any EXISTING reflection on the same
-    interaction with the CONTRADICTING polarity is archived — the
-    human-verified zone is now authoritative. NULL-polarity legacy rows are
-    never archived (deliberate; see docs/KNOWN_LIMITATIONS.md).
+    Within the positive zone, generation is skipped as redundant if an
+    ACTIVE reflection with polarity="positive" already exists for this
+    interaction (checked directly, not via judge_score -- see "Why not
+    judge_score" below). Redundant or not, entering a zone still archives
+    any ACTIVE reflection with the CONTRADICTING polarity: the human
+    signal re-establishes the zone either way, so stale-zone cleanup must
+    not be skipped just because no new content needed generating. This
+    matters even outside any race: the judge-driven writer
+    (_reflect_single) does no cross-checking of its own, so an interaction
+    can carry both an active positive and an active corrective reflection
+    from ordinary score fluctuation across judging cycles alone.
+
+    Why not judge_score: judge_pending_interactions() persists judge_score
+    via update_score() and generates the reflection via _reflect_single()
+    in a SEPARATE pass that can independently fail (logged, not re-raised)
+    without reverting judge_score -- so a high judge_score does not
+    reliably imply a positive reflection was actually saved. Checking
+    reality (existing reflections, excluding archived ones) instead avoids
+    permanently discarding a human-positive signal whenever judge-driven
+    generation silently failed, or judging is merely delayed/backlogged.
+
+    NULL-polarity legacy rows are never archived by zone-alignment
+    (deliberate; see docs/KNOWN_LIMITATIONS.md).
 
     The try/except wraps the ENTIRE per-row body, including the
     direction-is-None early-skip branch, so ANY database write failure for a
@@ -310,11 +319,30 @@ def process_human_feedback(eps: float = 0.05) -> dict:
             if row["human_score"] <= REFLECTION_THRESHOLD:
                 direction = "corrective"
             elif row["human_score"] >= POSITIVE_THRESHOLD - eps:
-                direction = None if has_existing_positive else "positive"
+                direction = "positive"
             else:
                 direction = None
 
             if direction is None:
+                store.update_interaction(row["id"], processed_at=now)
+                counters["skipped"] += 1
+                continue
+
+            if direction == "positive" and has_existing_positive:
+                # Redundant generation (a positive reflection already
+                # exists), but the human's confirmation still re-establishes
+                # the positive zone -- archive any stale contradicting
+                # (corrective) reflection before marking processed, rather
+                # than skipping cleanup just because no new content is
+                # generated. Reachable independent of a race: the
+                # judge-driven writer (_reflect_single) does no
+                # cross-checking of its own, so an interaction can carry
+                # both an active positive and an active corrective
+                # reflection from ordinary score fluctuation across
+                # judging cycles alone.
+                for r in existing_reflections:
+                    if r.get("polarity") == "corrective":
+                        archive_reflection_by_id(r["id"])  # soft-delete, ADR-compliant
                 store.update_interaction(row["id"], processed_at=now)
                 counters["skipped"] += 1
                 continue

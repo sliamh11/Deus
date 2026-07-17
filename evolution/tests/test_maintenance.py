@@ -166,6 +166,36 @@ def test_existing_positive_reflection_suppresses_redundant_generation(monkeypatc
     assert store._rows["r4"]["processed_at"] is not None
 
 
+def test_redundant_positive_still_archives_stale_contradicting_reflection(monkeypatch):
+    """A human score corroborating an already-existing positive reflection
+    skips NEW generation (redundant), but must still archive any ACTIVE
+    contradicting (corrective) reflection -- the human signal re-confirms
+    the zone either way, and this must not be skipped just because no new
+    content is generated. Reachable independent of a race: the
+    judge-driven writer (_reflect_single) does no cross-checking, so an
+    interaction can carry both an active positive and an active corrective
+    reflection from ordinary score fluctuation across judging cycles
+    alone."""
+    reflections = {
+        "r4c": [
+            {"id": "existing-pos", "polarity": "positive"},
+            {"id": "stale-corrective", "polarity": "corrective"},
+        ],
+    }
+    store = _install_store(
+        monkeypatch,
+        _FakeHFStore([_row("r4c", human_score=0.9)], reflections=reflections),
+    )
+    calls = _patch_generation(monkeypatch)
+
+    counters = process_human_feedback()
+
+    assert counters == {"corrective": 0, "positive": 0, "skipped": 1, "errored": 0}
+    assert calls["generate"] == []  # no redundant generation
+    assert calls["archive"] == ["stale-corrective"]  # but stale contradiction still cleaned up
+    assert store._rows["r4c"]["processed_at"] is not None
+
+
 def test_mid_range_score_is_skipped(monkeypatch):
     store = _install_store(monkeypatch, _FakeHFStore([_row("r5", human_score=0.7)]))
     _patch_generation(monkeypatch)
