@@ -2030,9 +2030,32 @@ def _make_gh_run(checks: list[dict] | None = None, returncode: int = 0, stderr: 
     return fake_run
 
 
-def _make_gh_run_split(required_checks, all_checks, *, required_rc=0, all_rc=0):
+_PROTECTION_NOT_PLAN_LIMITED = (
+    '{"message": "Branch not protected", "status": "404"}'
+)
+_PROTECTION_PLAN_LIMITED = (
+    '{"message": "Upgrade to GitHub Pro or make this repository public '
+    'to enable this feature.", "status": "403"}'
+)
+_PROTECTION_AUTH_DENIED = (
+    '{"message": "Resource not accessible by integration", "status": "403"}'
+)
+
+
+def _make_gh_run_split(
+    required_checks,
+    all_checks,
+    *,
+    required_rc=0,
+    all_rc=0,
+    protection_stdout=_PROTECTION_NOT_PLAN_LIMITED,
+    protection_rc=1,
+):
     """Fake ``subprocess.run`` returning different ``gh pr checks`` results for
-    the ``--required`` query vs the unfiltered query (LIA-144 fail-closed path).
+    the ``--required`` query vs the unfiltered query (LIA-144 fail-closed path),
+    plus a ``gh api .../protection`` intercept (defaults to a non-plan-limited
+    404 so any test reaching the branch-protection probe still fails closed
+    unless it opts into a plan-limited response).
     """
 
     def fake_run(cmd, *args, **kwargs):
@@ -2049,6 +2072,15 @@ def _make_gh_run_split(required_checks, all_checks, *, required_rc=0, all_rc=0):
                 payload, rc = all_checks, all_rc
             stdout = json.dumps(payload) if payload is not None else ""
             return subprocess.CompletedProcess(cmd, rc, stdout=stdout, stderr="")
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 2
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "api"
+        ):
+            return subprocess.CompletedProcess(
+                cmd, protection_rc, stdout=protection_stdout, stderr=""
+            )
         return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
 
     return fake_run
@@ -2080,6 +2112,61 @@ def test_check_ci_status_uses_required_flag(monkeypatch):
     # somewhere by accident), scoping the query to required checks only.
     assert captured["cmd"] == [
         "gh", "pr", "checks", "123", "--json", "bucket,name", "--required",
+    ]
+
+
+def test_check_ci_status_no_repo_argv_unchanged(monkeypatch):
+    # Backward-compat guard: omitting `repo` must produce byte-identical argv
+    # to today (no trailing --repo), independent of the assertion above.
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    hooks._check_ci_status("123")
+    assert "--repo" not in captured["cmd"]
+
+
+def test_check_ci_status_explicit_repo_scopes_gh_call(monkeypatch):
+    # Fixes the confirmed cross-repo bug: when the gated command carries an
+    # explicit repo, the gate's own internal gh call must be scoped to it,
+    # not to whatever repo the cwd's git remote happens to resolve.
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    status, _ = hooks._check_ci_status("14", repo="owner/other-repo")
+    assert status == hooks._CI_STATUS_GREEN
+    assert captured["cmd"] == [
+        "gh", "pr", "checks", "14", "--json", "bucket,name", "--required",
+        "--repo", "owner/other-repo",
     ]
 
 
@@ -2122,7 +2209,10 @@ def test_check_ci_status_required_pending_blocks(monkeypatch):
 
 def test_check_ci_status_no_required_but_checks_present_fails_closed(monkeypatch):
     # --required returns nothing, but the PR has (advisory) checks → ambiguous →
-    # NO_REQUIRED, which must block (fail closed).
+    # NO_REQUIRED, which must block (fail closed). Branch protection responds
+    # with a genuine, non-plan-limited 404 (full-featured repo, no protection
+    # configured) — proves the non-plan-limited ambiguous case is unaffected
+    # by the plan-limited fallback added below.
     hooks = load_hooks()
     monkeypatch.setattr(
         hooks.subprocess,
@@ -2130,12 +2220,191 @@ def test_check_ci_status_no_required_but_checks_present_fails_closed(monkeypatch
         _make_gh_run_split(
             required_checks=None,
             all_checks=[{"bucket": "pass", "name": "advisory-only"}],
+            protection_stdout=_PROTECTION_NOT_PLAN_LIMITED,
+            protection_rc=1,
         ),
     )
     status, detail = hooks._check_ci_status("123")
     assert status == hooks._CI_STATUS_NO_REQUIRED
     assert "none are branch-protection-required" in detail
     assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_check_ci_status_plan_limited_all_green_becomes_green(monkeypatch):
+    # Private repo without GitHub Pro: branch protection 403s in the known
+    # plan-limitation shape. Unfiltered checks are all green → the gate must
+    # fall back to GREEN instead of failing closed on NO_REQUIRED.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "pass", "name": "ci"}],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_GREEN
+    assert "plan-limited fallback" in detail
+
+
+def test_check_ci_status_plan_limited_red_still_blocks(monkeypatch):
+    # Same plan-limited repo, but a real check is failing — must still block.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "fail", "name": "ci"}],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_RED
+    assert "plan-limited fallback" in detail
+    assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_check_ci_status_plan_limited_pending_blocks(monkeypatch):
+    # Plan-limited repo, a check still running — must still block as pending.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "pending", "name": "ci"}],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_PENDING
+    assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_check_ci_status_plan_limited_advisory_only_failure_is_excluded(monkeypatch):
+    # The discriminating case: a plan-limited repo where the ONLY non-green
+    # check is a known-advisory one (TrueCourse, cancelled — bucket "cancel",
+    # which is in _BUCKET_FAIL). Before the advisory-exclusion fallback this
+    # would incorrectly block; after it, the excluded check must not count.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[
+                {"bucket": "cancel", "name": "TrueCourse --diff vs main"},
+                {"bucket": "pass", "name": "ci"},
+            ],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_GREEN
+    assert "plan-limited fallback" in detail
+
+
+def test_check_ci_status_plan_limited_advisory_exclusion_does_not_mask_real_failure(
+    monkeypatch,
+):
+    # @oracle: authored blind to the implementation from the ticket spec —
+    # excluding a known-advisory check must never mask a genuinely failing
+    # non-advisory check. A wrong GREEN here would let a merge land over red
+    # CI, so this is the dangerous-direction discriminator.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[
+                {"bucket": "cancel", "name": "TrueCourse --diff vs main"},
+                {"bucket": "fail", "name": "ci"},
+            ],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_RED
+    assert "ci" in detail
+
+
+def test_check_ci_status_plan_limited_only_check_is_advisory_is_no_checks(monkeypatch):
+    # A PR whose ONLY check is the excluded advisory one — filtering must not
+    # produce a vacuous GREEN (set() <= _BUCKET_PASS is trivially true on an
+    # empty bucket set); it must classify as NO_CHECKS instead.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "cancel", "name": "TrueCourse --diff vs main"}],
+            protection_stdout=_PROTECTION_PLAN_LIMITED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_NO_CHECKS
+    assert hooks._ci_block_reason("123", status, detail) is None
+
+
+def test_classify_checks_default_exclude_names_unchanged(monkeypatch):
+    # Regression guard: _classify_checks with exclude_names unset must be
+    # byte-identical to classifying the raw list (no filtering).
+    hooks = load_hooks()
+    checks = [{"bucket": "pass", "name": "ci"}, {"bucket": "fail", "name": "lint"}]
+    status, message, n = hooks._classify_checks(checks)
+    assert status == hooks._CI_STATUS_RED
+    assert "lint" in message
+    assert n == 2
+
+
+def test_check_ci_status_non_matching_403_stays_fail_closed(monkeypatch):
+    # A 403 that is NOT the plan-limitation shape (e.g. a real auth/permission
+    # denial) must NOT be treated as plan-limited — the substring gate must
+    # reject it, preserving today's fail-closed NO_REQUIRED behavior.
+    hooks = load_hooks()
+    monkeypatch.setattr(
+        hooks.subprocess,
+        "run",
+        _make_gh_run_split(
+            required_checks=None,
+            all_checks=[{"bucket": "pass", "name": "ci"}],
+            protection_stdout=_PROTECTION_AUTH_DENIED,
+            protection_rc=1,
+        ),
+    )
+    status, detail = hooks._check_ci_status("123")
+    assert status == hooks._CI_STATUS_NO_REQUIRED
+    assert hooks._ci_block_reason("123", status, detail) is not None
+
+
+def test_branch_protection_plan_limited_probe_error_fails_closed(monkeypatch):
+    # If the branch-protection probe itself can't be run (gh missing, e.g.),
+    # the helper must return False so the caller keeps failing closed.
+    hooks = load_hooks()
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 2
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "api"
+        ):
+            raise FileNotFoundError("gh not found")
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    assert hooks._branch_protection_plan_limited(None, "main") is False
 
 
 def test_check_ci_status_no_checks_anywhere_does_not_block(monkeypatch):
@@ -2348,6 +2617,77 @@ def test_extract_pr_ref_body_flag_before_positional():
     assert hooks._extract_pr_ref('gh pr merge --squash -b "fix: blah" 294') == "294"
 
 
+# ── _extract_repo_flag ───────────────────────────────────────────────────────
+
+
+def test_extract_repo_flag_global_position():
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh --repo owner/repo pr merge 294 --admin")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_short_flag_global_position():
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh -R owner/repo pr merge 294 --admin")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_short_flag_attached_form():
+    # gh's short-flag attached form: `-Rowner/repo` (no space).
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh pr merge -Rowner/repo --admin 294")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_subcommand_local_position():
+    # The shape production landing commands actually use:
+    # `gh pr merge --repo owner/repo --admin --squash <n>`.
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh pr merge --repo owner/repo --admin --squash 294")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_equals_form():
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh pr merge --repo=owner/repo --admin 294")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_absent_returns_none():
+    hooks = load_hooks()
+    assert hooks._extract_repo_flag("gh pr merge --admin 294") is None
+
+
+def test_extract_repo_flag_duplicate_last_wins():
+    # Mirrors gh's own last-flag-wins precedence for repeated flags.
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag(
+            "gh --repo first/repo pr merge --repo second/repo --admin 294"
+        )
+        == "second/repo"
+    )
+
+
+def test_extract_repo_flag_does_not_misread_other_flag_values():
+    # A body value that happens to look flag-like must not be misread as
+    # a repo flag -- `_FLAGS_WITH_VALUE` skips it correctly.
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag('gh pr merge --admin -b "--repo" 294') is None
+    )
+
+
 # ── CI gate integration: run_admin_merge_gate ────────────────────────────────
 
 
@@ -2369,6 +2709,58 @@ def test_admin_merge_gate_blocks_when_ci_red(monkeypatch, tmp_path, capsys):
     reason = output["hookSpecificOutput"]["permissionDecisionReason"]
     assert "CI is red" in reason
     assert "gh pr checks 294" in reason
+
+
+def test_admin_merge_gate_scopes_ci_check_to_explicit_repo(monkeypatch, tmp_path, capsys):
+    # Regression test for the confirmed cross-repo bug: a `gh pr merge --repo
+    # <other>` command must be graded against THAT repo's CI, not whatever the
+    # worktree's own git remote happens to resolve to. Simulate the exact
+    # failure mode -- CI is genuinely GREEN on the named repo but would read
+    # RED if the gate ever queried unscoped -- and confirm the gate allows
+    # (pre-approved) using the scoped query, never the unscoped one.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    command = "gh pr merge --repo owner/other-repo --admin --squash 14"
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            if "--repo" in cmd:
+                # Scoped query: this is the real target repo, CI is green.
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+                )
+            # Unscoped query: simulates the bug -- resolves to a DIFFERENT,
+            # unrelated PR whose CI is red. If the gate ever calls gh without
+            # --repo here, this branch fires and the test fails loudly below.
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout=json.dumps([{"bucket": "fail", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+
+    marker = repo / ".claude" / ".admin-merge-approved"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps({"command_hash": hooks._command_hash(command), "command": command}),
+        encoding="utf-8",
+    )
+
+    rc = hooks.run_admin_merge_gate(bash_event(repo, command), repo)
+
+    assert rc == 0
+    assert not marker.exists()  # consumed -- approval matched, no denial
+    assert "permissionDecision" not in capsys.readouterr().out
+    assert "--repo" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "owner/other-repo"
 
 
 def test_admin_merge_gate_blocks_when_ci_pending(monkeypatch, tmp_path, capsys):
@@ -4819,6 +5211,72 @@ def test_pr_matches_worktree_no_ref_matches_current_branch(tmp_path):
     matched, _ = hooks._pr_matches_worktree("gh pr merge --admin", repo)
 
     assert matched is True  # no explicit ref => current branch => this worktree's PR
+
+
+def test_gh_pr_head_branch_no_repo_argv_unchanged(monkeypatch):
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps({"headRefName": "some-branch"}), stderr=""
+        )
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    head = hooks._gh_pr_head_branch("294")
+    assert head == "some-branch"
+    assert captured["cmd"] == ["gh", "pr", "view", "294", "--json", "headRefName"]
+
+
+def test_gh_pr_head_branch_explicit_repo_scopes_gh_call(monkeypatch):
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps({"headRefName": "lia-410-branch"}), stderr=""
+        )
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    head = hooks._gh_pr_head_branch("14", repo="owner/other-repo")
+    assert head == "lia-410-branch"
+    assert captured["cmd"] == [
+        "gh", "pr", "view", "14", "--json", "headRefName",
+        "--repo", "owner/other-repo",
+    ]
+
+
+def test_pr_matches_worktree_threads_explicit_repo_to_gh_pr_view(monkeypatch, tmp_path):
+    # End-to-end: a `gh pr merge --repo o/r <ref>` command must scope the
+    # PR-head-branch lookup to that same repo, not the worktree's own remote.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "view"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"headRefName": "other-branch"}), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    matched, _ = hooks._pr_matches_worktree(
+        "gh pr merge --repo owner/other-repo --admin 999", repo
+    )
+    assert matched is False  # head branch differs from this worktree's branch
+    assert "--repo" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "owner/other-repo"
 
 
 def test_block_message_diagnoses_bucket_mismatch(tmp_path):
