@@ -30,7 +30,7 @@ _CODE_FROM_CATEGORY = {RATE_LIMIT: "rate_limit", AUTH_ERROR: "auth"}
 
 
 class CodexBackend(ModelReviewerBackend):
-    """Backend id ``gpt``: drives GPT (default gpt-5.6-sol) through the codex CLI."""
+    """Backend id ``gpt``: drives GPT (default codex_review.DEFAULT_MODEL) through the codex CLI."""
 
     def id(self) -> str:
         return BACKEND_GPT
