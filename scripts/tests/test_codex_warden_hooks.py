@@ -2083,6 +2083,61 @@ def test_check_ci_status_uses_required_flag(monkeypatch):
     ]
 
 
+def test_check_ci_status_no_repo_argv_unchanged(monkeypatch):
+    # Backward-compat guard: omitting `repo` must produce byte-identical argv
+    # to today (no trailing --repo), independent of the assertion above.
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    hooks._check_ci_status("123")
+    assert "--repo" not in captured["cmd"]
+
+
+def test_check_ci_status_explicit_repo_scopes_gh_call(monkeypatch):
+    # Fixes the confirmed cross-repo bug: when the gated command carries an
+    # explicit repo, the gate's own internal gh call must be scoped to it,
+    # not to whatever repo the cwd's git remote happens to resolve.
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    status, _ = hooks._check_ci_status("14", repo="owner/other-repo")
+    assert status == hooks._CI_STATUS_GREEN
+    assert captured["cmd"] == [
+        "gh", "pr", "checks", "14", "--json", "bucket,name", "--required",
+        "--repo", "owner/other-repo",
+    ]
+
+
 def test_check_ci_status_advisory_pending_does_not_block(monkeypatch):
     # Required checks all pass; advisory checks (TrueCourse etc.) still pending in
     # the unfiltered set. The gate sees only required → GREEN (no block).
@@ -2348,6 +2403,77 @@ def test_extract_pr_ref_body_flag_before_positional():
     assert hooks._extract_pr_ref('gh pr merge --squash -b "fix: blah" 294') == "294"
 
 
+# ── _extract_repo_flag ───────────────────────────────────────────────────────
+
+
+def test_extract_repo_flag_global_position():
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh --repo owner/repo pr merge 294 --admin")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_short_flag_global_position():
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh -R owner/repo pr merge 294 --admin")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_short_flag_attached_form():
+    # gh's short-flag attached form: `-Rowner/repo` (no space).
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh pr merge -Rowner/repo --admin 294")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_subcommand_local_position():
+    # The shape production landing commands actually use:
+    # `gh pr merge --repo owner/repo --admin --squash <n>`.
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh pr merge --repo owner/repo --admin --squash 294")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_equals_form():
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag("gh pr merge --repo=owner/repo --admin 294")
+        == "owner/repo"
+    )
+
+
+def test_extract_repo_flag_absent_returns_none():
+    hooks = load_hooks()
+    assert hooks._extract_repo_flag("gh pr merge --admin 294") is None
+
+
+def test_extract_repo_flag_duplicate_last_wins():
+    # Mirrors gh's own last-flag-wins precedence for repeated flags.
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag(
+            "gh --repo first/repo pr merge --repo second/repo --admin 294"
+        )
+        == "second/repo"
+    )
+
+
+def test_extract_repo_flag_does_not_misread_other_flag_values():
+    # A body value that happens to look flag-like must not be misread as
+    # a repo flag -- `_FLAGS_WITH_VALUE` skips it correctly.
+    hooks = load_hooks()
+    assert (
+        hooks._extract_repo_flag('gh pr merge --admin -b "--repo" 294') is None
+    )
+
+
 # ── CI gate integration: run_admin_merge_gate ────────────────────────────────
 
 
@@ -2369,6 +2495,58 @@ def test_admin_merge_gate_blocks_when_ci_red(monkeypatch, tmp_path, capsys):
     reason = output["hookSpecificOutput"]["permissionDecisionReason"]
     assert "CI is red" in reason
     assert "gh pr checks 294" in reason
+
+
+def test_admin_merge_gate_scopes_ci_check_to_explicit_repo(monkeypatch, tmp_path, capsys):
+    # Regression test for the confirmed cross-repo bug: a `gh pr merge --repo
+    # <other>` command must be graded against THAT repo's CI, not whatever the
+    # worktree's own git remote happens to resolve to. Simulate the exact
+    # failure mode -- CI is genuinely GREEN on the named repo but would read
+    # RED if the gate ever queried unscoped -- and confirm the gate allows
+    # (pre-approved) using the scoped query, never the unscoped one.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    command = "gh pr merge --repo owner/other-repo --admin --squash 14"
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "checks"
+        ):
+            captured["cmd"] = list(cmd)
+            if "--repo" in cmd:
+                # Scoped query: this is the real target repo, CI is green.
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=json.dumps([{"bucket": "pass", "name": "ci"}]), stderr=""
+                )
+            # Unscoped query: simulates the bug -- resolves to a DIFFERENT,
+            # unrelated PR whose CI is red. If the gate ever calls gh without
+            # --repo here, this branch fires and the test fails loudly below.
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout=json.dumps([{"bucket": "fail", "name": "ci"}]), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+
+    marker = repo / ".claude" / ".admin-merge-approved"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps({"command_hash": hooks._command_hash(command), "command": command}),
+        encoding="utf-8",
+    )
+
+    rc = hooks.run_admin_merge_gate(bash_event(repo, command), repo)
+
+    assert rc == 0
+    assert not marker.exists()  # consumed -- approval matched, no denial
+    assert "permissionDecision" not in capsys.readouterr().out
+    assert "--repo" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "owner/other-repo"
 
 
 def test_admin_merge_gate_blocks_when_ci_pending(monkeypatch, tmp_path, capsys):
@@ -4819,6 +4997,72 @@ def test_pr_matches_worktree_no_ref_matches_current_branch(tmp_path):
     matched, _ = hooks._pr_matches_worktree("gh pr merge --admin", repo)
 
     assert matched is True  # no explicit ref => current branch => this worktree's PR
+
+
+def test_gh_pr_head_branch_no_repo_argv_unchanged(monkeypatch):
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps({"headRefName": "some-branch"}), stderr=""
+        )
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    head = hooks._gh_pr_head_branch("294")
+    assert head == "some-branch"
+    assert captured["cmd"] == ["gh", "pr", "view", "294", "--json", "headRefName"]
+
+
+def test_gh_pr_head_branch_explicit_repo_scopes_gh_call(monkeypatch):
+    hooks = load_hooks()
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout=json.dumps({"headRefName": "lia-410-branch"}), stderr=""
+        )
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    head = hooks._gh_pr_head_branch("14", repo="owner/other-repo")
+    assert head == "lia-410-branch"
+    assert captured["cmd"] == [
+        "gh", "pr", "view", "14", "--json", "headRefName",
+        "--repo", "owner/other-repo",
+    ]
+
+
+def test_pr_matches_worktree_threads_explicit_repo_to_gh_pr_view(monkeypatch, tmp_path):
+    # End-to-end: a `gh pr merge --repo o/r <ref>` command must scope the
+    # PR-head-branch lookup to that same repo, not the worktree's own remote.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    _commit_repo(repo)
+    captured = {}
+
+    def fake_run(cmd, *args, **kwargs):
+        if (
+            isinstance(cmd, (list, tuple))
+            and len(cmd) >= 3
+            and str(cmd[0]).endswith("gh")
+            and cmd[1] == "pr"
+            and cmd[2] == "view"
+        ):
+            captured["cmd"] = list(cmd)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"headRefName": "other-branch"}), stderr=""
+            )
+        return _REAL_SUBPROCESS_RUN(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(hooks.subprocess, "run", fake_run)
+    matched, _ = hooks._pr_matches_worktree(
+        "gh pr merge --repo owner/other-repo --admin 999", repo
+    )
+    assert matched is False  # head branch differs from this worktree's branch
+    assert "--repo" in captured["cmd"]
+    assert captured["cmd"][captured["cmd"].index("--repo") + 1] == "owner/other-repo"
 
 
 def test_block_message_diagnoses_bucket_mismatch(tmp_path):
