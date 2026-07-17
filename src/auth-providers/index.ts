@@ -6,11 +6,8 @@
  * Instead, call ensureDefaultProviders() to lazily register built-in providers.
  */
 
-export {
-  AuthProvider,
-  AuthProviderRegistry,
-  NoProviderAvailableError,
-} from './types.js';
+export type { AuthProvider } from './types.js';
+export { AuthProviderRegistry, NoProviderAvailableError } from './types.js';
 export {
   AnthropicAuthProvider,
   CREDENTIALS_PATH,

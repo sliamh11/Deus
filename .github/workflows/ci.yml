@@ -72,7 +72,12 @@ jobs:
         # breaking httpx major would otherwise surface as a cryptic collection-time exit
         # rather than a clean failure. Installed here (before any pytest step) so the
         # warden suite is always collectable.
-        run: python3 -m pip install pytest 'httpx>=0.27,<1.0'
+        #
+        # sqlite-vec is installed here too (LIA-372): the memory suites below have
+        # only sparse skipif guards and memory_indexer does a bare `import
+        # sqlite_vec`, so they are NOT safe to run before it is present. Installing
+        # it up front lets every python test step run in the same environment.
+        run: python3 -m pip install pytest 'httpx>=0.27,<1.0' sqlite-vec==0.1.6
 
       - name: Pattern drift check
         run: python3 scripts/drift_check.py --all --base origin/${{ github.base_ref }}
@@ -93,14 +98,66 @@ jobs:
       - name: Session type contract tests
         run: python3 -m pytest tests/test_session_type_contract.py -v
 
+      - name: Memory / code-search / verdict-store tests
+        # Regression net for the retrieval-store + verdict-store layers (LIA-372).
+        # Hermetic: network calls are stubbed and live-DB paths are redirected to
+        # tmp via fixtures. sqlite-vec is installed in the "Install pytest" step
+        # above, so these suites (which touch the embeddings vec table) run in a
+        # complete environment. test_memory_indexer[_ner].py get their own steps
+        # (the former is ~200s).
+        run: |
+          python3 -m pytest \
+            scripts/tests/test_memory_gc.py \
+            scripts/tests/test_memory_retrieval_hook.py \
+            scripts/tests/test_memory_tree_hook.py \
+            scripts/tests/test_memory_health.py \
+            scripts/tests/test_memory_tree_params.py \
+            scripts/tests/test_memory_query.py \
+            scripts/tests/test_memory_benchmark.py \
+            scripts/tests/test_memory_tree_phase3.py \
+            scripts/tests/test_memory_mcp_server.py \
+            scripts/tests/test_code_search_resolver.py \
+            scripts/tests/test_code_search_cal_cache_bust.py \
+            scripts/tests/test_code_search_calibration.py \
+            scripts/tests/test_verdict_store_race.py \
+            scripts/tests/test_verdict_store_lock.py \
+            -v
+
+      - name: Memory tree tests
+        # Own line so the -k deselect below applies only to this file. 5 tests
+        # need a live embedding provider (Ollama/Gemini) or numpy that the CI
+        # runner lacks — deselected here; follow-up LIA-438 adds proper
+        # skipif(provider-unavailable) guards so they can be re-included. The
+        # other ~154 tests (incl. the LIA-369 embed-failure regression tests)
+        # run normally.
+        run: |
+          python3 -m pytest scripts/tests/test_memory_tree.py -v \
+            -k "not (test_embed_text_receives_original_prompt_only \
+                 or test_approach_boost_score \
+                 or test_approach_max_not_avg \
+                 or test_coverage_gate_forces_abstain \
+                 or test_convex_blend_produces_moderate_score)"
+
       - name: CLAUDE.md keyword coverage
         run: scripts/token_bench/ci_coverage_gate.sh origin/${{ github.base_ref }}
 
       - name: Install evolution test dependencies
         # google-genai is import-only for memory_indexer (the network client is
         # never built in tests); required so test_memory_indexer_contradiction_commit
-        # can import the module. See that test's module docstring.
-        run: python3 -m pip install sqlite-vec==0.1.6 google-genai
+        # can import the module. See that test's module docstring. (sqlite-vec is
+        # already installed in the "Install pytest" step above.)
+        run: python3 -m pip install google-genai
+
+      - name: Memory indexer NER tests
+        # Fast (~0.05s). sqlite-vec + google-genai are both installed by now.
+        run: python3 -m pytest scripts/tests/test_memory_indexer_ner.py -v
+
+      # NOTE: test_memory_indexer.py is intentionally NOT wired in here yet —
+      # 54/279 of its tests require a live embedding provider (Ollama/Gemini/
+      # sentence_transformers) the CI runner lacks. Deferred to LIA-438, which
+      # will add skipif(provider-unavailable) guards (or a stub embedder) so it
+      # can run in CI; test_memory_tree.py's 5 deselected tests are in the same
+      # follow-up.
 
       - name: Evolution tests
         run: python3 -m pytest evolution/tests/ -v

@@ -127,3 +127,105 @@ def test_reindex_busts_cache_when_no_calibration_and_embed_unavailable(
         f"got {code_search._cal_cache!r}"
     )
     assert "error" not in result
+
+
+# ---------------------------------------------------------------------------
+# LIA-368: orphaned rowids must be swept from the derived index tables
+# ---------------------------------------------------------------------------
+
+def test_reindex_sweeps_orphaned_fts_rowids(monkeypatch, tmp_path):
+    """Reindexing a changed file must DELETE the old chunks' rowids from
+    chunks_fts (derived), not just soft-delete the chunks rows. Pre-fix, the
+    stale fts rowids lingered and polluted the candidate pool."""
+    src = tmp_path / "src"
+    src.mkdir()
+    f = src / "mod.py"
+    f.write_text("def alpha():\n    return 1\n")
+    db_path = tmp_path / "code_search.db"
+    _seed_db(db_path)
+    monkeypatch.setenv("DEUS_CODE_SEARCH_DB", str(db_path))
+
+    code_search.reindex(str(src))
+    db = sqlite3.connect(str(db_path))
+    fts_ok = code_search._fts_available(db)
+    if not fts_ok:
+        db.close()
+        pytest.skip("chunks_fts not available")
+    old_rowids = [
+        r[0]
+        for r in db.execute(
+            "SELECT rowid FROM chunks WHERE orphaned_at IS NULL"
+        ).fetchall()
+    ]
+    assert old_rowids
+    assert (
+        db.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0] == len(old_rowids)
+    )
+    db.close()
+
+    # Change the file so reindex re-chunks and soft-deletes the old chunks.
+    f.write_text("def beta():\n    return 2\n\ndef gamma():\n    return 3\n")
+    code_search.reindex(str(src))
+
+    db = sqlite3.connect(str(db_path))
+    orphaned = db.execute(
+        "SELECT COUNT(*) FROM chunks WHERE orphaned_at IS NOT NULL"
+    ).fetchone()[0]
+    assert orphaned == len(old_rowids)  # chunks rows preserved (soft-deleted)
+    placeholders = ",".join("?" * len(old_rowids))
+    stale_in_fts = db.execute(
+        f"SELECT COUNT(*) FROM chunks_fts WHERE rowid IN ({placeholders})", old_rowids
+    ).fetchone()[0]
+    assert stale_in_fts == 0, "orphaned rowids must be swept from chunks_fts"
+    live = db.execute(
+        "SELECT COUNT(*) FROM chunks WHERE orphaned_at IS NULL"
+    ).fetchone()[0]
+    assert db.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0] == live
+    db.close()
+
+
+def test_gc_index_sweeps_preexisting_orphan_rows(monkeypatch, tmp_path):
+    """The --gc-index backfill removes EXISTING orphan derived rowids and is
+    idempotent + backs up first."""
+    db_path = tmp_path / "code_search.db"
+    _seed_db(db_path)
+    monkeypatch.setenv("DEUS_CODE_SEARCH_DB", str(db_path))
+
+    db = code_search._init_db(db_path)
+    if not code_search._fts_available(db):
+        db.close()
+        pytest.skip("chunks_fts not available")
+    db.execute(
+        "INSERT INTO chunks (id, file_path, chunk_type, chunk_name, chunk_index, "
+        "content, content_hash, mtime) VALUES ('a','f.py','func','a',0,'x','h',0)"
+    )
+    live_rowid = db.execute("SELECT rowid FROM chunks WHERE id='a'").fetchone()[0]
+    db.execute(
+        "INSERT INTO chunks (id, file_path, chunk_type, chunk_name, chunk_index, "
+        "content, content_hash, mtime, orphaned_at) "
+        "VALUES ('b','f.py','func','b',0,'y','h2',0,'2020-01-01')"
+    )
+    dead_rowid = db.execute("SELECT rowid FROM chunks WHERE id='b'").fetchone()[0]
+    db.execute(
+        "INSERT INTO chunks_fts (rowid, chunk_name, content) VALUES (?,?,?)",
+        (live_rowid, "a", "x"),
+    )
+    db.execute(
+        "INSERT INTO chunks_fts (rowid, chunk_name, content) VALUES (?,?,?)",
+        (dead_rowid, "b", "y"),
+    )
+    db.commit()
+    db.close()
+
+    result = code_search.gc_index()
+    assert result["ok"]
+    assert Path(result["backup"]).exists()  # backup written first
+    assert result["fts_deleted"] == 1
+
+    db = sqlite3.connect(str(db_path))
+    rowids = [r[0] for r in db.execute("SELECT rowid FROM chunks_fts").fetchall()]
+    assert live_rowid in rowids and dead_rowid not in rowids
+    db.close()
+
+    # Idempotent: a clean index sweeps nothing.
+    assert code_search.gc_index()["fts_deleted"] == 0
