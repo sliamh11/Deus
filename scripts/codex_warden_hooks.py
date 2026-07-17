@@ -83,6 +83,7 @@ from warden_hooks.ci_status import (  # noqa: E402
     _CI_STATUS_NO_REQUIRED,
     _CI_STATUS_PENDING,
     _CI_STATUS_RED,
+    _branch_protection_plan_limited,
     _check_ci_status,
     _ci_block_reason,
     _query_gh_checks,

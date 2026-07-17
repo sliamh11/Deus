@@ -125,6 +125,58 @@ def _query_gh_checks(
     return _CI_STATUS_ERROR, f"unknown check buckets: {', '.join(sorted(unknown))}", n
 
 
+_PLAN_LIMITATION_MESSAGE = "Upgrade to GitHub Pro or make this repository public"
+
+
+def _branch_protection_plan_limited(
+    repo: str | None, branch: str, timeout: int = 3
+) -> bool:
+    """Detect the one specific, narrow case where a private repo's plan tier
+    makes branch-protection required-checks structurally unknowable — not
+    "unconfigured", but genuinely inaccessible via the API regardless of what
+    the maintainer set up.
+
+    ``gh api`` has no ``--repo`` flag (unlike ``gh pr checks``); repo scoping
+    goes directly in the endpoint path. ``repo=None`` uses ``gh``'s own
+    ``{owner}/{repo}`` placeholder syntax (resolved from cwd's git remote);
+    an explicit ``repo`` is substituted into the path directly.
+
+    Returns ``True`` only when the response is *exactly* GitHub's documented
+    plan-limitation shape: JSON on stdout with a ``message`` field containing
+    ``_PLAN_LIMITATION_MESSAGE``. Any other outcome — a real 200 response, a
+    404 (branch protection genuinely unconfigured on a full-featured repo), a
+    403 with a *different* message (e.g. an auth/permission failure, never to
+    be conflated with plan-limitation), unparseable output, ``gh`` missing, or
+    a timeout — returns ``False``, so the caller's existing fail-closed path
+    is untouched.
+    """
+    repo_segment = repo if repo else "{owner}/{repo}"
+    argv = ["gh", "api", f"repos/{repo_segment}/branches/{branch}/protection"]
+    try:
+        result = subprocess.run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        # FileNotFoundError is an OSError subclass; no separate branch needed.
+        return False
+
+    try:
+        payload = json.loads(result.stdout.strip())
+    except ValueError:
+        # json.JSONDecodeError is a ValueError subclass; no separate branch needed.
+        return False
+
+    if not isinstance(payload, dict):
+        return False
+
+    return _PLAN_LIMITATION_MESSAGE in str(payload.get("message", ""))
+
+
 def _check_ci_status(
     pr_ref: str, timeout: int = 3, repo: str | None = None
 ) -> tuple[str, str]:
@@ -158,6 +210,20 @@ def _check_ci_status(
         return all_status, all_message
     if all_n == 0:
         return _CI_STATUS_NO_CHECKS, "no checks found for this PR"
+
+    # Structurally unknowable required-checks (private repo, no GitHub Pro):
+    # branch protection cannot exist on this repo at all, so the ambiguity
+    # this branch normally fails closed on doesn't apply. Fall back to the
+    # unfiltered result directly — strictly more conservative than real
+    # required-checks (demands every check green, not just a subset).
+    if _branch_protection_plan_limited(repo, "main", timeout):
+        return (
+            all_status,
+            f"{all_message} (plan-limited fallback: branch protection "
+            f"unavailable on this repo's plan tier — used all {all_n} "
+            f"check(s) instead of branch-protection-required ones)",
+        )
+
     # Thread the unfiltered status through so the operator sees WHAT is
     # outstanding (e.g. a failing advisory check), not just the ambiguity.
     return (
