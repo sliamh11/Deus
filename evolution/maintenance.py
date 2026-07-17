@@ -274,6 +274,17 @@ def process_human_feedback(eps: float = 0.05) -> dict:
     permanently discarding a human-positive signal whenever judge-driven
     generation silently failed, or judging is merely delayed/backlogged.
 
+    After a fresh-generation attempt, archival is gated on the zone being
+    CONFIRMED: reflection_id is not None (fresh save) OR a same-polarity
+    reflection already existed before this attempt. save_reflection's dedup
+    check (reflexion/store.py) matches by embedding similarity within
+    group_folder ONLY -- not scoped to this interaction or polarity -- so a
+    dedup rejection (reflection_id is None) does not by itself prove an
+    active same-polarity reflection exists; it could have matched this
+    interaction's own CONTRADICTING reflection, or an unrelated one
+    elsewhere. Archiving without that confirmation risks leaving the
+    interaction with zero active reflections.
+
     NULL-polarity legacy rows are never archived by zone-alignment
     (deliberate; see docs/KNOWN_LIMITATIONS.md).
 
@@ -329,17 +340,9 @@ def process_human_feedback(eps: float = 0.05) -> dict:
                 continue
 
             if direction == "positive" and has_existing_positive:
-                # Redundant generation (a positive reflection already
-                # exists), but the human's confirmation still re-establishes
-                # the positive zone -- archive any stale contradicting
-                # (corrective) reflection before marking processed, rather
-                # than skipping cleanup just because no new content is
-                # generated. Reachable independent of a race: the
-                # judge-driven writer (_reflect_single) does no
-                # cross-checking of its own, so an interaction can carry
-                # both an active positive and an active corrective
-                # reflection from ordinary score fluctuation across
-                # judging cycles alone.
+                # Redundant generation, but the zone is still re-confirmed --
+                # archive any stale contradicting reflection too (see
+                # docstring's "zone vs. generation" note for why).
                 for r in existing_reflections:
                     if r.get("polarity") == "corrective":
                         archive_reflection_by_id(r["id"])  # soft-delete, ADR-compliant
@@ -373,19 +376,30 @@ def process_human_feedback(eps: float = 0.05) -> dict:
                 interaction_id=row["id"], group_folder=row.get("group_folder"), polarity=direction,
             )
 
-            # Zone-alignment archival: runs whenever content passed validation
-            # (fresh save OR dedup against an existing reflection) -- the
-            # human-verified zone is established either way. NULL-polarity
-            # legacy rows never archived (verbatim per original issue #1011
-            # spec; documented in docs/KNOWN_LIMITATIONS.md). Reuses the
-            # pre-generation snapshot fetched above -- the just-saved
-            # reflection carries `direction`'s own polarity, never the
-            # CONTRADICTING one this loop targets, so staleness from the
-            # generate/save call in between doesn't affect correctness here.
+            # Zone-alignment archival: archive the CONTRADICTING polarity
+            # only once an active same-polarity (`direction`) reflection is
+            # CONFIRMED to represent the zone. On a fresh save, reflection_id
+            # itself is that confirmation. On a dedup rejection
+            # (reflection_id is None), save_reflection's dedup check
+            # (reflexion/store.py's check_reflection_duplicate) matches by
+            # embedding similarity within group_folder only -- NOT scoped to
+            # this interaction or polarity -- so the match could be against
+            # this interaction's own CONTRADICTING reflection (or an
+            # unrelated one elsewhere). Confirm a same-polarity reflection
+            # already existed BEFORE this attempt (the pre-generation
+            # snapshot) before trusting the dedup as "zone already covered";
+            # otherwise skip archival rather than risk leaving the
+            # interaction with zero active reflections. NULL-polarity legacy
+            # rows never archived (verbatim per original issue #1011 spec;
+            # documented in docs/KNOWN_LIMITATIONS.md).
             contradicting = "positive" if direction == "corrective" else "corrective"
-            for r in existing_reflections:
-                if r.get("polarity") == contradicting:
-                    archive_reflection_by_id(r["id"])  # soft-delete, ADR-compliant
+            zone_confirmed = reflection_id is not None or any(
+                r.get("polarity") == direction for r in existing_reflections
+            )
+            if zone_confirmed:
+                for r in existing_reflections:
+                    if r.get("polarity") == contradicting:
+                        archive_reflection_by_id(r["id"])  # soft-delete, ADR-compliant
 
             store.update_interaction(row["id"], processed_at=now)
 

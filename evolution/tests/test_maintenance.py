@@ -238,12 +238,18 @@ def test_validation_rejected_leaves_processed_at_unset(monkeypatch):
     assert store._rows["bad"]["processed_at"] is None  # retriable next cycle
 
 
-def test_dedup_marks_processed_and_still_archives(monkeypatch):
+def test_dedup_with_confirmed_same_polarity_still_archives(monkeypatch):
     """Round-5 regression: a dedup (valid content, save_reflection returns
-    None) must still run zone-alignment archival and mark processed_at --
+    None) must still run zone-alignment archival and mark processed_at when
+    an active same-polarity reflection ALREADY confirms the zone --
     archival was previously gated on `reflection_id is not None`, which
-    incorrectly skipped the dedup path."""
-    reflections = {"dup1": [{"id": "existing-positive", "polarity": "positive"}]}
+    incorrectly skipped the dedup path even when safe."""
+    reflections = {
+        "dup1": [
+            {"id": "existing-corrective", "polarity": "corrective"},  # confirms the zone
+            {"id": "existing-positive", "polarity": "positive"},  # contradicting, gets archived
+        ],
+    }
     store = _install_store(
         monkeypatch, _FakeHFStore([_row("dup1", human_score=0.2)], reflections=reflections),
     )
@@ -254,6 +260,28 @@ def test_dedup_marks_processed_and_still_archives(monkeypatch):
     assert counters == {"corrective": 0, "positive": 0, "skipped": 1, "errored": 0}
     assert calls["archive"] == ["existing-positive"]
     assert store._rows["dup1"]["processed_at"] is not None
+
+
+def test_dedup_without_confirmed_same_polarity_skips_archival(monkeypatch):
+    """Round-7 regression: save_reflection's dedup check matches by embedding
+    similarity within group_folder only -- NOT scoped to this interaction or
+    polarity -- so a dedup rejection does not by itself prove an active
+    same-polarity reflection exists. It could have matched THIS
+    interaction's own contradicting reflection. Without a pre-existing
+    same-polarity reflection to confirm the zone, archival must be skipped
+    -- archiving anyway risks leaving the interaction with zero active
+    reflections."""
+    reflections = {"dup2": [{"id": "existing-positive", "polarity": "positive"}]}
+    store = _install_store(
+        monkeypatch, _FakeHFStore([_row("dup2", human_score=0.2)], reflections=reflections),
+    )
+    calls = _patch_generation(monkeypatch, save_result="dedup")
+
+    counters = process_human_feedback()
+
+    assert counters == {"corrective": 0, "positive": 0, "skipped": 1, "errored": 0}
+    assert calls["archive"] == []  # NOT archived -- zone unconfirmed
+    assert store._rows["dup2"]["processed_at"] is not None
 
 
 def test_fresh_save_also_archives_contradicting_reflection(monkeypatch):
