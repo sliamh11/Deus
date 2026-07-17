@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import importlib.util
 import itertools
 import json
 import os
@@ -54,6 +55,7 @@ _BENCH_DIR = Path(__file__).resolve().parent
 _SCRIPTS_DIR = _BENCH_DIR.parent
 _REPO_ROOT = _SCRIPTS_DIR.parent
 _SP_PATH = _SCRIPTS_DIR / "standards_pack.py"
+_GQ_PATH = _SCRIPTS_DIR / "_gemini_quota.py"
 _FIXTURES_DIR = _BENCH_DIR / "fixtures"
 _DEFAULT_OUTPUT_DIR = _BENCH_DIR / "results"
 _PAIRWISE_CACHE_PATH = _BENCH_DIR / "attention_dilution_pairwise_cache.json"
@@ -107,6 +109,28 @@ Which response is better on three criteria, weighted equally:
 
 Return JSON exactly: {{"winner": "A" | "B" | "TIE", "reasoning": "<one sentence>"}}
 """
+
+
+# ---------------------------------------------------------------------------
+# Module loaders
+# ---------------------------------------------------------------------------
+
+
+def _load_gq():
+    """Load _gemini_quota as a module. scripts/bench/ is not on sys.path (this
+    file invokes standards_pack.py as a subprocess rather than in-process, so
+    unlike rule_following_judge.py it had no prior importlib plumbing) — same
+    spec_from_file_location pattern as rule_following_judge.py's `_load_gq`.
+    """
+    if "_gemini_quota" in sys.modules:
+        return sys.modules["_gemini_quota"]
+    spec = importlib.util.spec_from_file_location("_gemini_quota", _GQ_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load _gemini_quota from {_GQ_PATH}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_gemini_quota"] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -433,7 +457,7 @@ def _judge_recall(
         except Exception as e:
             msg = str(e)
             last_err = msg
-            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+            if _load_gq().is_quota_error(e):
                 if "PerDay" in msg:
                     exhausted.add(model)
                 else:
@@ -655,7 +679,7 @@ def _judge_pair(
         except Exception as e:
             msg = str(e)
             last_err = msg
-            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+            if _load_gq().is_quota_error(e):
                 if "PerDay" in msg:
                     exhausted.add(model)
                 else:
