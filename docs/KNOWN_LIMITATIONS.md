@@ -36,6 +36,9 @@ While Linux is supported, several features work best on macOS:
 
 Linux users can use Docker and skip voice transcription if Whisper Metal isn't available.
 
-## Human Feedback Zone-Alignment Archival (LIA-1011)
+## Human Feedback Storage Substrate (LIA-1011)
 
-NULL-polarity legacy rows never archived — `maintenance.process_human_feedback()`'s zone-alignment archival only reconsiders reflections with a `polarity` value; pre-migration reflections predate the `polarity` column and are never targeted, retroactively or otherwise. This is deliberate, per the original issue's spec, not an oversight.
+- **NULL-polarity legacy rows never archived** — `maintenance.process_human_feedback()`'s zone-alignment archival only reconsiders reflections with a `polarity` value; pre-migration reflections predate the `polarity` column and are never targeted, retroactively or otherwise. This is deliberate, per the original issue's spec, not an oversight.
+- **No producer yet** — `record_human_feedback()` has no caller in this repo, and no writer passes `source_ref=` to `log_interaction()`. This PR ships only the storage substrate (schema, writers, batch processor); the external-trace ingester and the human-annotation write-back caller are deferred to a follow-up.
+- **Maintenance due-check doesn't account for pending feedback** — `is_maintenance_due()` is driven by new-interaction count only; a `record_human_feedback()` write (an UPDATE, not an INSERT) doesn't advance that counter. Not reachable today since there's no producer yet, but whichever follow-up wires one must also ensure pending feedback can trigger maintenance independent of new-interaction volume.
+- **No atomic per-row claim in `process_human_feedback()`** — `run_maintenance()` runs inline from the fire-and-forget per-interaction path, so overlapping invocations are possible under concurrent interactions across channels. A race produces a duplicate LLM generation call, not a duplicate DB row (`save_reflection`'s dedup catches the second write). Same unaddressed gap as the pre-existing `judge_pending_interactions()`, not novel to this feature.

@@ -266,15 +266,37 @@ def process_human_feedback(eps: float = 0.05) -> dict:
 
     The try/except wraps the ENTIRE per-row body, including the
     direction-is-None early-skip branch, so ANY database write failure for a
-    row (mark-processed, generation, save, or archival) lands uniformly in
-    `errored` and never aborts the rest of the batch. Every counter
-    increment happens strictly AFTER its row's corresponding
+    row lands uniformly in `errored` and never aborts the rest of the batch.
+    Every counter increment happens strictly AFTER its row's corresponding
     store.update_interaction(processed_at=now) call succeeds, so a mid-row
     failure can only ever land in `errored` -- never double-counted into a
-    success bucket too (LIA-1011, rounds 5-7).
+    success bucket too.
+
+    Known limitations (accepted, not fixed here):
+      - No atomic per-row claim before processing. run_maintenance() is
+        invoked inline from the fire-and-forget per-interaction path
+        (cli.py cmd_log_interaction), so overlapping invocations are
+        possible if multiple interactions land concurrently across
+        channels. A race would produce a duplicate generate_reflection call
+        on the same row, not a duplicate DB row (save_reflection's existing
+        dedup check catches the second write). This is the same
+        unaddressed architectural gap judge_pending_interactions() already
+        has (no atomic claim there either) -- not novel to this function,
+        and out of scope to fix in isolation here.
+      - is_maintenance_due()'s due-check is driven by new-interaction count
+        delta only; record_human_feedback() (an UPDATE on an existing row)
+        does not bump that counter, so a feedback row written with no new
+        interactions following it would not trigger maintenance. This has
+        no live effect yet: record_human_feedback() has no caller in this
+        PR (the external-trace ingester and write-back caller are
+        explicitly deferred -- see docs/KNOWN_LIMITATIONS.md), so no row
+        can actually reach human_score IS NOT NULL today. Flagged as a
+        requirement for whichever follow-up issue wires the producer.
 
     Returns counters: {"corrective": int, "positive": int, "skipped": int, "errored": int}.
     """
+    import json
+
     from .config import REFLECTION_THRESHOLD, POSITIVE_THRESHOLD
     from .metrics import parse_metrics
     from .reflexion.generator import generate_reflection, generate_positive_reflection
@@ -307,11 +329,18 @@ def process_human_feedback(eps: float = 0.05) -> dict:
 
             rationale = sanitize_human_comment(row.get("human_comment"))
             metrics = parse_metrics(row.get("metrics"))
+            # tools_used is stored as a JSON TEXT column (see db.py schema);
+            # decode before passing to the generator, which expects a list
+            # and joins its elements (matching cli.py:472's convention --
+            # NOT row.get("tools_used") directly, which would hand the
+            # generator a raw JSON string and produce character-joined
+            # metadata in the prompt).
+            tools_used = json.loads(row.get("tools_used") or "[]")
             gen_fn = generate_reflection if direction == "corrective" else generate_positive_reflection
             content, category = gen_fn(
                 prompt=row["prompt"], response=row.get("response") or "",
                 score=row["human_score"], rationale=rationale,
-                tools_used=row.get("tools_used"), metrics=metrics,
+                tools_used=tools_used, metrics=metrics,
             )
             ok, reason = is_valid_reflection(content)
             if not ok:
