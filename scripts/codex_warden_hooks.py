@@ -40,6 +40,7 @@ from warden_review.constants import (  # noqa: E402
 from warden_hooks.command_parse import (  # noqa: E402
     _command_hash,
     _extract_pr_ref,
+    _extract_repo_flag,
     _gh_command_index_after_global_flags,
     _is_admin_merge_command,
     _is_gh_executable,
@@ -866,7 +867,8 @@ def approve_admin_merge(command: str, repo_root: Path) -> int:
     pr_ref = _extract_pr_ref(command)
     # Current-branch merges (no ref) pass ``gh pr checks`` the branch name
     check_ref = pr_ref or "HEAD"
-    status, detail = _check_ci_status(check_ref)
+    repo = _extract_repo_flag(command)
+    status, detail = _check_ci_status(check_ref, repo=repo)
     block = _ci_block_reason(check_ref, status, detail)
     if block:
         print(block, file=sys.stderr)
@@ -1700,15 +1702,23 @@ def _verdict_in(verdicts: dict[str, Any], marker_name: str) -> str | None:
     return None
 
 
-def _gh_pr_head_branch(ref: str, timeout: int = 3) -> str | None:
+def _gh_pr_head_branch(
+    ref: str, timeout: int = 3, repo: str | None = None
+) -> str | None:
     """Resolve a PR ref (number or URL) to its head branch via ``gh pr view``.
 
     Returns None on any failure so the caller fails safe (treats it as an
     unverifiable match and falls through to the one-shot approval path).
+
+    *repo* scopes the lookup to an explicit ``OWNER/REPO`` instead of ``gh``'s
+    cwd-based resolution — see ``_query_gh_checks`` for why this matters.
     """
+    argv = ["gh", "pr", "view", ref, "--json", "headRefName"]
+    if repo:
+        argv.extend(["--repo", repo])
     try:
         result = subprocess.run(
-            ["gh", "pr", "view", ref, "--json", "headRefName"],
+            argv,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1742,7 +1752,8 @@ def _pr_matches_worktree(command: str, wt: Path) -> tuple[bool, str]:
     ref = _extract_pr_ref(command)
     if ref is None or ref == wt_branch:
         return (True, "")
-    head = _gh_pr_head_branch(ref)
+    repo = _extract_repo_flag(command)
+    head = _gh_pr_head_branch(ref, repo=repo)
     if head is None:
         return (
             False,
@@ -1842,7 +1853,8 @@ def run_admin_merge_gate(event: dict[str, Any], repo_root: Path) -> int:
 
     pr_ref = _extract_pr_ref(command)
     check_ref = pr_ref or "HEAD"
-    ci_status, ci_detail = _check_ci_status(check_ref)
+    repo = _extract_repo_flag(command)
+    ci_status, ci_detail = _check_ci_status(check_ref, repo=repo)
     ci_block = _ci_block_reason(check_ref, ci_status, ci_detail)
     if ci_block:
         _block_pre_tool(ci_block)

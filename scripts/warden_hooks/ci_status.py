@@ -36,7 +36,7 @@ _BUCKET_FAIL = frozenset({"fail", "cancel"})
 
 
 def _query_gh_checks(
-    pr_ref: str, *, required_only: bool, timeout: int = 3
+    pr_ref: str, *, required_only: bool, timeout: int = 3, repo: str | None = None
 ) -> tuple[str, str, int]:
     """Run ``gh pr checks`` once and classify the result.
 
@@ -45,10 +45,20 @@ def _query_gh_checks(
     When *required_only* is set, the query is scoped with ``--required`` so the
     gate sees only branch-protection-required checks. Failure to query defaults
     to ``_CI_STATUS_ERROR`` so the caller blocks rather than falls open.
+
+    *repo* scopes the query to an explicit ``OWNER/REPO`` (via ``gh``'s own
+    ``--repo`` flag) instead of letting ``gh`` resolve one from the current
+    working directory's git remote — needed when the gated command already
+    names an explicit repo different from the caller's own cwd (e.g. a
+    worktree tree whose ambient remote belongs to a different repo). ``None``
+    (the default) keeps today's cwd-based resolution, so the constructed argv
+    is byte-identical when no explicit repo is given.
     """
     argv = ["gh", "pr", "checks", pr_ref, "--json", "bucket,name"]
     if required_only:
         argv.append("--required")
+    if repo:
+        argv.extend(["--repo", repo])
     try:
         result = subprocess.run(
             argv,
@@ -115,7 +125,9 @@ def _query_gh_checks(
     return _CI_STATUS_ERROR, f"unknown check buckets: {', '.join(sorted(unknown))}", n
 
 
-def _check_ci_status(pr_ref: str, timeout: int = 3) -> tuple[str, str]:
+def _check_ci_status(
+    pr_ref: str, timeout: int = 3, repo: str | None = None
+) -> tuple[str, str]:
     """Classify CI for *pr_ref*, scoped to branch-protection-required checks.
 
     The admin-merge gate must mirror branch protection — only checks the repo
@@ -126,8 +138,13 @@ def _check_ci_status(pr_ref: str, timeout: int = 3) -> tuple[str, str]:
 
     Falls closed: an unverifiable status — or a PR that has checks but none
     required — blocks rather than allowing an unreviewed admin-merge.
+
+    *repo*: see ``_query_gh_checks`` — scopes both queries below to an
+    explicit ``OWNER/REPO`` instead of ``gh``'s cwd-based resolution.
     """
-    status, message, _ = _query_gh_checks(pr_ref, required_only=True, timeout=timeout)
+    status, message, _ = _query_gh_checks(
+        pr_ref, required_only=True, timeout=timeout, repo=repo
+    )
     if status != _CI_STATUS_NO_CHECKS:
         return status, message
 
@@ -135,7 +152,7 @@ def _check_ci_status(pr_ref: str, timeout: int = 3) -> tuple[str, str]:
     # genuinely zero checks → allowed through (unchanged behaviour); checks
     # present but none required → ambiguous, fail closed.
     all_status, all_message, all_n = _query_gh_checks(
-        pr_ref, required_only=False, timeout=timeout
+        pr_ref, required_only=False, timeout=timeout, repo=repo
     )
     if all_status == _CI_STATUS_ERROR:
         return all_status, all_message
