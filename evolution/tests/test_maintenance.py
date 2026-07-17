@@ -143,10 +143,12 @@ def test_judge_score_zero_is_not_treated_as_missing(monkeypatch):
     assert counters["skipped"] == 0
 
 
-def test_judge_score_none_defaults_optimistic_and_skips(monkeypatch):
-    """A high human_score with no judge_score at all defaults judge_score to
-    1.0 (optimistic — assume no disagreement), so the row is skipped rather
-    than treated as a judge disagreement."""
+def test_judge_score_none_proceeds_as_positive(monkeypatch):
+    """A high human_score with no judge_score at all (judging hasn't
+    happened yet -- delayed, backlogged, or never queued) proceeds as a
+    positive reflection rather than being silently discarded: a missing
+    judge_score means no existing reflection could be redundant with, unlike
+    an existing judge_score that already meets POSITIVE_THRESHOLD."""
     store = _install_store(
         monkeypatch, _FakeHFStore([_row("r4", human_score=0.9, judge_score=None)]),
     )
@@ -154,8 +156,24 @@ def test_judge_score_none_defaults_optimistic_and_skips(monkeypatch):
 
     counters = process_human_feedback()
 
-    assert counters == {"corrective": 0, "positive": 0, "skipped": 1, "errored": 0}
+    assert counters == {"corrective": 0, "positive": 1, "skipped": 0, "errored": 0}
     assert store._rows["r4"]["processed_at"] is not None
+
+
+def test_judge_score_already_positive_suppresses_redundant_reflection(monkeypatch):
+    """An EXISTING judge_score that already meets POSITIVE_THRESHOLD means a
+    judge-driven positive reflection already exists -- the human's
+    corroborating high score is skipped rather than generating a
+    redundant duplicate."""
+    store = _install_store(
+        monkeypatch, _FakeHFStore([_row("r4b", human_score=0.9, judge_score=0.9)]),
+    )
+    _patch_generation(monkeypatch)
+
+    counters = process_human_feedback()
+
+    assert counters == {"corrective": 0, "positive": 0, "skipped": 1, "errored": 0}
+    assert store._rows["r4b"]["processed_at"] is not None
 
 
 def test_mid_range_score_is_skipped(monkeypatch):

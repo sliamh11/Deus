@@ -249,13 +249,16 @@ def process_human_feedback(eps: float = 0.05) -> dict:
 
     For each unprocessed row (human_score IS NOT NULL, processed_at IS NULL):
       - human_score <= REFLECTION_THRESHOLD -> corrective reflection.
-      - human_score >= POSITIVE_THRESHOLD - eps AND the judge disagreed
-        (judge_score < POSITIVE_THRESHOLD) -> positive reflection. Requiring
-        judge disagreement avoids a redundant positive reflection when the
-        judge already scored the interaction as positive. A missing
-        judge_score (judge never ran) is treated as an optimistic 1.0 --
-        NOT disagreement -- so an unjudged high-human-score row is skipped
-        rather than generating a possibly-redundant positive reflection.
+      - human_score >= POSITIVE_THRESHOLD - eps AND (judge_score is None OR
+        judge_score < POSITIVE_THRESHOLD) -> positive reflection. Only an
+        EXISTING judge_score that already meets POSITIVE_THRESHOLD suppresses
+        this -- that reflection already exists, so generating another would
+        be redundant. A missing judge_score means judging hasn't happened
+        yet (delayed, backlogged past this cycle's limit, or the interaction
+        was never queued for judging) -- there is no existing reflection to
+        be redundant with, so the human's positive signal proceeds now
+        rather than being silently and permanently discarded pending a judge
+        score that may never arrive in time.
       - otherwise -> skipped (no reflection warranted).
 
     Zone-alignment archival: once a reflection is generated (or dedups
@@ -277,9 +280,13 @@ def process_human_feedback(eps: float = 0.05) -> dict:
         invoked inline from the fire-and-forget per-interaction path
         (cli.py cmd_log_interaction), so overlapping invocations are
         possible if multiple interactions land concurrently across
-        channels. A race would produce a duplicate generate_reflection call
-        on the same row, not a duplicate DB row (save_reflection's existing
-        dedup check catches the second write). This is the same
+        channels. A race produces a duplicate generate_reflection call on
+        the same row at minimum; save_reflection's dedup check-then-insert
+        is not itself atomic (two concurrent calls can both see "no
+        duplicate yet" and both insert), so an actual duplicate reflection
+        row -- not just wasted LLM compute -- is possible under a genuine
+        race, not merely a risk this function's own retry-safety absorbs.
+        This is the same
         unaddressed architectural gap judge_pending_interactions() already
         has (no atomic claim there either) -- not novel to this function,
         and out of scope to fix in isolation here.
@@ -313,11 +320,21 @@ def process_human_feedback(eps: float = 0.05) -> dict:
     for row in rows:
         try:
             judge_score = row.get("judge_score")
-            judge_score = 1.0 if judge_score is None else judge_score
 
             if row["human_score"] <= REFLECTION_THRESHOLD:
                 direction = "corrective"
-            elif row["human_score"] >= POSITIVE_THRESHOLD - eps and judge_score < POSITIVE_THRESHOLD:
+            elif row["human_score"] >= POSITIVE_THRESHOLD - eps and (
+                judge_score is None or judge_score < POSITIVE_THRESHOLD
+            ):
+                # judge_score is None means the judge hasn't scored this
+                # interaction yet -- there is no existing positive reflection
+                # to be redundant with, so proceed. Only a judge_score that
+                # ALREADY meets POSITIVE_THRESHOLD suppresses the override
+                # (that reflection already exists). Treating a merely-pending
+                # judge_score as "optimistically high" (suppress) instead of
+                # "not yet known" (proceed) would silently and permanently
+                # discard a human-verified positive signal if judging is
+                # delayed or backlogged past this maintenance cycle.
                 direction = "positive"
             else:
                 direction = None
