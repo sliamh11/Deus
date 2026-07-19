@@ -83,6 +83,11 @@ def _load_hook(monkeypatch, recall_calls: list[dict]):
         return {"context": "stubbed context"}
 
     fake_mq.recall = fake_recall
+    # LIA-355: the hook's session_id/dedup branch reads mq.WRAP_OVERHEAD_CHARS
+    # unconditionally once a session_id is present. Keep the stub in sync with
+    # the real module's contract (scripts/memory_query.py:97) or any test that
+    # passes session_id hits AttributeError on this stub instead.
+    fake_mq.WRAP_OVERHEAD_CHARS = 512
 
     fake_sc = types.ModuleType("session_concepts")
     fake_sc.extract_terms = lambda prompt: []

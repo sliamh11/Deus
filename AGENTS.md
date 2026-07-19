@@ -185,8 +185,8 @@ renaming a repo-owned skill, update this table in the same change.
 | `/grill-with-docs` | Grill a plan and capture decisions as ADRs + glossary as you go |
 | `/grilling` | The relentless plan/design interview engine (used by `/grill-me` and `/grill-with-docs`) |
 | `/handoff` | Write a structured handoff document so the next agent starts with context |
+| `/implement` | Drive the coding phase of an approved spec/ticket - red-green-refactor via `/tdd` at agreed seams, gated by the `code-reviewer` Warden before commit |
 | `/learn-this` | Teach a topic and persist it as queryable vault memory, grounded in NotebookLM (vault-native companion to `/teach`) |
-| `/linear-slice` | Decompose a plan into dependency-ordered Linear issues (tracer-bullet slices) and release them into the dispatch pipeline |
 | `/onboard` | Onboard the current project into Deus code intelligence (codegraph + code_search indexing) |
 | `/preferences` | View or modify Deus user preferences |
 | `/preserve` | Save durable memories from the current conversation |
@@ -198,9 +198,12 @@ renaming a repo-owned skill, update this table in the same change.
 | `/setup` | Run first-time installation and configuration |
 | `/tdd` | Test-driven development loop — red-green-refactor, behavior-first |
 | `/teach` | Teach a skill or concept over multiple sessions (stateful teaching workspace) |
+| `/to-spec` | Turn the current conversation into a spec and publish it to the project issue tracker (synthesis, no interview) |
+| `/to-tickets` | Decompose a plan into dependency-ordered tracer-bullet tickets and publish them to whatever tracker this project uses (Linear/Asana/GitHub Issues/local files) |
 | `/update-skills` | Update installed skill branches from upstream |
 | `/use-local-whisper` | Switch voice transcription to local whisper.cpp |
 | `/wardens` | View, toggle, and configure warden quality gates |
+| `/wayfinder` | Plan a huge chunk of work as a shared map of decision tickets on the issue tracker, resolved one at a time |
 | `/writing-great-skills` | Reference for authoring predictable skills — leading words, progressive disclosure |
 | `/x-integration` | Set up or use X/Twitter integration |
 

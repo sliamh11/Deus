@@ -18,6 +18,7 @@
 - REVISE from any warden means re-run after fixes until SHIP. Never touch markers, commit, or proceed on REVISE — no exceptions, no "close enough," no time-pressure rationalization.
 - Quality over speed by default. Never shortcut a warden loop, skip a review round, or rationalize lower standards because of time pressure, autonomy grants, or late-session fatigue. Only skip when the user explicitly says to prioritize speed.
 - Never merge failing or pending CI. --admin is the accepted solo-dev landing path once all REQUIRED checks are green (+ fresh per-command approval interactively, or pipeline gates autonomously) — not emergency-only (LIA-147). Never --admin over red/pending CI.
+- Once plan-reviewer SHIPs a plan with a concrete spec/ticket to implement against, the coding phase should run through `/implement` — it drives `/tdd` where possible at pre-agreed seams, then ends by invoking the mandatory `code-reviewer` Warden (which also runs `/code-review` as a second lens) before any commit. This is the path for planned/spec-driven work, not an absolute requirement that blocks small trivial edits — the existing trivial-change bypass above is unaffected.
 
 ## Verification & Honesty
 - Never speculate. Only state verified facts. If unsure, say so.
