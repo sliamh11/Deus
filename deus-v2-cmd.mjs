@@ -106,7 +106,14 @@ export function validateCheckout(checkoutPath, opts = {}) {
     isWindows = isWindowsPlatform(),
     existsSync = fs.existsSync,
     readdirSync = fs.readdirSync,
-    realpathSync = fs.realpathSync,
+    // .native, not plain fs.realpathSync: the JS-walked default only
+    // chases symlinks and leaves Windows 8.3 short-name aliases ("RUNNER~1")
+    // unresolved, confirmed via a real Windows CI diagnostic run. .native
+    // calls the OS's own realpath (GetFinalPathNameByHandleW on Windows),
+    // which does resolve them -- identical output to the plain version for
+    // ordinary POSIX symlink resolution (verified locally), so no behavior
+    // change there.
+    realpathSync = fs.realpathSync.native,
     statSync = fs.statSync,
     runGit = (args) =>
       spawnSync('git', ['-C', checkoutPath, ...args], { encoding: 'utf8' }),
@@ -138,17 +145,14 @@ export function validateCheckout(checkoutPath, opts = {}) {
   );
   // realCheckoutPath (not the raw checkoutPath) is the load-bearing side of
   // every cross-source comparison below (this one, and isUnderDir further
-  // down): on real Windows CI runners, os.tmpdir() (and so checkoutPath
-  // itself, in tests) is commonly reported in the legacy 8.3 short-name
-  // form ("RUNNER~1"), while git's own --show-toplevel/--git-common-dir
-  // output for the SAME directory may or may not be — a genuinely
-  // different string either way, not just a separator/case difference
-  // pathsEqual's normalize+lowercase can fix. Rather than assume which
-  // form git's output takes, every git-derived value compared against a
-  // checkoutPath-derived value goes through realpathSync on BOTH sides —
-  // idempotent (a no-op) if a given side already happens to be canonical,
-  // necessary if it doesn't, so this is correct regardless of git's actual
-  // behavior here.
+  // down). git's several rev-parse subcommands don't agree on absolute vs.
+  // relative, or short- vs. long-form (confirmed via a real Windows CI
+  // diagnostic run — --show-toplevel returns an absolute, already-long
+  // path; --git-dir/--git-common-dir return a bare relative ".git" that
+  // inherits checkoutPath's own form). Rather than track each subcommand's
+  // quirk individually, every git-derived value compared against a
+  // checkoutPath-derived value goes through realpathSync on both sides —
+  // idempotent if a side is already canonical, necessary if it isn't.
   const realCheckoutPath = realpathSync(checkoutPath);
   if (
     !pathsEqual(realpathSync(resolvedToplevel), realCheckoutPath, isWindows)

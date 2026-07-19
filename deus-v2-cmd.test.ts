@@ -185,60 +185,6 @@ describe('validateCheckout', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('DIAGNOSTIC (temporary, remove before merge): logs real git/realpath values for Windows CI', () => {
-    // Not a real regression test — always passes. Exists only to capture
-    // ground truth from a real Windows CI runner for the still-unexplained
-    // invalid-nested-repo failures in this describe block: my realpathSync
-    // fix models a specific hypothesis (8.3 short-name mismatch) that a
-    // fully-mocked unit test confirms is internally consistent, but the
-    // REAL validateCheckout tests below still fail identically after that
-    // fix landed — meaning the real runner's actual values don't match
-    // what I assumed. Remove this test once the real values are captured
-    // and the actual fix is designed from them.
-    const target = path.join(tmpDir, 'diag-repo');
-    initRealRepo(target, {
-      origin: 'https://github.com/sliamh11/deus-v2.git',
-    });
-    fs.writeFileSync(
-      path.join(target, REAL_ENTRYPOINT_NAME),
-      '#!/bin/sh\necho hi\n',
-    );
-
-    const toplevel = spawnSync(
-      'git',
-      ['-C', target, 'rev-parse', '--show-toplevel'],
-      { encoding: 'utf8' },
-    );
-    const gitDir = spawnSync('git', ['-C', target, 'rev-parse', '--git-dir'], {
-      encoding: 'utf8',
-    });
-    const commonDir = spawnSync(
-      'git',
-      ['-C', target, 'rev-parse', '--git-common-dir'],
-      { encoding: 'utf8' },
-    );
-    const real = fs.realpathSync(target);
-    const result = validateCheckout(target, {
-      isWindows: isWindowsPlatform(),
-    });
-
-    console.error('DIAG target:', JSON.stringify(target));
-    console.error('DIAG isWindowsPlatform():', isWindowsPlatform());
-    console.error(
-      'DIAG git --show-toplevel stdout:',
-      JSON.stringify(toplevel.stdout),
-    );
-    console.error('DIAG git --git-dir stdout:', JSON.stringify(gitDir.stdout));
-    console.error(
-      'DIAG git --git-common-dir stdout:',
-      JSON.stringify(commonDir.stdout),
-    );
-    console.error('DIAG realpathSync(target):', JSON.stringify(real));
-    console.error('DIAG validateCheckout result:', JSON.stringify(result));
-
-    expect(true).toBe(true);
-  });
-
   it('reports missing for a nonexistent path', () => {
     const target = path.join(tmpDir, 'does-not-exist');
     expect(validateCheckout(target)).toEqual({
@@ -443,16 +389,19 @@ describe('validateCheckout', () => {
     // both sides" from "did it coincidentally return the same thing
     // either way." This test's mock instead maps each DISTINCT input to
     // its own distinct (but correctly related) canonical output, and
-    // throws on any unexpected argument — so it fails loudly if the fix
-    // ever regresses to comparing an un-realpath'd value against a
-    // realpath'd one, the exact shape of the original bug: os.tmpdir()
-    // (and so checkoutPath, in real usage) is commonly reported in the
-    // legacy 8.3 short-name form ("RUNNER~1") on GH Actions Windows
-    // runners; git's own --show-toplevel/--git-dir/--git-common-dir echo
-    // back whatever they were invoked with, so a naive comparison against
-    // only a realpath'd checkoutPath (this function's pre-fix behavior)
-    // compares a short-form value against a long-form one and spuriously
-    // fails with invalid-nested-repo / invalid-linked-worktree.
+    // throws on any unexpected argument.
+    //
+    // Fixture shape confirmed via a real Windows CI diagnostic run, not
+    // assumed: os.tmpdir() (and so checkoutPath, in real usage) is
+    // commonly reported in the legacy 8.3 short-name form ("RUNNER~1") on
+    // GH Actions Windows runners. git's --show-toplevel independently
+    // reports the LONG canonical form directly (git resolves it
+    // internally) -- already realpath-idempotent, no mismatch on that
+    // side by itself. git's --git-dir/--git-common-dir, for an ordinary
+    // (non-worktree) repo, report a bare RELATIVE ".git" instead, which
+    // resolveGitPath then resolves against checkoutPath's OWN (short)
+    // form -- this is where the actual mismatch against a realpath'd
+    // checkoutPath (long) comes from.
     const shortForm = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\deus-v2';
     const longForm = 'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\deus-v2';
     const runGit = vi.fn((args: string[]) => {
@@ -460,10 +409,10 @@ describe('validateCheckout', () => {
         return { status: 0, stdout: 'true\n' };
       }
       if (args.includes('--show-toplevel')) {
-        return { status: 0, stdout: `${shortForm}\n` };
+        return { status: 0, stdout: `${longForm}\n` };
       }
       if (args.includes('--git-dir') || args.includes('--git-common-dir')) {
-        return { status: 0, stdout: `${shortForm}\\.git\n` };
+        return { status: 0, stdout: '.git\n' };
       }
       if (args[0] === 'remote') {
         return {
@@ -475,6 +424,7 @@ describe('validateCheckout', () => {
     });
     const realpathSync = vi.fn((p: string) => {
       if (p === shortForm) return longForm;
+      if (p === longForm) return longForm; // already canonical, idempotent
       if (p === `${shortForm}\\.git`) return `${longForm}\\.git`;
       throw new Error(`unexpected realpathSync arg: ${p}`);
     });
@@ -490,7 +440,31 @@ describe('validateCheckout', () => {
 
     expect(result).toEqual({ valid: true });
     expect(realpathSync).toHaveBeenCalledWith(shortForm);
+    expect(realpathSync).toHaveBeenCalledWith(longForm);
     expect(realpathSync).toHaveBeenCalledWith(`${shortForm}\\.git`);
+  });
+
+  it('defaults to fs.realpathSync.native (not plain fs.realpathSync) when no override is given', () => {
+    // fs.realpathSync.native is the load-bearing choice (see the comment
+    // in validateCheckout) -- this pins that the actual default wiring
+    // uses it, since every other test in this describe block injects its
+    // own realpathSync and so never exercises the real default at all.
+    const target = path.join(tmpDir, 'repo');
+    initRealRepo(target, { origin: 'https://github.com/sliamh11/deus-v2.git' });
+    fs.writeFileSync(
+      path.join(target, REAL_ENTRYPOINT_NAME),
+      '#!/bin/sh\necho hi\n',
+    );
+    const nativeSpy = vi.spyOn(fs.realpathSync, 'native');
+
+    const result = validateCheckout(target, {
+      isWindows: isWindowsPlatform(),
+    });
+
+    expect(result).toEqual({ valid: true });
+    expect(nativeSpy).toHaveBeenCalled();
+
+    nativeSpy.mockRestore();
   });
 });
 
