@@ -310,11 +310,33 @@ export function makeSignalGuard(
   // INVARIANT: cleanup (via setCleanup) must be fully synchronous — Node
   // fires same-signal listeners with no interleaving only as long as no
   // listener body yields; releaseLock() below already satisfies this.
+  //
+  // KNOWN, ACCEPTED LIMITATION (evaluated and reverted a "fix" for this —
+  // see runForwarding's comment): on POSIX, a non-detached child shares
+  // this launcher's own foreground process group, so a terminal-generated
+  // signal (e.g. Ctrl+C) reaches the child directly AND gets forwarded a
+  // second time here. A prior attempt to close this via spawning the child
+  // detached (its own process group) was reverted because Node's
+  // `detached: true` actually calls setsid() — a NEW SESSION, not just a
+  // new process group — which detaches the child from the controlling
+  // terminal entirely and can break real interactive use (job control,
+  // reading from the tty) for delegated commands that are genuinely
+  // interactive (deus-cmd.sh has real `read -r` prompts; `deus-v2 chat` is
+  // an interactive REPL). That regression is a near-certain break of this
+  // launcher's core use case; the double-signal risk it would have "fixed"
+  // is unconfirmed for the actual delegate (deus-cmd.sh/.ps1 have zero
+  // signal-trap logic today, verified via grep) and is a lower-probability,
+  // lower-severity tradeoff to accept instead.
   const handler = (sig) => {
     if (box.child) {
       // Windows: kill() is a hard-terminate with no SIGHUP delivery (Node/OS
       // limitation, not a regression — matches a raw Ctrl+C with no launcher
-      // in between). POSIX targets get real cooperative forwarding here.
+      // in between). POSIX targets get real cooperative forwarding here —
+      // possibly a second copy of a terminal-originated signal (see above),
+      // which the default (unhandled) OS disposition treats identically to
+      // one copy, and is also needed as the ONLY delivery mechanism for a
+      // programmatic `kill <this-pid>` that doesn't reach the child at all
+      // otherwise.
       box.child.kill(sig);
       return; // the child's 'exit' event drives runForwarding's normal resolution
     }
@@ -346,7 +368,10 @@ export function makeSignalGuard(
 // so args reach the child via execve unchanged, never through a shell string
 // (satisfies "no reparsing/shell interpolation" for both the clone step and
 // final delegation). Used identically by the one-time clone step and the
-// steady-state delegate step, via the shared `guard`.
+// steady-state delegate step, via the shared `guard`. Deliberately NOT
+// spawned detached — see makeSignalGuard's comment for why that would trade
+// a narrower double-signal risk for a more certain interactive-terminal
+// regression on the delegate commands this launcher exists to run.
 export async function runForwarding(command, args, { cwd }, guard) {
   const child = spawn(command, args, { cwd, stdio: 'inherit' });
   guard.setChild(child);

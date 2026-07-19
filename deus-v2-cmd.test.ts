@@ -576,7 +576,7 @@ describe('runForwarding / makeSignalGuard', () => {
         // deliver SIGTERM to our own process — the guard should forward it
         // to the child rather than let Node's default disposition kill us.
         await new Promise((resolve) => setTimeout(resolve, 300));
-        process.emit('SIGTERM' as NodeJS.Signals);
+        process.emit('SIGTERM' as NodeJS.Signals, 'SIGTERM' as NodeJS.Signals);
         const result = await resultPromise;
         expect(result.code).toBe(0);
       } finally {
@@ -593,6 +593,62 @@ describe('runForwarding / makeSignalGuard', () => {
     guard.dispose();
     expect(process.listenerCount('SIGTERM')).toBe(before);
   });
+
+  it.skipIf(process.platform === 'win32')(
+    "real end-to-end: a delegated child spawned WITHOUT detached shares this process's process group (accepted-tradeoff regression guard)",
+    async () => {
+      // A prior round of code review flagged the plain (non-detached)
+      // forwarding above as risking a double-delivered signal when a
+      // terminal sends one to the whole foreground process group. A fix
+      // spawning the child detached (its own process group) was
+      // implemented, then REVERTED after discovering Node's
+      // `detached: true` on POSIX actually calls setsid() — a new SESSION,
+      // not just a new process group — which would have broken real
+      // interactive delegate commands (deus-cmd.sh has genuine `read -r`
+      // prompts; `deus-v2 chat` is an interactive REPL) by detaching them
+      // from the controlling terminal. This test pins the REVERTED
+      // (current, intentional) behavior — the child shares this process's
+      // process group (verified via `ps -o pgid=`, the same technique used
+      // to derive the fix-then-revert empirically) — as a regression guard
+      // against re-introducing `detached: true` by mistake.
+      const ownPgid = spawnSync(
+        'ps',
+        ['-o', 'pgid=', '-p', String(process.pid)],
+        { encoding: 'utf8' },
+      ).stdout.trim();
+
+      let capturedChildPid = -1;
+      const guard = makeSignalGuard();
+      const realSetChild = guard.setChild;
+      guard.setChild = ((child: { pid: number }) => {
+        capturedChildPid = child.pid;
+        return realSetChild(child);
+      }) as typeof guard.setChild;
+
+      const resultPromise = runForwarding(
+        'sleep',
+        ['5'],
+        { cwd: os.tmpdir() },
+        guard,
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(capturedChildPid).toBeGreaterThan(0);
+
+      const childPgid = spawnSync(
+        'ps',
+        ['-o', 'pgid=', '-p', String(capturedChildPid)],
+        { encoding: 'utf8' },
+      ).stdout.trim();
+      expect(childPgid).toBe(ownPgid); // same group — NOT detached into its own
+
+      process.emit('SIGTERM' as NodeJS.Signals, 'SIGTERM' as NodeJS.Signals);
+      const result = await resultPromise;
+      guard.dispose();
+
+      expect(result.signal).toBe('SIGTERM');
+    },
+  );
 });
 
 describe('ensureCheckout', () => {
@@ -818,7 +874,7 @@ describe('ensureCheckout', () => {
       await new Promise((resolve) => setTimeout(resolve, 300));
       expect(fs.existsSync(lockPath)).toBe(true); // lock held mid-clone
 
-      process.emit('SIGTERM' as NodeJS.Signals);
+      process.emit('SIGTERM' as NodeJS.Signals, 'SIGTERM' as NodeJS.Signals);
 
       await expect(resultPromise).rejects.toThrow();
 
