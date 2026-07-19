@@ -149,25 +149,31 @@ describe('setup/cli', () => {
       );
     });
 
-    it('preserves the executable bit of a pre-existing regular file (code-review-caught bug)', () => {
-      // A prior version only restored content via writeFileSync, which
-      // creates the new file with default (non-executable) permissions — a
-      // code review caught that this would silently strip the +x bit off a
-      // developer's real, executable ~/.local/bin/deus-v2 after the test
-      // suite ran, breaking the installed command.
-      const p = path.join(checkDir, 'deus-v2');
-      fs.writeFileSync(p, '#!/usr/bin/env node\n// real launcher', {
-        mode: 0o755,
-      });
-      expect(fs.statSync(p).mode & 0o777).toBe(0o755);
+    it.skipIf(process.platform === 'win32')(
+      'preserves the executable bit of a pre-existing regular file (code-review-caught bug)',
+      () => {
+        // A prior version only restored content via writeFileSync, which
+        // creates the new file with default (non-executable) permissions — a
+        // code review caught that this would silently strip the +x bit off a
+        // developer's real, executable ~/.local/bin/deus-v2 after the test
+        // suite ran, breaking the installed command. Windows has no POSIX
+        // executable-bit concept (NTFS ACLs, not mode bits), so this test's
+        // premise doesn't apply there — verified via CI (fs.writeFileSync's
+        // `mode: 0o755` doesn't produce a real 0o755 on Windows).
+        const p = path.join(checkDir, 'deus-v2');
+        fs.writeFileSync(p, '#!/usr/bin/env node\n// real launcher', {
+          mode: 0o755,
+        });
+        expect(fs.statSync(p).mode & 0o777).toBe(0o755);
 
-      const backup = backupEntry(p);
-      fs.unlinkSync(p);
-      fs.writeFileSync(p, 'test fixture content'); // test fixtures are non-executable
-      restoreEntry(p, backup);
+        const backup = backupEntry(p);
+        fs.unlinkSync(p);
+        fs.writeFileSync(p, 'test fixture content'); // test fixtures are non-executable
+        restoreEntry(p, backup);
 
-      expect(fs.statSync(p).mode & 0o777).toBe(0o755);
-    });
+        expect(fs.statSync(p).mode & 0o777).toBe(0o755);
+      },
+    );
 
     it('restores a pre-existing symlink after it is deleted and replaced', () => {
       const target = path.join(checkDir, 'real-target');

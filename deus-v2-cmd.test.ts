@@ -514,14 +514,14 @@ describe('runForwarding / makeSignalGuard', () => {
     const script = path.join(tmpDir, 'echo-argv.mjs');
     fs.writeFileSync(
       script,
-      `
-      import fs from 'node:fs';
-      fs.writeFileSync(process.argv[3], JSON.stringify({
-        args: process.argv.slice(2),
-        cwd: process.cwd(),
-      }));
-      process.exit(7);
-      `,
+      [
+        "import fs from 'node:fs';",
+        'fs.writeFileSync(process.argv[3], JSON.stringify({',
+        '  args: process.argv.slice(2),',
+        '  cwd: process.cwd(),',
+        '}));',
+        'process.exit(7);',
+      ].join('\n'),
     );
     const cwd = tmpDir;
     const trickyArg = 'has spaces and "quotes" and $vars';
@@ -555,14 +555,14 @@ describe('runForwarding / makeSignalGuard', () => {
       const outFile = path.join(tmpDir, 'trapped.txt');
       fs.writeFileSync(
         script,
-        `
-        import fs from 'node:fs';
-        process.on('SIGTERM', () => {
-          fs.writeFileSync(process.argv[2], 'trapped');
-          process.exit(0);
-        });
-        setTimeout(() => {}, 5000);
-        `,
+        [
+          "import fs from 'node:fs';",
+          "process.on('SIGTERM', () => {",
+          "  fs.writeFileSync(process.argv[2], 'trapped');",
+          '  process.exit(0);',
+          '});',
+          'setTimeout(() => {}, 5000);',
+        ].join('\n'),
       );
       const guard = makeSignalGuard();
       try {
