@@ -61,6 +61,7 @@ The lint step runs on every PR via `.github/workflows/ci.yml` (`npm run lint`) o
 - **Testing** is simplified: mock `platform.ts` to test any OS combination on any CI runner
 - **Container-runtime.ts** retains its own platform detection since it's container-specific logic (Docker network topology), not general OS behavior
 - **`process.getuid?.()` / `process.getgid?.()`** remain inline in container-runner.ts — these are Unix-specific container UID mapping, not general platform logic
+- **Top-level build-free launcher scripts are a standing, permanent exception**, not covered by the Tier 3 ESLint enforcement (scoped to `src/**/*.ts`) and not expected to ever be: `deus-cmd.sh` and `deus-v2-cmd.mjs` (LIA-434) both do their own OS detection (`$OSTYPE` / `os.platform()`) because they must run correctly before `npm install`/`npm run build` has ever happened — there is no `dist/` to import `src/platform.ts` from, and no `tsx`/`tsc` step for a plain `.mjs`/`.sh` entrypoint. `deus-v2-cmd.mjs` additionally does its own path-comparison logic (`path.win32`/`path.posix`, drive-letter case-folding) for validating a standalone git checkout — this is real platform-sensitive logic, disclosed here rather than silently scattered. If Tier 3 enforcement is ever extended beyond `src/` (see `project_windows_sot_plan` for that possibility), it needs an explicit carve-out for this category of file, not just an `ignores` entry copied from elsewhere.
 
 ## Alternatives Considered
 

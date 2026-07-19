@@ -1,0 +1,27 @@
+# Force LF line endings for source files, regardless of the checkout
+# platform's git config (core.autocrlf=true is the default on GitHub
+# Actions' windows-latest/windows-2025 runners). This repo previously had
+# no .gitattributes at all, which left every text file subject to
+# platform-dependent CRLF conversion on checkout.
+#
+# Confirmed necessary, not precautionary: LIA-434's deus-v2-cmd.mjs was
+# (as far as could be determined) the first top-level .mjs file in this
+# repo actually `import`-ed (not just executed as a script) by a .test.ts
+# file. On Windows CI, git's autocrlf conversion turned its LF line
+# endings into CRLF, which broke Vite/Vitest's SSR module-loading pipeline
+# for that file specifically (`SyntaxError: Invalid or unexpected token`,
+# reproduced locally by CRLF-converting the file and re-running vitest;
+# the same file passed both `node --check` and a standalone
+# `esbuild`/`transformWithEsbuild` transform even CRLF-converted, so the
+# failure is specific to Vitest's SSR/import-analysis step, not general
+# JS parsing). `deus-cmd.sh` and `scripts/migrate.mjs` were latently
+# exposed to the same risk but never actually broke, because nothing
+# previously imported a top-level .mjs file the way deus-v2-cmd.test.ts
+# does.
+* text=auto eol=lf
+
+# Windows-native scripts keep their conventional CRLF — these are only
+# ever executed on Windows, where CRLF is the native convention, and are
+# never `import`-ed as ES modules by a test file the way deus-v2-cmd.mjs is.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
