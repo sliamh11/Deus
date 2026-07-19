@@ -185,6 +185,60 @@ describe('validateCheckout', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it('DIAGNOSTIC (temporary, remove before merge): logs real git/realpath values for Windows CI', () => {
+    // Not a real regression test — always passes. Exists only to capture
+    // ground truth from a real Windows CI runner for the still-unexplained
+    // invalid-nested-repo failures in this describe block: my realpathSync
+    // fix models a specific hypothesis (8.3 short-name mismatch) that a
+    // fully-mocked unit test confirms is internally consistent, but the
+    // REAL validateCheckout tests below still fail identically after that
+    // fix landed — meaning the real runner's actual values don't match
+    // what I assumed. Remove this test once the real values are captured
+    // and the actual fix is designed from them.
+    const target = path.join(tmpDir, 'diag-repo');
+    initRealRepo(target, {
+      origin: 'https://github.com/sliamh11/deus-v2.git',
+    });
+    fs.writeFileSync(
+      path.join(target, REAL_ENTRYPOINT_NAME),
+      '#!/bin/sh\necho hi\n',
+    );
+
+    const toplevel = spawnSync(
+      'git',
+      ['-C', target, 'rev-parse', '--show-toplevel'],
+      { encoding: 'utf8' },
+    );
+    const gitDir = spawnSync('git', ['-C', target, 'rev-parse', '--git-dir'], {
+      encoding: 'utf8',
+    });
+    const commonDir = spawnSync(
+      'git',
+      ['-C', target, 'rev-parse', '--git-common-dir'],
+      { encoding: 'utf8' },
+    );
+    const real = fs.realpathSync(target);
+    const result = validateCheckout(target, {
+      isWindows: isWindowsPlatform(),
+    });
+
+    console.error('DIAG target:', JSON.stringify(target));
+    console.error('DIAG isWindowsPlatform():', isWindowsPlatform());
+    console.error(
+      'DIAG git --show-toplevel stdout:',
+      JSON.stringify(toplevel.stdout),
+    );
+    console.error('DIAG git --git-dir stdout:', JSON.stringify(gitDir.stdout));
+    console.error(
+      'DIAG git --git-common-dir stdout:',
+      JSON.stringify(commonDir.stdout),
+    );
+    console.error('DIAG realpathSync(target):', JSON.stringify(real));
+    console.error('DIAG validateCheckout result:', JSON.stringify(result));
+
+    expect(true).toBe(true);
+  });
+
   it('reports missing for a nonexistent path', () => {
     const target = path.join(tmpDir, 'does-not-exist');
     expect(validateCheckout(target)).toEqual({
