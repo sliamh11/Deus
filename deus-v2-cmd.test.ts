@@ -22,6 +22,16 @@ const LAUNCHER_PATH = fileURLToPath(
   new URL('./deus-v2-cmd.mjs', import.meta.url),
 );
 
+// These validateCheckout/ensureCheckout tests exercise REAL, unmocked git/fs
+// against real host-native paths — so `isWindows` must reflect the ACTUAL
+// host, not a hardcoded value, or the path-comparison logic gets fed data in
+// one convention (e.g. real Windows backslashes/drive letters) while being
+// told to compare it in the other (POSIX). The entrypoint filename these
+// fixtures create/expect must match for the same reason.
+const REAL_ENTRYPOINT_NAME = isWindowsPlatform()
+  ? 'deus-cmd.ps1'
+  : 'deus-cmd.sh';
+
 function git(cwd: string, args: string[]) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
   if (result.status !== 0) {
@@ -198,8 +208,13 @@ describe('validateCheckout', () => {
   it('reports valid for a real standalone clone with correct origin and entrypoint', () => {
     const target = path.join(tmpDir, 'repo');
     initRealRepo(target, { origin: 'https://github.com/sliamh11/deus-v2.git' });
-    fs.writeFileSync(path.join(target, 'deus-cmd.sh'), '#!/bin/sh\necho hi\n');
-    expect(validateCheckout(target, { isWindows: false })).toEqual({
+    fs.writeFileSync(
+      path.join(target, REAL_ENTRYPOINT_NAME),
+      '#!/bin/sh\necho hi\n',
+    );
+    expect(
+      validateCheckout(target, { isWindows: isWindowsPlatform() }),
+    ).toEqual({
       valid: true,
     });
   });
@@ -207,8 +222,13 @@ describe('validateCheckout', () => {
   it('accepts an SSH-form origin remote', () => {
     const target = path.join(tmpDir, 'repo-ssh');
     initRealRepo(target, { origin: 'git@github.com:sliamh11/deus-v2.git' });
-    fs.writeFileSync(path.join(target, 'deus-cmd.sh'), '#!/bin/sh\necho hi\n');
-    expect(validateCheckout(target, { isWindows: false })).toEqual({
+    fs.writeFileSync(
+      path.join(target, REAL_ENTRYPOINT_NAME),
+      '#!/bin/sh\necho hi\n',
+    );
+    expect(
+      validateCheckout(target, { isWindows: isWindowsPlatform() }),
+    ).toEqual({
       valid: true,
     });
   });
@@ -219,7 +239,9 @@ describe('validateCheckout', () => {
       origin: 'https://github.com/someone-else/other-repo.git',
     });
     fs.writeFileSync(path.join(target, 'deus-cmd.sh'), '#!/bin/sh\necho hi\n');
-    expect(validateCheckout(target, { isWindows: false })).toEqual({
+    expect(
+      validateCheckout(target, { isWindows: isWindowsPlatform() }),
+    ).toEqual({
       valid: false,
       reason: 'invalid-wrong-origin',
     });
@@ -236,7 +258,9 @@ describe('validateCheckout', () => {
       origin: 'https://attacker.example/github.com/sliamh11/deus-v2.git',
     });
     fs.writeFileSync(path.join(target, 'deus-cmd.sh'), '#!/bin/sh\necho hi\n');
-    expect(validateCheckout(target, { isWindows: false })).toEqual({
+    expect(
+      validateCheckout(target, { isWindows: isWindowsPlatform() }),
+    ).toEqual({
       valid: false,
       reason: 'invalid-wrong-origin',
     });
@@ -245,9 +269,11 @@ describe('validateCheckout', () => {
   it('reports invalid-missing-entrypoint when deus-cmd.sh is absent', () => {
     const target = path.join(tmpDir, 'no-entrypoint');
     initRealRepo(target, { origin: 'https://github.com/sliamh11/deus-v2.git' });
-    expect(validateCheckout(target, { isWindows: false })).toEqual({
+    expect(
+      validateCheckout(target, { isWindows: isWindowsPlatform() }),
+    ).toEqual({
       valid: false,
-      reason: 'invalid-missing-entrypoint:deus-cmd.sh',
+      reason: `invalid-missing-entrypoint:${REAL_ENTRYPOINT_NAME}`,
     });
   });
 
@@ -255,7 +281,9 @@ describe('validateCheckout', () => {
     const target = path.join(tmpDir, 'not-git');
     fs.mkdirSync(target);
     fs.writeFileSync(path.join(target, 'marker.txt'), 'hello');
-    expect(validateCheckout(target, { isWindows: false })).toEqual({
+    expect(
+      validateCheckout(target, { isWindows: isWindowsPlatform() }),
+    ).toEqual({
       valid: false,
       reason: 'invalid-not-a-git-repo',
     });
@@ -266,7 +294,9 @@ describe('validateCheckout', () => {
     initRealRepo(mainRepo);
     const linked = path.join(tmpDir, 'linked-worktree');
     git(mainRepo, ['worktree', 'add', '-b', 'side-branch', linked]);
-    expect(validateCheckout(linked, { isWindows: false })).toEqual({
+    expect(
+      validateCheckout(linked, { isWindows: isWindowsPlatform() }),
+    ).toEqual({
       valid: false,
       reason: 'invalid-linked-worktree',
     });
@@ -286,7 +316,7 @@ describe('validateCheckout', () => {
     const rmdirSyncSpy = vi.spyOn(fs, 'rmdirSync');
     const unlinkSyncSpy = vi.spyOn(fs, 'unlinkSync');
 
-    const result = validateCheckout(target, { isWindows: false });
+    const result = validateCheckout(target, { isWindows: isWindowsPlatform() });
 
     expect(result.valid).toBe(false);
     expect(result.reason).not.toBe('missing');
@@ -730,7 +760,7 @@ describe('ensureCheckout', () => {
         origin: 'https://github.com/sliamh11/deus-v2.git',
       });
       fs.writeFileSync(
-        path.join(targetPath, 'deus-cmd.sh'),
+        path.join(targetPath, REAL_ENTRYPOINT_NAME),
         '#!/bin/sh\necho hi\n',
       );
       return { code: 0, signal: null };
@@ -740,12 +770,14 @@ describe('ensureCheckout', () => {
       ensureCheckout(checkoutPath, {
         lockPath,
         spawnClone,
-        validateOpts: { isWindows: false },
+        validateOpts: { isWindows: isWindowsPlatform() },
         lockOpts: { waitTimeoutMs: 500, pollMs: 20 },
       }),
     ).resolves.toBeUndefined();
 
-    expect(fs.existsSync(path.join(checkoutPath, 'deus-cmd.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(checkoutPath, REAL_ENTRYPOINT_NAME))).toBe(
+      true,
+    );
     expect(fs.existsSync(lockPath)).toBe(false);
     // No stray staging directories left behind next to the real checkout.
     const siblings = fs.readdirSync(tmpDir);
@@ -770,7 +802,7 @@ describe('ensureCheckout', () => {
         origin: 'https://github.com/sliamh11/deus-v2.git',
       });
       fs.writeFileSync(
-        path.join(targetPath, 'deus-cmd.sh'),
+        path.join(targetPath, REAL_ENTRYPOINT_NAME),
         '#!/bin/sh\necho hi\n',
       );
       return { code: 0, signal: null };
@@ -780,12 +812,14 @@ describe('ensureCheckout', () => {
       ensureCheckout(checkoutPath, {
         lockPath,
         spawnClone,
-        validateOpts: { isWindows: false },
+        validateOpts: { isWindows: isWindowsPlatform() },
         lockOpts: { waitTimeoutMs: 500, pollMs: 20 },
       }),
     ).resolves.toBeUndefined();
 
-    expect(fs.existsSync(path.join(checkoutPath, 'deus-cmd.sh'))).toBe(true);
+    expect(fs.existsSync(path.join(checkoutPath, REAL_ENTRYPOINT_NAME))).toBe(
+      true,
+    );
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
@@ -814,7 +848,7 @@ describe('ensureCheckout', () => {
       origin: 'https://github.com/sliamh11/deus-v2.git',
     });
     fs.writeFileSync(
-      path.join(checkoutPath, 'deus-cmd.sh'),
+      path.join(checkoutPath, REAL_ENTRYPOINT_NAME),
       '#!/bin/sh\necho hi\n',
     );
 
@@ -823,7 +857,7 @@ describe('ensureCheckout', () => {
       ensureCheckout(checkoutPath, {
         lockPath,
         spawnClone,
-        validateOpts: { isWindows: false },
+        validateOpts: { isWindows: isWindowsPlatform() },
       }),
     ).resolves.toBeUndefined();
 
