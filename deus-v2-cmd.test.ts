@@ -375,6 +375,63 @@ describe('validateCheckout', () => {
 
     expect(result).toEqual({ valid: true });
   });
+
+  it('resolves a short-form (8.3) checkoutPath against git output via realpathSync canonicalization (Windows 8.3-short-name regression)', () => {
+    // Regression test for a real Windows-only bug the above test cannot
+    // catch: its realpathSync mock returns a FIXED string regardless of
+    // input, so it can't discriminate "did the code actually canonicalize
+    // both sides" from "did it coincidentally return the same thing
+    // either way." This test's mock instead maps each DISTINCT input to
+    // its own distinct (but correctly related) canonical output, and
+    // throws on any unexpected argument — so it fails loudly if the fix
+    // ever regresses to comparing an un-realpath'd value against a
+    // realpath'd one, the exact shape of the original bug: os.tmpdir()
+    // (and so checkoutPath, in real usage) is commonly reported in the
+    // legacy 8.3 short-name form ("RUNNER~1") on GH Actions Windows
+    // runners; git's own --show-toplevel/--git-dir/--git-common-dir echo
+    // back whatever they were invoked with, so a naive comparison against
+    // only a realpath'd checkoutPath (this function's pre-fix behavior)
+    // compares a short-form value against a long-form one and spuriously
+    // fails with invalid-nested-repo / invalid-linked-worktree.
+    const shortForm = 'C:\\Users\\RUNNER~1\\AppData\\Local\\Temp\\deus-v2';
+    const longForm = 'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\deus-v2';
+    const runGit = vi.fn((args: string[]) => {
+      if (args.includes('--is-inside-work-tree')) {
+        return { status: 0, stdout: 'true\n' };
+      }
+      if (args.includes('--show-toplevel')) {
+        return { status: 0, stdout: `${shortForm}\n` };
+      }
+      if (args.includes('--git-dir') || args.includes('--git-common-dir')) {
+        return { status: 0, stdout: `${shortForm}\\.git\n` };
+      }
+      if (args[0] === 'remote') {
+        return {
+          status: 0,
+          stdout: 'https://github.com/sliamh11/deus-v2.git\n',
+        };
+      }
+      throw new Error(`unexpected git args: ${args.join(' ')}`);
+    });
+    const realpathSync = vi.fn((p: string) => {
+      if (p === shortForm) return longForm;
+      if (p === `${shortForm}\\.git`) return `${longForm}\\.git`;
+      throw new Error(`unexpected realpathSync arg: ${p}`);
+    });
+
+    const result = validateCheckout(shortForm, {
+      isWindows: true,
+      existsSync: () => true,
+      readdirSync: () => ['deus-cmd.ps1'],
+      statSync: () => ({ isDirectory: () => true }) as fs.Stats,
+      realpathSync,
+      runGit,
+    });
+
+    expect(result).toEqual({ valid: true });
+    expect(realpathSync).toHaveBeenCalledWith(shortForm);
+    expect(realpathSync).toHaveBeenCalledWith(`${shortForm}\\.git`);
+  });
 });
 
 describe('acquireCloneLock / releaseLock', () => {

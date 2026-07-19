@@ -136,7 +136,23 @@ export function validateCheckout(checkoutPath, opts = {}) {
     toplevel.stdout.trim(),
     isWindows,
   );
-  if (!pathsEqual(resolvedToplevel, realpathSync(checkoutPath), isWindows)) {
+  // realCheckoutPath (not the raw checkoutPath) is the load-bearing side of
+  // every cross-source comparison below (this one, and isUnderDir further
+  // down): on real Windows CI runners, os.tmpdir() (and so checkoutPath
+  // itself, in tests) is commonly reported in the legacy 8.3 short-name
+  // form ("RUNNER~1"), while git's own --show-toplevel/--git-common-dir
+  // output for the SAME directory may or may not be — a genuinely
+  // different string either way, not just a separator/case difference
+  // pathsEqual's normalize+lowercase can fix. Rather than assume which
+  // form git's output takes, every git-derived value compared against a
+  // checkoutPath-derived value goes through realpathSync on BOTH sides —
+  // idempotent (a no-op) if a given side already happens to be canonical,
+  // necessary if it doesn't, so this is correct regardless of git's actual
+  // behavior here.
+  const realCheckoutPath = realpathSync(checkoutPath);
+  if (
+    !pathsEqual(realpathSync(resolvedToplevel), realCheckoutPath, isWindows)
+  ) {
     return { valid: false, reason: 'invalid-nested-repo' };
   }
 
@@ -157,7 +173,7 @@ export function validateCheckout(checkoutPath, opts = {}) {
   );
   if (
     !pathsEqual(resolvedGitDir, resolvedCommonDir, isWindows) ||
-    !isUnderDir(resolvedCommonDir, checkoutPath, isWindows)
+    !isUnderDir(realpathSync(resolvedCommonDir), realCheckoutPath, isWindows)
   ) {
     // Mirrors deus-cmd.sh's existing linked-worktree check (its own `deploy`
     // subcommand): a linked worktree has git-dir under the MAIN repo's
