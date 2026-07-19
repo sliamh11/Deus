@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   getCheckoutPath,
@@ -79,17 +79,23 @@ describe('isMainModule (symlink-invocation regression, code-review-caught bug)',
   // + script) before writing the fix; these tests pin the fixed behavior.
 
   it('returns true when argv1 resolves (through a symlink) to the module URL', () => {
+    // fileURLToPath is not injectable, so moduleUrl must be a URL the real
+    // fileURLToPath can actually parse on the CURRENT host: a bare
+    // "file:///real/module/path.mjs" (no drive letter) is a valid POSIX
+    // file URL but not a valid Windows one, so it must be built via
+    // pathToFileURL (the inverse operation) from a platform-appropriate
+    // absolute path, not hardcoded as a POSIX-style string.
+    const realModulePath = isWindowsPlatform()
+      ? 'C:\\real\\module\\path.mjs'
+      : '/real/module/path.mjs';
+    const moduleUrl = pathToFileURL(realModulePath).href;
     const realpathSync = (p: string) => {
       expect(p).toBe('/some/symlink/path');
-      return '/real/module/path.mjs';
+      return realModulePath;
     };
-    expect(
-      isMainModule(
-        '/some/symlink/path',
-        'file:///real/module/path.mjs',
-        realpathSync,
-      ),
-    ).toBe(true);
+    expect(isMainModule('/some/symlink/path', moduleUrl, realpathSync)).toBe(
+      true,
+    );
   });
 
   it('returns false when argv1 resolves to a different file', () => {
