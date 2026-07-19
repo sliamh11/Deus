@@ -222,62 +222,77 @@ export async function acquireCloneLock(lockPath, opts = {}) {
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
     }
-    let holderStat, holderContent;
+    // Hold an open read fd on the lock file for the rest of this iteration
+    // instead of re-`statSync`-ing the path twice. This closes a real TOCTOU
+    // gap two prior code reviews narrowed but couldn't fully close: a bare
+    // `statSync(path)` holds nothing, so the OS is free to reuse its inode
+    // number the instant a concurrent process unlinks it — a LATER
+    // `statSync(path)` can then observe a coincidentally-matching dev+ino on
+    // a genuinely different, freshly-recreated file. POSIX (and, per libuv,
+    // Node's own default Windows open flags: FILE_SHARE_READ|WRITE|DELETE)
+    // guarantees an inode is never reclaimed while any process holds it
+    // open — so keeping `holderFd` open across the isAlive() check FORCES a
+    // concurrent steal onto a different inode, making the dev+ino
+    // comparison below (where `isAlive` returns false) deterministic rather
+    // than merely unlikely to collide.
+    let holderFd;
     try {
-      // Stat (for inode identity) and content (for the PID) must both be
-      // captured from this same observation — see the steal branch below
-      // for why the inode is the load-bearing check, not the content.
-      holderStat = fs.statSync(lockPath);
-      holderContent = fs.readFileSync(lockPath, 'utf8').trim();
+      holderFd = fs.openSync(lockPath, 'r');
     } catch {
-      continue; // vanished between our failed open and read — retry immediately
+      continue; // vanished between our failed open and this one — retry immediately
     }
-    const holderPid = parseInt(holderContent, 10);
-    if (!Number.isInteger(holderPid)) {
-      // Unparseable content most likely means we read the lock file in the
-      // narrow window between another process's openSync (empty file) and
-      // its writeSync (PID written) — not a dead holder, just one still
-      // being created. Wait rather than steal.
-      await new Promise((resolve) => setTimeout(resolve, pollMs));
-      continue;
-    }
-    if (!isAlive(holderPid)) {
-      // Verify by INODE IDENTITY (not content) immediately before deleting:
-      // two code reviews caught real problems here in succession. First: an
-      // unconditional unlink could delete a DIFFERENT, freshly re-acquired
-      // lock a concurrent stealer already created. Second: re-verifying by
-      // CONTENT string (an earlier fix) is still wrong, because PIDs get
-      // reused by the OS — a coincidentally-identical PID string on a
-      // genuinely different (fresh, live) lock file would pass a content
-      // check and still get wrongly deleted. Comparing dev+ino instead
-      // checks the actual filesystem entity, not a value that can alias.
-      // This narrows, but — being a check-then-act pattern — does not
-      // perfectly close, the TOCTOU window; true atomicity for this
-      // operation requires OS-level advisory locking (flock/LockFileEx),
-      // which Node's core `fs` does not expose and which this file's
-      // build-free, dependency-free constraint (see the header comment)
-      // rules out reaching for via a native module. Combined with the
-      // immediately-following atomic `wx` re-open (the actual mutual-
-      // exclusion guarantee for who successfully HOLDS the lock), a
-      // surviving race here can misfire the eviction of a live lock at
-      // worst — an event requiring two processes to independently
-      // rediscover the same dead holder and interleave within a single
-      // syscall gap, for a lock that only exists to serialize one human-
-      // triggered, one-time clone.
+    try {
+      let holderStat, holderContent;
       try {
-        const currentStat = fs.statSync(lockPath);
-        if (
-          currentStat.ino === holderStat.ino &&
-          currentStat.dev === holderStat.dev
-        ) {
-          fs.unlinkSync(lockPath);
-        }
+        holderStat = fs.fstatSync(holderFd);
+        holderContent = fs.readFileSync(holderFd, 'utf8').trim();
       } catch {
-        // Vanished or already replaced by someone else — fine either way.
+        continue; // vanished after we opened it — retry immediately
       }
-      continue; // retry immediately — no reason to wait for a dead holder
+      const holderPid = parseInt(holderContent, 10);
+      if (!Number.isInteger(holderPid)) {
+        // Unparseable content most likely means we read the lock file in the
+        // narrow window between another process's openSync (empty file) and
+        // its writeSync (PID written) — not a dead holder, just one still
+        // being created. Wait rather than steal.
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+        continue;
+      }
+      if (!isAlive(holderPid)) {
+        // Verify by INODE IDENTITY (not content) immediately before
+        // deleting: two code reviews caught real problems here in
+        // succession. First: an unconditional unlink could delete a
+        // DIFFERENT, freshly re-acquired lock a concurrent stealer already
+        // created. Second: re-verifying by CONTENT string (an earlier fix)
+        // is still wrong, because PIDs get reused by the OS — a
+        // coincidentally-identical PID string on a genuinely different
+        // (fresh, live) lock file would pass a content check and still get
+        // wrongly deleted. `holderStat` came from the still-open `holderFd`
+        // (not a fresh path stat), which is what makes this comparison
+        // deterministic — see the comment above `holderFd`'s declaration.
+        try {
+          const currentStat = fs.statSync(lockPath);
+          if (
+            currentStat.ino === holderStat.ino &&
+            currentStat.dev === holderStat.dev
+          ) {
+            fs.unlinkSync(lockPath);
+          }
+        } catch {
+          // Vanished or already replaced by someone else — fine either way.
+        }
+        continue; // retry immediately — no reason to wait for a dead holder
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    } finally {
+      try {
+        fs.closeSync(holderFd);
+      } catch {
+        // Nothing else in this scope closes holderFd first, so reaching
+        // here would mean something genuinely unexpected — swallow rather
+        // than mask the real error this finally is cleaning up after.
+      }
     }
-    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
   return null; // timed out waiting for a live holder to finish
 }
