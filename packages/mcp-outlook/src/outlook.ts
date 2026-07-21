@@ -72,14 +72,48 @@ function buildCachePlugin(): ICachePlugin {
   const tokenPath = tokenCachePath();
   return {
     beforeCacheAccess: async (ctx: TokenCacheContext) => {
-      if (fs.existsSync(tokenPath)) {
-        ctx.tokenCache.deserialize(fs.readFileSync(tokenPath, 'utf-8'));
+      if (!fs.existsSync(tokenPath)) return;
+      const raw = fs.readFileSync(tokenPath, 'utf-8');
+      try {
+        ctx.tokenCache.deserialize(raw);
+      } catch (err) {
+        // Defense in depth against the write race fixed below: an already-
+        // corrupted cache (or one corrupted by some future bug) must not
+        // crash connect() outright. Treat it as an empty cache — MSAL falls
+        // through to "no cached account", which surfaces as the existing,
+        // actionable "run `node dist/index.js auth`" error instead of an
+        // opaque JSON parse failure.
+        logger.error(
+          { err, tokenPath },
+          'Outlook token cache is corrupt, ignoring and starting fresh — re-run `auth` if sign-in is required',
+        );
       }
     },
     afterCacheAccess: async (ctx: TokenCacheContext) => {
       if (ctx.cacheHasChanged) {
         fs.mkdirSync(CREDENTIALS_DIR, { recursive: true });
-        fs.writeFileSync(tokenPath, ctx.tokenCache.serialize());
+        // Atomic write: multiple mcp-outlook processes (one per Claude Code
+        // session/project) share this single token.json. A direct
+        // writeFileSync to the real path lets two concurrent writers
+        // interleave — writeFileSync loops multiple write() syscalls for
+        // content this size, so process B's write (which truncates first)
+        // can finish while process A's fd, opened against the old inode,
+        // still has unflushed tail bytes to write — appending a few leftover
+        // bytes after B's otherwise-complete JSON. Observed in the wild: a
+        // real token.json ended with `...},"AppMetadata":{}}ta":{}}`, i.e.
+        // one writer's complete file followed by another writer's trailing
+        // fragment, breaking every subsequent JSON.parse/deserialize with
+        // "Unexpected non-whitespace character after JSON". Writing to a
+        // unique per-process temp file in the same directory first, then
+        // renaming over the real path, avoids this: POSIX rename() is a
+        // single atomic syscall, so a reader always sees one writer's
+        // complete generation or another's, never a byte-level mix. The
+        // last rename to complete still wins over an earlier one's update
+        // (a much smaller, semantically acceptable race) — this fixes
+        // corruption, not last-writer-wins on the token data itself.
+        const tmpPath = `${tokenPath}.tmp.${process.pid}.${Date.now()}`;
+        fs.writeFileSync(tmpPath, ctx.tokenCache.serialize());
+        fs.renameSync(tmpPath, tokenPath);
       }
     },
   };
@@ -116,7 +150,13 @@ export function buildMsalClient(
 }
 
 // Re-exported for the auth subcommand + token-path checks in index.ts.
-export { CREDENTIALS_DIR, SCOPES, appCredentialsPath, tokenCachePath };
+export {
+  CREDENTIALS_DIR,
+  SCOPES,
+  appCredentialsPath,
+  tokenCachePath,
+  buildCachePlugin,
+};
 
 export class OutlookProvider implements ChannelProvider {
   readonly name = 'outlook';

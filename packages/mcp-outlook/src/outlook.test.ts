@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('@microsoft/microsoft-graph-client', () => ({
   Client: {
@@ -133,5 +133,89 @@ describe('OutlookProvider', () => {
           .acquireTokenByDeviceCode,
       ).toBe('function');
     });
+  });
+});
+
+// Separate describe block: exercises real file I/O against a scratch
+// CREDENTIALS_DIR, so the module must be freshly re-imported per test after
+// setting OUTLOOK_CREDENTIALS_DIR (the const is computed once at module load).
+describe('buildCachePlugin (token cache write/read race fix)', () => {
+  let scratchDir: string;
+
+  beforeEach(async () => {
+    const fs = await import('fs');
+    const os = await import('os');
+    const path = await import('path');
+    scratchDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), 'mcp-outlook-cache-test-'),
+    );
+    process.env.OUTLOOK_CREDENTIALS_DIR = scratchDir;
+    vi.resetModules();
+  });
+
+  afterEach(async () => {
+    const fs = await import('fs');
+    delete process.env.OUTLOOK_CREDENTIALS_DIR;
+    fs.rmSync(scratchDir, { recursive: true, force: true });
+  });
+
+  it('does not throw when the on-disk cache is corrupt — logs and continues', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const { buildCachePlugin, tokenCachePath } = await import('./outlook.js');
+
+    // Same shape as the real corruption observed: a complete JSON object
+    // followed by a trailing fragment of another writer's content.
+    fs.writeFileSync(
+      path.join(scratchDir, 'token.json'),
+      '{"Account":{}},"AppMetadata":{}}ta":{}}',
+    );
+
+    const plugin = buildCachePlugin();
+    const deserialize = vi.fn(() => {
+      throw new SyntaxError('Unexpected non-whitespace character after JSON');
+    });
+    await expect(
+      plugin.beforeCacheAccess({
+        tokenCache: { deserialize },
+      } as never),
+    ).resolves.toBeUndefined();
+    expect(deserialize).toHaveBeenCalledOnce();
+    // The corrupt file is left alone by the read path (only the next write
+    // replaces it) — confirms no crash occurred trying to "fix" it in place.
+    expect(fs.existsSync(tokenCachePath())).toBe(true);
+  });
+
+  it('writes atomically — no partial file, no leftover temp file', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const { buildCachePlugin, tokenCachePath } = await import('./outlook.js');
+
+    const plugin = buildCachePlugin();
+    const serialized = '{"Account":{"real":"cache-content"}}';
+    await plugin.afterCacheAccess({
+      cacheHasChanged: true,
+      tokenCache: { serialize: () => serialized },
+    } as never);
+
+    expect(fs.readFileSync(tokenCachePath(), 'utf-8')).toBe(serialized);
+    const leftoverTempFiles = fs
+      .readdirSync(scratchDir)
+      .filter((f) => f.includes('.tmp.'));
+    expect(leftoverTempFiles).toEqual([]);
+  });
+
+  it('skips the write entirely when the cache has not changed', async () => {
+    const fs = await import('fs');
+    const path = await import('path');
+    const { buildCachePlugin, tokenCachePath } = await import('./outlook.js');
+
+    const plugin = buildCachePlugin();
+    await plugin.afterCacheAccess({
+      cacheHasChanged: false,
+      tokenCache: { serialize: () => 'should-not-be-written' },
+    } as never);
+
+    expect(fs.existsSync(tokenCachePath())).toBe(false);
   });
 });
