@@ -26,11 +26,30 @@ from _time import local_now, utc_now  # noqa: E402
 # ── Config ────────────────────────────────────────────────────────────────────
 
 
-def _load_vault_root() -> Path | None:
-    """Resolve vault root from DEUS_VAULT_PATH env var or config.json."""
+def _load_vault_root(cwd: Path | None = None) -> Path | None:
+    """Resolve vault root: DEUS_VAULT_PATH env -> <cwd>/.deus/config.json
+    (per-instance override) -> ~/.config/deus/config.json (global fallback).
+
+    Matches the compress skill's own 3-tier resolution order
+    (.claude/skills/compress/skill.md). The per-instance tier is a STOP, not a
+    fall-through: if that file exists but has no usable vault_path, return
+    None rather than falling back to the global config -- a fall-through is
+    what would let one instance's resolver corrupt another instance's vault.
+    `cwd=None` (both existing call sites) preserves the prior 2-tier-only
+    behavior exactly.
+    """
     env_path = os.environ.get("DEUS_VAULT_PATH")
     if env_path:
         return Path(env_path).expanduser()
+    if cwd is not None:
+        instance_cfg = cwd / ".deus" / "config.json"
+        if instance_cfg.exists():
+            try:
+                cfg = json.loads(instance_cfg.read_text())
+            except (json.JSONDecodeError, OSError):
+                return None  # STOP -- do not fall through to global config
+            vp = cfg.get("vault_path")
+            return Path(vp).expanduser() if vp else None  # STOP either way
     cfg_path = Path("~/.config/deus/config.json").expanduser()
     if cfg_path.exists():
         try:
