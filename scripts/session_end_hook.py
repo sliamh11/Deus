@@ -42,11 +42,12 @@ from stop_hook import (  # noqa: E402
     _load_vault_root,
 )
 
-QUEUE_DIR = Path(os.environ.get("DEUS_AUTO_COMPRESS_QUEUE_DIR", "~/.deus/compress_queue")).expanduser()
-LOG_PATH = Path(os.environ.get("DEUS_AUTO_COMPRESS_LOG", "~/.deus/auto_compress.log")).expanduser()
+QUEUE_DIR = Path(os.environ.get("DEUS_AUTO_COMPRESS_QUEUE_DIR", "~/.deus/compress_queue")).expanduser()  # #1079
+LOG_PATH = Path(os.environ.get("DEUS_AUTO_COMPRESS_LOG", "~/.deus/auto_compress.log")).expanduser()  # #1079
 
 
 def _debounce_minutes() -> float:
+    # DEUS_AUTO_COMPRESS_DEBOUNCE_MIN: #1079
     try:
         v = float(os.environ.get("DEUS_AUTO_COMPRESS_DEBOUNCE_MIN", "30"))
         return v if v > 0 else 30.0
@@ -55,6 +56,7 @@ def _debounce_minutes() -> float:
 
 
 def _worker_ceiling() -> int:
+    # DEUS_AUTO_COMPRESS_TIMEOUT: #1079
     try:
         v = int(os.environ.get("DEUS_AUTO_COMPRESS_TIMEOUT", "120"))
         return v if v > 0 else 120
@@ -123,7 +125,7 @@ def main() -> None:
 
     if _is_bg_session():
         return  # bg sessions have their own separate blocking Stop-gate
-    if os.environ.get("DEUS_AUTO_COMPRESS") == "0":
+    if os.environ.get("DEUS_AUTO_COMPRESS") == "0":  # #1079
         return  # opt-out
 
     session_id = data.get("session_id")
