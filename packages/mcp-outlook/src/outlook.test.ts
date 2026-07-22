@@ -124,6 +124,195 @@ describe('OutlookProvider', () => {
     });
   });
 
+  describe('createEvent', () => {
+    it('throws when not connected (no graph client)', async () => {
+      await expect(
+        provider.createEvent(
+          'Burger',
+          { dateTime: '2026-07-27T18:30:00', timeZone: 'UTC' },
+          { dateTime: '2026-07-27T20:00:00', timeZone: 'UTC' },
+          ['attendee@example.com'],
+        ),
+      ).rejects.toThrow('Outlook not connected');
+    });
+
+    it('posts the expected event payload and returns id/webLink', async () => {
+      const post = vi.fn().mockResolvedValue({
+        id: 'evt-1',
+        webLink: 'https://outlook.example/evt-1',
+      });
+      (provider as any).graph = { api: vi.fn(() => ({ post })) };
+
+      const result = await provider.createEvent(
+        'Burger',
+        { dateTime: '2026-07-27T18:30:00', timeZone: 'UTC' },
+        { dateTime: '2026-07-27T20:00:00', timeZone: 'UTC' },
+        ['attendee@example.com'],
+      );
+
+      expect(post).toHaveBeenCalledWith({
+        subject: 'Burger',
+        start: { dateTime: '2026-07-27T18:30:00', timeZone: 'UTC' },
+        end: { dateTime: '2026-07-27T20:00:00', timeZone: 'UTC' },
+        attendees: [
+          {
+            emailAddress: { address: 'attendee@example.com' },
+            type: 'required',
+          },
+        ],
+      });
+      expect(result).toEqual({
+        id: 'evt-1',
+        webLink: 'https://outlook.example/evt-1',
+      });
+    });
+
+    it('propagates Graph API errors', async () => {
+      const post = vi.fn().mockRejectedValue(new Error('graph API error'));
+      (provider as any).graph = { api: vi.fn(() => ({ post })) };
+
+      await expect(
+        provider.createEvent(
+          'Burger',
+          { dateTime: '2026-07-27T18:30:00', timeZone: 'UTC' },
+          { dateTime: '2026-07-27T20:00:00', timeZone: 'UTC' },
+        ),
+      ).rejects.toThrow('graph API error');
+    });
+
+    it('posts an empty attendees array and omits body when neither is given', async () => {
+      const post = vi.fn().mockResolvedValue({ id: 'evt-2' });
+      (provider as any).graph = { api: vi.fn(() => ({ post })) };
+
+      await provider.createEvent(
+        'Solo block',
+        { dateTime: '2026-07-27T09:00:00', timeZone: 'UTC' },
+        { dateTime: '2026-07-27T09:30:00', timeZone: 'UTC' },
+      );
+
+      expect(post).toHaveBeenCalledWith({
+        subject: 'Solo block',
+        start: { dateTime: '2026-07-27T09:00:00', timeZone: 'UTC' },
+        end: { dateTime: '2026-07-27T09:30:00', timeZone: 'UTC' },
+        attendees: [],
+      });
+    });
+
+    it('includes body when supplied', async () => {
+      const post = vi.fn().mockResolvedValue({ id: 'evt-3' });
+      (provider as any).graph = { api: vi.fn(() => ({ post })) };
+
+      await provider.createEvent(
+        'Burger',
+        { dateTime: '2026-07-27T18:30:00', timeZone: 'UTC' },
+        { dateTime: '2026-07-27T20:00:00', timeZone: 'UTC' },
+        ['attendee@example.com'],
+        'Casual catch-up.',
+      );
+
+      expect(post).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { contentType: 'Text', content: 'Casual catch-up.' },
+        }),
+      );
+    });
+  });
+
+  describe('updateEvent', () => {
+    it('throws when not connected (no graph client)', async () => {
+      await expect(
+        provider.updateEvent('evt-1', { subject: 'New subject' }),
+      ).rejects.toThrow('Outlook not connected');
+    });
+
+    it('sends only start+end when rescheduling (the reschedule-only case)', async () => {
+      const patch = vi.fn().mockResolvedValue({ id: 'evt-1' });
+      (provider as any).graph = { api: vi.fn(() => ({ patch })) };
+
+      await provider.updateEvent('evt-1', {
+        start: { dateTime: '2026-07-26T12:00:00', timeZone: 'UTC' },
+        end: { dateTime: '2026-07-26T12:30:00', timeZone: 'UTC' },
+      });
+
+      expect(patch).toHaveBeenCalledWith({
+        start: { dateTime: '2026-07-26T12:00:00', timeZone: 'UTC' },
+        end: { dateTime: '2026-07-26T12:30:00', timeZone: 'UTC' },
+      });
+    });
+
+    it('sends only subject when only subject is supplied', async () => {
+      const patch = vi.fn().mockResolvedValue({ id: 'evt-1' });
+      (provider as any).graph = { api: vi.fn(() => ({ patch })) };
+
+      await provider.updateEvent('evt-1', { subject: 'New subject' });
+
+      expect(patch).toHaveBeenCalledWith({ subject: 'New subject' });
+    });
+
+    it('converts attendees to the Graph shape (replaces the whole list)', async () => {
+      const patch = vi.fn().mockResolvedValue({ id: 'evt-1' });
+      (provider as any).graph = { api: vi.fn(() => ({ patch })) };
+
+      await provider.updateEvent('evt-1', {
+        attendees: ['attendee@example.com'],
+      });
+
+      expect(patch).toHaveBeenCalledWith({
+        attendees: [
+          {
+            emailAddress: { address: 'attendee@example.com' },
+            type: 'required',
+          },
+        ],
+      });
+    });
+
+    it('wraps body the same way createEvent does', async () => {
+      const patch = vi.fn().mockResolvedValue({ id: 'evt-1' });
+      (provider as any).graph = { api: vi.fn(() => ({ patch })) };
+
+      await provider.updateEvent('evt-1', { body: 'New body text' });
+
+      expect(patch).toHaveBeenCalledWith({
+        body: { contentType: 'Text', content: 'New body text' },
+      });
+    });
+
+    it('propagates Graph API errors', async () => {
+      const patch = vi.fn().mockRejectedValue(new Error('graph API error'));
+      (provider as any).graph = { api: vi.fn(() => ({ patch })) };
+
+      await expect(
+        provider.updateEvent('evt-1', { subject: 'x' }),
+      ).rejects.toThrow('graph API error');
+    });
+
+    it('throws instead of sending a no-op PATCH when no fields are supplied', async () => {
+      const patch = vi.fn();
+      (provider as any).graph = { api: vi.fn(() => ({ patch })) };
+
+      await expect(provider.updateEvent('evt-1', {})).rejects.toThrow(
+        'no fields supplied',
+      );
+      expect(patch).not.toHaveBeenCalled();
+    });
+
+    it('returns id/webLink from the Graph response', async () => {
+      const patch = vi.fn().mockResolvedValue({
+        id: 'evt-1',
+        webLink: 'https://outlook.example/evt-1',
+      });
+      (provider as any).graph = { api: vi.fn(() => ({ patch })) };
+
+      const result = await provider.updateEvent('evt-1', { subject: 'x' });
+
+      expect(result).toEqual({
+        id: 'evt-1',
+        webLink: 'https://outlook.example/evt-1',
+      });
+    });
+  });
+
   describe('buildMsalClient', () => {
     it('builds a public client (device-code capable, no confidential flow)', () => {
       const client = buildMsalClient({ clientId: 'cid', tenantId: 'tid' });

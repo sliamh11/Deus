@@ -179,6 +179,74 @@ server.tool(
   },
 );
 
+// Write tool (like draft_email/send_email) — no compact/select needed, output
+// is small and fixed-shape.
+server.tool(
+  'create_event',
+  'Create a calendar event. Attendees (if any) are sent invitations automatically.',
+  {
+    subject: z.string(),
+    start: z.object({ dateTime: z.string(), timeZone: z.string() }),
+    end: z.object({ dateTime: z.string(), timeZone: z.string() }),
+    attendees: z.array(z.string()).optional(),
+    body: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const event = await provider.createEvent(
+        args.subject,
+        args.start,
+        args.end,
+        args.attendees,
+        args.body,
+      );
+      return mcpResponse({ id: event.id, webLink: event.webLink });
+    } catch (err: unknown) {
+      return mcpError(
+        McpErrorCode.API_ERROR,
+        err instanceof Error ? err.message : String(err),
+        'outlook.create_event',
+      );
+    }
+  },
+);
+
+// Write tool (like create_event) — no compact/select needed, output is small
+// and fixed-shape.
+server.tool(
+  'update_event',
+  'Update an existing calendar event by id. Only the supplied fields are changed. ' +
+    'WARNING: supplying attendees REPLACES the entire attendee list — anyone not ' +
+    'included is removed from the event and receives a cancellation, it is not ' +
+    'merged with the existing attendees.',
+  {
+    event_id: z.string(),
+    subject: z.string().optional(),
+    start: z.object({ dateTime: z.string(), timeZone: z.string() }).optional(),
+    end: z.object({ dateTime: z.string(), timeZone: z.string() }).optional(),
+    attendees: z.array(z.string()).optional(),
+    body: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const event = await provider.updateEvent(args.event_id, {
+        subject: args.subject,
+        start: args.start,
+        end: args.end,
+        attendees: args.attendees,
+        body: args.body,
+      });
+      return mcpResponse({ id: event.id, webLink: event.webLink });
+    } catch (err: unknown) {
+      return mcpError(
+        McpErrorCode.API_ERROR,
+        err instanceof Error ? err.message : String(err),
+        'outlook.update_event',
+      );
+    }
+  },
+);
+
 // ── Entry: auth subcommand, or start the MCP server ──────────────────
 
 if (process.argv[2] === 'auth') {

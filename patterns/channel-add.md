@@ -2,7 +2,7 @@
 governs:
   - src/channels
   - packages/
-last_verified: "2026-07-21" # auto-bump @1784640371
+last_verified: "2026-07-22" # auto-bump @1784640371
 test_tasks:
   - "Add a Discord channel with OAuth login"
   - "Add capabilities: logging to a new MCP channel server so notifications are delivered"

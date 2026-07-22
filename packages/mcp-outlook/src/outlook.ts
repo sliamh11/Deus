@@ -16,6 +16,7 @@ import os from 'os';
 import path from 'path';
 
 import {
+  InteractionRequiredAuthError,
   PublicClientApplication,
   type AccountInfo,
   type ICachePlugin,
@@ -42,7 +43,18 @@ const MAX_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
 
 // Delegated Microsoft Graph scopes. offline_access is implicit (MSAL requests a
 // refresh token automatically), so it is not listed here.
-const SCOPES = ['Mail.Read', 'Mail.ReadWrite', 'Mail.Send', 'User.Read'];
+//
+// IMPORTANT: Azure AD checks consent for the WHOLE scope set at once, so
+// adding a scope here breaks silent auth for ALL Outlook tools (not just the
+// new one) until `node dist/index.js auth` is re-run to re-consent —
+// InteractionRequiredAuthError from getToken() below is the symptom.
+const SCOPES = [
+  'Mail.Read',
+  'Mail.ReadWrite',
+  'Mail.Send',
+  'Calendars.ReadWrite',
+  'User.Read',
+];
 
 // Use stderr for logging (stdout is reserved for MCP JSON-RPC)
 const logger = pino(
@@ -187,14 +199,30 @@ export class OutlookProvider implements ChannelProvider {
     if (!this.msal || !this.account) {
       throw new Error('Outlook not connected');
     }
-    const result = await this.msal.acquireTokenSilent({
-      account: this.account,
-      scopes: SCOPES,
-    });
-    if (!result?.accessToken) {
-      throw new Error('Failed to acquire Microsoft Graph access token');
+    try {
+      const result = await this.msal.acquireTokenSilent({
+        account: this.account,
+        scopes: SCOPES,
+      });
+      if (!result?.accessToken) {
+        throw new Error('Failed to acquire Microsoft Graph access token');
+      }
+      return result.accessToken;
+    } catch (err) {
+      // Only reframe the specific consent-required failure (e.g. SCOPES grew
+      // since the cached token was consented — see the SCOPES comment above).
+      // Other failures (network blip, transient Azure outage) get a neutral
+      // wrapper — telling the user to re-authenticate for an unrelated
+      // failure would send them down the wrong path.
+      if (err instanceof InteractionRequiredAuthError) {
+        throw new Error(
+          `Microsoft Graph requires re-consent (likely a new scope was added). ` +
+            `Re-run \`node dist/index.js auth\` to re-authenticate. Original error: ` +
+            `${err.message}`,
+        );
+      }
+      throw err instanceof Error ? err : new Error(String(err));
     }
-    return result.accessToken;
   }
 
   async connect(): Promise<void> {
@@ -412,6 +440,78 @@ export class OutlookProvider implements ChannelProvider {
     const draftId = res.id || '';
     logger.info({ to, subject, draftId }, 'Draft created');
     return draftId;
+  }
+
+  /** Create a calendar event. Attendees (if any) are sent invitations automatically. */
+  async createEvent(
+    subject: string,
+    start: { dateTime: string; timeZone: string },
+    end: { dateTime: string; timeZone: string },
+    attendees?: string[],
+    body?: string,
+  ): Promise<{ id: string; webLink?: string }> {
+    if (!this.graph) throw new Error('Outlook not connected');
+
+    const res = await this.graph.api('/me/events').post({
+      subject,
+      start,
+      end,
+      attendees: (attendees || []).map((email) => ({
+        emailAddress: { address: email },
+        type: 'required',
+      })),
+      ...(body ? { body: { contentType: 'Text', content: body } } : {}),
+    });
+    const id = res.id || '';
+    logger.info({ subject, attendees, id }, 'Event created');
+    return { id, webLink: res.webLink };
+  }
+
+  /**
+   * Update an existing calendar event. Only the supplied fields are changed.
+   * WARNING: supplying `attendees` REPLACES the entire attendee list — anyone
+   * not included is removed from the event and receives a cancellation, it is
+   * not merged with the existing list (this mirrors Graph's own PATCH
+   * semantics on /me/events, it is not a limitation of this method).
+   */
+  async updateEvent(
+    eventId: string,
+    updates: {
+      subject?: string;
+      start?: { dateTime: string; timeZone: string };
+      end?: { dateTime: string; timeZone: string };
+      attendees?: string[];
+      body?: string;
+    },
+  ): Promise<{ id: string; webLink?: string }> {
+    if (!this.graph) throw new Error('Outlook not connected');
+
+    const payload: Record<string, unknown> = {};
+    if (updates.subject !== undefined) payload.subject = updates.subject;
+    if (updates.start !== undefined) payload.start = updates.start;
+    if (updates.end !== undefined) payload.end = updates.end;
+    if (updates.attendees !== undefined) {
+      payload.attendees = updates.attendees.map((email) => ({
+        emailAddress: { address: email },
+        type: 'required',
+      }));
+    }
+    if (updates.body !== undefined) {
+      payload.body = { contentType: 'Text', content: updates.body };
+    }
+
+    if (Object.keys(payload).length === 0) {
+      throw new Error(
+        'updateEvent: no fields supplied — pass at least one of subject/start/end/attendees/body',
+      );
+    }
+
+    const res = await this.graph.api(`/me/events/${eventId}`).patch(payload);
+    const id = res.id || eventId;
+    // Log which fields changed, not their values — body/subject may contain
+    // free text and attendees are email addresses.
+    logger.info({ eventId, id, fields: Object.keys(payload) }, 'Event updated');
+    return { id, webLink: res.webLink };
   }
 
   // ── Private ──────────────────────────────────────────────────────────
