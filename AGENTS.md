@@ -192,6 +192,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/preserve` | Save durable memories from the current conversation |
 | `/project-settings` | View or modify external project memory settings |
 | `/prototype` | Build a throwaway prototype to validate a state model or UI direction |
+| `/research` | Investigate a question against primary sources; write findings to a file (background agent) |
 | `/resolving-merge-conflicts` | Disciplined resolution of an in-progress git merge/rebase conflict |
 | `/resume` | Load recent work and memory context |
 | `/review-logs` | Review Deus system health logs |
@@ -201,6 +202,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/update-skills` | Update installed skill branches from upstream |
 | `/use-local-whisper` | Switch voice transcription to local whisper.cpp |
 | `/wardens` | View, toggle, and configure warden quality gates |
+| `/wayfinder` | Chart a large effort as decision tickets on the issue tracker; resolve them one at a time |
 | `/writing-great-skills` | Reference for authoring predictable skills — leading words, progressive disclosure |
 | `/x-integration` | Set up or use X/Twitter integration |
 
