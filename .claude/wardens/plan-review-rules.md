@@ -144,6 +144,12 @@ Common traps:
 **Check:** Does the plan include a cheap reaction step — 3-4 divergent throwaway variants (mock, HTML artifact, sample output) for the user to react to — before committing to one design?
 **Rule:** For look-and-feel work, elicit taste before implementation: generate divergent variants at prototype cost, let the user react, then implement only the chosen direction. Skip when the change is backend-only, a mechanical refactor, or the user already specified the exact design.
 
+## visual-verification-required
+**Severity:** blocking
+**Applies when:** Plan's stated goal is visual/UX quality, "look and feel," or matching/exceeding a named reference product — OR the plan implements or replaces any rendering surface (TUI panels, chat/channel message display, CLI output formatting, web UI).
+**Check:** Does the plan's Verification section include an item requiring a concrete artifact — a screenshot, terminal recording, or pty capture of the SPECIFIC named feature(s), captured against the real running target — reviewed before SHIP? Does every newly-ported or newly-added rendering/formatting component have its consuming call site named in the same file-plan entry (not just "port file X", but "X is called from Y, confirmed by Z")?
+**Rule:** A quality/UX-framed ask needs a quality/UX-framed acceptance criterion — mechanical checks (tests pass, types check, lint clean, CI green) verify plumbing, not the claim actually being made, and must never be the ONLY verification item for this class of plan. A component being "ported" or "added" is not evidence the feature it enables actually renders — headless/unit test coverage (including headless render-to-string harnesses) does not substitute for observing the real thing. If the plan cannot name a concrete visual-artifact checkpoint, it isn't ready to implement. **Proportionality:** scale to blast radius, same clause as `verification-strategy` — a one-line CLI print-statement tweak or a trivial, easily-reversible formatting nudge doesn't need a screenshot ceremony; reserve full enforcement for plans whose stated goal IS visual/UX quality or that replace/introduce a rendering surface (the exact class that caused this rule to exist), not every touch of a file that happens to print something.
+
 ---
 
 ## Remediation Details
@@ -224,3 +230,7 @@ Common traps:
 ### taste-pass
 **Cite:** map-vs-territory analysis (2026-07-04; durable copy in Session-Logs/2026-07-04/ after /compress) — unknown knowns (taste the user only recognizes on sight) are cheapest converted at prototype cost, not one-violation-each through the evolution feedback loop.
 **Remediation:** Add a pre-implementation step: produce 3-4 divergent throwaway variants of the user-facing surface (fake data is fine), present them for reaction, record the pick and why, then implement only the winner. The variants are disposable — do not wire up backend state to render them.
+
+### visual-verification-required
+**Cite:** `Research/2026-07-23-deus-tui-failure-root-cause-investigation.md` — LIA-471/473's plan Verification section never tested rendering quality (6/6 items were mechanical); `CodeColorizer` was ported and unit-tested but never wired into the message-render path, undetected through 4 plan-review rounds + 2 code-review rounds.
+**Remediation:** Add an explicit Verification item naming the artifact (screenshot/recording/pty capture), the specific feature it must show, and who reviews it before SHIP. For any newly ported/added rendering component, add its consuming call site to the same file-plan entry — "ported X" and "X is called from Y" are two separate facts, both required.
