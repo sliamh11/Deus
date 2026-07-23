@@ -514,6 +514,18 @@ export class OutlookProvider implements ChannelProvider {
     return { id, webLink: res.webLink };
   }
 
+  /**
+   * Delete a calendar event by id. If the caller is the organizer, Graph sends a
+   * cancellation email to all attendees automatically — this is Graph's built-in
+   * behavior, not something this method controls.
+   */
+  async deleteEvent(eventId: string): Promise<void> {
+    if (!this.graph) throw new Error('Outlook not connected');
+
+    await this.graph.api(`/me/events/${eventId}`).delete();
+    logger.info({ eventId }, 'Event deleted');
+  }
+
   // ── Private ──────────────────────────────────────────────────────────
 
   private async pollForMessages(): Promise<void> {

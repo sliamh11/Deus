@@ -247,6 +247,30 @@ server.tool(
   },
 );
 
+// Write tool (like create_event/update_event) — no compact/select needed,
+// output is small and fixed-shape.
+server.tool(
+  'delete_event',
+  'Delete a calendar event by id. If you are the organizer, deleting it sends a ' +
+    "cancellation email to all attendees automatically — this is Microsoft Graph's " +
+    'built-in behavior, not something this tool controls.',
+  {
+    event_id: z.string(),
+  },
+  async (args) => {
+    try {
+      await provider.deleteEvent(args.event_id);
+      return mcpResponse({ deleted: true, id: args.event_id });
+    } catch (err: unknown) {
+      return mcpError(
+        McpErrorCode.API_ERROR,
+        err instanceof Error ? err.message : String(err),
+        'outlook.delete_event',
+      );
+    }
+  },
+);
+
 // ── Entry: auth subcommand, or start the MCP server ──────────────────
 
 if (process.argv[2] === 'auth') {

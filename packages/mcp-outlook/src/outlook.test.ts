@@ -313,6 +313,34 @@ describe('OutlookProvider', () => {
     });
   });
 
+  describe('deleteEvent', () => {
+    it('throws when not connected (no graph client)', async () => {
+      await expect(provider.deleteEvent('evt-1')).rejects.toThrow(
+        'Outlook not connected',
+      );
+    });
+
+    it('calls delete on the right event id', async () => {
+      const del = vi.fn().mockResolvedValue(undefined);
+      const api = vi.fn(() => ({ delete: del }));
+      (provider as any).graph = { api };
+
+      await provider.deleteEvent('evt-1');
+
+      expect(api).toHaveBeenCalledWith('/me/events/evt-1');
+      expect(del).toHaveBeenCalled();
+    });
+
+    it('propagates Graph API errors', async () => {
+      const del = vi.fn().mockRejectedValue(new Error('graph API error'));
+      (provider as any).graph = { api: vi.fn(() => ({ delete: del })) };
+
+      await expect(provider.deleteEvent('evt-1')).rejects.toThrow(
+        'graph API error',
+      );
+    });
+  });
+
   describe('buildMsalClient', () => {
     it('builds a public client (device-code capable, no confidential flow)', () => {
       const client = buildMsalClient({ clientId: 'cid', tenantId: 'tid' });
