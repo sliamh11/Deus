@@ -15,6 +15,13 @@ MIN_PROMPT_LEN = 10
 TOP_K = 3
 MAX_CONTEXT_CHARS = 4096
 
+# EP-001: skip retrieval on synthetic task-notification prompts -- they don't
+# need memory context and pollute the session concept store otherwise.
+# Anchored + case-sensitive so a real prompt that merely quotes/discusses a
+# notification mid-text still retrieves normally (confirmed false-positive
+# class in production transcripts).
+_SYNTHETIC_PROMPT_MARKER = "<task-notification>"
+
 
 def main() -> None:
     try:
@@ -24,6 +31,11 @@ def main() -> None:
 
     prompt = data.get("prompt", "")
     if not prompt or len(prompt) < MIN_PROMPT_LEN:
+        return
+
+    # Must run before the deferred imports below -- placement is load-bearing
+    # for both the import-cost saving and the concept-store pollution fix.
+    if prompt.lstrip().startswith(_SYNTHETIC_PROMPT_MARKER):
         return
 
     session_id = data.get("session_id", "")
