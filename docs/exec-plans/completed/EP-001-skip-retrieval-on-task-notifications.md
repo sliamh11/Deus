@@ -1,10 +1,10 @@
 # EP-001: Skip memory-retrieval on synthetic task-notification prompts
 
-**Status:** active
+**Status:** completed
 **Branch:** worktree-fluttering-twirling-parasol
 **ADRs consulted:** threshold-calibration-sweep, benchmark-regression-gate, memory-tree, standards-pack-priority, procedure-memory-default-on (docs/decisions/INDEX.md)
 **Opened:** 2026-07-28
-**Closed:** --
+**Closed:** 2026-07-29
 
 ## Goal
 
@@ -81,7 +81,7 @@ Note: the sweep's own `min_recall_constraint` is 0.7 and reports `feasible_count
 - [x] Post-change retrieval-log check (live measurement 1) — fired hook with a synthetic `<task-notification>` prompt, confirmed 0 matching `source=repo-hook` lines before and after (hash `9239a118d6084780`). Also ran a REAL Claude Code session smoke test: an isolated scratch project (`.claude/settings.json` UserPromptSubmit hook pointed at this worktree's fixed script, not the shared host-registered copy) received a live `<task-notification>` prompt via `claude -p`; a temporary debug marker (removed after) confirmed the early-return branch actually executed through the real harness. Session IDs: `5e9403ed-a4fc-46c7-aac7-0f4aa53f6511`, `6695a594-f4f1-44bc-813a-7548ff27d209` (transcripts under `~/.claude/projects/-Users-liamsteiner--claude-jobs-a1376e26-tmp-ep001-smoke-test/`)
 - [x] code-reviewer SHIP — both backends: GPT co-gate SHIP round 1; Claude SHIP round 2 (round 1 REVISE on 3 blocking issues, all fixed and independently re-verified)
 - [x] Commit message proposed, user approval obtained — commit `1d110ac`
-- [x] PR opened on the fork remote, not merged without explicit approval — PR #38 (draft), https://github.com/liam-cyberpro/Deus/pull/38
+- [x] PR opened on the fork remote, not merged without explicit approval — PR #38, merged as `b1c10f8`, https://github.com/liam-cyberpro/Deus/pull/38
 
 ## Decision log
 
@@ -94,3 +94,4 @@ Note: the sweep's own `min_recall_constraint` is 0.7 and reports `feasible_count
 | 2026-07-28 | Fix 1's live measurement 1 redesigned with a positive control + source scoping | Original design was unexecutable (wrong hash length assumed) and confoundable (a second, unfiltered log writer with no `source` field) |
 | 2026-07-28 | Dropped the `[SYSTEM NOTIFICATION` marker, kept only `<task-notification>` | Zero confirmed occurrences anywhere in the repo or any sampled transcript across 2 independent checks |
 | 2026-07-28 | Did not commit to a single frozen injection-percentage target | Multiple independent measurement attempts did not reproduce each other despite each using a real method on real data -- the qualitative finding is solid; the precise number is not |
+| 2026-07-29 | Waived live measurement 2 (concept-store before/after dump) at close, rather than running it | It was explicitly scoped as exploratory/not-pass-fail in Validation; the fix's mechanism (skipping `session_concepts.update_concepts` entirely for these prompts) makes the expected direction self-evident from the code, and the two pass/fail live measurements (retrieval-log absence, real-session smoke test) already independently confirm the early return fires correctly |

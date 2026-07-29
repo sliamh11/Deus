@@ -181,7 +181,7 @@ def test_synthetic_notification_prompt_skips_recall_and_deferred_imports(monkeyp
     `memory_query`'s own `DEUS_RETRIEVAL_LOG` — so redirect it here too,
     otherwise a future regression would silently pollute the production
     `~/.deus/memory_retrieval_log.jsonl` that this EP's own live acceptance
-    check (docs/exec-plans/active/EP-001-*.md) depends on staying clean.
+    check (docs/exec-plans/completed/EP-001-*.md) depends on staying clean.
     """
     monkeypatch.delitem(sys.modules, "memory_query", raising=False)
     monkeypatch.delitem(sys.modules, "session_concepts", raising=False)
