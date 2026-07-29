@@ -4,6 +4,15 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.28.0](https://github.com/sliamh11/Deus/compare/v1.27.0...v1.28.0) (2026-07-29)
+
+
+### Features
+
+* **evolution:** add human ground-truth feedback storage substrate (LIA-1011) ([#1064](https://github.com/sliamh11/Deus/issues/1064)) ([1b0b2c6](https://github.com/sliamh11/Deus/commit/1b0b2c618618b57b59fa5b30783d941567193d65))
+* **sessions:** add deterministic SessionEnd auto-save (no LLM turn) ([#1079](https://github.com/sliamh11/Deus/issues/1079)) ([9288ced](https://github.com/sliamh11/Deus/commit/9288ced9551f29499cd10527c73d67764e23e89f))
+* **setup:** add deus-v2 parallel-install launcher (LIA-434) ([#1068](https://github.com/sliamh11/Deus/issues/1068)) ([6bb647b](https://github.com/sliamh11/Deus/commit/6bb647b53519a7e8545886dcec97578dc62e1776))
+
 ## [1.27.0](https://github.com/sliamh11/Deus/compare/v1.26.0...v1.27.0) (2026-07-17)
 
 
