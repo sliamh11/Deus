@@ -45,7 +45,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.11.1",
     "cron-parser": "^5.6.2",
-    "google-auth-library": "^10.7.0",
+    "google-auth-library": "^10.9.0",
     "googleapis": "^173.0.0",
     "minimatch": "^10.2.5",
     "pino": "^10.3.1",
