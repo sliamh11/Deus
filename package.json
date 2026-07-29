@@ -62,7 +62,7 @@
     "@langchain/anthropic": "^1.5.1",
     "@langchain/core": "^1.2.2",
     "@types/better-sqlite3": "^7.6.12",
-    "@types/node": "^25.9.3",
+    "@types/node": "^26.1.1",
     "@vitest/coverage-v8": "^4.1.10",
     "@whiskeysockets/baileys": "^7.0.0-rc13",
     "dotenv-cli": "^11.0.0",
