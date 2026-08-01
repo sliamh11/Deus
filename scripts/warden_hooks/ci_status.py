@@ -13,6 +13,37 @@ IS monkeypatched by tests, but its callers (``approve_admin_merge`` /
 name, so ``monkeypatch.setattr(hooks, "_check_ci_status", ...)`` rebinds exactly
 what those callers see. Tests also read ``hooks._CI_STATUS_*``; the entry
 re-exports every constant, so those reads resolve.
+
+LIA-513 (2026-08-01 cross-repo incident, investigated — no code change needed
+beyond the existing ``repo`` param above): two follow-up fixes were considered
+and deliberately NOT implemented, to save a future reader from re-deriving why.
+(a) Explicitly deriving ``--repo`` from a URL-shaped ``pr_ref`` — unnecessary:
+``gh pr checks``/``gh pr view`` already resolve a fully-qualified PR URL
+natively, independent of ``--repo``/cwd, which is exactly why the documented
+full-URL workaround fixed the live incident with zero code changes. (b)
+Passing an explicit ``cwd=`` to the internal ``subprocess.run`` calls here —
+also doesn't help: the admin-merge gate only fires when the event's cwd is
+already inside the *launch* repo's own worktree tree (see
+``_worktree_for_cwd`` in ``codex_warden_hooks.py``), so for a genuinely
+cross-repo target, no cwd value the gate could ever see resolves to the
+correct repo. A bare PR number/branch with no explicit ``--repo`` flag,
+targeting a different repo than the session's own worktree, is undecidable
+from any information available to the gate; the documented
+fully-qualified-URL workaround is the correct permanent mitigation for it,
+not a bug to fix here.
+
+One residual gap the URL workaround does NOT close:
+``_branch_protection_plan_limited``'s ``gh api repos/{owner}/{repo}/...``
+probe takes no ``pr_ref`` at all (``gh api`` has no ``--repo`` flag — repo
+scoping goes directly in the endpoint path, see that function's own
+docstring), so a URL-shaped ``pr_ref`` never reaches it. With ``repo=None``
+it falls back to ``gh``'s ``{owner}/{repo}`` placeholder, resolved from the
+process cwd's git remote — i.e. the launch repo, not the actual target.
+Accepted as-is rather than fixed: the only consequence is that a plan-limited
+*launch* repo can steer a cross-repo check onto the relaxed plan-limited
+fallback path (which still fail-closes on any non-green check) instead of
+the stricter no-required-checks path — never a silent pass-through of a red
+target-repo check, since that fallback still demands the check set be green.
 """
 
 from __future__ import annotations
