@@ -139,6 +139,38 @@ data flows to Google's Gemini API:
 
 ---
 
+## 7. OpenAI API — evolution-loop judge (opt-in, benchmark use)
+
+- **What**: For every interaction scored by this provider —
+  - User prompt (up to `EVOLUTION_JUDGE_MAX_PROMPT_CHARS`, default 2000 chars).
+  - Agent response (up to `EVOLUTION_JUDGE_MAX_RESPONSE_CHARS`, default 2000 chars).
+  - `context`, if the caller supplied one (up to `EVOLUTION_JUDGE_MAX_PROMPT_CHARS`
+    — no production caller passes this today, but the interface allows it, so
+    it's capped defensively).
+  - `user_profile` (the stored persona digest), if the caller supplied one —
+    already capped at `EVOLUTION_JUDGE_MAX_PERSONA_CHARS` (default 500 chars)
+    where it's generated (`evolution/persona.py`), re-capped again here.
+  - Tool names used in the interaction (identifiers only, e.g. `"Read"`,
+    `"Bash"` — not tool arguments or output).
+
+  Same prompt/response caps as the Gemini judge (§2a). `context`/`user_profile`
+  handling is actually *stricter* here: this provider re-caps both at point of
+  use (`_cap_context_and_profile`); Gemini's judge (`gemini_judge.py`) does not
+  cap `context` at point of use, and §2a doesn't document `user_profile` at all
+  even though it genuinely reaches Gemini in production (`user_profile=digest_for_group(...)`
+  in `evolution/mcp_server.py`, `evolution/maintenance.py`) — a pre-existing gap
+  in §2a, not something this section should claim parity with.
+- **Where**: `evolution/judge/openai_judge.py` → OpenAI `/chat/completions`.
+- **When**: NEVER auto-selected. Requires BOTH `EVOLUTION_OPENAI_JUDGE_ENABLED`
+  set AND `OPENAI_API_KEY` present. In practice this means a deliberate
+  `evolution.benchmark_judge --provider openai` run, or an explicit
+  `EVOLUTION_JUDGE_PROVIDER=openai` override — never a silent fallback when
+  Gemini/Ollama are simply unavailable.
+- **Controls**: Leave `EVOLUTION_OPENAI_JUDGE_ENABLED` unset (default) to
+  opt out entirely.
+
+---
+
 ## Opt-out summary
 
 | Data type | Destination | How to opt out |
@@ -152,6 +184,7 @@ data flows to Google's Gemini API:
 | Calendar events | Google Calendar | Remove `add-gcal` skill |
 | Issue summaries | Linear | Remove `add-linear` skill |
 | Task summaries | Asana | Remove `add-asana` skill |
+| Interaction scores (judge, opt-in) | OpenAI | Don't set `EVOLUTION_OPENAI_JUDGE_ENABLED` (opt-in only) |
 
 ---
 

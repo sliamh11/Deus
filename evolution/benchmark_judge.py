@@ -11,6 +11,7 @@ Usage:
 """
 import argparse
 import json
+import os
 import random
 import statistics
 import sys
@@ -31,6 +32,9 @@ from .judge.ollama_judge import (
     _ollama_url,
     is_ollama_available,
 )
+from .judge.provider import JudgeRegistry
+from .judge import providers as _judge_providers  # noqa: F401 — registers all built-in providers
+from .judge.providers.openai import OpenAIProvider
 
 DIMS = ("quality", "safety", "tool_use", "personalization")
 # Interactions scoring below this composite trigger reflexion (EVOLUTION_REFLECTION_THRESHOLD
@@ -339,7 +343,7 @@ def _auto_detect_models() -> list[str]:
     return [m for m in all_models if "gemma4" in m]
 
 
-def benchmark(models: list[str], interactions: list[dict], verbose: bool = True) -> list[ModelResult]:
+def benchmark(models: list[str], interactions: list[dict], provider: str = "ollama", verbose: bool = True) -> list[ModelResult]:
     results = []
 
     for model_name in models:
@@ -348,13 +352,19 @@ def benchmark(models: list[str], interactions: list[dict], verbose: bool = True)
             print(f"Benchmarking: {model_name}")
             print(f"{'='*60}")
 
-        try:
-            _check_model_pulled(model_name)
-        except RuntimeError as e:
-            print(f"  SKIP: {e}")
-            continue
+        if provider == "ollama":
+            try:
+                _check_model_pulled(model_name)
+            except RuntimeError as e:
+                print(f"  SKIP: {e}")
+                continue
+            judge = OllamaRuntimeJudge(model=model_name)
+        else:
+            # No "is this pulled locally" concept for a hosted API — a bad
+            # model string surfaces as a normal API error inside the
+            # per-interaction try/except below.
+            judge = JudgeRegistry.default().get(provider).make_runtime_judge(model=model_name)
 
-        judge = OllamaRuntimeJudge(model=model_name)
         mr = ModelResult(model=model_name)
 
         for i, interaction in enumerate(interactions):
@@ -582,19 +592,22 @@ def print_dimension_report(results: list[ModelResult], baseline_idx: int = 0) ->
                   f"P({r.model}>{base.model})={delta['p_b_gt_a']:.2f}")
 
 
-def _eval_safety_probes(model_name: str, probes: list[dict], verbose: bool = True) -> Optional[dict]:
+def _eval_safety_probes(model_name: str, probes: list[dict], provider: str = "ollama", verbose: bool = True) -> Optional[dict]:
     """Run synthetic safety probes through one model; binary unsafe-detection P/R.
 
     Judge flags 'unsafe' when its safety dim < 0.5. Smoke test (n~12), not calibration.
     """
     if not probes:
         return None
-    try:
-        _check_model_pulled(model_name)
-    except RuntimeError as e:
-        print(f"  SKIP safety probes for {model_name}: {e}")
-        return None
-    judge = OllamaRuntimeJudge(model=model_name)
+    if provider == "ollama":
+        try:
+            _check_model_pulled(model_name)
+        except RuntimeError as e:
+            print(f"  SKIP safety probes for {model_name}: {e}")
+            return None
+        judge = OllamaRuntimeJudge(model=model_name)
+    else:
+        judge = JudgeRegistry.default().get(provider).make_runtime_judge(model=model_name)
     tp = fp = fn = tn = errors = 0
     for p in probes:
         try:
@@ -655,22 +668,35 @@ def main() -> None:
                              "Only used in --fixture mode; pass '' to skip.")
     parser.add_argument("--json-out", type=str, default=None,
                         help="Write results JSON here (use a gitignored path for fixture runs).")
+    parser.add_argument("--provider", type=str, default="ollama", choices=["ollama", "openai"],
+                        help="Judge backend to benchmark (default: ollama). 'openai' opts into "
+                             "EVOLUTION_OPENAI_JUDGE_ENABLED for the duration of this run.")
     args = parser.parse_args()
 
-    if not is_ollama_available():
-        print("ERROR: Ollama is not reachable. Start it with: ollama serve")
-        sys.exit(1)
+    if args.provider == "ollama":
+        if not is_ollama_available():
+            print("ERROR: Ollama is not reachable. Start it with: ollama serve")
+            sys.exit(1)
+    else:
+        # This deliberate CLI invocation IS the opt-in context.
+        os.environ["EVOLUTION_OPENAI_JUDGE_ENABLED"] = "1"
+        if not OpenAIProvider().is_available():
+            print("ERROR: OpenAI judge not available — set OPENAI_API_KEY.")
+            sys.exit(1)
 
     # Determine models to benchmark
     if args.models:
         models = [m.strip() for m in args.models.split(",")]
-    else:
+    elif args.provider == "ollama":
         models = _auto_detect_models()
         if not models:
             print("ERROR: No gemma4 or qwen models found. Pull some first:")
             print("  ollama pull gemma4:e4b")
             print("  ollama pull gemma4:26b")
             sys.exit(1)
+    else:
+        print("ERROR: --models is required for --provider openai (no auto-detect for hosted models).")
+        sys.exit(1)
 
     print(f"Models to benchmark: {', '.join(models)}")
 
@@ -691,7 +717,7 @@ def main() -> None:
         print(f"Loaded {len(interactions)} interactions with stored ground-truth scores.\n")
 
     # Run benchmark
-    results = benchmark(models, interactions, verbose=not args.quiet)
+    results = benchmark(models, interactions, provider=args.provider, verbose=not args.quiet)
 
     # Composite ranking (legacy) + per-dimension report (fixture mode only).
     print_comparison(results)
@@ -703,7 +729,7 @@ def main() -> None:
         probes = _load_safety_probes(Path(args.safety_probes).expanduser())
         if probes:
             print(f"\nRunning {len(probes)} safety probes per model...")
-            safety_results = [_eval_safety_probes(m, probes, verbose=not args.quiet) for m in models]
+            safety_results = [_eval_safety_probes(m, probes, provider=args.provider, verbose=not args.quiet) for m in models]
             print_safety_report(safety_results)
 
     # Print conflicts for human review
