@@ -12,10 +12,11 @@ services:
     domain classification. Truncated to JUDGE_MAX_PROMPT/RESPONSE_CHARS each.
   - Gemini API: vault/memory file chunks for semantic embeddings, UNLESS
     Ollama is running and EMBEDDING_PROVIDER != 'gemini'.
-  - OpenAI API (via OPENAI_API_KEY), judge scoring ONLY, and ONLY when
+  - OpenAI (via the local `codex` CLI, ChatGPT/Codex subscription auth — no
+    OPENAI_API_KEY), judge scoring ONLY, and ONLY when
     EVOLUTION_OPENAI_JUDGE_ENABLED is explicitly set (opt-in, never
-    auto-selected): same interaction prompts + responses as the Gemini
-    judge, same truncation limits. See docs/security/data-flows.md §7.
+    auto-selected, macOS only): same interaction prompts + responses as the
+    Gemini judge, same truncation limits. See docs/security/data-flows.md §7.
 
 To keep all processing local:
   - Set EVOLUTION_ENABLED=0  (disables judge + reflexion + domain LLM fallback)
@@ -90,13 +91,11 @@ JUDGE_MODEL = os.environ.get("EVOLUTION_JUDGE_MODEL", "models/gemini-3.1-flash-l
 JUDGE_MAX_PROMPT_CHARS = int(os.environ.get("EVOLUTION_JUDGE_MAX_PROMPT_CHARS", "2000"))
 JUDGE_MAX_RESPONSE_CHARS = int(os.environ.get("EVOLUTION_JUDGE_MAX_RESPONSE_CHARS", "2000"))
 
-# ── OpenAI (opt-in judge alternative) ───────────────────────────────────────────
+# ── OpenAI (opt-in judge alternative, via codex-exec/ChatGPT subscription) ─────
 
-# Namespaced env var (NOT the bare OPENAI_BASE_URL) — that name is already used
-# by the credential-proxy/agent-backend subsystem for a different base URL shape
-# (https://api.openai.com, no /v1). Keeping this one prefixed avoids silently
-# cross-coupling the two subsystems' config.
-OPENAI_BASE_URL = os.environ.get("EVOLUTION_OPENAI_BASE_URL", "https://api.openai.com/v1")
+# Model passed to `codex exec -m`. No OPENAI_API_KEY / base-URL config here —
+# this provider authenticates via the codex CLI's own ChatGPT/Codex
+# subscription login, not a raw API key. See evolution/judge/openai_judge.py.
 OPENAI_JUDGE_MODEL = os.environ.get("EVOLUTION_OPENAI_JUDGE_MODEL", "gpt-5.6-luna")
 
 # ── Reflexion ─────────────────────────────────────────────────────────────────
@@ -198,27 +197,5 @@ def load_api_key() -> str:
         checked = ", ".join(str(p) for p in _ENV_SEARCH_PATHS)
         raise RuntimeError(
             f"GEMINI_API_KEY not found. Checked: {checked}, and env var."
-        )
-    return key
-
-
-def load_openai_api_key() -> str:
-    """Load OPENAI_API_KEY from .env files (in priority order) or environment.
-
-    Mirrors load_api_key() exactly (same search paths, same empty-is-absent
-    semantics) but for the judge subsystem's OpenAI provider.
-    """
-    for path in _ENV_SEARCH_PATHS:
-        if path.exists():
-            for line in path.read_text().splitlines():
-                if line.startswith("OPENAI_API_KEY="):
-                    value = line.split("=", 1)[1].strip()
-                    if value:
-                        return value
-    key = os.environ.get("OPENAI_API_KEY", "")
-    if not key:
-        checked = ", ".join(str(p) for p in _ENV_SEARCH_PATHS)
-        raise RuntimeError(
-            f"OPENAI_API_KEY not found. Checked: {checked}, and env var."
         )
     return key

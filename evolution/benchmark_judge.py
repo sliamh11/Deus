@@ -681,7 +681,11 @@ def main() -> None:
         # This deliberate CLI invocation IS the opt-in context.
         os.environ["EVOLUTION_OPENAI_JUDGE_ENABLED"] = "1"
         if not OpenAIProvider().is_available():
-            print("ERROR: OpenAI judge not available — set OPENAI_API_KEY.")
+            print(
+                "ERROR: OpenAI judge not available — requires a native codex CLI "
+                "install (e.g. `brew install codex`, not npm) and `codex login`. "
+                "Run `codex login status` to check."
+            )
             sys.exit(1)
 
     # Determine models to benchmark

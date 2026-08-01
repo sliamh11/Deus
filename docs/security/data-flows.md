@@ -139,7 +139,7 @@ data flows to Google's Gemini API:
 
 ---
 
-## 7. OpenAI API — evolution-loop judge (opt-in, benchmark use)
+## 7. OpenAI (via codex CLI / ChatGPT subscription) — evolution-loop judge (opt-in, benchmark use, macOS only)
 
 - **What**: For every interaction scored by this provider —
   - User prompt (up to `EVOLUTION_JUDGE_MAX_PROMPT_CHARS`, default 2000 chars).
@@ -160,14 +160,28 @@ data flows to Google's Gemini API:
   even though it genuinely reaches Gemini in production (`user_profile=digest_for_group(...)`
   in `evolution/mcp_server.py`, `evolution/maintenance.py`) — a pre-existing gap
   in §2a, not something this section should claim parity with.
-- **Where**: `evolution/judge/openai_judge.py` → OpenAI `/chat/completions`.
+- **Where**: `evolution/judge/openai_judge.py` → local `codex` CLI (ChatGPT/
+  Codex subscription authentication — no `OPENAI_API_KEY`, no per-call
+  billing). No raw HTTP call is made by this provider.
 - **When**: NEVER auto-selected. Requires BOTH `EVOLUTION_OPENAI_JUDGE_ENABLED`
-  set AND `OPENAI_API_KEY` present. In practice this means a deliberate
+  set AND a working, authenticated native `codex` CLI install (verified via
+  `codex login status`). In practice this means a deliberate
   `evolution.benchmark_judge --provider openai` run, or an explicit
   `EVOLUTION_JUDGE_PROVIDER=openai` override — never a silent fallback when
   Gemini/Ollama are simply unavailable.
+- **Isolation**: each call runs `codex exec` inside a macOS Seatbelt sandbox
+  (`sandbox-exec`) with every execution-capable codex feature disabled
+  (`shell_tool`, `unified_exec`, `apps`, `browser_use`, `computer_use`, and
+  15 others — enumerated in `evolution/judge/openai_judge.py`) and
+  `process-exec` restricted at the OS level to the codex binary itself —
+  defense against judged content (real user prompts/agent responses, which
+  may contain adversarial text) being used to direct the agent to read local
+  files or make unintended tool calls. Filesystem access is scoped to a
+  narrow allowlist (codex's own fixed bookkeeping paths, this user's own
+  temp/cache root, and one per-call isolated directory) — never a blanket
+  grant. The subprocess environment is minimized to `PATH`/`HOME` only.
 - **Controls**: Leave `EVOLUTION_OPENAI_JUDGE_ENABLED` unset (default) to
-  opt out entirely.
+  opt out entirely. macOS only — reports unavailable on other platforms.
 
 ---
 

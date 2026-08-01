@@ -95,9 +95,8 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `EVOLUTION_JUDGE_MAX_RESPONSE_CHARS` | `2000` | Max chars of agent response sent to Gemini judge |
 | `EVOLUTION_JUDGE_PROVIDER` | (auto-detect) | Force a specific judge provider: `ollama`, `gemini`, `claude`, `mock`, `llama-cpp`, `openai` |
 | `EVOLUTION_GEN_PROVIDER` | (auto-detect) | Force a specific generative provider: `gemini`, `ollama`, `mock`, `llama-cpp` |
-| `EVOLUTION_OPENAI_JUDGE_ENABLED` | (unset) | Opt-in gate for the OpenAI judge provider — required in addition to `OPENAI_API_KEY`; never auto-selected. See `docs/security/data-flows.md` §7 |
-| `EVOLUTION_OPENAI_JUDGE_MODEL` | `gpt-5.6-luna` | OpenAI model used when the `openai` judge provider is active |
-| `EVOLUTION_OPENAI_BASE_URL` | `https://api.openai.com/v1` | Base URL for the OpenAI judge provider (namespaced separately from the credential-proxy's `OPENAI_BASE_URL`) |
+| `EVOLUTION_OPENAI_JUDGE_ENABLED` | (unset) | Opt-in gate for the OpenAI judge provider — required in addition to a native `codex` CLI install + `codex login`; never auto-selected. macOS only. See `docs/security/data-flows.md` §7 |
+| `EVOLUTION_OPENAI_JUDGE_MODEL` | `gpt-5.6-luna` | Model passed to `codex exec -m` when the `openai` judge provider is active |
 | `DEUS_STORAGE_PROVIDER` | (auto-detect) | Force a specific storage provider: `sqlite` |
 | `EVOLUTION_GEN_MODEL` | `models/gemini-3.1-flash-lite` | Default generative model (Gemini) |
 | `EVOLUTION_MAX_REFLECTIONS` | `3` | Max reflections retrieved per agent query |
