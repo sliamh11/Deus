@@ -293,7 +293,13 @@ def _classify_stderr(stderr: str) -> str:
     return "fatal"
 
 
-def _call_openai(prompt: str, model: str = OPENAI_JUDGE_MODEL) -> str:
+# Confirmed live against this codex version (0.144.3): passing an invalid
+# value to -c model_reasoning_effort returns a clear 400
+# invalid_enum_value error naming exactly this set.
+_VALID_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+
+def _call_openai(prompt: str, model: str = OPENAI_JUDGE_MODEL, effort: str = "high") -> str:
     """Synchronous codex-exec call, sandboxed per the module docstring.
 
     Each attempt gets a fresh isolated temp directory (this-user-scoped,
@@ -301,7 +307,16 @@ def _call_openai(prompt: str, model: str = OPENAI_JUDGE_MODEL) -> str:
     which would honor TMPDIR and could land outside the validated Seatbelt
     grant under a stripped environment) and a fresh Seatbelt profile file;
     both are cleaned up in `finally` regardless of outcome.
+
+    `effort` defaults to "high" (preserving prior behavior for every
+    existing caller) — see the class docstring for why "high" is the
+    production default; exposed as a parameter so a caller can benchmark
+    other levels ("none"/"minimal"/"low"/"medium"/"xhigh"/"max") without
+    touching the sandbox/capability design at all (effort is purely a
+    model-generation knob, zero security surface).
     """
+    if effort not in _VALID_EFFORTS:
+        raise ValueError(f"Invalid effort {effort!r}; must be one of {sorted(_VALID_EFFORTS)}")
     codex_path = shutil.which("codex")
     if codex_path is None:
         raise RuntimeError("`codex` CLI not found on PATH.")
@@ -329,13 +344,14 @@ def _call_openai(prompt: str, model: str = OPENAI_JUDGE_MODEL) -> str:
             cmd += [
                 "-c", 'web_search="disabled"',
                 "-c", "tools.view_image=false",
-                # "high": --ignore-user-config drops config.toml's own
-                # reasoning-effort default, and rubric-adherence accuracy on
-                # a 4-dimension structured-scoring task benefits more from
+                # --ignore-user-config drops config.toml's own
+                # reasoning-effort default, so this is always explicit.
+                # Default "high": rubric-adherence accuracy on a
+                # 4-dimension structured-scoring task benefits more from
                 # higher effort than latency does from lower — accepted
                 # tradeoff despite the retry loops below compounding worst-
                 # case wall-clock (up to (JUDGE_RETRY_COUNT+1)^2 calls).
-                "-c", 'model_reasoning_effort="high"',
+                "-c", f'model_reasoning_effort="{effort}"',
                 "--ignore-user-config", "--ignore-rules",
                 "--sandbox", "read-only", "--ephemeral", "--skip-git-repo-check",
                 "--cd", iso_dir,
@@ -395,10 +411,10 @@ def _call_openai(prompt: str, model: str = OPENAI_JUDGE_MODEL) -> str:
     raise last_exc  # pragma: no cover — unreachable, loop always returns or raises
 
 
-async def _call_openai_async(prompt: str, model: str = OPENAI_JUDGE_MODEL) -> str:
+async def _call_openai_async(prompt: str, model: str = OPENAI_JUDGE_MODEL, effort: str = "high") -> str:
     """Async codex-exec call — runs sync in thread pool to avoid blocking the event loop."""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: _call_openai(prompt, model))
+    return await loop.run_in_executor(None, lambda: _call_openai(prompt, model, effort))
 
 
 def _cap_context_and_profile(
@@ -432,8 +448,9 @@ class OpenAIRuntimeJudge(BaseJudge):
     and a composite score.
     """
 
-    def __init__(self, model: str = OPENAI_JUDGE_MODEL):
+    def __init__(self, model: str = OPENAI_JUDGE_MODEL, effort: str = "high"):
         self.model = model
+        self.effort = effort
 
     def evaluate(
         self,
@@ -447,13 +464,13 @@ class OpenAIRuntimeJudge(BaseJudge):
         response = (response or "")[:JUDGE_MAX_RESPONSE_CHARS]
         context, user_profile = _cap_context_and_profile(context, user_profile)
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
-        raw = _call_openai(eval_prompt, self.model)
+        raw = _call_openai(eval_prompt, self.model, self.effort)
         result = _parse_result(raw)
         if result.is_parse_error:
             for _ in range(JUDGE_RETRY_COUNT):
                 raw = _call_openai(
                     _build_eval_prompt(prompt, response, tools_used, context, user_profile, strict_json=True),
-                    self.model,
+                    self.model, self.effort,
                 )
                 result = _parse_result(raw)
                 if not result.is_parse_error:
@@ -472,13 +489,13 @@ class OpenAIRuntimeJudge(BaseJudge):
         response = (response or "")[:JUDGE_MAX_RESPONSE_CHARS]
         context, user_profile = _cap_context_and_profile(context, user_profile)
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
-        raw = await _call_openai_async(eval_prompt, self.model)
+        raw = await _call_openai_async(eval_prompt, self.model, self.effort)
         result = _parse_result(raw)
         if result.is_parse_error:
             for _ in range(JUDGE_RETRY_COUNT):
                 raw = await _call_openai_async(
                     _build_eval_prompt(prompt, response, tools_used, context, user_profile, strict_json=True),
-                    self.model,
+                    self.model, self.effort,
                 )
                 result = _parse_result(raw)
                 if not result.is_parse_error:
@@ -587,6 +604,6 @@ def _parse_result(raw: str) -> JudgeResult:
         )
 
 
-def make_runtime_judge(model: str = OPENAI_JUDGE_MODEL) -> OpenAIRuntimeJudge:
+def make_runtime_judge(model: str = OPENAI_JUDGE_MODEL, effort: str = "high") -> OpenAIRuntimeJudge:
     """Return an OpenAIRuntimeJudge for scoring production interactions."""
-    return OpenAIRuntimeJudge(model=model)
+    return OpenAIRuntimeJudge(model=model, effort=effort)
