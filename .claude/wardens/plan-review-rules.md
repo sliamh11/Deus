@@ -152,7 +152,27 @@ Common traps:
 
 ---
 
+## round-count-circuit-breaker
+**Severity:** informational
+**Applies when:** The reviewing agent has direct evidence (its own context if resumed, a cross-review memo, or the dispatch prompt stating a round number) that this is the 6th or later plan-reviewer round against the same underlying plan artifact without reaching SHIP. No automated round-count tracker exists yet — this rule depends on evidence visible to the reviewer in the moment, not persisted state. Do not assume "round 6" unless directly evidenced; when unclear, treat as an unknown, not a pass.
+**Check:** When the round number IS evidenced, does the record show a holistic re-read of the entire accumulated artifact since round 5, with an explicit written answer to "is this still the smallest thing that satisfies the user's actual ask?"
+**Rule:** When you can see this is round 6+ and no re-scope checkpoint is on record, flag it explicitly in your review output and recommend one before further patching — a document that keeps needing fixes past round 5 is evidence the artifact itself needs to shrink. This is advisory, not blocking, until real round-count tracking infrastructure exists (a persisted per-artifact counter, not self-report) — promoting this to `blocking` severity requires that infra first, tracked as a separate follow-up.
+
+## reviewer-coverage-diversity
+**Severity:** informational
+**Applies when:** A plan or artifact has already had 2+ review rounds from the SAME reviewer role, and the round-over-round findings are NOT traceable to the previous round's own fixes (latent issues in the original artifact, not ones introduced while fixing something else).
+**Check:** Would an independent second instance of the same reviewer role, run on the CURRENT snapshot in parallel rather than in series, plausibly surface additional latent issues faster than one more serial round?
+**Rule:** Serial iteration converges slowly against latent-but-undetected issues because each pass samples a different subset of an artifact's claims rather than achieving full coverage — confirmed empirically in this session (2026-08-02): an ad hoc second result-skeptic pass on a personal-memory procedure-node draft (not part of PR #1101's own diff), dispatched beyond `/learn-procedure`'s standard single-pass step specifically because the first pass found real issues, caught a factual error present in the draft since before round 1 that round 1 never checked. Where this pattern is suspected, prefer 2-3 independent reviewer instances on the SAME snapshot in one round, unioning findings, over relying on additional serial rounds.
+
 ## Remediation Details
+
+### round-count-circuit-breaker
+**Cite:** RETRO-2026-08-02-01; docs/decisions/review-round-circuit-breaker-proposal.md
+**Remediation:** Stop patching. Re-read the full accumulated plan/artifact end to end, answer the re-scope question explicitly in the plan/PR, and either re-scope to a smaller artifact (restart the round count) or record why the current scope is still correct and continue.
+
+### reviewer-coverage-diversity
+**Cite:** docs/decisions/review-round-circuit-breaker-proposal.md § "A second, independent mechanism: finite-attention sampling"; an ad hoc second result-skeptic pass on a personal-memory procedure-node draft, this same working session (2026-08-02), not part of PR #1101's own diff.
+**Remediation:** Dispatch a second, independent instance of the same reviewer role against the current snapshot (parallel, not a resumed session) and union its findings with the first round's, rather than immediately starting a third serial round.
 
 ### public-repo-generic
 **Cite:** `feedback_public_repo_generic`

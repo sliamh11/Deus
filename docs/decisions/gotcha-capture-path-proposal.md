@@ -1,9 +1,9 @@
 # ADR: Lighter-weight capture path for single-fact gotchas
 
 **Date:** 2026-08-02
-**Status:** Proposed
+**Status:** Accepted (Option A)
 **Reversibility:** REVERSIBLE
-**Scope:** none yet — proposal only, not applied to any file; Option A would touch the compress skill, Option B a rules file
+**Scope:** `.claude/skills/compress/SKILL.md` (Option A, applied). Option B not pursued, per this doc's own "do not do both" guidance.
 
 ## Context
 
@@ -59,6 +59,11 @@ rule closing the gap between "knew the destination" and "wrote it there."
 Do not implement both -- pick one, since running two capture paths for the same gotcha class
 would itself become the kind of redundant process this retrospective's parent themes (review-round
 inefficiency, tool-shape mismatch) already warn against.
+
+**Outcome:** Option A was chosen and implemented as `.claude/skills/compress/SKILL.md`'s new
+"Step 0.5 -- Flag capturable gotchas" section. Option B was not pursued -- its edit target
+(`feedback_rule_extraction_standard.md`) is a personal-memory file outside this repo, not
+something this ADR can apply directly, and per the guidance above only one path should exist.
 
 ## Alternatives Considered
 

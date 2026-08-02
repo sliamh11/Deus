@@ -71,7 +71,7 @@ remain `med` (the default).
 
 | Atom | Citation |
 |------|---------|
-| `feedback_warden_loop.md` | Execution Gates L17: "REVISE from any warden means re-run after fixes until SHIP. Never touch markers, commit, or proceed on REVISE." |
+| `feedback_warden_loop.md` | Execution Gates L18: "REVISE from any warden means re-run after fixes until SHIP, against a bounded artifact (bounding is the round-count-circuit-breaker re-scope checkpoint in `plan-review-rules.md` — never a self-declared exemption) — no exceptions, no 'close enough,' no time-pressure rationalization. Never touch markers, commit, or proceed on REVISE." |
 | `feedback_wait_for_approval.md` | Execution Gates L13: "Never execute without explicit user approval. Wait to be told." |
 | `feedback_data_integrity.md` | Data & Security L6: "Never lose, overwrite, or downgrade user data. Merge, don't replace." |
 | `feedback_no_speculation.md` | Verification & Honesty L22: "Never speculate. Only state verified facts. If unsure, say so." |
