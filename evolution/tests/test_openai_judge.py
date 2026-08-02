@@ -36,7 +36,15 @@ _FAKE_CODEX_PATH = "/opt/homebrew/bin/codex"
 @pytest.fixture(autouse=True)
 def _fake_env():
     """codex/sandbox-exec present, EVOLUTION_OPENAI_JUDGE_ENABLED set, per-user
-    root resolvable — the baseline every test starts from. Deliberately does
+    root resolvable, Darwin platform — the baseline every test starts from.
+    platform.system is pinned to "Darwin" here (not just left to the real OS)
+    because this module is Darwin-only by design and CI runs these tests on
+    Linux runners: without this, is_openai_available()'s own Darwin gate
+    short-circuits to False before ever reaching the mocks individual tests
+    set up (_is_macho_binary, subprocess.run), so tests asserting the
+    all-mocks-succeed path silently fail on Linux CI while passing locally
+    on macOS. test_false_on_non_darwin overrides this back to "Linux" within
+    its own `with` block to test that gate specifically. Deliberately does
     NOT patch os.path.realpath globally (that leaked into pytest's own
     tmp_path fixture machinery, which also calls realpath internally) —
     shutil.which is patched to directly return the fake codex path, and
@@ -44,6 +52,7 @@ def _fake_env():
     the input unchanged)."""
     with patch("evolution.judge.openai_judge.shutil.which", return_value=_FAKE_CODEX_PATH), \
          patch("evolution.judge.openai_judge._darwin_per_user_root", return_value="/private/var/folders/1z/xxxxxxxxxxxxxxxxxxxxxxxxxxxx"), \
+         patch("evolution.judge.openai_judge.platform.system", return_value="Darwin"), \
          patch.dict("os.environ", {"EVOLUTION_OPENAI_JUDGE_ENABLED": "1"}):
         yield
 
