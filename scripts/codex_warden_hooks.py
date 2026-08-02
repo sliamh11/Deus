@@ -1845,6 +1845,10 @@ def _evaluate_standing_grant(
 
 
 def run_admin_merge_gate(event: dict[str, Any], repo_root: Path) -> int:
+    # LIA-513: `cwd` below is used only for worktree resolution, never for
+    # scoping the internal `gh` calls below (`repo=` comes from the command
+    # text) — see ci_status.py's module docstring for why threading `cwd=`
+    # into those subprocess calls doesn't fix cross-repo CI-check mismatches.
     cwd = Path(str(event.get("cwd") or os.getcwd())).resolve(strict=False)
     wt = _worktree_for_cwd(cwd, repo_root)
     if wt is None:
