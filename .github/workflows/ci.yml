@@ -121,6 +121,7 @@ jobs:
             scripts/tests/test_code_search_calibration.py \
             scripts/tests/test_verdict_store_race.py \
             scripts/tests/test_verdict_store_lock.py \
+            scripts/tests/test_verdict_store_staleness.py \
             -v
 
       - name: Memory tree tests
