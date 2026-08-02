@@ -11,6 +11,7 @@ Usage:
 """
 import argparse
 import json
+import math
 import os
 import random
 import statistics
@@ -46,12 +47,17 @@ SAFETY_PROBES_PATH = Path(__file__).resolve().parent / "fixtures" / "judge_safet
 
 @dataclass
 class EvalDetail:
-    """Per-interaction evaluation detail for conflict analysis."""
+    """Per-interaction evaluation detail for conflict analysis and paired comparison."""
     interaction_id: str
     prompt_preview: str  # first 80 chars
     ground_truth: float
     model_score: float
     rationale: str
+    # Per-dimension truth/score for this one interaction (only dims present in
+    # the interaction's ground_truth_dims — mirrors ModelResult.dim_scores/dim_truth
+    # but keyed to this record so cross-run comparisons can be paired by interaction_id.
+    dim_truth: dict[str, float] = field(default_factory=dict)
+    dim_scores: dict[str, float] = field(default_factory=dict)
 
     @property
     def delta(self) -> float:
@@ -143,6 +149,74 @@ def _mae(a: list[float], b: list[float]) -> Optional[float]:
     if not a:
         return None
     return statistics.mean(abs(a[i] - b[i]) for i in range(len(a)))
+
+
+# ── Trivial baselines (fixture "gameability" — how much raw Pearson a judge's
+# score explains beyond what a feature blind to actual response quality already
+# gets for free). See handoff 2026-08-02-01-15-gpt56-judge-benchmark-reliability:
+# a bare log(response_length) regressor alone scored r=0.485/r=0.338 on the two
+# investigation fixtures — a chunk of any judge's raw Pearson is just "did it
+# happen to favor longer responses," not judging skill. ─────────────────────────
+
+def _constant_mean_mae(truth: list[float]) -> Optional[float]:
+    """MAE of the 'always predict the in-sample mean' baseline. None if empty."""
+    if not truth:
+        return None
+    m = statistics.mean(truth)
+    return statistics.mean(abs(t - m) for t in truth)
+
+
+def _logistic_fit_pearson(feature: list[float], truth: list[float],
+                          iters: int = 500, lr: float = 0.1) -> Optional[float]:
+    """Fit y_hat = sigmoid(a*x + b) by gradient descent (MSE loss) on the
+    STANDARDIZED feature, from a fixed deterministic start (a=b=0) — no RNG
+    needed, unlike _bootstrap_ci which resamples. Returns Pearson(y_hat, truth).
+
+    In-sample fit on the same rows being graded — this measures how gameable
+    the fixture is by a trivial nonlinear transform of the feature, not
+    held-out generalization. Standardizing before fitting (rather than fitting
+    directly on raw log(len)) avoids z=a*x+b overflowing math.exp at realistic
+    response-length scale (log(len) ranges ~2-9, un-scaled that saturates or
+    diverges a lr sized for a standardized feature).
+    """
+    n = len(feature)
+    if n == 0 or len(truth) != n:
+        return None
+    mean_f = statistics.mean(feature)
+    std_f = statistics.pstdev(feature)
+    if std_f == 0:
+        return None  # constant feature — no slope to fit (mirrors _pearson's convention)
+    x = [(f - mean_f) / std_f for f in feature]
+
+    def sigmoid(z: float) -> float:
+        z = max(-30.0, min(30.0, z))  # clip: sigmoid saturates well before |z|=30
+        return 1.0 / (1.0 + math.exp(-z))
+
+    a, b = 0.0, 0.0
+    for _ in range(iters):
+        preds = [sigmoid(a * xi + b) for xi in x]
+        # d(MSE)/d(pred) * d(pred)/dz, averaged over n
+        grad_common = [2.0 * (preds[i] - truth[i]) * preds[i] * (1 - preds[i]) for i in range(n)]
+        grad_a = sum(grad_common[i] * x[i] for i in range(n)) / n
+        grad_b = sum(grad_common) / n
+        a -= lr * grad_a
+        b -= lr * grad_b
+
+    y_hat = [sigmoid(a * xi + b) for xi in x]
+    return _pearson(y_hat, truth)
+
+
+def compute_trivial_baselines(interactions: list[dict]) -> dict:
+    """Fixture-derived (not judge-derived) baselines — computed once per run,
+    independent of which model(s) are being benchmarked."""
+    responses = [i.get("response", "") or "" for i in interactions]
+    truth = [i["ground_truth_score"] for i in interactions]
+    log_len = [math.log(len(r) + 1) for r in responses]
+    return {
+        "log_length_pearson": _pearson(log_len, truth),
+        "constant_mean_mae": _constant_mean_mae(truth),
+        "logistic_pearson": _logistic_fit_pearson(log_len, truth),
+    }
 
 
 def _prf(tp: int, fp: int, fn: int) -> tuple[Optional[float], Optional[float], Optional[float]]:
@@ -398,16 +472,24 @@ def benchmark(models: list[str], interactions: list[dict], provider: str = "olla
             mr.ground_truth.append(interaction["ground_truth_score"])
             # Per-dimension arrays (only when the interaction carries per-dim truth).
             gt_dims = interaction.get("ground_truth_dims") or {}
+            record_dim_truth: dict[str, float] = {}
+            record_dim_scores: dict[str, float] = {}
             for d in DIMS:
                 if d in gt_dims:
-                    mr.dim_scores[d].append(getattr(result, d))
-                    mr.dim_truth[d].append(float(gt_dims[d]))
+                    dim_score = getattr(result, d)
+                    dim_truth_val = float(gt_dims[d])
+                    mr.dim_scores[d].append(dim_score)
+                    mr.dim_truth[d].append(dim_truth_val)
+                    record_dim_scores[d] = dim_score
+                    record_dim_truth[d] = dim_truth_val
             mr.details.append(EvalDetail(
                 interaction_id=interaction["id"],
                 prompt_preview=interaction["prompt"][:80].replace("\n", " "),
                 ground_truth=interaction["ground_truth_score"],
                 model_score=result.score,
                 rationale=result.rationale[:200] if result.rationale else "",
+                dim_truth=record_dim_truth,
+                dim_scores=record_dim_scores,
             ))
 
             if verbose:
@@ -432,7 +514,7 @@ def benchmark(models: list[str], interactions: list[dict], provider: str = "olla
     return results
 
 
-def print_comparison(results: list[ModelResult]) -> None:
+def print_comparison(results: list[ModelResult], trivial_baselines: Optional[dict] = None) -> None:
     if not results:
         print("\nNo results to compare.")
         return
@@ -446,23 +528,39 @@ def print_comparison(results: list[ModelResult]) -> None:
 
     ranked = sorted(results, key=composite, reverse=True)
 
+    log_len_r = trivial_baselines.get("log_length_pearson") if trivial_baselines else None
+    if trivial_baselines is not None:
+        logi = trivial_baselines.get("logistic_pearson")
+        cmae = trivial_baselines.get("constant_mean_mae")
+        fmt = lambda v: f"{v:.3f}" if v is not None else "n/a"
+        print(
+            "\nTrivial baselines (fixture gameability, not judge skill): "
+            f"log-length r={fmt(log_len_r)} | "
+            f"logistic(log-length) r={fmt(logi)} | "
+            f"constant-mean MAE={fmt(cmae)}"
+        )
+
     print(f"\n{'='*80}")
     print("BENCHMARK RESULTS (ranked by composite score)")
     print(f"{'='*80}")
-    print(
-        f"{'Rank':<5} {'Model':<25} {'Pearson':>8} {'Spearman':>9} "
-        f"{'MAE':>6} {'ParseErr':>9} {'Latency':>8} {'Composite':>10}"
-    )
-    print("-" * 80)
+    header = f"{'Rank':<5} {'Model':<25} {'Pearson':>8} {'Spearman':>9} " \
+             f"{'MAE':>6} {'ParseErr':>9} {'Latency':>8} {'Composite':>10}"
+    if log_len_r is not None:
+        header += f" {'Δ vs log-len':>13}"
+    print(header)
+    print("-" * len(header))
 
     for i, r in enumerate(ranked):
         comp = composite(r)
         marker = " ***" if i == 0 else ""
-        print(
+        row = (
             f"{i+1:<5} {r.model:<25} {r.pearson:>8.3f} {r.spearman:>9.3f} "
             f"{r.mae:>6.3f} {r.parse_errors:>4}/{r.total:<4} "
-            f"{r.avg_latency:>7.1f}s {comp:>9.3f}{marker}"
+            f"{r.avg_latency:>7.1f}s {comp:>9.3f}"
         )
+        if log_len_r is not None:
+            row += f" {r.pearson - log_len_r:>+13.3f}"
+        print(row + marker)
 
     print(f"\n*** Winner: {ranked[0].model}")
 
@@ -720,11 +818,15 @@ def main() -> None:
             sys.exit(1)
         print(f"Loaded {len(interactions)} interactions with stored ground-truth scores.\n")
 
+    # Fixture-derived (not judge-derived) trivial baselines — computed once,
+    # independent of which model(s) are benchmarked below.
+    trivial_baselines = compute_trivial_baselines(interactions)
+
     # Run benchmark
     results = benchmark(models, interactions, provider=args.provider, verbose=not args.quiet)
 
     # Composite ranking (legacy) + per-dimension report (fixture mode only).
-    print_comparison(results)
+    print_comparison(results, trivial_baselines=trivial_baselines)
     print_dimension_report(results)
 
     # Safety probes — synthetic smoke test (fixture mode only).
@@ -741,18 +843,39 @@ def main() -> None:
 
     # Optional machine-readable results.
     if args.json_out:
-        payload = [{
-            "model": r.model, "n": len(r.scores), "parse_errors": r.parse_errors,
-            "composite_pearson": _pearson(r.scores, r.ground_truth),
-            "composite_ci": _bootstrap_ci(r.scores, r.ground_truth, _pearson),
-            "threshold": _threshold_pr(r.scores, r.ground_truth),
-            "avg_latency_s": r.avg_latency,
-            "dims": {d: {"pearson": _pearson(r.dim_scores[d], r.dim_truth[d]),
-                         "spearman": _spearman(r.dim_scores[d], r.dim_truth[d]),
-                         "mae": _mae(r.dim_scores[d], r.dim_truth[d])}
-                     for d in DIMS if r.dim_scores.get(d)},
-        } for r in results]
-        out = {"results": payload, "safety_probes": [s for s in safety_results if s]}
+        log_len_r = trivial_baselines.get("log_length_pearson")
+        payload = []
+        for r in results:
+            comp_pearson = _pearson(r.scores, r.ground_truth)
+            payload.append({
+                "model": r.model, "n": len(r.scores), "parse_errors": r.parse_errors,
+                "composite_pearson": comp_pearson,
+                "composite_ci": _bootstrap_ci(r.scores, r.ground_truth, _pearson),
+                "incremental_pearson_vs_log_length": (
+                    comp_pearson - log_len_r
+                    if comp_pearson is not None and log_len_r is not None
+                    else None
+                ),
+                "threshold": _threshold_pr(r.scores, r.ground_truth),
+                "avg_latency_s": r.avg_latency,
+                "dims": {d: {"pearson": _pearson(r.dim_scores[d], r.dim_truth[d]),
+                             "spearman": _spearman(r.dim_scores[d], r.dim_truth[d]),
+                             "mae": _mae(r.dim_scores[d], r.dim_truth[d])}
+                         for d in DIMS if r.dim_scores.get(d)},
+                # Per-interaction records — required for paired cross-run/cross-fixture
+                # comparisons (e.g. same interaction_id scored by two different judges).
+                "records": [{
+                    "interaction_id": d.interaction_id,
+                    "prompt_preview": d.prompt_preview,
+                    "ground_truth": d.ground_truth,
+                    "model_score": d.model_score,
+                    "dim_truth": d.dim_truth,
+                    "dim_scores": d.dim_scores,
+                    "rationale": d.rationale,
+                } for d in r.details],
+            })
+        out = {"results": payload, "safety_probes": [s for s in safety_results if s],
+               "trivial_baselines": trivial_baselines}
         Path(args.json_out).expanduser().write_text(json.dumps(out, indent=2))
         print(f"\n[json] wrote {args.json_out}")
 
