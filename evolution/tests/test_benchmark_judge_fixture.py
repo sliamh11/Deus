@@ -1,4 +1,5 @@
 """Deterministic tests for benchmark_judge fixture-mode extensions (no Ollama calls)."""
+import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -135,6 +136,27 @@ def test_paired_delta_ci_deterministic_and_signed():
 
 
 # ── fixture + safety-probe loaders ─────────────────────────────────────────────
+
+# ── fixture identity (--json-out top-level "fixture" block) ─────────────────
+
+def test_fixture_identity_records_path_hash_and_n(tmp_path):
+    p = tmp_path / "fix.jsonl"
+    p.write_text(json.dumps({"id": "a", "prompt": "P"}) + "\n", encoding="utf-8")
+    expected_sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    identity = bj._fixture_identity(p, n=7)
+    assert identity["path"] == str(p)
+    assert identity["sha256"] == expected_sha
+    assert identity["n"] == 7
+
+
+def test_fixture_identity_hash_changes_with_content(tmp_path):
+    p = tmp_path / "fix.jsonl"
+    p.write_text("one\n", encoding="utf-8")
+    id1 = bj._fixture_identity(p, n=1)
+    p.write_text("two\n", encoding="utf-8")
+    id2 = bj._fixture_identity(p, n=1)
+    assert id1["sha256"] != id2["sha256"]
+
 
 def test_load_fixture_maps_and_skips(tmp_path):
     p = tmp_path / "fix.jsonl"
