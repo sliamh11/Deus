@@ -1,8 +1,8 @@
 # ADR: Round-count circuit breaker for the plan-review REVISE loop
 
-**Date**: 2026-08-02
-**Status**: Proposed
-**Reversibility**: REVERSIBLE
+**Date:** 2026-08-02
+**Status:** Proposed
+**Reversibility:** REVERSIBLE
 
 ## Context
 

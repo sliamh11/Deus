@@ -1,8 +1,8 @@
 # ADR: Lighter-weight capture path for single-fact gotchas
 
-**Date**: 2026-08-02
-**Status**: Proposed
-**Reversibility**: REVERSIBLE
+**Date:** 2026-08-02
+**Status:** Proposed
+**Reversibility:** REVERSIBLE
 
 ## Context
 
