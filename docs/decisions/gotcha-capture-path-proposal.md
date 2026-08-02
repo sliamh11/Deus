@@ -3,6 +3,7 @@
 **Date:** 2026-08-02
 **Status:** Proposed
 **Reversibility:** REVERSIBLE
+**Scope:** none yet — proposal only, not applied to any file; Option A would touch the compress skill, Option B a rules file
 
 ## Context
 

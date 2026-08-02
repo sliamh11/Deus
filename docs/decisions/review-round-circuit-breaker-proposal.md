@@ -3,6 +3,7 @@
 **Date:** 2026-08-02
 **Status:** Proposed
 **Reversibility:** REVERSIBLE
+**Scope:** `.claude/wardens/plan-review-rules.md`, `.claude/rules/core-behavioral-rules.md` (§ Execution Gates) — proposed, not yet applied to either file
 
 ## Context
 
