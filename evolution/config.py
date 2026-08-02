@@ -12,6 +12,11 @@ services:
     domain classification. Truncated to JUDGE_MAX_PROMPT/RESPONSE_CHARS each.
   - Gemini API: vault/memory file chunks for semantic embeddings, UNLESS
     Ollama is running and EMBEDDING_PROVIDER != 'gemini'.
+  - OpenAI (via the local `codex` CLI, ChatGPT/Codex subscription auth — no
+    OPENAI_API_KEY), judge scoring ONLY, and ONLY when
+    EVOLUTION_OPENAI_JUDGE_ENABLED is explicitly set (opt-in, never
+    auto-selected, macOS only): same interaction prompts + responses as the
+    Gemini judge, same truncation limits. See docs/security/data-flows.md §7.
 
 To keep all processing local:
   - Set EVOLUTION_ENABLED=0  (disables judge + reflexion + domain LLM fallback)
@@ -85,6 +90,13 @@ JUDGE_MODEL = os.environ.get("EVOLUTION_JUDGE_MODEL", "models/gemini-3.1-flash-l
 # chars preserves scoring signal while capping outbound payload size.
 JUDGE_MAX_PROMPT_CHARS = int(os.environ.get("EVOLUTION_JUDGE_MAX_PROMPT_CHARS", "2000"))
 JUDGE_MAX_RESPONSE_CHARS = int(os.environ.get("EVOLUTION_JUDGE_MAX_RESPONSE_CHARS", "2000"))
+
+# ── OpenAI (opt-in judge alternative, via codex-exec/ChatGPT subscription) ─────
+
+# Model passed to `codex exec -m`. No OPENAI_API_KEY / base-URL config here —
+# this provider authenticates via the codex CLI's own ChatGPT/Codex
+# subscription login, not a raw API key. See evolution/judge/openai_judge.py.
+OPENAI_JUDGE_MODEL = os.environ.get("EVOLUTION_OPENAI_JUDGE_MODEL", "gpt-5.6-luna")
 
 # ── Reflexion ─────────────────────────────────────────────────────────────────
 
