@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://deus.local/schemas/warden-attestations-v1.schema.json",
+  "title": "Warden attestation ledger v1",
+  "description": "OPA data document for scripts/warden_policy. Append-only: a new verdict adds a record and advances `latest`; no record is ever edited or deleted.",
+  "type": "object",
+  "required": ["warden_attestations"],
+  "additionalProperties": false,
+  "properties": {
+    "warden_attestations": {
+      "type": "object",
+      "required": ["schema_version", "generation", "config", "records", "latest"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": 1 },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Monotonically incremented on every mutating write. Read by the Hermes adapter under a shared ledger-lock (paired with the writer's exclusive lock) and sent as expected_generation on every OPA query, not just during an OPA outage -- detects OPA serving a stale snapshot after a failed/ambiguous PUT."
+        },
+        "config": {
+          "type": "object",
+          "required": ["enforced_repos"],
+          "additionalProperties": false,
+          "properties": {
+            "enforced_repos": {
+              "type": "object",
+              "description": "Keyed by repo_id. Absent or enabled=false means the repo is outside enforcement scope (commits allow, unconditionally, before any commit-form check).",
+              "additionalProperties": {
+                "type": "object",
+                "required": ["enabled", "enrolled_at"],
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "enrolled_at": { "type": "string", "format": "date-time" }
+                }
+              }
+            }
+          }
+        },
+        "records": {
+          "type": "object",
+          "description": "Keyed by attestation id (att-<uuid>). Immutable once written.",
+          "additionalProperties": { "$ref": "#/$defs/record" }
+        },
+        "latest": {
+          "type": "object",
+          "description": "repo_id -> gate -> subject_key -> attestation id. The only part of the document that changes after a new verdict is appended.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "pattern": "^att-" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "record": {
+      "type": "object",
+      "required": ["id", "schema_version", "repo_id", "gate", "subject", "verdict", "issuer", "issued_at", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^att-" },
+        "schema_version": { "const": 1 },
+        "repo_id": { "type": "string", "pattern": "^git-common-dir-sha256:[0-9a-f]{64}$" },
+        "gate": { "type": "string", "enum": ["code-review"] },
+        "subject": {
+          "type": "object",
+          "required": ["kind", "key", "digest"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "const": "git-tree" },
+            "key": { "type": "string", "pattern": "^git-tree:(sha1|sha256):[0-9a-f]+$" },
+            "digest": {
+              "type": "object",
+              "required": ["algorithm", "value"],
+              "additionalProperties": false,
+              "properties": {
+                "algorithm": { "type": "string", "enum": ["sha1", "sha256"] },
+                "value": { "type": "string" }
+              }
+            }
+          }
+        },
+        "verdict": { "type": "string", "enum": ["SHIP", "REVISE", "BLOCK"] },
+        "issuer": {
+          "type": "object",
+          "required": ["kind", "reviewer_id"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "type": "string", "enum": ["manual", "script"] },
+            "reviewer_id": { "type": "string", "description": "<role>@<backend>, e.g. code-reviewer@claude-sonnet-5 -- mirrors verdict_store.py's record_script_verdict vocabulary." }
+          }
+        },
+        "issued_at": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string" }
+      }
+    }
+  }
+}

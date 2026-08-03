@@ -116,6 +116,7 @@ Use these instead of rediscovering the system:
 | Linear notifications | `src/linear-notifications.ts` | Unified pipeline comment (rolling timeline) + macOS desktop notifications |
 | Pipeline CLI | `src/linear-pipeline-cli.ts` | `deus pipeline` -- event audit from the terminal |
 | Codex Warden hooks | `scripts/codex_warden_hooks.py` | Installs and runs Codex hook equivalents for Warden gates (plan-reviewer, code-reviewer, verification-gate, threat-modeler) |
+| Hermes guardrails (OPA) | `scripts/warden_policy/`, `scripts/hermes_warden_gate.py`, `scripts/warden_attest.py` | Rego policy + attestation ledger + fail-closed Hermes `pre_tool_call` adapter — see `docs/decisions/opa-warden-attestations-v1.md` and `docs/HERMES_WARDEN_OPA.md` |
 
 More detailed maps live in [docs/AGENT_DEUS_101.md](docs/AGENT_DEUS_101.md).
 
