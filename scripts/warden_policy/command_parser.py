@@ -63,6 +63,7 @@ from __future__ import annotations
 import re
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 
 # Flags allowed after `commit` that never mutate which content is committed.
 # `--` is git's standard "end of options" separator -- a no-op boundary marker some agents
@@ -92,6 +93,42 @@ def _strip_line_continuations(command: str) -> str:
 
 def _contains_command_substitution(tokens: list[str]) -> bool:
     return any(marker in tok for tok in tokens for marker in _COMMAND_SUBSTITUTION_MARKERS)
+
+
+# Only these characters are allowed in a `core.hooksPath` VALUE. Live-verified bypass this
+# closes (found by adversarial GPT code-review, reproduced independently): `shlex.split()`
+# (used to tokenize the raw command for classification) does NOT perform shell parameter
+# expansion or globbing -- Hermes's terminal tool later runs the SAME raw string through a
+# real shell, which does. An attacker can create a literal, empty decoy directory matching an
+# unexpanded string like "/tmp/$USER" (passes a naive filesystem-only check), while the real
+# shell expands "$USER"/"${USER}" to a completely different, attacker-prepopulated path by the
+# time git actually reads core.hooksPath -- confirmed live via direct bash reproduction (both
+# bare and braced parameter-expansion forms behave identically). Globbing (`/tmp/*`) is the
+# same class, also confirmed live. `~`/`{`/`}` are additionally rejected as allowlist
+# conservatism (consistent with this module's "new/obscure -- default to BLOCKED" design) --
+# not independently demonstrated as expanding in this specific argument position, but excluded
+# on the same "don't allow what isn't provably safe" principle.
+_SAFE_HOOKS_PATH_RE = re.compile(r"[A-Za-z0-9_./-]+")
+
+
+def _is_valid_empty_hooks_dir(path_str: str) -> bool:
+    # `core.hooksPath` is only meaningful as a suppression mechanism if it actually points to an
+    # empty directory (see module docstring / classify()'s comment on `-c`) -- an attacker- or
+    # agent-supplied non-empty directory containing a real `prepare-commit-msg` hook executes it
+    # despite `--no-verify`, which does NOT suppress that hook (live-verified: this is the whole
+    # reason the hooksPath override is required at all, not just a redundant belt-and-suspenders
+    # check). Relative paths are rejected outright since this function has no cwd context to
+    # resolve them against. `fullmatch` (not `match` with `^`/`$` anchors) is required -- Python's
+    # `$` anchor allows a single trailing newline, which `fullmatch` correctly rejects (found by
+    # adversarial plan review). Any filesystem error (unreadable dir, path mutated mid-check,
+    # etc.) fails closed -- untrusted command input must never raise out of classify().
+    if not _SAFE_HOOKS_PATH_RE.fullmatch(path_str):
+        return False
+    try:
+        p = Path(path_str)
+        return p.is_absolute() and p.is_dir() and not any(p.iterdir())
+    except OSError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -134,6 +171,7 @@ def classify(command: str) -> Classification:
 
     i = 1
     saw_hooks_path_override = False
+    hooks_path_value = None
     while i < len(tokens):
         tok = tokens[i]
         if tok == "commit":
@@ -145,9 +183,31 @@ def classify(command: str) -> Classification:
         if tok == "-c":
             if i + 1 >= len(tokens):
                 return _blocked("`-c` with no value")
+            # Exactly one `-c` is recognized, and it must be `core.hooksPath` --
+            # matching the module's ALLOWLIST design (see docstring). A second `-c`
+            # of ANY kind is rejected outright, not just one with a different key:
+            # a repeated `-c core.hooksPath=<other-dir>` would still pass a mere
+            # "was core.hooksPath seen at least once" check, yet git's own config
+            # precedence takes the LAST value for a single-valued key, so the real
+            # hooks directory (with prepare-commit-msg, etc.) would win over the
+            # first, known-empty one -- silently defeating the entire reason this
+            # override is required. Found by adversarial plan review.
+            if saw_hooks_path_override:
+                return _blocked(
+                    "more than one `-c` global option -- only a single "
+                    "`-c core.hooksPath=<dir>` is recognized"
+                )
             key_value = tokens[i + 1]
-            if key_value.split("=", 1)[0] == "core.hooksPath":
-                saw_hooks_path_override = True
+            key = key_value.split("=", 1)[0]
+            if key != "core.hooksPath":
+                return _blocked(
+                    f"`-c {key}=...` is not the recognized `-c core.hooksPath` override "
+                    "-- other `-c` keys (e.g. `core.fsmonitor`, `credential.helper`) are "
+                    "known git-config code-execution vectors independent of shell "
+                    "substitution and are never allowed here"
+                )
+            saw_hooks_path_override = True
+            hooks_path_value = key_value.split("=", 1)[1] if "=" in key_value else ""
             i += 2
             continue
         # Any other token before `commit` (another subcommand, an unrecognized
@@ -186,6 +246,17 @@ def classify(command: str) -> Classification:
 
     if not saw_no_verify:
         return _blocked("missing required `--no-verify`.")
+
+    # Checked once every other supported-form requirement is already confirmed (same ordering
+    # discipline as the substitution-marker check below): validating the hooksPath VALUE earlier
+    # (e.g. right when the `-c` token is seen) would risk misclassifying an unrelated command
+    # that never reaches `commit` at all as BLOCKED instead of not-commit-shaped.
+    if not _is_valid_empty_hooks_dir(hooks_path_value):
+        return _blocked(
+            "`-c core.hooksPath=<dir>` must point to an existing, absolute, EMPTY "
+            "directory -- a missing, relative, non-directory, or non-empty path "
+            "defeats the hook-suppression this override exists for"
+        )
 
     # Defense-in-depth, checked LAST -- see the module docstring.
     if _contains_command_substitution(tokens):

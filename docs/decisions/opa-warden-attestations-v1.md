@@ -122,12 +122,106 @@ runs the enclosed command to set up the substitution as a side effect of word-sp
 whether or not the resulting path is ever read), verified live the same way. Both markers are
 now included.
 
-**Named residual gap, not fixed in this round**: any `-c <key>=<value>` other than
-`core.hooksPath` is accepted with no restriction on `key` -- e.g. `-c core.fsmonitor=<path>` is
-a known git-config code-execution vector independent of shell substitution (git itself would
-execute `<path>` as a filesystem-monitor hook). Not live-verified against `git commit`
-specifically, so not asserted as a confirmed bypass here -- flagged as a conscious, named gap
-for a future round to verify and close, not a silent omission.
+**Fixed in a follow-up round** (found during continued deep testing after v1 shipped): the
+`-c <key>` gap named above was confirmed as a real, live-exploitable bypass, and a second,
+more severe gap in the same code was found by adversarial (GPT-backend) plan review while
+fixing it.
+
+1. *Unrestricted `-c <key>`.* `classify()` only checked WHETHER one of possibly several `-c`
+   flags equaled `core.hooksPath` -- it never rejected a `-c` with a different key, and never
+   rejected a duplicate `-c core.hooksPath=<different-value>`. **Live-verified**: ran
+   `git -c core.hooksPath=/tmp/empty -c core.fsmonitor=<script> commit --no-verify -m safe`
+   through a real Hermes agent's real terminal tool (gpt-5.6-sol via OpenAI Codex) against the
+   deployed pre-fix daemon -- the configured script executed as a side effect of an otherwise
+   "supported" commit (marker file created, confirmed via `ls`). A duplicate
+   `-c core.hooksPath=<different-value>` is a related bypass: git's own config precedence takes
+   the LAST value for a single-valued key, so a second override could silently redirect back to
+   a real (dangerous) hooks directory even though `core.hooksPath` was technically "seen."
+
+2. *Unvalidated `core.hooksPath` value* (found by GPT-backend plan review while fixing #1 above,
+   not previously named as a gap). Even with the key restricted to exactly `core.hooksPath`,
+   `classify()` never checked that the VALUE points to a real, empty, trusted directory.
+   `--no-verify` does **not** suppress `prepare-commit-msg` -- **live-verified directly against
+   real git** (a throwaway repo + a `prepare-commit-msg` hook that touches a marker file; `git -c
+   core.hooksPath=<that-dir> commit --no-verify` exits 0 and the marker file is created). So an
+   attacker- or agent-supplied non-empty `core.hooksPath` value defeats the entire reason the
+   override exists, independent of the `-c`-key gap. This is a pre-existing gap present since
+   v1 shipped (#1105), not introduced by this fix.
+
+**The fix** (`command_parser.py`): the pre-`commit` `-c` handling now rejects (a) any second
+`-c` of any kind (closing both the wrong-key and duplicate-hooksPath-value bypasses), and (b) a
+`core.hooksPath` value that isn't an absolute, existing, currently-empty directory (via a new
+`_is_valid_empty_hooks_dir()` helper, checked at the same point in `classify()` as the existing
+shell-substitution-marker check -- after commit-shape and every other supported-form requirement
+is already confirmed, so an unrelated non-commit command is never misclassified). Filesystem
+errors (unreadable directory, path mutated mid-check) fail closed rather than raising.
+
+**Live re-proof, post-fix**: both exploits above were re-run through a real Hermes agent
+(gpt-5.6-sol) against the fixed code (via a temporary hook redirect to the fix worktree, fully
+reverted afterward -- `~/.hermes/config.yaml` restored byte-identical, confirmed via `diff`,
+same technique as the shell-substitution fix's re-proof above). Both are now blocked with the
+new, specific messages; the marker files are confirmed absent via `ls`. A genuinely-supported
+commit (real empty hooksPath dir, no injection) was also re-run the same way and still succeeds,
+confirming no regression on the legitimate path.
+
+**Verified at the unit level**: 12 new regression tests across two new test classes
+(`TestDashCKeyAllowlist`, `TestHooksPathValueValidation`), full `scripts/warden_policy/` suite
+(95 tests) passes with no regressions. Existing tests' hardcoded `/tmp/empty`/`/tmp/e` hooksPath
+placeholders were converted to a real `tempfile.TemporaryDirectory()` fixture (not a fixed
+namespaced path -- flagged by GPT-backend review as still collision-prone/foot-gun-prone even
+if namespaced) since the classifier now validates the value against the real filesystem.
+
+**A third gap, found by adversarial GPT code-review while reviewing the emptiness-validation
+fix above** (not previously named): `classify()` validates the LITERAL string produced by
+`shlex.split()` on the raw command, but Hermes's terminal tool later executes the SAME raw
+string through a real shell, which performs parameter expansion (`$USER`, `${VAR}`) and
+globbing (`*`) that `shlex.split()` does not. **Live-verified** via direct bash reproduction:
+created a literal, empty decoy directory named `$USER` (dollar sign is a valid filename
+character), pre-populated the REAL expansion target (`/tmp/<username>`) with a
+`prepare-commit-msg` hook, ran `bash -c 'git -c core.hooksPath=/tmp/$USER commit --no-verify -m
+test'` (exactly how Hermes's terminal tool executes a command) -- confirmed exit 0, and the hook
+executed from the DIFFERENT (expanded) directory, not the literal one `classify()` validated.
+Braced parameter expansion (`${VAR}`) was independently confirmed to behave identically to the
+bare form in this argument position, and globbing (`/tmp/*`) was confirmed to expand when a
+matching filesystem entry exists.
+
+**Fix**: the hooksPath value must now match a strict character allowlist
+(`[A-Za-z0-9_./-]+`, via `re.fullmatch` -- not `re.match` with `^`/`$` anchors, since Python's
+`$` anchor allows a single trailing newline, which `fullmatch` correctly rejects, found by
+adversarial plan review) before the existing emptiness check runs. `~`, `{`, `}` are rejected as
+allowlist conservatism (consistent with the module's "new/obscure -- default to BLOCKED"
+design) -- confirmed live NOT to expand in this specific argument position, so blocked on
+general allowlist principle rather than as a demonstrated bypass (a distinction the review
+process specifically caught being mislabeled in both directions across two rounds, and
+corrected each time before landing).
+
+**Live re-proof, post-fix**: the `$USER` exploit was re-run through a real Hermes agent
+(gpt-5.6-sol) against the fixed code (same temporary-hook-redirect-then-revert methodology as
+the other two gaps above) -- confirmed blocked with the new message, marker file confirmed
+absent. A genuinely-supported commit (safe-character hooksPath, no injection) was re-run the
+same way and still succeeds.
+
+**Verified at the unit level**: 6 more regression tests (`TestHooksPathShellExpansionDivergence`),
+full `scripts/warden_policy/` suite (101 tests) passes with no regressions.
+
+**Pre-existing, not newly introduced**: the allowed charset still permits `..`, so
+`-c core.hooksPath=/tmp/../some/other/empty/dir` passes the character allowlist -- this doesn't
+expand attacker capability beyond "find or create some empty directory" (no shell-expansion
+divergence involved, since no shell treats `..` specially; it resolves identically regardless of
+which process reads it), which is already the accepted baseline threat model, not a new gap.
+
+**Accepted, still-open residual (raised and explicitly scoped out during this round)**: a
+genuinely concurrent process racing to write a hook file into the validated-empty directory
+*after* `_is_valid_empty_hooks_dir()` approves it but *before* the real `git commit` reads the
+hooks directory. This is the same category of risk this ADR's "What this is, and isn't" section
+already names and defers ("a genuinely concurrent, hand-timed adversarial process racing to
+mutate the index between authorization and the actual `git commit` is not defended against...
+closing that fully requires a git-level enforcement point -- a later, separate phase") -- not
+new scope-narrowing invented for this fix. The realistic threat model this guardrail defends
+against is a Hermes agent (possibly prompt-injected, or simply careless) directly and
+deterministically supplying a bad value -- which this fix closes -- not an independent attacker
+process racing filesystem writes, which already implies independent code execution outside this
+guardrail's threat model.
 
 ### Cross-reference: not the same system as `hook-dispatch-system.md`
 
