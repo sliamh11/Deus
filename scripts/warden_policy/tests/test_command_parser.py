@@ -146,5 +146,90 @@ class TestBlockedForms(unittest.TestCase):
         self.assertFalse(c.supported)
 
 
+class TestCommandSubstitutionInjection(unittest.TestCase):
+    """Regression tests for a real, live-verified vulnerability found during deep testing of
+    the shipped v1: a "supported" commit whose message/author/global-option values contain a
+    shell command-substitution marker executes arbitrary code as a side effect when Hermes's
+    terminal tool runs it through a real persistent shell -- independent of git or the
+    tree-attestation logic entirely. See the module docstring's "Defense-in-depth" paragraph.
+    """
+
+    def test_backtick_in_message_blocked(self):
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "safe `whoami`"')
+        self.assertTrue(c.is_commit_shaped)
+        self.assertFalse(c.supported)
+
+    def test_dollar_paren_in_message_space_form_blocked(self):
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "safe $(touch /tmp/x)"')
+        self.assertFalse(c.supported)
+
+    def test_dollar_paren_in_author_space_form_blocked(self):
+        c = classify(
+            'git -c core.hooksPath=/tmp/e commit --no-verify --author "$(touch /tmp/x) <a@b.c>" -m x'
+        )
+        self.assertFalse(c.supported)
+
+    def test_dollar_paren_in_message_equals_form_blocked(self):
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify --message=$(touch /tmp/x)')
+        self.assertFalse(c.supported)
+
+    def test_dollar_paren_in_author_equals_form_blocked(self):
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify --author=$(touch /tmp/x) -m x')
+        self.assertFalse(c.supported)
+
+    def test_dollar_paren_in_dash_capital_c_value_blocked(self):
+        # GPT-5.6-sol's specific finding: -C's value is consumed with zero content validation.
+        c = classify('git -C "$(touch /tmp/x)" -c core.hooksPath=/tmp/e commit --no-verify -m safe')
+        self.assertFalse(c.supported)
+
+    def test_process_substitution_input_form_blocked(self):
+        # Code-review's finding: <(...) is the same vulnerability class as $(...) -- bash forks
+        # and runs the enclosed command to set up the substitution as a side effect of
+        # word-splitting alone, regardless of whether the resulting path is ever read.
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m <(touch /tmp/x)')
+        self.assertFalse(c.supported)
+
+    def test_process_substitution_output_form_blocked(self):
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m >(touch /tmp/x)')
+        self.assertFalse(c.supported)
+
+    def test_dollar_paren_in_non_hookspath_dash_c_value_blocked(self):
+        c = classify(
+            'git -c core.hooksPath=/tmp/e -c user.name="$(touch /tmp/x)" commit --no-verify -m safe'
+        )
+        self.assertFalse(c.supported)
+
+    def test_line_continuation_split_marker_quoted_form_blocked(self):
+        # Round 4: shlex.split() preserves a literal backslash-newline inside a quoted value
+        # intact -- a per-token check could catch this form alone, but the actual fix
+        # normalizes the raw string, which also covers it.
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "safe $\\\n(touch /tmp/x)"')
+        self.assertFalse(c.supported)
+
+    def test_line_continuation_split_marker_unquoted_form_blocked(self):
+        # Round 5: the case that broke the per-token normalization approach -- shlex's own
+        # escape handling consumes the backslash for an UNQUOTED value, leaving only a bare
+        # newline by the time a token exists, which a post-tokenization regex can't recover.
+        # The fix normalizes the raw command string before shlex.split() ever runs, so this
+        # form is caught the same way as the quoted one.
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m $\\\n(touch>/tmp/x)')
+        self.assertFalse(c.supported)
+
+    def test_literal_dollar_sign_alone_not_blocked(self):
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "fix: cost is \\$5"')
+        self.assertTrue(c.supported)
+
+    def test_literal_braces_not_blocked(self):
+        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "fix: use {x} syntax"')
+        self.assertTrue(c.supported)
+
+    def test_unrelated_non_git_command_with_marker_and_commit_substring_not_commit_shaped(self):
+        # Round 3's finding: the check must never fire before commit-shape is confirmed, or an
+        # entirely unrelated command gets misclassified just for mentioning "commit" and a
+        # marker in unrelated positions (e.g. a filename).
+        c = classify("rg -F '$(' docs/commit-notes.md")
+        self.assertFalse(c.is_commit_shaped)
+
+
 if __name__ == "__main__":
     unittest.main()
