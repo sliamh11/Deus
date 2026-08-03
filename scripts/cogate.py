@@ -49,7 +49,7 @@ import codex_warden_hooks as whooks  # noqa: E402  (mark_warden, bucket resoluti
 from _agent_io import agent_output, is_agent_context  # noqa: E402
 from _exit_codes import INTERNAL_ERROR, SUCCESS, USAGE_ERROR  # noqa: E402
 from warden_review.constants import BACKEND_GPT, store_key  # noqa: E402
-from warden_hooks.verdict_store import _read_verdicts  # noqa: E402
+from warden_hooks.verdict_store import _fresh_entry, _read_verdicts  # noqa: E402
 
 # Only the GPT-wired warden roles (warden_review.constants.WIRED_ROLES) have a model backend, so
 # only these can be co-gated. The token is the EXACT codex_warden.py --role string (no aliases)
@@ -149,7 +149,11 @@ def main(argv: list[str] | None = None) -> int:
         claude_verdict = whooks.read_claude_verdict(marker_root, args.role)
         gpt_verdict = None
         if not args.skip_gpt:
-            gpt_verdict = (_read_verdicts(marker_root).get(store_key(args.role, BACKEND_GPT)) or {}).get("verdict")
+            # LIA-382: route through _fresh_entry (not a raw dict read) so a stale
+            # GPT SHIP — the worktree edited since GPT reviewed it — doesn't read
+            # as a live PASS here.
+            gpt_entry = _fresh_entry(_read_verdicts(marker_root), store_key(args.role, BACKEND_GPT), wt)
+            gpt_verdict = gpt_entry.get("verdict") if isinstance(gpt_entry, dict) else None
 
     # Outcome
     gate_blocked = (claude_verdict in _BLOCKING) or (gpt_verdict in _BLOCKING)
