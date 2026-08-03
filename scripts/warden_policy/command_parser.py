@@ -18,10 +18,49 @@ message between this classifier's authorization and the actual commit
 (found in this repo's own `.husky/pre-commit` -> `npx lint-staged`, and by
 name for `prepare-commit-msg` in adversarial plan review -- `--no-verify`
 alone does not suppress that one).
+
+Defense-in-depth: `classify()` also rejects any command whose tokens contain a
+shell command- or process-substitution marker (backtick, `$(`, `<(`, `>(`),
+checked ONLY after the command is already confirmed to be a genuine,
+otherwise-fully-supported git-commit invocation (never before -- an early
+check would misclassify an unrelated command that merely mentions "commit"
+as a substring, e.g. `rg -F '$(' docs/commit-notes.md`). Found live: Hermes's
+`terminal` tool runs commands through a real persistent shell, so a
+"supported" commit message like `-m "safe $(touch /tmp/x)"` would execute
+arbitrary code as a side effect, independent of git or the tree-attestation
+logic entirely -- verified by actually running it through a live Hermes
+agent and confirming the target file was created. Process substitution
+(`<(`/`>(`) is the same vulnerability class: bash forks and runs the enclosed
+command to set up the substitution as a side effect of word-splitting alone,
+whether or not the resulting path is ever read -- verified live the same way
+(a brief delay is needed before checking, since the fork runs in the
+background and can race ahead of a naive immediate check).
+
+Before the marker check runs, the RAW command string is normalized to strip
+shell line-continuations (a backslash immediately followed by a newline,
+stripped by a real shell before word-splitting/quote-removal even runs,
+regardless of quoting style) -- normalizing the raw string, not patching
+individual tokens after tokenization, because a per-token fix was tried and
+found insufficient: for a quoted value `shlex.split()` preserves the literal
+backslash-newline sequence intact, but for an unquoted value `shlex`'s own
+escape handling already consumes the backslash while leaving the bare
+newline behind, so no backslash remains for a post-tokenization check to
+match. Verified live in both forms. Accepted, named tradeoff: stripping the
+raw string unconditionally also strips inside what would be a single-quoted
+section (where a real shell does NOT remove line continuations at all) --
+an over-blocking direction only, never under-blocking.
+
+This is NOT a claim of exhaustive shell quote-removal or metacharacter
+sanitization (that would be reinventing a shell parser and remains this
+classifier's non-goal, same as the deliberately unaddressed shell-compound
+and alternate-invocation gaps below) -- it closes the specific, tractable,
+well-known constructs verified live across several adversarial review
+rounds.
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 
@@ -39,6 +78,20 @@ _FLAG_TAKES_VALUE = {"-m", "--message", "--author"}
 
 # Global options recognized BEFORE the `commit` subcommand.
 _GLOBAL_FLAG_TAKES_VALUE = {"-C"}  # value is a path; -c is handled specially (must be hooksPath)
+
+# Shell command-/process-substitution markers -- see the module docstring's "Defense-in-depth"
+# paragraph for the full rationale (why these four, why checked last, why line continuations
+# are normalized on the raw string rather than per-token).
+_COMMAND_SUBSTITUTION_MARKERS = ("`", "$(", "<(", ">(")
+_LINE_CONTINUATION_RE = re.compile(r"\\\r?\n")
+
+
+def _strip_line_continuations(command: str) -> str:
+    return _LINE_CONTINUATION_RE.sub("", command)
+
+
+def _contains_command_substitution(tokens: list[str]) -> bool:
+    return any(marker in tok for tok in tokens for marker in _COMMAND_SUBSTITUTION_MARKERS)
 
 
 @dataclass(frozen=True)
@@ -64,6 +117,9 @@ def _blocked(reason: str) -> Classification:
 
 
 def classify(command: str) -> Classification:
+    # Normalize line continuations before any other processing -- see the module docstring.
+    command = _strip_line_continuations(command)
+
     if "commit" not in command:
         return _not_commit_shaped()
 
@@ -130,5 +186,12 @@ def classify(command: str) -> Classification:
 
     if not saw_no_verify:
         return _blocked("missing required `--no-verify`.")
+
+    # Defense-in-depth, checked LAST -- see the module docstring.
+    if _contains_command_substitution(tokens):
+        return _blocked(
+            "commit contains a shell command- or process-substitution marker "
+            "(backtick, $(, <(, or >() in a value"
+        )
 
     return Classification(is_commit_shaped=True, supported=True, reason="supported commit form")
