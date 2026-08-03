@@ -168,9 +168,10 @@ Same as CLI (host + project + project local).
 Same as CLI. Additionally, the Stop hook has special behavior:
 
 - **Stop:** `stop_hook.py` detects `CLAUDE_JOB_DIR` is set via `_is_bg_session()`
-  and activates the compress gate, which blocks session completion until `/compress`
-  has been run. A `.compress_gate` sentinel file in `CLAUDE_JOB_DIR` prevents
-  double-blocking.
+  and activates the compress gate — an advisory `systemMessage` reminder (not a
+  hard block, since 2026-08-02) if `/compress` hasn't run yet. A `.compress_gate`
+  sentinel file in `CLAUDE_JOB_DIR` prevents repeat reminders. Checkpoint
+  writing and drift-scan still run in the same Stop invocation regardless.
 
 ### Required env vars
 
