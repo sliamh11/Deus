@@ -10,6 +10,7 @@ Usage:
     python3 -m evolution.benchmark_judge --auto  # auto-detect all gemma4 + qwen models
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -342,6 +343,19 @@ def _get_scored_interactions(limit: int, clean: bool = False) -> list[dict]:
         if len(results) >= limit:
             break
     return results
+
+
+def _fixture_identity(path: Path, n: int) -> dict:
+    """Fixture identity block for --json-out: path, content hash, row count.
+
+    Lets a downstream comparison refuse to pair two result files whose
+    fixture identity differs (see $AUTOMEM/procedures/judge-model-ab-fixture.md step 2).
+    """
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "n": n,
+    }
 
 
 def _load_fixture(path: Path) -> list[dict]:
@@ -803,8 +817,9 @@ def main() -> None:
     print(f"Models to benchmark: {', '.join(models)}")
 
     # Load ground-truth interactions: clean fixture (preferred) or raw DB (caveated).
-    if args.fixture:
-        interactions = _load_fixture(Path(args.fixture).expanduser())
+    fixture_path = Path(args.fixture).expanduser() if args.fixture else None
+    if fixture_path:
+        interactions = _load_fixture(fixture_path)
         print(f"Loaded {len(interactions)} records from fixture {args.fixture} "
               f"(fresh Gemini labels, per-dim + digest-symmetric grading).\n")
     else:
@@ -874,8 +889,12 @@ def main() -> None:
                     "rationale": d.rationale,
                 } for d in r.details],
             })
-        out = {"results": payload, "safety_probes": [s for s in safety_results if s],
-               "trivial_baselines": trivial_baselines}
+        out = {
+            "results": payload,
+            "safety_probes": [s for s in safety_results if s],
+            "trivial_baselines": trivial_baselines,
+            "fixture": _fixture_identity(fixture_path, len(interactions)) if fixture_path else None,
+        }
         Path(args.json_out).expanduser().write_text(json.dumps(out, indent=2))
         print(f"\n[json] wrote {args.json_out}")
 

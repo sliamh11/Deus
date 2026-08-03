@@ -45,6 +45,28 @@ External Project Mode scope: see `branches/external-mode.md`.
 
 If `$VAULT/CLAUDE.md` exceeds 200 lines, archive old content to `$VAULT/CLAUDE-Archive.md`.
 
+## Step 0.5 — Flag capturable gotchas
+
+Scan the conversation for a **gotcha**: a single-fact tool/infra surprise discovered at real
+cost mid-session (a flag whose default silently misroutes something, an API quirk that wasted
+retries, a CLI behavior that contradicted its docs) — distinct from the multi-step *procedures*
+`/learn-procedure` captures, and distinct from the user-preference facts Step 0 saves to
+`$VAULT/CLAUDE.md`.
+
+If the conversation contains one or more such gotchas that were NOT already captured in a rules
+file or memory node during the session, ask **once** (not once per gotcha):
+
+> "This session found N gotcha(s) — <one-line summary each>. Any belong in a rules file or a
+> knowledge node before I save?"
+
+Pre-resolve the likely destination from the session's own `project_path` (a project's own
+`.claude/rules/*.md`, its `docs/decisions/`, or — for a genuinely cross-project infra fact — the
+personal `$AUTOMEM` procedures store) so the user only has to confirm or redirect, not derive the
+path themselves. If the user confirms, write the fact directly to the named destination in the
+same session — append it, don't defer as a pending task. If the user declines, or the
+conversation has no gotcha-shaped content, skip silently — do not ask on every `/compress` run
+regardless of content.
+
 ## Save session log
 
 Review the conversation and create a session log at:
