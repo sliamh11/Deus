@@ -1,5 +1,10 @@
 # ADR: OPA/Rego attestation ledger as the shared Warden policy substrate (v1: Hermes only)
 
+**Date:** 2026-08-03
+**Status:** Accepted
+**Scope:** `scripts/warden_policy/`, `scripts/hermes_warden_gate.py`, `scripts/warden_attest.py`, `scripts/start_warden_opa.sh`, `launchd/com.deus.warden-opa.plist`
+**Related:** [docs/HERMES_WARDEN_OPA.md](../HERMES_WARDEN_OPA.md), [hook-dispatch-system.md](hook-dispatch-system.md)
+
 ## Status
 
 Accepted, v1 shipped (Hermes-only). Claude Code and git-level adoption are explicitly future work.
