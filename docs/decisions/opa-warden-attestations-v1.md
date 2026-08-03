@@ -90,6 +90,45 @@ alternate invocation form (paths, aliases, shell functions, wrapper scripts) is 
 problem with the same shape as the shell-compound evasion gap already scoped to the git-level
 backstop. Treat it the same way — a coaching-layer limitation, not a v1 defect to chase.
 
+**Fixed gap, found and closed during deep testing (2026-08-03, same day as initial ship)**: the
+classifier validated commit-form *shape* (which flags are present) but never inspected flag
+*values* for shell command-substitution syntax. Since Hermes's `terminal` tool runs commands
+through a real persistent shell, a "supported" commit whose message/author/`-C`/`-c` value
+contained a backtick or `$(` would execute arbitrary code as a side effect, independent of git
+or the tree-attestation logic entirely — verified live: a real Hermes agent ran
+`-m "safe $(touch /tmp/x)"`, classified as supported, and the target file was created (confirmed
+via `ls`, not the agent's self-report). Five adversarial review rounds (GPT-5.6-sol) progressively
+found the fix's scope too narrow (missed `-C`/`-c` values), the check placed too early (would
+have misclassified unrelated non-git commands merely mentioning "commit"), and two distinct
+shell line-continuation splice bypasses (`` `\`` + newline `` inside a quoted value, and the same
+marker with the backslash already consumed by `shlex`'s own escape handling for an unquoted
+value) — both verified live before and after the fix, not just unit-tested. The final fix
+normalizes the *raw command string* for line continuations before tokenization (not individual
+tokens afterward), then checks every token for the two markers once the command is already
+confirmed to be a genuine, otherwise-fully-supported git-commit invocation. **Live re-proof**:
+the fix was re-verified end-to-end against a real Hermes agent (gpt-5.6-sol via OpenAI Codex) —
+the exact original exploit (`-m "safe $(touch /tmp/x)"`, which had succeeded and created the
+target file against the pre-fix code) is now blocked, target file confirmed absent via `ls`; the
+unquoted line-continuation bypass was re-run the same way and also confirmed blocked, target
+file confirmed absent. Both re-proofs used a temporary hook redirect to the fix worktree, fully
+reverted afterward (`~/.hermes/config.yaml` restored byte-identical, confirmed via `diff`). Also
+verified at the unit level: 14 new regression tests (one per exploit variant found across all
+six review rounds, including process substitution -- see below), full `scripts/warden_policy/`
+suite (83 tests) passes with no regressions.
+
+A closely related construct, process substitution (`<(`, `>(`), was found missing from the
+marker set by code review after the above rounds -- the same vulnerability class (bash forks and
+runs the enclosed command to set up the substitution as a side effect of word-splitting alone,
+whether or not the resulting path is ever read), verified live the same way. Both markers are
+now included.
+
+**Named residual gap, not fixed in this round**: any `-c <key>=<value>` other than
+`core.hooksPath` is accepted with no restriction on `key` -- e.g. `-c core.fsmonitor=<path>` is
+a known git-config code-execution vector independent of shell substitution (git itself would
+execute `<path>` as a filesystem-monitor hook). Not live-verified against `git commit`
+specifically, so not asserted as a confirmed bypass here -- flagged as a conscious, named gap
+for a future round to verify and close, not a silent omission.
+
 ### Cross-reference: not the same system as `hook-dispatch-system.md`
 
 `docs/decisions/hook-dispatch-system.md` / `hook-dispatch-facade-correction.md` describe a
