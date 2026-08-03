@@ -29,7 +29,6 @@ def _always_ok_put(self, inner_doc):
     return True, inner_doc["generation"], None
 
 
-SUPPORTED_COMMIT = 'git -c core.hooksPath=/tmp/empty commit --no-verify -m x'
 UNSUPPORTED_COMMIT = 'git commit -a -m x'  # missing required flags
 
 
@@ -41,6 +40,12 @@ class TestHermesWardenGate(unittest.TestCase):
         _init_repo(self.repo)
         self.ledger = Path(self.tmp.name) / "ledger.json"
         self.log_path = Path(self.tmp.name) / "decisions.jsonl"
+        # A real, empty hooks directory -- command_parser.classify() now validates that
+        # `-c core.hooksPath=<value>` actually points to one (round 3 of adversarial plan
+        # review), not just that the key is right.
+        self.hooks_dir = Path(self.tmp.name) / "hooks"
+        self.hooks_dir.mkdir()
+        self.SUPPORTED_COMMIT = f'git -c core.hooksPath={self.hooks_dir} commit --no-verify -m x'
         self.patchers = [
             mock.patch.object(gate, "LEDGER_PATH", self.ledger),
             # Isolate the decision log too -- found live: without this, running these tests
@@ -96,7 +101,7 @@ class TestHermesWardenGate(unittest.TestCase):
             gate, "query_decision",
             return_value=DecisionResult(ok=True, allow=True, reason="matching code-review SHIP"),
         ):
-            result = gate.decide(self._payload(SUPPORTED_COMMIT))
+            result = gate.decide(self._payload(self.SUPPORTED_COMMIT))
         self.assertEqual(result, {})
 
     def test_enrolled_repo_with_opa_deny_blocks(self):
@@ -107,7 +112,7 @@ class TestHermesWardenGate(unittest.TestCase):
             gate, "query_decision",
             return_value=DecisionResult(ok=True, allow=False, reason="no code-review SHIP for staged tree X"),
         ):
-            result = gate.decide(self._payload(SUPPORTED_COMMIT))
+            result = gate.decide(self._payload(self.SUPPORTED_COMMIT))
         self.assertEqual(result["action"], "block")
         self.assertIn("no code-review SHIP", result["message"])
 
@@ -119,7 +124,7 @@ class TestHermesWardenGate(unittest.TestCase):
             gate, "query_decision",
             return_value=DecisionResult(ok=False, allow=False, reason="", error="connection refused"),
         ):
-            result = gate.decide(self._payload(SUPPORTED_COMMIT))
+            result = gate.decide(self._payload(self.SUPPORTED_COMMIT))
         self.assertEqual(result["action"], "block")
         self.assertIn("failing closed", result["message"])
 
@@ -130,7 +135,7 @@ class TestHermesWardenGate(unittest.TestCase):
             gate, "query_decision",
             side_effect=AssertionError("OPA must not be queried for an unenrolled repo"),
         ):
-            result = gate.decide(self._payload(SUPPORTED_COMMIT))
+            result = gate.decide(self._payload(self.SUPPORTED_COMMIT))
         self.assertEqual(result, {})
 
     def test_opa_timeout_blocks(self):
@@ -141,7 +146,7 @@ class TestHermesWardenGate(unittest.TestCase):
             gate, "query_decision",
             return_value=DecisionResult(ok=False, allow=False, reason="", error="timed out"),
         ):
-            result = gate.decide(self._payload(SUPPORTED_COMMIT))
+            result = gate.decide(self._payload(self.SUPPORTED_COMMIT))
         self.assertEqual(result["action"], "block")
 
     def test_opa_garbage_response_blocks(self):
@@ -152,19 +157,19 @@ class TestHermesWardenGate(unittest.TestCase):
             gate, "query_decision",
             return_value=DecisionResult(ok=False, allow=False, reason="", error="malformed JSON"),
         ):
-            result = gate.decide(self._payload(SUPPORTED_COMMIT))
+            result = gate.decide(self._payload(self.SUPPORTED_COMMIT))
         self.assertEqual(result["action"], "block")
 
     def test_unreadable_ledger_blocks(self):
         self.ledger.parent.mkdir(parents=True, exist_ok=True)
         self.ledger.write_text("{not valid json")
-        result = gate.decide(self._payload(SUPPORTED_COMMIT))
+        result = gate.decide(self._payload(self.SUPPORTED_COMMIT))
         self.assertEqual(result["action"], "block")
 
     def test_not_a_git_repo_blocks_commit_shaped_command(self):
         non_repo = Path(self.tmp.name) / "not-a-repo"
         non_repo.mkdir()
-        payload = {"tool_name": "terminal", "tool_input": {"command": SUPPORTED_COMMIT}, "cwd": str(non_repo)}
+        payload = {"tool_name": "terminal", "tool_input": {"command": self.SUPPORTED_COMMIT}, "cwd": str(non_repo)}
         result = gate.decide(payload)
         self.assertEqual(result["action"], "block")
 

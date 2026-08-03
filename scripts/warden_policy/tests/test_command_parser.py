@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -6,7 +7,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from warden_policy.command_parser import classify
 
-SUPPORTED = 'git -c core.hooksPath=/tmp/empty commit --no-verify -m "reviewed change"'
+# A single genuinely-empty, uniquely-allocated directory backs every existing test's
+# `-c core.hooksPath=...` value. Round-3 of adversarial plan review added real filesystem
+# validation of the hooksPath VALUE (not just the key) -- see command_parser.py's
+# _is_valid_empty_hooks_dir -- so tests can no longer point at an arbitrary placeholder path
+# that may not exist. A `tempfile.TemporaryDirectory()` (not a fixed literal like `/tmp/empty`,
+# even a namespaced one) avoids clobbering any pre-existing unrelated content at a guessed path
+# and is safe under concurrent test runs (GPT-backend plan review finding, round 5).
+_HOOKS_DIR = None
+
+
+def setUpModule():
+    global _HOOKS_DIR
+    _HOOKS_DIR = tempfile.TemporaryDirectory()
+
+
+def tearDownModule():
+    _HOOKS_DIR.cleanup()
+
+
+def _hooks():
+    return _HOOKS_DIR.name
+
+
+SUPPORTED = lambda: f'git -c core.hooksPath={_hooks()} commit --no-verify -m "reviewed change"'
 
 
 class TestNotCommitShaped(unittest.TestCase):
@@ -35,39 +59,39 @@ class TestNotCommitShaped(unittest.TestCase):
 
 class TestSupportedForms(unittest.TestCase):
     def test_plain_supported_form(self):
-        c = classify(SUPPORTED)
+        c = classify(SUPPORTED())
         self.assertTrue(c.is_commit_shaped)
         self.assertTrue(c.supported)
 
     def test_amend_supported(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify --amend --no-edit')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --amend --no-edit')
         self.assertTrue(c.supported)
 
     def test_dash_c_path_form_supported(self):
-        c = classify('git -C /path/to/repo -c core.hooksPath=/tmp/empty commit --no-verify -m x')
+        c = classify(f'git -C /path/to/repo -c core.hooksPath={_hooks()} commit --no-verify -m x')
         self.assertTrue(c.supported)
 
     def test_message_equals_form(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify --message=hello')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --message=hello')
         self.assertTrue(c.supported)
 
     def test_quoted_message_with_shell_metacharacters_is_just_a_message(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify -m "fix: a > b && c"')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m "fix: a > b && c"')
         self.assertTrue(c.supported)
 
     def test_bare_double_dash_separator_is_a_safe_noop(self):
         # found live: a real Hermes agent produced this form unprompted -- it's a standard
         # git idiom ("end of options"), always safe since it consumes/mutates nothing.
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify -m x --')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x --')
         self.assertTrue(c.supported)
 
     def test_pathspec_after_double_dash_still_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify -m x -- file.txt')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x -- file.txt')
         self.assertFalse(c.supported)
 
     def test_signoff_allow_empty_quiet_verbose(self):
         c = classify(
-            'git -c core.hooksPath=/tmp/empty commit --no-verify --signoff '
+            f'git -c core.hooksPath={_hooks()} commit --no-verify --signoff '
             '--allow-empty --quiet --verbose -m x'
         )
         self.assertTrue(c.supported)
@@ -75,7 +99,7 @@ class TestSupportedForms(unittest.TestCase):
 
 class TestBlockedForms(unittest.TestCase):
     def test_missing_no_verify(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit -m x')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit -m x')
         self.assertTrue(c.is_commit_shaped)
         self.assertFalse(c.supported)
         self.assertIn("--no-verify", c.reason)
@@ -89,55 +113,55 @@ class TestBlockedForms(unittest.TestCase):
     def test_hooks_path_after_commit_is_wrong_global_option_position(self):
         # -c must come BEFORE `commit` (git global option syntax); after `commit` it's
         # git-commit's own -c/--reedit-message shorthand, an entirely different, unsupported flag.
-        c = classify('git commit --no-verify -c core.hooksPath=/tmp/empty -m x')
+        c = classify(f'git commit --no-verify -c core.hooksPath={_hooks()} -m x')
         self.assertFalse(c.supported)
 
     def test_dash_a_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify -a -m x')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -a -m x')
         self.assertFalse(c.supported)
 
     def test_all_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify --all -m x')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --all -m x')
         self.assertFalse(c.supported)
 
     def test_combined_am_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify -am x')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -am x')
         self.assertFalse(c.supported)
 
     def test_include_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify --include -m x')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --include -m x')
         self.assertFalse(c.supported)
 
     def test_only_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify --only -m x')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --only -m x')
         self.assertFalse(c.supported)
 
     def test_interactive_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify --interactive')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --interactive')
         self.assertFalse(c.supported)
 
     def test_patch_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify --patch')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --patch')
         self.assertFalse(c.supported)
 
     def test_pathspec_from_file_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify --pathspec-from-file=x')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --pathspec-from-file=x')
         self.assertFalse(c.supported)
 
     def test_bare_pathspec_operand_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify -m x -- file.txt')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x -- file.txt')
         self.assertFalse(c.supported)
 
     def test_compound_and_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify -m x && rm -rf /')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x && rm -rf /')
         self.assertFalse(c.supported)
 
     def test_compound_semicolon_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify -m x; echo done')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x; echo done')
         self.assertFalse(c.supported)
 
     def test_pipe_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/empty commit --no-verify -m x | cat')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x | cat')
         self.assertFalse(c.supported)
 
     def test_unbalanced_quotes_mentioning_commit_blocked(self):
@@ -155,47 +179,47 @@ class TestCommandSubstitutionInjection(unittest.TestCase):
     """
 
     def test_backtick_in_message_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "safe `whoami`"')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m "safe `whoami`"')
         self.assertTrue(c.is_commit_shaped)
         self.assertFalse(c.supported)
 
     def test_dollar_paren_in_message_space_form_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "safe $(touch /tmp/x)"')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m "safe $(touch /tmp/x)"')
         self.assertFalse(c.supported)
 
     def test_dollar_paren_in_author_space_form_blocked(self):
         c = classify(
-            'git -c core.hooksPath=/tmp/e commit --no-verify --author "$(touch /tmp/x) <a@b.c>" -m x'
+            f'git -c core.hooksPath={_hooks()} commit --no-verify --author "$(touch /tmp/x) <a@b.c>" -m x'
         )
         self.assertFalse(c.supported)
 
     def test_dollar_paren_in_message_equals_form_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify --message=$(touch /tmp/x)')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --message=$(touch /tmp/x)')
         self.assertFalse(c.supported)
 
     def test_dollar_paren_in_author_equals_form_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify --author=$(touch /tmp/x) -m x')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --author=$(touch /tmp/x) -m x')
         self.assertFalse(c.supported)
 
     def test_dollar_paren_in_dash_capital_c_value_blocked(self):
         # GPT-5.6-sol's specific finding: -C's value is consumed with zero content validation.
-        c = classify('git -C "$(touch /tmp/x)" -c core.hooksPath=/tmp/e commit --no-verify -m safe')
+        c = classify(f'git -C "$(touch /tmp/x)" -c core.hooksPath={_hooks()} commit --no-verify -m safe')
         self.assertFalse(c.supported)
 
     def test_process_substitution_input_form_blocked(self):
         # Code-review's finding: <(...) is the same vulnerability class as $(...) -- bash forks
         # and runs the enclosed command to set up the substitution as a side effect of
         # word-splitting alone, regardless of whether the resulting path is ever read.
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m <(touch /tmp/x)')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m <(touch /tmp/x)')
         self.assertFalse(c.supported)
 
     def test_process_substitution_output_form_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m >(touch /tmp/x)')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m >(touch /tmp/x)')
         self.assertFalse(c.supported)
 
     def test_dollar_paren_in_non_hookspath_dash_c_value_blocked(self):
         c = classify(
-            'git -c core.hooksPath=/tmp/e -c user.name="$(touch /tmp/x)" commit --no-verify -m safe'
+            f'git -c core.hooksPath={_hooks()} -c user.name="$(touch /tmp/x)" commit --no-verify -m safe'
         )
         self.assertFalse(c.supported)
 
@@ -203,7 +227,7 @@ class TestCommandSubstitutionInjection(unittest.TestCase):
         # Round 4: shlex.split() preserves a literal backslash-newline inside a quoted value
         # intact -- a per-token check could catch this form alone, but the actual fix
         # normalizes the raw string, which also covers it.
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "safe $\\\n(touch /tmp/x)"')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m "safe $\\\n(touch /tmp/x)"')
         self.assertFalse(c.supported)
 
     def test_line_continuation_split_marker_unquoted_form_blocked(self):
@@ -212,15 +236,15 @@ class TestCommandSubstitutionInjection(unittest.TestCase):
         # newline by the time a token exists, which a post-tokenization regex can't recover.
         # The fix normalizes the raw command string before shlex.split() ever runs, so this
         # form is caught the same way as the quoted one.
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m $\\\n(touch>/tmp/x)')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m $\\\n(touch>/tmp/x)')
         self.assertFalse(c.supported)
 
     def test_literal_dollar_sign_alone_not_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "fix: cost is \\$5"')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m "fix: cost is \\$5"')
         self.assertTrue(c.supported)
 
     def test_literal_braces_not_blocked(self):
-        c = classify('git -c core.hooksPath=/tmp/e commit --no-verify -m "fix: use {x} syntax"')
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m "fix: use {{x}} syntax"')
         self.assertTrue(c.supported)
 
     def test_unrelated_non_git_command_with_marker_and_commit_substring_not_commit_shaped(self):
@@ -229,6 +253,156 @@ class TestCommandSubstitutionInjection(unittest.TestCase):
         # marker in unrelated positions (e.g. a filename).
         c = classify("rg -F '$(' docs/commit-notes.md")
         self.assertFalse(c.is_commit_shaped)
+
+
+class TestDashCKeyAllowlist(unittest.TestCase):
+    """Regression tests for a real, live-verified vulnerability found during continued deep
+    testing: the classifier only checked WHETHER one of possibly several `-c` flags equaled
+    `core.hooksPath` -- it never rejected other `-c` keys, and never rejected a duplicate
+    `-c core.hooksPath=<different-value>`. `-c core.fsmonitor=<script>` is a known git-config
+    code-execution vector, live-verified via a real Hermes agent's real terminal tool against
+    the deployed (pre-fix) daemon: the configured script executed as a side effect of an
+    otherwise "supported" commit. A duplicate `core.hooksPath` with a different value is a
+    second bypass -- git's own config precedence takes the LAST value for a single-valued key,
+    so a second override could silently redirect back to a real (dangerous) hooks directory.
+    """
+
+    def test_non_hookspath_c_key_alone_blocked(self):
+        c = classify(f'git -c core.fsmonitor={_hooks()}/evil.sh commit --no-verify -m x')
+        self.assertTrue(c.is_commit_shaped)
+        self.assertFalse(c.supported)
+
+    def test_dangerous_key_after_hookspath_blocked(self):
+        c = classify(
+            f'git -c core.hooksPath={_hooks()} -c core.fsmonitor=/tmp/evil.sh commit --no-verify -m x'
+        )
+        self.assertFalse(c.supported)
+
+    def test_dangerous_key_before_hookspath_blocked(self):
+        c = classify(
+            f'git -c core.fsmonitor=/tmp/evil.sh -c core.hooksPath={_hooks()} commit --no-verify -m x'
+        )
+        self.assertFalse(c.supported)
+
+    def test_duplicate_hookspath_different_value_blocked(self):
+        # The bypass the round-1 fix (key-only allowlist) missed: both `-c` occurrences have the
+        # RIGHT key, so a check that only asks "was core.hooksPath seen at least once" would pass
+        # this -- but git resolves the LAST value for a single-valued key, so the second,
+        # non-empty value would actually govern the real commit.
+        c = classify(
+            f'git -c core.hooksPath={_hooks()} -c core.hooksPath=/tmp/real-hooks commit --no-verify -m x'
+        )
+        self.assertFalse(c.supported)
+
+    def test_second_distinct_dangerous_key_blocked(self):
+        # Confirms this is allowlist-by-key, not a `core.fsmonitor`-only blocklist entry.
+        c = classify(f'git -c credential.helper=/tmp/evil.sh commit --no-verify -m x')
+        self.assertTrue(c.is_commit_shaped)
+        self.assertFalse(c.supported)
+
+    def test_single_hookspath_still_supported(self):
+        # Regression: the original, single-`-c` supported form must still work.
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x')
+        self.assertTrue(c.supported)
+
+
+class TestHooksPathValueValidation(unittest.TestCase):
+    """Regression tests for a second, more severe pre-existing gap found by adversarial
+    (GPT-backend) plan review during the same round: the classifier never validated that the
+    `-c core.hooksPath=<value>` VALUE actually points to a real, empty, trusted directory --
+    only that the KEY was right. `--no-verify` does NOT suppress `prepare-commit-msg`
+    (live-verified directly against real git), so an attacker- or agent-supplied
+    non-empty/attacker-controlled hooksPath directory can still execute a hook as a side effect
+    of an otherwise "supported" commit -- defeating the entire reason this override exists.
+    """
+
+    def test_nonexistent_hookspath_blocked(self):
+        c = classify(f'git -c core.hooksPath={_hooks()}/does-not-exist commit --no-verify -m x')
+        self.assertTrue(c.is_commit_shaped)
+        self.assertFalse(c.supported)
+
+    def test_relative_hookspath_blocked(self):
+        c = classify('git -c core.hooksPath=relative/dir commit --no-verify -m x')
+        self.assertFalse(c.supported)
+
+    def test_hookspath_pointing_to_a_file_blocked(self):
+        import tempfile as _tempfile
+        with _tempfile.NamedTemporaryFile(dir=_hooks()) as tmp_file:
+            c = classify(f'git -c core.hooksPath={tmp_file.name} commit --no-verify -m x')
+            self.assertFalse(c.supported)
+
+    def test_hookspath_pointing_to_nonempty_dir_blocked(self):
+        # The exact attack case: a directory that exists and IS a directory, but contains a
+        # real (or attacker-supplied) file -- e.g. a malicious prepare-commit-msg hook.
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as nonempty_dir:
+            (Path(nonempty_dir) / "prepare-commit-msg").write_text("#!/bin/sh\necho pwned\n")
+            c = classify(f'git -c core.hooksPath={nonempty_dir} commit --no-verify -m x')
+            self.assertFalse(c.supported)
+
+    def test_real_empty_hookspath_still_supported(self):
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x')
+        self.assertTrue(c.supported)
+
+    def test_bare_hookspath_no_equals_blocked(self):
+        # `-c core.hooksPath` with no `=value` at all -- hooks_path_value ends up "" (not None),
+        # which _is_valid_empty_hooks_dir correctly rejects: the character-allowlist
+        # `fullmatch` requires at least one character (the regex uses `+`), so an empty
+        # string is rejected there, before is_absolute() is ever reached.
+        c = classify('git -c core.hooksPath commit --no-verify -m x')
+        self.assertTrue(c.is_commit_shaped)
+        self.assertFalse(c.supported)
+
+
+class TestHooksPathShellExpansionDivergence(unittest.TestCase):
+    """Regression tests for a real, live-verified vulnerability found by adversarial GPT
+    code-review while reviewing the round-3 hooksPath-value-emptiness fix above: `classify()`
+    validates the LITERAL string from `shlex.split()`, but Hermes's terminal tool later runs
+    the SAME raw command through a real shell, which performs parameter expansion (`$USER`,
+    `${VAR}`) and globbing (`*`) that `shlex` does not. An attacker can create a literal, empty
+    decoy directory matching an unexpanded string, while the real shell expands it to a
+    completely different, attacker-prepopulated path -- confirmed live via direct bash
+    reproduction (both bare and braced parameter-expansion forms, and globbing).
+    """
+
+    def test_bare_dollar_variable_blocked(self):
+        # Live-verified: `bash -c 'git -c core.hooksPath=/tmp/$USER commit ...'` expands to a
+        # real, different directory than the literal "/tmp/$USER" path this would validate.
+        c = classify(f'git -c core.hooksPath={_hooks()}/$USER commit --no-verify -m x')
+        self.assertTrue(c.is_commit_shaped)
+        self.assertFalse(c.supported)
+
+    def test_braced_dollar_variable_blocked(self):
+        # Live-verified this round: braced (`${VAR}`) and bare (`$VAR`) parameter expansion
+        # behave identically in this argument position -- same confidence as the bare form.
+        c = classify(f'git -c core.hooksPath={_hooks()}/${{HOME}} commit --no-verify -m x')
+        self.assertFalse(c.supported)
+
+    def test_glob_star_blocked(self):
+        # Live-verified: globbing expands when a matching filesystem entry exists.
+        c = classify(f'git -c core.hooksPath={_hooks()}/* commit --no-verify -m x')
+        self.assertFalse(c.supported)
+
+    def test_tilde_blocked_as_allowlist_conservatism(self):
+        # NOT independently demonstrated to expand in this argument position (confirmed via
+        # direct bash reproduction: `core.hooksPath=~/dir` is NOT tilde-expanded, since tilde
+        # expansion only applies at the start of a word or in a genuine shell-variable
+        # assignment). Blocked anyway per this module's "new/obscure -- default to BLOCKED"
+        # allowlist philosophy, not because a live bypass was shown.
+        c = classify('git -c core.hooksPath=~/somedir commit --no-verify -m x')
+        self.assertFalse(c.supported)
+
+    def test_trailing_newline_blocked(self):
+        # Regression test for the fullmatch-vs-match anchor fix specifically: Python's `$`
+        # anchor allows a single trailing newline, `fullmatch` correctly rejects it. The value
+        # must be QUOTED for shlex to preserve the embedded newline as part of one token
+        # (an unquoted bare newline would just be whitespace, splitting into separate tokens).
+        c = classify(f'git -c core.hooksPath="{_hooks()}\n" commit --no-verify -m x')
+        self.assertFalse(c.supported)
+
+    def test_safe_characters_only_still_supported(self):
+        c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x')
+        self.assertTrue(c.supported)
 
 
 if __name__ == "__main__":
