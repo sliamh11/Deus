@@ -7,28 +7,45 @@ store the code-review + verification gates decide on (not the marker files).
 Unlike the pure leaf capsules (``globs``, ``command_parse``), these functions are
 NOT zero-coupling: they call entry-module helpers that tests monkeypatch
 (``_claude_marker_dir``, ``_git``) plus non-patched entry helpers
-(``_marker_dir_for_worktree``, ``_write_atomic``, ``_debug``) and the
-``MARKER_NAMES`` dispatch table. To keep those monkeypatches effective WITHOUT
+(``_marker_dir_for_worktree``, ``_write_atomic``, ``_debug``, ``_resolve_verdict_worktree``)
+and the ``MARKER_NAMES`` dispatch table. To keep those monkeypatches effective WITHOUT
 re-importing the ~4000-line entry on the hot hook path (the entry runs as
 ``__main__`` at runtime, so ``import codex_warden_hooks`` would re-parse it), the
 entry injects itself via :func:`bind_entry`; every entry-owned reference is then
 resolved through the live (possibly monkeypatched) module at CALL time. Resolution
 is deferred to call time, so helpers defined later than the bind site are fine.
 
-Intra-capsule calls stay direct; only the 6 distinct entry-owned symbols
-(``_claude_marker_dir``, ``_marker_dir_for_worktree``, ``_git``,
-``_write_atomic``, ``_debug``, ``MARKER_NAMES`` — 9 call sites) go through
-``_entry.``.
+Intra-capsule calls stay direct; only the 7 distinct entry-owned symbols
+(``_claude_marker_dir``, ``_marker_dir_for_worktree``, ``_resolve_verdict_worktree``,
+``_git``, ``_write_atomic``, ``_debug``, ``MARKER_NAMES``) go through ``_entry.``.
+
+LIA-382 (verdict staleness): SHIP/TRIVIAL entries carry a ``head_sha``/``diff_hash``
+fingerprint of the worktree's code state at write time (see ``_compute_state_fingerprint``
+and ``_write_verdict``). Gate reads (``_read_verdict``/``_last_verdict``) treat a SHIP/TRIVIAL
+entry whose fingerprint no longer matches the worktree's CURRENT state as absent, via
+``_fresh_entry``. REVISE/BLOCK/COULD_NOT_RUN entries are NEVER filtered by staleness — see
+``_fresh_entry``'s docstring for why (the short version: hiding a stale REVISE would defeat
+the post-REVISE TRIVIAL-bypass guard in ``mark_warden``). Note the mechanism's actual coverage
+is narrower than "closes cross-worktree misroutes" — see the plan's "Scope correction" for why
+a misrouted verdict's fingerprint is self-consistent with its (wrong) destination bucket.
 """
 
 from __future__ import annotations
 
 import contextlib
 import datetime as dt
+import hashlib
 import json
 import os
 from pathlib import Path
 from typing import Any, Callable
+
+#: Verdict values eligible for staleness filtering. Every other value (REVISE, BLOCK,
+#: COULD_NOT_RUN, and any future value) always passes through _fresh_entry unfiltered —
+#: staleness protection exists to stop an OLD APPROVAL from being trusted against NEW
+#: code, never to make an old REJECTION disappear (core-behavioral-rules.md's "REVISE...
+#: no exceptions" depends on REVISE staying visible regardless of subsequent edits).
+_STALENESS_ELIGIBLE_VERDICTS = frozenset({"SHIP", "TRIVIAL"})
 
 # OS-SPECIFIC (flagged per core-rules): fcntl is POSIX-only. The warden machinery
 # runs dev-host-only (macOS/Linux); on Windows fcntl is absent and the verdict-store
@@ -132,18 +149,129 @@ def _read_verdicts(repo_root: Path) -> dict[str, Any]:
     return _read_verdicts_at(_verdicts_path(repo_root))
 
 
+def _compute_state_fingerprint(worktree: Path) -> tuple[str | None, str | None]:
+    """Fingerprint *worktree*'s current code state: ``(head_sha, diff_hash)``.
+
+    ``head_sha`` is the worktree's HEAD commit. ``diff_hash`` is a sha256 of
+    ``git diff HEAD`` (tracked-file content, staged + unstaged) combined with the
+    sorted list of untracked file paths from ``git status --porcelain
+    --untracked-files=normal`` (existence only, not content — hashing untracked
+    file content on every gate read was judged too expensive relative to the
+    narrowness of the edge case it would additionally catch: a second edit to an
+    already-untracked new file with nothing else in the tree changing).
+
+    ``head_sha`` alone would miss any uncommitted edit (HEAD doesn't move for a
+    working-tree change made by ANY tool, including Bash) — ``diff_hash`` is what
+    actually detects "the code changed since this verdict was written" for the
+    invalidator-blind-edit gap this exists to close.
+
+    EVERY untracked path under ``.claude/`` is excluded from the untracked-file
+    list — not just the verdict store's own artifacts. The store's own files
+    (``.warden-verdicts.json``, its lockfile, ``.warden-log``, per-worktree marker
+    buckets) are what originally motivated this: they're WRITTEN by
+    ``_write_verdict`` itself, so without excluding them the act of recording a
+    verdict would change the untracked-file list and self-invalidate the entry
+    the moment it's written (confirmed: a brand-new ``.claude/`` dir reports as a
+    single ``?? .claude/`` porcelain line — git doesn't descend into a wholly-new
+    untracked directory in porcelain output). But the exclusion is intentionally
+    broader than just those specific paths: ``.claude/`` as a whole is this
+    project's dev-tooling/config directory (markers, warden config, skills,
+    scratch state), not "the code under review" — a brand-new file appearing
+    there is tooling housekeeping, not a code change this fingerprint needs to
+    react to. This repo's own ``.gitignore`` already excludes the store's own
+    files specifically, but the exclusion here doesn't rely on that (nor does it
+    try to enumerate every warden-state filename, which would drift out of sync
+    with ``.gitignore`` over time) — other repos adopting this warden system
+    (e.g. via add-guardrails) may not replicate every one of these gitignore
+    entries, and a self-invalidating gate would be a much worse failure mode than
+    this blind spot. Known, accepted consequence: a genuinely new *reviewable*
+    file landing directly under ``.claude/`` (e.g. a new skill or hook script,
+    not yet ``git add``ed) would NOT stale an existing SHIP on its own — see
+    ``test_new_untracked_file_directly_under_claude_dir_does_not_stale_ship`` in
+    the oracle test suite for the boundary this documents.
+
+    Fail-open at the primitive level: if any of the three git calls fails (not a
+    git repo, git missing, etc.), returns ``(None, None)`` — callers decide
+    fail-open vs fail-closed from there (see ``_fresh_entry``).
+    """
+    head_sha = _entry._git(worktree, "rev-parse", "HEAD")
+    if head_sha is None:
+        return (None, None)
+    diff_output = _entry._git(worktree, "diff", "HEAD")
+    if diff_output is None:
+        return (None, None)
+    status_output = _entry._git(worktree, "status", "--porcelain", "--untracked-files=normal")
+    if status_output is None:
+        return (None, None)
+    untracked = sorted(
+        line[3:] for line in status_output.splitlines()
+        if line.startswith("??") and not line[3:].startswith(".claude/")
+    )
+    composite = diff_output + "\x00" + "\x00".join(untracked)
+    diff_hash = hashlib.sha256(composite.encode("utf-8")).hexdigest()
+    return (head_sha, diff_hash)  # _git already .strip()s its return value
+
+
+def _fresh_entry(
+    data: dict[str, Any], warden: str, worktree: Path, fail_open: bool = True,
+) -> dict[str, Any] | None:
+    """Return ``data[warden]`` if it should be trusted right now, else ``None``.
+
+    - Missing/non-dict entry: ``None`` (nothing to trust).
+    - ``verdict`` not in ``_STALENESS_ELIGIBLE_VERDICTS`` (i.e. REVISE, BLOCK,
+      COULD_NOT_RUN): returned UNCHANGED, always — never filtered by staleness.
+      This is the critical invariant LIA-382 protects: a stale-looking REVISE
+      must stay visible and blocking, or ``mark_warden``'s post-REVISE
+      TRIVIAL-bypass guard (which reads ``_last_verdict``) would be silently
+      defeated by the very edit someone makes to FIX the REVISE.
+    - SHIP/TRIVIAL entry with no ``head_sha``/``diff_hash`` recorded (a legacy,
+      pre-LIA-382 entry): returned UNCHANGED — the staleness check is skipped,
+      not treated as automatically stale, so this fix doesn't retroactively
+      invalidate everything the moment it ships.
+    - SHIP/TRIVIAL entry with a recorded fingerprint: compared against
+      *worktree*'s CURRENT fingerprint. Match (or *worktree*'s current
+      fingerprint can't be computed AND ``fail_open`` is True) → returned
+      unchanged. Mismatch (or can't-compute with ``fail_open=False``) → ``None``.
+
+    ``fail_open`` defaults to the base policy (matches the existing ``_git``
+    caller convention throughout this codebase: an infra hiccup shouldn't newly
+    block a gate that worked before this fix existed). The one exception is the
+    admin-merge standing-grant check, which passes ``fail_open=False`` — a stale
+    SHIP there would let a merge skip per-command approval entirely, so an
+    unverifiable fingerprint must NOT be trusted there.
+    """
+    entry = data.get(warden)
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("verdict") not in _STALENESS_ELIGIBLE_VERDICTS:
+        return entry
+    stored_head = entry.get("head_sha")
+    stored_diff = entry.get("diff_hash")
+    if stored_head is None or stored_diff is None:
+        return entry  # legacy entry, no fingerprint recorded — trust as before
+    current_head, current_diff = _compute_state_fingerprint(worktree)
+    if current_head is None or current_diff is None:
+        return entry if fail_open else None
+    if current_head == stored_head and current_diff == stored_diff:
+        return entry
+    return None  # stale
+
+
 def _read_verdict(marker_name: str, repo_root: Path) -> str | None:
     """Return the verdict string for *marker_name* from .warden-verdicts.json.
 
     Maps the marker name (e.g. ``"code-reviewed"``) to the warden key used in
     the JSON (e.g. ``"code-reviewer"``) via ``MARKER_NAMES``.  Returns ``None``
-    if the file is absent, malformed, or the entry is missing.
+    if the file is absent, malformed, the entry is missing, or (LIA-382) a
+    SHIP/TRIVIAL entry's fingerprint no longer matches the worktree's current
+    state — see ``_fresh_entry``.
     """
     warden = _entry.MARKER_NAMES.get(marker_name)
     if not warden:
         return None
     data = _read_verdicts(repo_root)
-    entry = data.get(warden)
+    worktree = _entry._resolve_verdict_worktree(repo_root)
+    entry = _fresh_entry(data, warden, worktree)
     if not isinstance(entry, dict):
         return None
     v = entry.get("verdict")
@@ -222,14 +350,27 @@ def _write_verdict(repo_root: Path, warden: str, verdict: str, reason: str, sour
     path = _verdicts_path(repo_root)
     # Submission time, not write time: under lock contention the actual write can lag.
     stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # LIA-382: fingerprint the SAME worktree _verdicts_path resolved the bucket
+    # against, so a later read comparing against that worktree's current state is
+    # comparing like-for-like. Computed uniformly for every verdict value (not
+    # just SHIP/TRIVIAL) — harmless to store on a REVISE/BLOCK entry even though
+    # _fresh_entry never reads it back for those; keeps write-time logic simple,
+    # with all the verdict-value scoping living in one place (read time).
+    worktree = _entry._resolve_verdict_worktree(repo_root)
+    head_sha, diff_hash = _compute_state_fingerprint(worktree)
 
     def _set(data: dict[str, Any]) -> bool:
-        data[warden] = {
+        entry: dict[str, Any] = {
             "verdict": verdict,
             "ts": stamp,
             "reason": reason,
             "source": source,
         }
+        if head_sha is not None:
+            entry["head_sha"] = head_sha
+        if diff_hash is not None:
+            entry["diff_hash"] = diff_hash
+        data[warden] = entry
         return True
 
     # Lock-guarded RMW: re-reads inside the lock so a concurrent writer's key is
@@ -244,7 +385,8 @@ def _write_verdict(repo_root: Path, warden: str, verdict: str, reason: str, sour
 
 def _last_verdict(repo_root: Path, warden: str) -> str | None:
     data = _read_verdicts(repo_root)
-    entry = data.get(warden)
+    worktree = _entry._resolve_verdict_worktree(repo_root)
+    entry = _fresh_entry(data, warden, worktree)
     if isinstance(entry, dict):
         v = entry.get("verdict")
         return v if isinstance(v, str) else None

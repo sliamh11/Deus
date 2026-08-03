@@ -52,6 +52,7 @@ from warden_hooks.verdict_store import (  # noqa: E402
     _audit_log_path,
     _bypass_log_path,
     _clear_verdict,
+    _fresh_entry,
     _last_verdict,
     _last_verdict_is_blocking,
     _read_verdict,
@@ -502,6 +503,18 @@ def _current_worktree(repo_root: Path) -> Path:
     return _WORKTREE_CACHE[key]
 
 
+def _resolve_verdict_worktree(repo_root: Path) -> Path:
+    """Resolve the worktree marker/verdict resolution should target: an explicit
+    override if pinned, otherwise the worktree inferred from the current process
+    cwd. Extracted from _claude_marker_dir (LIA-382) so the verdict-store staleness
+    fingerprint (scripts/warden_hooks/verdict_store.py's _write_verdict/_read_verdict)
+    resolves the SAME worktree _claude_marker_dir uses for the bucket path itself —
+    bucket and fingerprint must agree on one worktree, or a fingerprint computed
+    against the wrong directory would never match anything.
+    """
+    return _WORKTREE_OVERRIDE or _current_worktree(repo_root)
+
+
 def _claude_marker_dir(repo_root: Path) -> Path:
     """Return the .claude state dir for the active worktree.
 
@@ -509,7 +522,7 @@ def _claude_marker_dir(repo_root: Path) -> Path:
     repo_root/.claude/worktree-markers/<sha1(worktree)[:12]>. 12 hex = 48 bits;
     with well under 100 worktrees the collision probability is effectively zero.
     """
-    wt = _WORKTREE_OVERRIDE or _current_worktree(repo_root)
+    wt = _resolve_verdict_worktree(repo_root)
     base = repo_root / ".claude"
     if wt.resolve(strict=False) != repo_root.resolve(strict=False):
         wt_id = hashlib.sha1(str(wt.resolve(strict=False)).encode()).hexdigest()[:12]
@@ -1431,7 +1444,16 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     # marker is present, every configured MODEL backend (e.g. gpt) must also be SHIP. Marker-absent
     # paths below are byte-unchanged. _evaluate_backends(skip_claude=True) reads only model verdicts
     # from the store; the invalidators clear plan-reviewer@<backend> so a fresh plan needs fresh
-    # model review (no stale-SHIP bypass — oracle O1/O2). Pure JSON read: no added subprocess cost.
+    # model review (no stale-SHIP bypass — oracle O1/O2). With no model backend configured for
+    # plan-reviewer (the default), this stays a pure JSON read: no added subprocess cost, since
+    # _evaluate_backends' per-backend loop `continue`s before ever reaching _read_verdict. LIA-382:
+    # when a model backend IS configured, this now costs ~3 git subprocess calls per SHIP/TRIVIAL
+    # entry read (_fresh_entry's staleness fingerprint) on EVERY Edit/Write/MultiEdit/apply_patch
+    # while the marker is present — not just at commit time, since this fast path fires on every
+    # edit in an active session. Left as-is deliberately (not special-cased to skip staleness
+    # checking here): correctness at every gate the fix was designed to cover outweighs the
+    # measured ~27ms/read cost, which is small next to LLM-inference-dominated agentic loop
+    # latency. Revisit this call site specifically if it's ever measured to matter in practice.
     if _marker(repo_root, ".plan-reviewed").exists():
         model_blocking = _evaluate_backends("plan-reviewer", config, repo_root, skip_claude=True)
         if not model_blocking:
@@ -1696,16 +1718,6 @@ def _parse_iso_utc(raw: Any) -> dt.datetime | None:
     return parsed.astimezone(dt.UTC)
 
 
-def _verdict_in(verdicts: dict[str, Any], marker_name: str) -> str | None:
-    """Return the verdict string for *marker_name* from a verdicts dict."""
-    warden = MARKER_NAMES.get(marker_name)
-    entry = verdicts.get(warden) if warden else None
-    if isinstance(entry, dict):
-        v = entry.get("verdict")
-        return v if isinstance(v, str) else None
-    return None
-
-
 def _gh_pr_head_branch(
     ref: str, timeout: int = 3, repo: str | None = None
 ) -> str | None:
@@ -1822,10 +1834,17 @@ def _evaluate_standing_grant(
         return (_GRANT_FALL_THROUGH, why)
 
     verdicts = _read_verdicts_at(_verdicts_path_for_worktree(repo_root, wt))
+    # LIA-382: fail_open=False here, unlike every other _fresh_entry call site in
+    # this file — a stale/unverifiable SHIP on the standing-grant fast path would
+    # let a merge skip per-command approval entirely, the single highest-value
+    # gate this store protects. `name` is a MARKER name (e.g. "code-reviewed");
+    # translate to the warden store key via MARKER_NAMES before calling
+    # _fresh_entry, or this silently no-ops.
     for name in _STANDING_MANDATORY_MARKERS:
-        v = _verdict_in(verdicts, name)
+        warden = MARKER_NAMES.get(name, name)
+        entry = _fresh_entry(verdicts, warden, wt, fail_open=False)
+        v = entry.get("verdict") if isinstance(entry, dict) else None
         if v != "SHIP":
-            warden = MARKER_NAMES.get(name, name)
             return (
                 _GRANT_BLOCK,
                 f"[admin-merge-gate] standing grant requires a SHIP {warden} "
@@ -1833,9 +1852,10 @@ def _evaluate_standing_grant(
                 f"{warden} warden to SHIP, then retry.",
             )
     for name in _STANDING_CONDITIONAL_MARKERS:
-        v = _verdict_in(verdicts, name)
+        warden = MARKER_NAMES.get(name, name)
+        entry = _fresh_entry(verdicts, warden, wt, fail_open=False)
+        v = entry.get("verdict") if isinstance(entry, dict) else None
         if v is not None and v != "SHIP":
-            warden = MARKER_NAMES.get(name, name)
             return (
                 _GRANT_BLOCK,
                 f"[admin-merge-gate] standing grant blocked: {warden} verdict is "
@@ -2607,7 +2627,11 @@ def read_cross_context(repo_root: Path, role: str, for_backend: str) -> str:
     if for_backend == BACKEND_CLAUDE:
         return ""  # Claude reads the model findings via the .<role>-cross-review.md file
     data = _read_verdicts(repo_root)
-    entry = data.get(role)
+    # LIA-382: a stale Claude verdict's reasoning is advisory context fed to another
+    # backend's review — presenting it as live when it's actually about since-changed
+    # code would be actively misleading, so it's filtered the same as any gate read.
+    wt = _resolve_verdict_worktree(repo_root)
+    entry = _fresh_entry(data, role, wt)
     if isinstance(entry, dict) and isinstance(entry.get("verdict"), str):
         reason = str(entry.get("reason", ""))[:CROSS_REASON_MAX_CHARS]
         return f"Claude {role} verdict: {entry['verdict']} — {reason}"
