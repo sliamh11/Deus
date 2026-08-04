@@ -27,6 +27,11 @@ class Verdict:
     raw: str = ""                                  # verbatim model output, for diagnostics
     error: str = ""                                # populated when verdict == COULD_NOT_RUN
     category: str = ""                             # "" | "rate_limit" | "auth" — steers messaging
+    files_not_reviewed: tuple[str, ...] = ()       # paths the engine DROPPED (max-files cap) and
+                                                   # therefore never sent to a model. Non-empty
+                                                   # means this review is INCOMPLETE, so a SHIP
+                                                   # over it is not an approval — run_review
+                                                   # downgrades that case to COULD_NOT_RUN.
 
     @property
     def is_ship(self) -> bool:
@@ -52,6 +57,9 @@ class ReviewRequest:
     is_diff: bool = True       # True: `content` is a unified diff (reviewed per-file). False:
                                # review the whole `content` as one unit (e.g. a plan). Default
                                # True keeps every existing diff-role caller byte-unchanged.
+    max_files: int | None = None  # Per-file review cap. None = the engine's own default
+                               # (codex_review.DEFAULT_MAX_FILES). Set explicitly to raise/disable
+                               # the cap when a caller needs COMPLETE coverage of a large change.
 
 
 class ModelReviewerBackend(ABC):
