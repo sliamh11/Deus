@@ -89,6 +89,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gpt-model", help="GPT backend model id (default: backend/config default)")
     ap.add_argument("--skip-gpt", action="store_true",
                     help="mark the Claude verdict only; do NOT run the GPT half (advisory/testing)")
+    ap.add_argument("--max-files", type=int, default=None,
+                    help="per-file review cap forwarded to the GPT half (the only half that "
+                         "applies it; the Claude half is an in-session subagent). A review that "
+                         "drops files is COULD_NOT_RUN, never SHIP; raise this for complete "
+                         "coverage of a large change.")
     ap.add_argument("--json", action="store_true", help="emit JSON (agent-native)")
     ap.add_argument("--compact", action="store_true", help="compact JSON")
     ap.add_argument("--select", help="comma-separated dot-paths to project from the JSON")
@@ -136,6 +141,10 @@ def main(argv: list[str] | None = None) -> int:
                     "--worktree-root", str(wt), "--timeout", str(args.gpt_timeout)]
         if args.gpt_model:
             gpt_argv += ["--model", args.gpt_model]
+        if args.max_files is not None:
+            # Forward so the operator can act on a truncated-review COULD_NOT_RUN, whose error
+            # text tells them to raise this very cap.
+            gpt_argv += ["--max-files", str(args.max_files)]
         if args.content_file:
             gpt_argv += ["--content-file", args.content_file]
         elif args.rev_range:

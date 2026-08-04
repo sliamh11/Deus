@@ -1446,16 +1446,23 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     # from the store; the invalidators clear plan-reviewer@<backend> so a fresh plan needs fresh
     # model review (no stale-SHIP bypass — oracle O1/O2). With no model backend configured for
     # plan-reviewer (the default), this stays a pure JSON read: no added subprocess cost, since
-    # _evaluate_backends' per-backend loop `continue`s before ever reaching _read_verdict. LIA-382:
-    # when a model backend IS configured, this now costs ~3 git subprocess calls per SHIP/TRIVIAL
-    # entry read (_fresh_entry's staleness fingerprint) on EVERY Edit/Write/MultiEdit/apply_patch
-    # while the marker is present — not just at commit time, since this fast path fires on every
-    # edit in an active session. Left as-is deliberately (not special-cased to skip staleness
-    # checking here): correctness at every gate the fix was designed to cover outweighs the
-    # measured ~27ms/read cost, which is small next to LLM-inference-dominated agentic loop
-    # latency. Revisit this call site specifically if it's ever measured to matter in practice.
+    # _evaluate_backends' per-backend loop `continue`s before ever reaching _read_verdict.
+    #
+    # check_fingerprint=False (LIA-516): the LIA-382 diff-hash staleness check in _fresh_entry is
+    # deliberately DISABLED for this read. A plan-reviewer SHIP approves the plan TEXT (intent),
+    # not a diff snapshot — unlike code-reviewer/verification-gate, which review an actual diff and
+    # correctly go stale when it changes. Fingerprinting this read meant the very first
+    # implementation edit after a genuine SHIP (any tracked-file change, since diff_hash covers the
+    # whole worktree) invalidated it, blocking the second edit of any multi-file implementation.
+    # Correct invalidation for this role already happens elsewhere: run_session_init and
+    # run_plan_mode_invalidator explicitly clear plan-reviewer@<backend> on every SessionStart and
+    # on every new plan (/plan, ExitPlanMode, or a fresh Plan-subagent dispatch) — see those
+    # functions. The fingerprint check was a third, redundant invalidation path for this role, and
+    # the wrong one: it fired on implementation edits, not on new plans.
     if _marker(repo_root, ".plan-reviewed").exists():
-        model_blocking = _evaluate_backends("plan-reviewer", config, repo_root, skip_claude=True)
+        model_blocking = _evaluate_backends(
+            "plan-reviewer", config, repo_root, skip_claude=True, check_fingerprint=False,
+        )
         if not model_blocking:
             return 0
         _block_pre_tool(_warden_backends_block_message("plan-reviewer", model_blocking, repo_root))
@@ -2824,7 +2831,8 @@ def _warden_backends_block_message(
 
 
 def _evaluate_backends(
-    role: str, config: dict[str, Any], repo_root: Path, *, skip_claude: bool = False
+    role: str, config: dict[str, Any], repo_root: Path, *, skip_claude: bool = False,
+    check_fingerprint: bool = True,
 ) -> list[tuple[str, str | None]]:
     """Strict-AND verdict evaluation for a role's configured backends.
 
@@ -2835,7 +2843,12 @@ def _evaluate_backends(
     Trigger-agnostic by design: it reads only the verdict store, so commit-triggered gates
     (code-reviewer/ai-eng-warden) and edit-triggered gates (plan-reviewer) can share it.
     ``skip_claude=True`` evaluates only the model backends — used by plan-reviewer, whose
-    Claude signal is the ``.plan-reviewed`` marker (not the verdict store)."""
+    Claude signal is the ``.plan-reviewed`` marker (not the verdict store).
+
+    ``check_fingerprint=False`` (LIA-516) disables the LIA-382 diff-hash staleness
+    check on the model-backend reads — see ``run_plan_review_gate``'s call site and
+    ``_fresh_entry``'s docstring for why this is correct for plan-reviewer specifically
+    and wrong for every other role, which keeps the default."""
     blocking: list[tuple[str, str | None]] = []
     for backend in _role_backends(config, role):
         if backend == BACKEND_CLAUDE:
@@ -2852,7 +2865,9 @@ def _evaluate_backends(
             if verdict == "TRIVIAL":
                 continue
         elif backend in KNOWN_MODEL_BACKENDS:
-            verdict = _read_verdict(store_key(role, backend), repo_root)
+            verdict = _read_verdict(
+                store_key(role, backend), repo_root, check_fingerprint=check_fingerprint,
+            )
         else:
             sys.stderr.write(
                 f"[warden-backends-gate] WARNING: unknown backend '{backend}' in "

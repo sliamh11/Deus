@@ -166,6 +166,28 @@ def _read(path: str) -> str:
             return fh.read()
     except OSError as exc:
         raise ReviewError(NOT_FOUND, f"cannot read {path}: {exc}")
+    except UnicodeDecodeError as exc:
+        # A patch/plan file may legitimately carry non-UTF-8 bytes. Raise the SAME typed error
+        # as an unreadable file so every caller's existing ReviewError handling covers it,
+        # instead of letting a bare UnicodeDecodeError escape as a traceback.
+        raise ReviewError(NOT_FOUND, f"cannot decode {path} as UTF-8: {exc}")
+
+
+def _git_diff_argv(root: str, *spec: str) -> list[str]:
+    """`git diff` argv that asks for the CANONICAL patch.
+
+    A reviewer must judge the bytes that actually changed, so the repo's own display filters
+    are switched off: `diff.external` / `diff.<drv>.command` (--no-ext-diff) and
+    `diff.<drv>.textconv` (--no-textconv) both replace the real patch with an arbitrarily
+    transformed rendering. `-c core.fsmonitor=` neutralizes a configured filesystem-monitor
+    hook, which neither flag covers and which the working-tree path would otherwise run.
+
+    NOT a hostile-repo boundary: `filter.<drv>.clean`/`.process` still run on working-tree
+    comparisons and no flag disables them. See docs/REVIEW_RUNNER.md § Scope — this tool
+    reviews code you control.
+    """
+    return ["git", "-c", "core.fsmonitor=", "-C", root, "diff",
+            "--no-ext-diff", "--no-textconv", *spec]
 
 
 def get_diff(root: str, rev_range: str | None, diff_file: str | None) -> str:
@@ -177,7 +199,7 @@ def get_diff(root: str, rev_range: str | None, diff_file: str | None) -> str:
         # Single sha => that commit vs its first parent; ranges (a..b) pass through.
         spec = [rev_range] if (".." in rev_range) else [f"{rev_range}^!"]
         out = subprocess.run(
-            ["git", "-C", root, "diff", *spec], capture_output=True, text=True,
+            _git_diff_argv(root, *spec), capture_output=True, text=True,
         )
         if out.returncode != 0:
             raise ReviewError(INTERNAL_ERROR,
@@ -185,7 +207,7 @@ def get_diff(root: str, rev_range: str | None, diff_file: str | None) -> str:
         return out.stdout
     # Default: working-tree review = staged + unstaged, against HEAD.
     out = subprocess.run(
-        ["git", "-C", root, "diff", "HEAD"], capture_output=True, text=True,
+        _git_diff_argv(root, "HEAD"), capture_output=True, text=True,
     )
     if out.returncode != 0:
         raise ReviewError(INTERNAL_ERROR, f"git diff HEAD failed: {out.stderr.strip()}")

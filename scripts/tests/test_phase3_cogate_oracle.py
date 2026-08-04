@@ -403,3 +403,93 @@ def test_o3_code_reviewer_gpt_could_not_run_fails_open(repo, blocks):
     assert blocks == [], (
         "COULD_NOT_RUN must fail open — infra failures must not block commits"
     )
+
+
+# ── LIA-516: check_fingerprint=False keeps a genuine plan-reviewer@gpt SHIP ──
+# ── alive across implementation edits, without weakening code-reviewer's gate ─
+#
+# Uses a REAL git repo (unlike the `repo` fixture above, which is a bare
+# tmp_path with no git init — under that fixture, _compute_state_fingerprint
+# always fails, so every verdict is written legacy-shaped and _fresh_entry's
+# staleness check never actually engages regardless of check_fingerprint. A
+# real repo is required so the fingerprint mechanism is genuinely exercised.
+
+def _init_git_repo_lia516(path: Path) -> None:
+    import subprocess
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init"], cwd=path, check=True,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["git", "config", "user.email", "oracle-lia516@example.invalid"],
+                    cwd=path, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "config", "user.name", "Oracle LIA-516"],
+                    cwd=path, check=True, stdout=subprocess.DEVNULL)
+    (path / "src").mkdir()
+    (path / "src" / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["git", "commit", "-m", "initial commit"], cwd=path, check=True,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    (path / ".claude" / "wardens").mkdir(parents=True)
+
+
+@pytest.fixture
+def real_git_repo(tmp_path, monkeypatch):
+    repo_path = tmp_path / "real_repo"
+    _init_git_repo_lia516(repo_path)
+    monkeypatch.setattr(h, "_claude_marker_dir", lambda root: root / ".claude")
+    monkeypatch.setattr(h, "_worktree_for_cwd", lambda cwd, root: root)
+    return repo_path
+
+
+def test_lia516_plan_review_gate_survives_implementation_edit(real_git_repo, blocks):
+    # @oracle LIA-516: after a genuine plan-reviewer@gpt SHIP, the FIRST
+    # implementation edit (a real tracked-file change, not a new plan) must NOT
+    # re-block the gate — the SHIP approved the plan text, and correct
+    # invalidation for this role is SessionStart/new-plan (Contracts B/C above),
+    # not a diff-hash fingerprint.
+    repo = real_git_repo
+    _config(repo, {_PLAN_ROLE: {"backends": ["claude", "gpt"]}})
+
+    marker_path = h._marker(repo, ".plan-reviewed")
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.touch()
+    _set(repo, _GPT_KEY, "SHIP")  # genuine SHIP, fingerprinted against current real HEAD/diff
+
+    # The first implementation edit after plan approval: a real tracked-file
+    # change, made via plain write_text (as any Bash-based or hook-invisible
+    # edit would be) — this is exactly the diff_hash-changing edit LIA-516
+    # reports as wrongly blocking the SECOND edit.
+    (repo / "src" / "main.py").write_text("print('hello world')\n", encoding="utf-8")
+
+    h.run_plan_review_gate(_plan_edit_event(repo), repo)
+
+    assert not blocks, (
+        f"run_plan_review_gate blocked after a real implementation edit "
+        f"following a genuine plan-reviewer@gpt SHIP: {blocks!r} — the LIA-382 "
+        "diff-hash fingerprint must not stale a plan-reviewer verdict on an "
+        "implementation edit (LIA-516); only SessionStart/new-plan should "
+        "invalidate it (see Contracts B/C above)."
+    )
+
+
+def test_lia516_code_reviewer_gate_still_blocks_on_stale_ship(real_git_repo, blocks):
+    # @oracle LIA-516 (contrast/control): the SAME kind of implementation edit
+    # must STILL stale a code-reviewer@gpt SHIP and block the commit gate — the
+    # LIA-516 exemption is plan-reviewer-scoped, not a global weakening of
+    # LIA-382 staleness protection for diff-reviewing wardens.
+    repo = real_git_repo
+    _config(repo, {_CODE_ROLE: {"backends": ["claude", "gpt"]}})
+
+    _set(repo, _CODE_GPT_KEY, "SHIP")  # genuine SHIP, fingerprinted against current HEAD/diff
+
+    # Same kind of edit as the plan-reviewer test above.
+    (repo / "src" / "main.py").write_text("print('hello world')\n", encoding="utf-8")
+
+    h.run_warden_backends_gate(_CODE_ROLE, _commit_event(repo), repo)
+
+    assert blocks, (
+        "run_warden_backends_gate for code-reviewer did NOT block after a "
+        "tracked-file edit staled its GPT SHIP — the LIA-516 fix must not "
+        "regress diff-based staleness protection for code-reviewer/"
+        "verification-gate/ai-eng-warden; only plan-reviewer's model-backend "
+        "reads are exempted from the fingerprint check."
+    )
