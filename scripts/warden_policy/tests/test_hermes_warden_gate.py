@@ -104,6 +104,24 @@ class TestHermesWardenGate(unittest.TestCase):
             result = gate.decide(self._payload(self.SUPPORTED_COMMIT))
         self.assertEqual(result, {})
 
+    def test_opa_input_includes_gate_field(self):
+        # Phase 0 of the Claude-Code-gate-to-OPA migration made guardrails.rego's
+        # "code-review" decision bodies gate-scoped -- an omitted "gate" field would make
+        # input.gate undefined in Rego, silently falling through to the file's own default
+        # deny for every real Hermes commit. Confirm the shim actually sends it.
+        from warden_policy.git_subject import resolve_repo_id
+        store = AttestationStore(self.ledger)
+        store.enroll(resolve_repo_id(self.repo))
+        captured = {}
+
+        def _capture(opa_url, opa_input, timeout_seconds):
+            captured.update(opa_input)
+            return DecisionResult(ok=True, allow=True, reason="matching code-review SHIP")
+
+        with mock.patch.object(gate, "query_decision", side_effect=_capture):
+            gate.decide(self._payload(self.SUPPORTED_COMMIT))
+        self.assertEqual(captured.get("gate"), "code-review")
+
     def test_enrolled_repo_with_opa_deny_blocks(self):
         from warden_policy.git_subject import resolve_repo_id
         store = AttestationStore(self.ledger)
