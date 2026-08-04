@@ -222,6 +222,12 @@ def test_plan_mode_invalidator_clears_on_plan_subagent(tmp_path):
         ("FOO= git commit", True),
         ("FOO='two words' git commit", True),
         ("git --git-dir=/foo commit", True),
+        # Other single-letter global flags must stay matched (the ReDoS fix
+        # narrowed the generic short-flag branch to exclude only C/c).
+        ("git -p commit", True),
+        ("git -P commit", True),
+        ("git -q commit", True),
+        ("git -s commit", True),
         ("git commitment", False),
         ("git log --oneline", False),
         ('git log --grep="git commit"', False),
@@ -254,6 +260,36 @@ def test_git_commit_regex_no_redos_on_consecutive_newlines():
     gate.GIT_COMMIT_RE.search(payload)
     elapsed = time.perf_counter() - start
     assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on 200k consecutive newlines"
+
+
+def test_git_commit_regex_no_redos_on_ambiguous_flag_alternation():
+    # CodeQL py/redos (high severity, caught in CI on the host copy's PR):
+    # a generic `-[A-Za-z]` short-flag alternative overlapped with the
+    # dedicated `-C`/`-c` branches, causing exponential-backtracking
+    # ambiguity. Fixed by narrowing the branch to exclude only C/c
+    # (`-[A-BD-Za-bd-z]`), not removing it outright -- an earlier attempt
+    # removed it entirely and silently regressed -p/-P/-q/-s coverage (see
+    # test_git_commit_regex for that positive-match guard). Regression guard
+    # here mirrors the host copy's test.
+    payload = "&git " + ("-C -A " * 2000) + "nope"
+    start = time.perf_counter()
+    gate.GIT_COMMIT_RE.search(payload)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on an ambiguous -C/-A chain"
+
+
+def test_git_commit_regex_no_redos_on_ambiguous_quoted_value_alternation():
+    # CodeQL py/redos (high severity): the -C/env-var value patterns' bare
+    # `\S+`/`\S*` fallback could also match already-quoted content, creating
+    # the same alternation-ambiguity ReDoS shape. Fixed by excluding quote
+    # characters from the bare fallback.
+    payload_c = "git -C " + ('"" -C ' * 2000) + "nope"
+    payload_env = "&git " + ('"" A=' * 2000) + "nope"
+    for payload in (payload_c, payload_env):
+        start = time.perf_counter()
+        gate.GIT_COMMIT_RE.search(payload)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on ambiguous quoted-value alternation"
 
 
 # --- trivial-bypass discipline ---------------------------------------------

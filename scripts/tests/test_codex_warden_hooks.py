@@ -1793,6 +1793,13 @@ def test_verification_gate_shows_revise_escalation(tmp_path, capsys):
         ('FOO="two words" git commit', True),
         # --long=value global flag form
         ("git --git-dir=/foo commit", True),
+        # Other single-letter global flags (must stay matched -- CodeQL's ReDoS fix
+        # narrowed the generic short-flag branch to exclude only C/c, not every letter;
+        # -P is literally the short form of --no-pager, this ticket's own headline case)
+        ("git -p commit", True),
+        ("git -P commit", True),
+        ("git -q commit", True),
+        ("git -s commit", True),
         # Existing behavior preserved
         ("git commit -- file.py", True),
         ("git -C /tmp/repo commit", True),
@@ -1864,6 +1871,53 @@ def test_git_commit_re_no_redos_on_unterminated_quote_chain():
     hooks.GIT_COMMIT_RE.search(payload)
     elapsed = time.perf_counter() - start
     assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on an unterminated-quote chain"
+
+
+def test_git_commit_re_no_redos_on_ambiguous_flag_alternation():
+    # CodeQL py/redos (caught in CI on this PR, high severity): the flags-
+    # repetition group originally included a generic `-[A-Za-z]` short-flag
+    # alternative alongside the dedicated `-C`/`-c` branches. Since -C and -c
+    # are themselves single letters, EVERY `-C`/`-c` token could be consumed
+    # two different ways (via its own branch, or via the generic short-flag
+    # branch), and with many repetitions the number of ways to partition the
+    # string between the two interpretations grows exponentially. Confirmed
+    # exploitable pre-fix: this exact payload at 2000 reps was still fast
+    # (linear scaling makes it a poor illustration on its own), but the same
+    # shape at just 25 repetitions took 11+ seconds pre-fix. Fixed by
+    # narrowing the generic short-flag branch to exclude ONLY `C`/`c`
+    # (`-[A-BD-Za-bd-z]`), not removing it outright -- an earlier attempt at
+    # this fix removed the branch entirely and silently regressed coverage
+    # for every other single-letter global flag, including -P (the short
+    # form of --no-pager, this ticket's own headline case) -- see
+    # test_git_commit_re for the -p/-P/-q/-s positive-match coverage that
+    # guards against re-losing this. Regression guard here: must stay fast
+    # at 2000+ repetitions, far past where the pre-fix version was already
+    # unusable.
+    hooks = load_hooks()
+    payload = "&git " + ("-C -A " * 2000) + "nope"
+    start = time.perf_counter()
+    hooks.GIT_COMMIT_RE.search(payload)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on an ambiguous -C/-A chain"
+
+
+def test_git_commit_re_no_redos_on_ambiguous_quoted_value_alternation():
+    # CodeQL py/redos (caught in CI on this PR, high severity): the -C and
+    # env-var value patterns originally fell back to a bare `\S+`/`\S*` token
+    # that could ALSO match already-quoted content (e.g. `"x"` has no
+    # whitespace, so `\S+` matches it just as well as the quoted alternative
+    # does) -- two alternatives matching the same span is the same
+    # exponential-ambiguity shape as the flag-alternation bug above. Fixed by
+    # excluding quote characters from the bare-token fallback
+    # (`[^'"\s]+`/`[^'"\s]*`), making the alternatives mutually exclusive.
+    hooks = load_hooks()
+    payload_c = "git -C " + ('"" -C ' * 2000) + "nope"
+    payload_env = "&git " + ('"" A=' * 2000) + "nope"
+    for label, payload in (("-C value", payload_c), ("env value", payload_env)):
+        start = time.perf_counter()
+        hooks.GIT_COMMIT_RE.search(payload)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on ambiguous {label} alternation"
 
 
 def test_verification_gate_blocks_no_pager_commit(tmp_path, capsys):
