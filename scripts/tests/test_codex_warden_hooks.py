@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import time
 from argparse import Namespace
 from pathlib import Path
 
@@ -1753,6 +1754,185 @@ def test_verification_gate_shows_revise_escalation(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "REVISE" in out
     assert "Trivial-commit bypass" not in out
+
+
+# ── GIT_COMMIT_RE (LIA-518: broadened commit-gate trigger) ──────────────────
+#
+# First direct coverage for this regex — previously exercised only indirectly
+# through the three gate functions' own tests. Cases mirror the ticket's
+# listed bypass forms plus the false-positive/negative battery and ReDoS
+# checks worked out across plan review.
+
+
+@pytest.mark.parametrize(
+    "command,expected",
+    [
+        # Ticket-listed bypass forms (previously all False negatives)
+        ("git commit -m x", True),
+        ("git --no-pager commit", True),
+        ("git -C /a -C b commit", True),
+        ("git -C '/path with spaces' commit -m x", True),
+        ('git -C "/path with spaces" commit -m x', True),
+        ("env git commit", True),
+        ("GIT_DIR=/foo git commit", True),
+        ("sudo git commit", True),
+        ("echo hi\ngit commit -m x", True),
+        ("foo; git commit -m x", True),
+        ("foo && git commit -m x", True),
+        ("foo || git commit -m x", True),
+        # Indented multiline (round 2 — the line-start anchor must allow
+        # leading horizontal whitespace, not just true line-start)
+        ("echo ready\n  git commit", True),
+        ("echo ready\n\tgit commit", True),
+        ("  git commit -m x", True),
+        ("echo ready\ngit --no-pager commit", True),
+        ("echo ready\n  sudo git commit", True),
+        # Empty / quoted env-var values (round 4)
+        ("FOO= git commit", True),
+        ("FOO='two words' git commit", True),
+        ('FOO="two words" git commit', True),
+        # --long=value global flag form
+        ("git --git-dir=/foo commit", True),
+        # Other single-letter global flags (must stay matched -- CodeQL's ReDoS fix
+        # narrowed the generic short-flag branch to exclude only C/c, not every letter;
+        # -P is literally the short form of --no-pager, this ticket's own headline case)
+        ("git -p commit", True),
+        ("git -P commit", True),
+        ("git -q commit", True),
+        ("git -s commit", True),
+        # Existing behavior preserved
+        ("git commit -- file.py", True),
+        ("git -C /tmp/repo commit", True),
+        ("cd foo && git commit", True),
+        # Negative cases — must NOT match
+        ("git commitment", False),
+        ("git log --oneline", False),
+        ("git add commit.txt", False),
+        ("cat commit.txt", False),
+        ("git show HEAD:committee.md", False),
+        ("mygit commit", False),
+        ('git log --grep="git commit"', False),
+        ("git status", False),
+        ("git committed-files", False),
+        ("echo git commit", False),
+        # Known, accepted, non-regressing limitation (LIA-518 round 4): quoted
+        # values are only recognized for -C's own argument; -c doesn't parse
+        # embedded/partial shell quoting (never supported this at all, so no
+        # regression — see the docstring above GIT_COMMIT_RE for rationale).
+        ('git -c user.name="John Doe" commit', False),
+    ],
+)
+def test_git_commit_re(command, expected):
+    hooks = load_hooks()
+    assert bool(hooks.GIT_COMMIT_RE.search(command)) is expected
+
+
+def test_git_commit_re_heredoc_mention_is_a_known_accepted_over_trigger():
+    # LIA-518: adding re.MULTILINE means a heredoc merely MENTIONING "git
+    # commit" on its own line (not an actual invocation) now also matches —
+    # a deliberately accepted new false-positive class, traded for closing
+    # the real gate-bypass. This gate's purpose is "never silently let a real
+    # commit skip review": a spurious block is a minor, recoverable
+    # annoyance; a missed gate is a silent, unrecoverable bypass. This test
+    # documents the tradeoff as intentional so a future edit doesn't "fix" it
+    # back into a false negative.
+    hooks = load_hooks()
+    heredoc = (
+        "cat <<'EOF' > README.md\n"
+        "Remember to run:\n"
+        "git commit -m \"your message\"\n"
+        "EOF"
+    )
+    assert hooks.GIT_COMMIT_RE.search(heredoc) is not None
+
+
+def test_git_commit_re_no_redos_on_consecutive_newlines():
+    # LIA-518 round 3: `^\s*` (an earlier, reverted candidate) was O(n^2) on
+    # a long run of consecutive newlines under re.MULTILINE — `^` matches at
+    # every line and `\s*` re-walks the remaining run each time. The shipped
+    # regex uses `^[ \t]*` (horizontal whitespace only) specifically to avoid
+    # this. Regression guard: must stay well under a second even at 200k
+    # consecutive newlines.
+    hooks = load_hooks()
+    payload = ("\n" * 200_000) + "notgit"
+    start = time.perf_counter()
+    hooks.GIT_COMMIT_RE.search(payload)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on 200k consecutive newlines"
+
+
+def test_git_commit_re_no_redos_on_unterminated_quote_chain():
+    # LIA-518 round 4: guards the new quoted-value alternatives (env-var
+    # values, -C's path) against a backtracking blowup on a long run of
+    # unterminated quote-opens.
+    hooks = load_hooks()
+    payload = "git " + ("-C 'unterminated " * 20_000) + "notcommit"
+    start = time.perf_counter()
+    hooks.GIT_COMMIT_RE.search(payload)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on an unterminated-quote chain"
+
+
+def test_git_commit_re_no_redos_on_ambiguous_flag_alternation():
+    # CodeQL py/redos (caught in CI on this PR, high severity): the flags-
+    # repetition group originally included a generic `-[A-Za-z]` short-flag
+    # alternative alongside the dedicated `-C`/`-c` branches. Since -C and -c
+    # are themselves single letters, EVERY `-C`/`-c` token could be consumed
+    # two different ways (via its own branch, or via the generic short-flag
+    # branch), and with many repetitions the number of ways to partition the
+    # string between the two interpretations grows exponentially. Confirmed
+    # exploitable pre-fix: this exact payload at 2000 reps was still fast
+    # (linear scaling makes it a poor illustration on its own), but the same
+    # shape at just 25 repetitions took 11+ seconds pre-fix. Fixed by
+    # narrowing the generic short-flag branch to exclude ONLY `C`/`c`
+    # (`-[A-BD-Za-bd-z]`), not removing it outright -- an earlier attempt at
+    # this fix removed the branch entirely and silently regressed coverage
+    # for every other single-letter global flag, including -P (the short
+    # form of --no-pager, this ticket's own headline case) -- see
+    # test_git_commit_re for the -p/-P/-q/-s positive-match coverage that
+    # guards against re-losing this. Regression guard here: must stay fast
+    # at 2000+ repetitions, far past where the pre-fix version was already
+    # unusable.
+    hooks = load_hooks()
+    payload = "&git " + ("-C -A " * 2000) + "nope"
+    start = time.perf_counter()
+    hooks.GIT_COMMIT_RE.search(payload)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on an ambiguous -C/-A chain"
+
+
+def test_git_commit_re_no_redos_on_ambiguous_quoted_value_alternation():
+    # CodeQL py/redos (caught in CI on this PR, high severity): the -C and
+    # env-var value patterns originally fell back to a bare `\S+`/`\S*` token
+    # that could ALSO match already-quoted content (e.g. `"x"` has no
+    # whitespace, so `\S+` matches it just as well as the quoted alternative
+    # does) -- two alternatives matching the same span is the same
+    # exponential-ambiguity shape as the flag-alternation bug above. Fixed by
+    # excluding quote characters from the bare-token fallback
+    # (`[^'"\s]+`/`[^'"\s]*`), making the alternatives mutually exclusive.
+    hooks = load_hooks()
+    payload_c = "git -C " + ('"" -C ' * 2000) + "nope"
+    payload_env = "&git " + ('"" A=' * 2000) + "nope"
+    for label, payload in (("-C value", payload_c), ("env value", payload_env)):
+        start = time.perf_counter()
+        hooks.GIT_COMMIT_RE.search(payload)
+        elapsed = time.perf_counter() - start
+        assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on ambiguous {label} alternation"
+
+
+def test_verification_gate_blocks_no_pager_commit(tmp_path, capsys):
+    # End-to-end proof (not just regex-unit-level) that the LIA-518 fix
+    # closes a real gate bypass in practice: --no-pager was a confirmed
+    # false negative on the pre-fix regex.
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_verification_gate(bash_event(repo, "git --no-pager commit -m test"), repo)
+
+    assert rc == 0
+    output = json.loads(capsys.readouterr().out)
+    reason = output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "verification-gate" in reason
 
 
 def test_verification_invalidator_clears_marker_after_edit(tmp_path):

@@ -244,7 +244,32 @@ HOOK_SPECS: tuple[HookSpec, ...] = (
 )
 
 PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULTILINE)
-GIT_COMMIT_RE = re.compile(r"(^|[;&|]\s*)git(?:\s+-C\s+\S+)?\s+commit(\s|$)")
+#: Trigger regex for the commit-time warden gates. LIA-518: broadened to cover
+#: `--no-pager`/other global flags, cumulative `-C`, quoted `-C` paths, `env`/`VAR=val`/
+#: `sudo` wrapping, and multiline commands. Line-start anchor is `^[ \t]*` (horizontal
+#: whitespace only), NOT `^\s*` -- the latter is O(n^2) under MULTILINE on long runs of
+#: blank lines (see test_git_commit_re_no_redos_on_consecutive_newlines). The generic
+#: `-<letter>` short-flag alternative excludes `C`/`c` specifically (they have their own
+#: dedicated branches below) -- including them there let a `-C`/`-c` token be consumed
+#: two ambiguous ways, which CodeQL's py/redos caught as exponential-backtracking (see
+#: test_git_commit_re_no_redos_on_ambiguous_flag_alternation). The `-C`/env-var value
+#: alternatives also exclude quote characters from their bare-token fallback
+#: (`[^'"\s]+`/`[^'"\s]*`, not `\S+`/`\S*`) for the same reason: an unquoted fallback
+#: that CAN match quoted content overlaps with the quoted alternative and is the same
+#: ReDoS shape (test_git_commit_re_no_redos_on_ambiguous_quoted_value_alternation). Known
+#: non-goals (trigger heuristic, not adversarial-complete; see LIA-517): unquoted
+#: `-C $(...)` args and embedded/partial quoting in `-c`/`--long=value` aren't parsed
+#: (e.g. `-c user.name="John Doe"` doesn't match). Deliberate accepted false positive: a
+#: heredoc merely mentioning "git commit" on its own line now also matches -- fail-closed
+#: is the correct tradeoff for a gate whose job is "never silently skip review."
+GIT_COMMIT_RE = re.compile(
+    r"(?:^[ \t]*|[;&|]\s*)"
+    r"(?:(?:sudo\s+)?(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|[^'\"\s]*)\s+)*)?"
+    r"git\s+"
+    r"(?:-C\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\s]+)\s+|-c\s+\S+\s+|--\S+\s+|-[A-BD-Za-bd-z]\s+)*"
+    r"commit(?:\s|$)",
+    re.MULTILINE,
+)
 SECURITY_PATH_RE = re.compile(
     r"(auth|session|credential|token|oauth|secret|proxy|security|trust|encrypt|decrypt|permission)",
     re.IGNORECASE,

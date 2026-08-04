@@ -1,7 +1,7 @@
 ---
 governs:
   - .claude/skills
-last_verified: "2026-08-02" # re-verified vs. gotcha-capture-path-proposal.md ADR — a standalone SKILL.md addition (this pattern's main governed case, not the companion-edit clause); existing guidance already covers it, no change needed
+last_verified: "2026-08-04" # auto-bump @1785842797
 test_tasks:
   - "Create a new skill under .claude/skills/ that fetches recent Gmail threads"
   - "Add a new skill SKILL.md that documents log rotation steps"
