@@ -592,3 +592,64 @@ def test_cogate_gpt_verdict_read_respects_staleness(store_root, monkeypatch):
         "live PASS — cogate.py's GPT-verdict read site must respect the same "
         "staleness filtering as every other read site (spec point 6)."
     )
+
+
+# ---------------------------------------------------------------------------
+# 9) LIA-516 — check_fingerprint=False exempts plan-reviewer model-backend
+#    reads from the LIA-382 diff-hash staleness check
+# ---------------------------------------------------------------------------
+
+
+def test_check_fingerprint_false_exempts_entry_from_staleness(store_root):
+    # @oracle LIA-516: plan-reviewer's SHIP approves plan TEXT (intent), not a
+    # diff snapshot — a tracked-file edit (the first implementation edit after
+    # a genuine plan SHIP) must NOT stale it when check_fingerprint=False, even
+    # though the identical write+edit DOES stale the entry under the default
+    # check_fingerprint=True (the control, proving this test is discriminating).
+    repo = store_root
+    from warden_review.constants import BACKEND_GPT, store_key
+
+    gpt_key = store_key("plan-reviewer", BACKEND_GPT)
+    _vs._write_verdict(repo, gpt_key, "SHIP", "plan approved")
+
+    _bash_edit_tracked_file(repo, "first implementation edit after plan SHIP\n")
+
+    # Control: the default (check_fingerprint=True) still stales this entry —
+    # proves the edit above is the same kind of change every other test in this
+    # file uses to demonstrate staleness, so the real assertion below is real.
+    assert _vs._read_verdict(gpt_key, repo) is None, (
+        "setup precondition failed: a normal fingerprinted SHIP did not go "
+        "stale after a tracked-file edit under the default check_fingerprint=True "
+        "— this test cannot meaningfully demonstrate the check_fingerprint=False "
+        "exemption without this control holding."
+    )
+
+    # Real assertion: the SAME entry, read with check_fingerprint=False, survives.
+    assert _vs._read_verdict(gpt_key, repo, check_fingerprint=False) == "SHIP", (
+        "a plan-reviewer@gpt SHIP was invalidated by a tracked-file edit even "
+        "with check_fingerprint=False — the LIA-516 exemption must skip the "
+        "fingerprint comparison entirely for this read, not just widen the "
+        "match tolerance."
+    )
+
+
+def test_check_fingerprint_false_does_not_resurrect_revise(store_root, monkeypatch):
+    # @oracle LIA-516: check_fingerprint=False must NOT change REVISE/BLOCK
+    # handling — those are already unconditionally unfiltered (spec point 4 of
+    # LIA-382), and this new parameter must not accidentally widen or narrow
+    # that invariant.
+    repo = store_root
+    from warden_review.constants import BACKEND_GPT, store_key
+
+    gpt_key = store_key("plan-reviewer", BACKEND_GPT)
+    _vs._write_verdict(repo, gpt_key, "REVISE", "found issues in the plan")
+    _bash_edit_tracked_file(repo, "edit after REVISE was recorded\n")
+
+    assert _vs._read_verdict(gpt_key, repo, check_fingerprint=False) == "REVISE", (
+        "check_fingerprint=False hid a REVISE verdict — REVISE/BLOCK must stay "
+        "visible regardless of this parameter, exactly as with the default."
+    )
+    assert _vs._read_verdict(gpt_key, repo, check_fingerprint=True) == "REVISE", (
+        "sanity: REVISE is unfiltered under the default too (already covered by "
+        "the LIA-382 oracle, re-asserted here for contrast)."
+    )
