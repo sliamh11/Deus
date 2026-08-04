@@ -217,14 +217,18 @@ class AttestationStore:
 
     def issue(
         self, *, repo_id: str, gate: str, subject_key: str, verdict: str,
-        issuer_kind: str, reviewer_id: str, reason: str,
+        issuer_kind: str, reviewer_id: str, reason: str, backend: str | None = None,
     ) -> WriteResult:
-        if verdict not in ("SHIP", "REVISE", "BLOCK"):
+        # COULD_NOT_RUN is a real, first-class verdict the legacy verdict store already
+        # persists today (e.g. `codex_warden_hooks.py record-verdict ... COULD_NOT_RUN` for
+        # a genuine backend infra failure) -- this ledger accepts it for parity, not as
+        # speculative new scope.
+        if verdict not in ("SHIP", "REVISE", "BLOCK", "COULD_NOT_RUN"):
             raise AttestationStoreError(f"invalid verdict {verdict!r}")
 
         def _apply(inner):
             record_id = f"att-{uuid.uuid4()}"
-            inner["records"][record_id] = {
+            record = {
                 "id": record_id,
                 "schema_version": SCHEMA_VERSION,
                 "repo_id": repo_id,
@@ -242,7 +246,20 @@ class AttestationStore:
                 "issued_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "reason": reason,
             }
-            inner["latest"].setdefault(repo_id, {}).setdefault(gate, {})[subject_key] = record_id
+            if backend is None:
+                # Every existing call site (Hermes included): byte-identical to today,
+                # writes only `latest`, never touches `latest_by_backend`.
+                inner["records"][record_id] = record
+                inner["latest"].setdefault(repo_id, {}).setdefault(gate, {})[subject_key] = record_id
+            else:
+                # Multi-backend migrated gates: record additionally carries "backend", and
+                # the write populates the new, additive `latest_by_backend` index instead of
+                # `latest` -- `latest`'s scalar shape and every existing entry are untouched.
+                record["backend"] = backend
+                inner["records"][record_id] = record
+                inner.setdefault("latest_by_backend", {}).setdefault(repo_id, {}).setdefault(
+                    gate, {}
+                ).setdefault(subject_key, {})[backend] = record_id
         return self._mutate(_apply)
 
     def sync(self) -> WriteResult:

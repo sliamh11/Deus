@@ -135,6 +135,11 @@ def decide(payload: dict) -> dict:
                 "repo_id": repo_id,
                 "subject_key": subject_key,
                 "expected_generation": inner["generation"],
+                # Required now that guardrails.rego's "code-review" decision bodies are
+                # gate-scoped (Phase 0 of the Claude-Code-gate-to-OPA migration) -- an
+                # omitted gate would make input.gate undefined, and undefined ==/!= never
+                # fires in Rego, silently falling through to the file's own default deny.
+                "gate": "code-review",
             }
 
             remaining = SHIM_SELF_DEADLINE_SECONDS - (time.monotonic() - start)
