@@ -1660,6 +1660,7 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
     if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
         return 0
     if _read_verdict("verified", repo_root) == "SHIP":
+        _cc_shadow_observe("verification-gate", config, repo_root, [])
         return 0
 
     mark_cmd = (
@@ -1689,6 +1690,12 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
             f"mark verified TRIVIAL \"reason\""
         )
     _block_pre_tool(reason)
+    # The Claude leg is this role's own store entry -- `_read_verdict("verified", ...)`
+    # above maps through MARKER_NAMES to the same "verification-gate" key.
+    _cc_shadow_observe(
+        "verification-gate", config, repo_root,
+        [(BACKEND_CLAUDE, _last_verdict(repo_root, "verification-gate"))],
+    )
     return 0
 
 
@@ -2911,6 +2918,45 @@ def _evaluate_backends(
     return blocking
 
 
+def _cc_shadow_observe(
+    role: str, config: dict[str, Any], repo_root: Path,
+    blocking: list[tuple[str, str | None]],
+) -> None:
+    """OPA shadow observation for a gate that has ALREADY decided.
+
+    Phase 1 of the Claude-Code-side OPA migration -- see
+    ``docs/decisions/opa-warden-attestations-v1.md`` § "Migration phases" and
+    ``scripts/warden_policy/cc_shadow.py``'s module docstring for the invariants.
+
+    Observe-only and off by default: it records what OPA would have said next to what
+    the gate actually said, into its own JSONL log, and can never change an outcome.
+    The return value is discarded at every call site and this function returns None.
+
+    Every piece of shadow coupling lives here rather than being smeared across the
+    gate bodies -- the gates gain one discarded call each, so the "no gate outcome
+    depends on OPA" property is auditable by reading this one function. The import is
+    lazy so a non-shadow session never pays for it, and the whole body is contained:
+    an exception here must never surface as a gate failure.
+
+    Call it AFTER the legacy decision is computed, and on a blocking path AFTER
+    ``_block_pre_tool`` has already written the decision to stdout.
+    """
+    try:
+        from warden_policy import cc_shadow
+
+        if not cc_shadow.shadow_enabled(repo_root):
+            return
+        cc_shadow.observe(
+            role=role,
+            worktree=_resolve_verdict_worktree(repo_root),
+            required_backends=_role_backends(config, role),
+            legacy_blocking=blocking,
+            legacy_claude_verdict=_last_verdict(repo_root, role),
+        )
+    except Exception:  # noqa: BLE001 -- a shadow observer must never break a gate
+        pass
+
+
 def run_warden_backends_gate(role: str, event: dict[str, Any], repo_root: Path) -> int:
     """Generic commit gate for a warden ROLE across all its configured backends.
 
@@ -2933,8 +2979,10 @@ def run_warden_backends_gate(role: str, event: dict[str, Any], repo_root: Path) 
 
     blocking = _evaluate_backends(role, config, repo_root)
     if not blocking:
+        _cc_shadow_observe(role, config, repo_root, blocking)
         return 0
     _block_pre_tool(_warden_backends_block_message(role, blocking, repo_root))
+    _cc_shadow_observe(role, config, repo_root, blocking)
     return 0
 
 

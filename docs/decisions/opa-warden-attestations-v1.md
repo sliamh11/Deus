@@ -32,6 +32,13 @@ Build a v1 slice: a repo-committed Rego policy + Python attestation store, a fai
 only. Claude Code's existing `verdict_store.py`/`.warden-verdicts.json` is left completely
 untouched — a different, higher-blast-radius migration, explicitly out of scope here.
 
+> **Partially superseded — see [Migration phases](#migration-phases-claude-code-side) below.**
+> The `verdict_store.py`/`.warden-verdicts.json` half of that sentence still holds exactly as
+> written: no phase to date modifies either. The broader "Claude Code is untouched" reading no
+> longer does — Phase 1 adds a read-only, default-off shadow observer to
+> `codex_warden_hooks.py`. No Claude Code gate consults an OPA answer; the migration this
+> sentence declared out of scope remains out of scope.
+
 ### Core mechanism
 
 - **Subject binding**: attestations bind to `git write-tree` on the *staged index* — byte-identical
@@ -229,6 +236,89 @@ guardrail's threat model.
 different, Deus-internal, backend-neutral (Claude/OpenAI container) hook dispatch facade. This
 ADR's mechanism shares vocabulary ("hooks," "guardrails," "policy decision point") but not
 architecture — do not conflate the two.
+
+## Migration phases (Claude-Code side)
+
+The Decision section above scoped v1 to Hermes. Extending the same substrate to Claude Code's
+own gates is being done in explicitly separated phases so each one can be reviewed and reverted
+on its own. **No phase to date lets a Claude Code gate consult an OPA answer** — that cutover is
+not designed yet and needs a human to read accumulated shadow data first.
+
+### Phase 0 — inert infra (PR #1118, `c287ec71`)
+
+Additive Rego facts (`backend_verdict`, `backend_verdict_map`) over a new additive
+`latest_by_backend` ledger index, plus an optional `backend=` parameter on
+`AttestationStore.issue`. Zero callers on the Claude Code side; `hermes_warden_gate.py` gained
+only the `"gate": "code-review"` field its own decision bodies now require.
+
+### Phase 1 — read-only shadow observer (this section)
+
+`scripts/warden_policy/cc_shadow.py` asks OPA what it *would* have decided, immediately after a
+Claude Code gate has already decided, and appends one classified line to
+`~/.config/deus/guardrails/logs/cc-shadow.jsonl`. Wired into `run_warden_backends_gate` (covering
+code-review and ai-eng) and `run_verification_gate`. Off by default: `.claude/wardens/opa-shadow.json`
+(gitignored, absent == off) with a `DEUS_OPA_SHADOW` env override.
+
+The toggle file is **repo-level, not per-worktree** — it must live in the PRIMARY checkout's
+`.claude/wardens/`, exactly like `config.json`, because the gates resolve `repo_root` to the
+primary checkout. A copy inside a linked worktree is silently never read. Found during
+natural-usage verification (a worktree-local toggle produced no observation from a real commit
+gate); the same run demonstrates the mechanism, since the gate read `backends: [claude, gpt, glm]`
+from the primary repo's `config.json` while that worktree has no `config.json` at all. The env
+var is process-scoped and works from any cwd.
+
+Three invariants, each with an executable test rather than a comment claiming it:
+
+1. No gate outcome can depend on it — `observe()` returns `None`, every call site discards the
+   result, and on blocking paths it runs *after* the decision has been written to stdout.
+2. It never writes to stdout or stderr — `_block_pre_tool` uses stdout for the hook protocol.
+3. It never writes to, or locks, the attestation ledger.
+
+**Why Phase 1 has no write path** (the design's load-bearing decision, recorded so it is not
+re-proposed): an earlier draft mirrored Claude Code verdicts into the ledger via
+`issue(backend=...)`, reasoning that `latest` is untouched so Hermes cannot be affected. That
+is true of the `latest` *index* and false of the *generation-coherence* property. `_mutate`
+bumps `generation` and writes disk **before** its OPA PUT is confirmed, so a failed PUT leaves
+disk at N+1 while OPA serves N; `supported` requires them equal, so the next Hermes-gated commit
+in **any enrolled repo** falls through to the default deny and fail-closes. A separate write
+flag, an OPA health pre-flight and a `sync()` retry lower the probability but do not restore the
+"changes nothing" contract, so the write path was cut entirely (independent plan review, round 2).
+
+Accepted consequence: with nothing writing `latest_by_backend`, essentially every observation
+classifies as `no-attestation` or `opa-unreachable`. That is the expected shape of Phase 1 data,
+not a defect — the value is in measuring OPA reachability and latency from the gate's own
+process, generation coherence under real traffic, subject-resolution success on real events, and
+the real legacy allow/block and TRIVIAL-bypass distributions. A Phase 2 write path needs its own
+design (isolated ledger, or atomic persist-and-activate) and its own review.
+
+**Gate-key vocabulary (found in code review; the single easiest thing to get wrong here).**
+`latest` and `latest_by_backend` use *different* `gate` vocabularies, and conflating them reads
+a permanently empty bucket:
+
+| index | keyed by | example |
+| --- | --- | --- |
+| `latest` (Hermes's single-attestation path) | gate name | `code-review` |
+| `latest_by_backend` (Phase 0's multi-backend index) | **role name** | `code-reviewer`, `ai-eng-warden` |
+
+This is Phase 0's own established convention, not a Phase 1 invention — `attestation-v1.schema.json`'s
+gate enum was widened to `["code-review", "code-reviewer", "ai-eng-warden"]` precisely to admit the
+role names, `test_attestation_store.py` uses `gate="code-reviewer"` for every `latest_by_backend`
+case, and `guardrails_test.rego`'s `backend_verdict` fixtures index under `code-reviewer` while its
+`valid_ship` fixtures use `code-review`. An earlier Phase 1 draft sent `latest`'s vocabulary; every
+mocked test still passed, and so did the live run, because with nothing writing the index an
+always-empty bucket is indistinguishable from a correctly-empty one. Pinned now by
+`test_cc_shadow.py::TestGateVocabularyRoundTrip`, which writes through the real `AttestationStore`,
+evaluates the real `guardrails.rego` via `opa eval`, and asserts both that the correct key retrieves
+the attestations *and* that the wrong key returns nothing (so the test stays discriminating).
+
+`verification-gate` is deliberately absent from the schema enum: nothing has ever written a
+verification attestation. Phase 1 only reads, so it queries an empty bucket harmlessly; a Phase 2
+write path must widen the enum first.
+
+Open item, recorded rather than skipped: the discriminating oracle for the gate-invariance
+property was **self-authored by the implementer**, not produced independently via `oracle-author`
+(the implementing agent had no dispatch capability). An independently authored oracle should be
+run before any Phase 2 cutover.
 
 ## Consequences
 
