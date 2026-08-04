@@ -45,6 +45,7 @@ decision := {"allow": true, "reason": "repo not enrolled"} if {
 decision := {"allow": true, "reason": "matching code-review SHIP"} if {
 	supported
 	input.operation == "git.commit"
+	input.gate == "code-review"
 	enrolled
 	valid_ship
 }
@@ -55,6 +56,36 @@ decision := {
 } if {
 	supported
 	input.operation == "git.commit"
+	input.gate == "code-review"
 	enrolled
 	not valid_ship
+}
+
+# --- Multi-backend facts for the migrated gates (code-reviewer, ai-eng-warden). Read
+# `latest_by_backend`, a key entirely distinct from `latest` above -- `latest`'s scalar-leaf
+# shape and the three "code-review" decision bodies above are untouched by anything below.
+# These are FACTS, never a `decision` -- the strict-AND across required backends stays in the
+# Python shim (mirrors `_evaluate_backends`'s existing per-backend-loop shape), not here. A
+# raw verdict string (not a boolean) is exposed per backend so the shim can distinguish
+# COULD_NOT_RUN (fail-open) from any other non-SHIP verdict (block) -- reproducing
+# `_evaluate_backends`'s real logic, which a boolean collapse could not. Gated by `supported`
+# -- the same staleness/generation guard `decision` already relies on -- so a stale OPA
+# snapshot can't leak a verdict through this path either. `att.subject.key == input.subject_key`
+# mirrors `valid_ship`'s own re-check above: `latest_by_backend`'s index is a pointer, not a
+# trusted authority on its own -- every field the decision relies on is re-checked against the
+# record itself, the same principle this file's header comment states for `valid_ship`.
+
+backend_verdict(backend) := att.verdict if {
+	id := data.warden_attestations.latest_by_backend[input.repo_id][input.gate][input.subject_key][backend]
+	att := data.warden_attestations.records[id]
+	att.schema_version == 1
+	att.repo_id == input.repo_id
+	att.gate == input.gate
+	att.subject.key == input.subject_key
+	att.backend == backend
+	supported
+}
+
+backend_verdict_map[backend] := backend_verdict(backend) if {
+	some backend in input.required_backends
 }

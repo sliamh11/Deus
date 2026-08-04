@@ -87,6 +87,66 @@ class TestIssueAppendOnly(unittest.TestCase):
                 verdict="MAYBE", issuer_kind="manual", reviewer_id="x@y", reason="",
             )
 
+    def test_could_not_run_verdict_accepted(self):
+        # Real precedent: the legacy verdict store already persists COULD_NOT_RUN as a
+        # first-class verdict today (codex_warden_hooks.py record-verdict ... COULD_NOT_RUN,
+        # used this same session for a genuine GLM/Z.AI infra failure). The ledger must
+        # accept it for parity -- previously this would have raised AttestationStoreError.
+        self.store.enroll("repo-a")
+        result = self.store.issue(
+            repo_id="repo-a", gate="code-reviewer", subject_key="git-tree:sha1:aaa",
+            verdict="COULD_NOT_RUN", issuer_kind="script", reviewer_id="code-reviewer@gpt",
+            reason="infra failure", backend="gpt",
+        )
+        self.assertTrue(result.ok)
+
+    def test_backend_none_is_byte_identical_to_legacy_call_shape(self):
+        # Every existing call site (Hermes included) never passes backend -- confirm the
+        # default behaves exactly as before this change: only `latest` is populated,
+        # `latest_by_backend` is never created at all.
+        self.store.enroll("repo-a")
+        self.store.issue(
+            repo_id="repo-a", gate="code-review", subject_key="git-tree:sha1:aaa",
+            verdict="SHIP", issuer_kind="manual", reviewer_id="x@y", reason="ok",
+        )
+        doc = self.store._read_disk()
+        inner = doc["warden_attestations"]
+        self.assertNotIn("latest_by_backend", inner)
+        latest_id = inner["latest"]["repo-a"]["code-review"]["git-tree:sha1:aaa"]
+        self.assertNotIn("backend", inner["records"][latest_id])
+
+    def test_backend_populates_latest_by_backend_not_latest(self):
+        self.store.enroll("repo-a")
+        self.store.issue(
+            repo_id="repo-a", gate="code-reviewer", subject_key="git-tree:sha1:bbb",
+            verdict="SHIP", issuer_kind="script", reviewer_id="code-reviewer@claude",
+            reason="ok", backend="claude",
+        )
+        doc = self.store._read_disk()
+        inner = doc["warden_attestations"]
+        # latest_by_backend populated with the record
+        record_id = inner["latest_by_backend"]["repo-a"]["code-reviewer"]["git-tree:sha1:bbb"]["claude"]
+        self.assertEqual(inner["records"][record_id]["verdict"], "SHIP")
+        self.assertEqual(inner["records"][record_id]["backend"], "claude")
+        # latest itself is completely untouched -- no entry for this gate/subject at all
+        self.assertNotIn("code-reviewer", inner["latest"].get("repo-a", {}))
+
+    def test_multiple_backends_same_gate_subject_coexist(self):
+        self.store.enroll("repo-a")
+        self.store.issue(
+            repo_id="repo-a", gate="code-reviewer", subject_key="git-tree:sha1:ccc",
+            verdict="SHIP", issuer_kind="script", reviewer_id="code-reviewer@claude",
+            reason="ok", backend="claude",
+        )
+        self.store.issue(
+            repo_id="repo-a", gate="code-reviewer", subject_key="git-tree:sha1:ccc",
+            verdict="COULD_NOT_RUN", issuer_kind="script", reviewer_id="code-reviewer@gpt",
+            reason="infra failure", backend="gpt",
+        )
+        doc = self.store._read_disk()
+        by_backend = doc["warden_attestations"]["latest_by_backend"]["repo-a"]["code-reviewer"]["git-tree:sha1:ccc"]
+        self.assertEqual(set(by_backend.keys()), {"claude", "gpt"})
+
 
 class TestFailedPutActivation(unittest.TestCase):
     def setUp(self):
