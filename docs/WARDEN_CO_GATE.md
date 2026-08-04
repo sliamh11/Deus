@@ -213,6 +213,16 @@ parity"). "Logic-decoupled, trigger-coupled" — see
 [`docs/decisions/hook-dispatch-facade-correction.md`](decisions/hook-dispatch-facade-correction.md).
 Do not assume the co-gate is active regardless of which agent backend is in use.
 
+## External platforms (no Claude Code session)
+
+Everything above describes the in-repo co-gate: a verdict store, per-worktree buckets, and
+a commit gate that reads them. An agent platform that just wants *a review* should not
+touch any of that. Use `scripts/review_runner.py` instead — it runs the same roles through
+the same backends, but is advisory by construction: it never writes co-gate state and never
+reads it either (a verdict store is trusted context, so reading one out of a repository you
+do not control would let that repository steer its own review). See
+[REVIEW_RUNNER.md](REVIEW_RUNNER.md).
+
 ## Adding a backend
 
 Adding a foreign reviewer takes three steps — the first two make it *runnable*,
