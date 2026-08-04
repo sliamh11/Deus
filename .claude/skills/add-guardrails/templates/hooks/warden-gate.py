@@ -44,10 +44,25 @@ VERDICTS_FILE = ".warden-verdicts.json"
 VALID_VERDICTS = {"SHIP", "TRIVIAL", "REVISE", "BLOCK"}
 PASS_VERDICTS = {"SHIP", "TRIVIAL"}
 
-#: Matches a `git commit` invocation at the start of the command or after a
-#: shell separator, including `git -C <dir> commit`. Mirrors the host gate so a
-#: commit can only proceed once the review markers exist.
-GIT_COMMIT_RE = re.compile(r"(^|[;&|]\s*)git(?:\s+-C\s+\S+)?\s+commit(\s|$)")
+#: Matches a `git commit` invocation at the start of the command or after a shell
+#: separator, so a commit can only proceed once the review markers exist. Covers
+#: `--no-pager`/other global flags, cumulative `-C`, quoted `-C` paths, `env`/`VAR=val`/
+#: `sudo` wrapping, and multiline commands. Line-start anchor is `^[ \t]*` (horizontal
+#: whitespace only), NOT `^\s*` -- the latter is O(n^2) under MULTILINE on long runs of
+#: blank lines (see test_git_commit_regex_no_redos_on_consecutive_newlines). Known
+#: non-goals (trigger heuristic, not adversarial-complete): unquoted `-C $(...)` args and
+#: embedded/partial quoting in `-c`/`--long=value`/short flags aren't parsed (e.g.
+#: `-c user.name="John Doe"` doesn't match). Deliberate accepted false positive: a
+#: heredoc merely mentioning "git commit" on its own line now also matches -- fail-closed
+#: is the correct tradeoff for a gate whose job is "never silently skip review."
+GIT_COMMIT_RE = re.compile(
+    r"(?:^[ \t]*|[;&|]\s*)"
+    r"(?:(?:sudo\s+)?(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S*)\s+)*)?"
+    r"git\s+"
+    r"(?:-C\s+(?:'[^']*'|\"[^\"]*\"|\S+)\s+|-c\s+\S+\s+|--\S+\s+|-[A-Za-z]\s+)*"
+    r"commit(?:\s|$)",
+    re.MULTILINE,
+)
 
 SELF = "python3 .claude/hooks/warden-gate.py"
 

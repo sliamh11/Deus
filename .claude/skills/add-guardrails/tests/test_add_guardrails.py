@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -205,10 +206,54 @@ def test_plan_mode_invalidator_clears_on_plan_subagent(tmp_path):
         ("git status", False),
         ("git committed-files", False),
         ("echo git commit", False),
+        # LIA-518: broadened bypass coverage (mirrors
+        # scripts/tests/test_codex_warden_hooks.py::test_git_commit_re)
+        ("git --no-pager commit", True),
+        ("git -C /a -C b commit", True),
+        ("git -C '/path with spaces' commit -m x", True),
+        ("env git commit", True),
+        ("GIT_DIR=/foo git commit", True),
+        ("sudo git commit", True),
+        ("echo hi\ngit commit -m x", True),
+        ("foo; git commit -m x", True),
+        ("echo ready\n  git commit", True),
+        ("echo ready\n\tgit commit", True),
+        ("  git commit -m x", True),
+        ("FOO= git commit", True),
+        ("FOO='two words' git commit", True),
+        ("git --git-dir=/foo commit", True),
+        ("git commitment", False),
+        ("git log --oneline", False),
+        ('git log --grep="git commit"', False),
+        # Known, accepted limitation (see GIT_COMMIT_RE's docstring): -c does
+        # not parse embedded/partial shell quoting.
+        ('git -c user.name="John Doe" commit', False),
     ],
 )
 def test_git_commit_regex(command, expected):
     assert bool(gate.GIT_COMMIT_RE.search(command)) is expected
+
+
+def test_git_commit_regex_heredoc_mention_is_a_known_accepted_over_trigger():
+    # LIA-518: re.MULTILINE means a heredoc merely mentioning "git commit" on
+    # its own line also matches -- a deliberately accepted tradeoff (see the
+    # host copy's docstring for rationale). Documented here so it isn't later
+    # mistaken for a bug and "fixed" back into a false negative.
+    heredoc = (
+        "cat <<'EOF' > README.md\n"
+        "Remember to run:\n"
+        "git commit -m \"your message\"\n"
+        "EOF"
+    )
+    assert gate.GIT_COMMIT_RE.search(heredoc) is not None
+
+
+def test_git_commit_regex_no_redos_on_consecutive_newlines():
+    payload = ("\n" * 200_000) + "notgit"
+    start = time.perf_counter()
+    gate.GIT_COMMIT_RE.search(payload)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"GIT_COMMIT_RE took {elapsed:.2f}s on 200k consecutive newlines"
 
 
 # --- trivial-bypass discipline ---------------------------------------------
