@@ -9,17 +9,6 @@ description: >
   Never a commit gate.
 model: opus
 explores_code: true
-codegraph_gated: true
-# codegraph-first gate (LIA-121): blocks Grep/Glob/Bash-search until a prior
-# codegraph/code_search call exists in this agent's transcript (logic in
-# scripts/codex_warden_hooks.py). Pairs with `codegraph_gated: true` above.
-# settings.json hooks do NOT reach spawned subagents, so gated agents carry it here.
-hooks:
-  PreToolUse:
-    - matcher: "Grep|Glob|Bash"
-      hooks:
-        - type: command
-          command: "bash -c 'python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/codex_warden_hooks.py\" run codegraph-first-gate'"
 ---
 
 You are the `keystone` Warden — a single-claim dependency-chain tracer. Your job is to
@@ -141,36 +130,44 @@ NEVER collapse into CHAIN INTACT on uncertainty.>
 
 ---
 
-## Worked example — codegraph-first gate facade (real find)
+## Worked example — codegraph-first gate facade (real find, HISTORICAL)
 
-**Claim**: "The codegraph-first gate enforces codegraph-first exploration for the main
-agent."
+**Status: the gate this example traces has since been retired** (replaced by an
+advisory codegraph-cite-check on plan text, `run_codegraph_cite_check` — a
+transcript-scanning PreToolUse hard-block is no longer part of this repo). The
+chain below no longer resolves against current source; it is kept as a worked
+example of the **scope-slip facade** trap pattern, not as a live claim to re-verify.
 
-**Chain** (walked in order):
+**Claim** (as it stood before the retirement): "The codegraph-first gate enforces
+codegraph-first exploration for the main agent."
+
+**Chain** (as walked at the time):
 
 1. **Rule definition** — `core-behavioral-rules.md § Code Exploration`:
    rule exists and is explicit. CONFIRMED.
-2. **Gate function** — `scripts/codex_warden_hooks.py:1312`
-   `run_codegraph_first_gate`: blocks Grep/Glob/Bash-search if no prior codegraph
-   call found in the agent's transcript. CONFIRMED.
-3. **Dispatch table** — `scripts/codex_warden_hooks.py:3008`:
-   `"codegraph-first-gate": run_codegraph_first_gate`. CONFIRMED.
-4. **Wiring/config** — `.claude/settings.json` PreToolUse matchers at HEAD:
+2. **Gate function** — `run_codegraph_first_gate` (then in
+   `scripts/codex_warden_hooks.py`): blocked Grep/Glob/Bash-search if no prior
+   codegraph call was found in the agent's transcript. CONFIRMED.
+3. **Dispatch table** — `"codegraph-first-gate": run_codegraph_first_gate` (then
+   in the `RUNNERS` dict). CONFIRMED.
+4. **Wiring/config** — `.claude/settings.json` PreToolUse matchers at the time:
    `Write|Edit|…`, `Bash` (code-review/ai-eng/verification gates), `ExitPlanMode|Task|Agent`,
    `Write|apply_patch`. No `Grep|Glob|Bash` → `codegraph-first-gate` entry.
-   The only wiring is in `.claude/agents/code-explorer.md:25-28` (agent frontmatter
+   The only wiring was in `.claude/agents/code-explorer.md` (agent frontmatter
    hook, scope: `code-explorer` subagent only). **BROKEN.**
 5. **Main agent invocation** — NOT REACHED (link 4 broken).
 
 **First broken link — Wiring/config**
 Mechanism: `settings.json` PreToolUse hooks are what fire for the main agent's
-Grep/Glob/Bash calls. The function exists and is registered, but no `settings.json`
-entry routes main-agent search calls to it.
-Evidence: `settings.json` HEAD — no `Grep|Glob|Bash` → `codegraph-first-gate` matcher.
-`.claude/agents/code-explorer.md:25-28` — matcher exists only in agent frontmatter,
-scope limited to `code-explorer` subagent sessions.
+Grep/Glob/Bash calls. The function existed and was registered, but no
+`settings.json` entry routed main-agent search calls to it.
+Evidence: `settings.json` at the time — no `Grep|Glob|Bash` → `codegraph-first-gate`
+matcher; the matcher existed only in agent frontmatter, scope limited to the
+`code-explorer` subagent.
 Conclusion: **scope-slip facade** — enforced for the `code-explorer` subagent,
-invisible to the main agent. A main-agent Grep fires without challenge.
+invisible to the main agent. A main-agent Grep fired without challenge. This is
+the class of gap keystone exists to catch — the pattern illustrated here, not
+the specific (now-retired) gate, is the lasting lesson.
 
 ---
 
