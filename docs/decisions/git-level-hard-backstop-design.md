@@ -12,6 +12,7 @@ date: 2026-08-07
 
 # Git-level hard backstop for `main` — design
 
+**Date:** 2026-08-07
 **Status:** Design only. No implementation in this pass — see "Not yet started" below.
 **Scope:** GitHub repository configuration (`sliamh11/Deus`), a new `.github/workflows/` check, a
 new small query script reusing `scripts/warden_policy/opa_client.py`. No change to
