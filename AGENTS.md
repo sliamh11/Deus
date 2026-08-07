@@ -171,6 +171,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/add-voice-transcription` | Add OpenAI Whisper voice transcription |
 | `/add-whatsapp` | Add WhatsApp as a channel |
 | `/add-youtube-transcript` | Add YouTube transcript extraction |
+| `/checklist-design` | On-demand UX/UI audit against checklist.design's checklist library |
 | `/checkpoint` | Save a mid-session continuity checkpoint |
 | `/code-review` | Run multi-agent code review |
 | `/codebase-design` | Shared vocabulary for designing deep modules — interface depth, seams, testability |
