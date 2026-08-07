@@ -320,6 +320,378 @@ property was **self-authored by the implementer**, not produced independently vi
 (the implementing agent had no dispatch capability). An independently authored oracle should be
 run before any Phase 2 cutover.
 
+### Phase 2 — isolated CC write path (design only; not yet implemented)
+
+This section designs the write path Phase 1 deliberately left undesigned. It does not
+implement it, does not enable any cutover, and does not change what any existing gate
+does. Written now because the design itself is reviewable independently of real shadow data;
+the *cutover decision* (which gates, if any, start consulting OPA) still needs that data and
+is explicitly out of scope here — see "Not yet started" below.
+
+**Chosen shape: an isolated document, not a fixed `_mutate` ordering.** Phase 1's own write-path
+post-mortem (above) identified the root cause precisely: `_mutate` persists disk at
+`generation` N+1 before its OPA PUT is confirmed, and `guardrails.rego`'s `supported` guard
+requires `data.warden_attestations.generation == input.expected_generation` — so a failed PUT on
+*any* write to that document fails closed for *every* enrolled repo's Hermes gate, including ones
+having nothing to do with the write that failed. Reordering `_mutate` to persist only after PUT
+confirmation was considered and rejected for this phase: it would rewrite the write transaction
+that six-plus rounds of adversarial review already hardened for Hermes's real, field-proven path,
+for a benefit (avoiding a redundant OPA document) that isolation achieves more cheaply and with
+zero shared-state blast radius.
+
+Instead: Claude-Code-authored mirrors go to a **second, wholly separate OPA data document**,
+`data.warden_cc_attestations`, backed by its own on-disk ledger
+(`~/.config/deus/guardrails/attestations-cc-v1.json`) and its own `generation` counter. A failed
+PUT on this document can only ever desynchronize `warden_cc_attestations.generation` from its own
+disk value — no Rego rule reads that path today (no rule exists yet; Phase 2 adds none), and
+`warden_attestations.generation` (the value Hermes's `supported` guard actually checks) is never
+touched by this write path at all, PROVIDED every OPA-bound write actually targets the isolated
+document's own data path rather than the module-level default (see the six sites below — this is
+not automatic and one of them is exactly the mechanism that would silently defeat it).
+
+**Mechanism reuse, not reimplementation.** `AttestationStore`'s locking/atomic-write/PUT-readback
+transaction is exactly what this write path needs — parameterize it rather than duplicate it:
+
+```python
+class AttestationStore:
+    def __init__(
+        self,
+        ledger_path: Path,
+        opa_base_url: str = OPA_DEFAULT_BASE_URL,
+        *,
+        document_key: str = "warden_attestations",      # new, defaults to today's behavior
+        opa_data_path: str | None = None,                # new; defaults to f"/v1/data/{document_key}"
+    ):
+        ...
+        self.document_key = document_key
+        self.opa_data_path = opa_data_path or f"/v1/data/{document_key}"
+```
+
+Every site in `attestation_store.py` that hardcodes the literal string `warden_attestations` —
+confirmed exhaustively via `grep -n "warden_attestations" scripts/warden_policy/attestation_store.py`
+(unquoted; a narrower quoted-literal grep undercounts and was the root cause of an earlier
+round's gap) — becomes `self.document_key`/`self.opa_data_path`-scoped together, as one
+atomic change, not a partial subset. All six sites:
+
+1. `OPA_DATA_PATH = "/v1/data/warden_attestations"` (:55) — the module constant `_put_and_readback`
+   uses for both the PUT (`Request` built at :142, sent at :146) and the generation read-back
+   (`Request` built at :151, sent at :153). This is the site that
+   actually determines which OPA document a write lands in, regardless of what the on-disk
+   ledger's own key is named — **the single most load-bearing site for the isolation guarantee**,
+   and the one an earlier round's review caught missing. `_put_and_readback` must read
+   `self.opa_data_path` here, not the module constant.
+2. `_empty_document()`'s `"warden_attestations"` wrapper key (:61).
+3. `_read_disk`'s schema-shape check, `if "warden_attestations" not in doc` (:113-114).
+4. `_mutate` (:192) — `inner = doc["warden_attestations"]`. `enroll`, `unenroll`, and
+   `issue()` all route through `_mutate`; `issue()` is what the whole Phase 2 write path is
+   built on.
+5. `sync()` (:270) — same `doc["warden_attestations"]` pattern, the retry path for a prior
+   failed PUT.
+6. `inspect()` (:277) — same pattern, the read-only listing path.
+
+Missing any of these six would let a CC-authored write silently reach or report on
+`data.warden_attestations` / the on-disk `warden_attestations` key instead of the isolated
+`warden_cc_attestations` counterpart — reproducing the exact failure mode the "Chosen shape"
+section above exists to rule out. Site #1 is the one that would do so most dangerously: even if
+sites 2-6 correctly read/write an isolated on-disk ledger file, an unparameterized
+`_put_and_readback` would still PUT that isolated document's contents to OPA's live
+`/v1/data/warden_attestations` path — overwriting the real document `guardrails.rego`'s
+`supported` guard reads and fail-closing every Hermes-enrolled repo immediately. All six must be
+fixed together; none is optional.
+
+Every existing call site (Hermes's, Phase 0's `backend=` parameter, `warden_attest.py`'s CLI)
+passes no new argument and is byte-identical in behavior — this is additive, confirmed by keeping
+`test_attestation_store.py`'s existing cases unparameterized and adding a new parameterized class
+for the second document, including a regression test that asserts the isolated store's PUT target
+is `/v1/data/warden_cc_attestations`, never `/v1/data/warden_attestations` (the concrete, testable
+form of the guarantee site #1 above states in prose). A `CcAttestationStore` convenience wrapper
+(or a `scripts/warden_policy/cc_attestations.py` module analogous to `cc_shadow.py`) instantiates
+`AttestationStore(CC_LEDGER_PATH, document_key="warden_cc_attestations")` so call sites never
+touch the constructor directly.
+
+**Who writes, and when.** `run_warden_backends_gate` (code-reviewer, ai-eng-warden) and
+`run_verification_gate` enqueue a job for `cc_store.issue_if_newer(backend=<backend>, gate=<role>,
+..., queued_at=...)` (see "Ordering guard" below for why the plain `issue()` method is not what
+the write path actually calls) once per backend verdict, **after** the legacy decision is already
+finalized and returned/written — same
+ordering discipline `cc_shadow.observe()` already established for Phase 1, and for the same
+reason: this call's outcome (success or failure) must never be consulted by the gate that just
+ran. A failed write here means "this SHIP wasn't mirrored to the CC ledger yet," never a block,
+never a retry-on-the-critical-path. `verification-gate` is not yet in any schema's `gate` enum
+(Phase 1 flagged this as a prerequisite for covering it at all) — Phase 2 satisfies that via a
+**new**, CC-specific schema file (`attestation-cc-v1.schema.json`) that includes it from the
+start, rather than widening the Hermes-facing `attestation-v1.schema.json`, so Hermes's own
+schema contract is untouched by this phase.
+
+**Bounding the synchronous call, and TRIVIAL handling** (found missing by the GPT co-gate review
+of this design, round 1 — a real gap, not addressed by the "outcome is discarded" framing alone).
+Two further rounds of Claude-backend review corrected the mechanism below: a first draft proposed
+a daemon-thread-plus-`join(timeout=...)` approach, but `codex_warden_hooks.py`'s hook invocations
+are short-lived, single-shot subprocesses (`main()` → `sys.exit(main())`) — when the join times
+out and the process exits, CPython does not let a daemon thread finish; it is torn down with the
+process almost every time, not "eventually completes independently" as that draft claimed. That
+would make the whole write path silently produce almost no real mirrors, undermining the reason
+Phase 2 exists (a CC ledger a future cutover can actually read).
+
+Discarding the *result* of `cc_store.issue_if_newer()` is not sufficient on its own: it (like
+`issue()`, the primitive it's layered on — see "Fix" below) runs under `_mutate`'s exclusive lock,
+`fcntl.flock(fd, fcntl.LOCK_EX)` (`attestation_store.py:97`)
+— a raw blocking syscall with **no timeout parameter at all** — and can spend up to 10s total
+across the two already-bounded `urlopen(..., timeout=_OPA_TIMEOUT_SECONDS)` calls inside
+`_put_and_readback` (the PUT at `:146`, the generation read-back at `:153`, each capped at 5s). A
+bare `try/except Exception:` cannot bound wall-clock time — it only fires after the call returns —
+and an in-process thread cannot outlive the hook's own short-lived subprocess.
+
+**Concrete mechanism, adopting this codebase's own established pattern for exactly this problem**
+(`session_end_hook.py`'s `_spawn_worker`/`_run_worker`, mirrored in `memory_tree_hook.py` — "work
+that must survive past the hook's own short lifetime" is not new scope here, it is a solved
+problem in this repo): the gate call site never calls the store's write method itself. It:
+
+- (a) writes one small JSON job file — the exact `issue()` kwargs (`repo_id`, `gate`,
+  `subject_key`, `verdict`, `issuer_kind`, `reviewer_id`, `reason`, `backend`) plus a `queued_at`
+  timestamp, keyed by `job_id = str(uuid.uuid4())` (guarantees no collision between
+  near-simultaneous gates for the same commit, or a REVISE round quickly followed by a SHIP
+  re-run) — atomically (write-temp, `os.replace`, `chmod(0o600)`) into a queue directory
+  (`~/.config/deus/guardrails/cc-write-queue/`, created with `mkdir(..., mode=0o700)` — both
+  matching `AttestationStore`'s own ledger-directory and temp-file permissions exactly; the job
+  file's `reason` field carries the same review text `AttestationStore.issue()` already accepts
+  and stores unredacted in `records[...].reason`, so it gets no less protection in the queue than
+  at rest in the ledger it is about to be written into);
+- (b) spawns a **fully detached** subprocess via `subprocess.Popen([sys.executable,
+  str(Path(__file__).resolve()), "--worker", job_id], start_new_session=True, stdin=DEVNULL,
+  stdout=DEVNULL, stderr=DEVNULL)` (module path resolved the same way `session_end_hook.py:110`
+  resolves its own — the worker re-invokes the `cc_attestations` module itself, not a separate
+  script) — the exact `Popen` shape `_spawn_worker` already uses. `start_new_session=True` here
+  protects specifically against a process-*group*-wide signal or a harness reaping the whole
+  subprocess tree as a unit on hook-process exit (a plain parent exit alone never kills an
+  already-forked child on POSIX regardless of session; the risk this flag closes is
+  SIGHUP/session-teardown propagation and being caught up in the parent's own process-group
+  cleanup, not "child dies because parent died") — and returns immediately, unconditionally, with
+  **no `join`, no timeout, no wait of any kind**.
+
+The detached worker process then does the actual `cc_store.issue_if_newer()` call on its own time, with no
+hook-budget constraint at all, since it is no longer part of the hook's critical path. Concurrency
+across independently-spawned workers is already safe by the same mechanism that protects Hermes's
+own concurrent writers today: `_locked()`'s `fcntl.flock` is acquired on a physical lockfile path
+opened independently by each process, which POSIX `flock` serializes correctly across *separate
+processes*, not just threads within one — no new race is introduced by moving the call from an
+in-process thread to a subprocess.
+
+**Ordering guard — completion order is not enqueue order** (found by the required GPT code-review
+co-gate on this design, a real gap `flock` mutual exclusion alone does not close). Mutual exclusion
+prevents two workers from writing *concurrently*, but says nothing about which one writes *last* —
+and `_apply`'s `latest[...] = record_id` (the line `issue()`'s inner apply function uses to update
+the pointer `guardrails.rego` and any future consumer would read) unconditionally overwrites
+whatever was there, with no ordering check. Detached workers acquire the lock in whatever order the
+OS schedules them, which is not enqueue order: for the explicitly-supported "REVISE round quickly
+followed by a SHIP re-run" sequence, if the SHIP worker's OPA round-trip happens to finish first and
+the REVISE worker (queued earlier, still legitimately in flight) wins the lock second, `latest`
+ends up pointing at the REVISE record even though SHIP is the true, newer verdict — a stale-overwrite
+that misrepresents the CC ledger's own append-only, mirror-of-reality purpose. `queued_at` alone
+(as specified above) does not prevent this: it timestamps enqueue, not the write that actually
+lands, and nothing before this fix compared it against anything.
+
+**Fix**: a CC-specific write method, `issue_if_newer(..., queued_at)`, layered on top of `issue()`'s
+existing `_mutate`-based transaction rather than changing `issue()` itself (Hermes's own call sites
+use plain `issue()`, untouched, byte-identical). Inside the same locked apply function — so the
+check and the write are atomic with respect to every other writer, not a separate read-then-write
+race of its own — it looks up the record currently pointed to by `latest[repo_id][gate][subject_key]`
+(or `latest_by_backend[...][backend]` for the CC path's backend-scoped writes), and only advances
+the pointer to the new record if no existing record for that key has a `queued_at` newer than this
+job's own. The append-only `records` map still gains the new record unconditionally either way —
+every attempted write stays part of the permanent audit trail, per this ledger's existing
+never-edit-never-delete contract — only pointer advancement is guarded. A worker that loses this
+comparison is not an error: it correctly recognizes its own job as superseded and exits normally
+after seeing its write did not become `latest`.
+
+Two further requirements this fix depends on, found by the same review round when checking whether
+the fix as first stated could actually work in practice:
+
+- **`queued_at` must be persisted onto the stored record, not just the (deleted-on-success) job
+  file.** The CC-specific record schema (a variant of the `record` shape in
+  `attestation-v1.schema.json`, scoped to the new `attestation-cc-v1.schema.json`) adds a
+  `queued_at` field alongside the existing `issued_at` — otherwise a *later* `issue_if_newer` call
+  has nothing durable to compare its own `queued_at` against once an earlier job's file is gone.
+- **Clock source: `time.time_ns()` (wall-clock, nanosecond resolution) — not `monotonic_ns()`, and
+  not the ledger's existing 1-second `time.strftime(...)` convention either.** An earlier draft of
+  this fix specified `time.monotonic_ns()`, found wrong by the same GPT code-review co-gate that
+  found the original ordering race: `queued_at` is *persisted to disk* and compared against
+  writes from arbitrarily later processes, but `monotonic_ns()`'s epoch is boot-relative and resets
+  on every reboot — a value written before a reboot is not just stale, it is not meaningfully
+  comparable at all to one written after, and a lower post-reboot value could leave `latest`
+  pointing at a genuinely obsolete pre-reboot record indefinitely (until uptime happens to exceed
+  the old value). `time.time_ns()` is wall-clock (UTC epoch), so it survives reboots and stays
+  comparable across the ledger's entire lifetime, while still getting nanosecond resolution — far
+  finer than the existing `time.strftime(...)` convention's 1-second granularity, which alone would
+  let two same-host re-runs enqueued within the same second tie. Ties (still possible, though far
+  less likely at ns resolution than at 1-second resolution) are broken in favor of keeping whichever
+  record is already `latest` unchanged, so a tie can never flip an established pointer. This is not
+  claimed to be perfectly monotonic (wall clocks can rarely step backward under NTP correction,
+  the same caveat every other timestamp already in this ledger — `issued_at`/`enrolled_at` — already
+  carries), only reboot-durable and precise enough that a real correctness bug (the reboot-reset
+  case) is not traded for a merely theoretical one already accepted elsewhere in this design.
+
+The oracle (below) must assert this ordering property directly, including both new requirements
+above, not merely that both writes eventually land.
+
+**Deletion criterion, stated explicitly** (a first draft left this to inference and a wrong reading
+would quietly reintroduce the same low-mirror-rate problem this redesign fixes): the job file is
+deleted when `cc_store.issue_if_newer(...)` returns a `WriteResult` with `.ok is True` — disk persistence,
+which `_mutate`'s own code comment states is "always true past this point" once `_write_disk_atomic`
+returns without raising — **not** gated on `.activated` (OPA PUT+read-back success). A
+persisted-but-not-activated write (OPA unreachable at write time — plausible early on, since the
+shadow toggle went live with essentially zero traffic yet) is the ledger's normal "failed PUT"
+state, which `sync()` already exists to retry on a later mutation; gating deletion on `.activated`
+instead would leave every job attempted during an OPA outage stuck in the queue with no retry path
+at all, a different flavor of the exact failure this redesign exists to avoid. `.ok` reflects disk
+persistence of the append-only `records` entry, independent of whether `issue_if_newer` advanced
+`latest`/`latest_by_backend` — a job that loses the ordering comparison above still persists (its
+verdict is real and belongs in the audit trail) and its job file is still deleted on that same
+`.ok is True`, exactly like a job that wins; "lost the ordering comparison" and "failed to persist"
+are different outcomes and only the second one should ever leave a job file behind for the sweep.
+
+**No worker self-ceiling needed, but a stale-job sweep is** — two related but distinct concerns,
+handled differently. `session_end_hook.py`'s `_run_worker` arms a `threading.Timer`-based wall-clock
+ceiling (LIA-235 pattern, "so a hung child can't leave an orphan") because its own worker's runtime
+is not intrinsically bounded (it invokes `auto_compress.py`, an LLM-driven summarization step with
+open-ended duration). This design's worker has no equivalent unbounded step: its entire body is one
+`cc_store.issue_if_newer()` call, whose worst case is fully bounded by `AttestationStore` itself — up to 10s
+across the two 5s-capped `urlopen` calls inside `_put_and_readback`, plus a `flock` acquisition that
+is fast in practice (single-writer-at-a-time ledger, no long-held cross-process contention by
+design) and, unlike the timer's actual target (a hung *userspace* loop), is released by the kernel
+immediately on process death regardless of how the process ends. A self-imposed timer would be
+redundant here, not missing.
+
+The orphan-file risk `session_end_hook.py`'s belt-and-sweep pair actually guards against — a worker
+killed (OOM, forced termination, an unhandled exception before the delete step) leaving its job file
+on disk forever, since nothing else ever revisits it — is real for this design too and is not
+covered by the "no ceiling needed" argument above; those are separate risks. Phase 2 needs the
+sweep half of that pair, not the belt half: extend `scripts/maintenance.py`'s existing daily
+registration (the same one that runs `compress_sweep.py`) with a lightweight `cc-write-queue` sweep
+that deletes (and logs one line per deletion, surfacing in `logs/maintenance.log` for `/review-logs`,
+matching `compress_sweep.py`'s own `MAX_ATTEMPTS`-exhausted logging convention) any `*.json` in the
+queue dir older than 24h — no `.running`/`.failed` state machine or attempts counter needed, since
+this design already chose single-best-effort-no-retry (below): a stale file is definitionally one
+the worker never got to, or got to and crashed before deleting, and either way there is nothing left
+to retry, only to reclaim.
+
+This mechanism needs no retry queue or attempts counter the way `session_end_hook.py`'s fuller
+worker does — a missed mirror costs one absent row of shadow-adjacent data, the same acceptable-loss
+shape Phase 1 already accepts for its own classification gaps (`generation-unknown`,
+`opa-unreachable`, etc.); a single best-effort attempt per queued job is sufficient scope. The
+parent hook's own containment is now trivial: (a) and (b) above wrapped in a single broad
+`try/except Exception: pass`, matching `cc_shadow.observe()`'s containment floor, purely against
+the enqueue/spawn step itself ever raising — never against anything inside `AttestationStore`,
+which remains untouched.
+
+`TRIVIAL` verdicts need explicit, distinct handling: the legacy gate accepts a human `TRIVIAL`
+bypass as satisfied, but `AttestationStore.issue()` rejects `TRIVIAL` as an invalid `verdict` value
+outright (`verdict not in ("SHIP", "REVISE", "BLOCK", "COULD_NOT_RUN")`), and the proposed
+CC-specific schema does not admit it either — an unhandled TRIVIAL commit would either raise inside
+the mirror call (caught by the containment above, so not a gate-breaking bug, but silently
+producing zero record) or need to be misrepresented as some other verdict. The write-path call site
+must recognize `TRIVIAL` explicitly and skip enqueueing entirely for it — never enqueue a job with
+an invalid verdict, and never invent a synthetic non-TRIVIAL verdict to satisfy the schema. The CC
+ledger simply has no record for a TRIVIAL-bypassed commit, which is honest: it was never actually
+reviewed by a backend, so mirroring "as if reviewed" would misrepresent Phase 1's own shadow-log
+data this design is meant to eventually build on.
+
+**What Phase 2 explicitly does NOT do:**
+- No Rego rule consults `data.warden_cc_attestations`. Writing and reading are separate
+  decisions; this section designs writing only.
+- No Claude Code gate's pass/fail outcome changes. Identical invariant to Phase 1's #1
+  ("no gate outcome can depend on it"), extended to cover write failures specifically.
+- No change to `data.warden_attestations`, its schema, or any code path Hermes depends on —
+  contingent on all six sites above being fixed together, not aspirational.
+
+**Public interface** (named now specifically so the independent oracle below can target the real
+future call site, not a stand-in — found necessary by GPT code-review co-gate: an oracle that
+tests only `AttestationStore` directly, with no reference to the call-site module, can be
+satisfied by a call site that gets the wrapping wrong even when the store primitive itself is
+correct). `scripts/warden_policy/cc_attestations.py`, not yet implemented, exposes exactly two
+functions the rest of this design already specifies the behavior of:
+
+- `enqueue_verdict(*, repo_id, gate, subject_key, verdict, issuer_kind, reviewer_id, reason,
+  backend, queue_dir: Path = QUEUE_DIR) -> None` — the hook call site's entry point (`queue_dir`
+  defaults to the real module-level constant for production use, overridable so tests never touch
+  the real queue directory, same rationale as `process_job`'s overrides below). Recognizes and
+  skips `TRIVIAL` before doing anything else (never writes a job file for it); otherwise performs
+  the atomic job-file write plus detached-`Popen` spawn described above. Wrapped in the broad
+  `try/except Exception: pass` containment already specified; returns `None` unconditionally.
+- `process_job(job_id: str, *, queue_dir: Path = QUEUE_DIR, ledger_path: Path = CC_LEDGER_PATH) ->
+  bool` — the detached worker's entry point (what `--worker <job-id>` invokes, resolving the job
+  file as `queue_dir / f"{job_id}.json"`). Reads the job file, calls `cc_store.issue_if_newer(...)`
+  against a store built from `ledger_path`, and returns whether the job file should be deleted —
+  `True` iff `WriteResult.ok is True`, per the deletion criterion above, regardless of `.activated`
+  or of whether the ordering comparison was won or lost. `queue_dir`/`ledger_path` default to the
+  real module-level constants for production use; both are overridable so tests never touch the
+  real `~/.config/deus/guardrails/` paths. The `--worker` CLI wrapper (not specified further here
+  — trivial glue) deletes the job file when this returns `True`.
+
+**Independent oracle.** Per this ADR's own open item above and `.claude/wardens/plan-review-rules.md`'s
+independent-oracle pattern, the discriminating test for this design is authored by the
+`oracle-author` role (dispatched via `scripts/dispatch-oracle-author.sh`, which runs it on
+GPT-5.6-Sol — genuine model diversity from whichever model eventually implements this, per the
+2026-07-15 user decision recorded in that script) from this spec, blind to any implementation
+(none exists yet) — `scripts/warden_policy/tests/test_cc_write_path_oracle.py`, with each
+assertion tagged `# @oracle LIA-527: <spec point>`, extending (per-assertion rather than the
+precedent's usual per-test-function granularity) this repo's existing convention
+(`test_verdict_store_staleness.py`, `test_codex_warden_hooks.py`, `test_warden_review.py`). The
+oracle brief must explicitly require tests asserting: the isolated store's OPA PUT target is
+`/v1/data/warden_cc_attestations`, distinct from `/v1/data/warden_attestations` (the site-#1
+guarantee above, made executable); `issue_if_newer`'s ordering guarantee on **both** paths CC
+writes actually use — the backend-scoped `latest_by_backend[repo_id][gate][subject_key][backend]`
+pointer (since CC writes always pass `backend=`, per "Who writes, and when," above) and, for
+completeness, the plain `latest[repo_id][gate][subject_key]` pointer `issue_if_newer` also
+supports — given two writes for the same key with different `queued_at` values applied to the
+store in EITHER order, the relevant pointer ends up referencing the newer `queued_at`'s record,
+never the older one, while `records` still contains both — sequential calls alone are not
+sufficient here (found necessary by the same GPT co-gate: an implementation that reads the current
+pointer BEFORE acquiring `_mutate`'s lock, then only conditionally mutates, can pass every
+sequential ordering test while still racing under real concurrent detached workers), so the oracle
+must ALSO exercise this with genuinely concurrent threads released together via a
+`threading.Barrier`, repeated across enough trials to give a non-atomic implementation a real
+chance to interleave (best-effort, not a formal proof — this property has no single deterministic
+pre-implementation assertion); and, **against the `cc_attestations`
+module named above, not a local stand-in** — `process_job` returns `True` for a persisted-but-not-
+activated `WriteResult` and `False` only for a genuinely failed one (the deletion criterion, made
+discriminating against the real call site rather than a proxy that could pass even if a future
+implementation wraps the criterion wrong), and `enqueue_verdict` writes no job file at all for
+`verdict="TRIVIAL"` (checkable by asserting the queue directory stays empty after the call, not
+merely that `AttestationStore.issue()` itself rejects TRIVIAL when called directly). Since
+`cc_attestations.py` does not exist yet, these two assertions are expected to fail with
+`ImportError`/`ModuleNotFoundError` today — a stronger, more specific red than a stand-in
+function's tautological pass, and the correct oracle shape for a module that hasn't been written:
+it can only ever be satisfied by the real interface behaving correctly, never by a look-alike.
+Every other assertion in the oracle (isolation, six-site coverage, ordering, legacy defaults)
+targets `AttestationStore` directly, which is the correct target for those — `cc_attestations.py`
+is a thin wrapper around it, not a reimplementation, so those properties belong at the store layer
+regardless of the wrapper's own correctness. It is expected **red** until Phase 2 is actually
+implemented; passing it is a precondition for treating the write path as done, not evidence it
+already is.
+
+**Not yet started, and why:** actual implementation of `AttestationStore`'s parameterization
+(all six sites), the new `cc_attestations` write/worker/sweep call sites, and the CC-specific
+schema file. Two independent reasons to hold here rather than implement in the same pass as this
+design: (1) LIA-527 itself is the lowest-urgency item in the roadmap by explicit prior decision —
+implementation should not compete for attention with higher-priority work; (2) the *cutover*
+decision this write path exists to eventually support needs real shadow-observer data first, and
+as of this design there is essentially none — `~/.config/deus/guardrails/logs/cc-shadow.jsonl`
+holds 9 lines, all from 2026-08-04 pre-toggle dev testing; the toggle (LIA-520) was only switched
+on 2026-08-07, less than two hours before this section was written, and has produced zero new
+observations since (no commit gate has fired in that window). Implementing the write path itself
+is not blocked on that data — only the cutover is — but there is no benefit to landing unused
+write-path code before the data that would justify designing the cutover on top of it exists.
+Tracked as explicit follow-up scope, not silently dropped.
+
+**Scope check** (round-count-circuit-breaker, per `plan-review-rules.md`): after 7 review rounds,
+re-confirming this is still the smallest design that satisfies LIA-527's ask — "design the write
+path... get the independent oracle authored" — rather than scope creep accumulated round-by-round.
+It is: every addition since round 4 traces directly to a real defect a reviewer found in the
+previous draft (missing parameterization sites, an unsafe concurrency mechanism, unstated
+deletion/uniqueness/cleanup semantics), not to speculative hardening. No implementation, cutover,
+or Rego change has been added — those remain explicitly out of scope, unchanged since round 4.
+
 ## Consequences
 
 - OPA (`brew install opa`, v1.19.0+, Rego v1 `if`-keyword syntax) is now a dependency for anyone
