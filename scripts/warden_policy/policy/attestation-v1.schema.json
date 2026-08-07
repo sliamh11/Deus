@@ -23,15 +23,21 @@
           "required": ["enforced_repos"],
           "additionalProperties": false,
           "properties": {
+            "plan_review_ttl_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Session-bound plan-review attestations older than this are treated as expired by guardrails.rego (LIA-523). Optional -- Rego's own `default plan_review_ttl_seconds := 7200` applies when absent."
+            },
             "enforced_repos": {
               "type": "object",
-              "description": "Keyed by repo_id. Absent or enabled=false means the repo is outside enforcement scope (commits allow, unconditionally, before any commit-form check).",
+              "description": "Keyed by repo_id. Absent or enabled=false means the repo is outside code-review enforcement scope (commits allow, unconditionally, before any commit-form check). plan_review_enabled is a second, independent, additive on/off switch for the plan-review gate -- absent means plan-review enforcement is off for this repo, regardless of the code-review `enabled` value. Deliberately NOT additionalProperties:false so new sibling switches can be added without a migration (LIA-523).",
               "additionalProperties": {
                 "type": "object",
                 "required": ["enabled", "enrolled_at"],
                 "properties": {
                   "enabled": { "type": "boolean" },
-                  "enrolled_at": { "type": "string", "format": "date-time" }
+                  "enrolled_at": { "type": "string", "format": "date-time" },
+                  "plan_review_enabled": { "type": "boolean" }
                 }
               }
             }
@@ -79,22 +85,37 @@
         "id": { "type": "string", "pattern": "^att-" },
         "schema_version": { "const": 1 },
         "repo_id": { "type": "string", "pattern": "^git-common-dir-sha256:[0-9a-f]{64}$" },
-        "gate": { "type": "string", "enum": ["code-review", "code-reviewer", "ai-eng-warden"] },
+        "gate": { "type": "string", "enum": ["code-review", "code-reviewer", "ai-eng-warden", "plan-review"] },
         "subject": {
           "type": "object",
-          "required": ["kind", "key", "digest"],
-          "additionalProperties": false,
+          "required": ["kind"],
           "properties": {
-            "kind": { "const": "git-tree" },
-            "key": { "type": "string", "pattern": "^git-tree:(sha1|sha256):[0-9a-f]+$" },
-            "digest": {
-              "type": "object",
-              "required": ["algorithm", "value"],
-              "additionalProperties": false,
-              "properties": {
-                "algorithm": { "type": "string", "enum": ["sha1", "sha256"] },
-                "value": { "type": "string" }
+            "kind": { "type": "string", "enum": ["git-tree", "session"] }
+          },
+          "if": { "properties": { "kind": { "const": "git-tree" } } },
+          "then": {
+            "required": ["kind", "key", "digest"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "git-tree" },
+              "key": { "type": "string", "pattern": "^git-tree:(sha1|sha256):[0-9a-f]+$" },
+              "digest": {
+                "type": "object",
+                "required": ["algorithm", "value"],
+                "additionalProperties": false,
+                "properties": {
+                  "algorithm": { "type": "string", "enum": ["sha1", "sha256"] },
+                  "value": { "type": "string" }
+                }
               }
+            }
+          },
+          "else": {
+            "required": ["kind", "session_id"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "session" },
+              "session_id": { "type": "string", "minLength": 1, "description": "Opaque Hermes session identifier -- stored raw, not hashed/digested (nothing sensitive to redact, unlike a repo-relative git path)." }
             }
           }
         },
