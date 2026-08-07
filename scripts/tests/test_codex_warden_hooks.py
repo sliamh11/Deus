@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sqlite3
 import subprocess
 import sys
 import time
@@ -4198,817 +4199,797 @@ def test_memo_enricher_section_ordering_stable_across_multi_edit(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Codegraph-first gate (LIA-121 / RETRO-2026-05-29-01)
-# ---------------------------------------------------------------------------
-#
-# Implementation: transcript-scanning (replaces broken marker scheme).
-# The gate reads the agent's transcript JSONL at Grep/Glob/Bash-search hook
-# time and checks for a prior codegraph tool_use.
-# The shared predicate is _line_is_codegraph_toolcall in codex_warden_hooks.py.
-
-_MCP_CODEGRAPH_LINE = json.dumps({
-    "type": "assistant",
-    "message": {"content": [{"type": "tool_use", "id": "t", "name": "mcp__codegraph__codegraph_context", "input": {"task": "x"}}]},
-})
-_TOOLSEARCH_CODEGRAPH_LINE = json.dumps({
-    "type": "assistant",
-    "message": {"content": [{"type": "tool_use", "id": "t", "name": "ToolSearch", "input": {"query": "select:mcp__codegraph__codegraph_context"}}]},
-})
-_BASH_LINE = json.dumps({
-    "type": "assistant",
-    "message": {"content": [{"type": "tool_use", "id": "t", "name": "Bash", "input": {"command": "ls"}}]},
-})
-_USER_RESULT_LINE = json.dumps({
-    "type": "user",
-    "message": {"content": [{"type": "tool_result", "content": "codegraph gate denied"}]},
-})
-
-
-def _write_transcript(tmp_path: Path, lines: list[str]) -> Path:
-    """Write a fake transcript JSONL file and return its path."""
-    p = tmp_path / "transcript.jsonl"
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return p
-
-
-def _gate_event(repo, tool_name, tool_input=None, transcript=None):
-    if transcript is None:
-        transcript = "/nonexistent/no-transcript.jsonl"
-    event = tool_event(repo, tool_name, tool_input)
-    event["transcript_path"] = str(transcript)
-    return event
-
-
-def _deny(capsys):
-    return json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"]
-
-
-def test_codegraph_gate_blocks_grep_without_prior_call(tmp_path, capsys):
-    """Grep is denied when transcript has no prior codegraph tool_use."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    # Transcript exists but contains only non-codegraph lines.
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    rc = hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo)
-    assert rc == 0
-    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
-    assert out["permissionDecision"] == "deny"
-    assert "codegraph" in out["permissionDecisionReason"].lower()
-
-
-def test_codegraph_gate_blocks_glob_without_prior_call(tmp_path, capsys):
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Glob", transcript=tr), repo) == 0
-    assert _deny(capsys) == "deny"
-
-
-def test_codegraph_gate_blocks_bash_grep(tmp_path, capsys):
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    rc = hooks.run_codegraph_first_gate(
-        _gate_event(repo, "Bash", {"command": "grep -r foo src/"}, transcript=tr), repo
-    )
-    assert rc == 0
-    assert _deny(capsys) == "deny"
-
-
-def test_codegraph_gate_blocks_git_grep(tmp_path, capsys):
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    rc = hooks.run_codegraph_first_gate(
-        _gate_event(repo, "Bash", {"command": "git grep foo"}, transcript=tr), repo
-    )
-    assert rc == 0
-    assert _deny(capsys) == "deny"
-
-
-def test_codegraph_gate_blocks_env_prefixed_grep(tmp_path, capsys):
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    rc = hooks.run_codegraph_first_gate(
-        _gate_event(repo, "Bash", {"command": "FOO=bar grep -r x ."}, transcript=tr), repo
-    )
-    assert rc == 0
-    assert _deny(capsys) == "deny"
-
-
-def test_codegraph_gate_allows_piped_grep(tmp_path, capsys):
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    rc = hooks.run_codegraph_first_gate(
-        _gate_event(repo, "Bash", {"command": "ls | grep foo"}, transcript=tr), repo
-    )
-    assert rc == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_codegraph_gate_allows_non_search_bash(tmp_path, capsys):
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    rc = hooks.run_codegraph_first_gate(
-        _gate_event(repo, "Bash", {"command": "FOO=bar npm test"}, transcript=tr), repo
-    )
-    assert rc == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_codegraph_gate_ignores_non_search_tools(tmp_path, capsys):
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Read", transcript=tr), repo) == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_codegraph_transcript_mcp_call_unblocks_grep(tmp_path, capsys):
-    """Prior mcp__codegraph__ tool_use in transcript unblocks Grep."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_MCP_CODEGRAPH_LINE])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_codegraph_transcript_toolsearch_unblocks_grep(tmp_path, capsys):
-    """Prior ToolSearch(select:mcp__codegraph__...) in transcript unblocks Grep."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_TOOLSEARCH_CODEGRAPH_LINE])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_codegraph_user_tool_result_does_not_unblock(tmp_path, capsys):
-    """A user-type tool_result that mentions codegraph in text must NOT unblock."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    # user tool_result echoing 'codegraph' — outer type is 'user', not 'assistant'
-    tr = _write_transcript(tmp_path, [_USER_RESULT_LINE])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
-    assert _deny(capsys) == "deny"
-
-
-def test_codegraph_non_codegraph_toolsearch_does_not_unblock(tmp_path, capsys):
-    """ToolSearch for a non-codegraph tool must NOT unblock."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    non_cg = json.dumps({"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "id": "t", "name": "ToolSearch",
-         "input": {"query": "select:WebFetch"}}
-    ]}})
-    tr = _write_transcript(tmp_path, [non_cg])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
-    assert _deny(capsys) == "deny"
-
-
-def test_codegraph_gate_is_per_invocation(tmp_path, capsys):
-    """Agent A's codegraph in its transcript must not unblock Agent B's grep."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    # Agent A transcript has a codegraph call → A's grep passes.
-    tr_a = tmp_path / "a.jsonl"
-    tr_a.write_text(_MCP_CODEGRAPH_LINE + "\n", encoding="utf-8")
-    # Agent B transcript has only a bash call → B's grep is blocked.
-    tr_b = tmp_path / "b.jsonl"
-    tr_b.write_text(_BASH_LINE + "\n", encoding="utf-8")
-
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr_a), repo) == 0
-    assert capsys.readouterr().out == ""  # A is unblocked
-
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr_b), repo) == 0
-    assert _deny(capsys) == "deny"  # B is still blocked
-
-
-def test_codegraph_gate_fail_open_on_exception(tmp_path, capsys):
-    """Non-dict event -> .get() raises -> caught -> must not block."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    assert hooks.run_codegraph_first_gate([], repo) == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_codegraph_gate_fail_open_missing_transcript(tmp_path, capsys):
-    """Missing transcript path → fail open (no deny)."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    event = tool_event(repo, "Grep")
-    event["transcript_path"] = ""  # empty → no scan possible
-    assert hooks.run_codegraph_first_gate(event, repo) == 0
-    assert capsys.readouterr().out == ""  # fail open, no deny
-
-
-# --- _resolve_agent_transcript: workflow-spawned agents (bounded glob-fallback) ---
-# Regression for the silent fail-open bug where a workflow agent's transcript lives
-# at subagents/workflows/wf_*/agent-<id>.jsonl but the flat derivation looked under
-# subagents/agent-<id>.jsonl (3 codegraph-gate CANARY fail-opens observed live).
-
-
-def test_resolve_agent_transcript_workflow_layout(tmp_path):
-    """A workflow agent's deeper transcript is found via the bounded glob-fallback."""
-    hooks = load_hooks()
-    session_id = "sessW"
-    parent = tmp_path / f"{session_id}.jsonl"
-    parent.write_text("", encoding="utf-8")
-    agent_id = "aWorkflow01"
-    wf_dir = tmp_path / session_id / "subagents" / "workflows" / "wf_abc123"
-    wf_dir.mkdir(parents=True)
-    wf_file = wf_dir / f"agent-{agent_id}.jsonl"
-    wf_file.write_text(_BASH_LINE + "\n", encoding="utf-8")
-
-    event = {"transcript_path": str(parent), "agent_id": agent_id}
-    assert hooks._resolve_agent_transcript(event) == str(wf_file)
-
-
-def test_resolve_agent_transcript_flat_subagent_unchanged(tmp_path):
-    """The common flat Task-subagent path still resolves to subagents/agent-<id>.jsonl."""
-    hooks = load_hooks()
-    session_id = "sessF"
-    parent = tmp_path / f"{session_id}.jsonl"
-    parent.write_text("", encoding="utf-8")
-    agent_id = "aFlat02"
-    flat_dir = tmp_path / session_id / "subagents"
-    flat_dir.mkdir(parents=True)
-    flat_file = flat_dir / f"agent-{agent_id}.jsonl"
-    flat_file.write_text(_BASH_LINE + "\n", encoding="utf-8")
-
-    event = {"transcript_path": str(parent), "agent_id": agent_id}
-    assert hooks._resolve_agent_transcript(event) == str(flat_file)
-
-
-def test_resolve_agent_transcript_missing_returns_flat_path(tmp_path):
-    """Not-yet-written (neither flat nor workflow file): return the flat path so the
-    scan fails open, exactly as before the fix."""
-    hooks = load_hooks()
-    session_id = "sessM"
-    parent = tmp_path / f"{session_id}.jsonl"
-    parent.write_text("", encoding="utf-8")
-    agent_id = "aMissing03"
-    expected_flat = tmp_path / session_id / "subagents" / f"agent-{agent_id}.jsonl"
-
-    event = {"transcript_path": str(parent), "agent_id": agent_id}
-    assert hooks._resolve_agent_transcript(event) == str(expected_flat)
-
-
-def test_codegraph_gate_resolves_workflow_subagent_transcript(tmp_path, capsys):
-    """End-to-end: a workflow-spawned agent with a prior codegraph call is unblocked;
-    without one it is blocked. Before the fix the gate silently failed open here."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    session_id = "wsess"
-    parent = tmp_path / f"{session_id}.jsonl"
-    parent.write_text("", encoding="utf-8")
-    wf_dir = tmp_path / session_id / "subagents" / "workflows" / "wf_xyz"
-    wf_dir.mkdir(parents=True)
-
-    # Agent WITH a codegraph call → grep allowed.
-    aid_ok = "aWfOk"
-    (wf_dir / f"agent-{aid_ok}.jsonl").write_text(_MCP_CODEGRAPH_LINE + "\n", encoding="utf-8")
-    ev_ok = tool_event(repo, "Grep")
-    ev_ok["transcript_path"] = str(parent)
-    ev_ok["agent_id"] = aid_ok
-    assert hooks.run_codegraph_first_gate(ev_ok, repo) == 0
-    assert capsys.readouterr().out == ""  # unblocked
-
-    # Agent WITHOUT a codegraph call → grep now actually blocked (was a silent no-op).
-    aid_block = "aWfBlock"
-    (wf_dir / f"agent-{aid_block}.jsonl").write_text(_BASH_LINE + "\n", encoding="utf-8")
-    ev_block = tool_event(repo, "Grep")
-    ev_block["transcript_path"] = str(parent)
-    ev_block["agent_id"] = aid_block
-    assert hooks.run_codegraph_first_gate(ev_block, repo) == 0
-    assert _deny(capsys) == "deny"
-
-
-def test_resolve_agent_transcript_rejects_glob_metacharacter_id(tmp_path):
-    """A crafted agent_id with glob metacharacters must NOT match a sibling file
-    (gate-bypass guard) -- it fails open via the literal flat path instead."""
-    hooks = load_hooks()
-    session_id = "sessGlob"
-    parent = tmp_path / f"{session_id}.jsonl"
-    parent.write_text("", encoding="utf-8")
-    # A real sibling workflow file exists and HAS a codegraph call.
-    wf_dir = tmp_path / session_id / "subagents" / "workflows" / "wf_1"
-    wf_dir.mkdir(parents=True)
-    (wf_dir / "agent-aRealSibling.jsonl").write_text(
-        _MCP_CODEGRAPH_LINE + "\n", encoding="utf-8"
-    )
-    # Attacker-shaped id "*" would glob-match the sibling (and falsely unblock) if
-    # the metacharacter guard were missing.
-    resolved = hooks._resolve_agent_transcript({"transcript_path": str(parent), "agent_id": "*"})
-    assert resolved == str(tmp_path / session_id / "subagents" / "agent-*.jsonl")
-    assert "aRealSibling" not in resolved
-
-
-def test_codegraph_gate_fail_open_unreadable_transcript(tmp_path, capsys):
-    """Unreadable transcript path → fail open (no deny)."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    # /nonexistent path → OSError in scan → canary logged + fail open.
-    event = _gate_event(repo, "Grep", transcript="/nonexistent/no-such-file.jsonl")
-    assert hooks.run_codegraph_first_gate(event, repo) == 0
-    # Gate fails open — no deny output.
-    assert capsys.readouterr().out == ""
-
-
-def test_codegraph_gate_canary_on_blindness(tmp_path, capsys):
-    """Rich transcript with zero tool_use blocks triggers canary + fail open."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    # Build a transcript with many assistant turns but NO tool_use blocks.
-    blind_line = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "thinking..."}]}})
-    threshold = hooks._BLIND_DETECTION_THRESHOLD
-    tr = _write_transcript(tmp_path, [blind_line] * (threshold + 1))
-
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
-    assert capsys.readouterr().out == ""  # fail open, not deny
-
-    # Canary must be logged to .warden-log.
-    log = repo / ".claude" / ".warden-log"
-    assert log.exists(), "canary must write to .warden-log"
-    assert "CANARY" in log.read_text()
-
-
-def test_codegraph_gate_canary_boundary(tmp_path, capsys):
-    """Below the blindness threshold a tool-less transcript still BLOCKS (the
-    agent may simply not have called codegraph yet); AT the threshold with zero
-    tool_use blocks it flips to canary + fail-open."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    blind = json.dumps(
-        {"type": "assistant", "message": {"content": [{"type": "text", "text": "..."}]}}
-    )
-    threshold = hooks._BLIND_DETECTION_THRESHOLD
-    # threshold-1 assistant turns, 0 tool_uses → normal DENY (not yet blind).
-    tr_below = _write_transcript(tmp_path, [blind] * (threshold - 1))
-    assert (
-        hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr_below), repo)
-        == 0
-    )
-    assert _deny(capsys) == "deny"
-    # exactly threshold assistant turns, 0 tool_uses → canary + fail-open (allow).
-    tr_at = _write_transcript(tmp_path, [blind] * threshold)
-    assert (
-        hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr_at), repo)
-        == 0
-    )
-    assert capsys.readouterr().out == ""
-
-
-def test_codegraph_gate_allows_indirect_grep_by_design(tmp_path, capsys):
-    """Primary-token classification does NOT block greps wrapped in another command."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    for cmd in ("xargs grep foo", "bash -c 'grep foo .'"):
-        assert hooks.run_codegraph_first_gate(
-            _gate_event(repo, "Bash", {"command": cmd}, transcript=tr), repo
-        ) == 0
-        assert capsys.readouterr().out == "", f"unexpectedly blocked: {cmd}"
-
-
-def test_resolve_agent_transcript_derivation(tmp_path):
-    """For a Task-spawned subagent (agent_id present) the gate scans the derived
-    per-subagent file, not the parent transcript_path. Without agent_id the path
-    is used as-is."""
-    hooks = load_hooks()
-    ev_sub = {"transcript_path": "/p/sess.jsonl", "agent_id": "xyz"}
-    assert (
-        hooks._resolve_agent_transcript(ev_sub)
-        == "/p/sess/subagents/agent-xyz.jsonl"
-    )
-    assert (
-        hooks._resolve_agent_transcript({"transcript_path": "/p/sess.jsonl"})
-        == "/p/sess.jsonl"
-    )
-    assert hooks._resolve_agent_transcript({}) == ""
-
-
-def test_codegraph_gate_scans_subagent_file_not_parent(tmp_path, capsys):
-    """A codegraph call in the PARENT transcript must NOT unblock a Task-spawned
-    subagent's grep (the parent lacks the subagent's calls); the same call in the
-    derived SUBAGENT file MUST unblock it. This is the production-path fix."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    session_dir = tmp_path / "proj"
-    session_dir.mkdir()
-    parent = session_dir / "sess.jsonl"
-    # Codegraph call lives ONLY in the parent (the wrong file for a subagent).
-    parent.write_text(_MCP_CODEGRAPH_LINE + "\n", encoding="utf-8")
-    sub_dir = (session_dir / "sess") / "subagents"
-    sub_dir.mkdir(parents=True)
-    sub_file = sub_dir / "agent-abc123.jsonl"
-    sub_file.write_text(_BASH_LINE + "\n", encoding="utf-8")  # subagent: no codegraph yet
-
-    event = tool_event(repo, "Grep")
-    event["transcript_path"] = str(parent)
-    event["agent_id"] = "abc123"
-    # Gate scans the SUBAGENT file (no codegraph there) → blocked, despite the
-    # parent containing a codegraph call.
-    assert hooks.run_codegraph_first_gate(event, repo) == 0
-    assert _deny(capsys) == "deny"
-
-    # Subagent itself calls codegraph → its file now has the call → unblocked.
-    sub_file.write_text(_MCP_CODEGRAPH_LINE + "\n", encoding="utf-8")
-    assert hooks.run_codegraph_first_gate(event, repo) == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_codegraph_gated_agents_have_hooks_block():
-    """Coverage: an agent has ``codegraph_gated: true`` iff it has the gate
-    hooks block. Prevents drift -- opting into the gate without the enforcement
-    block (or vice versa) fails here."""
-    agents_dir = ROOT / ".claude" / "agents"
-    for md in agents_dir.rglob("*.md"):
-        text = md.read_text(encoding="utf-8")
-        if not text.startswith("---"):
-            continue
-        front = text[3 : text.index("---", 3)]
-        gated = "codegraph_gated: true" in front
-        has_block = "run codegraph-first-gate" in front
-        assert gated == has_block, (
-            f"{md.name}: `codegraph_gated` flag and the codegraph gate hook block "
-            "are out of sync. Both must be present together or both absent."
-        )
-
-
-# ---------------------------------------------------------------------------
-# Availability fail-open: a fresh instance without codegraph falls back to grep
+# Codegraph citation check (advisory) -- replaces the retired transcript-
+# scanning codegraph-first gate. run_codegraph_cite_check validates the
+# symbols and file:line references cited in a PLAN against the live
+# codegraph index and only ever advises (no permissionDecision key).
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(autouse=True)
-def _codegraph_registered_by_default(tmp_path_factory, monkeypatch):
-    """Gate block-tests now require codegraph to look "registered" (the
-    availability probe). Provide a codegraph-registered config via
-    CLAUDE_CONFIG_DIR so the probe always finds it (its union of config paths
-    short-circuits to available regardless of the host's real ~/.claude.json or
-    CI's absence of one). Availability-specific tests override the whole lookup
-    by monkeypatching _codegraph_config_paths."""
-    cfg_dir = tmp_path_factory.mktemp("ccfg")
-    (cfg_dir / ".claude.json").write_text(
-        json.dumps({"mcpServers": {"codegraph": {}, "code-search": {}}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg_dir))
+def _cite_repo(tmp_path: Path) -> Path:
+    """A git repo with a seeded ``.codegraph/codegraph.db`` (real schema
+    subset, all NOT NULL columns populated) for codegraph-cite-check tests.
 
-
-def _config_with(tmp_path: Path, servers: dict) -> Path:
-    cfg = tmp_path / "claude_config.json"
-    cfg.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
-    return cfg
-
-
-def test_availability_codegraph_registered_enforces(tmp_path, capsys, monkeypatch):
-    """codegraph registered → gate still BLOCKS grep with no prior codegraph call."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    cfg = _config_with(tmp_path, {"codegraph": {}})
-    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [cfg])
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
-    assert _deny(capsys) == "deny"
-
-
-def test_availability_not_registered_allows_grep(tmp_path, capsys, monkeypatch):
-    """Fresh instance (config readable, no codegraph/code-search) → grep ALLOWED,
-    fail-open logged to .warden-log."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    cfg = _config_with(tmp_path, {"linear": {}})  # some other server, not codegraph
-    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [cfg])
-    monkeypatch.setenv("DEUS_STATE_DIR", str(tmp_path / "state"))
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
-    assert capsys.readouterr().out == ""  # no deny printed
-    assert "FAILOPEN" in (repo / ".claude" / ".warden-log").read_text()
-
-
-def test_availability_corrupt_config_allows_grep(tmp_path, capsys, monkeypatch):
-    """Present-but-unparseable config → grep ALLOWED (cannot confirm codegraph)."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    bad = tmp_path / "bad.json"
-    bad.write_text("{not json", encoding="utf-8")
-    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [bad])
-    monkeypatch.setenv("DEUS_STATE_DIR", str(tmp_path / "state"))
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_availability_no_config_files_allows_grep(tmp_path, capsys, monkeypatch):
-    """No config file at all (cannot confirm codegraph) → grep ALLOWED. Blocking
-    when codegraph can't be confirmed would brick a session that can't satisfy
-    the gate; existing block-tests stay deterministic via the autouse fixture."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [tmp_path / "nope.json"])
-    monkeypatch.setenv("DEUS_STATE_DIR", str(tmp_path / "state"))
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    assert hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo) == 0
-    assert capsys.readouterr().out == ""  # allowed, no deny
-
-
-def test_availability_failopen_logged_once_per_session(tmp_path, capsys, monkeypatch):
-    """Two fail-opens in one session → ONE log line; a new session logs again."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    cfg = _config_with(tmp_path, {"linear": {}})
-    monkeypatch.setattr(hooks, "_codegraph_config_paths", lambda rr: [cfg])
-    monkeypatch.setenv("DEUS_STATE_DIR", str(tmp_path / "state"))
-
-    def fire(session_name: str):
-        sess = tmp_path / f"{session_name}.jsonl"
-        sess.write_text(_BASH_LINE + "\n", encoding="utf-8")
-        hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=sess), repo)
-        capsys.readouterr()
-
-    fire("sessionA")
-    fire("sessionA")  # same session id → marker exists → no 2nd log
-    log_path = repo / ".claude" / ".warden-log"
-    assert log_path.read_text().count("FAILOPEN") == 1
-    fire("sessionB")  # different session → logs again
-    assert log_path.read_text().count("FAILOPEN") == 2
-
-
-def test_settings_json_wires_codegraph_first_gate():
-    """Shipped settings.json wires codegraph-first-gate for the MAIN thread on
-    BOTH the Bash block and a Grep|Glob block. Subagents carry it via their own
-    frontmatter (see test_codegraph_gated_agents_have_hooks_block)."""
-    settings = json.loads((ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
-    pretooluse = settings["hooks"]["PreToolUse"]
-
-    def cmds_for(matcher: str) -> str:
-        block = next((b for b in pretooluse if b.get("matcher") == matcher), None)
-        assert block is not None, f"no PreToolUse block for matcher {matcher!r}"
-        return " ".join(h["command"] for h in block["hooks"])
-
-    assert "codegraph-first-gate" in cmds_for("Bash"), "Bash block must run codegraph-first-gate"
-    assert "codegraph-first-gate" in cmds_for("Grep|Glob"), "Grep|Glob block must run codegraph-first-gate"
-
-
-# ---------------------------------------------------------------------------
-# Codegraph transcript format staleness gate (LIA-121)
-# ---------------------------------------------------------------------------
-# These tests exercise the SHARED PREDICATE (_line_is_codegraph_toolcall)
-# against the committed fixture. If CC changes its transcript format, the
-# fixture becomes stale and these tests detect the regression in the scan code.
-
-
-_FIXTURE_PATH = ROOT / "scripts" / "tests" / "fixtures" / "codegraph_transcript_sample.jsonl"
-
-
-def test_codegraph_transcript_fixture_positives():
-    """Fixture positive samples are correctly detected by the shared predicate."""
-    hooks = load_hooks()
-    assert _FIXTURE_PATH.exists(), (
-        f"Fixture not found at {_FIXTURE_PATH}. "
-        "Re-capture from a live CC transcript and commit."
-    )
-    found_any_positive = False
-    for raw in _FIXTURE_PATH.read_text(encoding="utf-8").splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        obj = json.loads(raw)
-        role = obj.pop("_fixture_role", None)
-        if role and role.startswith("pos_"):
-            found_any_positive = True
-            assert hooks._line_is_codegraph_toolcall(obj), (
-                f"Positive fixture sample '{role}' NOT detected by _line_is_codegraph_toolcall. "
-                "CC may have changed its transcript format, or the predicate was broken. "
-                "Re-capture the fixture from a live transcript and update the predicate in "
-                "codex_warden_hooks.py."
-            )
-    assert found_any_positive, "No positive samples found in fixture — fixture may be empty or malformed"
-
-
-def test_codegraph_transcript_fixture_negatives():
-    """Fixture negative samples are correctly rejected by the shared predicate."""
-    hooks = load_hooks()
-    assert _FIXTURE_PATH.exists(), f"Fixture not found at {_FIXTURE_PATH}"
-    for raw in _FIXTURE_PATH.read_text(encoding="utf-8").splitlines():
-        raw = raw.strip()
-        if not raw:
-            continue
-        obj = json.loads(raw)
-        role = obj.pop("_fixture_role", None)
-        if role and role.startswith("neg_"):
-            assert not hooks._line_is_codegraph_toolcall(obj), (
-                f"Negative fixture sample '{role}' wrongly detected as codegraph call. "
-                "The predicate is producing false positives — review _line_is_codegraph_toolcall."
-            )
-
-
-def test_line_is_codegraph_toolcall_direct_mcp():
-    """Direct mcp__codegraph__ call detected."""
-    hooks = load_hooks()
-    obj = {"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "name": "mcp__codegraph__codegraph_context", "input": {}}
-    ]}}
-    assert hooks._line_is_codegraph_toolcall(obj)
-
-
-def test_line_is_codegraph_toolcall_toolsearch_select():
-    """ToolSearch with select:mcp__codegraph__ query detected."""
-    hooks = load_hooks()
-    obj = {"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "name": "ToolSearch",
-         "input": {"query": "select:mcp__codegraph__codegraph_context"}}
-    ]}}
-    assert hooks._line_is_codegraph_toolcall(obj)
-
-
-def test_line_is_codegraph_toolcall_code_search():
-    """mcp__code-search__ prefix also detected."""
-    hooks = load_hooks()
-    obj = {"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "name": "mcp__code-search__search_code", "input": {}}
-    ]}}
-    assert hooks._line_is_codegraph_toolcall(obj)
-
-
-def test_line_is_codegraph_toolcall_rejects_user_type():
-    """user-type lines are NOT matched (false-positive safety)."""
-    hooks = load_hooks()
-    obj = {"type": "user", "message": {"content": [
-        {"type": "tool_result", "content": "mcp__codegraph__ gate denied"}
-    ]}}
-    assert not hooks._line_is_codegraph_toolcall(obj)
-
-
-def test_line_is_codegraph_toolcall_rejects_text_block():
-    """text blocks mentioning mcp__codegraph__ are NOT matched."""
-    hooks = load_hooks()
-    obj = {"type": "assistant", "message": {"content": [
-        {"type": "text", "text": "I will call mcp__codegraph__codegraph_context"}
-    ]}}
-    assert not hooks._line_is_codegraph_toolcall(obj)
-
-
-def test_line_is_codegraph_toolcall_rejects_non_codegraph_toolsearch():
-    """ToolSearch with a non-codegraph query is NOT matched."""
-    hooks = load_hooks()
-    obj = {"type": "assistant", "message": {"content": [
-        {"type": "tool_use", "name": "ToolSearch", "input": {"query": "select:WebFetch"}}
-    ]}}
-    assert not hooks._line_is_codegraph_toolcall(obj)
-
-
-def test_line_is_codegraph_toolcall_rejects_non_dict():
-    """Non-dict input is safely rejected (no exception)."""
-    hooks = load_hooks()
-    assert not hooks._line_is_codegraph_toolcall(None)
-    assert not hooks._line_is_codegraph_toolcall("string")
-    assert not hooks._line_is_codegraph_toolcall([])
-
-
-def test_scan_transcript_detects_mcp_call(tmp_path):
-    """_scan_transcript_for_codegraph finds a direct MCP call."""
-    hooks = load_hooks()
-    tr = _write_transcript(tmp_path, [_MCP_CODEGRAPH_LINE])
-    found, turns, tool_uses, prior_searches = hooks._scan_transcript_for_codegraph(str(tr))
-    assert found
-    assert turns >= 1
-    assert tool_uses >= 1
-
-
-def test_scan_transcript_detects_toolsearch(tmp_path):
-    """_scan_transcript_for_codegraph finds a ToolSearch select call."""
-    hooks = load_hooks()
-    tr = _write_transcript(tmp_path, [_TOOLSEARCH_CODEGRAPH_LINE])
-    found, turns, tool_uses, prior_searches = hooks._scan_transcript_for_codegraph(str(tr))
-    assert found
-    assert tool_uses >= 1
-
-
-def test_scan_transcript_returns_false_for_no_call(tmp_path):
-    """_scan_transcript_for_codegraph returns False when no codegraph call present."""
-    hooks = load_hooks()
-    tr = _write_transcript(tmp_path, [_BASH_LINE, _USER_RESULT_LINE])
-    found, turns, tool_uses, prior_searches = hooks._scan_transcript_for_codegraph(str(tr))
-    assert not found
-    assert tool_uses >= 1  # Bash tool_use counts
-
-
-def test_scan_transcript_missing_file():
-    """_scan_transcript_for_codegraph returns None for missing/unreadable file."""
-    hooks = load_hooks()
-    result = hooks._scan_transcript_for_codegraph("/nonexistent/x.jsonl")
-    assert result is None, "missing file must return None (fail-open sentinel)"
-
-
-# ---------------------------------------------------------------------------
-# Escalating deny message tests (LIA-129)
-# ---------------------------------------------------------------------------
-
-def _grep_tool_use_line(n: int = 1) -> list[str]:
-    """Return *n* JSONL lines each containing a Grep tool_use block."""
-    lines = []
-    for i in range(n):
-        lines.append(json.dumps({
-            "type": "assistant",
-            "message": {"content": [{"type": "tool_use", "id": f"g{i}", "name": "Grep", "input": {"pattern": "foo", "path": "."}}]},
-        }))
-    return lines
-
-
-def _bash_search_line(n: int = 1) -> list[str]:
-    """Return *n* JSONL lines each containing a Bash grep code-search tool_use."""
-    lines = []
-    for i in range(n):
-        lines.append(json.dumps({
-            "type": "assistant",
-            "message": {"content": [{"type": "tool_use", "id": f"b{i}", "name": "Bash", "input": {"command": "grep -r foo src/"}}]},
-        }))
-    return lines
-
-
-def test_escalating_deny_tier0_no_prior_searches(tmp_path, capsys):
-    """Tier-0: transcript has no prior search attempts → polite hint."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    # Transcript has a non-search Bash line only (ls), so prior_search_attempts == 0.
-    tr = _write_transcript(tmp_path, [_BASH_LINE])
-    hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo)
-    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
-    reason = out["permissionDecisionReason"]
-    assert out["permissionDecision"] == "deny"
-    # Tier-0 wording: polite hint, no "Blocked again"
-    assert "Call a codegraph or code_search tool first" in reason
-    assert "Blocked again" not in reason
-
-
-def test_escalating_deny_tier1_two_prior_searches(tmp_path, capsys):
-    """Tier-1: transcript has 2 prior search-tool uses → imperative two-step."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    # Two prior Grep tool_use blocks in the transcript.
-    tr = _write_transcript(tmp_path, _grep_tool_use_line(2))
-    hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo)
-    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
-    reason = out["permissionDecisionReason"]
-    assert out["permissionDecision"] == "deny"
-    assert "Blocked again" in reason
-    assert 'ToolSearch(query="select:mcp__codegraph__codegraph_context")' in reason
-    assert "codegraph_context" in reason
-    # Tier-1 should NOT yet include the Read fallback
-    assert "If ToolSearch returns no codegraph tool" not in reason
-
-
-def test_escalating_deny_tier2_three_plus_prior_searches(tmp_path, capsys):
-    """Tier-2: transcript has >= 3 prior search-tool uses → Read fallback added."""
-    hooks = load_hooks()
-    repo = git_repo(tmp_path)
-    # Three prior Grep tool_use blocks in the transcript.
-    tr = _write_transcript(tmp_path, _grep_tool_use_line(3))
-    hooks.run_codegraph_first_gate(_gate_event(repo, "Grep", transcript=tr), repo)
-    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
-    reason = out["permissionDecisionReason"]
-    assert out["permissionDecision"] == "deny"
-    assert "Blocked again" in reason
-    assert "If ToolSearch returns no codegraph tool" in reason
-    assert "use Read on the specific files you need instead" in reason
-
-
-def test_scan_prior_search_attempts_counts_correctly(tmp_path):
-    """_scan_transcript_for_codegraph counts prior_search_attempts accurately.
-
-    Transcript contains:
-    - 1 Grep tool_use          (counts)
-    - 1 Bash 'grep -r x' line  (counts — primary token is grep)
-    - 1 Bash 'npm test' line   (does NOT count — not a code search)
-    - 1 Bash 'ls | grep' line  (does NOT count — grep is after a pipe)
+    Seeds: ``resolveThing`` / ``hooks.resolveThing`` in ``scripts/x.py``
+    (a real 40-line file on disk, lines 10-40 attributed to the symbol),
+    ``DoomLoopDetector::record`` (also in ``scripts/x.py``), and a node
+    pointing at ``scripts/gone.py`` -- deliberately NOT created on disk, so
+    it exercises the branch-deleted-file guard.
     """
+    repo = git_repo(tmp_path)
+    (repo / "scripts").mkdir(parents=True, exist_ok=True)
+    (repo / "scripts" / "x.py").write_text(
+        "".join(f"line {i}\n" for i in range(1, 41)), encoding="utf-8"
+    )
+    codegraph_dir = repo / ".codegraph"
+    codegraph_dir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(codegraph_dir / "codegraph.db"))
+    conn.execute(
+        """
+        CREATE TABLE nodes (
+            id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            name TEXT NOT NULL,
+            qualified_name TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            language TEXT NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
+            start_column INTEGER NOT NULL,
+            end_column INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.executemany(
+        "INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, "
+        "start_line, end_line, start_column, end_column, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            ("1", "function", "resolveThing", "hooks.resolveThing",
+             "scripts/x.py", "python", 10, 40, 0, 0, 0),
+            ("2", "method", "record", "DoomLoopDetector::record",
+             "scripts/x.py", "typescript", 1, 5, 0, 0, 0),
+            ("3", "function", "goneFn", "gone.goneFn",
+             "scripts/gone.py", "python", 1, 5, 0, 0, 0),
+        ],
+    )
+    conn.commit()
+    conn.close()
+    return repo
+
+
+def _plan_event(repo: Path, plan_text: str) -> dict:
+    return tool_event(repo, "ExitPlanMode", {"plan": plan_text})
+
+
+def test_cite_check_validated_citation_is_silent(tmp_path, capsys):
     hooks = load_hooks()
-    grep_line = json.dumps({
-        "type": "assistant",
-        "message": {"content": [{"type": "tool_use", "id": "a", "name": "Grep", "input": {"pattern": "foo"}}]},
-    })
-    bash_grep_line = json.dumps({
-        "type": "assistant",
-        "message": {"content": [{"type": "tool_use", "id": "b", "name": "Bash", "input": {"command": "grep -r x src/"}}]},
-    })
-    bash_npm_line = json.dumps({
-        "type": "assistant",
-        "message": {"content": [{"type": "tool_use", "id": "c", "name": "Bash", "input": {"command": "npm test"}}]},
-    })
-    bash_piped_grep_line = json.dumps({
-        "type": "assistant",
-        "message": {"content": [{"type": "tool_use", "id": "d", "name": "Bash", "input": {"command": "ls | grep foo"}}]},
-    })
-    tr = _write_transcript(tmp_path, [grep_line, bash_grep_line, bash_npm_line, bash_piped_grep_line])
-    found, turns, tool_uses, prior_searches = hooks._scan_transcript_for_codegraph(str(tr))
-    assert not found
-    assert tool_uses == 4           # all 4 tool_use blocks counted
-    assert prior_searches == 2      # only Grep + Bash-grep, not npm test or piped grep
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, "Use `resolveThing` here."), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cite_check_prose_only_nudges_with_no_hook_specific_output(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "We will improve the widget and make things better."), repo
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out, "expected a systemMessage nudge for a plan with zero code citations"
+    payload = json.loads(out)
+    assert "hookSpecificOutput" not in payload, (
+        "PreToolUse schema (docs/SDK_DEEP_DIVE.md) permits only permissionDecision/"
+        "updatedInput under hookSpecificOutput -- this advisory must use the "
+        "top-level systemMessage field instead, never hookSpecificOutput"
+    )
+    assert "permissionDecision" not in json.dumps(payload), (
+        "codegraph-cite-check must NEVER emit permissionDecision -- that is what "
+        "makes this advisory non-blocking by construction"
+    )
+    assert "systemMessage" in payload
+
+
+def test_cite_check_names_unresolved_symbol(tmp_path, capsys):
+    # frobnicateWidget is unqualified -- structurally indistinguishable from
+    # a legitimate unindexed prose term, so it's detected as unresolved but
+    # does not gate the user-facing nudge. Confirm detection still happened
+    # via the audit log, distinct from the user-facing suppression.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "Call `frobnicateWidget` to fix it."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+    log_path = repo / ".claude" / ".warden-log"
+    last_line = log_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert "0 validated, 1 unresolved, none high-confidence" in last_line
+
+
+def test_cite_check_qualified_dotted_form_passes(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, "See `hooks.resolveThing`."), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cite_check_no_bare_leaf_fallback_regression(tmp_path, capsys):
+    # Critical regression test: a bare-leaf fallback would let
+    # NonexistentModule.resolveThing validate merely because SOME
+    # `resolveThing` exists somewhere, defeating the invented-name detector.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "Call `NonexistentModule.resolveThing`."), repo
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "NonexistentModule.resolveThing" in out, (
+        "a qualified citation whose qualifier doesn't match any indexed symbol "
+        "must be UNRESOLVED even though the bare leaf name exists elsewhere"
+    )
+
+
+def test_cite_check_cross_separator_keys_both_directions(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    # DoomLoopDetector::record is stored with "::"; cited with "." must still pass.
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "See `DoomLoopDetector.record`."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+    # hooks.resolveThing is stored with "."; cited with "::" must still pass.
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "See `hooks::resolveThing`."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cite_check_double_colon_shape_admitted(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, "See `Foo::bar`."), repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Foo::bar" in out, (
+        "the identifier grammar must admit :: as a qualifier separator, not "
+        "silently drop a :: token as a non-citation"
+    )
+
+
+@pytest.mark.parametrize(
+    "raw,line,expected_resolved",
+    [
+        ("scripts/x.py", 20, True),
+        ("scripts/x.py", 500, False),
+        ("scripts/x.py", 0, False),
+        ("scripts/x.py", -1, False),
+        ("scripts/nope.py", 5, False),
+    ],
+)
+def test_cite_check_file_line_resolution(tmp_path, capsys, raw, line, expected_resolved):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, f"See {raw}:{line}."), repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    if expected_resolved:
+        assert out == "", f"{raw}:{line} should have resolved silently"
+    else:
+        assert f"{raw}:{line}" in out, f"{raw}:{line} should be reported unresolved"
+
+
+def test_cite_check_worktree_file_not_in_main_checkout_resolves(tmp_path, capsys):
+    # A file present in the WORKTREE but absent from repo_root must resolve
+    # against wt, not repo_root -- proves the fingerprint uses the right root.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    (repo / "only_in_worktree.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "See only_in_worktree.py:2."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cite_check_path_traversal_rejected(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    # _FILE_LINE_RE requires an extension (path.ext:LINE); "passwd" alone has
+    # none, so use a cited path shaped like the file:line candidates this
+    # check actually extracts.
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "See ../../etc/passwd.conf:1."), repo
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "../../etc/passwd.conf:1" in out, "a path escaping the checkout must be unresolved, not silently allowed"
+
+
+def test_cite_check_deleted_file_identifier_unresolved(tmp_path, capsys):
+    # goneFn's indexed file_path (scripts/gone.py) doesn't exist under wt --
+    # a symbol whose file was deleted on this branch must not validate off a
+    # stale index. goneFn is unqualified, so (like the unresolved-symbol test
+    # above) this doesn't reach the user-facing nudge -- confirm the
+    # deleted-file guard still worked via the audit log instead.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, "Call `goneFn`."), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+    log_path = repo / ".claude" / ".warden-log"
+    last_line = log_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert "0 validated, 1 unresolved, none high-confidence" in last_line
+
+
+def test_cite_check_cwd_outside_worktree_is_silent(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    foreign = tmp_path / "foreign_repo"
+    foreign.mkdir()
+    subprocess.run(["git", "init"], cwd=foreign, check=True, stdout=subprocess.DEVNULL)
+    event = _plan_event(repo, "Call `totallyInventedSymbolXYZ`.")
+    event["cwd"] = str(foreign)
+    rc = hooks.run_codegraph_cite_check(event, repo)
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "an event whose cwd is neither repo_root nor one of its worktrees must "
+        "be a silent no-op, even though the plan cites an obviously-invalid symbol"
+    )
+
+
+def test_cite_check_missing_cwd_is_silent(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    event = _plan_event(repo, "Call `totallyInventedSymbolXYZ`.")
+    del event["cwd"]
+    rc = hooks.run_codegraph_cite_check(event, repo)
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cite_check_no_codegraph_dir_is_silent(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)  # no .codegraph/ at all
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "Call `totallyInventedSymbolXYZ`."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cite_check_garbage_db_is_silent(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    codegraph_dir = repo / ".codegraph"
+    codegraph_dir.mkdir(parents=True, exist_ok=True)
+    (codegraph_dir / "codegraph.db").write_bytes(b"not a real sqlite database")
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "Call `totallyInventedSymbolXYZ`."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "tool_name,tool_input,hook_event_name",
+    [
+        ("Grep", {"pattern": "foo"}, "PreToolUse"),
+        ("Glob", {"pattern": "*.py"}, "PreToolUse"),
+        ("Edit", {"file_path": "x.py"}, "PreToolUse"),
+        ("Bash", {"command": "ls"}, "PreToolUse"),
+        ("Task", {"subagent_type": "general"}, "PreToolUse"),
+    ],
+)
+def test_cite_check_non_matching_events_are_noop(
+    tmp_path, capsys, tool_name, tool_input, hook_event_name
+):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    event = tool_event(repo, tool_name, tool_input)
+    event["hook_event_name"] = hook_event_name
+    rc = hooks.run_codegraph_cite_check(event, repo)
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cite_check_alias_inert_for_post_tool_use_exit_plan_mode(tmp_path, capsys):
+    # The retired "codegraph-first-gate" name is now an alias to this same
+    # function. A stale worktree wiring it to PostToolUse ExitPlanMode (the
+    # gate never fired on PostToolUse) must stay a silent no-op.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    event = _plan_event(repo, "Call `totallyInventedSymbolXYZ`.")
+    event["hook_event_name"] = "PostToolUse"
+    rc = hooks.run_codegraph_cite_check(event, repo)
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cite_check_runners_alias_identity():
+    hooks = load_hooks()
+    assert hooks.RUNNERS["codegraph-first-gate"] is hooks.RUNNERS["codegraph-cite-check"]
+
+
+def test_cite_check_stoplist_and_min_length(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, "Just `run` `it`."), repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out, "stoplisted/too-short unqualified tokens must not count as real citations"
+    assert "cites no code symbols" in out
+
+
+def test_cite_check_qualified_tokens_never_stoplisted(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    conn = sqlite3.connect(str(repo / ".codegraph" / "codegraph.db"))
+    conn.execute(
+        "INSERT INTO nodes (id, kind, name, qualified_name, file_path, language, "
+        "start_line, end_line, start_column, end_column, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ("4", "function", "get", "RuntimeRegistry::get", "scripts/x.py", "typescript", 1, 2, 0, 0, 0),
+    )
+    conn.commit()
+    conn.close()
+
+    # A qualified token whose final segment is a stoplisted word ("get") must
+    # still validate -- the qualifier disambiguates it.
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, "See `RuntimeRegistry::get`."), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+    # An unseeded qualified token must be reported UNRESOLVED BY NAME, not
+    # silently dropped as though it were a stoplisted word.
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, "See `TaskRunner.run`."), repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "TaskRunner.run" in out
+
+
+def test_cite_check_long_extension_file_line_recognized(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    (repo / "setup").mkdir()
+    (repo / "setup" / "com.deus.gcal-keepalive.plist.template").write_text(
+        "x\ny\n", encoding="utf-8"
+    )
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "See setup/com.deus.gcal-keepalive.plist.template:1."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "a 16-char-capped extension must still be recognized as a file:line "
+        "candidate, not silently dropped (which would trigger a false "
+        "'cites no code symbols' nudge on a properly grounded plan)"
+    )
+
+
+def test_cite_check_bare_prose_words_get_the_no_symbols_nudge(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "We'll update the `config` and the `widget`."), repo
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "cites no code symbols" in out, (
+        "bare lowercase prose words in backticks are not citations (shape "
+        "filter) -- must get the zero-candidates nudge, not a list of bogus "
+        "unresolved symbols"
+    )
+
+
+def test_cite_check_mixed_real_and_unqualified_invented_stays_silent(tmp_path, capsys):
+    # frobnicateWidget is unqualified, so this can't be told apart from a
+    # legitimate unindexed prose term -- only a qualified-identifier or
+    # file:line miss is high-confidence enough to gate the nudge (see the
+    # measurement note above run_codegraph_cite_check's suppression check).
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "Use `resolveThing` and then `frobnicateWidget`."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "an unqualified miss must not gate the nudge even alongside a "
+        "validated real citation"
+    )
+
+
+def test_cite_check_candidate_cap(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    plan = " ".join(f"`invented{i}Symbol`" for i in range(100))
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out
+    named = out.count("invented")
+    assert named <= 5, "at most 5 unresolved citations should be named in the nudge"
+
+
+def test_cite_check_bare_filename_fallback_validates_real_file(tmp_path, capsys):
+    # A bare filename like AGENTS.md passes the identifier shape filter
+    # (contains a dot) but the index only has CODE nodes -- must validate via
+    # the filesystem fallback rather than reporting a real file unresolved.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    (repo / "AGENTS.md").write_text("# Agents\n", encoding="utf-8")
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, "See `AGENTS.md`."), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_cite_check_bare_filename_fallback_still_rejects_nonexistent(tmp_path, capsys):
+    # The fallback must only ADD validations for files that genuinely exist --
+    # a fake filename must still be reported unresolved. It's filename-shaped
+    # (a `.md` extension), though, so per _looks_like_uncheckable_qualified it
+    # doesn't gate the user-facing nudge either -- same pattern as the
+    # unresolved-symbol tests above, confirm detection via the audit log.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "See `NONEXISTENT_FILE.md`."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+    log_path = repo / ".claude" / ".warden-log"
+    last_line = log_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert "0 validated, 1 unresolved, none high-confidence" in last_line
+
+
+def test_cite_check_separate_budgets_dont_starve_file_lines(tmp_path, capsys):
+    # Each category needs its own independent candidate cap -- a shared
+    # budget filled identifiers-first would zero out file:line validation
+    # entirely on any plan with >= _MAX_CITE_CANDIDATES identifiers. Checked
+    # via the audit log's counts, not the nudge text: the message only ever
+    # names the first 5 unresolved citations, so with 40 fake identifiers
+    # ahead of it, "scripts/nope.py:5" is validated/counted but never
+    # displayed -- asserting against `out` here could never pass regardless
+    # of whether the underlying fix is correct.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    # Case transition must come BEFORE any trailing digit -- "invented0Symbol"
+    # has no adjacent lower-then-upper pair (the digit breaks it) and would be
+    # silently filtered out by _looks_like_symbol's shape check entirely.
+    idents = " ".join(f"`inventedSymbol{i}`" for i in range(hooks._MAX_CITE_CANDIDATES))
+    plan = f"{idents} See scripts/x.py:20 and scripts/nope.py:5."
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out, "expected a nudge given genuinely unresolved citations"
+
+    log_path = repo / ".claude" / ".warden-log"
+    last_line = log_path.read_text(encoding="utf-8").strip().splitlines()[-1]
+    assert "41 unresolved, 1 validated" in last_line, (
+        f"expected 40 fake identifiers + scripts/nope.py:5 = 41 unresolved and "
+        f"scripts/x.py:20 = 1 validated in the audit log, got: {last_line!r} -- "
+        "a starved file:line budget would show 40 unresolved, 0 validated "
+        "(the two real file:line citations silently dropped from extraction "
+        "entirely, not just left unresolved)"
+    )
+
+
+def test_cite_check_silences_mostly_validated_plan_with_unqualified_misses(tmp_path, capsys):
+    # A well-grounded plan legitimately cites JSON fields/DB columns/locals/
+    # event names that are not code symbols and never will be indexed --
+    # flagging every one as "possibly invented" is noise, not signal. Uses
+    # distinct real file:line citations (identical tokens dedupe within
+    # _extract_citations, so repeating one identifier would not produce
+    # multiple validated candidates).
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    real_lines = " ".join(f"scripts/x.py:{n}" for n in (5, 10, 15, 20, 25, 30, 35))
+    plan = f"Use `resolveThing`, and see {real_lines}. Also uses `notAnIndexedSchemaField` for config."
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "unqualified misses alone (no qualified-symbol or file:line miss) "
+        "must never gate the nudge, regardless of validated ratio"
+    )
+
+
+def test_cite_check_silences_low_ratio_plan_with_only_unqualified_misses(tmp_path, capsys):
+    # Real-world ADRs measured directly: unqualified misses (env vars, tool
+    # names, DB columns, stdlib APIs) dominate even well-grounded docs, often
+    # pushing the validated fraction well below any reasonable threshold --
+    # a ratio-based suppression fires on ~43/44 real docs for exactly this
+    # reason. Only high-confidence misses (qualified identifiers, file:line)
+    # should gate the nudge -- a low ratio driven purely by unqualified misses
+    # must stay silent too, not just a high one.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    plan = "Use `resolveThing`. See scripts/x.py:5. Also uses `notIndexedFieldA`, `notIndexedFieldB`, `notIndexedFieldC`."
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "1 validated / 4 unresolved = 20% validated -- would have nudged "
+        "under a ratio threshold, but every miss is unqualified so it must "
+        "stay silent"
+    )
+
+
+def test_cite_check_silences_even_when_nothing_validates_and_all_unqualified(tmp_path, capsys):
+    # An unqualified miss never gates the nudge on its own, even in the
+    # extreme case where NOTHING in the plan validates -- these names are
+    # structurally indistinguishable from legitimate unindexed prose terms
+    # (schema fields, tool names, env vars). Deliberately zero real citations
+    # here (distinct from the "no code symbols at all" branch above: these
+    # DO look like symbols, they just don't resolve).
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    plan = "Use `frobnicateWidget` and `anotherInventedName` and `yetAnotherWidget`."
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "zero validated citations, but every miss is unqualified -- must "
+        "still stay silent, not just when partially grounded"
+    )
+
+
+def test_cite_check_never_hides_a_qualified_miss(tmp_path, capsys):
+    # A genuinely invented QUALIFIED symbol is a concrete, checkable claim --
+    # unlike an unqualified miss, which is equally consistent with "this is a
+    # schema field, not a code symbol at all" -- so it must never be diluted
+    # away by a pile of legitimate unqualified prose terms.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    real_lines = " ".join(f"scripts/x.py:{n}" for n in (5, 10, 15, 20, 25, 30, 35))
+    plan = f"See {real_lines}. Also call `SomeModule.inventedMethod`."  # 7 validated, 1 qualified miss
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out, (
+        "7/8 = 87.5% validated, but the one miss is a QUALIFIED symbol "
+        "citation -- a high-confidence signal that must never be diluted "
+        "away by a high overall validated fraction"
+    )
+    assert "SomeModule.inventedMethod" in out
+
+
+def test_cite_check_never_hides_a_stale_file_line(tmp_path, capsys):
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    plan = "Use `resolveThing`, `hooks.resolveThing`, `DoomLoopDetector.record`. See scripts/x.py:500."
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out, (
+        "3/4 = 75% validated, but the one miss is a stale file:line "
+        "citation -- a filesystem-checked, concrete claim that must never "
+        "be diluted away"
+    )
+    assert "scripts/x.py:500" in out
+
+
+def test_cite_check_ignores_ipv4_host_port_as_file_line(tmp_path, capsys):
+    # _FILE_LINE_RE's generic path/extension grammar also matches
+    # host:port shapes (confirmed live in-repo: docs/decisions/ mentions
+    # 0.0.0.0:3005). Without the host:port filter this is extracted as
+    # file="0.0.0.0" line=3005, which never resolves and -- being a
+    # "file:line" miss -- is unconditionally high-confidence, forcing a
+    # nudge regardless of how well-grounded the rest of the plan is.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    real_lines = " ".join(f"scripts/x.py:{n}" for n in (5, 10, 15, 20, 25, 30, 35))
+    plan = f"Bind the observer to 0.0.0.0:3005 and 127.0.0.1:8080. See {real_lines}."
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "0.0.0.0:3005 / 127.0.0.1:8080 must never be extracted as file:line "
+        "citations -- a well-grounded plan mentioning a bind address must "
+        "not be forced to nudge"
+    )
+
+
+def test_cite_check_ignores_dns_host_port_as_file_line(tmp_path, capsys):
+    # Same false-positive class as the IPv4 case above, but for a DNS
+    # hostname: api.anthropic.com:443 shape-matches file="api.anthropic.com"
+    # line=443. _IPV4_LIKE_RE doesn't catch this (it isn't a dotted-quad),
+    # so it needs its own TLD-based filter.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    real_lines = " ".join(f"scripts/x.py:{n}" for n in (5, 10, 15, 20, 25, 30, 35))
+    plan = f"Call api.anthropic.com:443 and api.openai.com:443. See {real_lines}."
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "api.anthropic.com:443 / api.openai.com:443 must never be extracted "
+        "as file:line citations"
+    )
+
+
+def test_cite_check_still_resolves_real_markdown_file_line(tmp_path, capsys):
+    # Regression guard for the DNS-host-port fix above: `md` is a real file
+    # extension (also present in _FILENAME_EXTENSION_SUFFIXES for the
+    # separate identifier-qualification filter), so _looks_like_host_port
+    # must NOT treat it as a TLD -- a real citation like
+    # "docs/decisions/ADR-001.md:20" must still extract and validate.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    (repo / "docs").mkdir(parents=True, exist_ok=True)
+    (repo / "docs" / "ADR-001.md").write_text(
+        "".join(f"line {i}\n" for i in range(1, 30)), encoding="utf-8"
+    )
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(repo, "See docs/ADR-001.md:20."), repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "a real markdown file:line citation must still validate cleanly, "
+        "not be swallowed by the host:port filter"
+    )
+
+
+def test_cite_check_host_port_extraction_helper(tmp_path):
+    hooks = load_hooks()
+    assert hooks._looks_like_host_port("0.0.0.0") is True
+    assert hooks._looks_like_host_port("127.0.0.1") is True
+    assert hooks._looks_like_host_port("scripts/x.py") is False
+    assert hooks._looks_like_host_port("AGENTS.md") is False
+    assert hooks._looks_like_host_port("setup/com.deus.gcal-keepalive.plist.template") is False
+
+
+def test_cite_check_uncheckable_qualified_helper(tmp_path):
+    hooks = load_hooks()
+    # Filename-shaped -- measured real false positives.
+    assert hooks._looks_like_uncheckable_qualified("MEMORY_TREE.md") is True
+    assert hooks._looks_like_uncheckable_qualified("hooks.json") is True
+    assert hooks._looks_like_uncheckable_qualified("com.deus.plist") is True
+    assert hooks._looks_like_uncheckable_qualified("llama.cpp") is True
+    # Stdlib/builtin namespace roots -- measured real false positives.
+    assert hooks._looks_like_uncheckable_qualified("os.replace") is True
+    assert hooks._looks_like_uncheckable_qualified("Promise.all") is True
+    assert hooks._looks_like_uncheckable_qualified("datetime.now") is True
+    assert hooks._looks_like_uncheckable_qualified("std::process::Child::kill") is True
+    assert hooks._looks_like_uncheckable_qualified("mpsc::channel") is True
+    # Genuinely checkable qualified symbols must NOT be excluded -- this is
+    # the exact dilution risk ai-eng-warden has caught before.
+    assert hooks._looks_like_uncheckable_qualified("SomeModule.inventedMethod") is False
+    assert hooks._looks_like_uncheckable_qualified("WardenRegistry.resolveBackendShim") is False
+    assert hooks._looks_like_uncheckable_qualified("DoomLoopDetector.record") is False
+    # Unqualified tokens are out of scope for this helper (already excluded
+    # upstream by the `len(segments) > 1` check at the call site).
+    assert hooks._looks_like_uncheckable_qualified("resolveThing") is False
+
+
+def test_cite_check_silences_stdlib_and_filename_qualified_misses(tmp_path, capsys):
+    # Live end-to-end regression for the second dogfooding round: a
+    # well-grounded plan whose ONLY misses are stdlib/filename-shaped
+    # qualified tokens must stay silent, not nudge on grounds that don't
+    # actually distinguish real usage from invention.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    real_lines = " ".join(f"scripts/x.py:{n}" for n in (5, 10, 15, 20, 25, 30, 35))
+    plan = (
+        f"See {real_lines}. Uses `os.replace`, `Promise.all`, and cites "
+        "`MEMORY_TREE.md` and `hooks.json` for context."
+    )
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "stdlib-namespace and filename-shaped qualified misses must not gate "
+        "the nudge -- they are structurally unresolvable regardless of "
+        "whether they're real or invented"
+    )
+
+
+def test_cite_check_still_nudges_on_invented_qualified_symbol_amid_stdlib_noise(
+    tmp_path, capsys
+):
+    # The true-positive guarantee: a genuinely invented qualified symbol must
+    # still nudge even surrounded by legitimate stdlib/filename citations
+    # that are individually excluded -- exclusion is per-token, not
+    # ratio-based, so it can't dilute away a real invented symbol.
+    hooks = load_hooks()
+    repo = _cite_repo(tmp_path)
+    plan = (
+        "Uses `os.replace` and `Promise.all` and cites `MEMORY_TREE.md`. "
+        "Also call `WardenRegistry.resolveBackendShim` to fix it."
+    )
+    rc = hooks.run_codegraph_cite_check(_plan_event(repo, plan), repo)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out, (
+        "a genuinely invented qualified symbol must still nudge even amid "
+        "stdlib/filename-shaped noise that's individually excluded from "
+        "GATING the decision (each is still named in the message body -- "
+        "exclusion only means it can't trigger the nudge on its own)"
+    )
+    assert "WardenRegistry.resolveBackendShim" in out
+
+
+def _live_db_main_checkout() -> Path:
+    # .codegraph/ only exists in the MAIN checkout (never a linked worktree --
+    # same architecture check_codegraph_db_schema's _main_checkout_root
+    # handles), so this test's own file location must be resolved the same
+    # way, not assumed to already BE the main checkout.
+    import drift_check
+    return drift_check._main_checkout_root(Path(__file__).resolve().parents[2])
+
+
+@pytest.mark.skipif(
+    not (_live_db_main_checkout() / ".codegraph" / "codegraph.db").is_file(),
+    reason="requires a real ~/deus/.codegraph/codegraph.db (absent in CI / fresh installs)",
+)
+def test_cite_check_live_db_integration(capsys):
+    # Pins the schema assumption (_validate_identifiers' query shape) to
+    # reality against the REAL index, alongside check_codegraph_db_schema.
+    #
+    # Deliberately does NOT copy the DB into a synthetic scratch repo: a
+    # validated identifier also requires its indexed file_path to EXIST under
+    # the worktree (the branch-deleted-file guard), so an empty scratch repo
+    # with only the DB copied in would report every real symbol unresolved.
+    # Runs directly against the real main checkout instead, where the
+    # indexed file_path values genuinely exist on disk.
+    hooks = load_hooks()
+    main_repo = _live_db_main_checkout()
+    rc = hooks.run_codegraph_cite_check(
+        _plan_event(main_repo, "See `run_plan_review_gate`."), main_repo
+    )
+    assert rc == 0
+    assert capsys.readouterr().out == "", (
+        "a citation of a symbol genuinely present in this repo's own codebase "
+        "must validate against the real, current index"
+    )
+
+
+def test_cite_check_hook_specs_wired_for_exit_plan_mode():
+    hooks = load_hooks()
+    matches = [
+        spec for spec in hooks.HOOK_SPECS
+        if spec.behavior == "codegraph-cite-check"
+    ]
+    assert len(matches) == 1
+    assert matches[0].event == "PreToolUse"
+    assert matches[0].matcher == "ExitPlanMode"
+    assert not any(spec.behavior == "codegraph-first-gate" for spec in hooks.HOOK_SPECS), (
+        "the retired gate must not have its own HOOK_SPECS entry -- only the "
+        "RUNNERS alias exists, for stale-wiring compatibility"
+    )
+
+
+def test_settings_json_wires_codegraph_cite_check_not_search_blocking():
+    settings_path = Path(__file__).resolve().parents[2] / ".claude" / "settings.json"
+    settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    pre_tool_use = settings["hooks"]["PreToolUse"]
+
+    cite_check_matchers = [
+        block["matcher"] for block in pre_tool_use
+        if any("codegraph-cite-check" in h["command"] for h in block["hooks"])
+    ]
+    assert cite_check_matchers, "codegraph-cite-check must be wired under PreToolUse"
+    assert all("ExitPlanMode" in m for m in cite_check_matchers)
+
+    for block in pre_tool_use:
+        matcher = block.get("matcher", "")
+        if matcher in ("Grep|Glob", "Bash") or matcher == "Grep|Glob|Bash":
+            for h in block["hooks"]:
+                assert "codegraph-first-gate" not in h["command"], (
+                    f"stale codegraph-first-gate search-blocking wiring found under "
+                    f"matcher {matcher!r}"
+                )
+
+    agents_dir = Path(__file__).resolve().parents[2] / ".claude" / "agents"
+    for agent_file in agents_dir.glob("*.md"):
+        text = agent_file.read_text(encoding="utf-8")
+        assert "codegraph-first-gate" not in text or "HISTORICAL" in text, (
+            f"{agent_file.name} references codegraph-first-gate outside a "
+            "clearly-labeled historical example"
+        )
+        assert "codegraph_gated" not in text, (
+            f"{agent_file.name} still has the retired codegraph_gated flag"
+        )
 
 
 # ---------------------------------------------------------------------------
