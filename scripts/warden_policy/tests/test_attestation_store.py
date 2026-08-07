@@ -49,6 +49,35 @@ class TestEnrollment(unittest.TestCase):
         r2 = self.store.unenroll("repo-a")
         self.assertEqual(r2.generation, r1.generation + 1)
 
+    def test_set_plan_review_enabled_creates_fresh_entry_with_code_review_off(self):
+        r = self.store.set_plan_review_enabled("repo-a", True)
+        self.assertTrue(r.ok)
+        entry = self.store._read_disk()["warden_attestations"]["config"]["enforced_repos"]["repo-a"]
+        self.assertFalse(entry["enabled"])  # code-review stays off, not auto-enrolled
+        self.assertIn("enrolled_at", entry)
+        self.assertTrue(entry["plan_review_enabled"])
+
+    def test_disable_plan_review_never_enrolled_raises(self):
+        with self.assertRaises(AttestationStoreError):
+            self.store.set_plan_review_enabled("never-enrolled", False)
+
+    def test_enroll_after_enable_plan_review_preserves_plan_review_enabled(self):
+        # This is the case that would have caught the old replace-not-merge bug in enroll():
+        # enable-plan-review first, then enroll() for code-review, in that order.
+        self.store.set_plan_review_enabled("repo-a", True)
+        self.store.enroll("repo-a")
+        entry = self.store._read_disk()["warden_attestations"]["config"]["enforced_repos"]["repo-a"]
+        self.assertTrue(entry["enabled"])
+        self.assertTrue(entry["plan_review_enabled"])
+
+    def test_enable_plan_review_after_enroll_preserves_enabled(self):
+        # Mirror order: enroll() first, then enable-plan-review.
+        self.store.enroll("repo-a")
+        self.store.set_plan_review_enabled("repo-a", True)
+        entry = self.store._read_disk()["warden_attestations"]["config"]["enforced_repos"]["repo-a"]
+        self.assertTrue(entry["enabled"])
+        self.assertTrue(entry["plan_review_enabled"])
+
 
 class TestIssueAppendOnly(unittest.TestCase):
     def setUp(self):
@@ -86,6 +115,40 @@ class TestIssueAppendOnly(unittest.TestCase):
                 repo_id="repo-a", gate="code-review", subject_key="git-tree:sha1:aaa",
                 verdict="MAYBE", issuer_kind="manual", reviewer_id="x@y", reason="",
             )
+
+    def test_invalid_subject_kind_rejected(self):
+        with self.assertRaises(AttestationStoreError):
+            self.store.issue(
+                repo_id="repo-a", gate="plan-review", subject_key="sess-1",
+                verdict="SHIP", issuer_kind="manual", reviewer_id="x@y", reason="",
+                kind="not-a-real-kind",
+            )
+
+    def test_session_subject_stores_raw_session_id_not_a_digest(self):
+        self.store.set_plan_review_enabled("repo-a", True)
+        result = self.store.issue(
+            repo_id="repo-a", gate="plan-review", subject_key="sess-abc123",
+            verdict="SHIP", issuer_kind="manual", reviewer_id="plan-reviewer@claude",
+            reason="reviewed", kind="session",
+        )
+        self.assertTrue(result.ok)
+        doc = self.store._read_disk()
+        inner = doc["warden_attestations"]
+        latest_id = inner["latest"]["repo-a"]["plan-review"]["sess-abc123"]
+        record = inner["records"][latest_id]
+        self.assertEqual(record["subject"], {"kind": "session", "session_id": "sess-abc123"})
+        # a git-tree subject on the SAME ledger, issued after, must be unaffected --
+        # proves the two subject shapes don't corrupt each other.
+        self.store.enroll("repo-a")
+        self.store.issue(
+            repo_id="repo-a", gate="code-review", subject_key="git-tree:sha1:bbb",
+            verdict="SHIP", issuer_kind="manual", reviewer_id="x@y", reason="ok",
+        )
+        doc2 = self.store._read_disk()
+        tree_latest_id = doc2["warden_attestations"]["latest"]["repo-a"]["code-review"]["git-tree:sha1:bbb"]
+        tree_record = doc2["warden_attestations"]["records"][tree_latest_id]
+        self.assertEqual(tree_record["subject"]["kind"], "git-tree")
+        self.assertEqual(tree_record["subject"]["digest"], {"algorithm": "sha1", "value": "bbb"})
 
     def test_could_not_run_verdict_accepted(self):
         # Real precedent: the legacy verdict store already persists COULD_NOT_RUN as a

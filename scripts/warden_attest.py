@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Manual attestation CLI for scripts/warden_policy.
 
-Subcommands: enroll, unenroll, issue, inspect, check, sync.
+Subcommands: enroll, unenroll, issue, inspect, check, sync, plan-review, enable-plan-review,
+disable-plan-review.
 Typed exit codes: 0 OK, 1 usage error, 2 git/subject resolution error,
 3 not-activated (persisted but OPA PUT failed -- run `sync`), 6 CONFLICT
 (index changed mid-issuance).
@@ -119,6 +120,16 @@ def cmd_issue(args) -> int:
     return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
 
 
+def _subject_display(subject: dict) -> str:
+    """Render either subject shape for the human-readable `inspect` output (LIA-523 fix:
+    the old code unconditionally read subject['key'], which a session-kind subject
+    (opaque session_id, nothing to digest) doesn't have -- crashed with KeyError the
+    moment a ledger contained even one plan-review attestation)."""
+    if subject.get("kind") == "session":
+        return f"session:{subject.get('session_id', '?')}"
+    return subject.get("key", "?")
+
+
 def cmd_inspect(args) -> int:
     store = _store(args)
     try:
@@ -132,8 +143,59 @@ def cmd_inspect(args) -> int:
     else:
         print(f"repo_id: {repo_id}")
         for r in sorted(records, key=lambda r: r["issued_at"]):
-            print(f"  [{r['issued_at']}] {r['verdict']:7s} {r['subject']['key']}  ({r['reason']})")
+            print(f"  [{r['issued_at']}] {r['verdict']:7s} {_subject_display(r['subject'])}  ({r['reason']})")
     return EXIT_OK
+
+
+def cmd_plan_review(args) -> int:
+    """Issue a session-bound plan-review attestation (LIA-523) -- the Hermes-side analog
+    of Claude Code's `mark plan-reviewed SHIP`. Does NOT reuse cmd_issue's post-issuance
+    "index changed" race check: that check is meaningless without a staged tree, since a
+    plan-review attestation authorizes a session, not a git-tree snapshot."""
+    store = _store(args)
+    try:
+        repo_id = resolve_repo_id(Path(args.repo))
+    except GitSubjectError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_GIT_ERROR
+    result = store.issue(
+        repo_id=repo_id, gate="plan-review", subject_key=args.session_id, verdict=args.verdict,
+        issuer_kind=args.issuer_kind, reviewer_id=args.reviewer_id, reason=args.reason,
+        kind="session",
+    )
+    _emit(args, {"ok": result.ok, "activated": result.activated, "repo_id": repo_id,
+                  "session_id": args.session_id, "generation": result.generation, "error": result.error})
+    return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
+
+
+def cmd_enable_plan_review(args) -> int:
+    store = _store(args)
+    try:
+        repo_id = resolve_repo_id(Path(args.repo))
+    except GitSubjectError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_GIT_ERROR
+    result = store.set_plan_review_enabled(repo_id, True)
+    _emit(args, {"ok": result.ok, "activated": result.activated, "repo_id": repo_id,
+                  "generation": result.generation, "error": result.error})
+    return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
+
+
+def cmd_disable_plan_review(args) -> int:
+    store = _store(args)
+    try:
+        repo_id = resolve_repo_id(Path(args.repo))
+    except GitSubjectError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_GIT_ERROR
+    try:
+        result = store.set_plan_review_enabled(repo_id, False)
+    except AttestationStoreError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_USAGE
+    _emit(args, {"ok": result.ok, "activated": result.activated, "repo_id": repo_id,
+                  "generation": result.generation, "error": result.error})
+    return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
 
 
 def cmd_check(args) -> int:
@@ -202,6 +264,23 @@ def main(argv=None) -> int:
     p_inspect = sub.add_parser("inspect")
     p_inspect.add_argument("--repo", required=True)
     p_inspect.set_defaults(func=cmd_inspect)
+
+    p_plan_review = sub.add_parser("plan-review")
+    p_plan_review.add_argument("--repo", required=True)
+    p_plan_review.add_argument("--session-id", required=True)
+    p_plan_review.add_argument("--verdict", required=True, choices=["SHIP", "REVISE", "BLOCK"])
+    p_plan_review.add_argument("--issuer-kind", default="manual", choices=["manual", "script"])
+    p_plan_review.add_argument("--reviewer-id", required=True)
+    p_plan_review.add_argument("--reason", required=True)
+    p_plan_review.set_defaults(func=cmd_plan_review)
+
+    p_enable_pr = sub.add_parser("enable-plan-review")
+    p_enable_pr.add_argument("--repo", required=True)
+    p_enable_pr.set_defaults(func=cmd_enable_plan_review)
+
+    p_disable_pr = sub.add_parser("disable-plan-review")
+    p_disable_pr.add_argument("--repo", required=True)
+    p_disable_pr.set_defaults(func=cmd_disable_plan_review)
 
     p_check = sub.add_parser("check")
     p_check.add_argument("--repo", required=True)

@@ -235,3 +235,117 @@ test_decision_never_fires_for_migrated_gate_when_enrolled if {
 	not decision.allow with input as inp with data.warden_attestations as attestations_with_backend
 	decision.reason == "guardrails policy produced no valid decision" with input as inp with data.warden_attestations as attestations_with_backend
 }
+
+# --- Plan-review gate (LIA-523) ------------------------------------------------------
+
+session_reviewed := "sess-reviewed-abc"
+session_expired := "sess-expired-def"
+session_unknown := "sess-never-attested"
+
+now_fixed_ns := time.parse_rfc3339_ns("2026-08-08T12:00:00Z")
+
+plan_review_input(session_id) := {
+	"contract_version": 1,
+	"enforcement_point": "hermes.pre_tool_call",
+	"operation": "file.write",
+	"repo_id": repo_a,
+	"session_id": session_id,
+	"expected_generation": 5,
+	"gate": "plan-review",
+}
+
+# repo_a with code-review UNTOUCHED (still enabled: true from base_attestations) plus the new,
+# additive plan_review_enabled switch and two session-bound records -- proves the two
+# enrollment surfaces coexist without disturbing each other.
+attestations_with_plan_review := object.union(base_attestations, {
+	"config": {"enforced_repos": {repo_a: object.union(base_attestations.config.enforced_repos[repo_a], {"plan_review_enabled": true})}},
+	"records": object.union(base_attestations.records, {
+		"att-plan-review-fresh": {
+			"id": "att-plan-review-fresh", "schema_version": 1, "repo_id": repo_a, "gate": "plan-review",
+			"subject": {"kind": "session", "session_id": session_reviewed},
+			"verdict": "SHIP", "issuer": {"kind": "manual", "reviewer_id": "plan-reviewer@claude-sonnet-5"},
+			"issued_at": "2026-08-08T11:00:00Z", "reason": "12 rounds, all real findings resolved",
+		},
+		"att-plan-review-expired": {
+			"id": "att-plan-review-expired", "schema_version": 1, "repo_id": repo_a, "gate": "plan-review",
+			"subject": {"kind": "session", "session_id": session_expired},
+			"verdict": "SHIP", "issuer": {"kind": "manual", "reviewer_id": "plan-reviewer@claude-sonnet-5"},
+			"issued_at": "2026-08-08T09:00:00Z", "reason": "issued 3 hours before now_fixed_ns -- past the default 2h TTL",
+		},
+	}),
+	"latest": object.union(base_attestations.latest, {
+		repo_a: object.union(base_attestations.latest[repo_a], {
+			"plan-review": {
+				session_reviewed: "att-plan-review-fresh",
+				session_expired: "att-plan-review-expired",
+			},
+		}),
+	}),
+})
+
+test_plan_review_allow_fresh_ship if {
+	inp := plan_review_input(session_reviewed)
+	decision.allow with input as inp with data.warden_attestations as attestations_with_plan_review with time.now_ns as now_fixed_ns
+}
+
+test_plan_review_deny_expired_ttl if {
+	# Past the default 7200s TTL -- must NOT silently fall through to allow.
+	inp := plan_review_input(session_expired)
+	not decision.allow with input as inp with data.warden_attestations as attestations_with_plan_review with time.now_ns as now_fixed_ns
+}
+
+test_plan_review_deny_no_attestation_for_session if {
+	inp := plan_review_input(session_unknown)
+	not decision.allow with input as inp with data.warden_attestations as attestations_with_plan_review with time.now_ns as now_fixed_ns
+	decision.reason == sprintf("no valid (non-expired) plan-review SHIP for session %s", [session_unknown]) with input as inp with data.warden_attestations as attestations_with_plan_review with time.now_ns as now_fixed_ns
+}
+
+test_plan_review_allow_unenrolled_repo_regardless_of_session if {
+	# repo_a's code-review `enabled: true` must NOT imply plan-review enrollment -- the two
+	# switches are independent. Use base_attestations (no plan_review_enabled at all).
+	inp := plan_review_input(session_unknown)
+	decision.allow with input as inp with data.warden_attestations as base_attestations with time.now_ns as now_fixed_ns
+}
+
+test_plan_review_custom_ttl_from_config if {
+	# A configured plan_review_ttl_seconds of 1 hour makes the (3-hours-old) "expired" fixture
+	# ALSO exceed a custom, SHORTER-than-default TTL -- proves the config path is actually
+	# read, not just the hardcoded default.
+	short_ttl := object.union(attestations_with_plan_review, {
+		"config": object.union(attestations_with_plan_review.config, {"plan_review_ttl_seconds": 3600}),
+	})
+	inp := plan_review_input(session_expired)
+	not decision.allow with input as inp with data.warden_attestations as short_ttl with time.now_ns as now_fixed_ns
+}
+
+test_plan_review_custom_ttl_extends_validity if {
+	# A configured plan_review_ttl_seconds LONGER than the default makes the same 3-hour-old
+	# fixture VALID -- proves the custom TTL genuinely overrides the default in both
+	# directions, not just narrowing it.
+	long_ttl := object.union(attestations_with_plan_review, {
+		"config": object.union(attestations_with_plan_review.config, {"plan_review_ttl_seconds": 14400}),
+	})
+	inp := plan_review_input(session_expired)
+	decision.allow with input as inp with data.warden_attestations as long_ttl with time.now_ns as now_fixed_ns
+}
+
+test_plan_review_defense_in_depth_gate_mismatch if {
+	# A record indexed under "plan-review" in `latest` whose OWN gate field says something
+	# else must still deny -- the same defense-in-depth principle valid_ship already enforces.
+	tampered := object.union(attestations_with_plan_review, {
+		"records": object.union(attestations_with_plan_review.records, {
+			"att-plan-review-fresh": object.union(attestations_with_plan_review.records["att-plan-review-fresh"], {"gate": "code-review"}),
+		}),
+	})
+	inp := plan_review_input(session_reviewed)
+	not decision.allow with input as inp with data.warden_attestations as tampered with time.now_ns as now_fixed_ns
+}
+
+test_plan_review_git_commit_decision_bodies_never_fire_for_file_write if {
+	# Mental-exclusivity check mirroring test_decision_never_fires_for_migrated_gate_when_enrolled:
+	# a "file.write" operation must never satisfy any of the "git.commit" decision bodies.
+	inp := plan_review_input(session_reviewed)
+	d := decision with input as inp with data.warden_attestations as attestations_with_plan_review with time.now_ns as now_fixed_ns
+	d.reason != "matching code-review SHIP"
+	d.reason != "repo not enrolled"
+}

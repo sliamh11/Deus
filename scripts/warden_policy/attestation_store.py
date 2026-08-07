@@ -201,10 +201,14 @@ class AttestationStore:
 
     def enroll(self, repo_id: str) -> WriteResult:
         def _apply(inner):
-            inner["config"]["enforced_repos"][repo_id] = {
-                "enabled": True,
-                "enrolled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
+            # MERGE into any existing entry, never replace wholesale (LIA-523 fix): an
+            # earlier version did `enforced_repos[repo_id] = {...}`, silently erasing any
+            # sibling field (e.g. plan_review_enabled) a repo already had set. setdefault({})
+            # produces byte-identical output to the old code on a fresh repo_id, since there
+            # is nothing pre-existing to preserve in that case.
+            entry = inner["config"]["enforced_repos"].setdefault(repo_id, {})
+            entry["enabled"] = True
+            entry["enrolled_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         return self._mutate(_apply)
 
     def unenroll(self, repo_id: str) -> WriteResult:
@@ -215,9 +219,38 @@ class AttestationStore:
             entry["enabled"] = False
         return self._mutate(_apply)
 
+    def set_plan_review_enabled(self, repo_id: str, enabled: bool) -> WriteResult:
+        """Independent, additive on/off switch for the plan-review gate (LIA-523).
+
+        Deliberately does NOT require prior `enroll()` for `enabled=True`: plan-review
+        gating is a genuinely independent surface from code-review gating -- a repo may
+        want plan-review-only enforcement without running the (separately, more heavily
+        adversarially-tested) code-review gate. Auto-vivifies a fresh entry with
+        `enabled: False` (code-review stays off unless separately `enroll()`-ed) when none
+        exists yet. `enabled=False` mirrors `unenroll()`'s raise-if-absent convention --
+        you cannot disable something that was never created, for UX symmetry with the
+        established sibling pattern rather than a second, different behavior shape for
+        what is otherwise the same kind of toggle.
+        """
+        def _apply(inner):
+            entry = inner["config"]["enforced_repos"].get(repo_id)
+            if enabled:
+                if entry is None:
+                    entry = inner["config"]["enforced_repos"][repo_id] = {
+                        "enabled": False,
+                        "enrolled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                entry["plan_review_enabled"] = True
+            else:
+                if entry is None:
+                    raise AttestationStoreError(f"repo {repo_id} was never enrolled")
+                entry["plan_review_enabled"] = False
+        return self._mutate(_apply)
+
     def issue(
         self, *, repo_id: str, gate: str, subject_key: str, verdict: str,
         issuer_kind: str, reviewer_id: str, reason: str, backend: str | None = None,
+        kind: str = "git-tree",
     ) -> WriteResult:
         # COULD_NOT_RUN is a real, first-class verdict the legacy verdict store already
         # persists today (e.g. `codex_warden_hooks.py record-verdict ... COULD_NOT_RUN` for
@@ -225,22 +258,33 @@ class AttestationStore:
         # speculative new scope.
         if verdict not in ("SHIP", "REVISE", "BLOCK", "COULD_NOT_RUN"):
             raise AttestationStoreError(f"invalid verdict {verdict!r}")
+        if kind not in ("git-tree", "session"):
+            raise AttestationStoreError(f"invalid subject kind {kind!r}")
 
         def _apply(inner):
             record_id = f"att-{uuid.uuid4()}"
-            record = {
-                "id": record_id,
-                "schema_version": SCHEMA_VERSION,
-                "repo_id": repo_id,
-                "gate": gate,
-                "subject": {
+            if kind == "git-tree":
+                # Every existing call site: byte-for-byte the same shape as before `kind`
+                # existed.
+                subject = {
                     "kind": "git-tree",
                     "key": subject_key,
                     "digest": {
                         "algorithm": subject_key.split(":")[1],
                         "value": subject_key.split(":")[2],
                     },
-                },
+                }
+            else:
+                # session subject: subject_key carries the raw, opaque session_id -- nothing
+                # to hash/digest (unlike a repo-relative git path, a session id has no
+                # sensitive structure to redact).
+                subject = {"kind": "session", "session_id": subject_key}
+            record = {
+                "id": record_id,
+                "schema_version": SCHEMA_VERSION,
+                "repo_id": repo_id,
+                "gate": gate,
+                "subject": subject,
                 "verdict": verdict,
                 "issuer": {"kind": issuer_kind, "reviewer_id": reviewer_id},
                 "issued_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
