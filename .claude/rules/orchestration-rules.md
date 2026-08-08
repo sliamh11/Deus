@@ -21,6 +21,7 @@
 - Never auto-advance an issue past a gate that didn't actually run. Silence is not consent.
 - REVISE handling follows core-behavioral-rules.md: re-run after fixes until SHIP, no exceptions.
 - When a pipeline loop is detected, stabilize first: move the issue to a safe state (Manual Review Required or Backlog) before investigating. Never debug a live loop.
+- The commit-gate string-matches `git commit` anywhere in a Bash command and blocks the ENTIRE command before any of it runs — this isn't limited to warden marks chained before a commit (a previously-documented case, in personal vault memory, not this repo); it also silently drops a leading `git add` in the same call, e.g. `git add -A && git status && git commit -m ...` never stages anything (confirmed 2026-08-08, checklist.design-integration PR #1133 — a code-reviewer pass caught the staged diff missing a fix that was genuinely present in the working tree). Always issue `git commit` as its own isolated Bash call, with `git add`/staging done in a prior, separate call — never chained with `&&` before it.
 
 ## Agent Dispatch
 - Dispatched agents must work against the current issue state. If the issue was modified after dispatch, the agent's output is suspect — re-evaluate before accepting.
