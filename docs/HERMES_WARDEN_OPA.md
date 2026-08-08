@@ -45,23 +45,38 @@ operational how-to.
    ```bash
    python3 scripts/install_warden_opa_sync_launchd.py
    ```
-4. Add the Hermes hook (personal `~/.hermes/config.yaml`, never repo-committed):
+4. Add the Hermes hooks (personal `~/.hermes/config.yaml`, never repo-committed). Three
+   independent gates, each its own hook entry under the same `matcher: "terminal"` (a distinct
+   `command` string is a distinct, independently-invoked registration — none of the three
+   scripts calls or depends on another):
    ```yaml
    hooks:
      pre_tool_call:
        - matcher: "terminal"
          command: "python3 <PROJECT_ROOT>/scripts/hermes_warden_gate.py"
          timeout: 3
+       - matcher: "terminal"
+         command: "python3 <PROJECT_ROOT>/scripts/hermes_ai_eng_warden_gate.py"
+         timeout: 3
+       - matcher: "terminal"
+         command: "python3 <PROJECT_ROOT>/scripts/hermes_verification_gate.py"
+         timeout: 3
    ```
-   Do **not** set `hooks_auto_accept: true` globally — approve this one command explicitly so
+   Do **not** set `hooks_auto_accept: true` globally — approve each command explicitly so
    Hermes records it in `~/.hermes/shell-hooks-allowlist.json`. Verify with `hermes hooks list`
-   and `hermes hooks doctor`.
-5. Enroll a repo:
+   and `hermes hooks doctor`. Worst-case cumulative latency for one `git commit` is
+   sequential-additive across however many of the three hooks are enrolled, each up to its own
+   `timeout:` (3s default) — up to ~9s worst case with all three enrolled and slow; inherent to
+   Hermes's own sequential hook-dispatch loop.
+5. Enroll a repo. Code-review, ai-eng-warden, and verification-gate are three independent,
+   additive on/off switches — enabling one does not enable the others:
    ```bash
    python3 scripts/warden_attest.py enroll --repo /path/to/repo
+   python3 scripts/warden_attest.py enable-ai-eng-warden --repo /path/to/repo
+   python3 scripts/warden_attest.py enable-verification-gate --repo /path/to/repo
    ```
-   Unenrolled repos are completely unaffected by the guardrail — every commit form works
-   normally, including any of the repo's own git hooks.
+   A repo with none of these enabled is completely unaffected by any guardrail — every commit
+   form works normally, including any of the repo's own git hooks.
 
 ## Daily use
 
@@ -70,8 +85,22 @@ operational how-to.
 python3 scripts/warden_attest.py issue --repo <path> --verdict SHIP \
     --reviewer-id 'code-reviewer@claude-sonnet-5' --reason '...'
 
+# ai-eng-warden: --backend hermes is REQUIRED (a fixed, self-identifying backend id --
+# omitting it, or any other value, is a usage error, not a silent misroute):
+python3 scripts/warden_attest.py issue --repo <path> --gate ai-eng-warden --backend hermes \
+    --verdict SHIP --reviewer-id 'ai-eng-warden@hermes' --reason '...'
+
+# verification-gate: latest-indexed, single-verdict -- no --backend flag:
+python3 scripts/warden_attest.py issue --repo <path> --gate verification-gate \
+    --verdict SHIP --reviewer-id 'verification-gate@hermes' --reason '...'
+
 # supported commit form (BOTH flags required, -c must precede `commit`):
 git -c core.hooksPath=<any-empty-dir> commit --no-verify -m 'message'
+
+# -C is supported: identity resolves from the -C target, not cwd (a safe, absolute or
+# cwd-relative path only -- an unsafe value, e.g. containing shell metacharacters, blocks
+# unconditionally):
+git -C /path/to/repo -c core.hooksPath=<any-empty-dir> commit --no-verify -m 'message'
 
 # check what the guardrail would decide for a given command, without running it:
 python3 scripts/warden_attest.py check --repo <path> --command 'git commit -m x'
@@ -87,6 +116,10 @@ python3 scripts/warden_attest.py inspect --repo <path>
   `~/.hermes/shell-hooks-allowlist.json`.
 - **Turn off for one repo only** (daemon and other repos unaffected):
   `python3 scripts/warden_attest.py unenroll --repo <path>`.
+- **Turn off ai-eng-warden or verification-gate for one repo only** (independent of
+  code-review's own `enabled` switch and of each other):
+  `python3 scripts/warden_attest.py disable-ai-eng-warden --repo <path>` /
+  `python3 scripts/warden_attest.py disable-verification-gate --repo <path>`.
 - **Turn off the periodic self-heal job only** (daemon and gate unaffected — you lose automatic
   drift recovery, manual `sync` still works): `python3
   scripts/install_warden_opa_sync_launchd.py --uninstall`, or directly `launchctl bootout

@@ -39,6 +39,7 @@ valid_ship if {
 decision := {"allow": true, "reason": "repo not enrolled"} if {
 	supported
 	input.operation == "git.commit"
+	input.gate == "code-review"
 	not enrolled
 }
 
@@ -88,6 +89,84 @@ backend_verdict(backend) := att.verdict if {
 
 backend_verdict_map[backend] := backend_verdict(backend) if {
 	some backend in input.required_backends
+}
+
+# --- ai-eng-warden gate (LIA-524) -- purely additive, mirrors the code-review triple's shape
+# but reads `latest_by_backend` (role-keyed, per the ADR's "Gate-key vocabulary" table) instead
+# of `latest` (gate-keyed), with `input.backend` fixed to "hermes" by the Hermes-side shim.
+# Reuses `backend_verdict(backend)` (above) rather than re-deriving the lookup + record
+# re-validation -- smaller Rego surface, same defense-in-depth guarantees.
+
+ai_eng_warden_enrolled if data.warden_attestations.config.enforced_repos[input.repo_id].ai_eng_warden_enabled
+
+valid_ai_eng_warden_ship if backend_verdict(input.backend) == "SHIP"
+
+decision := {"allow": true, "reason": "repo not ai-eng-warden-enrolled"} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "ai-eng-warden"
+	not ai_eng_warden_enrolled
+}
+
+decision := {"allow": true, "reason": "matching ai-eng-warden SHIP"} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "ai-eng-warden"
+	ai_eng_warden_enrolled
+	valid_ai_eng_warden_ship
+}
+
+decision := {
+	"allow": false,
+	"reason": sprintf("no ai-eng-warden SHIP for staged tree %s", [input.subject_key]),
+} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "ai-eng-warden"
+	ai_eng_warden_enrolled
+	not valid_ai_eng_warden_ship
+}
+
+# --- verification-gate (LIA-524) -- purely additive, structurally identical to the code-review
+# triple above (git-tree subject, `latest` index, no backend -- CC's own `run_verification_gate`
+# is single-marker, not multi-backend, so mirroring that shape exactly is the faithful port).
+
+verification_gate_enrolled if data.warden_attestations.config.enforced_repos[input.repo_id].verification_gate_enabled
+
+valid_verification_ship if {
+	id := data.warden_attestations.latest[input.repo_id]["verification-gate"][input.subject_key]
+	att := data.warden_attestations.records[id]
+	att.schema_version == 1
+	att.repo_id == input.repo_id
+	att.gate == "verification-gate"
+	att.subject.key == input.subject_key
+	att.verdict == "SHIP"
+}
+
+decision := {"allow": true, "reason": "repo not verification-gate-enrolled"} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "verification-gate"
+	not verification_gate_enrolled
+}
+
+decision := {"allow": true, "reason": "matching verification-gate SHIP"} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "verification-gate"
+	verification_gate_enrolled
+	valid_verification_ship
+}
+
+decision := {
+	"allow": false,
+	"reason": sprintf("no verification-gate SHIP for staged tree %s", [input.subject_key]),
+} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "verification-gate"
+	verification_gate_enrolled
+	not valid_verification_ship
 }
 
 # --- Plan-review gate (LIA-523) -- purely additive. `enrolled`, `valid_ship`, and the three
