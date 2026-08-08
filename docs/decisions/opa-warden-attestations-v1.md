@@ -320,13 +320,16 @@ property was **self-authored by the implementer**, not produced independently vi
 (the implementing agent had no dispatch capability). An independently authored oracle should be
 run before any Phase 2 cutover.
 
-### Phase 2 — isolated CC write path (design only; not yet implemented)
+### Phase 2 — isolated CC write path (LIA-527, implemented; gate wiring tracked separately as LIA-534)
 
-This section designs the write path Phase 1 deliberately left undesigned. It does not
-implement it, does not enable any cutover, and does not change what any existing gate
-does. Written now because the design itself is reviewable independently of real shadow data;
-the *cutover decision* (which gates, if any, start consulting OPA) still needs that data and
-is explicitly out of scope here — see "Not yet started" below.
+This section designs, and (as of LIA-527) implements, the write path Phase 1 deliberately left
+undesigned. Implemented: the six-site `AttestationStore` parameterization, `issue_if_newer`,
+`scripts/warden_policy/cc_attestations.py`, and the CC-specific schema file. Not implemented
+here, and tracked separately: wiring `cc_attestations.enqueue_verdict` into any Claude Code
+gate (LIA-534) and any Rego rule consulting `data.warden_cc_attestations` (LIA-530 item 2) — so
+this phase still does not enable any cutover, and does not change what any existing gate does.
+The *cutover decision* (which gates, if any, start consulting OPA) still needs real shadow data
+and is explicitly out of scope here — see "Not yet started" below.
 
 **Chosen shape: an isolated document, not a fixed `_mutate` ordering.** Phase 1's own write-path
 post-mortem (above) identified the root cause precisely: `_mutate` persists disk at
@@ -670,19 +673,25 @@ regardless of the wrapper's own correctness. It is expected **red** until Phase 
 implemented; passing it is a precondition for treating the write path as done, not evidence it
 already is.
 
-**Not yet started, and why:** actual implementation of `AttestationStore`'s parameterization
-(all six sites), the new `cc_attestations` write/worker/sweep call sites, and the CC-specific
-schema file. Two independent reasons to hold here rather than implement in the same pass as this
-design: (1) LIA-527 itself is the lowest-urgency item in the roadmap by explicit prior decision —
-implementation should not compete for attention with higher-priority work; (2) the *cutover*
-decision this write path exists to eventually support needs real shadow-observer data first, and
-as of this design there is essentially none — `~/.config/deus/guardrails/logs/cc-shadow.jsonl`
-holds 9 lines, all from 2026-08-04 pre-toggle dev testing; the toggle (LIA-520) was only switched
-on 2026-08-07, less than two hours before this section was written, and has produced zero new
-observations since (no commit gate has fired in that window). Implementing the write path itself
-is not blocked on that data — only the cutover is — but there is no benefit to landing unused
-write-path code before the data that would justify designing the cutover on top of it exists.
-Tracked as explicit follow-up scope, not silently dropped.
+**Not yet started, and why** *(historical — as of this design's 7th review round, before
+LIA-527 implemented it; kept for the reasoning, superseded by the heading above)*: actual
+implementation of `AttestationStore`'s parameterization (all six sites), the new `cc_attestations`
+write/worker/sweep call sites, and the CC-specific schema file. Two independent reasons to hold
+here rather than implement in the same pass as this design: (1) LIA-527 itself is the
+lowest-urgency item in the roadmap by explicit prior decision — implementation should not compete
+for attention with higher-priority work; (2) the *cutover* decision this write path exists to
+eventually support needs real shadow-observer data first, and as of this design there is
+essentially none — `~/.config/deus/guardrails/logs/cc-shadow.jsonl` holds 9 lines, all from
+2026-08-04 pre-toggle dev testing; the toggle (LIA-520) was only switched on 2026-08-07, less than
+two hours before this section was written, and has produced zero new observations since (no
+commit gate has fired in that window). Implementing the write path itself is not blocked on that
+data — only the cutover is — but there is no benefit to landing unused write-path code before the
+data that would justify designing the cutover on top of it exists. Tracked as explicit follow-up
+scope, not silently dropped.
+
+**Still not yet started, current** — post-LIA-527: `cc_attestations.enqueue_verdict` wiring into
+any Claude Code gate (LIA-534) and the Rego cutover rule (LIA-530 item 2). Both remain out of
+scope for LIA-527 itself.
 
 **Scope check** (round-count-circuit-breaker, per `plan-review-rules.md`): after 7 review rounds,
 re-confirming this is still the smallest design that satisfies LIA-527's ask — "design the write
