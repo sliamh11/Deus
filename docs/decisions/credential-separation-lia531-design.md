@@ -14,6 +14,15 @@ date: 2026-08-08
 # Credential separation for the `main-attestation-backstop` admin surface — design
 
 **Date:** 2026-08-08
+**Scope:** A design for eliminating raw-GitHub-credential exposure to autonomous agent sessions via
+a local allowlisted proxy, plus a human-approval broker for the admin-capable surface the proxy
+denies. No GitHub account changes, no fine-grained PAT creation, no code in this pass. (Placed
+directly after **Date:** — earlier than the sibling
+`git-level-hard-backstop-design.md`'s own Date/Status/Scope order — because
+`scripts/drift_check.py`'s ADR-freshness check only scans the first 20 header lines for a
+`**Scope:**` field, confirmed by direct read of `parse_adr()`; this header's Status paragraph had
+grown long enough across review rounds to push Scope past line 20, which produced a real
+drift-check failure at push time, not a hypothetical one.)
 **Status:** Design only, threat-modeler SHIP followed by an extended code-reviewer/GPT co-gate cycle
 that found and fixed one CRITICAL post-threat-model finding plus several further findings the fix
 itself surfaced (see below and §8 for the full, exact round-by-round log — deliberately not
@@ -23,9 +32,6 @@ rounds landed after it was written; §8's log is the only place a current count 
 base-retarget TOCTOU issue (§5) and the broker's approval-artifact forgery gap (§4's already-named,
 distinct unauthenticated verdict store) — see "Not yet started" below for both. No implementation in
 this pass.
-**Scope:** A design for eliminating raw-GitHub-credential exposure to autonomous agent sessions via
-a local allowlisted proxy, plus a human-approval broker for the admin-capable surface the proxy
-denies. No GitHub account changes, no fine-grained PAT creation, no code in this pass.
 **Related:** LIA-522 (`docs/decisions/git-level-hard-backstop-design.md`, merged PR #1129 — the
 design this closes a named gap in, §3.1's `main-attestation-backstop` ruleset and §3.3's
 self-hosted-runner risk are both load-bearing prior art here), LIA-530 (LIA-527 Phase 2 + Rego
@@ -541,10 +547,11 @@ authorization mechanism) govern whether an agent actually reaches `--admin` thro
 proxy, which is a separate, stricter question resolved below.
 
 **The live spot-check this design still needs before relying on the above operationally must target
-the correct enforcement engine**: a ruleset with `bypass_actors: []` (matching `main-attestation-
-backstop`'s actual configuration), not classic branch protection (the first draft's mistake — testing
-against branch protection would validate a different mechanism than the one deployed and could
-return a false-positive green). This spot-check remains listed in §7 as not yet performed.
+the correct enforcement engine**: a ruleset with `bypass_actors: []` (matching
+`main-attestation-backstop`'s actual configuration), not classic branch protection (the first
+draft's mistake — testing against branch protection would validate a different mechanism than the
+one deployed and could return a false-positive green). This spot-check remains listed in §7 as not
+yet performed.
 
 **A timing gap round-2 review surfaced and this design closes with a mechanism simple enough to
 verify sound, not a redesign — corrected here after a verification-gate pass found this lead
