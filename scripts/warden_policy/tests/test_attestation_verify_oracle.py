@@ -167,18 +167,18 @@ class _OpaServer:
 
 @contextlib.contextmanager
 def _canonical_repo_env(value: str | None):
-    """Set (or explicitly unset) DEUS_CANONICAL_REPO for the duration of the block."""
-    had_original = "DEUS_CANONICAL_REPO" in os.environ
-    original = os.environ.get("DEUS_CANONICAL_REPO")
+    """Set (or explicitly unset) DEUS_CANONICAL_REPO (LIA-536) for the duration of the block."""
+    had_original = "DEUS_CANONICAL_REPO" in os.environ  # LIA-536
+    original = os.environ.get("DEUS_CANONICAL_REPO")  # LIA-536
     if value is None:
         os.environ.pop("DEUS_CANONICAL_REPO", None)
     else:
-        os.environ["DEUS_CANONICAL_REPO"] = value
+        os.environ["DEUS_CANONICAL_REPO"] = value  # LIA-536
     try:
         yield
     finally:
         if had_original:
-            os.environ["DEUS_CANONICAL_REPO"] = original
+            os.environ["DEUS_CANONICAL_REPO"] = original  # LIA-536
         else:
             os.environ.pop("DEUS_CANONICAL_REPO", None)
 

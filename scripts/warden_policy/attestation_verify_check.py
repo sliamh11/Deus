@@ -102,7 +102,7 @@ def resolve_repo_id_from_env() -> str:
     real git repo, logging the missing/invalid var name -- not just the resulting hash -- so this
     failure mode is diagnosable rather than reading as "OPA is down."
     """
-    canonical = os.environ.get("DEUS_CANONICAL_REPO")
+    canonical = os.environ.get("DEUS_CANONICAL_REPO")  # LIA-536
     if not canonical:
         raise RepoIdentityError(
             "DEUS_CANONICAL_REPO is not set -- cannot resolve repo_id. This must be set at "
