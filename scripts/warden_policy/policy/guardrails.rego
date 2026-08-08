@@ -146,3 +146,83 @@ decision := {
 	plan_review_enrolled
 	not valid_plan_review_ship
 }
+
+# --- attestation-verify cutover (LIA-530) -- once main-attestation-backstop is active, this IS
+# the sole non-bypassable gate on main (bypass_actors: [], git-level-hard-backstop-design.md
+# ~:95-112) -- confirmed decision, not advisory. An ALLOW from the CC-mirror path means "a
+# claude-backend code-reviewer SHIP was found AND Hermes has no opinion for this tree" -- an
+# explicit Hermes REVISE/BLOCK always wins over a CC mirror (never overridden). Does NOT verify
+# gpt/glm co-gate backends -- permanent, by-design limitation, disclosed here and in the allow
+# reason string. No signing, no runner isolation -- same-host trust, same accepted-risk framing
+# as git-level-hard-backstop-design.md §3.3. A DENY is authoritative-to-block; an ALLOW means
+# "evidence found," never "fully reviewed." **DOES NOT ACTIVATE UNTIL LIA-534's gate-wiring lands
+# too -- see git-level-hard-backstop-design.md §3.6's corrected three-part precondition.**
+
+cc_supported if {
+	input.contract_version == 1
+	data.warden_cc_attestations.schema_version == 1
+	data.warden_cc_attestations.generation == input.expected_cc_generation
+}
+
+valid_cc_mirrored_ship if {
+	id := data.warden_cc_attestations.latest_by_backend[input.repo_id]["code-reviewer"][input.subject_key]["claude"]
+	att := data.warden_cc_attestations.records[id]
+	att.schema_version == 1
+	att.repo_id == input.repo_id
+	att.gate == "code-reviewer"
+	att.subject.key == input.subject_key
+	att.backend == "claude"
+	att.verdict == "SHIP"
+	att.queued_at   # CC-only field (issue_if_newer sets it; Hermes's issue() never does) --
+	                # the real mis-targeted-document discriminator. Existence check: Rego's `if`
+	                # fails on undefined; the schema types this an integer >= 0, so no
+	                # legitimate value (including 0) is falsy here.
+	cc_supported
+}
+
+hermes_path_ok if {
+	supported
+	valid_ship
+}
+
+# Existence-only check, deliberately not re-using valid_ship's SHIP-specific re-checks -- ANY
+# fresh Hermes record for this subject (SHIP, REVISE, BLOCK, or COULD_NOT_RUN) means Hermes has
+# an opinion, and that opinion is authoritative; the CC path never second-guesses it.
+hermes_record_exists if {
+	id := data.warden_attestations.latest[input.repo_id]["code-review"][input.subject_key]
+	data.warden_attestations.records[id]
+}
+
+cc_path_ok if {
+	supported
+	not hermes_record_exists
+	valid_cc_mirrored_ship
+}
+
+decision := {"allow": true, "reason": "matching code-review SHIP (Hermes-native)"} if {
+	input.operation == "attestation.verify"
+	input.gate == "code-review"
+	hermes_path_ok
+}
+
+decision := {"allow": true, "reason": "matching code-reviewer SHIP (Claude Code native, claude backend only -- gpt/glm not verified, permanent limitation)"} if {
+	input.operation == "attestation.verify"
+	input.gate == "code-review"
+	not hermes_path_ok   # deliberate defense-in-depth, provably redundant with cc_path_ok's own
+	                      # `not hermes_record_exists` given valid_ship and hermes_record_exists
+	                      # resolve the identical index lookup -- kept for clarity at zero cost,
+	                      # never remove `not hermes_record_exists` from cc_path_ok on the mistaken
+	                      # belief that THIS line alone still protects against Hermes-record
+	                      # override (mutation-verified, opa-warden-attestations-v1.md Phase 4).
+	cc_path_ok
+}
+
+decision := {
+	"allow": false,
+	"reason": sprintf("no SHIP found for %s (Hermes-native or Claude-Code-mirrored; or an explicit non-SHIP Hermes verdict exists; or OPA snapshot stale/unsupported)", [input.subject_key]),
+} if {
+	input.operation == "attestation.verify"
+	input.gate == "code-review"
+	not hermes_path_ok
+	not cc_path_ok
+}
