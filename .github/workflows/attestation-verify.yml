@@ -13,9 +13,10 @@ name: Attestation Verify (git-level hard backstop)
 # Trust model (design doc §3.3): `pull_request_target` runs THIS file's definition and
 # scripts/warden_policy/attestation_verify_check.py from the BASE branch, never from the PR --
 # closing the "a PR edits the verifier to always report success" vector. The actor guard below is
-# the FIRST step in the job, before any checkout, so a non-owner PR is rejected before any
-# PR-derived data is touched at all. The PR's head commit is only ever `git fetch`ed (shallow,
-# blobless) into the trusted checkout to resolve its tree sha -- never checked out, never executed.
+# the first step that touches any PR-derived data, before any checkout, so a non-owner PR is
+# rejected before any PR-derived code or content is fetched or executed. The PR's head commit is
+# only ever `git fetch`ed (shallow, blobless) into the trusted checkout to resolve its tree sha --
+# never checked out, never executed.
 #
 # Residual, disclosed, NOT-closed-by-this-file gap (design doc §3.4, this ticket's plan §9): a
 # same-repo PR that adds/edits a DIFFERENT workflow (triggered on plain `pull_request`, so it runs
@@ -53,7 +54,7 @@ jobs:
     runs-on: [self-hosted, lia536-verify]
     timeout-minutes: 5
     steps:
-      - name: Actor guard (must run first, before any checkout)
+      - name: Actor guard (must run before any checkout)
         id: actor_guard
         # Unconditional step -- never gated by `if:`, since GitHub's required-check evaluation
         # treats a `skipped` conclusion as PASSING, silently defeating this ruleset's
@@ -62,6 +63,16 @@ jobs:
         # skip every later step (including whatever posts a Check Run), leaving the check
         # permanently pending rather than failed, which is the same "looks blocked, isn't"
         # trap this whole mechanism exists to close, reached a different way.
+        #
+        # Also cleans stale result.json/check_run_payload.json here, as this step's own first
+        # action -- folded in (rather than a separate preceding step) so a failure in the
+        # cleanup itself cannot cascade-skip this step and strand the check pending instead of
+        # failed. Self-hosted runner workspaces persist across job invocations (unlike
+        # GitHub-hosted runners, which are always fresh) -- without this, a successful run's
+        # result files can survive on disk, and if a LATER job's checkout/fetch step then fails
+        # (before "Query attestation-verify decision" ever runs, cascade-skipped), the Report
+        # Check Run step would read the STALE success file and post it against the NEW head SHA
+        # -- turning an infrastructure failure into a falsely-passing required check.
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -70,6 +81,7 @@ jobs:
           REPO_OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
+          rm -f result.json check_run_payload.json
           if [ "$PR_ACTOR" != "$REPO_OWNER" ]; then
             gh api "repos/${GH_REPO}/check-runs" \
               -f name="attestation-verify" \
