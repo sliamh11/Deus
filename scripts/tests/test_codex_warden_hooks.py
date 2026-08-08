@@ -1757,6 +1757,158 @@ def test_verification_gate_shows_revise_escalation(tmp_path, capsys):
     assert "Trivial-commit bypass" not in out
 
 
+# ── CC verdict mirroring (LIA-534: wire cc_attestations.enqueue_verdict into the two
+# commit-gate call sites -- run_warden_backends_gate and run_verification_gate) ──────
+
+
+def test_cc_mirror_verdicts_called_on_warden_backends_gate_pass(tmp_path, capsys, monkeypatch):
+    sys.path.insert(0, str(SCRIPT.parent))
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "code-reviewer", "SHIP", "looks good", "agent")
+
+    calls = []
+    monkeypatch.setattr(
+        "warden_policy.cc_attestations.enqueue_verdict",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    rc = hooks.run_warden_backends_gate(
+        "code-reviewer", bash_event(repo, "git commit -m test"), repo,
+    )
+
+    assert rc == 0
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["gate"] == "code-reviewer"
+    assert call["verdict"] == "SHIP"
+    assert call["issuer_kind"] == "script"
+    assert call["reviewer_id"] == "code-reviewer@claude"
+    assert call["backend"] == "claude"
+    assert call["repo_id"].startswith("git-common-dir-sha256:")
+    assert call["subject_key"].startswith("git-tree:")
+    assert call["reason"]
+
+
+def test_cc_mirror_verdicts_called_on_warden_backends_gate_block(tmp_path, capsys, monkeypatch):
+    sys.path.insert(0, str(SCRIPT.parent))
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "code-reviewer", "REVISE", "needs work", "agent")
+
+    calls = []
+    monkeypatch.setattr(
+        "warden_policy.cc_attestations.enqueue_verdict",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    hooks.run_warden_backends_gate("code-reviewer", bash_event(repo, "git commit -m test"), repo)
+
+    assert len(calls) == 1
+    assert calls[0]["verdict"] == "REVISE"
+    assert calls[0]["issuer_kind"] == "script"
+    assert calls[0]["gate"] == "code-reviewer"
+
+
+def test_cc_mirror_verdicts_skips_trivial(tmp_path, capsys, monkeypatch):
+    sys.path.insert(0, str(SCRIPT.parent))
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "code-reviewer", "TRIVIAL", "typo fix", "mark")
+
+    calls = []
+    monkeypatch.setattr(
+        "warden_policy.cc_attestations.enqueue_verdict",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    hooks.run_warden_backends_gate("code-reviewer", bash_event(repo, "git commit -m test"), repo)
+
+    assert calls == []
+
+
+def test_cc_mirror_verdicts_skips_never_run_backend(tmp_path, capsys, monkeypatch):
+    sys.path.insert(0, str(SCRIPT.parent))
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    # no verdict written at all -- _last_verdict returns None for this role
+
+    calls = []
+    monkeypatch.setattr(
+        "warden_policy.cc_attestations.enqueue_verdict",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    hooks.run_warden_backends_gate("code-reviewer", bash_event(repo, "git commit -m test"), repo)
+
+    assert calls == []
+
+
+def test_cc_mirror_verdicts_called_on_verification_gate_pass(tmp_path, capsys, monkeypatch):
+    sys.path.insert(0, str(SCRIPT.parent))
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "verification-gate", "SHIP", "all good", "mark")
+    (repo / ".claude" / ".verified").touch()
+
+    calls = []
+    monkeypatch.setattr(
+        "warden_policy.cc_attestations.enqueue_verdict",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    rc = hooks.run_verification_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    assert len(calls) == 1
+    assert calls[0]["gate"] == "verification-gate"
+    assert calls[0]["verdict"] == "SHIP"
+    assert calls[0]["issuer_kind"] == "script"
+    assert calls[0]["reviewer_id"] == "verification-gate@claude"
+
+
+def test_cc_mirror_verdicts_called_on_verification_gate_block(tmp_path, capsys, monkeypatch):
+    sys.path.insert(0, str(SCRIPT.parent))
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    (repo / ".claude" / "wardens").mkdir(parents=True)
+    hooks._write_verdict(repo, "verification-gate", "REVISE", "incomplete", "agent")
+
+    calls = []
+    monkeypatch.setattr(
+        "warden_policy.cc_attestations.enqueue_verdict",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    hooks.run_verification_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert len(calls) == 1
+    assert calls[0]["verdict"] == "REVISE"
+    assert calls[0]["gate"] == "verification-gate"
+
+
+def test_cc_mirror_verdicts_never_raises_into_gate_on_resolution_failure(
+    tmp_path, capsys, monkeypatch,
+):
+    """A GitSubjectError (or any exception) from resolve_repo_id/resolve_subject_key must not
+    surface as a gate failure -- matches _cc_shadow_observe's containment floor."""
+    sys.path.insert(0, str(SCRIPT.parent))
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "code-reviewer", "SHIP", "looks good", "agent")
+
+    def _boom(worktree):
+        raise RuntimeError("simulated git failure")
+
+    monkeypatch.setattr("warden_policy.git_subject.resolve_repo_id", _boom)
+
+    # Must not raise, and the gate's own return value/stdout must be unaffected.
+    rc = hooks.run_warden_backends_gate(
+        "code-reviewer", bash_event(repo, "git commit -m test"), repo,
+    )
+    assert rc == 0
+
+
 # ── GIT_COMMIT_RE (LIA-518: broadened commit-gate trigger) ──────────────────
 #
 # First direct coverage for this regex — previously exercised only indirectly
