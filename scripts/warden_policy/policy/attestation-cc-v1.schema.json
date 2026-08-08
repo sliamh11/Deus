@@ -25,7 +25,7 @@
           "properties": {
             "enforced_repos": {
               "type": "object",
-              "description": "Unused by the CC write path today (no enroll()/unenroll() call site writes this document) -- present only for structural parity with warden_attestations. No Rego rule consults data.warden_cc_attestations yet (Phase 2 designs writing only).",
+              "description": "The enforced_repos.<repo>.enabled CC-cutover toggle remains genuinely unwired -- no enroll()/unenroll() call site writes this document (v6 Fix G: the schema field is deliberately left without a writer in this pass, not a gap). But data.warden_cc_attestations IS now consulted: guardrails.rego's attestation-verify cutover rule (LIA-530, docs/decisions/opa-warden-attestations-v1.md's Phase 4) reads this document's records/latest_by_backend paths directly. Only config.enforced_repos itself stays unread.",
               "additionalProperties": {
                 "type": "object",
                 "properties": {

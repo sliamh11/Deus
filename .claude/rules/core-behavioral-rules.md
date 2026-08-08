@@ -23,6 +23,7 @@
 
 ## Verification & Honesty
 - Never speculate. Only state verified facts. If unsure, say so.
+- Clear `__pycache__`/`.pytest_cache` before trusting a `pytest` run on a file being actively edited — stale bytecode can produce a false pass or fail. Use `-p no:cacheprovider` or `rm -rf __pycache__ .pytest_cache` first.
 - Delegated review findings must include grep evidence, not just conclusions.
 - Check production logs before optimizing synthetic benchmarks.
 - Predict outcome before running expensive operations. Skip if predictable.

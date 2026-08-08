@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Manual attestation CLI for scripts/warden_policy.
 
-Subcommands: enroll, unenroll, issue, inspect, check, sync, plan-review, enable-plan-review,
-disable-plan-review.
+Subcommands: enroll, unenroll, issue, inspect, check, sync, reconcile, plan-review,
+enable-plan-review, disable-plan-review.
 Typed exit codes: 0 OK, 1 usage error, 2 git/subject resolution error,
 3 not-activated (persisted but OPA PUT failed -- run `sync`), 6 CONFLICT
 (index changed mid-issuance).
@@ -235,6 +235,19 @@ def cmd_sync(args) -> int:
     return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
 
 
+def cmd_reconcile(args) -> int:
+    """LIA-533: best-effort periodic/background reconciliation -- the intended entry point for
+    a launchd job, distinct from `sync` (which always attempts a blocking, unconditional PUT --
+    the documented manual-recovery command, unchanged). `reconcile` only touches OPA's exclusive
+    lock when a genuine content mismatch is confirmed, and never blocks waiting for it -- see
+    `AttestationStore.reconcile_if_drifted()`."""
+    store = _store(args)
+    result = store.reconcile_if_drifted()
+    _emit(args, {"ok": result.ok, "activated": result.activated,
+                  "generation": result.generation, "error": result.error})
+    return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="warden_attest.py")
     parser.add_argument("--ledger-path", default=None)
@@ -289,6 +302,9 @@ def main(argv=None) -> int:
 
     p_sync = sub.add_parser("sync")
     p_sync.set_defaults(func=cmd_sync)
+
+    p_reconcile = sub.add_parser("reconcile")
+    p_reconcile.set_defaults(func=cmd_reconcile)
 
     args = parser.parse_args(argv)
     return args.func(args)

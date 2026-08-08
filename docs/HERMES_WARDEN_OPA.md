@@ -36,7 +36,16 @@ operational how-to.
    launchctl kickstart -k gui/$(id -u)/com.deus.warden-opa
    curl -fsS 'http://127.0.0.1:8181/health?plugins'
    ```
-3. Add the Hermes hook (personal `~/.hermes/config.yaml`, never repo-committed):
+3. Install the periodic self-heal job (LIA-533) -- re-syncs the disk ledger to OPA every 5
+   minutes if they've drifted (e.g. a transient PUT failure inside a write, or OPA restarting
+   with a stale on-disk snapshot). Without this, a divergence is permanent until someone
+   manually runs `sync` (see Troubleshooting). Run this from your main checkout, not a worktree
+   -- the plist bakes in the invoking directory as `PROJECT_ROOT` (same convention as
+   `install_hermes_procedure_recheck_launchd.py`), so a removed worktree silently breaks it:
+   ```bash
+   python3 scripts/install_warden_opa_sync_launchd.py
+   ```
+4. Add the Hermes hook (personal `~/.hermes/config.yaml`, never repo-committed):
    ```yaml
    hooks:
      pre_tool_call:
@@ -47,7 +56,7 @@ operational how-to.
    Do **not** set `hooks_auto_accept: true` globally — approve this one command explicitly so
    Hermes records it in `~/.hermes/shell-hooks-allowlist.json`. Verify with `hermes hooks list`
    and `hermes hooks doctor`.
-4. Enroll a repo:
+5. Enroll a repo:
    ```bash
    python3 scripts/warden_attest.py enroll --repo /path/to/repo
    ```
@@ -78,6 +87,10 @@ python3 scripts/warden_attest.py inspect --repo <path>
   `~/.hermes/shell-hooks-allowlist.json`.
 - **Turn off for one repo only** (daemon and other repos unaffected):
   `python3 scripts/warden_attest.py unenroll --repo <path>`.
+- **Turn off the periodic self-heal job only** (daemon and gate unaffected — you lose automatic
+  drift recovery, manual `sync` still works): `python3
+  scripts/install_warden_opa_sync_launchd.py --uninstall`, or directly `launchctl bootout
+  gui/$(id -u)/com.deus.warden-opa-sync`.
 
 ## Troubleshooting
 
@@ -85,8 +98,11 @@ python3 scripts/warden_attest.py inspect --repo <path>
   `launchctl kickstart -k gui/$(id -u)/com.deus.warden-opa`, then check
   `~/.config/deus/guardrails/logs/warden-opa.error.log`.
 - **Commit blocked with "persisted but not activated" after `issue`**: the disk write succeeded
-  but OPA's PUT failed (daemon was briefly down, e.g.). Run `python3 scripts/warden_attest.py
-  sync` once the daemon is back up — no need to reissue the attestation.
+  but OPA's PUT failed (daemon was briefly down, e.g.). If the periodic self-heal job (LIA-533,
+  install step 3 above) is running, this self-corrects within 5 minutes automatically. For
+  immediate recovery, run `python3 scripts/warden_attest.py sync` once the daemon is back up —
+  no need to reissue the attestation. Check `launchctl list | grep warden-opa-sync` and
+  `<PROJECT_ROOT>/logs/warden-opa-sync.log` to confirm the self-heal job is actually running.
 - **Every decision logged to** `~/.config/deus/guardrails/logs/decisions.jsonl` (one JSON line
   per commit-shaped call) — redacted (hashed command, no raw repo paths or commit messages), but
   enough to answer "is this gate ever actually firing."
@@ -98,6 +114,8 @@ opa fmt --fail scripts/warden_policy/policy
 opa check --strict scripts/warden_policy/policy
 opa test -v scripts/warden_policy/policy
 python3 -m pytest scripts/warden_policy/tests -v
+python3 -m pytest scripts/tests/test_warden_attest_reconcile.py -v
 shellcheck scripts/start_warden_opa.sh
 plutil -lint launchd/com.deus.warden-opa.plist
+python3 -m py_compile scripts/install_warden_opa_sync_launchd.py
 ```

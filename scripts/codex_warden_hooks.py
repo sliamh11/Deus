@@ -1648,6 +1648,7 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
         return 0
     if _read_verdict("verified", repo_root) == "SHIP":
         _cc_shadow_observe("verification-gate", config, repo_root, [])
+        _cc_mirror_verdicts("verification-gate", config, repo_root)
         return 0
 
     mark_cmd = (
@@ -1683,6 +1684,7 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
         "verification-gate", config, repo_root,
         [(BACKEND_CLAUDE, _last_verdict(repo_root, "verification-gate"))],
     )
+    _cc_mirror_verdicts("verification-gate", config, repo_root)
     return 0
 
 
@@ -2944,6 +2946,49 @@ def _cc_shadow_observe(
         pass
 
 
+def _cc_mirror_verdicts(role: str, config: dict[str, Any], repo_root: Path) -> None:
+    """LIA-534: mirror every configured backend's verdict for ``role`` into the isolated CC
+    ledger via ``cc_attestations.enqueue_verdict`` -- full backend-verdict history (SHIP
+    included), not just the blocking subset ``_evaluate_backends``/``_cc_shadow_observe`` track.
+    ``issuer_kind`` is always ``"script"`` -- every call here mirrors an already-decided verdict
+    programmatically, never a human typing a review at write time (see ``warden_attest.py``'s
+    manual-vs-script split). Subject resolved via ``_resolve_verdict_worktree(repo_root)``,
+    matching ``_cc_shadow_observe`` exactly -- not a separately-threaded cwd, avoiding a second
+    parallel cwd-resolution path in a codebase with a documented history of cwd/worktree
+    bucket-mismatch bugs (LIA-446/467/376).
+
+    Call AFTER the legacy gate decision is already finalized/returned (same ordering discipline
+    ``_cc_shadow_observe`` already established) -- this call's outcome must never be consulted
+    by, or able to affect, the gate that just ran. The whole body is contained:
+    ``enqueue_verdict`` itself already swallows every exception and returns ``None``
+    unconditionally (fully detached, no join/wait), so this ``try/except`` exists only to
+    contain ``resolve_repo_id``/``resolve_subject_key`` (``GitSubjectError`` on an edge-case git
+    state), matching ``_cc_shadow_observe``'s containment floor."""
+    try:
+        from warden_policy import cc_attestations
+        from warden_policy.git_subject import resolve_repo_id, resolve_subject_key
+
+        worktree = _resolve_verdict_worktree(repo_root)
+        repo_id = resolve_repo_id(worktree)
+        subject_key = resolve_subject_key(worktree)
+        for backend in _role_backends(config, role):
+            if backend == BACKEND_CLAUDE:
+                verdict = _last_verdict(repo_root, role)
+            elif backend in KNOWN_MODEL_BACKENDS:
+                verdict = _read_verdict(store_key(role, backend), repo_root)
+            else:
+                continue
+            if verdict is None or verdict == "TRIVIAL":
+                continue
+            cc_attestations.enqueue_verdict(
+                repo_id=repo_id, gate=role, subject_key=subject_key, verdict=verdict,
+                issuer_kind="script", reviewer_id=store_key(role, backend),
+                reason=f"mirrored from legacy {role} verdict store", backend=backend,
+            )
+    except Exception:  # noqa: BLE001 -- containment floor, matches _cc_shadow_observe
+        pass
+
+
 def run_warden_backends_gate(role: str, event: dict[str, Any], repo_root: Path) -> int:
     """Generic commit gate for a warden ROLE across all its configured backends.
 
@@ -2967,9 +3012,11 @@ def run_warden_backends_gate(role: str, event: dict[str, Any], repo_root: Path) 
     blocking = _evaluate_backends(role, config, repo_root)
     if not blocking:
         _cc_shadow_observe(role, config, repo_root, blocking)
+        _cc_mirror_verdicts(role, config, repo_root)
         return 0
     _block_pre_tool(_warden_backends_block_message(role, blocking, repo_root))
     _cc_shadow_observe(role, config, repo_root, blocking)
+    _cc_mirror_verdicts(role, config, repo_root)
     return 0
 
 
