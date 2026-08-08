@@ -89,3 +89,60 @@ backend_verdict(backend) := att.verdict if {
 backend_verdict_map[backend] := backend_verdict(backend) if {
 	some backend in input.required_backends
 }
+
+# --- Plan-review gate (LIA-523) -- purely additive. `enrolled`, `valid_ship`, and the three
+# "git.commit" decision bodies above are byte-unchanged; this section never reads or writes
+# `enforced_repos[repo_id].enabled`. Session-bound (not git-tree-bound): a plan-reviewer SHIP
+# approves a session's reviewed intent, not a specific diff snapshot -- the same reasoning
+# Claude Code's own plan-review gate uses (LIA-516 deliberately disabled diff-hash staleness for
+# this role). `plan_review_enabled` is a second, independent enrollment switch alongside
+# `enabled` -- neither implies the other.
+
+plan_review_enrolled if data.warden_attestations.config.enforced_repos[input.repo_id].plan_review_enabled
+
+default plan_review_ttl_seconds := 7200
+
+plan_review_ttl_seconds := t if {
+	t := data.warden_attestations.config.plan_review_ttl_seconds
+}
+
+# Session-scoped attestations have no diff to bind to, so freshness is time-based instead:
+# expired (issued_at older than the TTL) is treated the same as "no attestation" -- blocks with
+# a re-attestation message, never falls through to an implicit allow.
+valid_plan_review_ship if {
+	id := data.warden_attestations.latest[input.repo_id]["plan-review"][input.session_id]
+	att := data.warden_attestations.records[id]
+	att.schema_version == 1
+	att.repo_id == input.repo_id
+	att.gate == "plan-review"
+	att.subject.kind == "session"
+	att.subject.session_id == input.session_id
+	att.verdict == "SHIP"
+	issued_ns := time.parse_rfc3339_ns(att.issued_at)
+	time.now_ns() - issued_ns < (plan_review_ttl_seconds * 1000000000)
+}
+
+decision := {"allow": true, "reason": "repo not plan-review-enrolled"} if {
+	supported
+	input.operation == "file.write"
+	not plan_review_enrolled
+}
+
+decision := {"allow": true, "reason": "matching plan-review SHIP"} if {
+	supported
+	input.operation == "file.write"
+	input.gate == "plan-review"
+	plan_review_enrolled
+	valid_plan_review_ship
+}
+
+decision := {
+	"allow": false,
+	"reason": sprintf("no valid (non-expired) plan-review SHIP for session %s", [input.session_id]),
+} if {
+	supported
+	input.operation == "file.write"
+	input.gate == "plan-review"
+	plan_review_enrolled
+	not valid_plan_review_ship
+}

@@ -692,6 +692,131 @@ previous draft (missing parameterization sites, an unsafe concurrency mechanism,
 deletion/uniqueness/cleanup semantics), not to speculative hardening. No implementation, cutover,
 or Rego change has been added — those remain explicitly out of scope, unchanged since round 4.
 
+### Phase 3 — Hermes plan-review gate (LIA-523, implemented)
+
+Extends this substrate to a SECOND Hermes gate type: a `pre_tool_call` adapter for `write_file`/
+`patch` (file-write-shaped tool calls), the pre-implementation half of "safely doing real
+day-to-day development from Hermes" that Phase 0/1/2 (code-review only) never covered. Went
+through 15 plan-review rounds (Claude) + 2 GPT co-gate rounds before implementation — recorded
+here because several of the roadmap's own working assumptions turned out wrong on inspection,
+and the corrections are load-bearing for anyone extending this gate further.
+
+**Corrected assumption**: the roadmap that scoped this ticket assumed it would need LIA-521's
+fork/monkeypatch pattern (`GatewayRunner._create_adapter` `__class__`-swap), reasoning by analogy
+to LIA-521's `pre_outbound_send` spike. Wrong: Hermes already has a native, production
+`pre_tool_call` hook (this is what `hermes_warden_gate.py` already uses for `terminal`). This
+phase needed zero Hermes source changes — one new `~/.hermes/config.yaml` hook entry
+(`matcher: "write_file|patch"`, separate from the existing `matcher: "terminal"` entry) plus new
+code entirely in this repo (`scripts/hermes_plan_review_gate.py`, plus additive changes to
+`attestation_store.py`, `guardrails.rego`, `attestation-v1.schema.json`, `warden_attest.py`).
+
+**Session-bound subject, not git-tree-bound.** Nothing is staged pre-write, so code-review's
+`git write-tree` binding doesn't apply. Follows Claude Code's own plan-review gate instead
+(`codex_warden_hooks.py::run_plan_review_gate`'s `.plan-reviewed` marker): a plan-reviewer SHIP
+approves a session's reviewed intent, not a diff snapshot (LIA-516 established this same
+principle for Claude Code — diff-hash staleness deliberately disabled for this role).
+`AttestationStore.issue()` gained a `kind` parameter (`"git-tree"` default, byte-identical to
+every existing call site; `"session"` stores the raw `session_id` — an opaque token, nothing to
+digest). `attestation-v1.schema.json`'s `subject` became an `if`/`then`/`else` conditional on
+`kind` rather than a flat `const` shape.
+
+**Enrollment: additive, not a restructure — deliberately reconciled with Phase 2's already-merged
+design.** An early draft restructured `enforced_repos[repo_id]` into a nested `{"gates": {...}}`
+shape; review found this would (a) have no real migration path since OPA evaluates raw JSON
+directly, not through a Python abstraction, (b) require editing `guardrails.rego`'s three
+existing `git.commit` decision bodies to call `enrolled("code-review")` instead of the bare
+`enrolled` fact, and (c) directly conflict with this same ADR's Phase 2 section above, whose
+oracle (`test_cc_write_path_oracle.py`) locks `enroll()`'s flat output shape as a forward-
+compatibility baseline. Final design: a single new field, `enforced_repos[repo_id].plan_review_enabled`
+(boolean, absent = off), via a new `AttestationStore.set_plan_review_enabled(repo_id, enabled)`
+method — `enroll()`'s existing shape, the bare `enrolled` Rego fact, and all three `git.commit`
+decision bodies stay byte-unchanged. A real, necessary fix surfaced during this work: `enroll()`'s
+`_apply` was a wholesale dict-replace, which would have silently erased `plan_review_enabled` if
+`enroll()` ran after `set_plan_review_enabled()` — changed to a merge (`setdefault` + per-key
+assignment), verified to produce byte-identical output to the old code for the case Phase 2's
+oracle actually exercises (a fresh `enroll()` call, nothing pre-existing to preserve).
+
+**Repo-identity resolution — the hardest part, four discarded designs before landing on v1's
+actual shape.** In order, and why each was rejected: (1) calling Hermes's own
+`tools.file_tools._resolve_path_for_task` — its top two resolution tiers read in-memory,
+per-process state (`terminal_tool.py`'s `_session_cwd`/`_task_env_overrides`) that doesn't survive
+into the freshly-spawned gate subprocess; (2) reading `$TERMINAL_CWD` from the subprocess
+environment alone — it is Hermes's own documented "global mutable timeshared between sessions,"
+so a concurrent/child session could read a stale value belonging to a different session,
+risking a false ALLOW; (3) a SessionDB (`hermes_state.py`'s `sessions` table) lookup — its
+safety argument rested on a claim (plain CLI `-w` sessions never populate it) that was
+subsequently found false (`run_agent.py::_ensure_db_session` does populate it for local
+sessions) once someone actually re-checked the grep that produced the claim.
+
+**Final v1 design — branch on path shape first, absolute paths only:**
+- **Absolute** `write_file`/`patch` targets resolve their OWN precise `repo_id` (parent-directory
+  walk to the nearest existing ancestor, then `git -C <dir> rev-parse ...` — identical mechanism
+  to `git_subject.py::resolve_repo_id`) and are checked against THAT repo's own enrollment and
+  attestation state. `payload["cwd"]` is never consulted in this branch, so there is nothing for
+  it to diverge from.
+- **Relative** targets (v1 cannot precisely resolve these — the reason this gate scope-cuts them
+  at all) get only a coarse, best-effort gate-applicability pre-check via `payload["cwd"]` (the
+  same mechanism `hermes_warden_gate.py` already uses for `terminal`) — used ONLY to decide "is
+  this call even in scope," never to grant an attestation-based allow. If the guess looks
+  enrolled, the call fails closed with an explicit message; if not, it falls back to today's
+  pre-existing, already-shipped, ungated behavior (a named, accepted residual gap, not a
+  regression). Tilde-prefixed paths are classified as relative and never expanded (Hermes's own
+  tilde-expansion depends on a process-dependent `HOME` that can differ between gateway and
+  interactive-CLI contexts — the same environment-dependent-resolution risk class as `$TERMINAL_CWD`).
+- **Every target in a `patch` call is checked independently before any call-level decision** — a
+  real false-ALLOW found by the GPT co-gate: an earlier draft let any relative target in a
+  mixed-target patch downgrade the WHOLE call to the weak cwd-based check, letting an absolute
+  target inside an enrolled-but-unattested repo be smuggled through via an irrelevant relative
+  sibling. Fixed so the call blocks if either the absolute-targets' precise check OR the
+  relative-targets' coarse check would block it. Cross-repo ambiguity (more than one distinct
+  ENROLLED repo_id among a patch's absolute targets) fails closed; unenrolled repo_ids never
+  count toward that check.
+
+**Named v1 limitation**: relative-path (including tilde) `write_file`/`patch` calls are
+unconditionally blocked once the repo looks plan-review-enrolled — a real usability cost given
+how commonly coding agents emit relative paths, accepted because no repo-identity mechanism this
+review could verify safe across Hermes's CLI/TUI/Desktop/ACP/gateway/subagent session types
+existed after genuine, repeated attempts. Mitigated by the gate being opt-in per-repo
+(`enable-plan-review`/`disable-plan-review`), not a global default. A `terminal` command can still
+write files directly (`echo > file`) — LIA-522's territory (the git-level backstop), not this
+gate's job.
+
+**Session-attestation TTL**: `~/.hermes/config.yaml`'s `session_reset.mode: none` and
+`agent.max_turns: 500` mean a session-bound attestation with no expiry could authorize writes for
+an entire, potentially very long session. `guardrails.rego`'s new `valid_plan_review_ship` rule
+requires `issued_at` within `plan_review_ttl_seconds` (default 7200, overridable via
+`data.warden_attestations.config.plan_review_ttl_seconds`) — an expired attestation blocks
+exactly like no attestation, never falls through to allow. Named residual gap: Hermes has no
+native "start a new plan mid-session" event (unlike Claude Code's `/plan` or a fresh Plan-subagent
+dispatch), so a session-scoped attestation stays valid for every write in that session (bounded by
+the TTL) even if the actual plan changes mid-session.
+
+**Independent oracle**: `scripts/warden_policy/tests/test_hermes_plan_review_gate_oracle.py`,
+authored via `oracle-author` from the spec before `hermes_plan_review_gate.py` existed (confirmed
+red for the right reason — `ModuleNotFoundError` — before any implementation was written), same
+pattern as Phase 2's oracle above. 22 test cases, tagged `@oracle LIA-523:`, discriminating
+specifically against the false-ALLOW/enrollment-ordering/tilde-expansion/ambiguity-scoping bug
+classes named above. One fixture bug was found and fixed during implementation (the oracle's own
+V4A MOVE-operation test helper used an invented two-line syntax that Hermes's real
+`tools.patch_parser` doesn't recognize as a MOVE at all — corrected to the real single-line
+`*** Move File: <src> -> <dst>` syntax after running the oracle against a real implementation and
+discovering it silently never exercised the MOVE-dual-path property it claimed to).
+
+**Hook activation is NOT just the config entry.** `agent/shell_hooks.py::register_from_config`
+keys registration on the exact `(event, command)` pair against
+`~/.hermes/shell-hooks-allowlist.json`; a non-interactive/gateway caller runs with
+`accept_hooks=False` by default. The new command string (`hermes_plan_review_gate.py`, distinct
+from the already-approved `hermes_warden_gate.py`) needs its own approval — either one interactive
+CLI session to trigger and accept the TTY consent prompt once (persists to the shared allowlist,
+covers every future session type), or `hooks_auto_accept: true` in `~/.hermes/config.yaml` for
+unattended activation. Without this, the hook silently never registers — logged warning only, no
+error — for gateway/non-TTY sessions specifically.
+
+**Not yet done**: live end-to-end verification against a real Hermes session and a real OPA daemon
+(allow/block/fail-closed/TTL-expiry/recovery, mirroring this ADR's own Verification section below)
+— tracked as the final step before this phase is considered fully proven, same posture as every
+other phase's live-verification requirement.
+
 ## Consequences
 
 - OPA (`brew install opa`, v1.19.0+, Rego v1 `if`-keyword syntax) is now a dependency for anyone
@@ -716,10 +841,15 @@ or Rego change has been added — those remain explicitly out of scope, unchange
 
 ## Rollback
 
-- Full: `launchctl bootout gui/$(id -u)/com.deus.warden-opa`, remove the `hooks:` entry from
-  `~/.hermes/config.yaml`, remove the corresponding entry from
+- Full: `launchctl bootout gui/$(id -u)/com.deus.warden-opa`, remove the `hooks:` entries from
+  `~/.hermes/config.yaml` (both `matcher: "terminal"` and, if Phase 3 is enabled,
+  `matcher: "write_file|patch"`), remove the corresponding entries from
   `~/.hermes/shell-hooks-allowlist.json`.
-- Per-repo (daemon stays running): `python3 scripts/warden_attest.py unenroll --repo <path>`.
+- Per-repo, code-review gate (daemon stays running): `python3 scripts/warden_attest.py unenroll --repo <path>`.
+- Per-repo, Phase 3 plan-review gate only: `python3 scripts/warden_attest.py disable-plan-review
+  --repo <path>`, or remove just the `matcher: "write_file|patch"` hook entry to disable Phase 3
+  everywhere at once without touching code-review enforcement — every Phase 3 change is additive,
+  so this alone fully and immediately disables it.
 
 ## Verification
 
