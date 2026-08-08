@@ -349,3 +349,372 @@ test_plan_review_git_commit_decision_bodies_never_fire_for_file_write if {
 	d.reason != "matching code-review SHIP"
 	d.reason != "repo not enrolled"
 }
+
+# --- attestation-verify cutover (LIA-530) --------------------------------------------
+
+subject_cc_mirrored := "git-tree:sha1:7777777777777777777777777777777777777777"
+subject_cc_mistargeted := "git-tree:sha1:8888888888888888888888888888888888888888"
+subject_cc_mistargeted_control := "git-tree:sha1:8888888888888888888888888888888888888801"
+subject_cc_session_probe := "sess-cc-probe-treated-as-subject-key"
+subject_cc_revise := "git-tree:sha1:cccc000000000000000000000000000000000000"
+subject_cc_backend_mismatch := "git-tree:sha1:dddd000000000000000000000000000000000000"
+subject_cc_gate_mismatch := "git-tree:sha1:eeee000000000000000000000000000000000000"
+subject_cc_record_schema_mismatch := "git-tree:sha1:ffff000000000000000000000000000000000000"
+subject_cc_record_repo_mismatch := "git-tree:sha1:1010000000000000000000000000000000000000"
+
+base_cc_attestations := {
+	"schema_version": 1,
+	"generation": 3,
+	"config": {"enforced_repos": {}},
+	"latest": {},
+	"records": {
+		"att-cc-ship": {
+			"id": "att-cc-ship", "schema_version": 1, "repo_id": repo_a, "gate": "code-reviewer",
+			"subject": {"kind": "git-tree", "key": subject_cc_mirrored, "digest": {"algorithm": "sha1", "value": "7777777777777777777777777777777777777777"}},
+			"verdict": "SHIP", "backend": "claude",
+			"issuer": {"kind": "script", "reviewer_id": "code-reviewer@claude"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "ok", "queued_at": 1754600000000000000,
+		},
+		"att-cc-mistargeted": {
+			# Hermes-shaped record (NO queued_at) planted under the CC document's own index --
+			# the round-3/4 exploit regression fixture (Fix C-revised). One of two deliberately
+			# schema-invalid records in this fixture set (the other is
+			# att-cc-record-schema-mismatch below, schema_version: 2) -- both exist specifically
+			# to prove the record-level defense-in-depth checks reject a malformed/mis-targeted
+			# record even if one somehow reached the ledger.
+			"id": "att-cc-mistargeted", "schema_version": 1, "repo_id": repo_a, "gate": "code-reviewer",
+			"subject": {"kind": "git-tree", "key": subject_cc_mistargeted, "digest": {"algorithm": "sha1", "value": "8888888888888888888888888888888888888888"}},
+			"verdict": "SHIP", "backend": "claude",
+			"issuer": {"kind": "manual", "reviewer_id": "code-reviewer@claude-sonnet-5"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "Hermes-shaped record erroneously indexed in the CC document -- must be rejected",
+		},
+		"att-cc-mistargeted-control": {
+			# Positive control: byte-identical subject/gate/backend/verdict to att-cc-mistargeted,
+			# but WITH queued_at -- proves the deny above is specifically about the missing field.
+			"id": "att-cc-mistargeted-control", "schema_version": 1, "repo_id": repo_a, "gate": "code-reviewer",
+			"subject": {"kind": "git-tree", "key": subject_cc_mistargeted_control, "digest": {"algorithm": "sha1", "value": "8888888888888888888888888888888888888801"}},
+			"verdict": "SHIP", "backend": "claude",
+			"issuer": {"kind": "script", "reviewer_id": "code-reviewer@claude"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "control: same shape, has queued_at", "queued_at": 1754600000000000000,
+		},
+		"att-cc-session-kind": {
+			# Session-kind CC record -- att.subject.key is undefined by construction. Indexed
+			# below under a subject_key-looking pointer to simulate an attacker (or a bug) trying
+			# to make a session-scoped record satisfy a tree-bound query.
+			"id": "att-cc-session-kind", "schema_version": 1, "repo_id": repo_a, "gate": "code-reviewer",
+			"subject": {"kind": "session", "session_id": subject_cc_session_probe},
+			"verdict": "SHIP", "backend": "claude",
+			"issuer": {"kind": "script", "reviewer_id": "code-reviewer@claude"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "session-kind record, must not satisfy a tree-bound check", "queued_at": 1754600000000000000,
+		},
+		"att-cc-override": {
+			# A valid CC-mirrored claude SHIP for subject_revised -- the SAME subject
+			# base_attestations already has a FRESH Hermes REVISE for (att-3). Fix I's regression
+			# fixture: this CC SHIP must NEVER override that fresh Hermes REVISE.
+			"id": "att-cc-override", "schema_version": 1, "repo_id": repo_a, "gate": "code-reviewer",
+			"subject": {"kind": "git-tree", "key": subject_revised, "digest": {"algorithm": "sha1", "value": "3333333333333333333333333333333333333333"}},
+			"verdict": "SHIP", "backend": "claude",
+			"issuer": {"kind": "script", "reviewer_id": "code-reviewer@claude"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "CC SHIP for a tree Hermes already REVISEd -- must not override", "queued_at": 1754600000000000000,
+		},
+		"att-cc-revise": {
+			# Defense-in-depth: verdict != SHIP. Deleting `att.verdict == "SHIP"` from
+			# valid_cc_mirrored_ship must fail this test.
+			"id": "att-cc-revise", "schema_version": 1, "repo_id": repo_a, "gate": "code-reviewer",
+			"subject": {"kind": "git-tree", "key": subject_cc_revise, "digest": {"algorithm": "sha1", "value": "cccc000000000000000000000000000000000000"}},
+			"verdict": "REVISE", "backend": "claude",
+			"issuer": {"kind": "script", "reviewer_id": "code-reviewer@claude"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "CC-mirrored REVISE, must never satisfy the SHIP-only check", "queued_at": 1754600000000000000,
+		},
+		"att-cc-backend-mismatch": {
+			# Indexed under the "claude" key below, but the record's OWN backend field says
+			# "gpt" -- defense-in-depth, same principle as the file's existing att-wrong-subject
+			# fixture. Deleting `att.backend == "claude"` must fail this test.
+			"id": "att-cc-backend-mismatch", "schema_version": 1, "repo_id": repo_a, "gate": "code-reviewer",
+			"subject": {"kind": "git-tree", "key": subject_cc_backend_mismatch, "digest": {"algorithm": "sha1", "value": "dddd000000000000000000000000000000000000"}},
+			"verdict": "SHIP", "backend": "gpt",
+			"issuer": {"kind": "script", "reviewer_id": "code-reviewer@gpt"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "SHIP for a DIFFERENT backend, misfiled under the claude key below", "queued_at": 1754600000000000000,
+		},
+		"att-cc-gate-mismatch": {
+			# Indexed under the "code-reviewer" gate bucket below, but the record's OWN gate
+			# field says "ai-eng-warden". Deleting `att.gate == "code-reviewer"` must fail this.
+			"id": "att-cc-gate-mismatch", "schema_version": 1, "repo_id": repo_a, "gate": "ai-eng-warden",
+			"subject": {"kind": "git-tree", "key": subject_cc_gate_mismatch, "digest": {"algorithm": "sha1", "value": "eeee000000000000000000000000000000000000"}},
+			"verdict": "SHIP", "backend": "claude",
+			"issuer": {"kind": "script", "reviewer_id": "ai-eng-warden@claude"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "SHIP for a DIFFERENT gate, misfiled under code-reviewer below", "queued_at": 1754600000000000000,
+		},
+		"att-cc-record-schema-mismatch": {
+			# Record's OWN schema_version says 2 -- doc-level schema_version stays 1 (cc_supported
+			# still true), isolating this from the doc-level schema_version test below. Deleting
+			# `att.schema_version == 1` from valid_cc_mirrored_ship must fail this test.
+			"id": "att-cc-record-schema-mismatch", "schema_version": 2, "repo_id": repo_a, "gate": "code-reviewer",
+			"subject": {"kind": "git-tree", "key": subject_cc_record_schema_mismatch, "digest": {"algorithm": "sha1", "value": "ffff000000000000000000000000000000000000"}},
+			"verdict": "SHIP", "backend": "claude",
+			"issuer": {"kind": "script", "reviewer_id": "code-reviewer@claude"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "record-level schema_version mismatch, doc-level stays valid", "queued_at": 1754600000000000000,
+		},
+		"att-cc-record-repo-mismatch": {
+			# Record's OWN repo_id points at a DIFFERENT repo than the one it's indexed under
+			# below -- defense-in-depth, same principle as the Hermes side's att-4-wrong-gate.
+			"id": "att-cc-record-repo-mismatch", "schema_version": 1, "repo_id": repo_unenrolled, "gate": "code-reviewer",
+			"subject": {"kind": "git-tree", "key": subject_cc_record_repo_mismatch, "digest": {"algorithm": "sha1", "value": "1010000000000000000000000000000000000000"}},
+			"verdict": "SHIP", "backend": "claude",
+			"issuer": {"kind": "script", "reviewer_id": "code-reviewer@claude"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "SHIP for a DIFFERENT repo_id, misfiled under repo_a's bucket below", "queued_at": 1754600000000000000,
+		},
+		"att-cc-coexist-with-hermes": {
+			# A fully valid CC-mirrored claude SHIP for subject_reviewed -- the SAME subject
+			# base_attestations ALSO has a genuine, fresh Hermes-native SHIP (att-1) for. Unlike
+			# att-cc-override (which pairs CC evidence with a Hermes REVISE), this pairs CC
+			# evidence with a Hermes SHIP -- the real "both paths have valid evidence" case, which
+			# must resolve via the Hermes-native reason specifically, never the CC-mirror one.
+			"id": "att-cc-coexist-with-hermes", "schema_version": 1, "repo_id": repo_a, "gate": "code-reviewer",
+			"subject": {"kind": "git-tree", "key": subject_reviewed, "digest": {"algorithm": "sha1", "value": "1111111111111111111111111111111111111111"}},
+			"verdict": "SHIP", "backend": "claude",
+			"issuer": {"kind": "script", "reviewer_id": "code-reviewer@claude"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "CC SHIP coexisting with a genuine Hermes-native SHIP for the same tree", "queued_at": 1754600000000000000,
+		},
+	},
+	"latest_by_backend": {
+		repo_a: {
+			"code-reviewer": {
+				subject_cc_mirrored: {"claude": "att-cc-ship"},
+				subject_cc_mistargeted: {"claude": "att-cc-mistargeted"},
+				subject_cc_mistargeted_control: {"claude": "att-cc-mistargeted-control"},
+				subject_cc_session_probe: {"claude": "att-cc-session-kind"},
+				subject_revised: {"claude": "att-cc-override"},
+				subject_cc_revise: {"claude": "att-cc-revise"},
+				subject_cc_backend_mismatch: {"claude": "att-cc-backend-mismatch"},
+				subject_cc_gate_mismatch: {"claude": "att-cc-gate-mismatch"},
+				subject_cc_record_schema_mismatch: {"claude": "att-cc-record-schema-mismatch"},
+				subject_cc_record_repo_mismatch: {"claude": "att-cc-record-repo-mismatch"},
+				subject_reviewed: {"claude": "att-cc-coexist-with-hermes"},
+			},
+		},
+	},
+}
+
+attestation_verify_input(subject_key) := {
+	"contract_version": 1,
+	"enforcement_point": "github_actions.attestation_verify",
+	"operation": "attestation.verify",
+	"repo_id": repo_a,
+	"subject_key": subject_key,
+	"expected_generation": 5,
+	"expected_cc_generation": 3,
+	"gate": "code-review",
+}
+
+# --- allow cases ---------------------------------------------------------
+
+test_attestation_verify_allow_hermes_native if {
+	inp := attestation_verify_input(subject_reviewed)
+	decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+	decision.reason == "matching code-review SHIP (Hermes-native)" with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+# Doubles as v6's positive control for Fix I (round 5): base_attestations has NO entry at all for
+# subject_cc_mirrored under "code-review" -- Hermes genuinely never reviewed this tree -- so this
+# also proves the CC path stays reachable when Hermes has no opinion at all, not just when a
+# REVISE overrides it (that override case is its own test below).
+test_attestation_verify_allow_cc_mirrored_claude_ship if {
+	inp := attestation_verify_input(subject_cc_mirrored)
+	decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+	decision.reason == "matching code-reviewer SHIP (Claude Code native, claude backend only -- gpt/glm not verified, permanent limitation)" with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_allow_hermes_native_when_cc_document_absent if {
+	# data.warden_cc_attestations is never overridden at all here -- the likely early-production
+	# shape before any CC mirror has ever been written. The Hermes-native path must still work.
+	inp := attestation_verify_input(subject_reviewed)
+	decision.allow with input as inp with data.warden_attestations as base_attestations
+}
+
+# --- deny cases ------------------------------------------------------------
+
+test_attestation_verify_deny_no_attestation if {
+	inp := attestation_verify_input(subject_new)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+	decision.reason == sprintf("no SHIP found for %s (Hermes-native or Claude-Code-mirrored; or an explicit non-SHIP Hermes verdict exists; or OPA snapshot stale/unsupported)", [subject_new]) with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_mistargeted_document if {
+	inp := attestation_verify_input(subject_cc_mistargeted)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_allow_mistargeted_document_control if {
+	inp := attestation_verify_input(subject_cc_mistargeted_control)
+	decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_wrong_gate if {
+	# None of the three attestation.verify decision bodies' explicit `input.gate == "code-review"`
+	# guard can fire when gate == "plan-review" -- falls to the file's own default deny, not a
+	# mismatched match (round 2/3's tautology-avoidance check, same principle Fix B established).
+	# NOTE: subject_reviewed has a genuine Hermes-native SHIP, so hermes_path_ok is TRUE here
+	# regardless of input.gate (valid_ship never reads input.gate) -- this test therefore only
+	# discriminates the FIRST decision body's own gate guard, not the CC-mirror body's (that
+	# body's `not hermes_path_ok` check would already block it here for an unrelated reason). See
+	# test_attestation_verify_deny_wrong_gate_on_cc_path immediately below for that guard.
+	inp := object.union(attestation_verify_input(subject_reviewed), {"gate": "plan-review"})
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+	decision.reason == "guardrails policy produced no valid decision" with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_wrong_gate_on_cc_path if {
+	# Code-reviewer round-1 finding: the test above can never discriminate the CC-mirror decision
+	# body's OWN `input.gate == "code-review"` guard, because it always uses a subject where
+	# hermes_path_ok is true, which already blocks that body via its `not hermes_path_ok` guard
+	# for an unrelated reason -- so a deletion of the CC body's gate check went undetected at
+	# PASS 46/46. Using subject_cc_mirrored (no Hermes record at all, so hermes_path_ok is FALSE)
+	# isolates the CC-mirror body's own gate guard specifically.
+	inp := object.union(attestation_verify_input(subject_cc_mirrored), {"gate": "plan-review"})
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+	decision.reason == "guardrails policy produced no valid decision" with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_wrong_gate_with_no_evidence_at_all if {
+	# Isolates the FINAL (catch-all) decision body's own `input.gate == "code-review"` guard
+	# (:220): with NO evidence anywhere (subject_new) AND a mismatched gate, both `hermes_path_ok`
+	# and `cc_path_ok` are already false regardless of that guard, so the two tests above -- which
+	# both use a subject with SOME evidence path resolvable -- can't discriminate it (deleting it
+	# left the DEFAULT deny's own generic reason string producing the observably-same allow=false
+	# either way). Pinning the exact reason string here proves the catch-all body's own gate guard
+	# is what keeps the more specific "no SHIP found for..." reason from firing on a wrong-gate,
+	# no-evidence query.
+	inp := object.union(attestation_verify_input(subject_new), {"gate": "plan-review"})
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+	decision.reason == "guardrails policy produced no valid decision" with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_stale_hermes_falls_through_correctly if {
+	# Hermes's OWN generation guard fails (expected_generation doesn't match data's generation) --
+	# even though a perfectly valid CC-mirrored SHIP exists for this same subject, `cc_path_ok`
+	# must NOT silently accept it: `supported` (Hermes's fresh-snapshot guard) is required
+	# explicitly, not just "no Hermes SHIP found" (round 4's Fix H regression test).
+	inp := object.union(attestation_verify_input(subject_cc_mirrored), {"expected_generation": 4})
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_stale_hermes_generation_with_real_ship_present if {
+	# Threat-modeler finding: the test above uses a subject with NO Hermes record at all, so it
+	# never exercises `supported`'s generation check on a subject that has a genuine Hermes SHIP.
+	# subject_reviewed has a real SHIP (att-1) -- with a stale/mismatched expected_generation, the
+	# whole Hermes read must be treated as untrustworthy and deny, not silently trust the SHIP it
+	# happens to still be able to see through the mismatch.
+	inp := object.union(attestation_verify_input(subject_reviewed), {"expected_generation": 4})
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_allow_hermes_native_precedence_when_cc_evidence_also_exists if {
+	# Code-reviewer finding: no fixture previously had BOTH a fresh Hermes SHIP and a valid
+	# CC-mirrored SHIP for the SAME subject -- the normal production state once LIA-534 lands (a
+	# commit reviewed natively by both Hermes and Claude Code). subject_reviewed now has both
+	# (att-1 Hermes-native, att-cc-coexist-with-hermes CC-mirrored). The Hermes-native path must
+	# win, with its OWN reason string -- never the CC-mirror path, even though its evidence is
+	# also genuinely valid.
+	#
+	# Code-reviewer round-2 finding: the decision/reason assertions below are byte-identical to
+	# test_attestation_verify_allow_hermes_native's, so they pass identically whether or not
+	# att-cc-coexist-with-hermes exists at all -- deleting the fixture left PASS 50/50. The
+	# assertion below makes the fixture's own premise load-bearing: it independently confirms
+	# valid_cc_mirrored_ship genuinely holds for this subject (i.e. real, valid CC evidence exists
+	# and is being deliberately NOT chosen), so removing the fixture now fails THIS test even
+	# though `decision` itself is unaffected.
+	inp := attestation_verify_input(subject_reviewed)
+	valid_cc_mirrored_ship with input as inp with data.warden_cc_attestations as base_cc_attestations
+	decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+	decision.reason == "matching code-review SHIP (Hermes-native)" with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_bad_contract_version if {
+	inp := object.union(attestation_verify_input(subject_reviewed), {"contract_version": 99})
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_session_kind_record if {
+	inp := attestation_verify_input(subject_cc_session_probe)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_fresh_hermes_revise_not_overridden_by_cc_ship if {
+	# Fix I's regression test (round 5, the single highest-value new test): subject_revised has a
+	# FRESH Hermes REVISE (att-3) AND a valid CC-mirrored claude SHIP (att-cc-override) for the
+	# SAME tree. The explicit Hermes REVISE must win -- deny, never allow via the CC path.
+	#
+	# Code-reviewer round-2 informational finding: pin that att-cc-override is genuinely valid CC
+	# evidence (not just present), so the test's premise -- "real CC evidence exists AND is
+	# correctly not used" -- is itself load-bearing, not incidental to fixture drift.
+	inp := attestation_verify_input(subject_revised)
+	valid_cc_mirrored_ship with input as inp with data.warden_cc_attestations as base_cc_attestations
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+# --- CC-side defense-in-depth ------------------------------------------------------------
+
+test_attestation_verify_deny_cc_non_ship_verdict if {
+	inp := attestation_verify_input(subject_cc_revise)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_cc_backend_field_mismatch if {
+	inp := attestation_verify_input(subject_cc_backend_mismatch)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_cc_gate_field_mismatch if {
+	inp := attestation_verify_input(subject_cc_gate_mismatch)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_cc_generation_mismatch if {
+	stale_cc := object.union(base_cc_attestations, {"generation": 99})
+	inp := attestation_verify_input(subject_cc_mirrored)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as stale_cc
+}
+
+test_attestation_verify_deny_cc_schema_version_mismatch if {
+	bad_cc := object.union(base_cc_attestations, {"schema_version": 2})
+	inp := attestation_verify_input(subject_cc_mirrored)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as bad_cc
+}
+
+test_attestation_verify_deny_cc_record_schema_version_mismatch if {
+	inp := attestation_verify_input(subject_cc_record_schema_mismatch)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_deny_cc_record_repo_id_mismatch if {
+	inp := attestation_verify_input(subject_cc_record_repo_mismatch)
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+# --- bidirectional isolation -----------------------------------------------------------
+
+test_attestation_verify_bodies_never_fire_for_git_commit if {
+	# A valid CC-mirrored SHIP exists for subject_cc_mirrored, but a git.commit query for that
+	# same subject must still resolve via git.commit's OWN (unchanged) deny body, never leak
+	# through any attestation.verify-only body.
+	inp := object.union(base_input(subject_cc_mirrored), {"expected_cc_generation": 3})
+	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+	decision.reason == sprintf("no code-review SHIP for staged tree %s", [subject_cc_mirrored]) with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+test_attestation_verify_bodies_never_fire_for_file_write if {
+	# CC data populated alongside a file.write/plan-review query -- proves it doesn't interfere;
+	# the pre-existing plan-review SHIP path must still resolve, with its ORIGINAL reason string.
+	inp := plan_review_input(session_reviewed)
+	d := decision with input as inp with data.warden_attestations as attestations_with_plan_review with data.warden_cc_attestations as base_cc_attestations with time.now_ns as now_fixed_ns
+	d.allow
+	d.reason == "matching plan-review SHIP"
+}
+
+test_attestation_verify_git_commit_bodies_never_fire_for_attestation_verify if {
+	inp := attestation_verify_input(subject_reviewed)
+	d := decision with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+	d.reason != "matching code-review SHIP"
+	d.reason != "repo not enrolled"
+}
