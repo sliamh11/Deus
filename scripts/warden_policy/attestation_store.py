@@ -30,6 +30,17 @@ it (e.g. the CLI's `inspect`); it must NOT be used for the Hermes adapter's
 read-then-query sequence. `reconcile_if_drifted()` (LIA-533) is a second, deliberate caller of
 `read_locked()` -- its later OPA GET/PUT don't need to stay atomic with this snapshot the way
 the Hermes adapter's live gate decision does, so this is not a repeat of that mistake.
+`attestation_verify_check.py` (LIA-536) is a THIRD deliberate caller of `read_locked()`, for both
+the Hermes and CC ledgers -- it deliberately does NOT hold a lock across its OPA query either
+(that CI script's timeout budget is more generous than the Hermes adapter's, and holding two
+`flock`s across a longer network call would stall every local Hermes/CC gate's own `LOCK_EX` the
+moment they need to write). Unlike a bare "read then trust," it re-acquires both locks after the
+query and compares `generation` against the pre-query read, discarding the result (one bounded
+retry, then fail-closed) if either ledger moved in between -- an optimistic-concurrency check that
+achieves the same atomicity-from-the-reader's-perspective guarantee `locked_read()` provides via
+holding, without ever holding a lock across the network call. This is not a repeat of the
+"released the lock too early and blindly trusted the snapshot" mistake this docstring warns
+against -- the snapshot is explicitly re-verified, never blindly trusted.
 
 No `--watch`: OPA's own docs note file-watching can silently drop updates
 across `os.replace` -- unacceptable here, since a stale snapshot could still
