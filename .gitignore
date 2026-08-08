@@ -165,3 +165,8 @@ src/private/
 
 # Architecture Explorer — generated graph data (re-run build.py to regenerate)
 tools/architecture-explorer/graph-data.js
+
+# attestation-verify workflow (LIA-536) — CI job working files, also produced by a local
+# standalone run of the workflow's own Report Check Run step (for verifying it directly)
+result.json
+check_run_payload.json

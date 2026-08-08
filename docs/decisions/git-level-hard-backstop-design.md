@@ -1,5 +1,5 @@
 ---
-name: Git-level hard backstop for `main` (LIA-522) — design only, not yet implemented
+name: Git-level hard backstop for `main` (LIA-522) — design; workflow + check script implemented (LIA-536), ruleset not yet activated
 description: >
   Unifies LIA-467/517's dead-end text-parsing redesign with the OPA ADR's own
   deferred "later, separate phase" for a git-level enforcement point. Reuses
@@ -13,7 +13,9 @@ date: 2026-08-07
 # Git-level hard backstop for `main` — design
 
 **Date:** 2026-08-07
-**Status:** Design only. No implementation in this pass — see "Not yet started" below.
+**Status:** Design complete; the `attestation-verify` workflow and check script are implemented
+(LIA-536). The `main-attestation-backstop` ruleset is not yet created or activated — see "Not yet
+started" below for what remains.
 **Scope:** GitHub repository configuration (`sliamh11/Deus`), a new `.github/workflows/` check, a
 new small query script reusing `scripts/warden_policy/opa_client.py`. No change to
 `scripts/codex_warden_hooks.py`, `scripts/warden_policy/command_parser.py`, or
@@ -145,19 +147,31 @@ Rego rule (`scripts/warden_policy/policy/guardrails.rego`, queried via
 substrate this whole roadmap chose OPA specifically to provide. **Corrected (was: "Zero new Rego,
 zero new attestation store, zero new schema" — stale, contradicted by LIA-530's implementation):**
 the decision now includes a dedicated attestation-verify block within that same Rego file
-(`opa-warden-attestations-v1.md`'s "### Phase 4" section), with its own `operation` value. A small
-new script (not yet written — see "Not yet started") builds the `opa_input` shape that block
+(`opa-warden-attestations-v1.md`'s "### Phase 4" section), with its own `operation` value.
+**Corrected (was: "not yet written"; done since LIA-536, see §5):** a small script
+(`scripts/warden_policy/attestation_verify_check.py`) builds the `opa_input` shape that block
 expects: `operation: "attestation.verify"` (a distinct operation from the `git.commit` shape
-Hermes's own adapter builds), `gate: "code-review"`, `repo_id`, `subject_key: git-tree:<merge
-commit's tree sha>`, `expected_generation`, plus `expected_cc_generation` (new, checked against the
-isolated `data.warden_cc_attestations` document's own `generation` counter) — and exits non-zero
-unless `result.allow is True`. **Both `expected_generation` and `expected_cc_generation` must be
-read from their respective on-disk ledgers under a shared lock, the same way
-`hermes_warden_gate.py`'s existing adapter reads `expected_generation` today (never from OPA's own
-served snapshot) — sourcing either from the snapshot being queried would make its corresponding
-`supported`/`cc_supported` freshness guard tautologically true and silently void it, exactly the
-"machine-local-input precondition" the design history behind this rule already named (Fix 7,
-carried unchanged through every design revision).** See `opa-warden-attestations-v1.md`'s Phase 4
+Hermes's own adapter builds), `gate: "code-review"`, `repo_id`, `subject_key: git-tree:<the PR's
+HEAD commit's tree sha>` (**corrected here too — was wrongly "merge commit's" in an earlier
+draft**; the CI check resolves the tree of the PR's head commit specifically, fetched but never
+checked out into the base-branch checkout, per §3.3/LIA-536's own design decisions — the merge
+commit doesn't exist yet at the point this check needs to evaluate), `expected_generation`, plus
+`expected_cc_generation` (new, checked against the isolated `data.warden_cc_attestations`
+document's own `generation` counter) — and exits non-zero unless `result.allow is True`. **Both
+`expected_generation` and `expected_cc_generation` must be read from their respective on-disk
+ledgers, never from OPA's own served snapshot** — sourcing either from the snapshot being queried
+would make its corresponding `supported`/`cc_supported` freshness guard tautologically true and
+silently void it, exactly the "machine-local-input precondition" the design history behind this
+rule already named (Fix 7, carried unchanged through every design revision). **Mechanism corrected
+here (LIA-536 implementation deliberately diverges from a shared-lock-across-query pattern for
+this specific CI script)**: `hermes_warden_gate.py`'s synchronous adapter holds one shared lock
+across the whole read-then-query sequence, safe only because its own OPA call is tightly bounded;
+`attestation_verify_check.py` instead reads both generations under brief, separately-released
+locks, queries OPA with no lock held (this script's own timeout budget is deliberately more
+generous, a CI step rather than a hook), then re-acquires both locks to confirm neither generation
+moved, retrying once (bounded) before failing closed — an optimistic-concurrency approach chosen
+specifically because holding two ledger locks across a longer CI-scale OPA call would stall every
+concurrent local session's own commit-gate writes. See `opa-warden-attestations-v1.md`'s Phase 4
 section for the full query contract and decision logic rather than duplicating it here.
 
 ### 3.3 Where the check runs, and why: self-hosted runner reads the local ledger directly
@@ -321,30 +335,38 @@ nowhere in that file. **Superseded below**: `valid_ship` itself is still byte-un
 LIA-530, implemented) that DOES consult `data.warden_cc_attestations` for the `attestation.verify`
 operation specifically — see the corrected precondition list immediately below.
 
-The real, complete precondition is **three** pieces of work, two now done:
+The real, complete precondition was **three** pieces of work; **all three now done, verified
+directly against source, not assumed from a PR title**:
 (a) LIA-527 Phase 2's write path (isolating CC-authored mirrors so they can't fail-close Hermes) —
 **done, PR #1138**; (b) a **cutover Rego rule** that makes the decision Claude Code's own gate
 would use actually consult `data.warden_cc_attestations` — **done, LIA-530, reviewed and
 implemented; see `opa-warden-attestations-v1.md`'s "### Phase 4" section for the mechanism**; and
 (c) **`cc_attestations.enqueue_verdict` wired into the real commit gates**
 (`codex_warden_hooks.py`'s `run_warden_backends_gate`/`run_verification_gate` call sites) so the CC
-ledger the Phase-4 Rego rule reads is genuinely populated on real commits, not empty — **tracked
-separately as LIA-534** (filed during Phase 2's implementation, confirmed still open, Backlog
-state), **explicitly NOT done yet**. (b) was out of scope for LIA-527 Phase 2 itself (its own doc:
-*"the cutover decision... is explicitly out of scope here"*) and was new, undesigned follow-up work
-when this section was first written; it has since been designed, reviewed, and implemented as
-LIA-530. (c) remains the one genuinely open item.
+ledger the Phase-4 Rego rule reads is genuinely populated on real commits, not empty — **done, PR
+#1144/`dd90400d` (LIA-534), merged 2026-08-08, confirmed via direct `git show --stat` read during
+LIA-536's own session, not merely a Linear-state check**: adds `_cc_mirror_verdicts(role, config,
+repo_root)` mirroring every configured backend's verdict into the isolated CC ledger, reviewed
+through 2 rounds of dual-backend plan review, code-reviewer, verification-gate (a 28-combination
+fault-injection probe), and ai-eng-warden, all SHIP. (b) was out of scope for LIA-527 Phase 2
+itself (its own doc: *"the cutover decision... is explicitly out of scope here"*) and was new,
+undesigned follow-up work when this section was first written; it has since been designed,
+reviewed, and implemented as LIA-530. (c) was the one genuinely open item as of LIA-536's session
+start; **it landed on `origin/main` mid-session, discovered via this session's own routine
+`git fetch`+diff freshness check, not sought out — see `.claude/rules/orchestration-rules.md`'s
+"Session-Start State Freshness" discipline this reflects.**
 
-Consequence, stated plainly: **landing (a) and (b) alone does NOT clear activation while (c)
-remains open** — without LIA-534's gate-wiring, the CC ledger `attestation-verify`'s CC-mirror path
-reads stays empty in production even though the Rego rule that would read it now exists, so
-`attestation-verify` can in practice only pass via Hermes's own native gate (or manual enrollment
-via `warden_attest.py`), not via a commit whose only review was Claude Code's native gates. **This
-ruleset must not be activated (`enforcement: "active"`) until ALL THREE of (a), (b), and (c)
-clear** — the ruleset JSON above can be created now with `enforcement: "disabled"` (a real,
-inspectable artifact with zero live effect) as preparatory work, but must stay disabled until all
-three clear. This three-part dependency — and specifically that (a)+(b) together are still
-insufficient without (c) — is corrected here per this session's own "log each forced deviation...
+Consequence, stated plainly, **corrected from this section's prior framing** ("landing (a) and (b)
+alone does NOT clear activation while (c) remains open"): (a), (b), and (c) have **all** now landed
+— the CC-mirror path `attestation-verify` reads is genuinely populated in production today, not
+empty. This is **necessary, not sufficient**, for activation: `main-attestation-backstop` must
+still not be activated (`enforcement: "active"`) until **LIA-531** (credential separation, §3.4)
+also lands — still open as of this writing, confirmed via live coordination with the session
+working it (round 9 of threat-model review, unshipped) — and the workflow's own temporary `paths:`
+trigger filter (see the dedicated bullet in §5) is removed. The ruleset JSON above can be created
+now with `enforcement: "disabled"` (a real, inspectable artifact with zero live effect) as
+preparatory work, but must stay disabled until LIA-531 clears too. This is corrected here per this
+session's own "log each forced deviation...
 as a `Deviation:` note... at discovery" discipline, and per this document's own established
 practice (§3.1, §3.3) of correcting a wrong claim in place rather than letting it stand once found.
 
@@ -371,8 +393,14 @@ practice (§3.1, §3.3) of correcting a wrong claim in place rather than letting
 ## 5. Not yet started, and why
 
 - The `attestation-verify` GitHub Actions workflow file itself, and the small query script it
-  runs (reusing `opa_client.query_decision`, resolving `repo_id`/`subject_key` for the PR's merge
-  commit the same way `git_subject.py` already does for Hermes's path).
+  runs (reusing `opa_client.query_decision`; `repo_id`/`subject_key` resolution deliberately
+  diverges from how `git_subject.py` resolves them for Hermes's path — see §3.2's corrected text
+  for why). **Done: implemented as LIA-536** (`.github/workflows/attestation-verify.yml` +
+  `scripts/warden_policy/attestation_verify_check.py`) — covered end-to-end (unit tests plus an
+  independently-authored oracle test against a real OPA instance), but not yet exercised by a
+  live GitHub Actions run; the self-hosted runner it depends on (next bullet) remains open, and
+  the workflow's own `paths:` trigger filter is itself a new, separate precondition (see the
+  dedicated bullet below, alongside LIA-531/LIA-534/ruleset-creation).
 - Registering and hardening the self-hosted runner (a real, consequential change to the user's
   GitHub account/repo security posture — explicitly not something to do autonomously without the
   user's direct awareness, distinct from a normal code change) — blocked on confirming the
@@ -398,22 +426,25 @@ practice (§3.1, §3.3) of correcting a wrong claim in place rather than letting
   fixes above exist to close, recurring one layer up at the required-check-registration boundary
   instead of the workflow's own logic.
 - Creating the `main-attestation-backstop` ruleset via `gh api` (safe to create in `disabled`
-  state now; must stay disabled per §3.6 until ALL THREE parts of that section's dependency clear).
+  state now; must stay disabled until LIA-531 clears — §3.6's three-part CC-attestation dependency
+  has fully cleared, see below, but LIA-531 is now the sole remaining activation blocker).
 - LIA-527 Phase 2's actual implementation — **done, PR #1138** — the FIRST of §3.6's three
-  activation preconditions.
+  CC-attestation preconditions.
 - **The cutover Rego rule** making `attestation-verify`'s decision actually consult
   `data.warden_cc_attestations` (§3.6) — the SECOND precondition. **Done: designed, reviewed, and
   implemented as LIA-530** (`opa-warden-attestations-v1.md`'s "### Phase 4" section). Was
   undesigned when this section was first written; is not undesigned any longer.
 - **`cc_attestations.enqueue_verdict` wired into the real commit gates**
   (`codex_warden_hooks.py`'s `run_warden_backends_gate`/`run_verification_gate` call sites) — the
-  THIRD precondition, still open, tracked as **LIA-534** (filed during LIA-527 Phase 2's
-  implementation, confirmed Backlog state). Without this, the CC ledger the Phase-4 Rego rule reads
-  stays empty on real commits even though the rule itself is implemented — see §3.6 for the full
-  consequence. This is the one item still needing its own implementation pass before
-  `main-attestation-backstop` can safely go `active`.
-- Credential separation per §3.4 (routine agent `gh` access vs. ruleset-administration access) —
-  must cover both stripping repository-Administration permission (closes the ruleset-disable
+  THIRD precondition. **Done: PR #1144/`dd90400d` (LIA-534), merged 2026-08-08** — was still open
+  as of this section first being written; landed mid-LIA-536-session, discovered via that session's
+  own routine freshness `git fetch`, confirmed directly via `git show --stat` rather than trusted
+  from a title. **All three of §3.6's CC-attestation preconditions are now done** — the remaining
+  activation blocker is LIA-531 (credential separation, next bullet) alone, plus this workflow's
+  own temporary `paths:` filter (bullet above).
+- Credential separation per §3.4 (routine agent `gh` access vs. ruleset-administration access),
+  tracked as **LIA-531** — must cover both stripping repository-Administration permission (closes
+  the ruleset-disable
   vector) AND the `workflow` scope specifically (closes the workflow-file-edit vector named in
   §3.1 — found by this round of review to be a real gap in §3.4's original remediation, which only
   named Administration permission; a credential retaining `workflow` scope could still edit
@@ -421,12 +452,26 @@ practice (§3.1, §3.3) of correcting a wrong claim in place rather than letting
   own real app identity, defeating the `integration_id: 15368` binding from the inside rather than
   around it). Without both, the backstop's non-bypassability claim is bounded, not absolute, as
   stated there.
+- **Remove `attestation-verify.yml`'s temporary `paths:` trigger filter** (added during LIA-536's
+  implementation, found necessary by verification-gate: with zero self-hosted runners registered as
+  of the workflow's initial landing, an unfiltered `pull_request_target` trigger would queue an
+  unpickable job on every PR to the repo indefinitely — non-blocking, since nothing requires this
+  check while the ruleset doesn't exist yet, but real Actions-UI clutter). Scoped narrowly
+  (`.github/workflows/attestation-verify.yml`, `scripts/warden_policy/**`) while inactive. **Must be
+  removed before `main-attestation-backstop` is ever activated** — the whole point of the backstop
+  is universal PR coverage, and a path-scoped trigger would silently exempt every PR that doesn't
+  touch those paths from ever getting an `attestation-verify` check at all, defeating
+  `bypass_actors: []` for those PRs by omission rather than by any bypass mechanism. Added as its
+  own precondition here (not folded into the credential-separation bullet above) because it's an
+  independent, purely mechanical follow-up with no security-design content of its own.
 
-None of the above was implemented in this pass. This is a design document only, matching the
-scope LIA-522 itself asks for ("Design... + implement + get an independently-authored oracle test
-before treating it as the hard backstop") narrowed the same way LIA-527 was: the design is real
-and reviewed; implementation is real, consequential follow-up work, not compressed into the same
-pass as first-cut design.
+None of the above was implemented in **LIA-522's own original design pass** — this document was a
+design document only at that time, matching the scope LIA-522 itself asked for ("Design...
++ implement + get an independently-authored oracle test before treating it as the hard backstop")
+narrowed the same way LIA-527 was: the design was real and reviewed; implementation was real,
+consequential follow-up work, deliberately not compressed into the same pass as first-cut design.
+**Several items have since been implemented** in their own dedicated follow-up passes, corrected
+in place above rather than left stale — see the "Done" markers throughout §3.2, §3.6, and §5.
 
 ## Alternatives considered
 
