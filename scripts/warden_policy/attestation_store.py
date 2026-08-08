@@ -52,13 +52,16 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 OPA_DEFAULT_BASE_URL = "http://127.0.0.1:8181"
-OPA_DATA_PATH = "/v1/data/warden_attestations"
+#: Hermes's own document key -- the default for every existing call site (Hermes's, Phase 0's
+#: `backend=`, `warden_attest.py`'s CLI). A separate, isolated document/store (`cc_attestations.py`)
+#: uses AttestationStore.__init__'s `document_key`/`opa_data_path` params instead of this default.
+_DEFAULT_DOCUMENT_KEY = "warden_attestations"
 _OPA_TIMEOUT_SECONDS = 5
 
 
-def _empty_document() -> dict[str, Any]:
+def _empty_document(document_key: str) -> dict[str, Any]:
     return {
-        "warden_attestations": {
+        document_key: {
             "schema_version": SCHEMA_VERSION,
             "generation": 0,
             "config": {"enforced_repos": {}},
@@ -66,6 +69,28 @@ def _empty_document() -> dict[str, Any]:
             "latest": {},
         }
     }
+
+
+def _build_subject(kind: str, subject_key: str) -> dict[str, Any]:
+    """Pure subject-dict constructor shared by `issue()` and `issue_if_newer()`.
+
+    Callers MUST validate `kind in ("git-tree", "session")` themselves before calling this --
+    it only branches on `kind == "git-tree"` vs. else, so an unvalidated unknown `kind` would
+    silently be treated as `"session"` if a caller dropped its own guard.
+    """
+    if kind == "git-tree":
+        # Every existing call site: byte-for-byte the same shape as before `kind` existed.
+        return {
+            "kind": "git-tree",
+            "key": subject_key,
+            "digest": {
+                "algorithm": subject_key.split(":")[1],
+                "value": subject_key.split(":")[2],
+            },
+        }
+    # session subject: subject_key carries the raw, opaque session_id -- nothing to hash/digest
+    # (unlike a repo-relative git path, a session id has no sensitive structure to redact).
+    return {"kind": "session", "session_id": subject_key}
 
 
 @dataclass(frozen=True)
@@ -81,11 +106,24 @@ class AttestationStoreError(Exception):
 
 
 class AttestationStore:
-    def __init__(self, ledger_path: Path, opa_base_url: str = OPA_DEFAULT_BASE_URL):
+    def __init__(
+        self,
+        ledger_path: Path,
+        opa_base_url: str = OPA_DEFAULT_BASE_URL,
+        *,
+        document_key: str = _DEFAULT_DOCUMENT_KEY,
+        opa_data_path: str | None = None,
+    ):
         self.ledger_path = Path(ledger_path)
         self.lock_path = self.ledger_path.with_suffix(self.ledger_path.suffix + ".lock")
         self.opa_base_url = opa_base_url.rstrip("/")
         self.ledger_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # LIA-527 Phase 2: every existing call site passes neither kwarg and gets byte-identical
+        # behavior (document_key defaults to Hermes's own "warden_attestations"). The isolated CC
+        # store (cc_attestations.py) passes document_key="warden_cc_attestations" so its writes
+        # can never land in -- or overwrite -- Hermes's live OPA document.
+        self.document_key = document_key
+        self.opa_data_path = opa_data_path or f"/v1/data/{document_key}"
 
     # -- locking ------------------------------------------------------
 
@@ -104,14 +142,14 @@ class AttestationStore:
 
     def _read_disk(self) -> dict[str, Any]:
         if not self.ledger_path.exists():
-            return _empty_document()
+            return _empty_document(self.document_key)
         try:
             with open(self.ledger_path, encoding="utf-8") as f:
                 doc = json.load(f)
         except (json.JSONDecodeError, OSError) as exc:
             raise AttestationStoreError(f"ledger unreadable/corrupt: {exc}") from exc
-        if "warden_attestations" not in doc:
-            raise AttestationStoreError("ledger missing warden_attestations root key")
+        if self.document_key not in doc:
+            raise AttestationStoreError(f"ledger missing {self.document_key} root key")
         return doc
 
     def _write_disk_atomic(self, doc: dict[str, Any]) -> None:
@@ -137,9 +175,12 @@ class AttestationStore:
     # -- OPA sync ---------------------------------------------------------
 
     def _put_and_readback(self, inner_doc: dict[str, Any]) -> tuple[bool, int | None, str | None]:
+        # Must read self.opa_data_path here, not a module-level constant -- otherwise an
+        # isolated CC store's write would still PUT to Hermes's live OPA document regardless
+        # of what the on-disk ledger's own key is named.
         body = json.dumps(inner_doc).encode("utf-8")
         req = urllib.request.Request(
-            self.opa_base_url + OPA_DATA_PATH, data=body,
+            self.opa_base_url + self.opa_data_path, data=body,
             headers={"Content-Type": "application/json"}, method="PUT",
         )
         try:
@@ -148,7 +189,7 @@ class AttestationStore:
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             return False, None, f"PUT to OPA failed: {exc}"
 
-        gen_req = urllib.request.Request(self.opa_base_url + OPA_DATA_PATH + "/generation")
+        gen_req = urllib.request.Request(self.opa_base_url + self.opa_data_path + "/generation")
         try:
             with urllib.request.urlopen(gen_req, timeout=_OPA_TIMEOUT_SECONDS) as resp:
                 result = json.loads(resp.read()).get("result")
@@ -189,7 +230,7 @@ class AttestationStore:
     def _mutate(self, apply_fn) -> WriteResult:
         with self._locked(exclusive=True):
             doc = self._read_disk()
-            inner = doc["warden_attestations"]
+            inner = doc[self.document_key]
             apply_fn(inner)
             inner["generation"] = inner["generation"] + 1
             self._write_disk_atomic(doc)
@@ -263,22 +304,7 @@ class AttestationStore:
 
         def _apply(inner):
             record_id = f"att-{uuid.uuid4()}"
-            if kind == "git-tree":
-                # Every existing call site: byte-for-byte the same shape as before `kind`
-                # existed.
-                subject = {
-                    "kind": "git-tree",
-                    "key": subject_key,
-                    "digest": {
-                        "algorithm": subject_key.split(":")[1],
-                        "value": subject_key.split(":")[2],
-                    },
-                }
-            else:
-                # session subject: subject_key carries the raw, opaque session_id -- nothing
-                # to hash/digest (unlike a repo-relative git path, a session id has no
-                # sensitive structure to redact).
-                subject = {"kind": "session", "session_id": subject_key}
+            subject = _build_subject(kind, subject_key)
             record = {
                 "id": record_id,
                 "schema_version": SCHEMA_VERSION,
@@ -306,17 +332,82 @@ class AttestationStore:
                 ).setdefault(subject_key, {})[backend] = record_id
         return self._mutate(_apply)
 
+    def issue_if_newer(
+        self, *, repo_id: str, gate: str, subject_key: str, verdict: str,
+        issuer_kind: str, reviewer_id: str, reason: str, queued_at: int,
+        backend: str | None = None, kind: str = "git-tree",
+    ) -> WriteResult:
+        """LIA-527 Phase 2: `issue()`, layered with an ordering guard for detached, concurrently
+        completing writers (see `cc_attestations.py`'s worker pattern).
+
+        `flock` mutual exclusion alone only prevents two writers from writing *concurrently* --
+        it says nothing about which one writes *last*. Detached workers acquire the lock in
+        whatever order the OS schedules them, which is not enqueue order. This method compares
+        `queued_at` (caller-supplied, `time.time_ns()` wall-clock -- reboot-durable, unlike
+        `monotonic_ns()`) against whichever record the relevant `latest`/`latest_by_backend`
+        pointer currently references, and only advances the pointer when this write is strictly
+        newer -- entirely INSIDE `_mutate`'s own exclusive-lock critical section, so there is no
+        separate pre-lock read for a concurrent writer to race against. Ties are broken in favor
+        of the already-established pointer (never flipped by an equal `queued_at`). The
+        append-only `records` map still gains the new record unconditionally either way -- only
+        pointer advancement is guarded, so a "superseded" write is not an error, just a write
+        that correctly loses the ordering comparison.
+        """
+        if verdict not in ("SHIP", "REVISE", "BLOCK", "COULD_NOT_RUN"):
+            raise AttestationStoreError(f"invalid verdict {verdict!r}")
+        if kind not in ("git-tree", "session"):
+            raise AttestationStoreError(f"invalid subject kind {kind!r}")
+
+        def _apply(inner):
+            record_id = f"att-{uuid.uuid4()}"
+            subject = _build_subject(kind, subject_key)
+            record = {
+                "id": record_id,
+                "schema_version": SCHEMA_VERSION,
+                "repo_id": repo_id,
+                "gate": gate,
+                "subject": subject,
+                "verdict": verdict,
+                "issuer": {"kind": issuer_kind, "reviewer_id": reviewer_id},
+                "issued_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "reason": reason,
+                "queued_at": queued_at,
+            }
+            if backend is None:
+                pointer_scope = inner["latest"].setdefault(repo_id, {}).setdefault(gate, {})
+                pointer_key = subject_key
+            else:
+                record["backend"] = backend
+                pointer_scope = inner.setdefault("latest_by_backend", {}).setdefault(
+                    repo_id, {}
+                ).setdefault(gate, {}).setdefault(subject_key, {})
+                pointer_key = backend
+            # Append-only: every attempted write lands in `records`, regardless of whether it
+            # goes on to win or lose the ordering comparison below.
+            inner["records"][record_id] = record
+            existing_id = pointer_scope.get(pointer_key)
+            existing_queued_at = (
+                inner["records"].get(existing_id, {}).get("queued_at") if existing_id else None
+            )
+            # Strict >: a missing existing_queued_at (no prior pointer, or a pre-existing plain
+            # issue()-written record that predates this field) counts as always-older, so the
+            # first write for a key always becomes latest. An equal queued_at never flips an
+            # already-established pointer.
+            if existing_queued_at is None or queued_at > existing_queued_at:
+                pointer_scope[pointer_key] = record_id
+        return self._mutate(_apply)
+
     def sync(self) -> WriteResult:
         """Re-PUT the current disk state to OPA without incrementing generation -- the
         retry path when a prior write's PUT/read-back failed ("persisted but not activated")."""
         with self._locked(exclusive=True):
             doc = self._read_disk()
-            inner = doc["warden_attestations"]
+            inner = doc[self.document_key]
             ok, activated_gen, err = self._put_and_readback(inner)
             return WriteResult(ok=ok, generation=inner["generation"], activated=ok, error=err)
 
     def inspect(self, repo_id: str) -> list[dict[str, Any]]:
         with self._locked(exclusive=False):
             doc = self._read_disk()
-        inner = doc["warden_attestations"]
+        inner = doc[self.document_key]
         return [r for r in inner["records"].values() if r["repo_id"] == repo_id]

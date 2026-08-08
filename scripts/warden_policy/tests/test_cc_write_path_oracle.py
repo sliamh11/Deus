@@ -319,14 +319,16 @@ class TestCcWriteResultDeletionOracle(unittest.TestCase):
             should_delete = process_job(job_id, queue_dir=queue_dir, ledger_path=ledger_path)
             self.assertTrue(should_delete)  # @oracle LIA-527: a genuinely successful write also deletes its job
 
-        document = json.loads(ledger_path.read_text(encoding="utf-8"))
-        inner = document[CC_DOCUMENT_KEY]
-        record_id = inner["latest_by_backend"]["repo-real"]["code-reviewer"][subject_key][
-            "claude"
-        ]  # @oracle LIA-527: process_job actually calls issue_if_newer, which populates latest_by_backend
-        record = inner["records"][record_id]
-        self.assertEqual(record["verdict"], "SHIP")  # @oracle LIA-527: the persisted record's verdict matches the job's
-        self.assertEqual(record["subject"]["key"], subject_key)  # @oracle LIA-527: the persisted record's subject matches the job's
+            # Read-back must stay INSIDE the `with` block: tempfile.TemporaryDirectory deletes
+            # `tmp` -- and therefore `ledger_path`, which lives under it -- on __exit__.
+            document = json.loads(ledger_path.read_text(encoding="utf-8"))
+            inner = document[CC_DOCUMENT_KEY]
+            record_id = inner["latest_by_backend"]["repo-real"]["code-reviewer"][subject_key][
+                "claude"
+            ]  # @oracle LIA-527: process_job actually calls issue_if_newer, which populates latest_by_backend
+            record = inner["records"][record_id]
+            self.assertEqual(record["verdict"], "SHIP")  # @oracle LIA-527: the persisted record's verdict matches the job's
+            self.assertEqual(record["subject"]["key"], subject_key)  # @oracle LIA-527: the persisted record's subject matches the job's
 
 
 class TestCcTrivialVerdictOracle(unittest.TestCase):

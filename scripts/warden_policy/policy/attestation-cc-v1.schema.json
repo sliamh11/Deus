@@ -1,0 +1,136 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://deus.local/schemas/warden-attestations-cc-v1.schema.json",
+  "title": "Claude-Code-authored attestation ledger v1 (LIA-527 Phase 2)",
+  "description": "OPA data document for scripts/warden_policy's isolated CC write path (docs/decisions/opa-warden-attestations-v1.md, Phase 2). Backed by its own on-disk ledger and its own generation counter -- wholly separate from attestation-v1.schema.json's warden_attestations document, so a failed write here can never desynchronize Hermes's own gate. Append-only: a new verdict adds a record and advances latest/latest_by_backend; no record is ever edited or deleted.",
+  "type": "object",
+  "required": ["warden_cc_attestations"],
+  "additionalProperties": false,
+  "properties": {
+    "warden_cc_attestations": {
+      "type": "object",
+      "required": ["schema_version", "generation", "config", "records", "latest"],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": 1 },
+        "generation": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Monotonically incremented on every mutating write to this document. Independent of warden_attestations's own generation counter."
+        },
+        "config": {
+          "type": "object",
+          "required": ["enforced_repos"],
+          "additionalProperties": false,
+          "properties": {
+            "enforced_repos": {
+              "type": "object",
+              "description": "Unused by the CC write path today (no enroll()/unenroll() call site writes this document) -- present only for structural parity with warden_attestations. No Rego rule consults data.warden_cc_attestations yet (Phase 2 designs writing only).",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "enabled": { "type": "boolean" },
+                  "enrolled_at": { "type": "string", "format": "date-time" }
+                }
+              }
+            }
+          }
+        },
+        "records": {
+          "type": "object",
+          "description": "Keyed by attestation id (att-<uuid>). Immutable once written.",
+          "additionalProperties": { "$ref": "#/$defs/record" }
+        },
+        "latest": {
+          "type": "object",
+          "description": "repo_id -> gate -> subject_key -> attestation id, advanced only when issue_if_newer's ordering guard determines the write is newer than whatever the pointer currently references.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "pattern": "^att-" }
+            }
+          }
+        },
+        "latest_by_backend": {
+          "type": "object",
+          "description": "repo_id -> gate -> subject_key -> backend -> attestation id. This is the pointer shape CC writes actually use (every enqueue_verdict call passes backend=). Additive, optional -- absent entirely on a ledger that has never issued a write.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": { "type": "string", "pattern": "^att-" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "record": {
+      "type": "object",
+      "required": ["id", "schema_version", "repo_id", "gate", "subject", "verdict", "issuer", "issued_at", "reason", "queued_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "pattern": "^att-" },
+        "schema_version": { "const": 1 },
+        "repo_id": { "type": "string", "pattern": "^git-common-dir-sha256:[0-9a-f]{64}$" },
+        "gate": { "type": "string", "enum": ["code-review", "code-reviewer", "ai-eng-warden", "plan-review", "verification-gate"] },
+        "subject": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "type": "string", "enum": ["git-tree", "session"] }
+          },
+          "if": { "properties": { "kind": { "const": "git-tree" } } },
+          "then": {
+            "required": ["kind", "key", "digest"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "git-tree" },
+              "key": { "type": "string", "pattern": "^git-tree:(sha1|sha256):[0-9a-f]+$" },
+              "digest": {
+                "type": "object",
+                "required": ["algorithm", "value"],
+                "additionalProperties": false,
+                "properties": {
+                  "algorithm": { "type": "string", "enum": ["sha1", "sha256"] },
+                  "value": { "type": "string" }
+                }
+              }
+            }
+          },
+          "else": {
+            "required": ["kind", "session_id"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "session" },
+              "session_id": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "verdict": { "type": "string", "enum": ["SHIP", "REVISE", "BLOCK", "COULD_NOT_RUN"] },
+        "issuer": {
+          "type": "object",
+          "required": ["kind", "reviewer_id"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "type": "string", "enum": ["manual", "script"] },
+            "reviewer_id": { "type": "string", "description": "<role>@<backend>, e.g. code-reviewer@claude -- mirrors verdict_store.py's record_script_verdict vocabulary." }
+          }
+        },
+        "issued_at": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string" },
+        "backend": { "type": "string", "description": "Present for every CC record -- enqueue_verdict always passes backend=." },
+        "queued_at": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "time.time_ns() wall-clock timestamp at enqueue time. Persisted onto the record (not just the deleted-on-success job file) so a later issue_if_newer call has a durable value to compare its own queued_at against. Reboot-durable (unlike monotonic_ns()), nanosecond resolution."
+        }
+      }
+    }
+  }
+}
