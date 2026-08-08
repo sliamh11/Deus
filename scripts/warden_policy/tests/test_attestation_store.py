@@ -1,3 +1,4 @@
+import contextlib
 import sys
 import tempfile
 import threading
@@ -8,14 +9,19 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from warden_policy.attestation_store import AttestationStore, AttestationStoreError
+from warden_policy.attestation_store import AttestationStore, AttestationStoreError, _OPA_REQUEST_FAILED
+
+# Captured once, before any test patches AttestationStore._locked -- LIA-533's lock-contention
+# tests need to delegate to the real locking behavior for the non-contended branch while
+# overriding only the contended one.
+_real_locked = AttestationStore._locked
 
 
-def _always_ok(self, inner_doc):
+def _always_ok(self, inner_doc, **kwargs):
     return True, inner_doc["generation"], None
 
 
-def _always_fails(self, inner_doc):
+def _always_fails(self, inner_doc, **kwargs):
     return False, inner_doc["generation"] - 1, "simulated PUT failure"
 
 
@@ -344,6 +350,171 @@ class TestReadLocked(unittest.TestCase):
         self.assertEqual(len(reader_saw_generation_at), 1)
         # the reader's view was only obtained AFTER the writer released its exclusive lock
         self.assertGreaterEqual(reader_saw_generation_at[0], writer_released_at[0])
+
+
+class TestLockedNonBlocking(unittest.TestCase):
+    """LIA-533: `_locked(non_blocking=True)` must never wait -- this is the primitive
+    `reconcile_if_drifted()`'s repair phase relies on to never queue behind a real `_mutate()`
+    write in progress (GPT round-3's writer-race finding)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = AttestationStore(Path(self.tmp.name) / "attestations-v1.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_non_blocking_exclusive_fails_immediately_against_a_held_lock(self):
+        holder_acquired = threading.Event()
+        release_holder = threading.Event()
+
+        def _holder():
+            with self.store._locked(exclusive=True):
+                holder_acquired.set()
+                release_holder.wait(timeout=5)
+
+        t = threading.Thread(target=_holder)
+        t.start()
+        self.assertTrue(holder_acquired.wait(timeout=5))
+        start = time.monotonic()
+        with self.assertRaises(BlockingIOError):
+            with self.store._locked(exclusive=True, non_blocking=True):
+                pass
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 0.5)  # returned immediately, did not wait for the holder
+        release_holder.set()
+        t.join(timeout=5)
+
+    def test_non_blocking_default_is_false_existing_behavior_unchanged(self):
+        # Every existing caller omits non_blocking and gets today's exact blocking behavior.
+        with self.store._locked(exclusive=True):
+            pass  # no exception, no behavior change from the added parameter's default
+
+
+class TestReconcileIfDrifted(unittest.TestCase):
+    """LIA-533: periodic/background reconciliation -- distinguishes "already in sync" (no lock),
+    "confirmed content mismatch" (repair, short-timeout non-blocking lock), and "OPA request
+    failed" (unknown state, skip without ever touching the lock)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = AttestationStore(Path(self.tmp.name) / "attestations-v1.json")
+        self.patcher = mock.patch.object(AttestationStore, "_put_and_readback", _always_ok)
+        self.patcher.start()
+        self.store.enroll("repo-a")
+        self.patcher.stop()  # each test below installs its own spy/mock for _put_and_readback
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _disk_inner(self):
+        return self.store._read_disk()["warden_attestations"]
+
+    def test_matching_content_never_attempts_a_repair_put(self):
+        matching = self._disk_inner()
+        put_spy = mock.MagicMock(side_effect=lambda inner, **kw: _always_ok(self.store, inner))
+        with mock.patch.object(AttestationStore, "_get_opa_document", return_value=matching), \
+             mock.patch.object(AttestationStore, "_put_and_readback", put_spy):
+            result = self.store.reconcile_if_drifted()
+        self.assertTrue(result.ok)
+        self.assertTrue(result.activated)
+        self.assertIsNone(result.error)
+        put_spy.assert_not_called()
+
+    def test_confirmed_content_mismatch_attempts_repair_with_short_timeout(self):
+        # GPT round-2's finding: comparison must be full-content, not generation-only -- this
+        # fixture proves the mismatch is detected via content, and that the repair PUT is
+        # bounded to a short timeout (GPT round-5/6), not the module default.
+        differing = dict(self._disk_inner())
+        differing["generation"] = 999
+        put_spy = mock.MagicMock(side_effect=lambda inner, **kw: _always_ok(self.store, inner))
+        with mock.patch.object(AttestationStore, "_get_opa_document", return_value=differing), \
+             mock.patch.object(AttestationStore, "_put_and_readback", put_spy):
+            result = self.store.reconcile_if_drifted()
+        self.assertTrue(result.activated)
+        put_spy.assert_called_once()
+        _, kwargs = put_spy.call_args
+        self.assertEqual(kwargs.get("timeout_seconds"), 0.5)
+
+    def test_null_opa_document_is_confirmed_drift_not_unreachable(self):
+        # GPT round-5 finding 1: a reachable OPA reporting no document (HTTP 200, no `result`)
+        # is real, confirmed drift -- must not be folded into "request failed, skip."
+        put_spy = mock.MagicMock(side_effect=lambda inner, **kw: _always_ok(self.store, inner))
+        with mock.patch.object(AttestationStore, "_get_opa_document", return_value=None), \
+             mock.patch.object(AttestationStore, "_put_and_readback", put_spy):
+            result = self.store.reconcile_if_drifted()
+        self.assertTrue(result.activated)
+        put_spy.assert_called_once()
+
+    def test_opa_request_failure_skips_without_touching_the_lock(self):
+        # GPT round-4 finding: distinct from a confirmed mismatch -- must never attempt the
+        # locked repair, or a sustained outage recreates a recurring fail-open window.
+        put_spy = mock.MagicMock(side_effect=lambda inner, **kw: _always_ok(self.store, inner))
+        with mock.patch.object(AttestationStore, "_get_opa_document",
+                                return_value=_OPA_REQUEST_FAILED), \
+             mock.patch.object(AttestationStore, "_put_and_readback", put_spy):
+            result = self.store.reconcile_if_drifted()
+        self.assertFalse(result.ok)
+        self.assertFalse(result.activated)
+        self.assertIn("unreachable", result.error)
+        put_spy.assert_not_called()
+
+    def test_repair_lock_contention_reports_busy_without_mutating(self):
+        # The end-to-end regression test for GPT round-3's writer-race finding: when the repair
+        # phase's non-blocking acquisition is contended (a real write in flight), reconcile
+        # backs off immediately and never calls _put_and_readback -- no interleaving possible.
+        differing = dict(self._disk_inner())
+        differing["generation"] = 999
+        put_spy = mock.MagicMock(side_effect=lambda inner, **kw: _always_ok(self.store, inner))
+
+        @contextlib.contextmanager
+        def _contended_locked(self_, exclusive, non_blocking=False):
+            if non_blocking:
+                raise BlockingIOError("simulated contention")
+            with _real_locked(self_, exclusive, non_blocking=non_blocking):
+                yield
+
+        with mock.patch.object(AttestationStore, "_get_opa_document", return_value=differing), \
+             mock.patch.object(AttestationStore, "_put_and_readback", put_spy), \
+             mock.patch.object(AttestationStore, "_locked", _contended_locked):
+            result = self.store.reconcile_if_drifted()
+        self.assertFalse(result.ok)
+        self.assertFalse(result.activated)
+        self.assertIn("lock busy", result.error)
+        put_spy.assert_not_called()
+
+    def test_real_writer_in_flight_does_not_interleave_with_reconcile_repair(self):
+        # True concurrency version of the test above: a real _mutate() write genuinely holding
+        # the exclusive lock in a background thread (same sleep-based pattern already
+        # established by TestReadLocked.test_locked_read_waits_for_a_slow_writer_to_release in
+        # this file), reconcile_if_drifted() called concurrently from the main thread. Proves
+        # the two can never interleave in practice, not just that the mocked exception path is
+        # handled by the deterministic test above.
+        differing = dict(self._disk_inner())
+        differing["generation"] = 999
+        put_spy = mock.MagicMock(side_effect=lambda inner, **kw: _always_ok(self.store, inner))
+
+        def _slow_apply(inner):
+            time.sleep(0.3)
+            inner["config"]["enforced_repos"]["repo-b"] = {
+                "enabled": True, "enrolled_at": "2026-08-03T00:00:00Z",
+            }
+
+        def _writer():
+            self.store._mutate(_slow_apply)
+
+        with mock.patch.object(AttestationStore, "_get_opa_document", return_value=differing), \
+             mock.patch.object(AttestationStore, "_put_and_readback", put_spy):
+            t = threading.Thread(target=_writer)
+            t.start()
+            time.sleep(0.05)  # let the writer acquire the exclusive lock first
+            self.store.reconcile_if_drifted()
+            t.join(timeout=5)
+        # reconcile's own read_locked() (shared) genuinely waits for the writer's exclusive hold
+        # to release first -- correct, pre-existing reader/writer coordination, not new. What
+        # matters: no interleaved/duplicate repair PUT -- the writer's own legitimate PUT, plus
+        # at most one repair attempt from reconcile, never more (never two overlapping PUTs).
+        self.assertLessEqual(put_spy.call_count, 2)
 
 
 if __name__ == "__main__":

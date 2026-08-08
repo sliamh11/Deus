@@ -27,7 +27,9 @@ and vice versa. `read_locked()` is a separate, narrower convenience method
 that releases the lock before returning -- correct only for callers that
 need a point-in-time snapshot with no follow-on query to keep atomic with
 it (e.g. the CLI's `inspect`); it must NOT be used for the Hermes adapter's
-read-then-query sequence.
+read-then-query sequence. `reconcile_if_drifted()` (LIA-533) is a second, deliberate caller of
+`read_locked()` -- its later OPA GET/PUT don't need to stay atomic with this snapshot the way
+the Hermes adapter's live gate decision does, so this is not a repeat of that mistake.
 
 No `--watch`: OPA's own docs note file-watching can silently drop updates
 across `os.replace` -- unacceptable here, since a stale snapshot could still
@@ -57,6 +59,14 @@ OPA_DEFAULT_BASE_URL = "http://127.0.0.1:8181"
 #: uses AttestationStore.__init__'s `document_key`/`opa_data_path` params instead of this default.
 _DEFAULT_DOCUMENT_KEY = "warden_attestations"
 _OPA_TIMEOUT_SECONDS = 5
+
+#: Sentinel distinct from a legitimate `None` document (LIA-533): `_get_opa_document()` returns
+#: this only when the request itself never got a valid answer (network/timeout/malformed JSON).
+#: A reachable OPA reporting no document for the path (HTTP 200, `result` key absent/null -- its
+#: documented shape for an undefined path) returns plain `None`, which is real, confirmed drift,
+#: not an unknown state -- conflating the two would silently skip repairing a deleted/null
+#: document forever.
+_OPA_REQUEST_FAILED = object()
 
 
 def _empty_document(document_key: str) -> dict[str, Any]:
@@ -128,11 +138,20 @@ class AttestationStore:
     # -- locking ------------------------------------------------------
 
     @contextlib.contextmanager
-    def _locked(self, exclusive: bool):
+    def _locked(self, exclusive: bool, non_blocking: bool = False):
+        """`non_blocking=True` (LIA-533): raises `BlockingIOError` immediately instead of
+        waiting if the lock is currently held by anyone else -- used only by
+        `reconcile_if_drifted()`'s repair path, so a periodic/background caller can never make a
+        concurrent reader (the Hermes gate's `locked_read()`) or another writer (`_mutate`) queue
+        behind it. Every existing caller omits this parameter and gets today's exact blocking
+        behavior, unchanged."""
         self.lock_path.touch(exist_ok=True)
         fd = os.open(self.lock_path, os.O_RDWR)
+        flags = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        if non_blocking:
+            flags |= fcntl.LOCK_NB
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            fcntl.flock(fd, flags)
             yield
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
@@ -174,24 +193,33 @@ class AttestationStore:
 
     # -- OPA sync ---------------------------------------------------------
 
-    def _put_and_readback(self, inner_doc: dict[str, Any]) -> tuple[bool, int | None, str | None]:
+    def _put_and_readback(
+        self, inner_doc: dict[str, Any], *, timeout_seconds: float | None = None,
+    ) -> tuple[bool, int | None, str | None]:
         # Must read self.opa_data_path here, not a module-level constant -- otherwise an
         # isolated CC store's write would still PUT to Hermes's live OPA document regardless
         # of what the on-disk ledger's own key is named.
+        #
+        # timeout_seconds (LIA-533): overrides _OPA_TIMEOUT_SECONDS for both calls below when
+        # given. `None` (every existing caller: _mutate, sync()) preserves today's 5s default
+        # exactly. reconcile_if_drifted()'s repair path passes a short override (0.5s) to bound
+        # its own worst-case exclusive-lock hold, since it (unlike _mutate) may be contending
+        # with the Hermes gate's own tight external timeout budget.
+        timeout = timeout_seconds if timeout_seconds is not None else _OPA_TIMEOUT_SECONDS
         body = json.dumps(inner_doc).encode("utf-8")
         req = urllib.request.Request(
             self.opa_base_url + self.opa_data_path, data=body,
             headers={"Content-Type": "application/json"}, method="PUT",
         )
         try:
-            with urllib.request.urlopen(req, timeout=_OPA_TIMEOUT_SECONDS):
+            with urllib.request.urlopen(req, timeout=timeout):
                 pass
         except (urllib.error.URLError, OSError, TimeoutError) as exc:
             return False, None, f"PUT to OPA failed: {exc}"
 
         gen_req = urllib.request.Request(self.opa_base_url + self.opa_data_path + "/generation")
         try:
-            with urllib.request.urlopen(gen_req, timeout=_OPA_TIMEOUT_SECONDS) as resp:
+            with urllib.request.urlopen(gen_req, timeout=timeout) as resp:
                 result = json.loads(resp.read()).get("result")
         except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
             return False, None, f"generation read-back failed: {exc}"
@@ -405,6 +433,61 @@ class AttestationStore:
             inner = doc[self.document_key]
             ok, activated_gen, err = self._put_and_readback(inner)
             return WriteResult(ok=ok, generation=inner["generation"], activated=ok, error=err)
+
+    def _get_opa_document(self) -> dict[str, Any] | None | object:
+        """Plain GET of the full live document, no lock held (LIA-533). Returns:
+        - a dict: OPA answered and has this document.
+        - `None`: OPA answered but reports no document for this path (its documented shape for
+          an undefined/deleted/null document) -- a real, confirmed state, not "unknown."
+        - `_OPA_REQUEST_FAILED`: the request itself never got a valid answer (network error,
+          timeout, malformed response) -- genuinely unknown state, distinct from the above.
+        """
+        req = urllib.request.Request(self.opa_base_url + self.opa_data_path)
+        try:
+            with urllib.request.urlopen(req, timeout=_OPA_TIMEOUT_SECONDS) as resp:
+                return json.loads(resp.read()).get("result")
+        except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError):
+            return _OPA_REQUEST_FAILED
+
+    def reconcile_if_drifted(self) -> WriteResult:
+        """Best-effort periodic/background reconciliation (LIA-533) for a caller -- e.g. a
+        launchd job -- that must never contend with the hot commit-gate's `locked_read()`, and
+        must never race a real `_mutate()` write's own PUT-and-readback.
+
+        Three-way outcome, each handled differently:
+        1. OPA already matches disk (full content comparison, not just `generation` -- a foreign
+           document could coincidentally carry a matching generation with different content):
+           done, no lock touched at all.
+        2. The GET itself failed (`_OPA_REQUEST_FAILED`): genuinely unknown state -- OPA may be
+           fully down, in which case attempting a repair PUT is doomed to also fail. Skip
+           entirely without ever touching the exclusive lock, so a sustained outage never creates
+           a recurring lock-hold window; the next tick (or the next real write's own embedded
+           PUT) retries once OPA is reachable again.
+        3. Confirmed drift (OPA answered -- possibly with no document at all, itself a real,
+           repairable state -- and it differs from disk): repair under the SAME lock `_mutate`
+           already uses for its own PUT-and-readback, acquired non-blocking so this call can
+           never make a concurrent reader or writer wait on ITS acquisition, and with a short,
+           measured timeout bounding its own worst-case hold to ~1s if acquired. If the lock is
+           contended (a real write in flight), back off immediately -- that write's own PUT
+           already handles activation, so nothing is lost by skipping this tick.
+        """
+        doc = self.read_locked()
+        inner = doc[self.document_key]
+        opa_doc = self._get_opa_document()
+        if opa_doc is _OPA_REQUEST_FAILED:
+            return WriteResult(ok=False, generation=inner["generation"], activated=False,
+                                error="OPA unreachable -- skipped, not a confirmed content mismatch")
+        if opa_doc == inner:
+            return WriteResult(ok=True, generation=inner["generation"], activated=True, error=None)
+        try:
+            with self._locked(exclusive=True, non_blocking=True):
+                doc = self._read_disk()
+                inner = doc[self.document_key]
+                ok, activated_gen, err = self._put_and_readback(inner, timeout_seconds=0.5)
+                return WriteResult(ok=ok, generation=inner["generation"], activated=ok, error=err)
+        except BlockingIOError:
+            return WriteResult(ok=False, generation=inner["generation"], activated=False,
+                                error="lock busy (reconciliation skipped, retries next tick)")
 
     def inspect(self, repo_id: str) -> list[dict[str, Any]]:
         with self._locked(exclusive=False):
