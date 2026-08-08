@@ -242,7 +242,13 @@ architecture — do not conflate the two.
 The Decision section above scoped v1 to Hermes. Extending the same substrate to Claude Code's
 own gates is being done in explicitly separated phases so each one can be reviewed and reverted
 on its own. **No phase to date lets a Claude Code gate consult an OPA answer** — that cutover is
-not designed yet and needs a human to read accumulated shadow data first.
+not designed yet and needs a human to read accumulated shadow data first. (Distinct from Phase 4
+below, which lets the Rego layer itself answer an `attestation.verify` query for the separate,
+designed-but-not-yet-implemented `attestation-verify` git-level check —
+`git-level-hard-backstop-design.md`'s workflow, verify script, and `main-attestation-backstop`
+ruleset are all still unwritten per its §5. No *Claude Code gate* consults that answer either, same
+as every other phase here — this sentence's own claim stays true; LIA-534 tracks the still-open
+gate-wiring half, LIA-530/Phase 4 below closes the separate Rego-cutover half.)
 
 ### Phase 0 — inert infra (PR #1118, `c287ec71`)
 
@@ -324,10 +330,15 @@ run before any Phase 2 cutover.
 
 This section designs, and (as of LIA-527) implements, the write path Phase 1 deliberately left
 undesigned. Implemented: the six-site `AttestationStore` parameterization, `issue_if_newer`,
-`scripts/warden_policy/cc_attestations.py`, and the CC-specific schema file. Not implemented
-here, and tracked separately: wiring `cc_attestations.enqueue_verdict` into any Claude Code
-gate (LIA-534) and any Rego rule consulting `data.warden_cc_attestations` (LIA-530 item 2) — so
-this phase still does not enable any cutover, and does not change what any existing gate does.
+`scripts/warden_policy/cc_attestations.py`, and the CC-specific schema file. **Corrected (was:
+"Not implemented here, and tracked separately: wiring `cc_attestations.enqueue_verdict` into any
+Claude Code gate (LIA-534) and any Rego rule consulting `data.warden_cc_attestations` (LIA-530
+item 2)" — the Rego half is now done):** the Rego rule consulting `data.warden_cc_attestations`
+is implemented (LIA-530, "### Phase 4" below). Still not implemented here, and still tracked
+separately: wiring `cc_attestations.enqueue_verdict` into any Claude Code gate (LIA-534) — so this
+phase alone still does not change what any existing Claude Code gate does; the separate
+`attestation-verify` git-level check (Phase 4 below) can now consult a CC-mirrored SHIP once
+LIA-534 populates the ledger it reads.
 The *cutover decision* (which gates, if any, start consulting OPA) still needs real shadow data
 and is explicitly out of scope here — see "Not yet started" below.
 
@@ -346,7 +357,9 @@ Instead: Claude-Code-authored mirrors go to a **second, wholly separate OPA data
 `data.warden_cc_attestations`, backed by its own on-disk ledger
 (`~/.config/deus/guardrails/attestations-cc-v1.json`) and its own `generation` counter. A failed
 PUT on this document can only ever desynchronize `warden_cc_attestations.generation` from its own
-disk value — no Rego rule reads that path today (no rule exists yet; Phase 2 adds none), and
+disk value — as of Phase 2 (this section), no Rego rule reads that path yet (Phase 2 adds none;
+the Phase-4 attestation-verify cutover rule below, LIA-530, is the first and only one that does),
+and
 `warden_attestations.generation` (the value Hermes's `supported` guard actually checks) is never
 touched by this write path at all, PROVIDED every OPA-bound write actually targets the isolated
 document's own data path rather than the module-level default (see the six sites below — this is
@@ -601,7 +614,8 @@ data this design is meant to eventually build on.
 
 **What Phase 2 explicitly does NOT do:**
 - No Rego rule consults `data.warden_cc_attestations`. Writing and reading are separate
-  decisions; this section designs writing only.
+  decisions; this section designs writing only. (Reading is added by Phase 4 below, LIA-530, a
+  separate section and a separate review cycle — this bullet describes Phase 2's own scope only.)
 - No Claude Code gate's pass/fail outcome changes. Identical invariant to Phase 1's #1
   ("no gate outcome can depend on it"), extended to cover write failures specifically.
 - No change to `data.warden_attestations`, its schema, or any code path Hermes depends on —
@@ -690,8 +704,10 @@ data that would justify designing the cutover on top of it exists. Tracked as ex
 scope, not silently dropped.
 
 **Still not yet started, current** — post-LIA-527: `cc_attestations.enqueue_verdict` wiring into
-any Claude Code gate (LIA-534) and the Rego cutover rule (LIA-530 item 2). Both remain out of
-scope for LIA-527 itself.
+any Claude Code gate (LIA-534). **Corrected (was: "and the Rego cutover rule (LIA-530 item 2).
+Both remain out of scope")**: the Rego cutover rule is now designed, reviewed, and implemented
+(LIA-530, "### Phase 4" below) — it was out of scope for LIA-527 itself, and remains so, but is no
+longer undone. LIA-534's gate-wiring is the one item in this bullet still not started.
 
 **Scope check** (round-count-circuit-breaker, per `plan-review-rules.md`): after 7 review rounds,
 re-confirming this is still the smallest design that satisfies LIA-527's ask — "design the write
@@ -825,6 +841,143 @@ error — for gateway/non-TTY sessions specifically.
 (allow/block/fail-closed/TTL-expiry/recovery, mirroring this ADR's own Verification section below)
 — tracked as the final step before this phase is considered fully proven, same posture as every
 other phase's live-verification requirement.
+
+### Phase 4 — attestation-verify cutover (LIA-530)
+
+Closes the second of `git-level-hard-backstop-design.md` §3.6's activation preconditions: a new
+Rego decision block in `guardrails.rego`, under a dedicated `operation: "attestation.verify"`
+value (never `git.commit`), that lets the git-level `attestation-verify` check consult
+`data.warden_cc_attestations` for evidence of a Claude-Code-native `code-reviewer` SHIP —
+something no phase before this one did (Phase 2's own text was explicit that reading was out of
+scope; Phase 1's shadow observer never wrote a live gate outcome either). **Framing, stated
+plainly and not softened**: once `main-attestation-backstop` is flipped to `enforcement: "active"`
+(blocked on §3.6's still-open third precondition, LIA-534's gate-wiring — see that section), this
+Rego block becomes the sole non-bypassable gate on `main` (`bypass_actors: []`,
+`git-level-hard-backstop-design.md` §3.1). It went through five rounds of design-only plan-review
+plus threat-model (two independent reviewer types, run repeatedly), then a further round of
+implementation-plan review before landing, given the stakes of that framing.
+
+**Two paths, one Hermes-authoritative.** `hermes_path_ok` (a fresh, `supported` OPA snapshot with
+a genuine Hermes-native `code-review` SHIP) is checked first; only if Hermes has no opinion at all
+does the CC-mirror path (`cc_path_ok`) get consulted. "No opinion at all" is deliberately an
+existence check (`hermes_record_exists`, added late — see below), not a SHIP-specific one: a fresh
+Hermes REVISE, BLOCK, or COULD_NOT_RUN for the same tree is just as authoritative as a SHIP, and
+must never be silently overridden by a CC-mirrored claude SHIP for that same tree.
+
+**The REVISE-override bug, and why the fix is an existence check, not a verdict check.** An
+earlier draft gated the CC path on `not valid_ship` — "Hermes doesn't have a matching SHIP" — which
+cannot distinguish "Hermes never reviewed this tree" from "Hermes reviewed it and said REVISE."
+Two independent reviewers, run separately, found the same exploit: an explicit, fresh Hermes
+REVISE or BLOCK on a tree could be silently overridden by a CC-mirrored claude SHIP for that same
+tree, because the gate only asked "is there a SHIP," never "did Hermes already answer." The fix,
+`hermes_record_exists`, checks record existence only — deliberately not re-using `valid_ship`'s
+SHIP-specific re-checks — so the CC path is reachable only when Hermes genuinely has no record for
+that subject at all. This is a DENY-favoring resolution, stated here explicitly rather than left
+as the ambiguous "union" `git-level-hard-backstop-design.md` §3.6 originally hedged as one
+possible shape: an explicit Hermes REVISE now always wins, regardless of what the CC ledger says —
+the CC path is strictly a fallback for "Hermes has no opinion," never an override for "Hermes said
+no."
+
+**The mis-targeted-document exploit, and its discriminator.** `warden_attestations` and
+`warden_cc_attestations` are schema-identical at the record level, so no field on its own
+distinguishes a genuine CC-mirrored record from a Hermes-shaped record accidentally (or
+adversarially) planted under the CC document's index — a real, demonstrated exploit against an
+earlier draft. The actual discriminator, found on direct schema comparison rather than invented:
+`attestation-cc-v1.schema.json` requires `queued_at` on every CC record (`issue_if_newer`, the
+CC-only write path, sets it); `attestation-v1.schema.json` sets `additionalProperties: false` and
+defines no `queued_at` field at all — Hermes's `issue()` never writes it. `valid_cc_mirrored_ship`
+checks for its existence (Rego's `if` fails on undefined; the field is typed as an integer >= 0,
+so no legitimate value, including 0, is falsy). This is a defense-in-depth backstop for Phase 2's
+own most-scrutinized risk (its six-site write-target parameterization), not a replacement for it —
+a shared risk, cross-referenced rather than assumed independently solved.
+
+**A stale Hermes snapshot must deny, never silently downgrade to the weaker CC-only check.**
+`cc_path_ok` requires `supported` — Hermes's own fresh-snapshot generation guard — explicitly, not
+merely "no Hermes SHIP was found," which is also true when the snapshot is simply stale or
+running an unrecognized contract version. Without this, a stale-Hermes-but-actually-SHIPped commit
+could route through the single-backend CC path instead of denying outright, silently downgrading
+the evidentiary bar the moment OPA served a stale read.
+
+**The CC-cutover enrollment toggle: schema field exists, deliberately left unwired.**
+`attestation-cc-v1.schema.json`'s `config.enforced_repos.<repo>.enabled` genuinely exists
+(structural parity with `warden_attestations`), but no writer sets it — no CLI flag or call site
+anywhere in `scripts/` calls `enroll()` against the CC document. Wiring one would be a real,
+disproportionate-for-this-pass CLI/enrollment-flow feature this design does not need to be
+correct. The real activation control for the whole mechanism stays one layer outside Rego:
+`main-attestation-backstop`'s own `enforcement: "active"`/`"disabled"` state
+(`git-level-hard-backstop-design.md` §3.6) — sufficient for this repo's single enrolled target
+today. If a second repo ever needs independent CC-cutover control, wiring a writer for the
+already-reserved schema field is a small, well-scoped follow-up, not a redesign — named explicitly
+so it isn't quietly built as a drive-by inside an unrelated change later.
+
+**Permanent, honest, by-design limitation: claude backend only.** The CC-mirror path checks the
+native `claude` backend's own `code-reviewer` mirror, full stop — it does not verify `gpt`/`glm`
+co-gate backend verdicts, and this is not a temporary scope cut. A commit the local strict-AND
+gate (`.claude/wardens/config.json`'s `code-reviewer.backends`) actually BLOCKED on a real
+non-claude REVISE still passes this check on a claude-only SHIP. Disclosed loudly, in both the
+Rego comment block itself and the allow-reason string returned on that path ("claude backend only
+— gpt/glm not verified, permanent limitation"), not left as an implied fact without its
+consequence.
+
+**Required, not advisory — a confirmed decision, not a hedge.** `git-level-hard-backstop-design.md`
+commits to `bypass_actors: []` for the ruleset this check backs, meaning `attestation-verify` will
+be a required, non-bypassable status check once activated — not an optional signal a human glances
+at. The claude-only limitation above is a real, accepted gap in the sole gate on `main`, stated
+plainly rather than softened by an "advisory" label that would misrepresent its actual operational
+weight.
+
+**Does not activate on its own.** Per `git-level-hard-backstop-design.md` §3.6 (corrected in the
+same change as this section), landing this Rego rule clears only the SECOND of three activation
+preconditions for `main-attestation-backstop`. The THIRD — `cc_attestations.enqueue_verdict`
+actually wired into the real commit gates (`codex_warden_hooks.py`'s
+`run_warden_backends_gate`/`run_verification_gate`) so the CC ledger this rule reads is genuinely
+populated on real commits — is tracked separately as **LIA-534** and is explicitly not done yet.
+Landing this section alone does not mean the CC-mirror path is reachable in production.
+
+**Independent test coverage, verified by mutation testing, not inspection alone.**
+`guardrails_test.rego` gained defense-in-depth tests for the new block (non-SHIP CC verdicts,
+backend/gate/repo_id/schema_version field mismatches at both the document and record level, the
+mis-targeted-document exploit and its positive control, the REVISE-override exploit and its
+positive control, session-kind records, stale-Hermes-generation fall-through — both with and
+without a genuine Hermes SHIP present, the CC-mirror path's own wrong-gate guard isolated from the
+Hermes-native body's, the catch-all deny body's own wrong-gate guard isolated with no evidence
+present at all, Hermes-native precedence when valid CC evidence ALSO genuinely coexists for the
+same tree (pinned via an explicit `valid_cc_mirrored_ship` assertion, not just the resulting
+`decision` — an earlier version of this same test asserted only `decision`, which is unaffected by
+whether the coexisting CC evidence is real or the fixture is absent entirely, a round-2
+code-review finding, fixed), and bidirectional isolation against both `git.commit` and
+`file.write`). Verified by deleting each guard line in the new block one at a time and confirming
+`opa test` catches it: of 31 guard lines, **28 are caught by a dedicated test** (two rounds found
+real gaps and closed them — an earlier draft's CC-mirror gate guard and no-evidence-plus-wrong-gate
+catch-all guard both initially survived deletion at green, closed by adding the isolating tests
+named above).
+
+**3 lines are not currently discriminated by any test, each a genuine, disclosed residual gap in
+the test suite's precision (not a defect in the Rego block itself), and each individually
+addressable if closing them is ever prioritized**: `hermes_record_exists`'s final existence check
+(`data.warden_attestations.records[id]`) only matters for a dangling `latest` pointer — no fixture
+constructs one, though one could; the deny body's literal `"allow": false` field is untested via
+`not decision.allow`-style assertions specifically because Rego's `not` treats an absent key the
+same as `false` (true of every pre-existing test in this file, not introduced here) — an explicit
+`decision.allow == false` assertion would close it; and `valid_cc_mirrored_ship`'s `id := ...`
+pointer lookup degrades gracefully, not dangerously, under deletion — Rego's own semantics for an
+unbound index variable turn the lookup into an existential scan of every CC record instead of the
+specific `latest_by_backend`-pointed one, which the current fixture set cannot yet distinguish
+from the pointer-scoped behavior because every fixture's `latest_by_backend` entry and matching
+record are mutually consistent — a fixture with a `latest_by_backend` pointer to one record ID
+while a DIFFERENT, non-matching record also exists in `records` would close it.
+
+**2 lines are proven, not merely observed, to be permanently non-discriminable by any possible
+test — logically redundant by construction, not an untested gap**: `cc_supported`'s own
+`input.contract_version == 1` check is an unreachable duplicate of `supported`'s identical check
+(`cc_path_ok` already requires `supported` before `cc_supported` is ever reached, so this line can
+never be the sole cause of a different outcome); and the CC-mirror decision body's own
+`not hermes_path_ok` is provably redundant with `cc_path_ok`'s own `not hermes_record_exists` —
+`valid_ship` and `hermes_record_exists` resolve the identical index lookup, so any tree where
+`hermes_path_ok` is true necessarily has `hermes_record_exists` true too, which already makes
+`cc_path_ok` false via its own guard before `not hermes_path_ok` is ever reached. Both are cheap,
+intentional defense-in-depth, kept rather than removed — but a future reader should not mistake
+either for load-bearing logic protecting against a real, reachable state.
 
 ## Consequences
 
