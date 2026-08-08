@@ -1,23 +1,27 @@
 #!/usr/bin/env python3
-"""Fail-closed Hermes `pre_tool_call` adapter for scripts/warden_policy.
+"""Fail-closed Hermes `pre_tool_call` adapter for the verification-gate (LIA-524).
 
-Hermes's own hook engine fails OPEN on script error, timeout, non-JSON, or
-an unrecognized response shape -- so this script can never rely on a
-non-zero exit code to block. Every failure path below explicitly emits
-Hermes's canonical block shape and exits 0; only a fully-validated
-affirmative allow ever prints `{}`.
+Sibling to `hermes_warden_gate.py` (the code-review/`terminal` gate) -- same fail-closed
+philosophy, same JSON stdin/stdout protocol, same total-exception-containment in `main()` --
+but NOT a modification of that file. A fully independent script, matching
+`hermes_plan_review_gate.py`'s own documented precedent, wired via a SEPARATE
+`~/.hermes/config.yaml` hook entry (a different `command` string, same `matcher: "terminal"`).
 
-Ordering (found wrong, then fixed, by adversarial plan review): enrollment
-is resolved BEFORE commit-form validation. An earlier draft validated the
-commit form first, which would have blocked an ORDINARY `git commit` in an
-UNENROLLED repo just for lacking the required flags -- directly
-contradicting "unenrolled repos behave normally." The correct order: (1) is
-this even a terminal/commit-shaped call at all -- if not, allow immediately,
-no ledger/OPA involved; (2) resolve repo_id and check enrollment from the
-LOCAL ledger (a pure disk read, always available even if OPA is down) -- if
-not enrolled, allow immediately, regardless of commit form; (3) only for an
-ENROLLED repo does the supported-commit-form check and the OPA SHIP query
-apply.
+6-step sequence (Design section B.4 of the reviewed LIA-524 plan). verification-gate has NO
+diff-trigger condition at all -- unconditional once enrolled, mirroring Claude Code's own
+`run_verification_gate` (evidence-before-claims, not diff-pattern-triggered):
+1. `tool_name != "terminal"` -> allow.
+2. not commit-shaped -> allow.
+3. `-C` rejected (unsafe value) -> block UNCONDITIONALLY, before any repo/enrollment lookup --
+   identity is unknowable, never fall back to cwd.
+4. resolve repo_path from `-C`'s target if present, else cwd; resolve repo_id; not
+   verification_gate_enabled for that repo -> allow, regardless of commit form.
+5. enrolled but commit form unsupported -> block -- a repo enrolled only in verification-gate
+   must get its own commit-form validation, not silently inherit it from
+   `hermes_warden_gate.py`.
+6. resolve subject_key from the SAME corrected repo_path; query OPA
+   (`gate: "verification-gate"`, no backend -- `latest`-indexed, single-verdict, matching
+   Claude Code's own single-marker `run_verification_gate`); block on non-allow.
 """
 
 from __future__ import annotations
@@ -35,7 +39,7 @@ from warden_policy.git_subject import GitSubjectError, resolve_repo_id, resolve_
 from warden_policy.opa_client import query_decision
 
 LEDGER_PATH = Path.home() / ".config" / "deus" / "guardrails" / "attestations-v1.json"
-LOG_PATH = Path.home() / ".config" / "deus" / "guardrails" / "logs" / "decisions.jsonl"
+LOG_PATH = Path.home() / ".config" / "deus" / "guardrails" / "logs" / "verification-gate-decisions.jsonl"
 OPA_URL = "http://127.0.0.1:8181"
 OPA_TIMEOUT_SECONDS = 0.75
 SHIM_SELF_DEADLINE_SECONDS = 2.5  # stays comfortably under Hermes's configured hook timeout (3s)
@@ -53,7 +57,7 @@ def _hash_command(command: str) -> str:
 def _log(entry: dict) -> None:
     # Best-effort, never raises -- logging must never itself cause a block/crash.
     # Deliberately never logs raw repo paths, full commands, or commit reasons/messages --
-    # only command_sha256, a hash, per the redaction requirement from plan review.
+    # only command_sha256, a hash, matching hermes_warden_gate.py's redaction discipline.
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with open(LOG_PATH, "a", encoding="utf-8") as f:
@@ -86,32 +90,19 @@ def decide(payload: dict) -> dict:
 
     if classification.dash_c_rejected:
         # LIA-524: an unsafe `-C` value makes repo identity UNKNOWABLE -- fail closed
-        # UNCONDITIONALLY, before any repo/enrollment lookup. Never fall back to `cwd` here:
-        # that fallback is exactly the flaw this check exists to close (an untrustworthy `-C`
-        # value must not silently degrade to "pretend -C wasn't there").
+        # UNCONDITIONALLY, before any repo/enrollment lookup. Never fall back to `cwd`.
         result = _block(classification.reason)
         log_entry.update(decision="block", reason=classification.reason, fail_closed=True)
         _log(log_entry)
         return result
 
-    # LIA-524: `-C <path>` genuinely redirects which repository the eventual `git`
-    # invocation operates on -- resolving identity from `cwd` alone would let an enrolled
-    # repo's ledger check be bypassed by running from an unenrolled directory and pointing
-    # `-C` at the enrolled target. A relative `-C` value resolves against `cwd`, matching
-    # git's own real `-C` semantics (git resolves a relative `-C` against its own process
-    # cwd at invocation time).
     repo_path = Path(cwd)
     if classification.dash_c_target:
         target = Path(classification.dash_c_target)
         repo_path = target if target.is_absolute() else Path(cwd) / target
+
     store = AttestationStore(LEDGER_PATH, opa_base_url=OPA_URL)
 
-    # The shared lock is held across the ENTIRE read-then-decide sequence below, including the
-    # OPA network call -- not just the local disk read. Found missing by adversarial code
-    # review: an earlier version released the lock right after reading, so a writer's
-    # write+PUT+read-back transaction could interleave with this adapter's read-then-query,
-    # contradicting the reader/writer coordination this module documents. Holding it across a
-    # bounded (<=750ms) OPA call is the accepted cost of that guarantee.
     try:
         with store.locked_read() as doc:
             inner = doc["warden_attestations"]
@@ -125,10 +116,12 @@ def decide(payload: dict) -> dict:
                 return result
 
             log_entry["repo_id"] = repo_id
-            enrolled = inner.get("config", {}).get("enforced_repos", {}).get(repo_id, {}).get("enabled", False)
+            verification_gate_enabled = inner.get("config", {}).get("enforced_repos", {}).get(
+                repo_id, {},
+            ).get("verification_gate_enabled", False)
 
-            if not enrolled:
-                log_entry.update(decision="allow", reason="repo not enrolled", fail_closed=False)
+            if not verification_gate_enabled:
+                log_entry.update(decision="allow", reason="repo not verification-gate-enrolled", fail_closed=False)
                 _log(log_entry)
                 return {}
 
@@ -154,11 +147,7 @@ def decide(payload: dict) -> dict:
                 "repo_id": repo_id,
                 "subject_key": subject_key,
                 "expected_generation": inner["generation"],
-                # Required now that guardrails.rego's "code-review" decision bodies are
-                # gate-scoped (Phase 0 of the Claude-Code-gate-to-OPA migration) -- an
-                # omitted gate would make input.gate undefined, and undefined ==/!= never
-                # fires in Rego, silently falling through to the file's own default deny.
-                "gate": "code-review",
+                "gate": "verification-gate",
             }
 
             remaining = SHIM_SELF_DEADLINE_SECONDS - (time.monotonic() - start)

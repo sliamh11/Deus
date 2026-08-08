@@ -1,28 +1,39 @@
 #!/usr/bin/env python3
-"""Fail-closed Hermes `pre_tool_call` adapter for scripts/warden_policy.
+"""Fail-closed Hermes `pre_tool_call` adapter for the ai-eng-warden gate (LIA-524).
 
-Hermes's own hook engine fails OPEN on script error, timeout, non-JSON, or
-an unrecognized response shape -- so this script can never rely on a
-non-zero exit code to block. Every failure path below explicitly emits
-Hermes's canonical block shape and exits 0; only a fully-validated
-affirmative allow ever prints `{}`.
+Sibling to `hermes_warden_gate.py` (the code-review/`terminal` gate) -- same fail-closed
+philosophy, same JSON stdin/stdout protocol, same total-exception-containment in `main()` --
+but NOT a modification of that file. A fully independent script, matching
+`hermes_plan_review_gate.py`'s own documented precedent, wired via a SEPARATE
+`~/.hermes/config.yaml` hook entry (a different `command` string, same `matcher: "terminal"`).
 
-Ordering (found wrong, then fixed, by adversarial plan review): enrollment
-is resolved BEFORE commit-form validation. An earlier draft validated the
-commit form first, which would have blocked an ORDINARY `git commit` in an
-UNENROLLED repo just for lacking the required flags -- directly
-contradicting "unenrolled repos behave normally." The correct order: (1) is
-this even a terminal/commit-shaped call at all -- if not, allow immediately,
-no ledger/OPA involved; (2) resolve repo_id and check enrollment from the
-LOCAL ledger (a pure disk read, always available even if OPA is down) -- if
-not enrolled, allow immediately, regardless of commit form; (3) only for an
-ENROLLED repo does the supported-commit-form check and the OPA SHIP query
-apply.
+7-step sequence (Design section A.5 of the reviewed LIA-524 plan):
+1. `tool_name != "terminal"` -> allow.
+2. not commit-shaped -> allow.
+3. `-C` rejected (unsafe value) -> block UNCONDITIONALLY, before any repo/enrollment lookup --
+   identity is unknowable, never fall back to cwd.
+4. resolve repo_path from `-C`'s target if present, else cwd; resolve repo_id; not
+   ai_eng_warden_enabled for that repo -> allow, regardless of commit form (unenrolled repos
+   behave normally).
+5. enrolled but commit form unsupported -> block UNCONDITIONALLY -- this must run BEFORE the
+   diff-trigger check (step 6), never after. Round-12 TOCTOU finding: checking the
+   pre-execution diff first would let an attacker use a side-effecting, unvalidated command
+   (command substitution, a chained command) to dirty an LLM-pattern file AFTER the diff check
+   but AS PART OF the same shell invocation the hook is about to allow -- e.g.
+   `git commit -a -m "$(touch memory_indexer.py)"`. Form validation must gate everything
+   diff-dependent, exactly as it already does for `hermes_warden_gate.py`'s own gate.
+6. diff doesn't touch an LLM file pattern (`warden_policy.llm_file_patterns`) -> allow (gate
+   doesn't fire).
+7. resolve subject_key from the SAME corrected repo_path; query OPA
+   (`gate: "ai-eng-warden", backend: "hermes"` -- a single fixed self-identifying backend id,
+   not the multi-backend `backend_verdict_map`/`required_backends` machinery, which Hermes has
+   no caller for yet); block on non-allow.
 """
 
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -32,10 +43,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from warden_policy.attestation_store import AttestationStore, AttestationStoreError
 from warden_policy.command_parser import classify
 from warden_policy.git_subject import GitSubjectError, resolve_repo_id, resolve_subject_key
+from warden_policy.llm_file_patterns import AI_ENG_BASENAMES, AI_ENG_DIR_PREFIXES
 from warden_policy.opa_client import query_decision
 
 LEDGER_PATH = Path.home() / ".config" / "deus" / "guardrails" / "attestations-v1.json"
-LOG_PATH = Path.home() / ".config" / "deus" / "guardrails" / "logs" / "decisions.jsonl"
+LOG_PATH = Path.home() / ".config" / "deus" / "guardrails" / "logs" / "ai-eng-warden-decisions.jsonl"
 OPA_URL = "http://127.0.0.1:8181"
 OPA_TIMEOUT_SECONDS = 0.75
 SHIM_SELF_DEADLINE_SECONDS = 2.5  # stays comfortably under Hermes's configured hook timeout (3s)
@@ -53,13 +65,46 @@ def _hash_command(command: str) -> str:
 def _log(entry: dict) -> None:
     # Best-effort, never raises -- logging must never itself cause a block/crash.
     # Deliberately never logs raw repo paths, full commands, or commit reasons/messages --
-    # only command_sha256, a hash, per the redaction requirement from plan review.
+    # only command_sha256, a hash, matching hermes_warden_gate.py's redaction discipline.
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
     except OSError:
         pass
+
+
+def _diff_touches_llm_files(repo_path: Path) -> bool:
+    """Check if repo_path's staged/unstaged changes touch LLM-related files. Fail-closed.
+
+    Mirrors `codex_warden_hooks.py::_diff_touches_llm_files` exactly, using the shared
+    `llm_file_patterns` constants -- but against `repo_path` (the `-C`-resolved target repo),
+    not necessarily the process's own cwd.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD"],
+            capture_output=True, text=True, cwd=repo_path, timeout=10,
+        )
+        if result.returncode != 0:
+            return True
+        files = result.stdout.strip().split("\n") if result.stdout.strip() else []
+        result2 = subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            capture_output=True, text=True, cwd=repo_path, timeout=10,
+        )
+        if result2.returncode != 0:
+            return True
+        files += result2.stdout.strip().split("\n") if result2.stdout.strip() else []
+    except Exception:
+        return True
+    for f in files:
+        basename = f.split("/")[-1]
+        if basename in AI_ENG_BASENAMES:
+            return True
+        if f.startswith(AI_ENG_DIR_PREFIXES):
+            return True
+    return False
 
 
 def decide(payload: dict) -> dict:
@@ -86,32 +131,19 @@ def decide(payload: dict) -> dict:
 
     if classification.dash_c_rejected:
         # LIA-524: an unsafe `-C` value makes repo identity UNKNOWABLE -- fail closed
-        # UNCONDITIONALLY, before any repo/enrollment lookup. Never fall back to `cwd` here:
-        # that fallback is exactly the flaw this check exists to close (an untrustworthy `-C`
-        # value must not silently degrade to "pretend -C wasn't there").
+        # UNCONDITIONALLY, before any repo/enrollment lookup. Never fall back to `cwd`.
         result = _block(classification.reason)
         log_entry.update(decision="block", reason=classification.reason, fail_closed=True)
         _log(log_entry)
         return result
 
-    # LIA-524: `-C <path>` genuinely redirects which repository the eventual `git`
-    # invocation operates on -- resolving identity from `cwd` alone would let an enrolled
-    # repo's ledger check be bypassed by running from an unenrolled directory and pointing
-    # `-C` at the enrolled target. A relative `-C` value resolves against `cwd`, matching
-    # git's own real `-C` semantics (git resolves a relative `-C` against its own process
-    # cwd at invocation time).
     repo_path = Path(cwd)
     if classification.dash_c_target:
         target = Path(classification.dash_c_target)
         repo_path = target if target.is_absolute() else Path(cwd) / target
+
     store = AttestationStore(LEDGER_PATH, opa_base_url=OPA_URL)
 
-    # The shared lock is held across the ENTIRE read-then-decide sequence below, including the
-    # OPA network call -- not just the local disk read. Found missing by adversarial code
-    # review: an earlier version released the lock right after reading, so a writer's
-    # write+PUT+read-back transaction could interleave with this adapter's read-then-query,
-    # contradicting the reader/writer coordination this module documents. Holding it across a
-    # bounded (<=750ms) OPA call is the accepted cost of that guarantee.
     try:
         with store.locked_read() as doc:
             inner = doc["warden_attestations"]
@@ -125,18 +157,27 @@ def decide(payload: dict) -> dict:
                 return result
 
             log_entry["repo_id"] = repo_id
-            enrolled = inner.get("config", {}).get("enforced_repos", {}).get(repo_id, {}).get("enabled", False)
+            ai_eng_warden_enabled = inner.get("config", {}).get("enforced_repos", {}).get(
+                repo_id, {},
+            ).get("ai_eng_warden_enabled", False)
 
-            if not enrolled:
-                log_entry.update(decision="allow", reason="repo not enrolled", fail_closed=False)
+            if not ai_eng_warden_enabled:
+                log_entry.update(decision="allow", reason="repo not ai-eng-warden-enrolled", fail_closed=False)
                 _log(log_entry)
                 return {}
 
+            # Round-12 TOCTOU fix: commit-form validation is UNCONDITIONAL once enrolled --
+            # it must run BEFORE the diff-trigger check below, never after. See module docstring.
             if not classification.supported:
                 result = _block(classification.reason)
                 log_entry.update(decision="block", reason=classification.reason, fail_closed=False)
                 _log(log_entry)
                 return result
+
+            if not _diff_touches_llm_files(repo_path):
+                log_entry.update(decision="allow", reason="diff does not touch an LLM file pattern", fail_closed=False)
+                _log(log_entry)
+                return {}
 
             try:
                 subject_key = resolve_subject_key(repo_path)
@@ -154,11 +195,8 @@ def decide(payload: dict) -> dict:
                 "repo_id": repo_id,
                 "subject_key": subject_key,
                 "expected_generation": inner["generation"],
-                # Required now that guardrails.rego's "code-review" decision bodies are
-                # gate-scoped (Phase 0 of the Claude-Code-gate-to-OPA migration) -- an
-                # omitted gate would make input.gate undefined, and undefined ==/!= never
-                # fires in Rego, silently falling through to the file's own default deny.
-                "gate": "code-review",
+                "gate": "ai-eng-warden",
+                "backend": "hermes",
             }
 
             remaining = SHIM_SELF_DEADLINE_SECONDS - (time.monotonic() - start)

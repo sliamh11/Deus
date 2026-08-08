@@ -36,6 +36,13 @@ from warden_review.constants import (  # noqa: E402
     store_key,
 )
 
+# LLM-sensitive file patterns (LIA-524): shared with the Hermes-side ai-eng-warden gate so
+# the two harnesses can't silently drift on what counts as an LLM-sensitive diff.
+from warden_policy.llm_file_patterns import (  # noqa: E402
+    AI_ENG_BASENAMES as _AI_ENG_BASENAMES,
+    AI_ENG_DIR_PREFIXES as _AI_ENG_DIR_PREFIXES,
+)
+
 # Warden-hooks capsules (LIA-306): pure leaf modules extracted from this file. Re-imported
 # here so the runtime + test symbol surface (``hooks._glob_match`` etc.) stays identical.
 from warden_hooks.command_parse import (  # noqa: E402
@@ -1571,15 +1578,6 @@ def run_code_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     (``backends`` absent → ``["claude"]``) this is behaviorally identical to before,
     including the mark-command / trivial-bypass messaging."""
     return run_warden_backends_gate("code-reviewer", event, repo_root)
-
-
-# Files that assemble prompts or call LLM APIs directly
-_AI_ENG_BASENAMES = {
-    "linear-dispatcher.ts", "linear-webhook.ts", "linear-notifications.ts",
-    "linear-gate-specs.ts", "memory_indexer.py", "memory_tree.py",
-}
-# Directory prefixes whose children involve LLM logic (judge, agent specs)
-_AI_ENG_DIR_PREFIXES = ("evolution/", ".claude/agents/")
 
 
 def _diff_touches_llm_files(repo_root: Path) -> bool:
