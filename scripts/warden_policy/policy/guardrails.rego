@@ -225,7 +225,7 @@ valid_plan_review_ship if {
 	att.subject.session_id == input.session_id
 	att.verdict == "SHIP"
 	issued_ns := time.parse_rfc3339_ns(att.issued_at)
-	time.now_ns() - issued_ns < (plan_review_ttl_seconds * 1000000000)
+	time.now_ns() - issued_ns < plan_review_ttl_seconds * 1000000000
 }
 
 decision := {"allow": true, "reason": "repo not plan-review-enrolled"} if {
@@ -274,7 +274,7 @@ cc_supported if {
 }
 
 valid_cc_mirrored_ship if {
-	id := data.warden_cc_attestations.latest_by_backend[input.repo_id]["code-reviewer"][input.subject_key]["claude"]
+	id := data.warden_cc_attestations.latest_by_backend[input.repo_id]["code-reviewer"][input.subject_key].claude
 	att := data.warden_cc_attestations.records[id]
 	att.schema_version == 1
 	att.repo_id == input.repo_id
@@ -282,10 +282,11 @@ valid_cc_mirrored_ship if {
 	att.subject.key == input.subject_key
 	att.backend == "claude"
 	att.verdict == "SHIP"
-	att.queued_at   # CC-only field (issue_if_newer sets it; Hermes's issue() never does) --
-	                # the real mis-targeted-document discriminator. Existence check: Rego's `if`
-	                # fails on undefined; the schema types this an integer >= 0, so no
-	                # legitimate value (including 0) is falsy here.
+	att.queued_at # CC-only field (issue_if_newer sets it; Hermes's issue() never does) --
+
+	# the real mis-targeted-document discriminator. Existence check: Rego's `if`
+	# fails on undefined; the schema types this an integer >= 0, so no
+	# legitimate value (including 0) is falsy here.
 	cc_supported
 }
 
@@ -317,12 +318,13 @@ decision := {"allow": true, "reason": "matching code-review SHIP (Hermes-native)
 decision := {"allow": true, "reason": "matching code-reviewer SHIP (Claude Code native, claude backend only -- gpt/glm not verified, permanent limitation)"} if {
 	input.operation == "attestation.verify"
 	input.gate == "code-review"
-	not hermes_path_ok   # deliberate defense-in-depth, provably redundant with cc_path_ok's own
-	                      # `not hermes_record_exists` given valid_ship and hermes_record_exists
-	                      # resolve the identical index lookup -- kept for clarity at zero cost,
-	                      # never remove `not hermes_record_exists` from cc_path_ok on the mistaken
-	                      # belief that THIS line alone still protects against Hermes-record
-	                      # override (mutation-verified, opa-warden-attestations-v1.md Phase 4).
+	not hermes_path_ok # deliberate defense-in-depth, provably redundant with cc_path_ok's own
+
+	# `not hermes_record_exists` given valid_ship and hermes_record_exists
+	# resolve the identical index lookup -- kept for clarity at zero cost,
+	# never remove `not hermes_record_exists` from cc_path_ok on the mistaken
+	# belief that THIS line alone still protects against Hermes-record
+	# override (mutation-verified, opa-warden-attestations-v1.md Phase 4).
 	cc_path_ok
 }
 
