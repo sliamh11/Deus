@@ -37,7 +37,9 @@
                 "properties": {
                   "enabled": { "type": "boolean" },
                   "enrolled_at": { "type": "string", "format": "date-time" },
-                  "plan_review_enabled": { "type": "boolean" }
+                  "plan_review_enabled": { "type": "boolean" },
+                  "ai_eng_warden_enabled": { "type": "boolean" },
+                  "verification_gate_enabled": { "type": "boolean" }
                 }
               }
             }
@@ -85,7 +87,7 @@
         "id": { "type": "string", "pattern": "^att-" },
         "schema_version": { "const": 1 },
         "repo_id": { "type": "string", "pattern": "^git-common-dir-sha256:[0-9a-f]{64}$" },
-        "gate": { "type": "string", "enum": ["code-review", "code-reviewer", "ai-eng-warden", "plan-review"] },
+        "gate": { "type": "string", "enum": ["code-review", "code-reviewer", "ai-eng-warden", "plan-review", "verification-gate"] },
         "subject": {
           "type": "object",
           "required": ["kind"],

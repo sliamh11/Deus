@@ -406,11 +406,12 @@ class TestGateVocabularyRoundTrip(unittest.TestCase):
         # "code-review" is `latest`'s Hermes key and is deliberately NOT a shadow role.
         self.assertNotIn("code-review", cc_shadow.SHADOW_ROLES)
         covered = cc_shadow.SHADOW_ROLES & enum
-        self.assertEqual(covered, {"code-reviewer", "ai-eng-warden"})
-        # Documented gap, asserted so it stays deliberate: nothing has ever written a
-        # verification attestation, so Phase 0 never added the key. A Phase 2 write
-        # path must widen the schema before this can be anything but no-attestation.
-        self.assertEqual(cc_shadow.SHADOW_ROLES - enum, {"verification-gate"})
+        # LIA-524 widened the schema enum to admit "verification-gate" via a Hermes-native
+        # write path (scripts/hermes_verification_gate.py) -- distinct from the still-unwritten
+        # CC-mirrored path this test originally documented. All three shadow roles are now
+        # covered by the schema enum.
+        self.assertEqual(covered, {"code-reviewer", "ai-eng-warden", "verification-gate"})
+        self.assertEqual(cc_shadow.SHADOW_ROLES - enum, set())
 
     @unittest.skipUnless(__import__("shutil").which("opa"), "opa binary not installed")
     def test_real_store_write_is_retrievable_by_the_shadows_own_query(self):
