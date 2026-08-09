@@ -410,6 +410,7 @@ _deus_auto_sync() {
   for _as_arg in "$@"; do
     [ "$_as_arg" = "--print-identity" ] && return 0
   done
+  # DEUS_AUTO_SYNC=0 kill switch for the whole feature -- LIA-529
   [ "$DEUS_AUTO_SYNC" = "0" ] && return 0
   [ "$(_read_config_key auto_sync_enabled)" = "false" ] && return 0
 
