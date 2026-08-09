@@ -28,6 +28,7 @@
 - Dispatched agents must work against the current issue state. If the issue was modified after dispatch, the agent's output is suspect — re-evaluate before accepting.
 - Agent output that doesn't match the issue's acceptance criteria should not auto-merge, even if CI passes. The output-quality-gate exists for this.
 - Failed dispatches (auth errors, container failures, timeouts) must be surfaced with clear error state — not silently swallowed.
+- **`subagent_type: "general-purpose"` is denied in this repo** (2026-08-09, confirmed via `.claude/settings.json:4`: `"deny": ["Agent(Explore)", "Agent(general-purpose)", "Agent(Plan)"]`). Use `"general"` instead — it's the equivalent catch-all agent type actually permitted here. A denied dispatch fails immediately with a permission-rule error, not silently, but it still wastes a round trip; default to `"general"` for open-ended delegated research/tasks in this repo.
 
 ## Tool Hygiene
 - When creating or updating issues via MCP tools, verify the rendered output matches intent. Double-escaped markdown, broken formatting, and missing fields are bugs, not cosmetic issues — they degrade agent scoping and human review.
