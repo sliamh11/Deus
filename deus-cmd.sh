@@ -176,6 +176,274 @@ _deus_freshness_check() {
   return 0
 }
 
+# >>> auto-sync
+# Passive background auto-sync: on every plain `deus` call, fetch+ff-merge (and, when
+# HEAD actually moves, rebuild+restart / push) two repos in a single detached, non-
+# blocking background subshell. User-confirmed design (LIA-529+, 2026-08-08): unlike
+# _deus_freshness_check above (read-only nudge), this one actually mutates git state.
+# Step A (this checkout) borrows deploy's diff-gated restart, not sync's unconditional
+# one. Step B (a second, generic repo) is entirely config-driven — deus-cmd.sh itself
+# must never hardcode any real repo/fork identity (public-repo-generic).
+
+# Stash-safe wrapper: snapshots a dirty tree, runs "$@", restores. Never a bare `git
+# stash`/`pop` — the stash stack is shared across worktrees/concurrent sessions, so the
+# entry is located by a unique tag, not stack position. On a stash-apply conflict,
+# `git reset --merge` restores a clean tree while leaving the stash entry recoverable —
+# a bare failed apply alone leaves literal conflict markers in the working file, which
+# would corrupt deus-cmd.sh itself if a Deus-side conflict landed there.
+_auto_sync_stash_run() {
+  local repo="$1"; shift
+  local tag="deus-auto-sync-$(basename "$repo")-$$-$(date +%s 2>/dev/null || echo 0)"
+  local dirty=false
+  # Tracked (unstaged/staged) AND untracked changes all count as dirty -- an
+  # untracked-only tree is invisible to `git diff`/`--cached` but can still collide
+  # with an incoming ff-only merge (a real failure shape: the merge itself refuses
+  # to run rather than overwrite an untracked file), so it must be stashed too.
+  if ! git -C "$repo" diff --quiet 2>/dev/null || ! git -C "$repo" diff --cached --quiet 2>/dev/null \
+     || [ -n "$(git -C "$repo" ls-files --others --exclude-standard 2>/dev/null)" ]; then
+    dirty=true
+  fi
+  if ! $dirty; then
+    "$@"
+    return $?
+  fi
+  git -C "$repo" stash push -u -m "$tag" >/dev/null 2>&1 || return 1
+  local sha
+  sha=$(git -C "$repo" stash list --format='%H %gs' 2>/dev/null | grep -F "$tag" | head -1 | cut -d' ' -f1)
+  if [ -z "$sha" ]; then
+    echo "AUTO-SYNC WARNING: could not identify our own stash entry in $repo after push (tag: $tag) — aborting this sync, changes remain stashed (recoverable via: git -C \"$repo\" stash list)." >&2
+    return 1
+  fi
+  "$@"
+  local run_status=$?
+  # --index: restore the original staged/unstaged split, not just file contents.
+  # Without it, any staged changes in the snapshotted tree come back unstaged --
+  # a silent mutation of the user's own git state beyond what this helper promises.
+  if git -C "$repo" stash apply --index "$sha" >/dev/null 2>&1; then
+    # Deliberately NOT dropping the stash entry here. `git stash drop` only
+    # accepts the positional `stash@{N}` form (confirmed empirically: it
+    # rejects a raw commit SHA outright, unlike `apply`, which accepts one
+    # directly) -- so cleanup would require resolving our SHA to its CURRENT
+    # position via a fresh `stash list`, then dropping that position. Any
+    # concurrent process pushing a stash between those two commands shifts
+    # every existing entry's position, and `stash drop` would delete THEIR
+    # entry instead of ours. This is a real, in-scope threat here, not
+    # theoretical -- the shared stash stack is explicitly used by concurrent
+    # sessions/tools in this repo's own git-safety convention. There is no
+    # atomic "drop by content identity" primitive to use instead. Leaving a
+    # successfully-applied stash entry behind is harmless (recoverable,
+    # prunable manually) -- racing to delete the wrong one is not.
+    echo "AUTO-SYNC: synced $repo -- local stash entry left in place (never auto-dropped, to avoid a race with concurrent stash activity); safe to 'git -C \"$repo\" stash drop' manually once you've confirmed it's no longer needed." >&2
+    return $run_status
+  else
+    git -C "$repo" reset --merge >/dev/null 2>&1
+    # reset --merge only cleans tracked/index state -- a failed --index apply can
+    # have already partially restored untracked files from the stash's untracked-
+    # files parent (3rd parent, present when stashed with -u) before hitting the
+    # tracked-file conflict, and those are left behind (confirmed empirically: the
+    # content survives, duplicated between the leftover file and the still-
+    # preserved stash, but the tree is not actually clean afterward as claimed).
+    #
+    # NEVER auto-delete them, even after verifying (via git hash-object) that a
+    # path's on-disk content exactly matches the stash's own blob at this
+    # instant: this worker runs detached in the background while the user keeps
+    # working, and a hash-check followed by `rm -f` is still two separate
+    # operations -- a concurrent process can replace that exact path with its
+    # own new content in the gap between the check and the delete, and `rm -f`
+    # would destroy it. No amount of "check right before acting" closes this;
+    # POSIX offers no atomic "delete this path only if its content still
+    # matches X" primitive. Confirmed as a real, in-scope risk (co-gate review,
+    # twice: once for the tracked-state case below, again here for the
+    # untracked case) -- concurrent work during this detached worker is
+    # explicitly part of the threat model, not a corner case to wave off.
+    # Purely informational: log which leftover paths match the stash's own
+    # content (safe for the USER to manually delete, with their own judgment
+    # about what's happened on disk since) vs. which don't (content already
+    # differs -- almost certainly someone else's work, leave it alone and
+    # don't even mention it as "our" residue).
+    #
+    # -z: plain `ls-tree --name-only` C-quotes (octal-escapes) non-ASCII or
+    # otherwise special filenames by default (core.quotepath) -- confirmed
+    # empirically this silently breaks matching for e.g. Hebrew/accented names
+    # (a real pattern in this vault). NUL-delimited output sidesteps quoting.
+    local untracked_parent _entry _blob_sha _uf _actual_sha
+    untracked_parent=$(git -C "$repo" log -1 --format='%P' "$sha" 2>/dev/null | awk '{print $3}')
+    if [ -n "$untracked_parent" ]; then
+      git -C "$repo" ls-tree -rz "$untracked_parent" 2>/dev/null | while IFS= read -r -d '' _entry; do
+        [ -z "$_entry" ] && continue
+        _blob_sha="${_entry%%$'\t'*}"
+        _blob_sha="${_blob_sha##* }"
+        _uf="${_entry#*$'\t'}"
+        [ -z "$_uf" ] && continue
+        git -C "$repo" ls-files --error-unmatch -- "$_uf" >/dev/null 2>&1 && continue
+        [ -e "$repo/$_uf" ] || continue
+        _actual_sha=$(git -C "$repo" hash-object -- "$_uf" 2>/dev/null)
+        [ "$_actual_sha" = "$_blob_sha" ] || continue
+        echo "AUTO-SYNC INFO: $repo/$_uf still matches the preserved stash's own content -- likely safe to remove manually if no longer needed (never auto-deleted, to avoid a TOCTOU race with concurrent work at that path)." >&2
+      done
+    fi
+    # No tracked-state cleanup beyond `reset --merge` above either: an earlier
+    # draft added an unconditional `reset --hard HEAD` "safety net" for
+    # git-version-agnostic behavior, but that's the exact same TOCTOU danger as
+    # the untracked case, for tracked files -- and unlike the untracked case,
+    # there's no single blob to verify a partial merge result against even for
+    # logging purposes. Never proven necessary on this git version either
+    # (ablated and re-tested clean during review). Removed rather than made
+    # unsafe-by-design; `reset --merge`'s own behavior is what's relied on for
+    # tracked state, same as before this feature ever added the extra step.
+    echo "AUTO-SYNC WARNING: stash apply conflict in $repo after sync — tree restored via 'git reset --merge', stash NOT dropped (ref: $sha, recoverable via: git -C \"$repo\" stash list)." >&2
+    return 1
+  fi
+}
+
+# Fetch + ff-only merge only — never a real merge, rebase, or reset on divergence.
+_auto_sync_fetch_merge() {
+  local repo="$1" remote="$2"
+  git -C "$repo" fetch --quiet "$remote" main >/dev/null 2>&1 || return 1
+
+  # Refuse rather than silently overwrite a locally-ignored file the incoming
+  # commit starts tracking — a real git gap, see docs/decisions/live-command-freshness.md
+  # Decision 4.
+  local incoming ignored collision _f
+  incoming=$(git -C "$repo" diff --name-only "HEAD..$remote/main" 2>/dev/null)
+  ignored=$(git -C "$repo" ls-files --others --ignored --exclude-standard 2>/dev/null)
+  if [ -n "$incoming" ] && [ -n "$ignored" ]; then
+    collision=""
+    while IFS= read -r _f; do
+      [ -z "$_f" ] && continue
+      if printf '%s\n' "$ignored" | grep -F -x -q "$_f" 2>/dev/null; then
+        collision="${collision:+$collision }$_f"
+      fi
+    done <<AUTOSYNCEOF
+$incoming
+AUTOSYNCEOF
+    if [ -n "$collision" ]; then
+      echo "AUTO-SYNC WARNING: refusing to merge in $repo — incoming change would silently overwrite locally-ignored file(s): $collision" >&2
+      return 1
+    fi
+  fi
+
+  git -C "$repo" merge --ff-only "$remote/main" >/dev/null 2>&1
+}
+
+# Step A — this checkout. Every guard fails silently, checked before any mutation.
+_auto_sync_step_a() {
+  local repo="$SCRIPT_DIR"
+  # Linked-worktree guard (matches deploy's PRIVATE-WIPE precedent): never build/restart
+  # from anything but the primary checkout.
+  [ "$(git -C "$repo" rev-parse --git-dir 2>/dev/null)" = "$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" ] || return 0
+  local branch
+  branch=$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null)
+  [ "$branch" = "main" ] || return 0
+  git -C "$repo" remote get-url origin >/dev/null 2>&1 || return 0
+
+  local before after
+  before=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+  # No restart on a stash-restore conflict, even if HEAD moved — known limitation,
+  # see docs/decisions/live-command-freshness.md Decision 4.
+  _auto_sync_stash_run "$repo" _auto_sync_fetch_merge "$repo" origin || return 0
+  after=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+
+  # Restart gated on ACTUAL HEAD movement, not "merge exited 0" (an already-up-to-date
+  # ff-only merge is a no-op success) — deploy's pattern, not sync's unconditional one.
+  if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
+    _build_and_restart --quiet >/dev/null 2>&1
+  fi
+}
+
+# Step B — a second, generic repo. Fully config-driven and fully independent of Step A:
+# a failure/absence here never affects Step A, and vice versa. deus-cmd.sh itself must
+# never contain any real repo/fork identity — only these three config key reads.
+_auto_sync_step_b() {
+  # NEVER name this local `path` -- it is a zsh special parameter tied to $PATH;
+  # `local path` blanks $PATH for the rest of this function (silently breaking
+  # every subsequent git/python3 call), and this file's shebang is zsh, not bash.
+  # Confirmed empirically: the entire step was a silent no-op in production zsh
+  # until this was caught and fixed.
+  local sync_path upstream_id fork_id
+  sync_path=$(_read_config_key secondary_sync_path)
+  upstream_id=$(_read_config_key secondary_sync_upstream_identity)
+  fork_id=$(_read_config_key secondary_sync_fork_identity)
+  [ -n "$sync_path" ] && [ -n "$upstream_id" ] && [ -n "$fork_id" ] || return 0
+  case "$sync_path" in
+    "~"*) sync_path="$HOME${sync_path#\~}" ;;
+  esac
+  [ -d "$sync_path" ] || return 0
+  git -C "$sync_path" rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+  local branch
+  branch=$(git -C "$sync_path" symbolic-ref --short -q HEAD 2>/dev/null)
+  [ "$branch" = "main" ] || return 0
+
+  # Identity-verified on BOTH sides — not just "a remote named origin/fork exists".
+  local origin_url fork_url
+  origin_url=$(git -C "$sync_path" remote get-url origin 2>/dev/null)
+  fork_url=$(git -C "$sync_path" remote get-url fork 2>/dev/null)
+  case "$origin_url" in *"$upstream_id"*) ;; *) return 0 ;; esac
+  case "$fork_url" in *"$fork_id"*) ;; *) return 0 ;; esac
+
+  local before after
+  before=$(git -C "$sync_path" rev-parse HEAD 2>/dev/null)
+  # See Step A's NOTE above — same known, documented, non-blocking limitation applies
+  # here (no push on a stash-restore conflict, even if HEAD moved).
+  _auto_sync_stash_run "$sync_path" _auto_sync_fetch_merge "$sync_path" origin || return 0
+  after=$(git -C "$sync_path" rev-parse HEAD 2>/dev/null)
+
+  # Push only on real movement. Never force — a rejected push is logged, never retried.
+  if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
+    if ! git -C "$sync_path" push fork main >/dev/null 2>&1; then
+      echo "AUTO-SYNC WARNING: push to fork main failed/rejected for $sync_path — not retried this run." >&2
+    fi
+  fi
+}
+
+_deus_auto_sync_worker() {
+  _auto_sync_step_a
+  _auto_sync_step_b
+}
+
+# Entry point — called once per `deus` invocation, right after _deus_freshness_check.
+_deus_auto_sync() {
+  [[ "$OSTYPE" == darwin* || "$OSTYPE" == linux* ]] || return 0
+  case "$1" in sync|deploy|root|--print-identity|""|-h|--help|help) return 0 ;; esac
+  local _as_arg
+  for _as_arg in "$@"; do
+    [ "$_as_arg" = "--print-identity" ] && return 0
+  done
+  # DEUS_AUTO_SYNC=0 kill switch for the whole feature -- LIA-529
+  [ "$DEUS_AUTO_SYNC" = "0" ] && return 0
+  [ "$(_read_config_key auto_sync_enabled)" = "false" ] && return 0
+
+  local stamp_dir="$HOME/.config/deus" now
+  now=$(date +%s 2>/dev/null) || return 0
+  mkdir -p "$stamp_dir" 2>/dev/null || return 0
+
+  # Atomic throttle+lock via `mkdir` (POSIX-guaranteed atomic on a single caller,
+  # unlike a separate read-stamp/compare/write-stamp sequence — two concurrent `deus`
+  # invocations could otherwise both pass that check and spawn overlapping
+  # fetch/merge/build/restart/push work against the same repo). The lock dir's own
+  # mtime IS the throttle stamp — no separate stamp file. Own lock, independent of
+  # _deus_freshness_check's stamp — different cadence semantics (this path mutates
+  # state; that one only reads).
+  local lock="$stamp_dir/.auto-sync.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    local lock_mtime
+    lock_mtime=$(_file_mtime "$lock" 2>/dev/null) || return 0
+    [ $(( now - lock_mtime )) -lt 600 ] 2>/dev/null && return 0
+    # Stale (crashed/killed prior run, or a genuinely elapsed window) — reclaim.
+    # rmdir+mkdir isn't atomic as a pair: two callers reclaiming at the exact same
+    # instant can both succeed (a narrow, low-consequence race bounded to this one
+    # ~600s boundary, not the whole window like the original stamp-file bug).
+    rmdir "$lock" 2>/dev/null
+    mkdir "$lock" 2>/dev/null || return 0
+  fi
+
+  local log="$stamp_dir/auto-sync.log"
+  ( _deus_auto_sync_worker >>"$log" 2>&1 & ) >/dev/null 2>&1
+  return 0
+}
+# <<< auto-sync
+
 _fcc_validate_model_name() {
   if ! printf '%s' "$1" | grep -qE '^[a-zA-Z0-9_./:@-]+$'; then
     echo "Error: invalid characters in model name."
@@ -390,6 +658,8 @@ _ensure_portable_skills() {
 
 # Nudge if the live tree has drifted off/behind main (warn-only, throttled).
 _deus_freshness_check "$@"
+# Passive background auto-sync (mutating — see the auto-sync sentinel block above).
+_deus_auto_sync "$@"
 
 case "$1" in
   init|onboard)
