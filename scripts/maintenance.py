@@ -100,6 +100,21 @@ def main():
         "credential_probe", [cred_probe], dry_run
     )
 
+    # SessionEnd auto-save safety net: recovers queue entries a crashed/killed
+    # detached worker missed. Up to 3 entries x compress_sweep's own worker
+    # ceiling (120s default) + slack.
+    compress_sweep = str(SCRIPTS_DIR / "maintenance" / "compress_sweep.py")
+    results["compress_sweep"] = run_task(
+        "compress_sweep", [compress_sweep], dry_run, timeout=600,
+    )
+
+    # LIA-527 Phase 2: reclaims cc-write-queue job files a crashed/killed detached worker
+    # missed. Single-best-effort-no-retry design -- see cc_write_queue_sweep.py's docstring.
+    cc_write_queue_sweep = str(SCRIPTS_DIR / "maintenance" / "cc_write_queue_sweep.py")
+    results["cc_write_queue_sweep"] = run_task(
+        "cc_write_queue_sweep", [cc_write_queue_sweep], dry_run,
+    )
+
     # ── Weekly tasks (Sunday or --weekly) ────────────────────────────────────
 
     if run_weekly:

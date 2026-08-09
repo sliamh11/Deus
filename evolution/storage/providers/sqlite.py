@@ -45,6 +45,11 @@ _UPDATABLE_INTERACTION_COLS = frozenset({
     "correction_mined_at",
     "judge_schema_version",
     "metrics",
+    # LIA-1011: set by maintenance.process_human_feedback() once a row has
+    # been routed (skipped, errored-and-retriable-next-cycle excluded, or
+    # generated+saved). human_score/human_comment/scored_at/source_ref are
+    # deliberately NOT here -- see record_human_feedback() and log_interaction().
+    "processed_at",
 })
 
 # Guard against concurrent schema migrations from multiple threads
@@ -281,15 +286,22 @@ class SQLiteStorageProvider(StorageProvider):
             # log_interaction upsert (like judge_score) so a NULL re-log cannot
             # clobber the guard back to NULL.
             ("credited_at", "TEXT"),
-            # LIA-109: opaque external-origin ref ("<system>:<kind>:<id>", e.g.
-            # "tracing:trace:abc123") for exact matching against an external
-            # ingestion source. Set-once: COALESCE-preserved in the upsert.
+            # LIA-1011: human feedback / external-trace annotation substrate.
+            # source_ref is set-once (COALESCE upsert in log_interaction, never
+            # in _UPDATABLE_INTERACTION_COLS) so the first writer's external
+            # reference can never be clobbered by a later re-log. human_score/
+            # human_comment/scored_at are written only via the guarded
+            # record_human_feedback() UPDATE. processed_at is set by
+            # maintenance.process_human_feedback() once a row has been routed.
             ("source_ref", "TEXT"),
-            # LIA-109: human ground-truth feedback. human_processed_at is the
-            # one-shot guard for process_human_feedback(); cleared only when the
-            # (score, comment) pair actually changes (NULL-safe comparison).
             ("human_score", "REAL"),
             ("human_comment", "TEXT"),
+            ("scored_at", "TEXT"),
+            ("processed_at", "TEXT"),
+            # LIA-109: separate timestamp pair for update_human_feedback() /
+            # get_unprocessed_human_feedback() (distinct from record_human_feedback's
+            # scored_at/processed_at above -- both mechanisms share human_score/
+            # human_comment but track their own processing timestamps).
             ("human_scored_at", "TEXT"),
             ("human_processed_at", "TEXT"),
         ]:
@@ -304,10 +316,12 @@ class SQLiteStorageProvider(StorageProvider):
             CREATE INDEX IF NOT EXISTS ix_interactions_domain
                 ON interactions(domain_presets) WHERE domain_presets IS NOT NULL
         """)
-        db.execute("""
-            CREATE INDEX IF NOT EXISTS ix_interactions_source_ref
-                ON interactions(source_ref) WHERE source_ref IS NOT NULL
-        """)
+        # NOTE: a non-UNIQUE ix_interactions_source_ref used to be created here
+        # too (fork's original LIA-109 version) -- removed because it shared
+        # the exact index name with LIA-1011's CREATE UNIQUE INDEX below and,
+        # running first with IF NOT EXISTS, silently prevented the unique
+        # constraint from ever being created (source_ref duplicates were not
+        # actually rejected). See that statement below for the real index.
 
         # LIA-109: persisted reflection polarity ('corrective' | 'positive';
         # NULL for rows predating the column). Persisted — never inferred:
@@ -320,9 +334,27 @@ class SQLiteStorageProvider(StorageProvider):
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+        # LIA-1011: source_ref is set-once per interaction; the partial unique
+        # index enforces that at the DB layer (NULLs are unconstrained, so
+        # interactions without an external source are unaffected).
+        db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_interactions_source_ref
+                ON interactions(source_ref) WHERE source_ref IS NOT NULL
+        """)
+
         # Reflection lifecycle: soft-delete archival column (added in v1.5)
         try:
             db.execute("ALTER TABLE reflections ADD COLUMN archived_at TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        # LIA-1011: polarity records which "zone" (corrective vs positive) a
+        # reflection was generated for, so process_human_feedback() can
+        # archive a reflection that contradicts a later human-verified zone.
+        # NULL for legacy/pre-migration rows and for principles.py's
+        # cross-group writer (never zone-keyed) -- see docs/KNOWN_LIMITATIONS.md.
+        try:
+            db.execute("ALTER TABLE reflections ADD COLUMN polarity TEXT")
         except sqlite3.OperationalError:
             pass  # Column already exists
 
@@ -382,6 +414,14 @@ class SQLiteStorageProvider(StorageProvider):
         # previously-stored value (post-hoc metrics; the IDs needed at scoring
         # time). credited_at is intentionally absent — written only via
         # claim_interaction_credit (LIA-214).
+        #
+        # source_ref uses the REVERSED COALESCE operand order vs metrics/
+        # retrieved_reflection_ids above: COALESCE(interactions.source_ref,
+        # excluded.source_ref) is existing-value-first, so the FIRST writer's
+        # external reference is authoritative and can never be clobbered by a
+        # later re-log (set-once semantics; LIA-1011). The unique partial
+        # index ix_interactions_source_ref additionally guards against two
+        # different interactions claiming the same source_ref.
         db.execute(
             """
             INSERT INTO interactions
@@ -410,7 +450,7 @@ class SQLiteStorageProvider(StorageProvider):
                     excluded.retrieved_reflection_ids,
                     interactions.retrieved_reflection_ids
                 ),
-                source_ref = COALESCE(interactions.source_ref, excluded.source_ref)
+                source_ref      = COALESCE(interactions.source_ref, excluded.source_ref)
             """,
             (
                 interaction_id, timestamp, group_folder, prompt, response,
@@ -495,6 +535,29 @@ class SQLiteStorageProvider(StorageProvider):
             "UPDATE interactions SET credited_at = datetime('now') "
             "WHERE id = ? AND credited_at IS NULL",
             [interaction_id],
+        )
+        db.commit()
+        claimed = cur.rowcount == 1
+        db.close()
+        return claimed
+
+    def record_human_feedback(
+        self, interaction_id: str, *, human_score: float,
+        human_comment: Optional[str], scored_at: str,
+    ) -> bool:
+        """Record a human-supplied score/comment for an interaction, once.
+
+        Mirrors claim_interaction_credit's connection lifecycle + WHERE ...
+        IS NULL guard pattern: the UPDATE only applies when human_score is
+        currently NULL, so a second call for the same interaction is a no-op.
+        Returns True for the single writer that won the claim, False
+        otherwise (already scored, or the row is missing). LIA-1011.
+        """
+        db = self._connect()
+        cur = db.execute(
+            """UPDATE interactions SET human_score = ?, human_comment = ?, scored_at = ?
+               WHERE id = ? AND human_score IS NULL""",
+            [human_score, human_comment, scored_at, interaction_id],
         )
         db.commit()
         claimed = cur.rowcount == 1
@@ -898,27 +961,15 @@ class SQLiteStorageProvider(StorageProvider):
         db.close()
         return dict(row) if row else None
 
-    def get_unprocessed_human_feedback(self, limit: int = 50) -> list[dict]:
-        """Interactions with fresh human feedback awaiting processing.
-
-        judge_score IS NOT NULL: the human/judge comparison needs both sides;
-        unjudged rows are picked up on a later pass once the judge loop runs.
-        """
-        db = self._connect()
-        rows = db.execute(
-            """
-            SELECT * FROM interactions
-            WHERE human_score IS NOT NULL
-              AND human_processed_at IS NULL
-              AND judge_score IS NOT NULL
-            ORDER BY human_scored_at ASC
-            LIMIT ?
-            """,
-            [limit],
-        ).fetchall()
-        db.close()
-        return [dict(r) for r in rows]
-
+    # NOTE: get_unprocessed_human_feedback (human_scored_at/human_processed_at
+    # variant) removed here -- it was shadowed dead code (a same-named method
+    # defined later in this class, see LIA-1011's get_unprocessed_human_feedback
+    # below, always won). mark_human_feedback_processed/update_human_feedback
+    # above are now unreferenced by any live caller (interaction_log.py routes
+    # through record_human_feedback instead) but are left defined, unused, as
+    # the primitives evolution/tests/test_human_feedback.py still calls directly
+    # -- that suite needs a rewrite onto the LIA-1011 path; not done as part of
+    # this upstream-sync merge.
     def mark_human_feedback_processed(self, interaction_id: str) -> None:
         db = self._connect()
         db.execute(
@@ -1003,8 +1054,14 @@ class SQLiteStorageProvider(StorageProvider):
 
     def get_reflections_for_interaction(self, interaction_id: str) -> list[dict]:
         db = self._connect()
+        # Excludes archived reflections (LIA-1011): a prior positive/corrective
+        # reflection that was already archived is inactive and should not
+        # count as "existing" for either the record_feedback_tool credit
+        # path (mcp_server.py) or process_human_feedback's redundancy check
+        # (maintenance.py) -- crediting or treating a superseded reflection
+        # as still-live would be wrong for both callers.
         rows = db.execute(
-            "SELECT id FROM reflections WHERE interaction_id = ?",
+            "SELECT id, polarity FROM reflections WHERE interaction_id = ? AND archived_at IS NULL",
             [interaction_id],
         ).fetchall()
         db.close()
@@ -1257,6 +1314,26 @@ class SQLiteStorageProvider(StorageProvider):
               AND eval_suite != 'infra_error'
               AND group_folder != '__maintenance__'
             ORDER BY timestamp ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        db.close()
+        return [dict(r) for r in rows]
+
+    def get_unprocessed_human_feedback(self, limit: int = 50) -> list[dict]:
+        """Fetch human-scored interactions not yet routed by process_human_feedback.
+
+        LIA-1011: human_score IS NOT NULL means record_human_feedback() wrote
+        a score; processed_at IS NULL means maintenance.process_human_feedback()
+        has not yet consumed this row.
+        """
+        db = self._connect()
+        rows = db.execute(
+            """
+            SELECT * FROM interactions
+            WHERE human_score IS NOT NULL AND processed_at IS NULL
+            ORDER BY scored_at ASC
             LIMIT ?
             """,
             (limit,),

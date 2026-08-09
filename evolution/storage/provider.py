@@ -67,11 +67,14 @@ class StorageProvider(ABC):
 
         When a row with the same ID already exists, all fields are overwritten
         EXCEPT metrics, retrieved_reflection_ids, and source_ref: a None value
-        for any of these preserves the previously stored value (COALESCE
-        upsert), so post-hoc metric updates, the retrieved-reflection IDs
-        (needed at scoring time), and the set-once external-origin ref
-        (e.g. "tracing:trace:abc123") survive re-logging. credited_at is never
-        written here — see claim_interaction_credit (LIA-214).
+        for metrics/retrieved_reflection_ids preserves the previously stored
+        value (COALESCE upsert), so post-hoc metric updates and the
+        retrieved-reflection IDs (needed at scoring time) survive re-logging.
+        source_ref is set-once: the FIRST non-NULL value written for an
+        interaction id is authoritative and a later re-log can never
+        overwrite it (LIA-1011; reversed COALESCE operand order vs the other
+        two). credited_at is never written here — see claim_interaction_credit
+        (LIA-214).
         """
         ...
 
@@ -88,6 +91,21 @@ class StorageProvider(ABC):
         that won the claim, False if already claimed or the row is missing.
         Makes LIA-214 retrieved-reflection crediting idempotent under concurrent
         score writers and judge re-scores.
+        """
+        ...
+
+    @abstractmethod
+    def record_human_feedback(
+        self, interaction_id: str, *, human_score: float,
+        human_comment: Optional[str], scored_at: str,
+    ) -> bool:
+        """Record a human-supplied score/comment for an interaction, once.
+
+        Sets human_score/human_comment/scored_at only if human_score is
+        currently NULL (one-shot, idempotent — mirrors
+        claim_interaction_credit). Returns True for the single writer that
+        won the claim, False if already scored or the row is missing.
+        LIA-1011.
         """
         ...
 
@@ -178,11 +196,11 @@ class StorageProvider(ABC):
     ) -> str:
         """Persist a reflection with its embedding. Returns the reflection ID.
 
-        *polarity* ('corrective' | 'positive') records which generator produced
-        the lesson. Persisted, never inferred: category values overlap between
-        generators and score_at_gen can be decoupled from polarity (user-signal
-        writer, env-tunable thresholds). None (unknown) rows are exempt from
-        zone-alignment archival.
+        polarity records which "zone" ("corrective" or "positive") this
+        reflection belongs to, so a later human-verified feedback event can
+        archive a reflection whose zone it contradicts (LIA-1011). None for
+        writers not keyed to a fixed zone (e.g. principles.py's cross-group
+        extraction).
         """
         ...
 
@@ -300,7 +318,7 @@ class StorageProvider(ABC):
 
     @abstractmethod
     def get_reflections_for_interaction(self, interaction_id: str) -> list[dict]:
-        """Get all reflections linked to a specific interaction."""
+        """Get active (non-archived) reflections linked to a specific interaction."""
         ...
 
     @abstractmethod
@@ -421,6 +439,14 @@ class StorageProvider(ABC):
     @abstractmethod
     def get_unjudged_interactions(self, limit: int = 50) -> list[dict]:
         """Fetch interactions that have not been judged yet (judge_score IS NULL)."""
+        ...
+
+    @abstractmethod
+    def get_unprocessed_human_feedback(self, limit: int = 50) -> list[dict]:
+        """Fetch human-scored interactions not yet routed by process_human_feedback.
+
+        human_score IS NOT NULL AND processed_at IS NULL. LIA-1011.
+        """
         ...
 
     @abstractmethod

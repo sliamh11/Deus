@@ -67,6 +67,11 @@
             "type": "command",
             "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" plan-mode-invalidator'",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" codegraph-cite-check'",
+            "timeout": 5
           }
         ]
       },
@@ -106,21 +111,6 @@
           {
             "type": "command",
             "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/format-check.sh\"'",
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" codegraph-first-gate'",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "Grep|Glob",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash -c '\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/warden-shim.sh\" codegraph-first-gate'",
             "timeout": 5
           }
         ]

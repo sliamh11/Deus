@@ -54,14 +54,20 @@ Different components read config from different locations. Getting these wrong c
 
 ## Code-Intelligence MCP Servers (host-side)
 
-Two **host-side** MCP servers power code search and the codegraph-first
-exploration gate (`scripts/codex_warden_hooks.py`, `run_codegraph_first_gate`).
-They are *not* the channel MCP servers (WhatsApp, Telegram, …) — they run on the
-host for Claude Code sessions and are registered at **user scope** so every
-project sees them. A fresh machine / migration that skips them leaves the gate
-with no real codegraph tool to call, quietly degrading the exploration workflow
-required by `core-behavioral-rules.md`. See `docs/ARCHITECTURE.md` for what each
-server does and how they compose.
+Two **host-side** MCP servers power code search and exploration for agent
+sessions. They are *not* the channel MCP servers (WhatsApp, Telegram, …) — they
+run on the host for Claude Code sessions and are registered at **user scope**
+so every project sees them. A fresh machine / migration that skips them leaves
+agents with no real codegraph tool to call, quietly degrading the exploration
+workflow required by `core-behavioral-rules.md`. See `docs/ARCHITECTURE.md` for
+what each server does and how they compose.
+
+Separately, the advisory `codegraph-cite-check` hook (`scripts/codex_warden_hooks.py`,
+`run_codegraph_cite_check`) reads `.codegraph/codegraph.db` directly (not via
+these MCP servers) to validate the symbols and `file:line` references cited in
+a submitted plan. It fires on PreToolUse `ExitPlanMode`, never blocks, and is a
+silent no-op if the DB is absent — so skipping the MCP servers above degrades
+agent tool access, not this check.
 
 | Server | Provides | Source |
 |--------|----------|--------|
@@ -89,13 +95,11 @@ claude mcp add code-search --scope user -- \
 ```bash
 claude mcp list | grep codegraph     # → ✓ Connected
 claude mcp list | grep code-search   # → ✓ Connected
-python3 -m pytest scripts/tests/ -k codegraph -q   # gate-detection fixtures pass
+python3 -m pytest scripts/tests/ -k codegraph -q   # codegraph-cite-check fixtures pass
+python3 scripts/drift_check.py --codegraph-db   # DB schema still matches the query cite-check runs
 ```
 
-The gate recognizes a real call when a transcript line is an `assistant`
-`tool_use` whose `name` starts with `mcp__codegraph__` or `mcp__code-search__`
-(see `_line_is_codegraph_toolcall`). If `claude mcp list` shows neither server,
-re-register with the commands above.
+If `claude mcp list` shows neither server, re-register with the commands above.
 
 ## Message Pipeline
 

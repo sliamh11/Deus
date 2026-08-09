@@ -5,6 +5,7 @@ from .provider import JudgeProvider, JudgeRegistry, NoProviderAvailableError
 from .gemini_judge import GeminiRuntimeJudge
 from .ollama_judge import OllamaRuntimeJudge, is_ollama_available
 from .llama_cpp_judge import LlamaCppRuntimeJudge, is_llama_cpp_available
+from .openai_judge import OpenAIRuntimeJudge, is_openai_available
 
 # Register built-in providers on import
 from . import providers as _providers  # noqa: F401
@@ -31,5 +32,6 @@ __all__ = [
     "GeminiRuntimeJudge",
     "OllamaRuntimeJudge", "is_ollama_available",
     "LlamaCppRuntimeJudge", "is_llama_cpp_available",
+    "OpenAIRuntimeJudge", "is_openai_available",
     "make_runtime_judge",
 ]

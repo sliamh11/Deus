@@ -30,7 +30,7 @@ _CODE_FROM_CATEGORY = {RATE_LIMIT: "rate_limit", AUTH_ERROR: "auth"}
 
 
 class CodexBackend(ModelReviewerBackend):
-    """Backend id ``gpt``: drives GPT (default gpt-5.6-sol) through the codex CLI."""
+    """Backend id ``gpt``: drives GPT (default codex_review.DEFAULT_MODEL) through the codex CLI."""
 
     def id(self) -> str:
         return BACKEND_GPT
@@ -43,6 +43,10 @@ class CodexBackend(ModelReviewerBackend):
             rules_path=Path(request.rules_path),
             is_diff=request.is_diff,           # False for content-file roles (e.g. plan-reviewer)
         )
+        if request.max_files is not None:
+            # Only override when the caller asked: leaving the field alone keeps every existing
+            # co-gate call on codex_review's own DEFAULT_MAX_FILES.
+            cfg.max_files = request.max_files
         try:
             result = cr.review(request.content, cfg, request.cwd, request.cross_context)
         except cr.ReviewError as exc:
@@ -71,4 +75,7 @@ class CodexBackend(ModelReviewerBackend):
             findings=findings,
             summary=meta.get("summary", ""),
             raw=result.get("raw", ""),
+            # Paths the engine dropped at the max-files cap. Previously discarded here, which let
+            # a truncated review surface as a plain SHIP; the driver now downgrades that case.
+            files_not_reviewed=tuple(meta.get("files_dropped_max") or ()),
         )

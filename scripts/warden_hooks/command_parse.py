@@ -220,6 +220,16 @@ def _parse_git_invocation(sub_command: str, cwd: Path) -> tuple[bool, Path | Non
                 if "=" not in tok and i < len(tokens):
                     i += 1
                 continue
+            # Generic single-letter bare flag (e.g. -q, -s -- not real git
+            # globals, but the superseded GIT_COMMIT_RE regex's own
+            # `-[A-BD-Za-bd-z]` alternative matched any letter except C/c
+            # generically, and this gate's fail-closed philosophy prefers
+            # over-matching to under-matching -- see feedback_no_speculative_hardening
+            # comment above _GIT_GLOBAL_FLAGS_WITH_VALUE for why this isn't an
+            # enumerated allowlist instead).
+            if len(tok) == 2 and tok[0] == "-" and tok[1].isalpha() and tok[1] not in ("C", "c"):
+                i += 1
+                continue
             break
         is_commit = i < len(tokens) and tokens[i] == "commit"
         return is_commit, (target.resolve(strict=False) if saw_c else None)
@@ -240,16 +250,22 @@ def _is_git_commit_command(command: str) -> bool:
     )
 
 
+#: ``gh pr merge``/``gh pr view`` flags that consume the following token as
+#: their value. Shared by ``_extract_pr_ref`` (to skip over them while hunting
+#: for the PR ref) and ``_extract_repo_flag`` (to avoid misreading one of their
+#: values as a repo flag).
+_FLAGS_WITH_VALUE = frozenset({
+    "-R", "--repo", "-t", "--subject-body",
+    "--match-head-commit", "--author",
+    "-b", "--body", "-F", "--body-file", "-A", "--author-email",
+})
+
+
 def _extract_pr_ref(command: str) -> str | None:
     """Return the PR number, URL, or branch from a ``gh pr merge`` command.
 
     Scans past flags so ``gh pr merge --squash 294`` is handled correctly.
     """
-    _FLAGS_WITH_VALUE = frozenset({
-        "-R", "--repo", "-t", "--subject-body",
-        "--match-head-commit", "--author",
-        "-b", "--body", "-F", "--body-file", "-A", "--author-email",
-    })
     tokens = _shell_tokens(command)
     for index, token in enumerate(tokens):
         if not _is_gh_executable(token):
@@ -270,4 +286,48 @@ def _extract_pr_ref(command: str) -> str | None:
                 continue
             i += 1
         return None
+    return None
+
+
+def _extract_repo_flag(command: str) -> str | None:
+    """Return an explicit ``-R``/``--repo`` value from a ``gh`` invocation, if any.
+
+    ``gh`` accepts ``-R``/``--repo <[HOST/]OWNER/REPO>`` either as a global flag
+    (before the subcommand, e.g. ``gh --repo o/r pr merge 294``) or as a
+    subcommand-local flag (after it, e.g. ``gh pr merge --repo o/r 294`` — the
+    shape production callers actually use). Scans every token after ``gh``
+    uniformly, using ``_FLAGS_WITH_VALUE`` to skip the VALUE of every other
+    flag so it is never misread as a repo flag. When ``--repo``/``-R`` appears
+    more than once, the LAST occurrence wins, matching ``gh``'s own
+    last-flag-wins precedence. Returns ``None`` when no explicit repo scope is
+    given, so callers fall back to ``gh``'s own cwd-based git-remote
+    resolution (today's unchanged default behaviour).
+    """
+    tokens = _shell_tokens(command)
+    for index, token in enumerate(tokens):
+        if not _is_gh_executable(token):
+            continue
+        found: str | None = None
+        i = index + 1
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok in ("-R", "--repo"):
+                if i + 1 < len(tokens):
+                    found = tokens[i + 1]
+                i += 2
+                continue
+            if tok.startswith("--repo="):
+                found = tok.split("=", 1)[1]
+                i += 1
+                continue
+            if tok.startswith("-R") and tok != "-R" and not tok.startswith("--"):
+                # gh's short-flag attached form: `-Rowner/repo`.
+                found = tok[2:]
+                i += 1
+                continue
+            if tok in _FLAGS_WITH_VALUE and i + 1 < len(tokens):
+                i += 2
+                continue
+            i += 1
+        return found
     return None

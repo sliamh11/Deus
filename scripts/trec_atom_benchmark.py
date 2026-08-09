@@ -42,6 +42,8 @@ if _PROJECT_ROOT not in sys.path:
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
+from _gemini_quota import is_quota_error  # noqa: E402
+
 BENCH_DIR = Path(os.path.expanduser("~/.deus/bench"))
 LOG_PATH = Path(os.path.expanduser("~/.deus/memory_tree_queries.jsonl"))
 DB_PATH = Path(os.path.expanduser("~/.deus/memory.db"))
@@ -412,7 +414,7 @@ def stage_judge(judge: str = "gemini", judge_model: str = "gemma4:e4b", fresh: b
                         time.sleep(4)
                         break
                     except Exception as e:
-                        if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                        if is_quota_error(e):
                             if "PerDay" in str(e):
                                 exhausted_models.add(model)
                                 print(f"  {model} daily quota exhausted, skipping", file=sys.stderr)
@@ -463,7 +465,7 @@ def stage_judge(judge: str = "gemini", judge_model: str = "gemma4:e4b", fresh: b
                                 time.sleep(4)
                                 break
                             except Exception as e:
-                                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                                if is_quota_error(e):
                                     if "PerDay" in str(e):
                                         exhausted_models.add(model)
                                     else:

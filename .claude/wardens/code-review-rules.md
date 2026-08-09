@@ -97,6 +97,12 @@
 **Check:** Does the diff (or PR body) show the producer→consumer edge — a non-test caller, a live registration, or the flag actually read on a runtime path — OR cite a deferred-wire Linear issue (e.g. `LIA-NNN`) for the missing wire?
 **Rule:** A new capability must be reachable in the runtime path or explicitly tracked as deferred. Green unit tests do not prove reachability — every facade in the LIA-133 audit had passing unit tests yet no live caller. Flag the unwired-and-untracked case; a cited deferral is acceptable.
 
+## visual-verification-artifact-required
+**Severity:** blocking
+**Applies when:** Diff introduces or replaces a rendering/display surface (TUI components, chat/channel message templates, CLI output formatting, web UI) — i.e. the diff's own purpose, evidenced by the files touched, is visual/UX quality or a new/replaced rendering path. Does not apply to a diff whose visual/UX change is trivial and easily reversible (one-line copy/color/formatting tweak, no new or replaced rendering surface) — the same class `visual-verification-required` exempts at plan time.
+**Check:** Does the diff itself contain a minimal verification record — naming the specific feature captured, the expected result, the observed result, and an explicit PASS/FAIL disposition — alongside a corroborating artifact reference (a new/added artifact file, or a citation to one inside a modified/added doc that is part of THIS diff)? A bare artifact-file path with no recorded expected/observed/disposition does not satisfy this — it proves a file was added, not that anyone reviewed it. (Scoped deliberately to diff-visible evidence — commit messages and PR bodies are not guaranteed to reach every review backend; a reviewer WITH that fuller context may additionally corroborate against it, but must not rely on it as the sole basis to pass.) Separately: if the diff itself claims a live/manual verification occurred, is there a corroborating trace for THAT specific claim within the diff — don't take it on account?
+**Rule:** An applicable diff must ship with a real, diff-visible verification record (feature, expected, observed, disposition) plus its artifact reference — absence of either is blocking regardless of whether anyone claimed the check was done; silence is not a safe harbor. An in-diff claim of live/visual verification that the diff itself cannot corroborate is equally blocking — an uncorroborated claim provides no more assurance than no claim at all and must never be treated as the lesser risk. This elevates `connectivity-wiring`/`expected-output-confirmed`'s general "unverified claim" language to blocking specifically for this class of diff, where the whole point of the change is what a human would see.
+
 ## expected-output-confirmed
 **Severity:** warning
 **Applies when:** The branch's plan committed an Expected Output (plan-review `verification-strategy`) for a non-trivial behavioral change present in this diff.
@@ -214,6 +220,10 @@
 ### connectivity-wiring
 **Cite:** `docs/decisions/facade-prevention-mechanism.md`; LIA-133 facade audit (Layer 1 of 3)
 **Remediation:** Add the missing producer→consumer edge — wire the new symbol/module into a live runtime path, or set the flag on that path — and show it in the diff or PR body. If the wire is intentionally deferred, cite the tracking Linear issue in the PR body and an adjacent code comment. Do not rely on unit-test presence as evidence of reachability. The rejected blanket "zero-caller exported symbol" check (and why it floods false positives) is documented in the ADR.
+
+### visual-verification-artifact-required
+**Cite:** `Research/2026-07-23-deus-tui-failure-root-cause-investigation.md` — LIA-471's round-2 code review found "zero trace anywhere in the diff, the commit messages, or the ADR" for a claimed live pty smoke test and still shipped it as a non-blocking Warning; LIA-473 shipped with zero visual verification of any kind (no claim made at all), which a claim-gated rule would have missed entirely.
+**Remediation:** Add a short verification record (feature / expected / observed / PASS-or-FAIL) plus the artifact it refers to as a new file in the diff, or within an added/modified doc, before SHIP. If an in-diff claim was made and the diff can't corroborate it, either add the record+artifact now or remove the claim and treat the feature as unverified until a real check is done.
 
 ### expected-output-confirmed
 **Cite:** `verification-rules.md` `fresh-evidence` (claim-time companion); predict→execute→diff / reward-hacking guard; `feedback_predict_before_testing`.

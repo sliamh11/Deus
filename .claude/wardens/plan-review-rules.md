@@ -144,9 +144,35 @@ Common traps:
 **Check:** Does the plan include a cheap reaction step — 3-4 divergent throwaway variants (mock, HTML artifact, sample output) for the user to react to — before committing to one design?
 **Rule:** For look-and-feel work, elicit taste before implementation: generate divergent variants at prototype cost, let the user react, then implement only the chosen direction. Skip when the change is backend-only, a mechanical refactor, or the user already specified the exact design.
 
+## visual-verification-required
+**Severity:** blocking
+**Applies when:** Plan's stated goal is visual/UX quality, "look and feel," or matching/exceeding a named reference product — OR the plan implements or replaces any rendering surface (TUI panels, chat/channel message display, CLI output formatting, web UI).
+**Check:** Does the plan's Verification section include an item requiring a concrete artifact — a screenshot, terminal recording, or pty capture of the SPECIFIC named feature(s), captured against the real running target — reviewed before SHIP? Does every newly-ported or newly-added rendering/formatting component have its consuming call site named in the same file-plan entry (not just "port file X", but "X is called from Y, confirmed by Z")?
+**Rule:** A quality/UX-framed ask needs a quality/UX-framed acceptance criterion — mechanical checks (tests pass, types check, lint clean, CI green) verify plumbing, not the claim actually being made, and must never be the ONLY verification item for this class of plan. A component being "ported" or "added" is not evidence the feature it enables actually renders — headless/unit test coverage (including headless render-to-string harnesses) does not substitute for observing the real thing. If the plan cannot name a concrete visual-artifact checkpoint, it isn't ready to implement. **Proportionality:** scale to blast radius, same clause as `verification-strategy` — a one-line CLI print-statement tweak or a trivial, easily-reversible formatting nudge doesn't need a screenshot ceremony; reserve full enforcement for plans whose stated goal IS visual/UX quality or that replace/introduce a rendering surface (the exact class that caused this rule to exist), not every touch of a file that happens to print something.
+
 ---
 
+## round-count-circuit-breaker
+**Severity:** informational
+**Applies when:** The reviewing agent has direct evidence (its own context if resumed, a cross-review memo, or the dispatch prompt stating a round number) that this is the 6th or later plan-reviewer round against the same underlying plan artifact without reaching SHIP. No automated round-count tracker exists yet — this rule depends on evidence visible to the reviewer in the moment, not persisted state. Do not assume "round 6" unless directly evidenced; when unclear, treat as an unknown, not a pass.
+**Check:** When the round number IS evidenced, does the record show a holistic re-read of the entire accumulated artifact since round 5, with an explicit written answer to "is this still the smallest thing that satisfies the user's actual ask?"
+**Rule:** When you can see this is round 6+ and no re-scope checkpoint is on record, flag it explicitly in your review output and recommend one before further patching — a document that keeps needing fixes past round 5 is evidence the artifact itself needs to shrink. This is advisory, not blocking, until real round-count tracking infrastructure exists (a persisted per-artifact counter, not self-report) — promoting this to `blocking` severity requires that infra first, tracked as a separate follow-up.
+
+## reviewer-coverage-diversity
+**Severity:** informational
+**Applies when:** A plan or artifact has already had 2+ review rounds from the SAME reviewer role, and the round-over-round findings are NOT traceable to the previous round's own fixes (latent issues in the original artifact, not ones introduced while fixing something else).
+**Check:** Would an independent second instance of the same reviewer role, run on the CURRENT snapshot in parallel rather than in series, plausibly surface additional latent issues faster than one more serial round?
+**Rule:** Serial iteration converges slowly against latent-but-undetected issues because each pass samples a different subset of an artifact's claims rather than achieving full coverage — confirmed empirically in this session (2026-08-02): an ad hoc second result-skeptic pass on a personal-memory procedure-node draft (not part of PR #1101's own diff), dispatched beyond `/learn-procedure`'s standard single-pass step specifically because the first pass found real issues, caught a factual error present in the draft since before round 1 that round 1 never checked. Where this pattern is suspected, prefer 2-3 independent reviewer instances on the SAME snapshot in one round, unioning findings, over relying on additional serial rounds.
+
 ## Remediation Details
+
+### round-count-circuit-breaker
+**Cite:** RETRO-2026-08-02-01; docs/decisions/review-round-circuit-breaker-proposal.md
+**Remediation:** Stop patching. Re-read the full accumulated plan/artifact end to end, answer the re-scope question explicitly in the plan/PR, and either re-scope to a smaller artifact (restart the round count) or record why the current scope is still correct and continue.
+
+### reviewer-coverage-diversity
+**Cite:** docs/decisions/review-round-circuit-breaker-proposal.md § "A second, independent mechanism: finite-attention sampling"; an ad hoc second result-skeptic pass on a personal-memory procedure-node draft, this same working session (2026-08-02), not part of PR #1101's own diff.
+**Remediation:** Dispatch a second, independent instance of the same reviewer role against the current snapshot (parallel, not a resumed session) and union its findings with the first round's, rather than immediately starting a third serial round.
 
 ### public-repo-generic
 **Cite:** `feedback_public_repo_generic`
@@ -224,3 +250,7 @@ Common traps:
 ### taste-pass
 **Cite:** map-vs-territory analysis (2026-07-04; durable copy in Session-Logs/2026-07-04/ after /compress) — unknown knowns (taste the user only recognizes on sight) are cheapest converted at prototype cost, not one-violation-each through the evolution feedback loop.
 **Remediation:** Add a pre-implementation step: produce 3-4 divergent throwaway variants of the user-facing surface (fake data is fine), present them for reaction, record the pick and why, then implement only the winner. The variants are disposable — do not wire up backend state to render them.
+
+### visual-verification-required
+**Cite:** `Research/2026-07-23-deus-tui-failure-root-cause-investigation.md` — LIA-471/473's plan Verification section never tested rendering quality (6/6 items were mechanical); `CodeColorizer` was ported and unit-tested but never wired into the message-render path, undetected through 4 plan-review rounds + 2 code-review rounds.
+**Remediation:** Add an explicit Verification item naming the artifact (screenshot/recording/pty capture), the specific feature it must show, and who reviews it before SHIP. For any newly ported/added rendering component, add its consuming call site to the same file-plan entry — "ported X" and "X is called from Y" are two separate facts, both required.

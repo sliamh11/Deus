@@ -8,18 +8,35 @@ name: Judge Regression Gate
 # INCONCLUSIVE run, _classify_gate_outcome in safety_redteam.py), and a missing
 # GEMINI_API_KEY skips the bench step (preflight below). So a Gemini hiccup
 # cannot hard-block evolution/** PRs -- only a real recall drop does.
+#
+# `safety-recall` is a REQUIRED branch-protection check. This workflow used to
+# trigger only via `on.pull_request.paths: evolution/**` -- but when a required
+# check's own workflow never triggers (any PR outside evolution/**), GitHub
+# Actions posts NO status for the job name at all (not a pass, not a skip), and
+# a required-but-absent check leaves the PR permanently "Expected"/blocked in
+# the merge UI. Confirmed live on PR #1102: branch protection lists
+# `safety-recall` as required, but it never appeared in `gh pr checks` for a PR
+# touching zero evolution/ files. Fix: trigger on EVERY pull_request (paths:
+# removed below) so the job always posts a status; gate the real bench work via
+# an in-job `dorny/paths-filter` check instead -- the SAME pattern `ci.yml`'s
+# `test-packages`/`test-agent-runner` (also required checks) already use for
+# this exact problem. One divergence from their shape: this workflow keeps its
+# pre-existing `workflow_dispatch` trigger able to force-run the real bench
+# regardless of changed paths (ci.yml's jobs have no such trigger, so they can
+# gate the WHOLE job on `github.event_name == 'pull_request'`; doing that here
+# would silently turn workflow_dispatch into a permanent no-op).
+#
 # Recovery: if this required check is persistently red due to a JOB-level infra
 # failure (OOM/runner timeout/Docker), drop 'safety-recall' from the branch
 # protection required_status_checks contexts and re-enable after resolution.
 
 on:
   pull_request:
-    paths:
-      - 'evolution/**'
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: read # dorny/paths-filter reads the PR changed-file list via the API on pull_request runs
 
 jobs:
   safety-recall:
@@ -27,7 +44,18 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+
+      - name: Check whether this PR touches evolution/
+        id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            evolution:
+              - 'evolution/**'
+
+      - uses: actions/setup-python@v7
+        if: github.event_name != 'pull_request' || steps.filter.outputs.evolution == 'true'
         with:
           python-version: '3.12'
 
@@ -35,6 +63,7 @@ jobs:
         # Only the Gemini judge client is needed for this path (pinned to match
         # eval/requirements.txt). Not the full eval deps -- safety_redteam does
         # not use deepeval/langchain.
+        if: github.event_name != 'pull_request' || steps.filter.outputs.evolution == 'true'
         run: pip install google-genai==1.14.0
 
       - name: Check Gemini secret
@@ -45,6 +74,7 @@ jobs:
         # so it must not block (consistent with the in-bench infra-skip). NOTE:
         # this must gate the bench via `if:` -- a bare `exit 0` here would NOT
         # skip later steps; GitHub runs steps regardless of a prior step's exit.
+        if: github.event_name != 'pull_request' || steps.filter.outputs.evolution == 'true'
         id: preflight
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -57,7 +87,7 @@ jobs:
           fi
 
       - name: Run safety red-team recall bench (Gemini judge)
-        if: steps.preflight.outputs.has_key == 'true'
+        if: (github.event_name != 'pull_request' || steps.filter.outputs.evolution == 'true') && steps.preflight.outputs.has_key == 'true'
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Pin the judge model to the one the baselines.json floor was measured

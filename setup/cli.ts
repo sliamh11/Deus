@@ -18,10 +18,37 @@ export async function run(_args: string[]): Promise<void> {
   const platform = getPlatform();
   const homeDir = os.homedir();
 
-  if (platform === 'windows') {
-    setupWindowsCli(projectRoot, homeDir);
-  } else {
-    setupUnixCli(projectRoot, homeDir);
+  // v1 and v2 installs are independent in BOTH directions: each leg gets
+  // its own try/catch so an uncaught throw from either (e.g. a filesystem
+  // permission error mid-symlink) can never prevent the other from being
+  // attempted. A code review caught that an earlier version only protected
+  // one direction (v2's failure couldn't affect v1's already-emitted
+  // status) but left v1 able to abort run() before v2 was ever reached.
+  try {
+    if (platform === 'windows') {
+      setupWindowsCli(projectRoot, homeDir);
+    } else {
+      setupUnixCli(projectRoot, homeDir);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error({ err }, 'deus (v1) CLI setup threw unexpectedly');
+    emitStatus('SETUP_CLI', { STATUS: 'failed', ERROR: message });
+  }
+
+  try {
+    if (platform === 'windows') {
+      setupWindowsCliV2(projectRoot, homeDir);
+    } else {
+      setupUnixCliV2(projectRoot, homeDir);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn(
+      { err },
+      'deus-v2 CLI setup failed (v1 deus install unaffected)',
+    );
+    emitStatus('SETUP_CLI_V2', { STATUS: 'failed', ERROR: message });
   }
 }
 
@@ -77,43 +104,7 @@ function setupUnixCli(projectRoot: string, homeDir: string): void {
   // Clean up stale /usr/local/bin/deus symlink that may shadow the new one
   cleanStaleLegacySymlink(logger);
 
-  // Check if ~/.local/bin is in PATH; if not, add it to shell config
-  const pathEnv = process.env.PATH || '';
-  const delimiter = process.platform === 'win32' ? ';' : ':';
-  let inPath = pathEnv.split(delimiter).some((p) => p === binDir);
-
-  if (!inPath) {
-    const exportLine = `export PATH="$HOME/.local/bin:$PATH"`;
-    const shellConfigs = [
-      path.join(homeDir, '.zshrc'),
-      path.join(homeDir, '.bashrc'),
-    ];
-
-    for (const rc of shellConfigs) {
-      if (!fs.existsSync(rc)) continue;
-      const content = fs.readFileSync(rc, 'utf-8');
-      if (content.includes('.local/bin')) {
-        inPath = true;
-        break;
-      }
-    }
-
-    if (!inPath) {
-      // Detect user's shell and append to the appropriate config
-      const shell = process.env.SHELL || '/bin/bash';
-      const rcFile = shell.endsWith('zsh')
-        ? path.join(homeDir, '.zshrc')
-        : path.join(homeDir, '.bashrc');
-
-      try {
-        fs.appendFileSync(rcFile, `\n# Added by Deus setup\n${exportLine}\n`);
-        inPath = true;
-        logger.info({ rcFile }, 'Added ~/.local/bin to PATH in shell config');
-      } catch (err) {
-        logger.warn({ err, rcFile }, 'Could not update shell config');
-      }
-    }
-  }
+  const inPath = ensureUnixBinDirInPath(homeDir, binDir);
 
   emitStatus('SETUP_CLI', {
     STATUS: 'success',
@@ -124,15 +115,128 @@ function setupUnixCli(projectRoot: string, homeDir: string): void {
 }
 
 /**
+ * Install the `deus-v2` launcher symlink (LIA-434) — a parallel, independent
+ * command alongside `deus`, never replacing it. See deus-v2-cmd.mjs for the
+ * checkout-location/validation/delegation logic; this only wires up the
+ * symlink, mirroring setupUnixCli's structure.
+ */
+function setupUnixCliV2(projectRoot: string, homeDir: string): void {
+  const binDir = path.join(homeDir, '.local', 'bin');
+  const linkPath = path.join(binDir, 'deus-v2');
+  const scriptPath = path.join(projectRoot, 'deus-v2-cmd.mjs');
+
+  if (!fs.existsSync(scriptPath)) {
+    emitStatus('SETUP_CLI_V2', {
+      STATUS: 'failed',
+      ERROR: 'deus-v2-cmd.mjs not found',
+    });
+    return;
+  }
+
+  try {
+    fs.chmodSync(scriptPath, 0o755);
+  } catch {
+    // May fail on some filesystems, non-critical
+  }
+
+  fs.mkdirSync(binDir, { recursive: true });
+
+  const existing = checkExistingCli(linkPath, 'deus-v2-cmd.mjs');
+  if (existing === 'foreign') {
+    logger.warn(
+      { linkPath },
+      'A non-Deus binary already exists at the deus-v2 CLI path. Skipping symlink creation to avoid data loss.',
+    );
+    emitStatus('SETUP_CLI_V2', {
+      STATUS: 'conflict',
+      LINK_PATH: linkPath,
+      SCRIPT_PATH: scriptPath,
+      EXISTING: 'foreign',
+      IN_PATH: false,
+    });
+    return;
+  }
+
+  try {
+    fs.unlinkSync(linkPath);
+  } catch {
+    // Doesn't exist
+  }
+
+  fs.symlinkSync(scriptPath, linkPath);
+  logger.info({ linkPath, scriptPath }, 'Created deus-v2 CLI symlink');
+
+  // No cleanStaleLegacySymlink call here — there's no historical
+  // /usr/local/bin/deus-v2 to clean up for a brand-new command.
+
+  const inPath = ensureUnixBinDirInPath(homeDir, binDir);
+
+  emitStatus('SETUP_CLI_V2', {
+    STATUS: 'success',
+    LINK_PATH: linkPath,
+    SCRIPT_PATH: scriptPath,
+    IN_PATH: inPath,
+  });
+}
+
+/**
+ * Ensure `binDir` is on PATH, appending an export line to the user's shell
+ * config if needed. Extracted from setupUnixCli so setupUnixCliV2 can reuse
+ * it without duplicating the PATH-mutation logic (both install into the same
+ * ~/.local/bin).
+ */
+function ensureUnixBinDirInPath(homeDir: string, binDir: string): boolean {
+  const pathEnv = process.env.PATH || '';
+  const delimiter = process.platform === 'win32' ? ';' : ':';
+  let inPath = pathEnv.split(delimiter).some((p) => p === binDir);
+
+  if (inPath) return true;
+
+  const exportLine = `export PATH="$HOME/.local/bin:$PATH"`;
+  const shellConfigs = [
+    path.join(homeDir, '.zshrc'),
+    path.join(homeDir, '.bashrc'),
+  ];
+
+  for (const rc of shellConfigs) {
+    if (!fs.existsSync(rc)) continue;
+    const content = fs.readFileSync(rc, 'utf-8');
+    if (content.includes('.local/bin')) {
+      return true;
+    }
+  }
+
+  // Detect user's shell and append to the appropriate config
+  const shell = process.env.SHELL || '/bin/bash';
+  const rcFile = shell.endsWith('zsh')
+    ? path.join(homeDir, '.zshrc')
+    : path.join(homeDir, '.bashrc');
+
+  try {
+    fs.appendFileSync(rcFile, `\n# Added by Deus setup\n${exportLine}\n`);
+    logger.info({ rcFile }, 'Added ~/.local/bin to PATH in shell config');
+    return true;
+  } catch (err) {
+    logger.warn({ err, rcFile }, 'Could not update shell config');
+    return false;
+  }
+}
+
+/**
  * Check what exists at the CLI symlink path.
  * Returns:
  * - 'none'    — nothing exists, safe to create
- * - 'ours'    — symlink pointing to a deus-cmd.sh, safe to replace
+ * - 'ours'    — symlink pointing to a script named `expectedBasename`, safe to replace
  * - 'dead'    — dead symlink, safe to replace
  * - 'foreign' — something else (different binary, regular file), DO NOT replace
+ *
+ * `expectedBasename` defaults to 'deus-cmd.sh' (the v1 launcher) so existing
+ * call sites are unaffected; the deus-v2 launcher (LIA-434) passes
+ * 'deus-v2-cmd.mjs'.
  */
 export function checkExistingCli(
   linkPath: string,
+  expectedBasename = 'deus-cmd.sh',
 ): 'none' | 'ours' | 'dead' | 'foreign' {
   try {
     const stat = fs.lstatSync(linkPath);
@@ -141,8 +245,8 @@ export function checkExistingCli(
       const target = fs.readlinkSync(linkPath);
       // Check if target is alive
       if (!fs.existsSync(linkPath)) return 'dead';
-      // Check if it points to any deus-cmd.sh (ours, possibly different install path)
-      if (path.basename(target) === 'deus-cmd.sh') return 'ours';
+      // Check if it points to our own script (ours, possibly different install path)
+      if (path.basename(target) === expectedBasename) return 'ours';
       return 'foreign';
     }
 
@@ -150,6 +254,51 @@ export function checkExistingCli(
     return 'foreign';
   } catch {
     return 'none';
+  }
+}
+
+// Exact structural patterns for the two shims this step generates — see
+// setupWindowsCli/setupWindowsCliV2's cmdContent below, which these must
+// stay byte-for-byte in sync with. Anchored end-to-end (^...$, content has
+// no other lines) with only the absolute script path left as a wildcard, so
+// a relocated install (different projectRoot) is still recognized as ours.
+// The `[\\/]` immediately before the basename is load-bearing, not
+// decorative: without it, a code review caught that a FOREIGN shim naming
+// e.g. "custom-deus-v2-cmd.mjs" (a different file whose name merely ends
+// with the expected basename, no path-separator boundary) would also
+// match and be wrongly classified 'ours', overwriting the user's file.
+const CMD_SHIM_PATTERNS: Record<'v1' | 'v2', RegExp> = {
+  v1: /^@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "[^"\r\n]*[\\/]deus-cmd\.ps1" %\*\r\n$/,
+  v2: /^@echo off\r\nnode "[^"\r\n]*[\\/]deus-v2-cmd\.mjs" %\*\r\n$/,
+};
+
+/**
+ * Windows equivalent of checkExistingCli's foreign-detection, for the .cmd
+ * shims (no symlinks involved, so basename-of-target doesn't apply): a
+ * missing path is 'none'; an existing symlink is always 'foreign' — never
+ * followed, since fs.writeFileSync would silently overwrite whatever it
+ * points at; a regular file is 'ours' only if its content EXACTLY matches
+ * this step's own generated shim structure for `kind` (a loose
+ * "contains the basename somewhere" check was caught by code review as
+ * unsafe — a user-authored wrapper or unrelated command that merely
+ * mentions the target script's name would have been silently overwritten).
+ */
+export function checkExistingCmdShim(
+  cmdPath: string,
+  kind: 'v1' | 'v2',
+): 'none' | 'ours' | 'foreign' {
+  let stat;
+  try {
+    stat = fs.lstatSync(cmdPath);
+  } catch {
+    return 'none';
+  }
+  if (stat.isSymbolicLink()) return 'foreign';
+  try {
+    const content = fs.readFileSync(cmdPath, 'utf-8');
+    return CMD_SHIM_PATTERNS[kind].test(content) ? 'ours' : 'foreign';
+  } catch {
+    return 'foreign';
   }
 }
 
@@ -202,6 +351,22 @@ function setupWindowsCli(projectRoot: string, homeDir: string): void {
 
   fs.mkdirSync(binDir, { recursive: true });
 
+  const existingShim = checkExistingCmdShim(cmdPath, 'v1');
+  if (existingShim === 'foreign') {
+    logger.warn(
+      { cmdPath },
+      'A non-Deus file or symlink already exists at the CLI path. Skipping shim creation to avoid data loss.',
+    );
+    emitStatus('SETUP_CLI', {
+      STATUS: 'conflict',
+      CMD_PATH: cmdPath,
+      SCRIPT_PATH: ps1Path,
+      EXISTING: 'foreign',
+      IN_PATH: false,
+    });
+    return;
+  }
+
   // Create a .cmd shim that invokes the PowerShell script
   const cmdContent =
     [
@@ -212,7 +377,77 @@ function setupWindowsCli(projectRoot: string, homeDir: string): void {
   fs.writeFileSync(cmdPath, cmdContent);
   logger.info({ cmdPath, ps1Path }, 'Created deus.cmd shim');
 
-  // Check if binDir is in user PATH and add it if not
+  const inPath = ensureWindowsBinDirInPath(binDir);
+
+  emitStatus('SETUP_CLI', {
+    STATUS: 'success',
+    CMD_PATH: cmdPath,
+    SCRIPT_PATH: ps1Path,
+    IN_PATH: inPath,
+    PATH_DIR: binDir,
+  });
+}
+
+/**
+ * Install the `deus-v2.cmd` shim (LIA-434) — a parallel, independent command
+ * alongside `deus`, never replacing it. Unlike deus.cmd (which wraps a native
+ * .ps1 via `powershell -File`), deus-v2-cmd.mjs is a Node script, so the
+ * shim invokes `node` directly.
+ */
+function setupWindowsCliV2(projectRoot: string, homeDir: string): void {
+  const binDir = path.join(homeDir, '.local', 'bin');
+  const cmdPath = path.join(binDir, 'deus-v2.cmd');
+  const scriptPath = path.join(projectRoot, 'deus-v2-cmd.mjs');
+
+  if (!fs.existsSync(scriptPath)) {
+    emitStatus('SETUP_CLI_V2', {
+      STATUS: 'failed',
+      ERROR: 'deus-v2-cmd.mjs not found',
+    });
+    return;
+  }
+
+  fs.mkdirSync(binDir, { recursive: true });
+
+  const existingShim = checkExistingCmdShim(cmdPath, 'v2');
+  if (existingShim === 'foreign') {
+    logger.warn(
+      { cmdPath },
+      'A non-Deus file or symlink already exists at the deus-v2 CLI path. Skipping shim creation to avoid data loss.',
+    );
+    emitStatus('SETUP_CLI_V2', {
+      STATUS: 'conflict',
+      CMD_PATH: cmdPath,
+      SCRIPT_PATH: scriptPath,
+      EXISTING: 'foreign',
+      IN_PATH: false,
+    });
+    return;
+  }
+
+  const cmdContent =
+    ['@echo off', `node "${scriptPath}" %*`].join('\r\n') + '\r\n';
+
+  fs.writeFileSync(cmdPath, cmdContent);
+  logger.info({ cmdPath, scriptPath }, 'Created deus-v2.cmd shim');
+
+  const inPath = ensureWindowsBinDirInPath(binDir);
+
+  emitStatus('SETUP_CLI_V2', {
+    STATUS: 'success',
+    CMD_PATH: cmdPath,
+    SCRIPT_PATH: scriptPath,
+    IN_PATH: inPath,
+    PATH_DIR: binDir,
+  });
+}
+
+/**
+ * Ensure `binDir` is on the user's Windows PATH. Extracted from
+ * setupWindowsCli so setupWindowsCliV2 can reuse it without duplicating the
+ * PATH-mutation logic (both install into the same ~/.local/bin).
+ */
+function ensureWindowsBinDirInPath(binDir: string): boolean {
   let inPath = false;
   try {
     const currentPath = execSync(
@@ -235,12 +470,5 @@ function setupWindowsCli(projectRoot: string, homeDir: string): void {
   } catch (err) {
     logger.warn({ err }, 'Could not check/update user PATH');
   }
-
-  emitStatus('SETUP_CLI', {
-    STATUS: 'success',
-    CMD_PATH: cmdPath,
-    SCRIPT_PATH: ps1Path,
-    IN_PATH: inPath,
-    PATH_DIR: binDir,
-  });
+  return inPath;
 }

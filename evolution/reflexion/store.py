@@ -42,8 +42,8 @@ def save_reflection(
     content is corrupted (LIA-213 save-time validation) or a semantically
     similar reflection already exists.
     group_folder=None means the reflection applies cross-group.
-    polarity ('corrective' | 'positive') records which generator produced the
-    lesson; None-polarity rows are exempt from zone-alignment archival.
+    polarity ("corrective"/"positive"/None) records which zone this
+    reflection belongs to; see StorageProvider.save_reflection (LIA-1011).
     """
     # LIA-213: validate before the expensive embed; see validation.py.
     ok, reason = is_valid_reflection(content)

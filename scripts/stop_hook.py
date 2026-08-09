@@ -26,11 +26,30 @@ from _time import local_now, utc_now  # noqa: E402
 # ── Config ────────────────────────────────────────────────────────────────────
 
 
-def _load_vault_root() -> Path | None:
-    """Resolve vault root from DEUS_VAULT_PATH env var or config.json."""
+def _load_vault_root(cwd: Path | None = None) -> Path | None:
+    """Resolve vault root: DEUS_VAULT_PATH env -> <cwd>/.deus/config.json
+    (per-instance override) -> ~/.config/deus/config.json (global fallback).
+
+    Matches the compress skill's own 3-tier resolution order
+    (.claude/skills/compress/skill.md). The per-instance tier is a STOP, not a
+    fall-through: if that file exists but has no usable vault_path, return
+    None rather than falling back to the global config -- a fall-through is
+    what would let one instance's resolver corrupt another instance's vault.
+    `cwd=None` (both existing call sites) preserves the prior 2-tier-only
+    behavior exactly.
+    """
     env_path = os.environ.get("DEUS_VAULT_PATH")
     if env_path:
         return Path(env_path).expanduser()
+    if cwd is not None:
+        instance_cfg = cwd / ".deus" / "config.json"
+        if instance_cfg.exists():
+            try:
+                cfg = json.loads(instance_cfg.read_text())
+            except (json.JSONDecodeError, OSError):
+                return None  # STOP -- do not fall through to global config
+            vp = cfg.get("vault_path")
+            return Path(vp).expanduser() if vp else None  # STOP either way
     cfg_path = Path("~/.config/deus/config.json").expanduser()
     if cfg_path.exists():
         try:
@@ -287,7 +306,14 @@ def _count_transcript_turns(transcript_path: str) -> int:
 
 
 def _bg_compress_gate(transcript_path: str) -> dict | None:
-    """Block once per bg session if /compress hasn't run yet."""
+    """Advisory reminder (never blocks Stop) once per bg session if /compress
+    hasn't run yet. Downgraded from a hard block to advisory-only 2026-08-02
+    at user request: the block could fire mid-task on a session waiting on a
+    long-running background Workflow, before there was anything to save.
+    Tradeoff considered and chosen deliberately (over silencing just that
+    session, or removing the gate outright) because the underlying intent --
+    background sessions should get saved to the vault -- is still worth a
+    reminder. See session history before changing this again."""
     if not _is_bg_session():
         return None
     if not transcript_path:
@@ -300,11 +326,10 @@ def _bg_compress_gate(transcript_path: str) -> dict | None:
     if _compress_already_ran(transcript_path):
         return None
     return {
-        "decision": "block",
-        "reason": (
-            "Background session compress gate: /compress has not run yet. "
-            "Policy requires background sessions to run /compress before "
-            "completion so the session is saved to the vault."
+        "systemMessage": (
+            "Background session reminder: /compress has not run yet. "
+            "Background sessions should run /compress before completion "
+            "so the session is saved to the vault."
         ),
     }
 
@@ -329,15 +354,14 @@ def main():
 
     transcript_path = hook_data.get("transcript_path", "")
 
-    block = _bg_compress_gate(transcript_path)
-    if block:
-        print(json.dumps(block))
-        # Sentinel after print — crash before delivery doesn't permanently consume the gate
+    reminder = _bg_compress_gate(transcript_path)
+    if reminder:
+        print(json.dumps(reminder))
+        # Sentinel after print — crash before delivery doesn't permanently consume the reminder
         try:
             (Path(os.environ["CLAUDE_JOB_DIR"]) / ".compress_gate").touch()
         except OSError:
             pass
-        return
 
     if should_checkpoint():
         if transcript_path:

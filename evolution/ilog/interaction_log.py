@@ -92,13 +92,19 @@ def update_human_feedback(
 ) -> bool:
     """Record a human ground-truth score (0.0-1.0) for an interaction.
 
-    Idempotent: an identical (score, comment) re-write leaves
-    human_processed_at untouched; any actual change clears it so the
-    maintenance pass reprocesses the row. Returns True when the row exists.
+    Routed through StorageProvider.record_human_feedback (LIA-1011): ONE-SHOT,
+    not idempotent-update -- the FIRST human_score written for an interaction
+    is authoritative. A later call for an interaction that already has a
+    human_score is a no-op and returns False (does not raise, does not
+    overwrite). Returns True for the single writer that wins the claim, False
+    if already scored or the row is missing.
     """
     if not 0.0 <= score <= 1.0:
         raise ValueError(f"human score must be in [0.0, 1.0], got {score}")
-    return get_storage().update_human_feedback(interaction_id, score, comment)
+    scored_at = datetime.now(timezone.utc).isoformat()
+    return get_storage().record_human_feedback(
+        interaction_id, human_score=score, human_comment=comment, scored_at=scored_at,
+    )
 
 
 def get_interaction_by_source_ref(source_ref: str) -> Optional[dict]:

@@ -56,6 +56,7 @@ _BENCH_DIR = Path(__file__).resolve().parent
 _SCRIPTS_DIR = _BENCH_DIR.parent
 _REPO_ROOT = _SCRIPTS_DIR.parent
 _SP_PATH = _SCRIPTS_DIR / "standards_pack.py"
+_GQ_PATH = _SCRIPTS_DIR / "_gemini_quota.py"
 _DEFAULT_PROBES = _SCRIPTS_DIR / "tests" / "fixtures" / "rule_following_probes.jsonl"
 _DEFAULT_OUTPUT_DIR = _BENCH_DIR / "results"
 _JUDGE_CACHE_PATH = _BENCH_DIR / "rule_following_judge_cache.json"
@@ -127,6 +128,22 @@ def _load_sp():
         raise RuntimeError(f"Cannot load standards_pack from {_SP_PATH}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["standards_pack"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_gq():
+    """Load _gemini_quota as a module. Same importlib pattern as `_load_sp` —
+    scripts/bench/ is not on sys.path, so a plain `from _gemini_quota import
+    is_quota_error` would break direct script execution.
+    """
+    if "_gemini_quota" in sys.modules:
+        return sys.modules["_gemini_quota"]
+    spec = importlib.util.spec_from_file_location("_gemini_quota", _GQ_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load _gemini_quota from {_GQ_PATH}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["_gemini_quota"] = mod
     spec.loader.exec_module(mod)
     return mod
 
@@ -372,7 +389,7 @@ def _judge_one(
         except Exception as e:  # noqa: BLE001 — broad on purpose for fallback
             msg = str(e)
             last_err = msg[:200]
-            if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+            if _load_gq().is_quota_error(e):
                 if "PerDay" in msg:
                     exhausted.add(model)
                     print(f"  {model} daily quota exhausted, skipping", file=sys.stderr)

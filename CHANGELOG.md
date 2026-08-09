@@ -4,6 +4,36 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.28.0](https://github.com/sliamh11/Deus/compare/v1.27.0...v1.28.0) (2026-07-29)
+
+
+### Features
+
+* **evolution:** add human ground-truth feedback storage substrate (LIA-1011) ([#1064](https://github.com/sliamh11/Deus/issues/1064)) ([1b0b2c6](https://github.com/sliamh11/Deus/commit/1b0b2c618618b57b59fa5b30783d941567193d65))
+* **sessions:** add deterministic SessionEnd auto-save (no LLM turn) ([#1079](https://github.com/sliamh11/Deus/issues/1079)) ([9288ced](https://github.com/sliamh11/Deus/commit/9288ced9551f29499cd10527c73d67764e23e89f))
+* **setup:** add deus-v2 parallel-install launcher (LIA-434) ([#1068](https://github.com/sliamh11/Deus/issues/1068)) ([6bb647b](https://github.com/sliamh11/Deus/commit/6bb647b53519a7e8545886dcec97578dc62e1776))
+
+## [1.27.0](https://github.com/sliamh11/Deus/compare/v1.26.0...v1.27.0) (2026-07-17)
+
+
+### Features
+
+* **deus-v2:** validate subscription billing through credential proxy (LIA-397) ([#1035](https://github.com/sliamh11/Deus/issues/1035)) ([38aa247](https://github.com/sliamh11/Deus/commit/38aa2470a7ca41e7a81e2fb48d0d0c88843d9f32))
+
+
+### Bug Fixes
+
+* **admin-merge-gate:** allow admin-merge on plan-limited private repos ([#1055](https://github.com/sliamh11/Deus/issues/1055)) ([8d283a9](https://github.com/sliamh11/Deus/commit/8d283a99ab5433c0e1bafd469f63ed7e7ef52e47))
+* **admin-merge-gate:** exclude known-advisory checks from plan-limited fallback ([#1056](https://github.com/sliamh11/Deus/issues/1056)) ([8e67e6a](https://github.com/sliamh11/Deus/commit/8e67e6a7441e65fae6201692a044c4101e81c81c))
+* **admin-merge-gate:** scope internal gh calls to the gated command's --repo ([#1054](https://github.com/sliamh11/Deus/issues/1054)) ([545b941](https://github.com/sliamh11/Deus/commit/545b9413a89b7ebcca199511b26a1ebf5243d3c0))
+* **code-search:** sweep orphaned rowids from vec/fts on reindex (LIA-368) ([#1042](https://github.com/sliamh11/Deus/issues/1042)) ([fad4885](https://github.com/sliamh11/Deus/commit/fad48855df90642c7c5562bdaf26505ee73a112c))
+* **ingress:** don't kill the OAuth refresh timer on a port-conflict retry (LIA-363) ([#1020](https://github.com/sliamh11/Deus/issues/1020)) ([0cf61dd](https://github.com/sliamh11/Deus/commit/0cf61dd0d7d81b017e64d677f18b9dddfdd74e71))
+* **memory:** exclude orphaned entries from FTS query (LIA-370) ([#1040](https://github.com/sliamh11/Deus/issues/1040)) ([0645453](https://github.com/sliamh11/Deus/commit/0645453bd13dccb53d25c2435a94d2e06afa87fc))
+* **memory:** re-embed nodes missing an embedding row (LIA-369) ([#1041](https://github.com/sliamh11/Deus/issues/1041)) ([f2855b0](https://github.com/sliamh11/Deus/commit/f2855b06daa76e687ccdf0cb328b7b1f68290bd8))
+* **memory:** repair entries_fts write-path drift (LIA-370) ([#1043](https://github.com/sliamh11/Deus/issues/1043)) ([1414898](https://github.com/sliamh11/Deus/commit/14148983f3c79630fba1dbca89de4b86e2523019))
+* **runtime:** handle stream errors on tool-proxy req + container stdin (LIA-362, LIA-385) ([#1021](https://github.com/sliamh11/Deus/issues/1021)) ([df9df3f](https://github.com/sliamh11/Deus/commit/df9df3fefe143695b6d84901f0dd5844f69aabd1))
+* **security:** fail-closed gh gate for external projects (LIA-361) ([#1013](https://github.com/sliamh11/Deus/issues/1013)) ([ee9b62e](https://github.com/sliamh11/Deus/commit/ee9b62eebbe0385e8186e13d906183bd4ab3c077))
+
 ## [1.26.0](https://github.com/sliamh11/Deus/compare/v1.25.0...v1.26.0) (2026-07-11)
 
 

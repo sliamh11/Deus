@@ -1,7 +1,9 @@
 """Deterministic tests for benchmark_judge fixture-mode extensions (no Ollama calls)."""
+import hashlib
 import json
 import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +29,56 @@ def test_spearman_handles_ties():
 
 def test_mae():
     assert abs(bj._mae([0.0, 1.0], [0.5, 0.5]) - 0.5) < 1e-9
+
+
+# ── trivial baselines (fixture gameability) ─────────────────────────────────
+
+def test_constant_mean_mae_hand_value():
+    assert abs(bj._constant_mean_mae([0.0, 0.5, 1.0]) - 1 / 3) < 1e-9
+    assert bj._constant_mean_mae([]) is None
+
+
+def test_logistic_fit_pearson_deterministic_and_realistic_scale():
+    # log(len)-like feature magnitude (~2-9), NOT standardized by the caller —
+    # must not overflow/diverge (this is exactly what plan-review flagged).
+    feature = [2.3, 3.1, 4.0, 4.8, 5.5, 6.2, 6.9, 7.5, 8.1, 8.8] * 3
+    truth = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0] * 3
+    r1 = bj._logistic_fit_pearson(feature, truth)
+    r2 = bj._logistic_fit_pearson(feature, truth)
+    assert r1 == r2                      # identical inputs -> bit-identical output
+    assert r1 is not None and r1 > 0.9   # near-linear signal fits well
+
+
+def test_logistic_fit_pearson_edge_cases():
+    assert bj._logistic_fit_pearson([], []) is None                    # n=0
+    assert bj._logistic_fit_pearson([1.0] * 5, [0.1, 0.2, 0.3, 0.4, 0.5]) is None  # constant feature
+
+
+def test_compute_trivial_baselines_end_to_end():
+    interactions = [
+        {"response": "short", "ground_truth_score": 0.2},
+        {"response": "a bit longer response here", "ground_truth_score": 0.5},
+        {"response": "a substantially longer and more detailed response than the others", "ground_truth_score": 0.9},
+        {"response": "medium length one", "ground_truth_score": 0.4},
+        {"response": "yet another medium-ish length response for this row", "ground_truth_score": 0.6},
+    ]
+    baselines = bj.compute_trivial_baselines(interactions)
+    assert set(baselines) == {"log_length_pearson", "constant_mean_mae", "logistic_pearson"}
+    assert baselines["log_length_pearson"] is not None
+    assert baselines["constant_mean_mae"] is not None
+
+
+def test_compute_trivial_baselines_reproduces_verified_fixture_numbers():
+    # Exact-match regression guard against the independently spot-verified
+    # numbers in Handoffs/2026-08-02-01-15-gpt56-judge-benchmark-reliability.md:
+    # a bare log(response_length) regressor scores r=0.485 on fixture-v1 (n=200)
+    # and r=0.338 on fixture-openai-v1 (n=104).
+    openai_fixture = Path(__file__).resolve().parents[2] / "finetune" / "judge-bench" / "fixture-openai-v1.jsonl"
+    if not openai_fixture.exists():
+        pytest.skip("fixture-openai-v1.jsonl not present in this checkout (gitignored)")
+    interactions = bj._load_fixture(openai_fixture)
+    baselines = bj.compute_trivial_baselines(interactions)
+    assert abs(baselines["log_length_pearson"] - 0.338) < 5e-3
 
 
 def test_threshold_pr_hand_example():
@@ -84,6 +136,27 @@ def test_paired_delta_ci_deterministic_and_signed():
 
 
 # ── fixture + safety-probe loaders ─────────────────────────────────────────────
+
+# ── fixture identity (--json-out top-level "fixture" block) ─────────────────
+
+def test_fixture_identity_records_path_hash_and_n(tmp_path):
+    p = tmp_path / "fix.jsonl"
+    p.write_text(json.dumps({"id": "a", "prompt": "P"}) + "\n", encoding="utf-8")
+    expected_sha = hashlib.sha256(p.read_bytes()).hexdigest()
+    identity = bj._fixture_identity(p, n=7)
+    assert identity["path"] == str(p)
+    assert identity["sha256"] == expected_sha
+    assert identity["n"] == 7
+
+
+def test_fixture_identity_hash_changes_with_content(tmp_path):
+    p = tmp_path / "fix.jsonl"
+    p.write_text("one\n", encoding="utf-8")
+    id1 = bj._fixture_identity(p, n=1)
+    p.write_text("two\n", encoding="utf-8")
+    id2 = bj._fixture_identity(p, n=1)
+    assert id1["sha256"] != id2["sha256"]
+
 
 def test_load_fixture_maps_and_skips(tmp_path):
     p = tmp_path / "fix.jsonl"
@@ -172,3 +245,36 @@ def test_benchmark_passes_digest_and_records_per_dim(monkeypatch):
     assert mr.dim_scores["personalization"] == [0.25]
     assert mr.dim_truth["personalization"] == [0.5]
     assert mr.scores == [0.55] and mr.ground_truth == [0.6]
+    # per-record dim_truth/dim_scores (what --json-out's "records" array serializes
+    # directly, for paired cross-run/cross-fixture comparison by interaction_id)
+    assert len(mr.details) == 1
+    d0 = mr.details[0]
+    assert d0.interaction_id == "i1"
+    assert d0.dim_scores == {"quality": 0.5, "safety": 1.0, "tool_use": 1.0, "personalization": 0.25}
+    assert d0.dim_truth == {"quality": 0.75, "safety": 1.0, "tool_use": 1.0, "personalization": 0.5}
+
+
+# ── print_comparison back-compat ────────────────────────────────────────────
+
+def test_print_comparison_without_trivial_baselines_still_works(capsys):
+    mr = bj.ModelResult(model="m")
+    mr.scores = [0.1, 0.5, 0.9]
+    mr.ground_truth = [0.2, 0.4, 0.8]
+    mr.total = 3
+    bj.print_comparison([mr])  # trivial_baselines defaults to None — no crash, no Δ column
+    out = capsys.readouterr().out
+    assert "Δ vs log-len" not in out
+    assert "Trivial baselines" not in out
+
+
+def test_print_comparison_with_trivial_baselines(capsys):
+    mr = bj.ModelResult(model="m")
+    mr.scores = [0.1, 0.5, 0.9]
+    mr.ground_truth = [0.2, 0.4, 0.8]
+    mr.total = 3
+    bj.print_comparison([mr], trivial_baselines={
+        "log_length_pearson": 0.3, "logistic_pearson": 0.35, "constant_mean_mae": 0.2,
+    })
+    out = capsys.readouterr().out
+    assert "Trivial baselines" in out and "log-length r=0.300" in out
+    assert "Δ vs log-len" in out

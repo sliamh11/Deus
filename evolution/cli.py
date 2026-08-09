@@ -590,6 +590,7 @@ def cmd_dismiss_warden_finding(json_str: str) -> None:
             score_at_gen=0.3,  # Low score = negative signal
             interaction_id=None,
             group_folder=group_folder,
+            polarity="corrective",
         )
     except Exception as exc:
         print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}))
