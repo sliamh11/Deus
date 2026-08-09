@@ -236,7 +236,10 @@ python3 scripts/warden_attest.py inspect --repo <path>
 ```bash
 opa fmt --fail scripts/warden_policy/policy
 opa check --strict scripts/warden_policy/policy
-opa test -v scripts/warden_policy/policy
+# --ignore excludes the loose JSON Schema docs: opa test merges same-directory JSON files into one
+# data tree, and the two schema files' conflicting top-level keys (e.g. $id) trigger a merge error
+# otherwise (LIA-538). Neither schema file is consumed by the Rego policy itself.
+opa test -v --ignore="*.schema.json" scripts/warden_policy/policy
 python3 -m pytest scripts/warden_policy/tests -v
 python3 -m pytest scripts/tests/test_warden_attest_reconcile.py -v
 shellcheck scripts/start_warden_opa.sh
