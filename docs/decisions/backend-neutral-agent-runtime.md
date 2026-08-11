@@ -53,6 +53,12 @@ Every backend adapter change should include or update a parity matrix covering:
 
 At minimum, run TypeScript checks plus targeted backend/session/auth/container tests before merging. Full live verification requires a rebuilt agent container and provider credentials.
 
+Note: `deus connect` (see the `add-connector` skill) is a CLI-level model
+redirect — it launches the real, unmodified `claude` binary with only the
+upstream model swapped via `ANTHROPIC_BASE_URL` — and is explicitly outside
+the backend-adapter concept this ADR governs; it does not participate in the
+Parity Matrix below.
+
 ## Parity Matrix
 
 | Surface | Claude Default | OpenAI/Codex Opt-In | Llama.cpp Local Opt-In |

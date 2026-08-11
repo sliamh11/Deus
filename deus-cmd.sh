@@ -48,6 +48,74 @@ if [ "$1" = "codex" ] || [ "$1" = "claude" ] || [ "$1" = "fcc" ]; then
   shift
 fi
 
+# deus connect <id> [claude-args...] — route to a non-Claude model via a
+# registered connector, staying on the same identity/vault/preferences
+# pipeline the block above uses instead of a self-contained branch (that
+# would bypass identity/vault/memory-level/preferences/portable-skills
+# entirely — the exact defect this design avoids). list/setup/status are
+# immediate, self-contained utility commands with no `claude` launch; the
+# default arm signals via DEUS_CONNECT_ID and clears positional params so
+# the shared dispatcher below still matches `home|""|--print-identity`
+# regardless of what followed the connector id.
+if [ "$1" = "connect" ]; then
+  shift
+  case "${1:-}" in
+    ""|list)
+      python3 "$SCRIPT_DIR/scripts/connectors_cli.py" list
+      exit $?
+      ;;
+    status)
+      shift
+      python3 "$SCRIPT_DIR/scripts/connectors_cli.py" status "$1"
+      exit $?
+      ;;
+    setup)
+      shift
+      if [ -z "${1:-}" ]; then
+        echo "Usage: deus connect setup <id>" >&2
+        python3 "$SCRIPT_DIR/scripts/connectors_cli.py" list >&2
+        exit 1
+      fi
+      # Do NOT call _ensure_portable_skills here -- this early prefix-
+      # dispatch block runs before that function is DEFINED; shell scripts
+      # execute top-to-bottom, so calling it this early would hit "command
+      # not found" on every invocation. Just signal and shift; the actual
+      # call happens right after the function's own definition, before the
+      # main case "$1" in ... dispatcher begins.
+      export DEUS_CONNECT_SETUP_ID="$1"
+      ;;
+    *)
+      # Do NOT reuse CLI_AGENT/_normalize_cli_agent -- deus fcc's own
+      # runtime dispatch on that chain is confirmed dead code today, not a
+      # safe pattern to extend for a new launch path.
+      export DEUS_CONNECT_ID="$1"
+      shift
+      DEUS_CONNECT_ARGS=("$@")   # preserve trailing claude args separately
+      # --agents/--name/-n are injected by launch_connect() itself (below) --
+      # a user-supplied one here would silently override the required
+      # inline agents or the resume-identification tag, since passthrough
+      # args are appended AFTER the injected ones (--agents is also a
+      # documented top-level `deus` flag, so this is a plausible collision,
+      # not just theoretical). Claude's CLI also accepts the equals form
+      # (--agents=<json>, --name=<name>), which a token-only match would
+      # miss entirely -- must reject both forms. (deus connect, #1171)
+      for _dc_arg in "${DEUS_CONNECT_ARGS[@]}"; do
+        case "$_dc_arg" in
+          --agents|--agents=*|--name|--name=*|-n)
+            echo "Error: deus connect already injects $_dc_arg -- pass a different flag." >&2
+            exit 1
+            ;;
+        esac
+      done
+      set --                     # force the shared dispatcher below into
+                                  # home|""|--print-identity, so the
+                                  # connector launch (not setup -- see
+                                  # above) gets the full identity/vault/
+                                  # preferences/portable-skills pipeline
+      ;;
+  esac
+fi
+
 _read_config_key() {
   python3 -c "
 import json; from pathlib import Path
@@ -633,6 +701,7 @@ PORTABLE_SKILLS=(
   wardens
   add-editor
   add-understand-anything
+  add-connector
 )
 
 _ensure_portable_skills() {
@@ -660,6 +729,33 @@ _ensure_portable_skills() {
 _deus_freshness_check "$@"
 # Passive background auto-sync (mutating — see the auto-sync sentinel block above).
 _deus_auto_sync "$@"
+
+# `deus connect setup <id>` continuation — signaled by the early prefix-
+# dispatch block above. Deferred to here (the earliest point the function
+# genuinely exists) rather than called from that block directly. Runs
+# outside the home/external-project pipeline below on purpose: routing
+# `setup` through that pipeline would run project onboarding for whatever
+# directory the user happens to be in, an unintended mutation. (deus
+# connect, #1171)
+if [ -n "$DEUS_CONNECT_SETUP_ID" ]; then
+  _connect_setup_id="$DEUS_CONNECT_SETUP_ID"
+  unset DEUS_CONNECT_SETUP_ID   # exported vars leak into every child process --
+                                # the claude session this launches (and anything
+                                # IT launches, e.g. add-connector's own
+                                # verification step running "deus connect <id>")
+                                # must not inherit a stale setup sentinel that
+                                # would hijack that nested launch back into
+                                # /add-connector.
+  _ensure_portable_skills
+  # `deus connect setup` must work from any directory (that's the whole
+  # point of the PORTABLE_SKILLS fix above) -- but the launched session gets
+  # none of the normal Deus context pipeline (no --append-system-prompt),
+  # and the skill's own commands (e.g. "python3 scripts/connectors_cli.py
+  # list") use repo-relative paths, matching every other portable skill's
+  # convention. Without cd'ing first, those commands would fail the moment
+  # this is invoked from outside $SCRIPT_DIR.
+  cd "$SCRIPT_DIR" && exec claude "/add-connector $_connect_setup_id"
+fi
 
 case "$1" in
   init|onboard)
@@ -1181,7 +1277,70 @@ sys.exit(1)
       fi
     }
 
+    launch_connect() {
+      # deus connect (#1171)
+      local id="$DEUS_CONNECT_ID"
+      unset DEUS_CONNECT_ID   # exported vars leak into every child process --
+                              # this must not leak into the claude process
+                              # about to be launched (or anything it
+                              # subsequently runs, e.g. a nested
+                              # "deus connect <other-id>" call from inside a
+                              # tool call).
+      local env_output py_exit agents_json agents_py_exit
+      env_output="$(python3 "$SCRIPT_DIR/scripts/connectors_cli.py" env "$id")"
+      py_exit=$?
+      if [ "$py_exit" -ne 0 ] || [ -z "$env_output" ]; then
+        echo "Error: connector '$id' is unknown or not configured."
+        echo "Run: deus connect setup $id"
+        return 1
+      fi
+      eval "$env_output"
+
+      # Claude Code's own authentication precedence (confirmed against
+      # code.claude.com/docs/en/authentication's "Authentication precedence"
+      # section) ranks cloud-provider selection (CLAUDE_CODE_USE_BEDROCK/
+      # VERTEX/FOUNDRY) above ANTHROPIC_AUTH_TOKEN, which itself outranks
+      # ANTHROPIC_API_KEY -- the one var this connector actually sets above.
+      # A user with any of these already set ambiently (e.g. an existing
+      # corporate gateway/cloud-provider config) would have the connector
+      # launch silently authenticate against THAT instead of routing through
+      # CLIProxyAPI at all -- not an error, just silently wrong. Clear them
+      # for this launch specifically; a bare `claude`/`deus claude` outside
+      # this connector session is unaffected.
+      unset ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+
+      agents_json="$(python3 "$SCRIPT_DIR/scripts/connectors_cli.py" agents-json "$id")"
+      agents_py_exit=$?
+      if [ "$agents_py_exit" -ne 0 ] || [ -z "$agents_json" ]; then
+        echo "Error: connector '$id' produced invalid subagent definitions."
+        return 1
+      fi
+
+      # That var silently collapses every subagent's model to one if ever
+      # set -- unset on every connect launch, not just during onboarding.
+      unset CLAUDE_CODE_SUBAGENT_MODEL
+
+      echo "warning: Connected via $id -- non-Claude model, do not resume bare."
+
+      # "$@" here is launch_connect's own positional params, forwarded from
+      # launch_agent's "$@" below -- this is the pipeline's assembled
+      # context (e.g. --append-system-prompt "$FULL_PROMPT"). --agents is
+      # injected only here, at the final launch_claude call, never earlier
+      # in any positional-parameter list the AGENTS_MODE scan above sees --
+      # that scan string-matches a literal "--agents" token appearing
+      # anywhere in "$@" and execs `claude agents` (Claude's own
+      # agent-management TUI) instead of a normal launch if it appears
+      # before this point. (deus connect, #1171)
+      launch_claude "$@" --agents "$agents_json" --name "connect:$id (non-Claude)" "${DEUS_CONNECT_ARGS[@]}"
+      return $?
+    }
+
     launch_agent() {
+      # deus connect (#1171)
+      if [ -n "$DEUS_CONNECT_ID" ]; then
+        launch_connect "$@"
+        return $?
+      fi
       if [ "$CLI_AGENT" = "fcc" ]; then
         launch_fcc "$@"
         return $?
@@ -1519,7 +1678,15 @@ $STARTUP_INSTRUCTION"
         printf '%s' "$FULL_PROMPT" >&3
         exit 0
       fi
-      if [ "$TUI_DEFAULT" = "true" ]; then
+      # deus connect always forces the plain-claude path below, ignoring
+      # tui_default entirely: env-var redirection would propagate into the
+      # TUI's own claude subprocess for free (Rust's Command inherits the
+      # full parent environment), but --agents/--name are CLI flags the
+      # TUI's own Rust code constructs per-turn with no propagation path
+      # without modifying that binary -- a partial-parity variant risks
+      # confusing, undocumented behavior more than it's worth. (deus
+      # connect, #1171)
+      if [ "$TUI_DEFAULT" = "true" ] && [ -z "$DEUS_CONNECT_ID" ]; then
         cd "$CURRENT_DIR" && _launch_tui_with_context "$FULL_PROMPT" "" "external"
       fi
       launch_agent --append-system-prompt "$FULL_PROMPT"
@@ -1572,7 +1739,9 @@ $STARTUP_INSTRUCTION"
       printf '%s' "$FULL_PROMPT" >&3
       exit 0
     fi
-    if [ "$TUI_DEFAULT" = "true" ]; then
+    # deus connect always forces the plain-claude path (see the matching
+    # comment in external-project mode above for why). (#1171)
+    if [ "$TUI_DEFAULT" = "true" ] && [ -z "$DEUS_CONNECT_ID" ]; then
       cd "$HOME/deus" && _launch_tui_with_context "$FULL_PROMPT" "$INITIAL_MSG" "home"
     fi
 
@@ -2003,6 +2172,7 @@ $STARTUP_INSTRUCTION"
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
     echo "  deus fcc        Launch with proxy model (see: deus provider, deus model)"
+    echo "  deus connect    Launch via a registered non-Claude connector (list|setup|status <id> | <id>)"
     echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
     echo "  deus init       Onboard the current project: index it for code intelligence"
     echo "                    (codegraph + code_search) and register it (alias: onboard)"
