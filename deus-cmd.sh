@@ -98,7 +98,7 @@ if [ "$1" = "connect" ]; then
       # documented top-level `deus` flag, so this is a plausible collision,
       # not just theoretical). Claude's CLI also accepts the equals form
       # (--agents=<json>, --name=<name>), which a token-only match would
-      # miss entirely -- must reject both forms.
+      # miss entirely -- must reject both forms. (deus connect, #1171)
       for _dc_arg in "${DEUS_CONNECT_ARGS[@]}"; do
         case "$_dc_arg" in
           --agents|--agents=*|--name|--name=*|-n)
@@ -735,7 +735,8 @@ _deus_auto_sync "$@"
 # genuinely exists) rather than called from that block directly. Runs
 # outside the home/external-project pipeline below on purpose: routing
 # `setup` through that pipeline would run project onboarding for whatever
-# directory the user happens to be in, an unintended mutation.
+# directory the user happens to be in, an unintended mutation. (deus
+# connect, #1171)
 if [ -n "$DEUS_CONNECT_SETUP_ID" ]; then
   _connect_setup_id="$DEUS_CONNECT_SETUP_ID"
   unset DEUS_CONNECT_SETUP_ID   # exported vars leak into every child process --
@@ -1277,6 +1278,7 @@ sys.exit(1)
     }
 
     launch_connect() {
+      # deus connect (#1171)
       local id="$DEUS_CONNECT_ID"
       unset DEUS_CONNECT_ID   # exported vars leak into every child process --
                               # this must not leak into the claude process
@@ -1328,12 +1330,13 @@ sys.exit(1)
       # that scan string-matches a literal "--agents" token appearing
       # anywhere in "$@" and execs `claude agents` (Claude's own
       # agent-management TUI) instead of a normal launch if it appears
-      # before this point.
+      # before this point. (deus connect, #1171)
       launch_claude "$@" --agents "$agents_json" --name "connect:$id (non-Claude)" "${DEUS_CONNECT_ARGS[@]}"
       return $?
     }
 
     launch_agent() {
+      # deus connect (#1171)
       if [ -n "$DEUS_CONNECT_ID" ]; then
         launch_connect "$@"
         return $?
@@ -1681,7 +1684,8 @@ $STARTUP_INSTRUCTION"
       # full parent environment), but --agents/--name are CLI flags the
       # TUI's own Rust code constructs per-turn with no propagation path
       # without modifying that binary -- a partial-parity variant risks
-      # confusing, undocumented behavior more than it's worth.
+      # confusing, undocumented behavior more than it's worth. (deus
+      # connect, #1171)
       if [ "$TUI_DEFAULT" = "true" ] && [ -z "$DEUS_CONNECT_ID" ]; then
         cd "$CURRENT_DIR" && _launch_tui_with_context "$FULL_PROMPT" "" "external"
       fi
@@ -1736,7 +1740,7 @@ $STARTUP_INSTRUCTION"
       exit 0
     fi
     # deus connect always forces the plain-claude path (see the matching
-    # comment in external-project mode above for why).
+    # comment in external-project mode above for why). (#1171)
     if [ "$TUI_DEFAULT" = "true" ] && [ -z "$DEUS_CONNECT_ID" ]; then
       cd "$HOME/deus" && _launch_tui_with_context "$FULL_PROMPT" "$INITIAL_MSG" "home"
     fi
