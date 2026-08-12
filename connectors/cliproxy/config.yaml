@@ -94,3 +94,12 @@ deus-model-map:
 # Default model for the session itself (ANTHROPIC_MODEL) when no /model
 # switch has been made yet.
 default-model-alias: "luna-max"
+
+# Makes /v1/models return raw, uncloaked upstream ids instead of
+# obfuscated claude-branded ones. Claude Code's own gateway-discovery
+# filter (an id must contain "claude" or "anthropic") then keeps exactly
+# the 3 claude-gpt-* picker-discovery aliases above and drops every other
+# catalog entry (image-generation models, internal tooling, etc.) instead
+# of surfacing all of them under meaningless obfuscated names.
+claude-code:
+  disable-cloaking-model-list: true
