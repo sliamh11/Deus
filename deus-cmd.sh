@@ -1445,6 +1445,7 @@ sys.exit(1)
                               # "deus connect <other-id>" call from inside a
                               # tool call).
       local env_output py_exit agents_json agents_py_exit was_implicit
+      local _dc_clear_var
       was_implicit="$_DEUS_CONNECT_ID_IMPLICIT"
       unset _DEUS_CONNECT_ID_IMPLICIT
       # `--` guards against a leading-dash id reaching argparse as a flag --
@@ -1473,16 +1474,35 @@ sys.exit(1)
 
       # Claude Code's own authentication precedence (confirmed against
       # code.claude.com/docs/en/authentication's "Authentication precedence"
-      # section) ranks cloud-provider selection (CLAUDE_CODE_USE_BEDROCK/
-      # VERTEX/FOUNDRY) above ANTHROPIC_AUTH_TOKEN, which itself outranks
-      # ANTHROPIC_API_KEY -- the one var this connector actually sets above.
-      # A user with any of these already set ambiently (e.g. an existing
-      # corporate gateway/cloud-provider config) would have the connector
-      # launch silently authenticate against THAT instead of routing through
-      # CLIProxyAPI at all -- not an error, just silently wrong. Clear them
-      # for this launch specifically; a bare `claude`/`deus claude` outside
-      # this connector session is unaffected.
-      unset ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+      # section, plus code.claude.com/docs/en/amazon-bedrock for Mantle)
+      # ranks cloud-provider selection (CLAUDE_CODE_USE_BEDROCK/VERTEX/
+      # FOUNDRY/MANTLE) above ANTHROPIC_AUTH_TOKEN, which itself outranks
+      # ANTHROPIC_API_KEY. A user with any of these already set ambiently
+      # (e.g. an existing corporate gateway/cloud-provider config) would
+      # have the connector launch silently authenticate against THAT
+      # instead of routing through the connector's own engine at all --
+      # not an error, just silently wrong. Clear them for this launch
+      # specifically; a bare `claude`/`deus claude` outside this connector
+      # session is unaffected.
+      #
+      # connector-aware: only unset a var the connector's own env_output
+      # did NOT itself set. Needed because the `ollama` connector (unlike
+      # cliproxy_oauth) sets ANTHROPIC_AUTH_TOKEN=ollama as its actual
+      # credential -- an unconditional unset here would erase it
+      # immediately after eval sets it, silently breaking auth. The match
+      # is anchored to a real line start (`$'\n'"$env_output"` / matching
+      # `*$'\n'"export ...="*`), not a bare substring: `env_output` is
+      # newline-delimited `export KEY=value` lines (connectors_cli.py's
+      # cmd_env), and shlex.quote() does not escape `=`, so a bare
+      # substring match could false-positive on a connector value that
+      # happens to contain the literal text `export ANTHROPIC_AUTH_TOKEN=`
+      # elsewhere in the string.
+      for _dc_clear_var in ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_MANTLE; do
+        case $'\n'"$env_output" in
+          *$'\n'"export ${_dc_clear_var}="*) ;;  # connector set it itself -- leave it
+          *) unset "$_dc_clear_var" ;;
+        esac
+      done
 
       agents_json="$(python3 "$SCRIPT_DIR/scripts/connectors_cli.py" agents-json -- "$id")"
       agents_py_exit=$?
@@ -1521,8 +1541,11 @@ sys.exit(1)
         return $?
       fi
       if [ "$CLI_AGENT" = "ollama" ]; then
-        echo "Error: Ollama backend is not yet available as a CLI agent."
-        echo "Use 'deus backend set claude' or 'deus backend set openai' instead."
+        echo "Error: 'deus backend set ollama' is not a CLI agent -- use"
+        echo "'deus connect ollama' instead (routes via Ollama's native"
+        echo "Anthropic-API mode; run 'deus connect setup ollama' first if"
+        echo "not yet configured). 'deus backend set claude/openai' remains"
+        echo "for the persisted-backend model, unrelated to deus connect."
         return 1
       fi
       if [ "$CLI_AGENT" = "llama-cpp" ]; then

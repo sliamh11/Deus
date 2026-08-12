@@ -15,9 +15,25 @@ from Deus's own container-agent backend adapters (`deus codex`,
 `docs/decisions/backend-neutral-agent-runtime.md`'s note near the Parity
 Matrix.
 
-This skill is generic over any registered connector (currently ships with
-`cliproxy-oauth` only) — adding a second connector in the future changes
-`connectors/providers/`, not this skill.
+This skill is generic over any registered connector (ships with
+`cliproxy-oauth` and `ollama`) — adding another connector in the future
+changes `connectors/providers/`, not this skill.
+
+**Four distinct "ollama" surfaces exist in this repo — do not conflate
+them when guiding a user:**
+1. **`deus connect ollama`** (this skill, this section) — routes a Claude
+   Code session directly to a local Ollama instance via its native
+   Anthropic-API mode. No proxy, no daemon management.
+2. **`deus provider ollama` / `deus fcc`** (`deus-cmd.sh`'s `fcc` proxy
+   system) — a *different* mechanism: routes through `fcc-server`'s
+   OpenAI-compat translation proxy. Also reaches a local Ollama install,
+   but via proxy translation, not a direct native-mode redirect.
+3. **`deus backend set ollama`** — a persisted `DEUS_AGENT_BACKEND` value.
+   Not yet wired to a working CLI agent; its stub error message points
+   here (`deus connect ollama`) and to `deus provider ollama`/`fcc`.
+4. **`.claude/skills/add-ollama-tool`** — an unrelated feature: adds an
+   Ollama MCP server so a *container agent* (not a `deus connect` session)
+   can offload tasks to a local model.
 
 ## Phase 1: Pre-flight
 
@@ -38,24 +54,31 @@ reconfigure.
 
 ## Phase 2: Which connector
 
-AskUserQuestion: Which connector do you want to set up? (ships with
-`cliproxy-oauth` only today — CLIProxyAPI, OAuth-login, reuses your
-ChatGPT/Codex subscription for GPT models alongside Claude).
+AskUserQuestion: Which connector do you want to set up?
+- `cliproxy-oauth` — CLIProxyAPI, OAuth-login, reuses your ChatGPT/Codex
+  subscription for GPT models alongside Claude.
+- `ollama` — routes to a locally-pulled Ollama model via its native
+  Anthropic-API mode. No OAuth, no proxy daemon (Ollama runs its own
+  service already).
 
 ## Phase 3: Required risk acknowledgment
 
-**Not a footnote — block progression on explicit confirmation.** Show all
-five of these before proceeding, every time, for every future user:
+**Not a footnote — block progression on explicit confirmation, every time,
+for every future user.** Risks 2-5 below are structural to `deus connect`
+itself and apply to every connector; risk 1 is `cliproxy-oauth`-specific
+(OAuth-subscription reuse — Ollama has no OAuth token extraction, this risk
+class does not apply to it) and risk 6 is `ollama`-specific. Show the set
+that matches the connector selected in Phase 2:
 
 > **`deus connect` risk disclosure:**
 >
-> 1. **OAuth-subscription reuse is a real, non-zero, documented account-ban
->    risk class.** This connector extracts an OAuth token from your
->    ChatGPT/Codex subscription and reuses it for a separate HTTP client —
->    see `examples/multi-model-cliproxyapi/README.md`'s "Known open risks"
->    for the full account, including real dated ban reports in CLIProxyAPI's
->    own issue tracker for other providers. Unlike a config mistake, there
->    is no rollback if this fires.
+> 1. **(cliproxy-oauth only) OAuth-subscription reuse is a real, non-zero,
+>    documented account-ban risk class.** This connector extracts an OAuth
+>    token from your ChatGPT/Codex subscription and reuses it for a
+>    separate HTTP client — see `examples/multi-model-cliproxyapi/README.md`'s
+>    "Known open risks" for the full account, including real dated ban
+>    reports in CLIProxyAPI's own issue tracker for other providers. Unlike
+>    a config mistake, there is no rollback if this fires.
 > 2. **Anthropic explicitly disclaims support** for routing Claude Code to
 >    non-Claude models through any gateway
 >    (https://code.claude.com/docs/en/llm-gateway) — a support-scope
@@ -79,13 +102,22 @@ five of these before proceeding, every time, for every future user:
 >    Deus preferences (the default), a connector session runs with
 >    `--dangerously-skip-permissions` like any other Deus session — full,
 >    unprompted tool execution, just with a non-Claude, unsupported model
->    driving it instead of Claude. The three inline subagents are scoped to
->    `Read`/`Grep`/`Glob`/`Bash`/`WebSearch`/`WebFetch` (not the session's
->    full tool set), but the top-level connector session itself is not
->    additionally restricted beyond your normal Deus bypass setting.
+>    driving it instead of Claude. Each connector's inline subagents are
+>    scoped to `Read`/`Grep`/`Glob`/`Bash`/`WebSearch`/`WebFetch` (not the
+>    session's full tool set), but the top-level connector session itself
+>    is not additionally restricted beyond your normal Deus bypass setting.
+> 6. **(ollama only) A small/weak local model can silently produce
+>    lower-quality or subtly wrong tool-use sequences** — misread
+>    instructions, bad tool-call arguments, incomplete reasoning — while
+>    running under the exact same full bypass-permission trust as Claude
+>    (risk 5). This is a different risk profile than `cliproxy-oauth`'s,
+>    not a lesser version of it: it's about the model's own capability
+>    silently degrading task correctness, not about where the model comes
+>    from, and it carries no distinct warning signal beyond noticing the
+>    output itself looks off.
 
-AskUserQuestion: Confirm you understand and accept all five risks above
-before continuing?
+AskUserQuestion: Confirm you understand and accept the risks above before
+continuing?
 - Yes, continue
 - No, cancel setup
 
@@ -93,6 +125,7 @@ Stop here if the user declines.
 
 ## Phase 4: Install the engine
 
+**cliproxy-oauth:**
 ```bash
 python3 scripts/connectors_cli.py install-check cliproxy-oauth
 ```
@@ -110,9 +143,41 @@ silently auto-fetch a binary that's about to hold real OAuth tokens.**
 
 Re-run the install-check after the user confirms installation is done.
 
+**ollama:**
+```bash
+python3 scripts/connectors_cli.py install-check ollama
+```
+
+Checks only that the `ollama` binary is on PATH — deliberately does NOT
+probe whether the background service is actually running, since at this
+point Phase 5 hasn't collected the user's real host yet and a live check
+here could only ever reach the default `localhost:11434` (silently wrong
+for a non-default-host setup, with no way to recover except repeating the
+same failing check). Service liveness — against the real configured host —
+is checked in Phase 10's `verify-setup`, after Phase 7 writes it. If
+`not installed`, tell the user to install Ollama
+(https://ollama.com/download); if it's installed but the service isn't
+running (menu-bar app on macOS / systemd unit on Linux), Phase 10 will
+catch that instead, with the real host. This connector never manages the
+Ollama service itself — no daemon to start on the user's behalf, unlike
+`cliproxy-oauth`'s launchd plist.
+
+**ollama-only: context window prerequisite.** Ollama defaults its context
+window by available VRAM — under 24 GiB VRAM defaults to 4k, well below
+what a real Deus session needs (Ollama's own Claude Code guidance
+recommends 64k+). Tell the user to raise `OLLAMA_CONTEXT_LENGTH` to at
+least 64000 before continuing:
+- **macOS menu-bar app**: Settings → context-length slider.
+- **CLI/systemd-managed install**: `export OLLAMA_CONTEXT_LENGTH=65536`
+  in the service's environment, then restart the service.
+
+Phase 10's `verify-setup` checks this automatically (via `/api/ps`'s
+`context_length`) and fails if it's still too small — but flag it now so
+the user isn't surprised by a failed verify later.
+
 ## Phase 5: Collect config values
 
-Ask the user (do not invent values):
+**cliproxy-oauth:**
 
 - **Inbound key** — generate one rather than asking the user to invent it:
   `python3 -c "import secrets; print(secrets.token_urlsafe(24))"`. This is
@@ -131,8 +196,23 @@ Ask the user (do not invent values):
   made — recommend `luna-max` (max reasoning effort) unless the user
   prefers otherwise.
 
+**ollama:**
+
+- **Which locally-pulled model backs `deus-ollama-local`?** Run
+  `ollama list` and show the user the real, currently-pulled models —
+  never invent a plausible-looking tag the way `cliproxy-oauth`'s
+  placeholder does for GPT ids (that's necessary there because a remote
+  account's real upstream id can't be locally enumerated; here it can, so
+  there's no reason to guess). If nothing is pulled yet, help the user
+  `ollama pull <model>` first.
+- **Host** — default `http://localhost:11434`, only ask if the user runs
+  Ollama on a non-default host/port.
+- No inbound key, no OAuth leg, no launchd config — this connector doesn't
+  need them.
+
 ## Phase 6: Authenticate
 
+**cliproxy-oauth:**
 ```bash
 python3 scripts/connectors_cli.py authenticate cliproxy-oauth
 ```
@@ -143,8 +223,18 @@ underlying engine supports `--no-browser` with a printed URL; if that's
 needed, tell the user to run the login step manually with that flag instead
 of through this script, then continue to Phase 7.
 
-## Phase 7: Write config + launchd daemon
+**ollama:**
+```bash
+python3 scripts/connectors_cli.py authenticate ollama
+```
 
+No-op — always returns success. No OAuth/login concept for locally-pulled
+models. (Ollama's optional hosted "cloud" model aliases require `ollama
+signin`, out of scope for this connector's current scope.)
+
+## Phase 7: Write config
+
+**cliproxy-oauth (+ launchd daemon):**
 ```bash
 echo '<json values>' | python3 scripts/connectors_cli.py write-config cliproxy-oauth
 ```
@@ -193,46 +283,81 @@ launchctl load ~/Library/LaunchAgents/com.deus.connectors.cliproxy-oauth.plist
 launchctl kickstart -k gui/$(id -u)/com.deus.connectors.cliproxy-oauth
 ```
 
+**ollama (no daemon):**
+```bash
+echo '<json values>' | python3 scripts/connectors_cli.py write-config ollama
+```
+
+Where `<json values>` is a JSON object:
+```json
+{
+  "host": "http://localhost:11434",
+  "model_map": {"deus-ollama-local": "<real pulled model tag from Phase 5>"},
+  "default_model_alias": "<same real pulled model tag>"
+}
+```
+
+Writes only `~/.config/deus/connectors/ollama/config.local.yaml` — no
+launchd plist, no daemon to load or kickstart. Ollama's own service is
+already running (confirmed in Phase 4) and this connector never manages it.
+
 ## Phase 8: `~/.claude.json` pre-approval
 
-Read-merge the connector's inbound key into
+**cliproxy-oauth only.** Read-merge the connector's inbound key into
 `~/.claude.json`'s `customApiKeyResponses.approved` array — back up the
 file first (`cp ~/.claude.json ~/.claude.json.bak-<date>`), then merge
 (never overwrite the whole array — other entries may already exist).
 
+**ollama: not applicable, based on docs — not yet confirmed by a live run.**
+`env_for_launch()` sets `ANTHROPIC_API_KEY=""` (empty) and authenticates via
+`ANTHROPIC_AUTH_TOKEN=ollama` instead, which Claude Code's own auth
+precedence resolves before `ANTHROPIC_API_KEY` — the custom-API-key
+approval prompt this phase exists to pre-answer is keyed off
+`ANTHROPIC_API_KEY` being set, so it's expected not to trigger. This is
+reasoned from `code.claude.com/docs/en/authentication`'s precedence order,
+not yet observed in a real run (no live Ollama setup existed at
+implementation time to test against). Treat Phase 10's live check as the
+first real confirmation of this — if a prompt does appear there, that's a
+genuine finding to fix, not an expected step to route around.
+
 ## Phase 9: Validate subagent definitions
 
 ```bash
-python3 scripts/connectors_cli.py agents-json cliproxy-oauth
+python3 scripts/connectors_cli.py agents-json <id>
 ```
 
-Confirm it prints valid, non-empty JSON — no file templates to install,
-`deus connect`'s launch mechanism passes these inline via `claude --agents`.
+(`<id>` = `cliproxy-oauth` or `ollama`, whichever was set up.) Confirm it
+prints valid, non-empty JSON — no file templates to install, `deus
+connect`'s launch mechanism passes these inline via `claude --agents`.
 
 ## Phase 10: Verify
 
 ```bash
-python3 scripts/connectors_cli.py verify-setup cliproxy-oauth
+python3 scripts/connectors_cli.py verify-setup <id>
 ```
 
-Engine health + a real functional probe. Then run one real launch and
-confirm, end to end:
+Engine health + a real functional probe (for `ollama`: liveness, a
+tool-schema-bearing `/v1/messages` probe, and the context-length check from
+Phase 4 — all three must pass). Then run one real launch and confirm, end
+to end:
 
 ```bash
-deus connect cliproxy-oauth
+deus connect <id>
 ```
 
 - Model resolution: check `/model` shows the redirected model.
 - Inline subagents resolve: dispatch the `Agent` tool with
-  `deus-gpt-sol`/`deus-gpt-terra`/`deus-gpt-luna`.
+  `deus-gpt-sol`/`deus-gpt-terra`/`deus-gpt-luna` (`cliproxy-oauth`) or
+  `deus-ollama-local` (`ollama`).
 - Normal Deus context is present: ask it to recall a recent checkpoint —
   the round 11/12 fix's whole point was that a connector session gets the
   same identity/vault/memory/preferences pipeline as a bare `deus` launch,
   not a redirected-but-otherwise-bare Claude Code process.
-- A bare `claude` in a separate terminal never sees `deus-gpt-*` — confirms
-  subagent isolation (the one fully structural guarantee this feature
-  makes; env-var inheritance by nested processes and session-resume
-  visibility are both disclosed tradeoffs, not guarantees — see Phase 3).
+- A bare `claude` in a separate terminal never sees the connector's
+  subagents — confirms subagent isolation (the one fully structural
+  guarantee this feature makes; env-var inheritance by nested processes
+  and session-resume visibility are both disclosed tradeoffs, not
+  guarantees — see Phase 3).
 
 ## Phase 11: Set as default (optional)
 
@@ -268,21 +393,43 @@ python3 scripts/connectors_cli.py status cliproxy-oauth
 launchctl list | grep com.deus.connectors.cliproxy-oauth
 ```
 
-### Model doesn't resolve / 401s from the proxy
+### `deus connect ollama` says "connector is unknown or not configured"
+
+Config didn't write correctly, or the Ollama service isn't running (this
+connector never starts/manages it):
+
+```bash
+python3 scripts/connectors_cli.py status ollama
+curl -s http://localhost:11434/api/version
+```
+
+### Model doesn't resolve / 401s from the proxy (cliproxy-oauth)
 
 ```bash
 curl -s http://localhost:8317/healthz
 cat ~/.config/deus/connectors/cliproxy/config.local.yaml   # confirm api-keys, oauth-model-alias
 ```
 
+### `deus connect ollama` fails verify / real session fails on tool use or truncates
+
+```bash
+curl -s http://localhost:11434/api/ps   # check context_length for the loaded model
+cat ~/.config/deus/connectors/ollama/config.local.yaml   # confirm host, deus-model-map
+```
+
+If `context_length` is below 64000, raise `OLLAMA_CONTEXT_LENGTH` per Phase
+4 and restart the Ollama service. If the model itself doesn't support
+tool-calling, pick a different pulled model in Phase 5/7.
+
 ### Subagents don't appear via the `Agent` tool
 
-Confirm you launched through `deus connect cliproxy-oauth`, not a bare
-`claude` — subagent definitions are injected inline on that exact launch
-command and never written to disk.
+Confirm you launched through `deus connect <id>`, not a bare `claude` —
+subagent definitions are injected inline on that exact launch command and
+never written to disk.
 
 ## Removal
 
+**cliproxy-oauth:**
 1. Unload and remove the launchd daemon:
    ```bash
    launchctl unload ~/Library/LaunchAgents/com.deus.connectors.cliproxy-oauth.plist
@@ -296,3 +443,13 @@ command and never written to disk.
    in Phase 8 (remove that one key, keep the rest of the array intact).
 4. Confirm: `python3 scripts/connectors_cli.py status cliproxy-oauth` now
    reports "not configured".
+
+**ollama:**
+1. Remove the real local config (no launchd daemon to unload — this
+   connector never created one):
+   ```bash
+   rm ~/.config/deus/connectors/ollama/config.local.yaml
+   ```
+2. Confirm: `python3 scripts/connectors_cli.py status ollama` now reports
+   "not configured". Ollama's own service is untouched — it wasn't started
+   or managed by this connector, so there's nothing else to stop.
