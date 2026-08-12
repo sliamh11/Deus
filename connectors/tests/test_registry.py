@@ -240,7 +240,8 @@ class TestCliproxyOauthEnvForLaunch:
         env = c.env_for_launch()
         assert env == {
             "ANTHROPIC_BASE_URL": "http://localhost:8317",
-            "ANTHROPIC_API_KEY": "real-key",
+            "ANTHROPIC_AUTH_TOKEN": "real-key",
+            "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_MODEL": "sol",
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
         }

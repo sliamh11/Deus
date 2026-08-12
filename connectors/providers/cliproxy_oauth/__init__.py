@@ -149,7 +149,21 @@ class CliproxyOauthConnector(Connector):
         )
         return {
             "ANTHROPIC_BASE_URL": f"http://localhost:{port}",
-            "ANTHROPIC_API_KEY": keys[0] if keys else "",
+            # Real credential goes on ANTHROPIC_AUTH_TOKEN, not
+            # ANTHROPIC_API_KEY -- matches the ollama connector's exact
+            # pattern. Claude Code's ANTHROPIC_API_KEY approval check
+            # compares only the last 20 characters of the key against a
+            # ~/.claude.json allowlist, so this connector's full-length key
+            # could never match and silently fell through to the user's
+            # personal OAuth subscription instead. ANTHROPIC_AUTH_TOKEN
+            # sidesteps that check and outranks ANTHROPIC_API_KEY in
+            # Claude Code's own auth precedence.
+            "ANTHROPIC_AUTH_TOKEN": keys[0] if keys else "",
+            # Explicitly emptied, not omitted: masks any ambient
+            # ANTHROPIC_API_KEY the launching shell might have set, so it
+            # can never be picked up instead of this connector's own
+            # credential.
+            "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_MODEL": default_alias,
             # Lets Claude Code's /model picker discover the claude-gpt-*
             # aliases (connectors/cliproxy/config.yaml's picker-discovery
