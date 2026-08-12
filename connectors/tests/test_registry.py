@@ -96,7 +96,11 @@ class TestConnectorRegistry:
 
     def test_register_rejects_reserved_ids(self):
         reg = ConnectorRegistry.default()
-        for reserved in ("list", "setup", "status"):
+        # "default" plus its own sub-namespace (show/off/clear) -- a
+        # connector using any of these would be permanently unreachable
+        # via `deus connect <id>`, intercepted by the `default)` case arm
+        # before the launch catch-all ever runs (deus connect, #1171-followup).
+        for reserved in ("list", "setup", "status", "default", "show", "off", "clear"):
             with pytest.raises(ConnectorRegistrationError):
                 reg.register(FakeConnector(reserved))
 

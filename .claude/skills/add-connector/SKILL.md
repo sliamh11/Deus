@@ -234,6 +234,29 @@ deus connect cliproxy-oauth
   makes; env-var inheritance by nested processes and session-resume
   visibility are both disclosed tradeoffs, not guarantees — see Phase 3).
 
+## Phase 11: Set as default (optional)
+
+By default, every future session still needs `deus connect <id>` typed
+explicitly — a bare `deus`/`deus home` is never affected. If you want this
+connector to be your default everywhere instead (every bare `deus`/`deus
+home` session, in any project, routes through it automatically), ask:
+
+AskUserQuestion: Set `<id>` as your default connector for every session?
+- Yes — run `deus connect default <id>` interactively and walk through its
+  own confirmation prompt (a materially bigger blast radius than one-off
+  `deus connect <id>` use, so it carries its own disclosure, not just
+  Phase 3's).
+- No — skip; `deus connect <id>` remains available on demand.
+
+If yes, `deus connect default <id>` requires an interactive terminal (fails
+closed, not silently, when piped/non-interactive) and prints its own
+five-point-adjacent disclosure before writing anything — most importantly:
+`deus claude` (typed explicitly) is the only guaranteed way to force plain
+Claude once a default is set; a persistent `deus backend set claude` choice
+or `DEUS_CLI_AGENT`/`DEUS_AGENT_BACKEND` env vars are NOT enough on their
+own to block it. Reversible any time with `deus connect default off`
+(`clear` is an accepted synonym).
+
 ## Troubleshooting
 
 ### `deus connect cliproxy-oauth` says "connector is unknown or not configured"
