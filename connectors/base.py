@@ -68,8 +68,9 @@ class Connector(ABC):
     def id(self) -> str:
         """Stable connector id, e.g. 'cliproxy-oauth'.
 
-        Never one of the reserved words `list`/`setup`/`status` — the
-        registry rejects registration of a connector using any of those.
+        Never one of the reserved words `list`/`setup`/`status`/`default`/
+        `show`/`off`/`clear` — the registry rejects registration of a
+        connector using any of those (see `registry.RESERVED_IDS`).
         """
         ...
 

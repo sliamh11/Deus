@@ -4,6 +4,9 @@
 Subcommands:
   list                  enumerate registered connectors + configured status
   status <id>            engine health + functional probe for one connector
+  is-configured <id>      is_configured() only, no health probe -- for a
+                           setup-time gate (e.g. `deus connect default <id>`)
+                           that shouldn't require the daemon to be up right now
   env <id>                print 'export KEY=<shlex-quoted value>' lines for
                            deus-cmd.sh to `eval`; exits non-zero with no
                            stdout on an unknown/unconfigured id
@@ -87,6 +90,17 @@ def cmd_status(args: argparse.Namespace) -> int:
     healthy = connector.setup_handler.verify()
     print("healthy" if healthy else "unhealthy")
     return 0 if healthy else 1
+
+
+def cmd_is_configured(args: argparse.Namespace) -> int:
+    try:
+        connector = _registry().resolve(args.id)
+    except UnknownConnectorError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    configured = connector.is_configured()
+    print("configured" if configured else "not configured")
+    return 0 if configured else 1
 
 
 def cmd_env(args: argparse.Namespace) -> int:
@@ -178,6 +192,10 @@ def main(argv: list[str]) -> int:
     p_status = sub.add_parser("status")
     p_status.add_argument("id")
     p_status.set_defaults(func=cmd_status)
+
+    p_is_configured = sub.add_parser("is-configured")
+    p_is_configured.add_argument("id")
+    p_is_configured.set_defaults(func=cmd_is_configured)
 
     p_env = sub.add_parser("env")
     p_env.add_argument("id")

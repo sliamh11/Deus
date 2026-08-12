@@ -55,7 +55,7 @@ A personal AI that understands you - not just recalls things you've said. It lea
 - [Ollama](https://ollama.ai/download) for local embeddings and scoring (not an agent backend) - `/setup` pulls the right models automatically based on your hardware
 - **Optional:** [llama.cpp](https://github.com/ggerganov/llama.cpp) for a fully local, API-free agent backend — no per-turn cost, works offline. Run `/add-llama-cpp` to install.
 - **Optional:** [free-claude-code](https://github.com/Alishahryar1/free-claude-code) proxy for using Claude Code CLI with alternative models (Ollama, llama-server, Gemini). Launch with `deus fcc` after configuring via `deus provider` and `deus model`.
-- **Optional:** `deus connect` — reuse an OAuth-subscription-multiplexing engine (e.g. [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)) to route a session to non-Claude models (GPT 5.6 Sol/Terra/Luna) alongside normal Claude access, with Deus identity/vault/memory/preferences/skills intact. Run `/add-connector` to set up. **Unsupported by Anthropic** (routing Claude Code to non-Claude models through any gateway is explicitly outside its support scope) and carries a real, disclosed session-resume-visibility tradeoff — read the risk disclosure in `/add-connector` before enabling.
+- **Optional:** `deus connect` — reuse an OAuth-subscription-multiplexing engine (e.g. [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)) to route a session to non-Claude models (GPT 5.6 Sol/Terra/Luna) alongside normal Claude access, with Deus identity/vault/memory/preferences/skills intact. Run `/add-connector` to set up. **Unsupported by Anthropic** (routing Claude Code to non-Claude models through any gateway is explicitly outside its support scope) and carries a real, disclosed session-resume-visibility tradeoff — read the risk disclosure in `/add-connector` before enabling. Opt-in per session by default (`deus connect <id>`); `deus connect default <id>` persists it globally instead, so every bare `deus`/`deus home` session routes there until `deus connect default off` — `deus claude` always bypasses either mode.
 
 ### Install
 
@@ -120,7 +120,7 @@ See [AGENTS.md](AGENTS.md#commands-and-skills) for all available skills.
 | `deus arch` | Visualize a project's architecture in an interactive 3D explorer |
 | `deus codex` | Use OpenAI/Codex backend for this session |
 | `deus fcc` | Launch with a local proxy model (Ollama, llama-server, Gemini) |
-| `deus connect <id>` | Launch via a registered non-Claude connector (`list`/`setup`/`status <id>`) — see `/add-connector` |
+| `deus connect <id>` | Launch via a registered non-Claude connector (`list`/`setup <id>`/`status <id>`/`default <id>\|off`) — see `/add-connector` |
 | `deus provider <name>` | Switch proxy provider (`ollama`, `llamacpp`, `gemini`) |
 | `deus model <name>` | Switch proxy model (auto-prefixes active provider) |
 | `deus model dashboard` | Open proxy admin UI in browser |
