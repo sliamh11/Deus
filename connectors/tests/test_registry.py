@@ -2,6 +2,7 @@
 from typing import Any
 
 import pytest
+import yaml
 
 from connectors.base import Connector, ConnectorSetupHandler
 from connectors.registry import (
@@ -211,6 +212,79 @@ class TestCliproxyOauthIsConfigured:
     def test_missing_config_is_not_configured(self):
         c = self.mod.CliproxyOauthConnector()
         assert c.is_configured() is False
+
+
+class TestCliproxyOauthEnvForLaunch:
+    """Coverage for env_for_launch()'s CLAUDE_CODE_ENABLE_GATEWAY_MODEL_
+    DISCOVERY key (model-picker-visibility follow-up) -- lets Claude Code's
+    /model picker discover the claude-gpt-* aliases via CLIProxyAPI's own
+    /v1/models, for live in-session model switching instead of
+    launch-time-only ANTHROPIC_MODEL.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _redirect_local_config(self, tmp_path, monkeypatch):
+        import connectors.providers.cliproxy_oauth as mod
+
+        monkeypatch.setattr(mod, "LOCAL_CONFIG", tmp_path / "config.local.yaml")
+        self.mod = mod
+
+    def test_gateway_discovery_key_present_alongside_existing_three(self):
+        self.mod.LOCAL_CONFIG.write_text(
+            "port: 8317\n"
+            "api-keys:\n  - real-key\n"
+            "deus-model-map:\n  deus-gpt-sol: sol\n"
+            "default-model-alias: sol\n"
+        )
+        c = self.mod.CliproxyOauthConnector()
+        env = c.env_for_launch()
+        assert env == {
+            "ANTHROPIC_BASE_URL": "http://localhost:8317",
+            "ANTHROPIC_API_KEY": "real-key",
+            "ANTHROPIC_MODEL": "sol",
+            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+        }
+
+    def test_gateway_discovery_key_present_even_when_unconfigured(self):
+        # env_for_launch() itself doesn't gate on is_configured() -- that's
+        # the caller's job (connectors_cli.py's cmd_env checks is_configured()
+        # first). Confirms the new key isn't accidentally conditional on
+        # having claude-gpt-* aliases set up.
+        c = self.mod.CliproxyOauthConnector()
+        env = c.env_for_launch()
+        assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+
+
+class TestTrackedConfigPickerDiscoveryAliases:
+    """Regression coverage for a documentation-only invariant that has no
+    other enforcement: each claude-gpt-* picker-discovery alias's `name`
+    must exactly match its plain-alias twin's `name`, or CLIProxyAPI
+    silently treats them as two different upstream models. Nothing in
+    code enforces this today (it's a tracked-YAML-file convention,
+    documented three times in connectors/cliproxy/config.yaml's comments
+    and .claude/skills/add-connector/SKILL.md) -- this test at least
+    catches an accidental drift in the tracked template itself.
+    """
+
+    def test_discovery_alias_names_match_plain_twins(self):
+        import connectors.providers.cliproxy_oauth as mod
+
+        cfg = yaml.safe_load(mod.TRACKED_CONFIG.read_text())
+        entries = cfg["oauth-model-alias"]["codex"]
+        by_alias = {e["alias"]: e["name"] for e in entries}
+
+        twins = {
+            "claude-gpt-sol": "sol",
+            "claude-gpt-terra": "terra",
+            "claude-gpt-luna": "luna-max",
+        }
+        for discovery_alias, plain_alias in twins.items():
+            assert discovery_alias in by_alias, f"missing {discovery_alias} entry"
+            assert plain_alias in by_alias, f"missing {plain_alias} entry"
+            assert by_alias[discovery_alias] == by_alias[plain_alias], (
+                f"{discovery_alias}'s name ({by_alias[discovery_alias]!r}) must "
+                f"match {plain_alias}'s name ({by_alias[plain_alias]!r})"
+            )
 
 
 class TestWriteLaunchdPlist:

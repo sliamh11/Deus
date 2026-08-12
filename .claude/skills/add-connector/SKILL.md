@@ -31,10 +31,32 @@ inherited from another user), still walk through Phase 2 (select) and
 Phase 3 (risk acknowledgment) — Phase 3 is required every time, regardless
 of configuration state, per its own rule; skipping it here would let an
 already-configured install proceed straight to a real connector launch
-without ever showing the five risks. Only Phases 4-9 (install/authenticate/
+without ever showing the risks. Only Phases 4-9 (install/authenticate/
 write-config) are skippable on an already-configured connector — jump from
 Phase 3 straight to Phase 10 (Verify) unless the user explicitly wants to
 reconfigure.
+
+**`cliproxy-oauth`-specific one-time check, added for the model-picker-
+visibility follow-up — this is a deliberate, documented exception to this
+skill's normal connector-generic design, not a pattern to copy for a
+future connector.** An already-configured `cliproxy-oauth` install
+predating this feature has no `claude-gpt-*` discovery aliases in its real
+config, and the normal skip straight to Phase 10 would never surface the
+migration step needed to add them. Before jumping to Phase 10 on an
+already-configured `cliproxy-oauth`, run:
+```bash
+if [ -f ~/.config/deus/connectors/cliproxy/config.local.yaml ]; then
+  grep -c 'claude-gpt-' ~/.config/deus/connectors/cliproxy/config.local.yaml
+else
+  echo 0
+fi
+```
+If the count is below 3 (a fresh install has 0; a partially-applied manual
+edit could have 1 or 2 — `-c` counts matches rather than a bare presence
+check specifically so a partial edit isn't mistaken for a complete one),
+walk through Phase 7's "Already configured? Add discovery aliases
+manually" subsection before continuing to Phase 10 — every other Phase
+4-9 step still stays skipped.
 
 ## Phase 2: Which connector
 
@@ -83,8 +105,18 @@ five of these before proceeding, every time, for every future user:
 >    `Read`/`Grep`/`Glob`/`Bash`/`WebSearch`/`WebFetch` (not the session's
 >    full tool set), but the top-level connector session itself is not
 >    additionally restricted beyond your normal Deus bypass setting.
+> 6. **`/model` surfaces GPT model names directly in Claude Code's native
+>    picker**, labeled "From gateway", rather than only being reachable by
+>    typing an exact alias. Applies to every fresh setup (the tracked
+>    template always includes the picker-discovery aliases now — not an
+>    opt-in); an already-configured install only gains this once its
+>    real config is migrated per Phase 7's "Already configured" step. Not
+>    a new exposure either way — the same models were already reachable
+>    via `ANTHROPIC_MODEL`/typed `/model` — this just makes it easier to
+>    notice at a glance which model is actually selected, which is a
+>    mitigation of confusion, not a new risk in its own right.
 
-AskUserQuestion: Confirm you understand and accept all five risks above
+AskUserQuestion: Confirm you understand and accept all six risks above
 before continuing?
 - Yes, continue
 - No, cancel setup
@@ -125,11 +157,27 @@ Ask the user (do not invent values):
   names (`gpt-5.6-sol`/`gpt-5.6-terra`/`gpt-5.6-luna`) — **not** confirmed
   real IDs for the user's account/plan. These get hand-edited into
   `oauth-model-alias.codex[].name` in the written config (Phase 7) — the
-  `alias` values (`sol`/`terra`/`luna-max`) stay fixed; only the `name`
-  values (real upstream ids) vary per account.
+  `alias` values (`sol`/`terra`/`luna-max`, and their `claude-gpt-*` picker-
+  discovery twins) stay fixed; only the `name` values (real upstream ids)
+  vary per account. **Each `claude-gpt-*` entry's `name` must be set to the
+  exact same value as its plain-alias twin** (e.g. `claude-gpt-sol`'s
+  `name` = `sol`'s `name`) — a mismatch wouldn't error, CLIProxyAPI would
+  just silently treat them as two different upstream models.
 - **Default model** for the session itself when no `/model` switch has been
   made — recommend `luna-max` (max reasoning effort) unless the user
-  prefers otherwise.
+  prefers otherwise. This is separate from picker visibility: the plain
+  aliases (not the `claude-gpt-*` twins) are what `ANTHROPIC_MODEL` uses.
+- **Picker visibility for the 3 GPT models** — included automatically,
+  not a choice to make here. The tracked template (Phase 7) already bakes
+  in a `claude-`-prefixed alias + `display-name` per GPT model, and
+  `write-config` always writes the full template verbatim — there's no
+  partial-write mechanism to selectively drop these three entries, so
+  don't present skipping them as an option. This is low-risk by design
+  (see Phase 3 risk 6): purely additive, no real alias sacrificed, no new
+  credential exposure. If a user genuinely wants `/model` to show nothing
+  extra, they can remove the 3 `claude-gpt-*` entries from their real
+  `config.local.yaml` by hand after setup — but that's a post-setup
+  edit, not a Phase 5 choice.
 
 ## Phase 6: Authenticate
 
@@ -193,6 +241,40 @@ launchctl load ~/Library/LaunchAgents/com.deus.connectors.cliproxy-oauth.plist
 launchctl kickstart -k gui/$(id -u)/com.deus.connectors.cliproxy-oauth
 ```
 
+### Already configured? Add discovery aliases manually
+
+**For an existing `config.local.yaml` predating the model-picker-
+visibility feature** (reached via Phase 1's check on an already-configured
+`cliproxy-oauth`) — do NOT re-run `write-config` above: it always rebuilds
+the file from the tracked template, which would discard the real upstream
+`name` values you already hand-edited in. Instead, hand-edit
+`~/.config/deus/connectors/cliproxy/config.local.yaml` directly, adding 3
+new entries under `oauth-model-alias.codex[]` — reuse the SAME real
+upstream `name` value already present for each existing plain alias
+(`sol`/`terra`/`luna-max`); only `alias` (add a `claude-` prefix) and
+`display-name` are new:
+
+```yaml
+oauth-model-alias:
+  codex:
+    # ... existing sol/terra/luna-max entries -- do not remove or modify ...
+    - name: "<same real name as the existing sol entry, verbatim>"
+      alias: "claude-gpt-sol"
+      display-name: "GPT Sol"
+    - name: "<same real name as the existing terra entry, verbatim>"
+      alias: "claude-gpt-terra"
+      display-name: "GPT Terra"
+    - name: "<same real name as the existing luna entry, verbatim>"
+      alias: "claude-gpt-luna"
+      display-name: "GPT Luna (max)"
+```
+
+No daemon restart needed — CLIProxyAPI watches its config file for
+changes and reloads automatically on write (confirmed:
+`internal/watcher/events.go`'s fsnotify-based watcher), and Claude Code's
+own gateway discovery re-queries `/v1/models` on each new session start,
+so the very next `deus connect cliproxy-oauth` launch picks this up.
+
 ## Phase 8: `~/.claude.json` pre-approval
 
 Read-merge the connector's inbound key into
@@ -223,6 +305,11 @@ deus connect cliproxy-oauth
 ```
 
 - Model resolution: check `/model` shows the redirected model.
+- **Picker visibility** (new, model-picker-visibility follow-up): if
+  `claude-gpt-*` aliases are configured, run `/model` and confirm all 3
+  GPT entries appear labeled "From gateway" with clean names ("GPT Sol"/
+  "GPT Terra"/"GPT Luna (max)"), not raw ids — and that switching between
+  them takes effect on the next turn without relaunching the session.
 - Inline subagents resolve: dispatch the `Agent` tool with
   `deus-gpt-sol`/`deus-gpt-terra`/`deus-gpt-luna`.
 - Normal Deus context is present: ask it to recall a recent checkpoint —
