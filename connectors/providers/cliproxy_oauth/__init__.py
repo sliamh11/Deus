@@ -151,6 +151,15 @@ class CliproxyOauthConnector(Connector):
             "ANTHROPIC_BASE_URL": f"http://localhost:{port}",
             "ANTHROPIC_API_KEY": keys[0] if keys else "",
             "ANTHROPIC_MODEL": default_alias,
+            # Lets Claude Code's /model picker discover the claude-gpt-*
+            # aliases (connectors/cliproxy/config.yaml's picker-discovery
+            # twins) via CLIProxyAPI's own /v1/models -- live, in-session
+            # model switching instead of launch-time-only ANTHROPIC_MODEL.
+            # Harmless when no claude-* aliases are configured yet:
+            # discovery just finds nothing extra, same as before this key
+            # existed. Not in launch_connect()'s ambient-var clear list, so
+            # it passes through eval "$env_output" unaffected.
+            "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
         }
 
     def agents_for_launch(self) -> dict[str, Any]:
