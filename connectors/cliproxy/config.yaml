@@ -82,7 +82,7 @@ oauth-model-alias:
       display-name: "GPT Luna (max)"
 
 # Deus-specific: maps the three fixed `deus connect` subagent names
-# (connectors/providers/cliproxy_oauth's STABLE_SUBAGENT_NAMES) to the
+# (connectors/providers/cliproxy_oauth's GPT_MODELS) to the
 # CLIProxyAPI alias configured above. Only the alias values should change
 # per real model; the deus-gpt-* keys are fixed and referenced directly by
 # connectors/providers/cliproxy_oauth's agents_for_launch().

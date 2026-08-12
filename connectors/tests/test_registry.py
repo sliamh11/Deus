@@ -256,6 +256,74 @@ class TestCliproxyOauthEnvForLaunch:
         assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
 
 
+class TestCliproxyOauthAgentsForLaunch:
+    """agents_for_launch() had zero direct test coverage before this class
+    -- added as a real before/after regression check for the GPT model-
+    registry consolidation (STABLE_SUBAGENT_NAMES + _SUBAGENT_DESCRIPTIONS
+    -> a single GptModelDef/GPT_MODELS table).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _redirect_local_config(self, tmp_path, monkeypatch):
+        import connectors.providers.cliproxy_oauth as mod
+
+        monkeypatch.setattr(mod, "LOCAL_CONFIG", tmp_path / "config.local.yaml")
+        self.mod = mod
+
+    def test_empty_when_unconfigured(self):
+        c = self.mod.CliproxyOauthConnector()
+        assert c.agents_for_launch() == {}
+
+    def test_only_configured_subagents_are_included(self):
+        self.mod.LOCAL_CONFIG.write_text("deus-model-map:\n  deus-gpt-sol: sol\n")
+        c = self.mod.CliproxyOauthConnector()
+        agents = c.agents_for_launch()
+        assert set(agents.keys()) == {"deus-gpt-sol"}
+
+    def test_agent_shape_and_content(self):
+        self.mod.LOCAL_CONFIG.write_text(
+            "deus-model-map:\n"
+            "  deus-gpt-sol: sol\n"
+            "  deus-gpt-terra: terra\n"
+            "  deus-gpt-luna: luna-max\n"
+        )
+        c = self.mod.CliproxyOauthConnector()
+        agents = c.agents_for_launch()
+
+        assert set(agents.keys()) == {
+            "deus-gpt-sol",
+            "deus-gpt-terra",
+            "deus-gpt-luna",
+        }
+        sol = agents["deus-gpt-sol"]
+        assert sol["model"] == "sol"
+        assert "deus-gpt-sol" in sol["prompt"]
+        assert sol["description"]
+        assert sol["tools"] == [
+            "Read",
+            "Grep",
+            "Glob",
+            "Bash",
+            "WebSearch",
+            "WebFetch",
+        ]
+
+        luna = agents["deus-gpt-luna"]
+        assert luna["model"] == "luna-max"
+
+    def test_descriptions_are_distinct_per_subagent(self):
+        self.mod.LOCAL_CONFIG.write_text(
+            "deus-model-map:\n"
+            "  deus-gpt-sol: sol\n"
+            "  deus-gpt-terra: terra\n"
+            "  deus-gpt-luna: luna-max\n"
+        )
+        c = self.mod.CliproxyOauthConnector()
+        agents = c.agents_for_launch()
+        descriptions = {a["description"] for a in agents.values()}
+        assert len(descriptions) == 3
+
+
 class TestTrackedConfigPickerDiscoveryAliases:
     """Regression coverage for a documentation-only invariant that has no
     other enforcement: each claude-gpt-* picker-discovery alias's `name`

@@ -31,6 +31,7 @@ import sys
 import urllib.error
 import urllib.request
 import xml.parsers.expat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -53,10 +54,57 @@ LOCAL_CONFIG = Path(
 PLIST_LABEL = "com.deus.connectors.cliproxy-oauth"
 PLIST_PATH = Path(f"~/Library/LaunchAgents/{PLIST_LABEL}.plist").expanduser()
 
-# Fixed, connector-defined stable subagent names — portable across users
-# (real upstream model ids are per-account, not portable). Only the
-# gitignored local config's alias-to-real-id mapping varies per user.
-STABLE_SUBAGENT_NAMES = ("deus-gpt-sol", "deus-gpt-terra", "deus-gpt-luna")
+
+@dataclass(frozen=True)
+class GptModelDef:
+    """One onboarded GPT model's portable (account-agnostic) metadata --
+    the per-account upstream routing (which real model "sol" points to)
+    lives only in the user's local config's deus-model-map, never here.
+
+    Value Object (frozen, structural equality, no identity) -- the single
+    source of truth model_aliases()/agents_for_launch() derive from,
+    replacing what used to be two separately hand-maintained structures
+    (a name tuple + a description dict) that had to be kept in sync by
+    hand when onboarding a new model. Deliberately a plain tuple below,
+    not its own Registry class: every consumer only ever needs full
+    iteration, never id-keyed lookup, so O(n) iteration is exactly what's
+    needed -- the same "declarative single source of truth" idea
+    Connector/ConnectorRegistry already apply one level up (per-engine),
+    applied one level down (per-model, within this one connector).
+    """
+
+    subagent_name: str
+    description: str
+
+
+# Single source of truth for every onboarded GPT model. To add one: add a
+# GptModelDef entry here, plus the matching oauth-model-alias.codex[]
+# (plain + picker-discovery) and deus-model-map entries to
+# connectors/cliproxy/config.yaml (the real upstream model id is
+# account-specific and can only be confirmed during setup -- see
+# add-connector/SKILL.md Phase 5).
+GPT_MODELS: tuple[GptModelDef, ...] = (
+    GptModelDef(
+        "deus-gpt-sol",
+        "General-purpose subagent pinned to GPT 5.6 Sol via the local "
+        "multi-model gateway. Use for research, analysis, or a second "
+        "opinion where a genuinely independent (non-Claude) model is "
+        "valuable.",
+    ),
+    GptModelDef(
+        "deus-gpt-terra",
+        "General-purpose subagent pinned to GPT 5.6 Terra via the local "
+        "multi-model gateway. Use for research, analysis, or a second "
+        "opinion where a genuinely independent (non-Claude) model is "
+        "valuable.",
+    ),
+    GptModelDef(
+        "deus-gpt-luna",
+        "General-purpose subagent pinned to GPT 5.6 Luna (max reasoning "
+        "effort) via the local multi-model gateway. Use for harder "
+        "research/analysis tasks warranting deeper reasoning.",
+    ),
+)
 
 # Must match connectors/cliproxy/config.yaml's literal placeholder exactly.
 # authenticate() bootstraps LOCAL_CONFIG by copying that tracked template
@@ -69,26 +117,6 @@ STABLE_SUBAGENT_NAMES = ("deus-gpt-sol", "deus-gpt-terra", "deus-gpt-luna")
 # would then skip straight to verification) and a real deus connect launch
 # (which would then use this literal string as ANTHROPIC_API_KEY).
 _PLACEHOLDER_INBOUND_KEY = "REPLACE_WITH_YOUR_OWN_INBOUND_KEY"
-
-_SUBAGENT_DESCRIPTIONS = {
-    "deus-gpt-sol": (
-        "General-purpose subagent pinned to GPT 5.6 Sol via the local "
-        "multi-model gateway. Use for research, analysis, or a second "
-        "opinion where a genuinely independent (non-Claude) model is "
-        "valuable."
-    ),
-    "deus-gpt-terra": (
-        "General-purpose subagent pinned to GPT 5.6 Terra via the local "
-        "multi-model gateway. Use for research, analysis, or a second "
-        "opinion where a genuinely independent (non-Claude) model is "
-        "valuable."
-    ),
-    "deus-gpt-luna": (
-        "General-purpose subagent pinned to GPT 5.6 Luna (max reasoning "
-        "effort) via the local multi-model gateway. Use for harder "
-        "research/analysis tasks warranting deeper reasoning."
-    ),
-}
 
 
 def _load_local_config() -> dict[str, Any]:
@@ -129,7 +157,9 @@ class CliproxyOauthConnector(Connector):
     def model_aliases(self) -> dict[str, str]:
         mapping = _load_local_config().get("deus-model-map") or {}
         return {
-            name: mapping[name] for name in STABLE_SUBAGENT_NAMES if name in mapping
+            m.subagent_name: mapping[m.subagent_name]
+            for m in GPT_MODELS
+            if m.subagent_name in mapping
         }
 
     def is_configured(self) -> bool:
@@ -179,18 +209,19 @@ class CliproxyOauthConnector(Connector):
     def agents_for_launch(self) -> dict[str, Any]:
         aliases = self.model_aliases()
         agents: dict[str, Any] = {}
-        for name in STABLE_SUBAGENT_NAMES:
-            alias = aliases.get(name)
+        for model in GPT_MODELS:
+            alias = aliases.get(model.subagent_name)
             if not alias:
                 continue
-            agents[name] = {
-                "description": _SUBAGENT_DESCRIPTIONS[name],
+            agents[model.subagent_name] = {
+                "description": model.description,
                 "prompt": (
-                    f"You are {name}, dispatched as a subagent, reachable "
-                    "only through this deus connect session. Do the task "
-                    "described in the prompt directly and report your "
-                    "findings/output -- you are not a reviewer unless "
-                    "explicitly asked to review something."
+                    f"You are {model.subagent_name}, dispatched as a "
+                    "subagent, reachable only through this deus connect "
+                    "session. Do the task described in the prompt "
+                    "directly and report your findings/output -- you are "
+                    "not a reviewer unless explicitly asked to review "
+                    "something."
                 ),
                 "model": alias,
                 # Matches the least-privilege scope of the personal
