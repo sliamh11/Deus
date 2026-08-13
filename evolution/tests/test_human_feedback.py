@@ -1,10 +1,20 @@
 """
-LIA-109: human ground-truth feedback seam.
+LIA-109 / LIA-1011: human ground-truth feedback seam.
 
 Covers the frozen decision matrix for process_human_feedback (direction-aware
-routing + zone-alignment archival), the source_ref set-once upsert, NULL-safe
+routing + zone-alignment archival), the source_ref set-once upsert, one-shot
 human-feedback idempotency, migration idempotency, and a completeness pin that
 every interaction-keyed save_reflection call site threads polarity.
+
+This suite originated under LIA-109 (fork-local) and was rewritten onto the
+LIA-1011 path (upstream) it now actually exercises -- LIA-109 predated
+LIA-1011 and the two overlapped when the fork last merged 90 upstream
+commits; LIA-109's own storage primitives (update_human_feedback/
+mark_human_feedback_processed on the provider, and the human_scored_at/
+human_processed_at columns they write) are dead code left in place
+unreferenced, superseded by record_human_feedback/processed_at. See
+evolution/storage/providers/sqlite.py's NOTE above mark_human_feedback_processed
+for the full history.
 """
 import re
 import sqlite3
@@ -138,46 +148,58 @@ def test_human_feedback_validation(test_db):
 
 
 def test_human_feedback_null_safe_idempotency(test_db):
-    store = get_storage()
+    """update_human_feedback routes through record_human_feedback (LIA-1011),
+    which is one-shot: the FIRST human_score for an interaction wins. A later
+    call -- even with a different score/comment -- is a no-op: returns False,
+    never overwrites, never raises. This replaces the older LIA-109
+    mutable-update contract (score/comment could be revised, clearing
+    human_processed_at on each real change) that this test used to cover --
+    that contract's own storage methods (update_human_feedback/
+    mark_human_feedback_processed on the provider, distinct from the
+    same-named ilog wrapper here) are dead code, unreferenced by any live
+    caller since interaction_log.py was rewired onto record_human_feedback.
+    See sqlite.py's NOTE above mark_human_feedback_processed for the full
+    history."""
     _log("hf-1")
-    update_human_feedback("hf-1", 0.4)  # no comment
-    store.mark_human_feedback_processed("hf-1")
+    assert update_human_feedback("hf-1", 0.4) is True
+    row = _row(test_db, "hf-1")
+    assert row["human_score"] == 0.4
+    assert row["human_comment"] is None
 
-    # identical re-write: stays processed (no reprocessing storm)
-    update_human_feedback("hf-1", 0.4)
-    assert _row(test_db, "hf-1")["human_processed_at"] is not None
+    # second call, even with a different score/comment: no-op, no overwrite
+    assert update_human_feedback("hf-1", 0.9, "trying to overwrite") is False
+    row = _row(test_db, "hf-1")
+    assert row["human_score"] == 0.4
+    assert row["human_comment"] is None
 
-    # none -> comment transition must clear processed (the != NULL-poison trap)
-    update_human_feedback("hf-1", 0.4, "now with a comment")
-    assert _row(test_db, "hf-1")["human_processed_at"] is None
-
-    store.mark_human_feedback_processed("hf-1")
-    # comment -> same comment: stays processed
-    update_human_feedback("hf-1", 0.4, "now with a comment")
-    assert _row(test_db, "hf-1")["human_processed_at"] is not None
-
-    # comment -> none transition must clear processed
-    update_human_feedback("hf-1", 0.4, None)
-    assert _row(test_db, "hf-1")["human_processed_at"] is None
-
-    store.mark_human_feedback_processed("hf-1")
-    # score change must clear processed
-    update_human_feedback("hf-1", 0.9)
-    assert _row(test_db, "hf-1")["human_processed_at"] is None
+    # a fresh interaction is unaffected by another row's claim
+    _log("hf-2")
+    assert update_human_feedback("hf-2", 0.7) is True
+    assert _row(test_db, "hf-2")["human_score"] == 0.7
 
 
 # ── process_human_feedback: frozen decision matrix ───────────────────────────
-# thresholds: reflection=0.6, positive=0.85, disagreement=0.3 (module defaults)
+# thresholds: reflection=0.6, positive=0.85 (module defaults). process_human_feedback
+# returns a dict of counters ({"corrective", "positive", "skipped", "errored"}), not
+# a bare count -- assert sum(result.values()) for "how many rows did this cycle touch".
 
 MATRIX = [
     # (human, judge, expect_corrective, expect_positive)
-    (0.5, 0.85, True, False),    # below threshold -> corrective
-    (0.9, 0.5, False, True),     # positive override, diff 0.4
-    (0.9, 0.7, False, False),    # diff 0.2 < 0.3 -> stamp only
-    (0.7, 0.85, False, False),   # middle band -> stamp only
-    (0.59, 0.9, True, False),    # boundary: 0.59 < 0.6 -> corrective
-    (0.6, 0.9, False, False),    # boundary: 0.6 not < 0.6 -> stamp only
-    (0.85, 0.55, False, True),   # double boundary; float-safe eps comparison
+    # judge is recorded on the row for realism but plays NO role in routing --
+    # process_human_feedback zones purely on human_score (see its docstring's
+    # "Why not judge_score": judge-driven generation can independently fail
+    # without reverting judge_score, so gating on it risks permanently
+    # discarding a valid human signal). Kept as a parametrize column for
+    # historical continuity with this matrix's original shape, not because
+    # it's load-bearing -- rows 2 and 3 below deliberately vary only judge to
+    # make that explicit.
+    (0.5, 0.85, True, False),    # human <= 0.6 -> corrective
+    (0.9, 0.5, False, True),     # human >= 0.85-eps -> positive
+    (0.9, 0.7, False, True),     # same human score as row 2, different judge -> same routing
+    (0.7, 0.85, False, False),   # middle band -> no zone, skipped (neither fires)
+    (0.59, 0.9, True, False),    # boundary: 0.59 <= 0.6 -> corrective
+    (0.6, 0.9, True, False),     # boundary: 0.6 <= 0.6 (inclusive) -> corrective
+    (0.85, 0.55, False, True),   # boundary: 0.85 >= 0.85-eps -> positive, float-safe
 ]
 
 
@@ -188,29 +210,37 @@ def test_routing_matrix(test_db, fake_generators, human, judge, expect_corr, exp
     update_score(iid, judge, {"quality": judge})
     update_human_feedback(iid, human)
 
-    assert maintenance_mod.process_human_feedback() == 1
+    result = maintenance_mod.process_human_feedback()
+    assert sum(result.values()) == 1
     assert bool(fake_generators["corrective"]) == expect_corr
     assert bool(fake_generators["positive"]) == expect_pos
-    assert _row(test_db, iid)["human_processed_at"] is not None
+    assert _row(test_db, iid)["processed_at"] is not None
     # human comment/rationale threads through; score_at_gen = human ground truth
     for saved in fake_generators["saved"]:
         assert saved["score_at_gen"] == human
         assert saved["polarity"] in ("corrective", "positive")
 
 
-def test_unjudged_rows_not_selected(test_db, fake_generators):
+def test_unjudged_rows_still_routed_by_human_score(test_db, fake_generators):
+    """No judge_score is required for routing -- human_score alone drives it
+    (get_unprocessed_human_feedback's query never filters on judge_score).
+    This is intentional, not an oversight -- see process_human_feedback's
+    "Why not judge_score" for the rationale this test is pinning."""
     _log("mx-nojudge")
     update_human_feedback("mx-nojudge", 0.2)
-    assert maintenance_mod.process_human_feedback() == 0
-    assert _row(test_db, "mx-nojudge")["human_processed_at"] is None
+    result = maintenance_mod.process_human_feedback()
+    assert sum(result.values()) == 1
+    assert result["corrective"] == 1
+    assert _row(test_db, "mx-nojudge")["processed_at"] is not None
 
 
 def test_processed_rows_skipped(test_db, fake_generators):
     _log("mx-done")
     update_score("mx-done", 0.9, {})
     update_human_feedback("mx-done", 0.2)
-    get_storage().mark_human_feedback_processed("mx-done")
-    assert maintenance_mod.process_human_feedback() == 0
+    get_storage().update_interaction("mx-done", processed_at="2020-01-01T00:00:00+00:00")
+    result = maintenance_mod.process_human_feedback()
+    assert sum(result.values()) == 0
 
 
 # ── zone-alignment archival ──────────────────────────────────────────────────
@@ -220,8 +250,13 @@ ARCHIVAL = [
     (0.9, "corrective", 0.4, "archived"),   # positive verdict retires corrective
     (0.5, "positive", 0.9, "archived"),     # corrective verdict retires positive
     (0.5, "corrective", 0.4, "active"),     # aligned corrective kept
-    (0.7, "positive", 0.9, "archived"),     # middle band retires positive (stamp-only branch)
-    (0.7, "corrective", 0.4, "archived"),   # middle band retires corrective too
+    # middle band -> direction is None -> process_human_feedback returns
+    # immediately after stamping processed_at (before the archival code even
+    # runs), so NO existing reflection is ever touched. This is the same
+    # human-score-only zone logic as the routing MATRIX above, just observed
+    # from the archival side.
+    (0.7, "positive", 0.9, "active"),       # middle band -> no zone -> untouched
+    (0.7, "corrective", 0.4, "active"),     # middle band -> no zone -> untouched
     # decoupled-score rows: polarity column is authoritative, score is noise
     (0.5, "corrective", 0.9, "active"),     # user-signal corrective w/ high score: kept
     (0.9, "positive", 0.3, "active"),       # user-signal positive w/ low score: kept
@@ -238,7 +273,8 @@ def test_zone_alignment_archival(test_db, fake_generators, human, polarity, scor
     _insert_reflection(test_db, rid, iid, polarity, score_at_gen)
     update_human_feedback(iid, human)
 
-    assert maintenance_mod.process_human_feedback() == 1
+    result = maintenance_mod.process_human_feedback()
+    assert sum(result.values()) == 1
     assert _reflection_state(test_db, rid) == expected
 
 

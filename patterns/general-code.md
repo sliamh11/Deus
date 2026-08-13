@@ -1,5 +1,5 @@
 ---
-last_verified: "2026-08-02" # auto-bump @1785674769
+last_verified: "2026-08-13" # bumped for LIA-1011 human-feedback test rewrite (evolution/tests/test_human_feedback.py)
 governs:
   - src/
   - evolution/

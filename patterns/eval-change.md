@@ -3,7 +3,7 @@ governs:
   - evolution/
   - eval/
   - scripts/memory_indexer.py
-last_verified: "2026-08-02" # auto-bump @1785674769
+last_verified: "2026-08-13" # bumped for LIA-1011 human-feedback test rewrite (evolution/tests/test_human_feedback.py)
 test_tasks:
   - "Add a new DeepEval metric under eval/ for the core_qa test suite"
   - "Add a new judge backend to evolution/judge/ using the provider registry"
