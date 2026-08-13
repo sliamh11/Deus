@@ -114,8 +114,13 @@ default-model-alias: "luna-max"
 # the response change (5 vs 26 output tokens on an identical prompt) when
 # only this override changed. That makes Claude Code's own `--agents`
 # `effort` frontmatter field moot for these three subagents; this is the
-# real, authoritative control. Codex protocol levels: low/medium/high/xhigh
-# (no "max" -- xhigh is the ceiling). The `name` values here MUST match
+# real, authoritative control. Codex's real levels (confirmed via `codex
+# debug models` against the live account catalog): low/medium/high/xhigh/
+# max/ultra on sol and terra, but no "ultra" on luna. This connector only
+# ever writes low/medium/high/xhigh/max -- "ultra" is deliberately left
+# out (not universal across all three models, and its "automatic task
+# delegation" behavior is unverified through this proxy mechanism). The
+# `name` values here MUST match
 # their oauth-model-alias.codex[] plain-alias twin above exactly, same
 # name-sync requirement as the claude-gpt-* picker-discovery twins --
 # `deus connect setup cliproxy-oauth`'s write-config keeps them in sync

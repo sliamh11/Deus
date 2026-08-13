@@ -116,10 +116,20 @@ GPT_MODELS: tuple[GptModelDef, ...] = (
     ),
 )
 
-# CLIProxyAPI's Codex protocol reasoning-effort levels (confirmed against
-# Claude Code's own effort-level table -- Codex has no "max"; "xhigh" is
-# its ceiling). Used to validate effort_map values in write_config().
-_CODEX_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
+# Codex's real reasoning-effort levels (confirmed via `codex debug
+# models` against the account's own live model catalog -- NOT Claude
+# Code's effort-level table, which was the wrong source for a prior
+# version of this constant and undercounted these levels). The full
+# catalog shows 6 levels on gpt-5.6-sol/terra (low/medium/high/xhigh/
+# max/ultra) but only 5 on gpt-5.6-luna (no "ultra"). "ultra" is
+# deliberately excluded from this shared tuple: it isn't available on
+# all three models, and its catalog description ("automatic task
+# delegation") suggests client-side orchestration behavior that this
+# connector's payload.override raw-JSON-injection mechanism may not be
+# able to replicate through the proxy -- unverified, needs a live probe
+# before trusting it. Used to validate effort_map values in
+# write_config().
+_CODEX_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 # Must match connectors/cliproxy/config.yaml's literal placeholder exactly.
 # authenticate() bootstraps LOCAL_CONFIG by copying that tracked template
