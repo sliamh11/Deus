@@ -95,6 +95,38 @@ deus-model-map:
 # switch has been made yet.
 default-model-alias: "luna-max"
 
+# Per-model reasoning-effort overrides. CLIProxyAPI force-sets the outbound
+# Codex `reasoning.effort` regardless of what Claude Code itself sends --
+# confirmed live: a client requesting effort "low" on every call still saw
+# the response change (5 vs 26 output tokens on an identical prompt) when
+# only this override changed. That makes Claude Code's own `--agents`
+# `effort` frontmatter field moot for these three subagents; this is the
+# real, authoritative control. Codex protocol levels: low/medium/high/xhigh
+# (no "max" -- xhigh is the ceiling). The `name` values here MUST match
+# their oauth-model-alias.codex[] plain-alias twin above exactly, same
+# name-sync requirement as the claude-gpt-* picker-discovery twins --
+# `deus connect setup cliproxy-oauth`'s write-config keeps them in sync
+# automatically; hand-editing this file for an already-configured install
+# (add-connector/SKILL.md's migration subsection) must keep them in sync
+# by hand.
+payload:
+  override:
+    - models:
+        - name: "gpt-5.6-sol" # must match the "sol" entry's name above exactly
+          protocol: "codex"
+      params:
+        "reasoning.effort": "high"
+    - models:
+        - name: "gpt-5.6-terra" # must match the "terra" entry's name above exactly
+          protocol: "codex"
+      params:
+        "reasoning.effort": "high"
+    - models:
+        - name: "gpt-5.6-luna" # must match the "luna-max" entry's name above exactly
+          protocol: "codex"
+      params:
+        "reasoning.effort": "xhigh"
+
 # Makes /v1/models return raw, uncloaked upstream ids instead of
 # obfuscated claude-branded ones. Claude Code's own gateway-discovery
 # filter (an id must contain "claude" or "anthropic") then keeps exactly

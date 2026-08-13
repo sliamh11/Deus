@@ -74,6 +74,23 @@ walk through Phase 7's "Already configured? Add discovery aliases
 manually" subsection before continuing to Phase 9 — every other Phase
 4-8 step still stays skipped.
 
+**Second `cliproxy-oauth`-specific one-time check, added for the
+per-model reasoning-effort feature — same reasoning as the check above,
+same deliberate exception.** An already-configured install predating this
+feature has no `payload.override` block, and the normal skip straight to
+Phase 9 would never surface the migration step needed to add it:
+```bash
+if [ -f ~/.config/deus/connectors/cliproxy/config.local.yaml ]; then
+  grep -c 'reasoning\.effort' ~/.config/deus/connectors/cliproxy/config.local.yaml
+else
+  echo 0
+fi
+```
+If the count is below 3, walk through Phase 7's "Already configured? Add
+reasoning-effort overrides manually" subsection before continuing to
+Phase 9 (in addition to the discovery-alias check above, if that one also
+applies) — every other Phase 4-8 step still stays skipped.
+
 **Also for any already-configured `cliproxy-oauth` install (regardless of
 the check above)**: if it predates the credential-fallthrough fix, it may
 have gone through the old (now-deleted) Phase 8 flow, which left a
@@ -258,6 +275,13 @@ the user isn't surprised by a failed verify later.
   exact same value as its plain-alias twin** (e.g. `claude-gpt-sol`'s
   `name` = `sol`'s `name`) — a mismatch wouldn't error, CLIProxyAPI would
   just silently treat them as two different upstream models.
+- **Reasoning effort per model** — CLIProxyAPI force-sets the outbound
+  Codex `reasoning.effort` for each of the 3 GPT models via a config-side
+  override (confirmed live: it overrides whatever Claude Code itself
+  sends, regardless). Tracked-template defaults are `sol`=`high`,
+  `terra`=`high`, `luna`=`xhigh` (Codex's ceiling — there's no `max`
+  level on this protocol). Offer the user each default and let them
+  change any of them. Accepted values: `low`/`medium`/`high`/`xhigh`.
 - **Default model** for the session itself when no `/model` switch has been
   made — recommend `luna-max` (max reasoning effort) unless the user
   prefers otherwise. This is separate from picker visibility: the plain
@@ -324,9 +348,15 @@ Where `<json values>` is a JSON object:
   "anthropic_api_key": "<optional, only if the user opted in>",
   "model_map": {"deus-gpt-sol": "sol", "deus-gpt-terra": "terra", "deus-gpt-luna": "luna-max"},
   "default_model_alias": "luna-max",
+  "effort_map": {"deus-gpt-luna": "xhigh"},
   "binary_path": "<absolute path from: command -v cli-proxy-api>"
 }
 ```
+
+`effort_map` is optional — only include the subagents whose effort level
+the user changed from the tracked template's defaults (Phase 5). Omitting
+it, or omitting a specific subagent's key, leaves that subagent at its
+template default (`sol`=`high`, `terra`=`high`, `luna`=`xhigh`).
 
 This writes the real config to
 `~/.config/deus/connectors/cliproxy/config.local.yaml` — **outside any
@@ -350,9 +380,15 @@ overwrite it on their behalf.
 
 **Then hand-edit the real upstream model id strings** collected in Phase 5
 into `~/.config/deus/connectors/cliproxy/config.local.yaml`'s
-`oauth-model-alias.codex[].name` fields (the `write-config` call above does
-not touch these — only `deus-model-map`, `api-keys`, `claude-api-key`, and
-`default-model-alias`).
+`oauth-model-alias.codex[].name` fields **and** the matching
+`payload.override[].models[].name` field for each GPT model (the
+`write-config` call above does not touch either — only `deus-model-map`,
+`api-keys`, `claude-api-key`, `default-model-alias`, and — new for the
+reasoning-effort feature — `payload.override[].params["reasoning.effort"]`
+when `effort_map` was given). Keep each model's `oauth-model-alias.name`
+and `payload.override[].models[].name` identical, same requirement as the
+`claude-gpt-*` picker-discovery twin's name — a mismatch wouldn't error,
+the effort override would just silently stop matching any real request.
 
 Load the daemon:
 
@@ -394,6 +430,44 @@ changes and reloads automatically on write (confirmed:
 `internal/watcher/events.go`'s fsnotify-based watcher), and Claude Code's
 own gateway discovery re-queries `/v1/models` on each new session start,
 so the very next `deus connect cliproxy-oauth` launch picks this up.
+
+### Already configured (cliproxy-oauth)? Add reasoning-effort overrides manually
+
+**For an existing `config.local.yaml` predating the per-model
+reasoning-effort feature** (reached via Phase 1's second check on an
+already-configured `cliproxy-oauth`) — same rule as the discovery-alias
+subsection above: do NOT re-run `write-config`, for the same reason (it
+rebuilds the file from the tracked template, discarding the real upstream
+`name` values already hand-edited in). Instead, hand-edit
+`~/.config/deus/connectors/cliproxy/config.local.yaml` directly, adding a
+top-level `payload.override` block — reuse the SAME real upstream `name`
+value already present for each existing plain alias (`sol`/`terra`/
+`luna-max`), never the tracked template's placeholder names:
+
+```yaml
+payload:
+  override:
+    - models:
+        - name: "<same real name as the existing sol entry, verbatim>"
+          protocol: "codex"
+      params:
+        "reasoning.effort": "high"
+    - models:
+        - name: "<same real name as the existing terra entry, verbatim>"
+          protocol: "codex"
+      params:
+        "reasoning.effort": "high"
+    - models:
+        - name: "<same real name as the existing luna entry, verbatim>"
+          protocol: "codex"
+      params:
+        "reasoning.effort": "xhigh"
+```
+
+Ask the user for each level the same way Phase 5 would for a fresh
+setup (defaults shown above; accepted values `low`/`medium`/`high`/
+`xhigh`). No daemon restart needed — same fsnotify-based config watcher
+as the discovery-alias subsection above, since it's the same config file.
 
 **ollama (no daemon):**
 ```bash
