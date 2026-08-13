@@ -75,6 +75,13 @@ class GptModelDef:
 
     subagent_name: str
     description: str
+    # The tracked template's placeholder upstream model name
+    # (connectors/cliproxy/config.yaml's oauth-model-alias.codex[].name
+    # AND its payload.override[].models[].name -- these two must stay in
+    # sync, same as the claude-gpt-* picker-discovery twin's name).
+    # write_config() uses this to find the right payload.override entry
+    # to mutate for effort_map, without a second hardcoded lookup table.
+    template_upstream_name: str
 
 
 # Single source of truth for every onboarded GPT model. To add one: add a
@@ -90,6 +97,7 @@ GPT_MODELS: tuple[GptModelDef, ...] = (
         "multi-model gateway. Use for research, analysis, or a second "
         "opinion where a genuinely independent (non-Claude) model is "
         "valuable.",
+        "gpt-5.6-sol",
     ),
     GptModelDef(
         "deus-gpt-terra",
@@ -97,14 +105,31 @@ GPT_MODELS: tuple[GptModelDef, ...] = (
         "multi-model gateway. Use for research, analysis, or a second "
         "opinion where a genuinely independent (non-Claude) model is "
         "valuable.",
+        "gpt-5.6-terra",
     ),
     GptModelDef(
         "deus-gpt-luna",
         "General-purpose subagent pinned to GPT 5.6 Luna (max reasoning "
         "effort) via the local multi-model gateway. Use for harder "
         "research/analysis tasks warranting deeper reasoning.",
+        "gpt-5.6-luna",
     ),
 )
+
+# Codex's real reasoning-effort levels (confirmed via `codex debug
+# models` against the account's own live model catalog -- NOT Claude
+# Code's effort-level table, which was the wrong source for a prior
+# version of this constant and undercounted these levels). The full
+# catalog shows 6 levels on gpt-5.6-sol/terra (low/medium/high/xhigh/
+# max/ultra) but only 5 on gpt-5.6-luna (no "ultra"). "ultra" is
+# deliberately excluded from this shared tuple: it isn't available on
+# all three models, and its catalog description ("automatic task
+# delegation") suggests client-side orchestration behavior that this
+# connector's payload.override raw-JSON-injection mechanism may not be
+# able to replicate through the proxy -- unverified, needs a live probe
+# before trusting it. Used to validate effort_map values in
+# write_config().
+_CODEX_EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
 # Must match connectors/cliproxy/config.yaml's literal placeholder exactly.
 # authenticate() bootstraps LOCAL_CONFIG by copying that tracked template
@@ -204,6 +229,73 @@ class CliproxyOauthConnector(Connector):
             # existed. Not in launch_connect()'s ambient-var clear list, so
             # it passes through eval "$env_output" unaffected.
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+            # GPT-5.6 Sol/Terra/Luna have a real, server-enforced 272,000-
+            # token context window when reached through Codex OAuth (this
+            # connector's mechanism) -- confirmed directly against this
+            # account's live model catalog and independently corroborated
+            # by an OpenAI Codex maintainer statement (github.com/openai/
+            # codex#19464: "this is not something you can work around by
+            # making client-side adjustments... needs to be implemented
+            # server-side") and a CLIProxyAPI maintainer statement on this
+            # exact model family (github.com/router-for-me/CLIProxyAPI
+            # #4195). No config/proxy override changes this -- it is not a
+            # display artifact.
+            #
+            # Claude Code determines auto-compact's threshold by pattern-
+            # matching the model ID against three cases (verified verbatim
+            # against code.claude.com/docs/en/model-config "Correct the
+            # window for a gateway or custom model ID"): (1) an ID with no
+            # `claude-` prefix, no `[1m]` suffix, and unresolvable to a
+            # Claude model -> this override applies directly; (2) same but
+            # with `[1m]` -> needs CLAUDE_CODE_DISABLE_1M_CONTEXT too
+            # (not our case); (3) an ID that starts with `claude-` or
+            # resolves to a Claude model -> this override is IGNORED unless
+            # DISABLE_COMPACT is also set (which disables compaction
+            # entirely, not what we want).
+            #
+            # Each dispatched subagent (deus-gpt-sol/terra/luna, via
+            # agents_for_launch() below) runs in its own context window
+            # keyed to ITS OWN "model" field -- the plain aliases
+            # ("sol"/"terra"/"luna-max"), which hit case (1) and get this
+            # override correctly. That is the primary, intended path this
+            # override exists for.
+            #
+            # Known, NOT-fully-covered gap: connectors/cliproxy/config.yaml
+            # also configures `claude-gpt-sol`/`terra`/`luna` picker-
+            # discovery aliases (deliberately `claude-`-prefixed so
+            # CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY surfaces them in
+            # the /model picker) and a separate real-Claude-model leg
+            # (`claude-api-key` -> "opus-planner", for `opus-planner`).
+            # `opus-planner` itself is NOT `claude-`-prefixed and Claude
+            # Code cannot resolve that opaque proxy alias to a real Claude
+            # model -- so it hits case (1) too, meaning if a user ever
+            # `/model`-switches to `opus-planner` mid-session, it
+            # INCORRECTLY inherits this 272K cap (a real Claude model
+            # artificially throttled). Conversely, the `claude-gpt-*`
+            # picker-discovery aliases hit case (3) -- this override does
+            # NOT apply to them at all, so a user reaching a GPT model via
+            # the /model picker (rather than subagent dispatch) gets NO
+            # correction and is exposed to the original silent-wrong-
+            # threshold problem this override exists to fix. Both gaps are
+            # scoped to manual /model-switching only, not the primary
+            # dispatched-subagent path, and are not fixed by this override
+            # -- Claude Code has no mechanism to resolve an opaque proxy
+            # alias to its real upstream model or context window.
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "272000",
+            # Forces auto-compact on for this connector's launched session,
+            # overriding the user's global ~/.claude/settings.json
+            # (autoCompactEnabled: false is a deliberate host-wide choice
+            # for normal Claude usage, left untouched). Consumed by
+            # deus-cmd.sh's launch_connect() via the DEUS_CONNECT_SETTINGS_
+            # JSON reserved key (connectors/base.py's env_for_launch()
+            # docstring) -- forwarded as `claude --settings <value>` for
+            # this one launch only. Session-wide, with no per-subagent
+            # override (Claude Code has no such mechanism) -- so any
+            # portion of the session using a real Claude model (e.g.
+            # `opus-planner`) also auto-compacts more eagerly than the
+            # user's global default would, independent of the context-
+            # window gaps documented above.
+            "DEUS_CONNECT_SETTINGS_JSON": '{"autoCompactEnabled": true}',
         }
 
     def agents_for_launch(self) -> dict[str, Any]:
@@ -280,6 +372,51 @@ class CliproxyOauthSetupHandler(ConnectorSetupHandler):
         placeholder["default-model-alias"] = values.get(
             "default_model_alias", next(iter(model_map.values()), "")
         )
+        # Only touches entries the caller actually specifies -- a subagent
+        # omitted from effort_map keeps the template's baked-in default
+        # (see connectors/cliproxy/config.yaml's payload.override block).
+        # An unknown key (typo, stale/removed model) is rejected loudly
+        # rather than silently never applied, matching this file's
+        # fail-loud posture elsewhere (e.g. the claude-api-key placeholder
+        # rejection above).
+        effort_map = values.get("effort_map") or {}
+        known_subagents = {m.subagent_name for m in GPT_MODELS}
+        unknown = set(effort_map) - known_subagents
+        if unknown:
+            raise ValueError(
+                f"effort_map has unknown subagent name(s) {sorted(unknown)} "
+                f"-- must be one of {sorted(known_subagents)}"
+            )
+        overrides = placeholder.get("payload", {}).get("override", [])
+        for model in GPT_MODELS:
+            level = effort_map.get(model.subagent_name)
+            if level is None:
+                continue
+            if level not in _CODEX_EFFORT_LEVELS:
+                raise ValueError(
+                    f"invalid effort level {level!r} for {model.subagent_name} "
+                    f"-- must be one of {_CODEX_EFFORT_LEVELS}"
+                )
+            matched = False
+            for rule in overrides:
+                names = [m.get("name") for m in rule.get("models", [])]
+                if model.template_upstream_name in names:
+                    rule["params"]["reasoning.effort"] = level
+                    matched = True
+                    break
+            if not matched:
+                # Same fail-loud posture as the unknown-key/invalid-level
+                # checks above -- a template with a dropped/renamed
+                # payload.override entry (drift the TestTrackedConfig
+                # PickerDiscoveryAliases test guards against, but that's an
+                # external guard, not a runtime check) must not silently
+                # write a config where the requested effort was never
+                # actually applied.
+                raise ValueError(
+                    f"no payload.override entry found for "
+                    f"{model.subagent_name}'s upstream name "
+                    f"{model.template_upstream_name!r} -- template drift?"
+                )
         LOCAL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
         LOCAL_CONFIG.write_text(yaml.safe_dump(placeholder, sort_keys=False))
         LOCAL_CONFIG.chmod(0o600)

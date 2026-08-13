@@ -244,6 +244,8 @@ class TestCliproxyOauthEnvForLaunch:
             "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_MODEL": "sol",
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "272000",
+            "DEUS_CONNECT_SETTINGS_JSON": '{"autoCompactEnabled": true}',
         }
 
     def test_gateway_discovery_key_present_even_when_unconfigured(self):
@@ -254,6 +256,19 @@ class TestCliproxyOauthEnvForLaunch:
         c = self.mod.CliproxyOauthConnector()
         env = c.env_for_launch()
         assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+
+    def test_context_window_and_autocompact_keys_present(self):
+        # GPT-5.6 Sol/Terra/Luna have a real, server-enforced 272,000-token
+        # context window via Codex OAuth (confirmed against this account's
+        # live model catalog + independent OpenAI/CLIProxyAPI maintainer
+        # statements). These two keys correct Claude Code's auto-compact
+        # threshold for the unrecognized model aliases and force
+        # auto-compact on for this connector's session only, without
+        # touching the user's global ~/.claude/settings.json.
+        c = self.mod.CliproxyOauthConnector()
+        env = c.env_for_launch()
+        assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "272000"
+        assert env["DEUS_CONNECT_SETTINGS_JSON"] == '{"autoCompactEnabled": true}'
 
 
 class TestCliproxyOauthAgentsForLaunch:
@@ -324,6 +339,156 @@ class TestCliproxyOauthAgentsForLaunch:
         assert len(descriptions) == 3
 
 
+class TestCliproxyOauthWriteConfig:
+    """write_config() had zero direct test coverage before this class --
+    added alongside the per-model reasoning-effort feature (effort_map),
+    since a config-writing method with no tests is exactly where a
+    silent-no-op or wrong-mutation regression would go unnoticed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _redirect_paths(self, tmp_path, monkeypatch):
+        import connectors.providers.cliproxy_oauth as mod
+
+        tracked_config = tmp_path / "tracked-config.yaml"
+        tracked_config.write_text(
+            yaml.safe_dump(
+                {
+                    "api-keys": ["REPLACE_WITH_YOUR_OWN_INBOUND_KEY"],
+                    "deus-model-map": {},
+                    "default-model-alias": "",
+                    "payload": {
+                        "override": [
+                            {
+                                "models": [
+                                    {"name": "gpt-5.6-sol", "protocol": "codex"}
+                                ],
+                                "params": {"reasoning.effort": "high"},
+                            },
+                            {
+                                "models": [
+                                    {"name": "gpt-5.6-terra", "protocol": "codex"}
+                                ],
+                                "params": {"reasoning.effort": "high"},
+                            },
+                            {
+                                "models": [
+                                    {"name": "gpt-5.6-luna", "protocol": "codex"}
+                                ],
+                                "params": {"reasoning.effort": "xhigh"},
+                            },
+                        ]
+                    },
+                },
+                sort_keys=False,
+            )
+        )
+        monkeypatch.setattr(mod, "TRACKED_CONFIG", tracked_config)
+        monkeypatch.setattr(mod, "LOCAL_CONFIG", tmp_path / "config.local.yaml")
+        monkeypatch.setattr(mod, "PLIST_PATH", tmp_path / "test.plist")
+        self.mod = mod
+        self.handler = mod.CliproxyOauthSetupHandler(mod.CliproxyOauthConnector())
+
+    def _base_values(self, **overrides):
+        values = {
+            "inbound_key": "real-key",
+            "model_map": {"deus-gpt-sol": "sol"},
+            "default_model_alias": "sol",
+            "binary_path": "/usr/local/bin/cli-proxy-api",
+        }
+        values.update(overrides)
+        return values
+
+    def _written_overrides(self):
+        written = yaml.safe_load(self.mod.LOCAL_CONFIG.read_text())
+        by_name = {}
+        for rule in written["payload"]["override"]:
+            name = rule["models"][0]["name"]
+            by_name[name] = rule["params"]["reasoning.effort"]
+        return by_name
+
+    def test_effort_map_omitted_leaves_template_defaults(self):
+        self.handler.write_config(self._base_values())
+        assert self._written_overrides() == {
+            "gpt-5.6-sol": "high",
+            "gpt-5.6-terra": "high",
+            "gpt-5.6-luna": "xhigh",
+        }
+
+    def test_effort_map_with_one_subagent_only_changes_that_entry(self):
+        self.handler.write_config(
+            self._base_values(effort_map={"deus-gpt-luna": "low"})
+        )
+        assert self._written_overrides() == {
+            "gpt-5.6-sol": "high",
+            "gpt-5.6-terra": "high",
+            "gpt-5.6-luna": "low",
+        }
+
+    def test_max_effort_level_is_accepted(self):
+        # Regression guard: "max" is a real Codex level (confirmed via
+        # `codex debug models` against the live account catalog, on all
+        # three of sol/terra/luna) that a prior version of this constant
+        # wrongly rejected -- pin it so a future accidental narrowing
+        # back to the 4-level set is caught here, not live.
+        self.handler.write_config(
+            self._base_values(effort_map={"deus-gpt-luna": "max"})
+        )
+        assert self._written_overrides()["gpt-5.6-luna"] == "max"
+
+    def test_invalid_effort_level_raises(self):
+        with pytest.raises(ValueError, match="invalid effort level"):
+            self.handler.write_config(
+                self._base_values(effort_map={"deus-gpt-sol": "bogus"})
+            )
+
+    def test_unknown_subagent_key_raises_not_silently_skipped(self):
+        with pytest.raises(ValueError, match="unknown subagent"):
+            self.handler.write_config(
+                self._base_values(effort_map={"deus-gpt-solo": "high"})
+            )
+
+    def test_missing_override_entry_raises_not_silently_skipped(self, tmp_path, monkeypatch):
+        # A template whose payload.override drifted (e.g. an entry got
+        # dropped or its name renamed) must not let write_config() silently
+        # write a config where the requested effort was never applied.
+        drifted_config = tmp_path / "drifted-tracked-config.yaml"
+        drifted_config.write_text(
+            yaml.safe_dump(
+                {
+                    "api-keys": ["REPLACE_WITH_YOUR_OWN_INBOUND_KEY"],
+                    "deus-model-map": {},
+                    "default-model-alias": "",
+                    "payload": {
+                        "override": [
+                            {
+                                "models": [
+                                    {"name": "gpt-5.6-sol", "protocol": "codex"}
+                                ],
+                                "params": {"reasoning.effort": "high"},
+                            },
+                            # terra's entry is missing entirely -- simulates
+                            # template drift.
+                            {
+                                "models": [
+                                    {"name": "gpt-5.6-luna", "protocol": "codex"}
+                                ],
+                                "params": {"reasoning.effort": "xhigh"},
+                            },
+                        ]
+                    },
+                },
+                sort_keys=False,
+            )
+        )
+        monkeypatch.setattr(self.mod, "TRACKED_CONFIG", drifted_config)
+
+        with pytest.raises(ValueError, match="template drift"):
+            self.handler.write_config(
+                self._base_values(effort_map={"deus-gpt-terra": "low"})
+            )
+
+
 class TestTrackedConfigPickerDiscoveryAliases:
     """Regression coverage for a documentation-only invariant that has no
     other enforcement: each claude-gpt-* picker-discovery alias's `name`
@@ -354,6 +519,40 @@ class TestTrackedConfigPickerDiscoveryAliases:
                 f"{discovery_alias}'s name ({by_alias[discovery_alias]!r}) must "
                 f"match {plain_alias}'s name ({by_alias[plain_alias]!r})"
             )
+
+    def test_payload_override_names_match_oauth_alias_twins(self):
+        """Same invariant, same enforcement gap, for the reasoning-effort
+        feature's payload.override block: each entry's models[].name must
+        match GPT_MODELS.template_upstream_name, which must itself equal
+        the real upstream name registered for that subagent's alias under
+        oauth-model-alias.codex[] -- or the override silently stops
+        matching any real request. Catches drift in the tracked template
+        itself, same as the discovery-alias test above.
+        """
+        import connectors.providers.cliproxy_oauth as mod
+
+        cfg = yaml.safe_load(mod.TRACKED_CONFIG.read_text())
+        oauth_names = {
+            e["alias"]: e["name"] for e in cfg["oauth-model-alias"]["codex"]
+        }
+        deus_model_map = cfg["deus-model-map"]
+        by_override_name = {
+            rule["models"][0]["name"]: rule for rule in cfg["payload"]["override"]
+        }
+
+        for model in mod.GPT_MODELS:
+            alias = deus_model_map[model.subagent_name]
+            assert oauth_names[alias] == model.template_upstream_name, (
+                f"{model.subagent_name}'s alias {alias!r} resolves to upstream "
+                f"name {oauth_names[alias]!r}, but GPT_MODELS declares "
+                f"template_upstream_name={model.template_upstream_name!r}"
+            )
+            assert model.template_upstream_name in by_override_name, (
+                f"missing payload.override entry for {model.template_upstream_name!r}"
+            )
+            rule = by_override_name[model.template_upstream_name]
+            assert rule["models"][0]["protocol"] == "codex"
+            assert rule["params"]["reasoning.effort"] in mod._CODEX_EFFORT_LEVELS
 
 
 class TestWriteLaunchdPlist:

@@ -129,7 +129,7 @@ if [ "$1" = "connect" ]; then
       # miss entirely -- must reject both forms. (deus connect, #1171)
       for _dc_arg in "${DEUS_CONNECT_ARGS[@]}"; do
         case "$_dc_arg" in
-          --agents|--agents=*|--name|--name=*|-n)
+          --agents|--agents=*|--name|--name=*|-n|--settings|--settings=*)
             echo "Error: deus connect already injects $_dc_arg -- pass a different flag." >&2
             exit 1
             ;;
@@ -1445,7 +1445,7 @@ sys.exit(1)
                               # "deus connect <other-id>" call from inside a
                               # tool call).
       local env_output py_exit agents_json agents_py_exit was_implicit
-      local _dc_clear_var
+      local _dc_clear_var settings_args
       was_implicit="$_DEUS_CONNECT_ID_IMPLICIT"
       unset _DEUS_CONNECT_ID_IMPLICIT
       # `--` guards against a leading-dash id reaching argparse as a flag --
@@ -1472,6 +1472,24 @@ sys.exit(1)
       fi
       eval "$env_output"
 
+      # Reserved env-var convention (connectors/base.py's env_for_launch()
+      # docstring): a connector may set DEUS_CONNECT_SETTINGS_JSON to have
+      # its value forwarded as `claude --settings <json>` for this one
+      # launch only -- e.g. cliproxy-oauth uses it to force
+      # autoCompactEnabled on for its GPT-5.6 sessions (272K real context
+      # window) without touching the user's global ~/.claude/settings.json.
+      # Conditional append (mirrors launch_codex()'s codex_args pattern
+      # above) so a connector that never sets it (e.g. ollama) never gets a
+      # bare `--settings ""` appended. Unset immediately after reading, same
+      # leak-prevention rationale as the DEUS_CONNECT_ID unset above -- must
+      # not survive into a nested "deus connect <other-id>" call.
+      # Tracked: #1185
+      settings_args=()
+      if [ -n "$DEUS_CONNECT_SETTINGS_JSON" ]; then
+        settings_args=(--settings "$DEUS_CONNECT_SETTINGS_JSON")
+      fi
+      unset DEUS_CONNECT_SETTINGS_JSON
+
       # Claude Code's own authentication precedence (confirmed against
       # code.claude.com/docs/en/authentication's "Authentication precedence"
       # section, plus code.claude.com/docs/en/amazon-bedrock for Mantle)
@@ -1497,7 +1515,17 @@ sys.exit(1)
       # substring match could false-positive on a connector value that
       # happens to contain the literal text `export ANTHROPIC_AUTH_TOKEN=`
       # elsewhere in the string.
-      for _dc_clear_var in ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_MANTLE; do
+      # CLAUDE_CODE_MAX_CONTEXT_TOKENS (added below) isn't an auth-
+      # precedence var like the other five in this list -- it's a
+      # connector-scoped context-window override (see connectors/
+      # providers/cliproxy_oauth's env_for_launch(), 272000 for GPT-5.6's
+      # real Codex-OAuth window) that needs the identical connector-aware
+      # leak-prevention treatment: without it, a NESTED `deus connect
+      # <other-id>` call from inside this launched session would inherit
+      # the outer connector's exported value and apply the wrong threshold
+      # to an unrelated connector's model. Caught by code-reviewer's GPT
+      # backend on this diff.
+      for _dc_clear_var in ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_MAX_CONTEXT_TOKENS; do
         case $'\n'"$env_output" in
           *$'\n'"export ${_dc_clear_var}="*) ;;  # connector set it itself -- leave it
           *) unset "$_dc_clear_var" ;;
@@ -1526,7 +1554,7 @@ sys.exit(1)
       # anywhere in "$@" and execs `claude agents` (Claude's own
       # agent-management TUI) instead of a normal launch if it appears
       # before this point. (deus connect, #1171)
-      launch_claude "$@" --agents "$agents_json" --name "connect:$id (non-Claude)" "${DEUS_CONNECT_ARGS[@]}"
+      launch_claude "$@" --agents "$agents_json" --name "connect:$id (non-Claude)" "${settings_args[@]}" "${DEUS_CONNECT_ARGS[@]}"
       return $?
     }
 

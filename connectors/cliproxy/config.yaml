@@ -80,6 +80,19 @@ oauth-model-alias:
     - name: "gpt-5.6-luna" # must match the "luna-max" entry's name above exactly
       alias: "claude-gpt-luna"
       display-name: "GPT Luna (max)"
+    # KNOWN GAP: the `claude-` prefix that makes these three discoverable in
+    # /model also means Claude Code's CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000
+    # override (connectors/providers/cliproxy_oauth's env_for_launch(),
+    # correcting for GPT-5.6's real 272K Codex-OAuth context window) does
+    # NOT apply to them -- Claude Code only applies that override to an ID
+    # it can't resolve as a Claude model; a `claude-`-prefixed ID needs
+    # DISABLE_COMPACT too, which disables compaction entirely instead of
+    # correcting its threshold. A user who reaches a GPT model via these
+    # picker-discovery aliases (rather than the primary deus-gpt-sol/
+    # terra/luna subagent dispatch, which correctly gets the override via
+    # its own plain "sol"/"terra"/"luna-max" model field) is NOT protected
+    # by that override. See the full case-by-case citation in cliproxy_
+    # oauth's env_for_launch().
 
 # Deus-specific: maps the three fixed `deus connect` subagent names
 # (connectors/providers/cliproxy_oauth's GPT_MODELS) to the
@@ -94,6 +107,43 @@ deus-model-map:
 # Default model for the session itself (ANTHROPIC_MODEL) when no /model
 # switch has been made yet.
 default-model-alias: "luna-max"
+
+# Per-model reasoning-effort overrides. CLIProxyAPI force-sets the outbound
+# Codex `reasoning.effort` regardless of what Claude Code itself sends --
+# confirmed live: a client requesting effort "low" on every call still saw
+# the response change (5 vs 26 output tokens on an identical prompt) when
+# only this override changed. That makes Claude Code's own `--agents`
+# `effort` frontmatter field moot for these three subagents; this is the
+# real, authoritative control. Codex's real levels (confirmed via `codex
+# debug models` against the live account catalog): low/medium/high/xhigh/
+# max/ultra on sol and terra, but no "ultra" on luna. This connector only
+# ever writes low/medium/high/xhigh/max -- "ultra" is deliberately left
+# out (not universal across all three models, and its "automatic task
+# delegation" behavior is unverified through this proxy mechanism). The
+# `name` values here MUST match
+# their oauth-model-alias.codex[] plain-alias twin above exactly, same
+# name-sync requirement as the claude-gpt-* picker-discovery twins --
+# `deus connect setup cliproxy-oauth`'s write-config keeps them in sync
+# automatically; hand-editing this file for an already-configured install
+# (add-connector/SKILL.md's migration subsection) must keep them in sync
+# by hand.
+payload:
+  override:
+    - models:
+        - name: "gpt-5.6-sol" # must match the "sol" entry's name above exactly
+          protocol: "codex"
+      params:
+        "reasoning.effort": "high"
+    - models:
+        - name: "gpt-5.6-terra" # must match the "terra" entry's name above exactly
+          protocol: "codex"
+      params:
+        "reasoning.effort": "high"
+    - models:
+        - name: "gpt-5.6-luna" # must match the "luna-max" entry's name above exactly
+          protocol: "codex"
+      params:
+        "reasoning.effort": "xhigh"
 
 # Makes /v1/models return raw, uncloaked upstream ids instead of
 # obfuscated claude-branded ones. Claude Code's own gateway-discovery
