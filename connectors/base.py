@@ -114,7 +114,18 @@ class Connector(ABC):
     def env_for_launch(self) -> dict[str, str]:
         """Env vars for the launching shell only. Never written to
         `~/.claude/settings.json`'s global `env` block — that would leak
-        this redirection into every Claude Code session on the machine."""
+        this redirection into every Claude Code session on the machine.
+
+        One reserved key: `DEUS_CONNECT_SETTINGS_JSON`. If present,
+        `deus-cmd.sh`'s `launch_connect()` forwards its value as
+        `claude --settings <value>` for this one launch only, then unsets
+        it so it can't leak into a nested `deus connect <other-id>` call.
+        Use this for session-scoped Claude Code settings overrides (e.g.
+        forcing `autoCompactEnabled` on for a connector whose routed model
+        has a real, smaller context window) without touching the user's
+        global `~/.claude/settings.json`. Optional — a connector that omits
+        it is unaffected (no `--settings` flag gets appended at all).
+        """
         ...
 
     @abstractmethod

@@ -229,6 +229,73 @@ class CliproxyOauthConnector(Connector):
             # existed. Not in launch_connect()'s ambient-var clear list, so
             # it passes through eval "$env_output" unaffected.
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+            # GPT-5.6 Sol/Terra/Luna have a real, server-enforced 272,000-
+            # token context window when reached through Codex OAuth (this
+            # connector's mechanism) -- confirmed directly against this
+            # account's live model catalog and independently corroborated
+            # by an OpenAI Codex maintainer statement (github.com/openai/
+            # codex#19464: "this is not something you can work around by
+            # making client-side adjustments... needs to be implemented
+            # server-side") and a CLIProxyAPI maintainer statement on this
+            # exact model family (github.com/router-for-me/CLIProxyAPI
+            # #4195). No config/proxy override changes this -- it is not a
+            # display artifact.
+            #
+            # Claude Code determines auto-compact's threshold by pattern-
+            # matching the model ID against three cases (verified verbatim
+            # against code.claude.com/docs/en/model-config "Correct the
+            # window for a gateway or custom model ID"): (1) an ID with no
+            # `claude-` prefix, no `[1m]` suffix, and unresolvable to a
+            # Claude model -> this override applies directly; (2) same but
+            # with `[1m]` -> needs CLAUDE_CODE_DISABLE_1M_CONTEXT too
+            # (not our case); (3) an ID that starts with `claude-` or
+            # resolves to a Claude model -> this override is IGNORED unless
+            # DISABLE_COMPACT is also set (which disables compaction
+            # entirely, not what we want).
+            #
+            # Each dispatched subagent (deus-gpt-sol/terra/luna, via
+            # agents_for_launch() below) runs in its own context window
+            # keyed to ITS OWN "model" field -- the plain aliases
+            # ("sol"/"terra"/"luna-max"), which hit case (1) and get this
+            # override correctly. That is the primary, intended path this
+            # override exists for.
+            #
+            # Known, NOT-fully-covered gap: connectors/cliproxy/config.yaml
+            # also configures `claude-gpt-sol`/`terra`/`luna` picker-
+            # discovery aliases (deliberately `claude-`-prefixed so
+            # CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY surfaces them in
+            # the /model picker) and a separate real-Claude-model leg
+            # (`claude-api-key` -> "opus-planner", for `opus-planner`).
+            # `opus-planner` itself is NOT `claude-`-prefixed and Claude
+            # Code cannot resolve that opaque proxy alias to a real Claude
+            # model -- so it hits case (1) too, meaning if a user ever
+            # `/model`-switches to `opus-planner` mid-session, it
+            # INCORRECTLY inherits this 272K cap (a real Claude model
+            # artificially throttled). Conversely, the `claude-gpt-*`
+            # picker-discovery aliases hit case (3) -- this override does
+            # NOT apply to them at all, so a user reaching a GPT model via
+            # the /model picker (rather than subagent dispatch) gets NO
+            # correction and is exposed to the original silent-wrong-
+            # threshold problem this override exists to fix. Both gaps are
+            # scoped to manual /model-switching only, not the primary
+            # dispatched-subagent path, and are not fixed by this override
+            # -- Claude Code has no mechanism to resolve an opaque proxy
+            # alias to its real upstream model or context window.
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "272000",
+            # Forces auto-compact on for this connector's launched session,
+            # overriding the user's global ~/.claude/settings.json
+            # (autoCompactEnabled: false is a deliberate host-wide choice
+            # for normal Claude usage, left untouched). Consumed by
+            # deus-cmd.sh's launch_connect() via the DEUS_CONNECT_SETTINGS_
+            # JSON reserved key (connectors/base.py's env_for_launch()
+            # docstring) -- forwarded as `claude --settings <value>` for
+            # this one launch only. Session-wide, with no per-subagent
+            # override (Claude Code has no such mechanism) -- so any
+            # portion of the session using a real Claude model (e.g.
+            # `opus-planner`) also auto-compacts more eagerly than the
+            # user's global default would, independent of the context-
+            # window gaps documented above.
+            "DEUS_CONNECT_SETTINGS_JSON": '{"autoCompactEnabled": true}',
         }
 
     def agents_for_launch(self) -> dict[str, Any]:
