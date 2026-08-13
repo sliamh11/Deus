@@ -199,6 +199,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/resume` | Load recent work and memory context |
 | `/review-logs` | Review Deus system health logs |
 | `/setup` | Run first-time installation and configuration |
+| `/show-me` | Explain the current topic visually — diagrams, code-shape sketches, focused HTML artifacts |
 | `/tdd` | Test-driven development loop — red-green-refactor, behavior-first |
 | `/teach` | Teach a skill or concept over multiple sessions (stateful teaching workspace) |
 | `/update-skills` | Update installed skill branches from upstream |
