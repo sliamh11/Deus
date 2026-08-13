@@ -1483,6 +1483,7 @@ sys.exit(1)
       # bare `--settings ""` appended. Unset immediately after reading, same
       # leak-prevention rationale as the DEUS_CONNECT_ID unset above -- must
       # not survive into a nested "deus connect <other-id>" call.
+      # Tracked: #1185
       settings_args=()
       if [ -n "$DEUS_CONNECT_SETTINGS_JSON" ]; then
         settings_args=(--settings "$DEUS_CONNECT_SETTINGS_JSON")
