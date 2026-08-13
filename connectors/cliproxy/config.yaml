@@ -1,0 +1,105 @@
+# Tracked, placeholder-only config for the `cliproxy-oauth` connector
+# (deus connect setup cliproxy-oauth writes the real version to
+# ~/.config/deus/connectors/cliproxy/config.local.yaml — OUTSIDE this repo
+# entirely, never here). Relocated/generalized from the already-merged
+# examples/multi-model-cliproxyapi/config.yaml.
+#
+# SECURITY: CLIProxyAPI's config format takes literal values only (no
+# env-var indirection). NEVER fill in real keys/tokens directly in this
+# tracked file — `deus connect setup cliproxy-oauth` (the `add-connector`
+# skill) writes real values to config.local.yaml for you.
+#
+# Mechanism this relies on: once Claude Code's ANTHROPIC_BASE_URL points at
+# a non-Anthropic endpoint, it skips its own model-name validation and
+# passes whatever string it's given (via /model, ANTHROPIC_MODEL, or a
+# subagent's `model:` frontmatter) straight through to that endpoint. The
+# `alias` values below are exactly those strings.
+#
+# See examples/multi-model-cliproxyapi/README.md's "Known open risks"
+# section before using this for real — in particular, the OAuth-login leg
+# (Codex) carries a real, documented account-ban risk with no rollback.
+
+port: 8317
+# CLIProxyAPI's own default for an unset `host` is empty (""), which binds
+# ALL interfaces (IPv4 + IPv6) -- not localhost-only, despite this connector
+# being designed and launched as a local-only daemon. Confirmed directly
+# against CLIProxyAPI's source (internal/config/config.go's own doc comment
+# on the Host field: 'Default is empty ("") to bind all interfaces... Use
+# "127.0.0.1" or "localhost" for local-only access.') and its listener
+# construction (internal/api/server.go: `Addr: fmt.Sprintf("%s:%d",
+# cfg.Host, cfg.Port)`). Pinned here explicitly so every generated config
+# inherits the intended network boundary.
+host: "127.0.0.1"
+auth-dir: "~/.cli-proxy-api"
+
+# Inbound auth: what Claude Code authenticates to THIS proxy with.
+# Replaced with a real value in config.local.yaml — never a real secret here.
+api-keys:
+  - "REPLACE_WITH_YOUR_OWN_INBOUND_KEY"
+
+# Optional safe leg: a real, official Anthropic API key (not OAuth) can be
+# routed through the same proxy for a Claude-family alias if desired.
+claude-api-key:
+  - api-key: "REPLACE_WITH_YOUR_REAL_ANTHROPIC_API_KEY"
+    models:
+      - name: "claude-opus-5"
+        alias: "opus-planner"
+
+# Accepted-risk leg: Codex OAuth-login (run `deus connect setup
+# cliproxy-oauth`, which drives `--codex-login` once to authenticate).
+# Reuses a ChatGPT/Codex subscription rather than a real API key — see
+# examples/multi-model-cliproxyapi/README.md's "Known open risks" before
+# relying on this.
+oauth-model-alias:
+  codex:
+    - name: "gpt-5.6-sol" # placeholder — confirm real upstream name
+      alias: "sol"
+    - name: "gpt-5.6-terra" # placeholder — confirm real upstream name
+      alias: "terra"
+    - name: "gpt-5.6-luna" # placeholder — confirm real upstream name
+      alias: "luna-max"
+    # Picker-discovery twins of the three aliases above -- same upstream
+    # `name` values (must stay identical to their plain twin above, or
+    # CLIProxyAPI treats them as two different upstream models), only the
+    # `alias`/`display-name` differ. The `claude-` prefix satisfies Claude
+    # Code's gateway-discovery filter (an id must contain "claude" or
+    # "anthropic" to appear in /model when CLAUDE_CODE_ENABLE_GATEWAY_
+    # MODEL_DISCOVERY is set); `display-name` controls what the picker
+    # actually shows instead of the raw id. Confirmed CLIProxyAPI supports
+    # multiple aliases per upstream name (internal/config/config_
+    # normalization.go's SanitizeOAuthModelAlias: "allows multiple aliases
+    # per upstream name"). The plain aliases above stay untouched -- they
+    # remain the discovery-independent ANTHROPIC_MODEL launch default and
+    # subagent routing target.
+    - name: "gpt-5.6-sol" # must match the "sol" entry's name above exactly
+      alias: "claude-gpt-sol"
+      display-name: "GPT Sol"
+    - name: "gpt-5.6-terra" # must match the "terra" entry's name above exactly
+      alias: "claude-gpt-terra"
+      display-name: "GPT Terra"
+    - name: "gpt-5.6-luna" # must match the "luna-max" entry's name above exactly
+      alias: "claude-gpt-luna"
+      display-name: "GPT Luna (max)"
+
+# Deus-specific: maps the three fixed `deus connect` subagent names
+# (connectors/providers/cliproxy_oauth's GPT_MODELS) to the
+# CLIProxyAPI alias configured above. Only the alias values should change
+# per real model; the deus-gpt-* keys are fixed and referenced directly by
+# connectors/providers/cliproxy_oauth's agents_for_launch().
+deus-model-map:
+  deus-gpt-sol: "sol"
+  deus-gpt-terra: "terra"
+  deus-gpt-luna: "luna-max"
+
+# Default model for the session itself (ANTHROPIC_MODEL) when no /model
+# switch has been made yet.
+default-model-alias: "luna-max"
+
+# Makes /v1/models return raw, uncloaked upstream ids instead of
+# obfuscated claude-branded ones. Claude Code's own gateway-discovery
+# filter (an id must contain "claude" or "anthropic") then keeps exactly
+# the 3 claude-gpt-* picker-discovery aliases above and drops every other
+# catalog entry (image-generation models, internal tooling, etc.) instead
+# of surfacing all of them under meaningless obfuscated names.
+claude-code:
+  disable-cloaking-model-list: true

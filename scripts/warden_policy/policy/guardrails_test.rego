@@ -167,6 +167,24 @@ test_deny_stale_opa_generation_mismatch if {
 	not decision.allow with input as inp with data.warden_attestations as base_attestations
 }
 
+# LIA-535: git.commit/file.write generation mismatches get a distinct, diagnostic reason instead
+# of the fully generic default -- proves the new decision body actually fires with the right text,
+# not just that allow is false (test_deny_stale_opa_generation_mismatch above only checks that).
+test_deny_stale_opa_generation_mismatch_has_distinct_reason if {
+	inp := object.union(base_input(subject_reviewed), {"expected_generation": 4})
+	decision.reason == "OPA ledger generation stale (expected 4, got 5) -- run `python3 scripts/warden_attest.py sync` or wait for the next self-heal tick (LIA-533)" with input as inp with data.warden_attestations as base_attestations
+}
+
+# LIA-535 round-1 regression test: an unrecognized operation with a stale expected_generation must
+# still fall through to the fully generic default, not get misclassified as ledger staleness. This
+# is the exact scenario plan-review round 1 caught against the original, too-broad
+# `input.operation != "attestation.verify"` guard.
+test_deny_unrecognized_operation_with_stale_generation_still_hits_generic_default if {
+	inp := object.union(base_input(subject_reviewed), {"operation": "something.else", "expected_generation": 4})
+	not decision.allow with input as inp with data.warden_attestations as base_attestations
+	decision.reason == "guardrails policy produced no valid decision" with input as inp with data.warden_attestations as base_attestations
+}
+
 test_deny_malformed_store_missing_records_key if {
 	att := {
 		"schema_version": 1, "generation": 5,
@@ -612,6 +630,23 @@ test_attestation_verify_deny_stale_hermes_generation_with_real_ship_present if {
 	# happens to still be able to see through the mismatch.
 	inp := object.union(attestation_verify_input(subject_reviewed), {"expected_generation": 4})
 	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
+# LIA-535 exclusion-proof: attestation.verify must NOT match the new git.commit/file.write-scoped
+# generation-mismatch rule -- it keeps its own composite deny message. This also proves there's no
+# Rego eval_conflict_error: if the new rule's `input.operation in {...}` guard were dropped
+# entirely, this exact input would satisfy BOTH the new rule's condition and the existing
+# attestation.verify fallback's `not hermes_path_ok, not cc_path_ok` condition simultaneously, and
+# `opa test` would report eval_conflict_error for this test rather than PASS/FAIL. (The round-1-
+# rejected `!= "attestation.verify"` guard does NOT trigger this specific conflict -- it still
+# excludes attestation.verify correctly; its bug was misclassifying unrecognized operations
+# instead, covered by test_deny_unrecognized_operation_with_stale_generation_still_hits_generic_default above.)
+test_attestation_verify_stale_hermes_generation_keeps_composite_message if {
+	inp := object.union(attestation_verify_input(subject_cc_mirrored), {"expected_generation": 4})
+	decision.reason == sprintf(
+		"no SHIP found for %s (Hermes-native or Claude-Code-mirrored; or an explicit non-SHIP Hermes verdict exists; or OPA snapshot stale/unsupported)",
+		[subject_cc_mirrored],
+	) with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
 }
 
 test_attestation_verify_allow_hermes_native_precedence_when_cc_evidence_also_exists if {
