@@ -75,6 +75,13 @@ class GptModelDef:
 
     subagent_name: str
     description: str
+    # The tracked template's placeholder upstream model name
+    # (connectors/cliproxy/config.yaml's oauth-model-alias.codex[].name
+    # AND its payload.override[].models[].name -- these two must stay in
+    # sync, same as the claude-gpt-* picker-discovery twin's name).
+    # write_config() uses this to find the right payload.override entry
+    # to mutate for effort_map, without a second hardcoded lookup table.
+    template_upstream_name: str
 
 
 # Single source of truth for every onboarded GPT model. To add one: add a
@@ -90,6 +97,7 @@ GPT_MODELS: tuple[GptModelDef, ...] = (
         "multi-model gateway. Use for research, analysis, or a second "
         "opinion where a genuinely independent (non-Claude) model is "
         "valuable.",
+        "gpt-5.6-sol",
     ),
     GptModelDef(
         "deus-gpt-terra",
@@ -97,14 +105,21 @@ GPT_MODELS: tuple[GptModelDef, ...] = (
         "multi-model gateway. Use for research, analysis, or a second "
         "opinion where a genuinely independent (non-Claude) model is "
         "valuable.",
+        "gpt-5.6-terra",
     ),
     GptModelDef(
         "deus-gpt-luna",
         "General-purpose subagent pinned to GPT 5.6 Luna (max reasoning "
         "effort) via the local multi-model gateway. Use for harder "
         "research/analysis tasks warranting deeper reasoning.",
+        "gpt-5.6-luna",
     ),
 )
+
+# CLIProxyAPI's Codex protocol reasoning-effort levels (confirmed against
+# Claude Code's own effort-level table -- Codex has no "max"; "xhigh" is
+# its ceiling). Used to validate effort_map values in write_config().
+_CODEX_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 
 # Must match connectors/cliproxy/config.yaml's literal placeholder exactly.
 # authenticate() bootstraps LOCAL_CONFIG by copying that tracked template
@@ -280,6 +295,51 @@ class CliproxyOauthSetupHandler(ConnectorSetupHandler):
         placeholder["default-model-alias"] = values.get(
             "default_model_alias", next(iter(model_map.values()), "")
         )
+        # Only touches entries the caller actually specifies -- a subagent
+        # omitted from effort_map keeps the template's baked-in default
+        # (see connectors/cliproxy/config.yaml's payload.override block).
+        # An unknown key (typo, stale/removed model) is rejected loudly
+        # rather than silently never applied, matching this file's
+        # fail-loud posture elsewhere (e.g. the claude-api-key placeholder
+        # rejection above).
+        effort_map = values.get("effort_map") or {}
+        known_subagents = {m.subagent_name for m in GPT_MODELS}
+        unknown = set(effort_map) - known_subagents
+        if unknown:
+            raise ValueError(
+                f"effort_map has unknown subagent name(s) {sorted(unknown)} "
+                f"-- must be one of {sorted(known_subagents)}"
+            )
+        overrides = placeholder.get("payload", {}).get("override", [])
+        for model in GPT_MODELS:
+            level = effort_map.get(model.subagent_name)
+            if level is None:
+                continue
+            if level not in _CODEX_EFFORT_LEVELS:
+                raise ValueError(
+                    f"invalid effort level {level!r} for {model.subagent_name} "
+                    f"-- must be one of {_CODEX_EFFORT_LEVELS}"
+                )
+            matched = False
+            for rule in overrides:
+                names = [m.get("name") for m in rule.get("models", [])]
+                if model.template_upstream_name in names:
+                    rule["params"]["reasoning.effort"] = level
+                    matched = True
+                    break
+            if not matched:
+                # Same fail-loud posture as the unknown-key/invalid-level
+                # checks above -- a template with a dropped/renamed
+                # payload.override entry (drift the TestTrackedConfig
+                # PickerDiscoveryAliases test guards against, but that's an
+                # external guard, not a runtime check) must not silently
+                # write a config where the requested effort was never
+                # actually applied.
+                raise ValueError(
+                    f"no payload.override entry found for "
+                    f"{model.subagent_name}'s upstream name "
+                    f"{model.template_upstream_name!r} -- template drift?"
+                )
         LOCAL_CONFIG.parent.mkdir(parents=True, exist_ok=True)
         LOCAL_CONFIG.write_text(yaml.safe_dump(placeholder, sort_keys=False))
         LOCAL_CONFIG.chmod(0o600)
