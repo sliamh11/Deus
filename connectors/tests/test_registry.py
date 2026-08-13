@@ -410,6 +410,17 @@ class TestCliproxyOauthWriteConfig:
             "gpt-5.6-luna": "low",
         }
 
+    def test_max_effort_level_is_accepted(self):
+        # Regression guard: "max" is a real Codex level (confirmed via
+        # `codex debug models` against the live account catalog, on all
+        # three of sol/terra/luna) that a prior version of this constant
+        # wrongly rejected -- pin it so a future accidental narrowing
+        # back to the 4-level set is caught here, not live.
+        self.handler.write_config(
+            self._base_values(effort_map={"deus-gpt-luna": "max"})
+        )
+        assert self._written_overrides()["gpt-5.6-luna"] == "max"
+
     def test_invalid_effort_level_raises(self):
         with pytest.raises(ValueError, match="invalid effort level"):
             self.handler.write_config(
