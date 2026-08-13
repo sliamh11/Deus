@@ -244,6 +244,8 @@ class TestCliproxyOauthEnvForLaunch:
             "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_MODEL": "sol",
             "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY": "1",
+            "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "272000",
+            "DEUS_CONNECT_SETTINGS_JSON": '{"autoCompactEnabled": true}',
         }
 
     def test_gateway_discovery_key_present_even_when_unconfigured(self):
@@ -254,6 +256,19 @@ class TestCliproxyOauthEnvForLaunch:
         c = self.mod.CliproxyOauthConnector()
         env = c.env_for_launch()
         assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+
+    def test_context_window_and_autocompact_keys_present(self):
+        # GPT-5.6 Sol/Terra/Luna have a real, server-enforced 272,000-token
+        # context window via Codex OAuth (confirmed against this account's
+        # live model catalog + independent OpenAI/CLIProxyAPI maintainer
+        # statements). These two keys correct Claude Code's auto-compact
+        # threshold for the unrecognized model aliases and force
+        # auto-compact on for this connector's session only, without
+        # touching the user's global ~/.claude/settings.json.
+        c = self.mod.CliproxyOauthConnector()
+        env = c.env_for_launch()
+        assert env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] == "272000"
+        assert env["DEUS_CONNECT_SETTINGS_JSON"] == '{"autoCompactEnabled": true}'
 
 
 class TestCliproxyOauthAgentsForLaunch:

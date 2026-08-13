@@ -80,6 +80,19 @@ oauth-model-alias:
     - name: "gpt-5.6-luna" # must match the "luna-max" entry's name above exactly
       alias: "claude-gpt-luna"
       display-name: "GPT Luna (max)"
+    # KNOWN GAP: the `claude-` prefix that makes these three discoverable in
+    # /model also means Claude Code's CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000
+    # override (connectors/providers/cliproxy_oauth's env_for_launch(),
+    # correcting for GPT-5.6's real 272K Codex-OAuth context window) does
+    # NOT apply to them -- Claude Code only applies that override to an ID
+    # it can't resolve as a Claude model; a `claude-`-prefixed ID needs
+    # DISABLE_COMPACT too, which disables compaction entirely instead of
+    # correcting its threshold. A user who reaches a GPT model via these
+    # picker-discovery aliases (rather than the primary deus-gpt-sol/
+    # terra/luna subagent dispatch, which correctly gets the override via
+    # its own plain "sol"/"terra"/"luna-max" model field) is NOT protected
+    # by that override. See the full case-by-case citation in cliproxy_
+    # oauth's env_for_launch().
 
 # Deus-specific: maps the three fixed `deus connect` subagent names
 # (connectors/providers/cliproxy_oauth's GPT_MODELS) to the
