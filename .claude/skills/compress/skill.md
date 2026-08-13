@@ -12,6 +12,18 @@ Context-aware session saving. Behavior adapts to home mode vs external project m
 
 Check if the current working directory is the Deus home directory (`~/deus`). If it is → **Home Mode**. Otherwise → **External Project Mode**.
 
+## Resolve `REPO_ROOT` (External Project Mode only)
+
+Resolve this here, unconditionally, the same way `$VAULT` is resolved below -- this file is
+processed top-to-bottom by the orchestrating flow, so nothing downstream needs to infer whether a
+conditionally-read secondary file happened to establish it first:
+```bash
+REPO_ROOT=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || pwd)
+```
+Fails soft to `pwd` if the project isn't a git repo. `branches/external-mode.md`'s own sections
+reference this value; none of them re-derive it (same relationship as `$VAULT` below -- `external-
+mode.md` explicitly defers to skill.md for `$VAULT` and now does the same for `REPO_ROOT`).
+
 ## Resolve vault path
 
 Resolve the vault path using this **per-instance** order (highest priority first). `$VAULT` means the resolved path:
@@ -66,6 +78,125 @@ path themselves. If the user confirms, write the fact directly to the named dest
 same session — append it, don't defer as a pending task. If the user declines, or the
 conversation has no gotcha-shaped content, skip silently — do not ask on every `/compress` run
 regardless of content.
+
+## Step 0.6 — Collect retrospective candidates (External Project Mode only, silent)
+
+Home mode: skip entirely — home mode already has its own separate capture paths (CLAUDE.md Step 0,
+`/learn-procedure`, `.claude/rules/`). This step exists only to give external projects an equivalent,
+since they don't have those paths.
+
+External Project Mode only: scan the just-finished conversation for retro-worthy notes — either a
+cross-project methodology insight (something Deus-wide, not tied to this repo) or a repo-specific
+insight worth persisting (an architecture decision, a root cause, a gotcha). Do not interrupt the user
+and do not grill; this step only stages candidates for later classification when a retrospective
+actually fires (see `branches/external-mode.md`).
+
+**Memory-level scope for candidates (mirrors Step 0's scope rule above):** the memory-level gate
+(`branches/external-mode.md`) has already stopped this entire step for `restricted` projects before
+we get here.
+- **standard:** only stage cross-project methodology candidates. Do NOT stage repo-specific
+  candidates (anything referencing a file, symbol, PR, migration, or product concept unique to this
+  repo) — same restriction Step 0 already applies to `$VAULT/CLAUDE.md`. If a note only makes sense
+  with a repo-specific reference, discard it rather than staging it.
+- **full:** both candidate types may be staged.
+
+For each candidate that survives the scope check above, append one line to `_retro-inbox.md`, resolved
+via the canonical `inbox_dir` resolution below -- **`branches/external-mode.md`'s own "Inbox
+resolution" section references this definition, not a copy of it.**
+
+**A basename-substring glob (`*basename*`) was tried here and correctly BLOCKed on review**: it
+treats a single unique match as trustworthy, but a single match can still be the WRONG repo entirely
+(e.g. `project` uniquely matching `project-other`'s tracked directory) -- the ownership-claim
+mechanism only stops a SECOND claimant from later overwriting, it can never verify the FIRST
+claimant selected the correct directory in the first place. Verified empirically in this
+environment: Claude Code's own `~/.claude/projects/<name>/` directories are named by encoding the
+*exact full absolute path* Claude Code was invoked from (`/` replaced with `-`; hyphens, dots, and
+other characters passed through unchanged) -- not a basename. A repo at
+`/Users/x/Dev/cyber-olympians-platform` produces exactly the directory
+`-Users-x-Dev-cyber-olympians-platform`, confirmed by listing real directories in this environment
+against `pwd | sed 's/\//-/g'`. This isn't a single-environment guess -- this codebase already
+implements and relies on the identical scheme in shipped code:
+`scripts/auto_memory_dir.py::_encode_project_dir()` (`path.replace("/", "-")`, called from
+`resolve_auto_memory_dir()` to build this exact `~/.claude/projects/.../memory` path, and referenced
+elsewhere via `docs/decisions/standards-pack-priority.md` and `.claude/skills/resume/skill.md`).
+That implementation also normalizes Windows backslashes first, which this shell snippet doesn't --
+consistent with this whole feature already being POSIX-only by design throughout (`mkdir`-based
+locks, `set -C`, `shasum`/`sha256sum`, the `stat -f`/`stat -c` fallback), not a gap introduced here.
+Each git worktree of the same logical repo gets its OWN separate directory too (a worktree's
+`REPO_ROOT` is its own distinct absolute path), which is correct behavior for the inbox -- notes
+stay scoped to wherever the session that staged them actually ran.
+
+Use an EXACT match against this deterministic encoding, not a glob, eliminating the substring-collision
+class entirely:
+```bash
+REPO_ROOT="${REPO_ROOT:-$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || pwd)}"
+ENCODED_ROOT=$(printf '%s' "$REPO_ROOT" | sed 's/\//-/g')
+CANDIDATE_DIR="$HOME/.claude/projects/${ENCODED_ROOT}/memory/"
+if [ -d "$CANDIDATE_DIR" ]; then
+  inbox_dir="$CANDIDATE_DIR"
+else
+  inbox_dir=""
+fi
+```
+The `${REPO_ROOT:-...}` guard is defense in depth, not the primary resolution -- `REPO_ROOT` is
+already resolved unconditionally above ("Resolve `REPO_ROOT`"), so this should always be a no-op.
+It exists because this exact line was the one that broke (misfiling candidate notes into an
+arbitrary project's inbox) the last time `REPO_ROOT` went unset here -- a guard at the consumption
+site stays correct even if some future edit to this file's ordering, or a different executing
+agent's read path, ever breaks the "resolved earlier" assumption again.
+
+**This closes the broad substring-collision class, but the encoding itself is not perfectly
+injective -- keep the ownership claim as defense in depth for the residual risk.** Replacing every
+`/` with `-` is ambiguous when the ORIGINAL path also contains a literal `-`:
+`/Users/a-b/proj` and `/Users/a/b/proj` both encode to `-Users-a-b-proj`. This is a narrower,
+rarer collision than the substring glob's "any repo whose name transitively contains our basename,"
+but not zero, and it's a property of a path-encoding scheme this feature doesn't control (Claude
+Code's own), not something an exact match alone can rule out. Verify ownership even on an exact
+match, using the same atomic noclobber claim `branches/external-mode.md` condition (a) already
+established for the sibling basename-collision risk (retrospective storage):
+```bash
+if [ -n "$inbox_dir" ]; then
+  INBOX_OWNER_FILE="${inbox_dir}.repo-root-owner"
+  if ( set -C; echo "$REPO_ROOT" > "$INBOX_OWNER_FILE" ) 2>/dev/null; then
+    : # first claim on this inbox path -- proceed
+  else
+    OWNED_ROOT=$(cat "$INBOX_OWNER_FILE" 2>/dev/null)
+    if [ "$OWNED_ROOT" != "$REPO_ROOT" ]; then
+      inbox_dir=""   # a DIFFERENT repo already owns this inbox path -- fail closed, do not touch it
+    fi
+    # else: $OWNED_ROOT already equals $REPO_ROOT -- same repo as before, no collision
+  fi
+fi
+```
+On a fail-closed result (directory doesn't exist, or ownership mismatch), proceed with
+`INBOX_CONTENT=none` exactly as when the directory never existed at all -- never fall back to
+reading or writing the ambiguous/foreign path anyway.
+
+If `$inbox_dir` resolves (directory exists at the exact encoded path, ownership verified), append
+under the
+same lock used by the wipe step in `session-retrospective.md` and the dispatch step in
+`branches/external-mode.md`. **This is the canonical definition of that lock -- the other two sites
+reference this one, not their own copy.** Use `mkdir` as the atomic exclusive-create primitive, the
+same idiom this repo's own `docs/decisions/live-command-freshness.md` ADR already established for
+its auto-sync throttle lock (`mkdir` is POSIX-atomic; a plain `test -e || touch` is NOT, and would
+silently reopen the exact concurrent-dispatch race `e99cf7d` closed if some future implementation
+substituted it in):
+```bash
+LOCK="${inbox_dir}_retro-inbox.md.lock"
+if mkdir "$LOCK" 2>/dev/null; then
+  # ... do the append under the lock ...
+  rmdir "$LOCK"
+else
+  # lock held elsewhere -- short retry/backoff, skip silently on failure to acquire within
+  # ~2s (a missed candidate this run is low-cost, a corrupted file is not)
+fi
+```
+The appended line itself:
+```
+<ISO-date> <one-line note>
+```
+
+Skip this step entirely if no scripts/Agent tool are available (non-Claude-Code backend).
 
 ## Save session log
 
@@ -191,8 +322,11 @@ After saving the session log:
 6. **Pre-warm semantic cache** (always, background):
    Run: `python3 ~/deus/scripts/memory_indexer.py --query "recent work ongoing tasks" --top 2 --recency-boost > ~/.deus/resume_semantic_cache.txt 2>/dev/null &`
 
-7. **Trigger session retrospective** (home mode only, background, opt-in):
-   Read `branches/retrospective.md` for conditions and dispatch instructions. Skip silently if any check fails.
+7. **Trigger session retrospective** (background, opt-in):
+   - Home mode: read `branches/retrospective.md` for conditions and dispatch instructions (unchanged).
+   - External mode: read the "External retrospective" section of `branches/external-mode.md` (has its
+     own conditions, threshold, and inbox handling — separate from home mode's).
+   Skip silently if any check fails.
 
 8. **Render a Decision Receipt** (always, in the chat reply — home + external):
    After the log is saved, render a short user-facing digest so the user can follow what
@@ -210,4 +344,4 @@ After saving the session log:
    `decisions[]` recorded AND no PR/merge this session; in that case the Confirm line still
    reports the save. This is the comprehension digest; the operational Confirm line is separate.
 
-Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, source-transcript archival status if it failed, and whether a session retrospective was triggered (home mode only — report "retrospective triggered (background)" or "retrospective skipped: <reason>").
+Confirm with the filename saved, number of pending tasks carried forward, redaction result (standard mode only), indexing result, atom extraction result, source-transcript archival status if it failed, and whether a session retrospective was triggered (home or external mode — report "retrospective triggered (background)" or "retrospective skipped: <reason>").
