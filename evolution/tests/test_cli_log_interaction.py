@@ -924,8 +924,12 @@ def test_main_unknown_subcommand_exits_nonzero():
 # ── _maybe_auto_optimize tests ──────────────────────────────────────────────
 
 
-def test_auto_optimize_calls_all_modules(monkeypatch):
-    """_maybe_auto_optimize should call optimize() for every module in MODULE_REGISTRY."""
+def test_auto_optimize_calls_all_modules(test_db, monkeypatch):
+    """_maybe_auto_optimize should call optimize() for every module in MODULE_REGISTRY.
+
+    `test_db` is required since LIA-551: this path now writes subsystem_health
+    rows, and without the fixture they would land in the real ~/.deus/evolution.db.
+    """
     import evolution.config as cfg
     monkeypatch.setattr(cfg, "AUTO_OPTIMIZE_THRESHOLD", 10)
 
@@ -953,7 +957,7 @@ def test_auto_optimize_calls_all_modules(monkeypatch):
     assert "summarization" in called_modules
 
 
-def test_auto_optimize_includes_domain_presets(monkeypatch):
+def test_auto_optimize_includes_domain_presets(test_db, monkeypatch):
     """_maybe_auto_optimize should call optimize() with each domain for every module."""
     import evolution.config as cfg
     monkeypatch.setattr(cfg, "AUTO_OPTIMIZE_THRESHOLD", 10)
@@ -987,7 +991,7 @@ def test_auto_optimize_includes_domain_presets(monkeypatch):
         assert "engineering" in domains, f"{mod} missing engineering domain call"
 
 
-def test_auto_optimize_disabled_when_threshold_zero(monkeypatch):
+def test_auto_optimize_disabled_when_threshold_zero(test_db, monkeypatch):
     """EVOLUTION_AUTO_OPTIMIZE_THRESHOLD=0 should disable auto-optimization."""
     import evolution.config as cfg
     monkeypatch.setattr(cfg, "AUTO_OPTIMIZE_THRESHOLD", 0)
@@ -1001,7 +1005,7 @@ def test_auto_optimize_disabled_when_threshold_zero(monkeypatch):
     assert len(optimize_calls) == 0, "optimize should not be called when threshold is 0"
 
 
-def test_auto_optimize_skips_below_threshold(monkeypatch):
+def test_auto_optimize_skips_below_threshold(test_db, monkeypatch):
     """_maybe_auto_optimize should skip when scored count is below threshold."""
     import evolution.config as cfg
     monkeypatch.setattr(cfg, "AUTO_OPTIMIZE_THRESHOLD", 10)
