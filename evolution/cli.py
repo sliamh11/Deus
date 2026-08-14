@@ -4,6 +4,7 @@ Deus Evolution CLI.
 
 Usage:
     python evolution/cli.py status [--group <folder>]
+    python evolution/cli.py health [--json]
     python evolution/cli.py get_reflections <query_json>
     python evolution/cli.py log_interaction <json>
     python evolution/cli.py reflect <interaction_id>
@@ -23,6 +24,13 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+# Health component namespace (LIA-551). Every optimizer component lives under
+# this prefix; the `evolution.optimizer` rollup is derived live from the rows
+# beneath it and is never itself persisted.
+_OPTIMIZER_HEALTH_PREFIX = "evolution.optimizer."
+_REGISTRY_COMPONENT = _OPTIMIZER_HEALTH_PREFIX + "registry"
+_STORAGE_COMPONENT = _OPTIMIZER_HEALTH_PREFIX + "storage"
+
 # Allow running as a script (python evolution/cli.py) or module (-m evolution.cli)
 if __name__ == "__main__" and __package__ is None:
     _project_root = str(Path(__file__).parent.parent)
@@ -32,6 +40,7 @@ if __name__ == "__main__" and __package__ is None:
 
 
 def cmd_status(group_folder: Optional[str] = None, domain: Optional[str] = None, compare: bool = False, show_tokens: bool = False) -> None:
+    from . import health
     from .ilog.interaction_log import get_recent, score_trend
     from .optimizer.artifacts import list_artifacts
     from .storage import get_storage
@@ -86,7 +95,27 @@ def cmd_status(group_folder: Optional[str] = None, domain: Optional[str] = None,
                 f"n={a['sample_count']}"
             )
     else:
-        print("  No active artifacts. Run `optimize` to generate one.")
+        # This used to say "Run `optimize` to generate one." — which described
+        # an optimizer nobody had tried yet. In reality it had been auto-firing
+        # and crashing on every cycle since ~2026-03 (LIA-551). An empty
+        # artifact list is only good news if the optimizer is actually healthy,
+        # so say which case this is.
+        opt = health.rollup(_OPTIMIZER_HEALTH_PREFIX)
+        if opt["status"] == health.STATUS_FAILED:
+            print("  No active artifacts — the optimizer is FAILING, not idle:")
+            for row in opt["rows"]:
+                if row["last_status"] != health.STATUS_FAILED:
+                    continue
+                since = (row["first_failed_at"] or "?")[:19]
+                print(
+                    f"    [{row['component']}] FAILED "
+                    f"{row['consecutive_failures']}x since {since} — {row['last_reason']}"
+                )
+            print("  Details: python evolution/cli.py health")
+        elif opt["status"] is None:
+            print("  No active artifacts, and no optimizer run has been recorded yet.")
+        else:
+            print("  No active artifacts. Optimizer healthy; nothing cleared the ship margin.")
 
     # Token trend (optional)
     if show_tokens:
@@ -158,30 +187,109 @@ def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> Non
 
 
 def _maybe_auto_optimize(domain_presets: Optional[list] = None) -> None:
-    """Auto-trigger DSPy optimization if enough new scored interactions exist."""
+    """Auto-trigger DSPy optimization if enough new scored interactions exist.
+
+    Every outcome past the `AUTO_OPTIMIZE_THRESHOLD <= 0` opt-out below lands
+    in `subsystem_health` (LIA-551) — module enumeration, the storage queries,
+    and each optimize call. This used to be one try/except ending at
+    log.warning, which made "crashed on every cycle for five months" look
+    exactly like "nothing to do" — and a log line here is not an escalation
+    surface anyway (see evolution/health.py for the two measured reasons).
+    Exceptions are never re-raised from any of those paths: this runs on the
+    batch-judge hot path and the live judge/reflexion loop must keep working.
+    """
+    from . import health
     from .config import AUTO_OPTIMIZE_THRESHOLD
+
     if AUTO_OPTIMIZE_THRESHOLD <= 0:
+        # Deliberate operator opt-out, so no row is written. Consequence:
+        # "disabled by config" and "the trigger stopped firing" look identical
+        # in subsystem_health. LIA-552's staleness probe must tell them apart.
         return
 
-    from .storage import get_storage
+    # Hoisted above the below-threshold return so a skip can be recorded for
+    # every module. Safe without dspy: optimizer.modules guards its dspy import
+    # and falls back to plain object subclasses.
+    try:
+        from .optimizer.modules import MODULE_REGISTRY
+        module_names = list(MODULE_REGISTRY)
+    except Exception as exc:
+        # Cannot even enumerate the work. That is an infrastructure failure,
+        # not a skip, and it gets its own component so the derived rollup has
+        # something real to report.
+        detail = f"{type(exc).__name__}: {exc}"
+        health.record_attempt(_REGISTRY_COMPONENT, health.STATUS_FAILED, detail)
+        log.error('evolution: cannot enumerate optimizer modules — %s', detail)
+        return
+    health.record_attempt(_REGISTRY_COMPONENT, health.STATUS_OK)
 
-    store = get_storage()
-    last_ts = store.get_latest_artifact_timestamp() or "1970-01-01"
-    scored_since = store.count_scored_since(last_ts)
+    # Guarded for the same reason as everything else here: if any of these
+    # three raise, the old code wrote no health row AND let the exception
+    # escape to an outer log.warning — this ticket's exact bug, one frame up.
+    try:
+        from .storage import get_storage
+
+        store = get_storage()
+        last_ts = store.get_latest_artifact_timestamp() or "1970-01-01"
+        scored_since = store.count_scored_since(last_ts)
+    except Exception as exc:
+        detail = f"{type(exc).__name__}: {exc}"
+        health.record_attempt(_STORAGE_COMPONENT, health.STATUS_FAILED, detail)
+        log.error('evolution: cannot read optimizer scheduling state — %s', detail)
+        return
+    health.record_attempt(_STORAGE_COMPONENT, health.STATUS_OK,
+                          "completed without error")
 
     if scored_since < AUTO_OPTIMIZE_THRESHOLD:
+        # Records only that a cycle ran and idled. A skip must not carry a
+        # reason: last_reason belongs to attempts, and letting a skip write it
+        # destroyed a real failure's diagnostic cause (caught in review).
+        for module_name in module_names:
+            health.record_skip(_OPTIMIZER_HEALTH_PREFIX + module_name)
         return
 
     try:
         from .optimizer.dspy_optimizer import optimize
-        from .optimizer.modules import MODULE_REGISTRY
-        for module_name in MODULE_REGISTRY:
-            optimize(module=module_name)
-            # Domain-specific optimization if enough domain data
-            for domain in (domain_presets or []):
-                optimize(module=module_name, domain=domain)
     except Exception as exc:
-        log.warning('evolution: auto-optimize failed — %s: %s', type(exc).__name__, exc)
+        detail = f"import optimize: {type(exc).__name__}: {exc}"
+        for module_name in module_names:
+            health.record_attempt(
+                _OPTIMIZER_HEALTH_PREFIX + module_name, health.STATUS_FAILED, detail
+            )
+        log.error('evolution: optimizer unavailable — %s', detail)
+        return
+
+    for module_name in module_names:
+        # Exactly one health write per module, aggregating its cross-domain call
+        # and every domain variant. Writing after each call instead would let a
+        # later domain success overwrite an earlier cross-domain failure and
+        # clear the streak — this ticket's own failure mode, one level down.
+        scopes = [("cross-domain", None)] + [(d, d) for d in (domain_presets or [])]
+        failures = []
+        for scope, domain in scopes:
+            try:
+                if domain is None:
+                    optimize(module=module_name)
+                else:
+                    optimize(module=module_name, domain=domain)
+            except Exception as exc:
+                failures.append(f"{scope}: {type(exc).__name__}: {exc}")
+
+        component = _OPTIMIZER_HEALTH_PREFIX + module_name
+        if failures:
+            detail = "; ".join(failures)
+            health.record_attempt(component, health.STATUS_FAILED, detail)
+            log.error('evolution: auto-optimize failed for %s — %s', module_name, detail)
+        else:
+            # OK means every call for this module returned without raising —
+            # not necessarily that anything was optimized. tool_selection is
+            # permanently excluded (LIA-151: no usable ground truth), so its
+            # optimize() returns early and lands here too. Deliberately not a
+            # separate status: this state machine has already produced two
+            # masking bugs by growing extra states, and the reason string
+            # carries the nuance without adding one.
+            health.record_attempt(component, health.STATUS_OK,
+                                  "completed without error")
 
 
 def _maybe_batch_judge(domain_presets: Optional[list] = None) -> None:
@@ -645,6 +753,48 @@ def cmd_serve() -> None:
     _run_mcp_server()
 
 
+def cmd_health(as_json: bool = False) -> None:
+    """Report subsystem health; exit 1 if anything is FAILED.
+
+    This exit code is the escalation surface for LIA-551 — a log line is not
+    one, for the reasons in evolution/health.py. LIA-552's daily cockpit check
+    and the hourly healthcheck gate on it, so it must stay meaningful.
+    """
+    from . import health
+
+    rows = health.list_all()
+    opt = health.rollup(_OPTIMIZER_HEALTH_PREFIX)
+
+    if as_json:
+        summary = {k: v for k, v in opt.items() if k != "rows"}
+        print(json.dumps(
+            {"rollups": {opt["component"]: summary}, "components": rows},
+            indent=2, default=str,
+        ))
+    else:
+        print("\n=== Subsystem Health ===")
+        if not rows:
+            print("  No health records yet.")
+        for row in rows:
+            # NEVER-ATTEMPTED is deliberately distinct from OK: a component
+            # that has never run is not a healthy one.
+            status = row["last_status"] or "NEVER-ATTEMPTED"
+            print(f"  [{status}] {row['component']}")
+            if row["last_status"] == health.STATUS_FAILED:
+                since = (row["first_failed_at"] or "?")[:19]
+                print(f"      failing {row['consecutive_failures']}x since {since}")
+            if row["last_reason"]:
+                print(f"      reason: {row['last_reason']}")
+            if row["last_attempt_at"]:
+                print(f"      last attempt: {row['last_attempt_at'][:19]}")
+            if row["last_skipped_at"]:
+                print(f"      last skipped: {row['last_skipped_at'][:19]}")
+        print(f"\n  rollup {opt['component']}: {opt['status'] or 'NEVER-ATTEMPTED'}")
+
+    if health.has_failure():
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="evolution")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -738,6 +888,12 @@ def main() -> None:
     p_consolidate.add_argument("--min-score", type=float, default=0.7, help="Min reflection score (default: 0.7)")
     p_consolidate.add_argument("--force", action="store_true", help="Override minimum count check")
 
+    # health
+    p_health = sub.add_parser(
+        "health", help="Report subsystem health; exit 1 if any component FAILED")
+    p_health.add_argument("--json", dest="as_json", action="store_true",
+                          help="Emit machine-readable JSON")
+
     # serve
     sub.add_parser("serve", help="Start MCP stdio server")
 
@@ -776,6 +932,8 @@ def main() -> None:
 
     if args.cmd == "status":
         cmd_status(group_folder=args.group, domain=args.domain, compare=args.compare, show_tokens=args.tokens)
+    elif args.cmd == "health":
+        cmd_health(as_json=args.as_json)
     elif args.cmd == "get_reflections":
         cmd_get_reflections(args.query_json)
     elif args.cmd == "get_active_prompt":
