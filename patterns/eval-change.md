@@ -38,6 +38,8 @@ Before any change to `evolution/`, read `docs/decisions/INDEX.md`. Three decisio
 
 **Tests that monkeypatch the database path** must use `EVOLUTION_DB_PATH`, not the old `DB_PATH`. Using `DB_PATH` silently tests against the wrong database file.
 
+**Never call `monkeypatch.undo()` in a test that touches the DB.** It reverses *every* patch on that monkeypatch instance — including the `test_db` fixture's `EVOLUTION_DB_PATH` redirect — so any write after it lands in the real `~/.deus/evolution.db`. This is data loss, not untidiness: an `OK` write to `subsystem_health` zeroes `consecutive_failures` and clears `first_failed_at`, so running the suite can erase a genuine production failure streak. Use `with monkeypatch.context() as scoped:` around only the patch you need reverted. Verify by snapshotting the real DB before and after a full run — it must be byte-identical. (2026-08-15, LIA-551/PR #1187: five stray rows reached the live DB before this was caught. Systemic conftest guard tracked in LIA-555.)
+
 ## Concurrency limits
 
 Concurrency is `cpu_count // 2`, capped at 8. Override with `DEUS_EVAL_CONCURRENT`. **Never raise this cap** — rate limits saturate fast (~30 containers/session).
