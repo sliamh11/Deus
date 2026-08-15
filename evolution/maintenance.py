@@ -133,14 +133,35 @@ def _score_single(row: dict, judge) -> dict | None:
 
 
 def _reflect_single(scored: dict, config: dict) -> bool:
-    """Generate reflection(s) for a scored interaction. Returns True on success."""
+    """Generate reflection(s) for a scored interaction.
+
+    Returns True on success or skip, False on generation failure. The skip case
+    guards the data-integrity invariant (no reflection persisted from an absent
+    response), not a counting one — a caller that wants an honest reflected/total
+    tally must filter empties out beforehand, as the batch path does.
+    """
     from .config import MAX_REFLECTIONS_TO_GENERATE
     from .metrics import parse_metrics
-    from .reflexion.generator import generate_reflection, generate_positive_reflection
+    from .reflexion.generator import (
+        generate_reflection,
+        generate_positive_reflection,
+        response_supports_reflection,
+    )
     from .reflexion.store import save_reflection
 
     row = scored["row"]
     metrics = parse_metrics(row.get("metrics"))
+
+    # Defence in depth: the only caller already filters these out of
+    # needs_reflection so the health denominator stays honest, but this path is
+    # judge-score-driven and an empty response supports neither a corrective nor
+    # a positive reflection, so a future caller must not be able to reintroduce
+    # one (LIA-558). True means "handled without error". The human-score path
+    # elsewhere in this module is deliberately exempt — there a person supplied
+    # the evidence.
+    if not response_supports_reflection(row.get("response")):
+        return True
+
     try:
         if scored["score"] < config["reflection_threshold"]:
             generated_contents: set[str] = set()
@@ -233,6 +254,7 @@ def _judge_pending_interactions() -> int:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from .config import REFLECTION_THRESHOLD, POSITIVE_THRESHOLD
     from .judge import make_runtime_judge
+    from .reflexion.generator import response_supports_reflection
     from .storage import get_storage
 
     store = get_storage()
@@ -275,11 +297,16 @@ def _judge_pending_interactions() -> int:
             else:
                 scored_results.append(result)
 
-    # Pass 2: Reflect in parallel for interactions that need it
+    # Pass 2: Reflect in parallel for interactions that need it. Empty-response
+    # rows are excluded HERE rather than skipped inside _reflect_single so the
+    # {reflected}/{len(needs_reflection)} health detail below keeps an honest
+    # denominator — a pass that reflected nothing must not read "N/N" (LIA-558,
+    # preserving the visibility LIA-556 added).
     needs_reflection = [
         s for s in scored_results
-        if s["score"] < config["reflection_threshold"]
-        or s["score"] >= config["positive_threshold"]
+        if (s["score"] < config["reflection_threshold"]
+            or s["score"] >= config["positive_threshold"])
+        and response_supports_reflection(s["row"].get("response"))
     ]
     reflected = 0
     if needs_reflection:

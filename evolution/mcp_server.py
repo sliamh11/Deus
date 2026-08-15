@@ -36,7 +36,7 @@ except ImportError:
 
 from .judge import make_runtime_judge
 from .ilog.interaction_log import log_interaction, update_score
-from .reflexion.generator import generate_reflection
+from .reflexion.generator import generate_reflection, response_supports_reflection
 from .reflexion.retriever import format_reflections_block, get_reflections
 from .reflexion.store import increment_helpful, save_reflection
 
@@ -205,7 +205,9 @@ async def _async_judge_and_reflect(
         }
         update_score(interaction_id, result.score, dims, schema_version=result.schema_version)
 
-        if result.score < REFLECTION_THRESHOLD:
+        # The score is still recorded above; only the learning signal is withheld.
+        # An empty response carries no evidence of what the agent did (LIA-558).
+        if result.score < REFLECTION_THRESHOLD and response_supports_reflection(response):
             generated_contents: set[str] = set()
             for _ in range(MAX_REFLECTIONS_TO_GENERATE):
                 content, category = generate_reflection(

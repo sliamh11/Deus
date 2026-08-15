@@ -7,7 +7,10 @@ Each LLM-judged dimension uses a structured format to reduce bimodal scoring:
 - tool_use: Likert execution_quality (1-5)
 
 _normalize_dim() converts each raw dict into a 0.0–1.0 float for compose_score.
+render_response() is the shared seam every prompt builder uses to interpolate an
+agent response, so an absent one can never render as a blank section.
 """
+from typing import Optional
 
 # ── RUBRIC COUPLING WARNING — read before editing any dimension below ─────────
 # This RUBRIC is ONE shared prompt: the judge scores ALL four dimensions
@@ -126,6 +129,30 @@ COMPOSITE_WEIGHTS = {
     "gate_audit": 0.05,
     "completion_honesty": 0.05,
 }
+
+# Rendered in place of an absent agent response: a blank "**Agent response:**"
+# section makes the judge confabulate success from the instructions above it
+# (gemma4:e4b, temp 0 — empty scored 5/5, the literal "Done." scored 1/5).
+# Wording is load-bearing, not cosmetic: a more emphatic variant read as a
+# verdict and mis-scored a case where silence was the instruction. Full
+# measurement in LIA-558.
+EMPTY_RESPONSE_SENTINEL = "(the agent returned an empty response — no text at all)"
+
+
+def render_response(response: Optional[str]) -> str:
+    """Render an agent response for inclusion in a judge or reflection prompt.
+
+    Returns the response unchanged — byte-identical, including any leading or
+    trailing whitespace around real content — or EMPTY_RESPONSE_SENTINEL when
+    there is nothing to show. Whitespace-only counts as nothing.
+
+    Every prompt builder that interpolates a stored response goes through here so
+    the rule lives in one place; see LIA-558 for the measurement.
+    """
+    if response is None or not response.strip():
+        return EMPTY_RESPONSE_SENTINEL
+    return response
+
 
 # Mechanical dims default to 1.0 (neutral) so old rows without them aren't penalized.
 DIM_DEFAULTS = {

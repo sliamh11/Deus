@@ -326,7 +326,11 @@ def run_cc_backfill(
             print("Logging interactions without scores. Run maintenance to judge later.")
             judge = None
 
-    from .reflexion.generator import generate_reflection, generate_positive_reflection
+    from .reflexion.generator import (
+        generate_reflection,
+        generate_positive_reflection,
+        response_supports_reflection,
+    )
     from .reflexion.store import save_reflection
     from .judge.mechanical import score_tool_economy, score_gate_audit, score_completion_honesty
     from .judge.criteria import compose_score
@@ -396,8 +400,10 @@ def run_cc_backfill(
                       f"p={result.personalization:.2f}  te={te_score:.2f}  "
                       f"ga={ga_score:.2f}  ch={ch_score:.2f}")
 
-            # Generate reflections
-            if not result.is_parse_error:
+            # Generate reflections. The response guard is hoisted above the
+            # corrective/positive split on purpose: an empty response supports
+            # neither verdict, so BOTH branches must be withheld (LIA-558).
+            if not result.is_parse_error and response_supports_reflection(pair["response"]):
                 if composite < REFLECTION_THRESHOLD:
                     try:
                         content, category = generate_reflection(
