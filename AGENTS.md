@@ -194,6 +194,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/preserve` | Save durable memories from the current conversation |
 | `/project-settings` | View or modify external project memory settings |
 | `/prototype` | Build a throwaway prototype to validate a state model or UI direction |
+| `/repo-visualiser` | Map a repo at latest main as a rotatable, animated isometric system map — cited 3D buildings, live payload pulses |
 | `/research` | Investigate a question against primary sources; write findings to a file (background agent) |
 | `/resolving-merge-conflicts` | Disciplined resolution of an in-progress git merge/rebase conflict |
 | `/resume` | Load recent work and memory context |
