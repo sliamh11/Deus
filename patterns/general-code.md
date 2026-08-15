@@ -1,5 +1,5 @@
 ---
-last_verified: "2026-08-15" # reviewed against LIA-491 (container instance scoping)
+last_verified: "2026-08-15" # auto-bump @1786817018; also LIA-491 (container instance scoping)
 governs:
   - src/
   - evolution/
