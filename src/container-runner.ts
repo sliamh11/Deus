@@ -5,6 +5,7 @@
  * Mount assembly lives in container-mounter.ts.
  */
 import { ChildProcess, execFile, spawn } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -22,6 +23,7 @@ import {
   CREDENTIAL_PROXY_PORT,
   DEUS_CONTEXT_FILE_MAX_CHARS,
   DEUS_OPENAI_MODEL,
+  deusInstanceId,
   IDLE_TIMEOUT,
   LLAMA_CPP_AGENT_MODEL,
   LLAMA_CPP_MODEL,
@@ -470,7 +472,23 @@ export async function runContainerAgent(
     input.ipcRunKey,
   );
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
-  const containerName = `deus-${safeName}-${Date.now()}`;
+  // Apple Container rejects names over 63 chars. Fixed overhead is
+  // `deus-`(5) + `-`(1) + a 13-digit timestamp + `-i`(2) + 8 hex = 29, leaving
+  // 34 for the group segment. Long names keep a digest of the FULL folder so
+  // two folders sharing a prefix still get distinct names; short names are
+  // left untouched so the common case reads exactly as before (LIA-491).
+  const namePart =
+    safeName.length <= 34
+      ? safeName
+      : `${safeName.slice(0, 27)}-${createHash('sha256')
+          .update(safeName)
+          .digest('hex')
+          .slice(0, 6)}`;
+  // The instance id is a SUFFIX, not a prefix: group folders may legally begin
+  // with `i` + 8 hex chars, so a prefix could not be told apart from a legacy
+  // name. Legacy names always end in timestamp digits, so they can never match
+  // the `-i<8hex>` suffix (LIA-491).
+  const containerName = `deus-${namePart}-${Date.now()}-i${deusInstanceId()}`;
   const containerArgs = buildContainerArgs(
     mounts,
     containerName,

@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import path from 'path';
 
 import {
@@ -53,6 +54,42 @@ export const SENDER_ALLOWLIST_PATH = path.join(
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
 export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
+
+let cachedInstanceId: string | undefined;
+
+/**
+ * Stable identifier for THIS Deus installation, used to scope container
+ * ownership so one daemon never stops another's containers (LIA-491).
+ *
+ * The identity must be stable across restarts (orphan cleanup reaps containers
+ * left by a previous *crashed* run of this same daemon) yet distinct between
+ * concurrently-running installs. `PROJECT_ROOT` has both properties: launchd
+ * gives each install its own `WorkingDirectory`. `DEUS_INSTANCE_ID` (LIA-491)
+ * is the escape hatch for two daemons deliberately sharing one working copy.
+ *
+ * The resolved value is always hashed rather than used verbatim, so an
+ * arbitrary override can never contain regex metacharacters that would widen
+ * the ownership matcher, nor characters illegal in a container name.
+ *
+ * Resolved lazily rather than at module scope so the value isn't frozen before
+ * overrides settle, and so tests can reset the cache. (Not for side-effect
+ * reasons — this module already calls `readEnvFile` at import.)
+ */
+export function deusInstanceId(): string {
+  if (cachedInstanceId !== undefined) return cachedInstanceId;
+  // LIA-491: process.env wins over .env, matching the convention in checks.ts.
+  const raw =
+    process.env.DEUS_INSTANCE_ID?.trim() ||
+    readEnvFile(['DEUS_INSTANCE_ID']).DEUS_INSTANCE_ID?.trim() ||
+    PROJECT_ROOT;
+  cachedInstanceId = createHash('sha256').update(raw).digest('hex').slice(0, 8);
+  return cachedInstanceId;
+}
+
+/** Test-only: clear the memoised instance id. */
+export function resetDeusInstanceIdCache(): void {
+  cachedInstanceId = undefined;
+}
 
 export const CONTAINER_IMAGE =
   process.env.CONTAINER_IMAGE || 'deus-agent:latest';
