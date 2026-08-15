@@ -388,7 +388,17 @@ class StorageProvider(ABC):
 
     @abstractmethod
     def get_compactable_interactions(self, days: int, limit: int = 50) -> list[dict]:
-        """Fetch scored interactions older than N days with long prompt text, eligible for compaction."""
+        """Fetch scored interactions older than N days with long prompt text, eligible for compaction.
+
+        Interactions with no response text are excluded. Compaction summarises an
+        interaction with an LLM and the summary replaces the prompt permanently,
+        so a blank response yields a confabulated record rather than a compacted
+        one (LIA-564). Implementations must exclude them during selection, not
+        after, so rejected rows cannot occupy slots under `limit`.
+
+        "Blank" means what Python's ``str.strip()`` means, Unicode whitespace
+        included — not just ASCII space.
+        """
         ...
 
     @abstractmethod
