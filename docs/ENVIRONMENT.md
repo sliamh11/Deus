@@ -53,6 +53,23 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `MAX_CONCURRENT_CONTAINERS` | `5` | Max parallel agent containers |
 | `IDLE_TIMEOUT` | `1800000` | Idle container shutdown timeout in ms |
 | `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` | Max output size per container in bytes (10 MB) |
+| `DEUS_INSTANCE_ID` | derived from the install path | Identifies this install so orphan cleanup only stops its *own* containers (LIA-491) |
+
+### `DEUS_INSTANCE_ID`
+
+Every container is named with a trailing `-i<8hex>` stamp, and startup orphan
+cleanup only stops containers carrying **this** install's stamp. Without it a
+second daemon on the same host would stop live containers belonging to the
+first, killing conversations mid-flight.
+
+The default derives from the install directory, which is stable across restarts
+(so a crashed run's orphans are still reaped) and distinct between installs (so
+concurrent daemons leave each other alone). **You only need to set this if two
+daemons deliberately share one working copy** — otherwise leave it unset.
+
+The value is **hashed, not used verbatim**, so any string works; it just has to
+differ between instances. Containers created before this existed carry no stamp
+and are reported at startup rather than stopped — remove them manually if stale.
 
 ## Credential Proxy
 
