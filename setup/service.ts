@@ -865,6 +865,19 @@ export const SCHEDULED_JOBS: ScheduledJobSpec[] = [
     minute: 0,
     description: 'Deus morning memory report',
   },
+  {
+    // 06:45 sits after the 04:30 maintenance run so it grades that run's
+    // outcome rather than the previous day's, and before the 07:00 morning
+    // report so a fresh verdict is on disk if that report is ever wired to
+    // read it. It is NOT wired today — morning_report.py has no reference to
+    // the cockpit artifact — so this slot is preparation, not integration
+    // (LIA-552).
+    id: 'cockpit-healthcheck',
+    scriptRelPath: 'scripts/cockpit_healthcheck.py',
+    hour: 6,
+    minute: 45,
+    description: 'Deus cockpit healthcheck',
+  },
 ];
 
 function jobTaskName(id: string): string {
