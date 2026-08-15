@@ -1,8 +1,13 @@
 """Tests for the has_code column and signal pipeline additions."""
 
 
-def test_has_code_column_migration():
-    """Verify has_code column exists after migration."""
+def test_has_code_column_migration(test_db):
+    """Verify has_code column exists after migration.
+
+    test_db is required: get_storage() resolves EVOLUTION_DB_PATH lazily, so
+    without the redirect this ran the migration against the real
+    ~/.deus/evolution.db on every suite run (LIA-555).
+    """
     from evolution.storage import get_storage
     store = get_storage()
     db = store._connect()
