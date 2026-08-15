@@ -1341,3 +1341,63 @@ class TestCodegraphDbSchema:
         out = capsys.readouterr().out
         assert "FAIL" in out
         assert "qualified_name" in out
+
+
+class TestCheckAllBumpForwarding:
+    """check_all must forward `bump` to the drift sub-check (LIA-472).
+
+    Before the fix, the CLI's `elif` chain matched `--all` before `--bump`, and
+    `check_all` had no `bump` parameter at all -- so `--all --bump` silently did
+    nothing. These tests pin the forwarding, and that the default stays False so
+    CI's `--all --base ...` invocation remains non-mutating.
+    """
+
+    def _setup(self, tmp_path, monkeypatch):
+        """Minimal valid tree (mirrors TestCheckContradictions.test_not_in_check_all)
+        so check_all's other sub-checks don't sys.exit before we can observe the
+        forwarding, plus a spy replacing drift_check.main. Returns the call log.
+        """
+        _make_pattern_tree(tmp_path, {
+            "demo.md": "---\ngoverns:\n  - src/\nlast_verified: \"2026-04-09\"\n"
+                       "test_tasks:\n  - \"do a thing\"\n  - \"do b\"\n  - \"do c\"\n---\nbody\n"
+        })
+        (tmp_path / "src").mkdir()
+        (tmp_path / "docs").mkdir()
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+
+        calls: list[dict] = []
+
+        def fake_main(base_ref=None, bump=False):
+            calls.append({"base_ref": base_ref, "bump": bump})
+            return 0
+
+        monkeypatch.setattr(drift_check, "main", fake_main)
+        return calls
+
+    def test_forwards_bump_true(self, tmp_path, monkeypatch, capsys):
+        calls = self._setup(tmp_path, monkeypatch)
+
+        drift_check.check_all(tmp_path, bump=True)
+
+        capsys.readouterr()
+        assert len(calls) == 1
+        assert calls[0]["bump"] is True
+
+    def test_defaults_to_no_bump(self, tmp_path, monkeypatch, capsys):
+        """Omitting bump must not mutate -- this is what keeps CI safe."""
+        calls = self._setup(tmp_path, monkeypatch)
+
+        drift_check.check_all(tmp_path)
+
+        capsys.readouterr()
+        assert len(calls) == 1
+        assert calls[0]["bump"] is False
+
+    def test_bump_composes_with_base_ref(self, tmp_path, monkeypatch, capsys):
+        """`--all --base <ref> --bump` must forward both, not one or the other."""
+        calls = self._setup(tmp_path, monkeypatch)
+
+        drift_check.check_all(tmp_path, base_ref="origin/main", bump=True)
+
+        capsys.readouterr()
+        assert calls[0] == {"base_ref": "origin/main", "bump": True}
