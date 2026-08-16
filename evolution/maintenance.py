@@ -113,6 +113,16 @@ def _score_single(row: dict, judge) -> dict | None:
             tools_used=row.get("tools_used"),
             user_profile=digest_for_group(row.get("group_folder")),
         )
+        if result.is_schema_error:
+            # The judge omitted a required dimension, so there is nothing to
+            # store. Returning None folds this into the existing `failed`
+            # counter below, where it is counted rather than silently skipped;
+            # judge_score stays NULL so the row is picked up again by the
+            # unjudged sweep. LIA-580.
+            log.warning(
+                "evolution: judge schema error for %s — %s", row["id"], result.rationale
+            )
+            return None
         dims = {
             "quality": result.quality,
             "safety": result.safety,

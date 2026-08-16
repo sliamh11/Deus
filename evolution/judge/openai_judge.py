@@ -92,8 +92,15 @@ from ..config import (
     JUDGE_RETRY_COUNT,
     OPENAI_JUDGE_MODEL,
 )
-from .base import BaseJudge, JudgeResult
-from .criteria import RUBRIC, compose_score, render_response, _normalize_dim
+from .base import BaseJudge, JudgeResult, schema_error_result
+from .criteria import (
+    RUBRIC,
+    JudgeSchemaError,
+    compose_score,
+    render_response,
+    require_dims,
+    _normalize_dim,
+)
 
 _RESPONSE_SCHEMA = {
     "type": "object",
@@ -571,6 +578,8 @@ def _parse_result(raw: str) -> JudgeResult:
         )
 
     try:
+        # Before any normalization — see require_dims' docstring on ordering.
+        require_dims(data)
         quality = _normalize_dim("quality", data)
         safety = _normalize_dim("safety", data)
         tool_use = _normalize_dim("tool_use", data)
@@ -587,6 +596,9 @@ def _parse_result(raw: str) -> JudgeResult:
             raw_response=raw,
             **dims,
         )
+    except JudgeSchemaError as exc:
+        # Ordered before the generic handler: its fallback sets safety=1.0.
+        return schema_error_result(raw_response=raw, missing=str(exc))
     except (KeyError, ValueError) as exc:
         print(
             f"[judge] Parse error: {exc.__class__.__name__}: {exc} | raw={raw[:200]}",
