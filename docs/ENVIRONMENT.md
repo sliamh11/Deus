@@ -88,6 +88,7 @@ and are reported at startup rather than stopped — remove them manually if stal
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `gemma4:e4b` | Default Ollama judge model (override per-surface with `EVOLUTION_OLLAMA_JUDGE_MODEL`) |
 | `EVOLUTION_OLLAMA_JUDGE_MODEL` | (falls back to `OLLAMA_MODEL`) | Per-surface override for the evolution-loop Ollama judge model (mirrors `LLAMA_CPP_JUDGE_MODEL`). The override model must be pulled in Ollama or judge construction fails |
+| `EVOLUTION_JUDGE_NUM_CTX` | `8192` | Context window sent with every Ollama judge call. Set explicitly because Ollama's own default is 4096 while a real eval prompt runs ~4000 tokens — at the default, the prompt or the response truncates depending on the host's Ollama build and judge scores stop being comparable across machines (LIA-558) |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma` | Ollama embedding model |
 | `LLAMA_CPP_BASE_URL` | `http://localhost:8080/v1` | llama.cpp HTTP base URL (OpenAI-compatible `/v1` prefix); consumed by evolution-loop providers |
 | `LLAMA_CPP_MODEL` | (empty — server default) | Catch-all model override. Empty = use whatever llama-server has loaded (single-model) OR auto-pick (router mode) |
