@@ -44,7 +44,7 @@ The judge model scores agent responses. Configured in `judge_model.py`.
 | 1 | GeminiJudge | `GEMINI_API_KEY` in `.env` |
 | 2 | ClaudeProxyJudge (fallback) | Credential proxy on localhost:3001. Currently blocked by Anthropic OAuth auth issue. |
 
-Override the judge model name with `DEEPEVAL_JUDGE_MODEL` (default: `claude-sonnet-4-5`).
+Override the judge model name with `DEEPEVAL_JUDGE_MODEL` (default: `claude-sonnet-5`).
 
 ## Concurrency
 
@@ -106,7 +106,7 @@ Convention: `test_{name}.py` loads `datasets/{name}.jsonl`. The warmup fixture a
 | `DEUS_EVAL_CONCURRENT` | auto | Parallel warmup workers |
 | `CREDENTIAL_PROXY_PORT` | `3001` | Credential proxy port |
 | `GEMINI_API_KEY` | (none) | For GeminiJudge |
-| `DEEPEVAL_JUDGE_MODEL` | `claude-sonnet-4-5` | Judge model name override |
+| `DEEPEVAL_JUDGE_MODEL` | `claude-sonnet-5` | Judge model name override |
 
 ## Architecture Notes
 
