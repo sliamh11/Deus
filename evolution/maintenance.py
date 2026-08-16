@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -50,6 +51,10 @@ ARCHIVE_AFTER_DAYS = 30
 # prefix, so a rollup still sees all of them.
 _JUDGE_HEALTH_PREFIX = "evolution.judge."
 _BATCH_COMPONENT = _JUDGE_HEALTH_PREFIX + "batch"
+
+#: Same sibling discipline for this module's other subsystem (LIA-556 site 5).
+_MAINTENANCE_HEALTH_PREFIX = "evolution.maintenance."
+_COMPACTION_COMPONENT = _MAINTENANCE_HEALTH_PREFIX + "compaction"
 
 #: Maintenance runs at most once per this many interactions.
 MAINTENANCE_INTERACTION_INTERVAL = 25
@@ -98,8 +103,25 @@ def is_maintenance_due(*, interaction_count: Optional[int] = None) -> bool:
     return (interaction_count - stored_count) >= MAINTENANCE_INTERACTION_INTERVAL
 
 
-def _score_single(row: dict, judge) -> dict | None:
-    """Score a single interaction. Returns score info dict or None on failure."""
+def _format_error_kinds(kinds: "Counter[str]") -> str:
+    """Render failure kinds as `TimeoutError x2, schema x1`, worst-first.
+
+    Counts, not a set: two timeouts and one schema miss is a different picture
+    from one of each, and collapsing them would hide which cause dominates.
+    """
+    return ", ".join(f"{kind} x{n}" for kind, n in kinds.most_common())
+
+
+def _score_single(row: dict, judge) -> "tuple[dict | None, str | None]":
+    """Score a single interaction.
+
+    Returns `(score_info, error_kind)`. On success `error_kind` is None; on
+    failure `score_info` is None and `error_kind` names why — `"schema"` for the
+    LIA-580 path, otherwise the exception's class name. The caller folds those
+    kinds into the batch health record, so a wholly failed batch says whether it
+    died of timeouts, schema misses or auth rather than only how many rows fell
+    over (LIA-556 site 4).
+    """
     from .ilog.interaction_log import update_score
     from .persona import digest_for_group
 
@@ -122,7 +144,7 @@ def _score_single(row: dict, judge) -> dict | None:
             log.warning(
                 "evolution: judge schema error for %s — %s", row["id"], result.rationale
             )
-            return None
+            return None, "schema"
         dims = {
             "quality": result.quality,
             "safety": result.safety,
@@ -136,10 +158,10 @@ def _score_single(row: dict, judge) -> dict | None:
             "dims": dims,
             "rationale": result.rationale,
             "is_parse_error": result.is_parse_error,
-        }
+        }, None
     except Exception as exc:
         log.warning("Failed to score interaction %s: %s", row["id"], exc)
-        return None
+        return None, type(exc).__name__
 
 
 def _reflect_single(scored: dict, config: dict) -> bool:
@@ -288,19 +310,25 @@ def _judge_pending_interactions() -> int:
     scored_results = []
     parse_errors = 0
     failed = 0
+    # Kinds are tallied here on the main thread, from what each worker returns,
+    # rather than in a shared accumulator the workers write to — so the pool
+    # needs no locking (LIA-556 site 4).
+    error_kinds: "Counter[str]" = Counter()
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(_score_single, row, judge): row["id"]
             for row in unjudged
         }
         for future in as_completed(futures):
-            result = future.result()
+            result, error_kind = future.result()
             if result is None:
                 # _score_single swallowed an exception for this row. Counted,
                 # not just skipped: an all-None batch is a broken judge, and
                 # the old bare `continue` made that indistinguishable from a
-                # quiet one.
+                # quiet one. The kind rides along so the health record can name
+                # what went wrong, not merely how often.
                 failed += 1
+                error_kinds[error_kind or "unknown"] += 1
                 continue
             if result["is_parse_error"]:
                 parse_errors += 1
@@ -329,9 +357,14 @@ def _judge_pending_interactions() -> int:
         # Nothing usable came out of a non-empty batch. Keyed on
         # scored_results, never on the return value below: an all-parse-error
         # batch returns nonzero while having produced no usable score at all.
+        # The kinds matter most on this branch: a wholly failed batch is
+        # exactly when the reader needs to know whether it died of timeouts,
+        # schema misses or auth, not merely how many rows fell over.
+        kinds = _format_error_kinds(error_kinds)
         detail = (
             f"{len(unjudged)} unjudged, 0 scored "
-            f"({parse_errors} parse errors, {failed} failed)"
+            f"({parse_errors} parse errors, {failed} failed"
+            f"{': ' + kinds if kinds else ''})"
         )
         health.record_attempt(_BATCH_COMPONENT, health.STATUS_FAILED, detail)
         log.error("evolution: batch judging produced no usable scores — %s", detail)
@@ -339,11 +372,13 @@ def _judge_pending_interactions() -> int:
         # OK attests to scoring only. Reflection counts ride along in the
         # reason so a wholly failed pass 2 is visible, but they do not set the
         # status: reflection health is its own concern (LIA-556 follow-up).
+        kinds = _format_error_kinds(error_kinds)
         health.record_attempt(
             _BATCH_COMPONENT,
             health.STATUS_OK,
             f"{len(scored_results)} scored, {parse_errors} parse errors, "
-            f"{failed} failed, {reflected}/{len(needs_reflection)} reflections",
+            f"{failed} failed{': ' + kinds if kinds else ''}, "
+            f"{reflected}/{len(needs_reflection)} reflections",
         )
 
     return len(scored_results) + parse_errors
@@ -555,8 +590,26 @@ def compact_old_interactions() -> int:
         from .generative.provider import GenerativeRegistry
         provider = GenerativeRegistry.default().resolve()
         can_generate = provider.is_available()
-    except Exception:
-        pass
+    except Exception as exc:
+        # Was a bare `except: pass`. On failure `can_generate` stays False and
+        # compaction silently degrades to plain truncation — forever, with no
+        # log and no record (LIA-556 site 5).
+        log.warning(
+            "evolution: generative provider probe failed, compaction will "
+            "truncate instead of summarize — %s: %s", type(exc).__name__, exc
+        )
+        health.record_attempt(
+            _COMPACTION_COMPONENT, health.STATUS_FAILED, type(exc).__name__
+        )
+    else:
+        # OK only on a clean probe. `is_available() == False` is a legitimate
+        # "no generative backend configured" state, not a failure, and it
+        # cannot reach the except branch — it is a plain assignment above.
+        health.record_attempt(
+            _COMPACTION_COMPONENT,
+            health.STATUS_OK,
+            f"generative provider {'available' if can_generate else 'not configured'}",
+        )
 
     compacted = 0
     for row in compactable:

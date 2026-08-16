@@ -31,6 +31,14 @@ _OPTIMIZER_HEALTH_PREFIX = "evolution.optimizer."
 _REGISTRY_COMPONENT = _OPTIMIZER_HEALTH_PREFIX + "registry"
 _STORAGE_COMPONENT = _OPTIMIZER_HEALTH_PREFIX + "storage"
 
+# Same sibling discipline for the remaining LIA-556 sites in this module. The
+# dispatch components are the OUTERMOST guards — they fire when an inner
+# wrapper could not run at all, so they stay distinct from the inner
+# `evolution.judge.batch` row rather than clobbering it.
+_PRINCIPLES_HEALTH_PREFIX = "evolution.principles."
+_JUDGE_DISPATCH_COMPONENT = "evolution.judge.dispatch"
+_MAINTENANCE_DISPATCH_COMPONENT = "evolution.maintenance.dispatch"
+
 # Allow running as a script (python evolution/cli.py) or module (-m evolution.cli)
 if __name__ == "__main__" and __package__ is None:
     _project_root = str(Path(__file__).parent.parent)
@@ -113,7 +121,10 @@ def cmd_status(group_folder: Optional[str] = None, domain: Optional[str] = None,
                 )
             print("  Details: python evolution/cli.py health")
         elif opt["status"] is None:
-            print("  No active artifacts, and no optimizer run has been recorded yet.")
+            # Print the rollup's own reason rather than a fixed string: it now
+            # distinguishes "nothing recorded at all" from "cycles ran but never
+            # attempted work", which this line used to conflate (LIA-556).
+            print(f"  No active artifacts — {opt['reason']}.")
         else:
             print("  No active artifacts. Optimizer healthy; nothing cleared the ship margin.")
 
@@ -161,8 +172,32 @@ def cmd_get_active_prompt(module: str) -> None:
     print(json.dumps(block or {}))
 
 
+def _clear_dispatch_failure(component: str) -> None:
+    """Clear a dispatch component's failure streak, and only that.
+
+    The two dispatch guards run once per interaction, so recording OK
+    unconditionally would add a health write to every message. `record_attempt`
+    is nonetheless the only thing that resets `consecutive_failures` /
+    `first_failed_at` (`health.py`), so recording nothing at all would make a
+    single transient failure permanent — `has_failure()` feeds `cmd_health`,
+    which the daily cockpit gates on, so one timeout would redden it forever.
+
+    So: read first, write only on the FAILED -> OK transition. Steady state is
+    one indexed SELECT on a small table and zero writes (LIA-556 site 3).
+
+    Best-effort like everything on this path — a lost race just delays the
+    clear by a cycle, and `health.get` already swallows its own errors.
+    """
+    from . import health
+
+    row = health.get(component)
+    if row and row.get("last_status") == health.STATUS_FAILED:
+        health.record_attempt(component, health.STATUS_OK, "recovered")
+
+
 def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> None:
     """Auto-trigger principles extraction if enough new data exists."""
+    from . import health
     from .config import PRINCIPLES_COOLDOWN_HOURS
     from .reflexion.principles import extract_principles
     from .storage import get_storage
@@ -179,11 +214,19 @@ def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> Non
             if datetime.now(timezone.utc) - last_dt < timedelta(hours=PRINCIPLES_COOLDOWN_HOURS):
                 continue
         # Data-count check + extraction (extract_principles handles its own min_new gate)
+        component = _PRINCIPLES_HEALTH_PREFIX + domain_key
         try:
             extract_principles(domain=domain)
         except Exception as exc:
             log.warning('evolution: principles extraction failed for domain=%s — %s: %s',
                         domain, type(exc).__name__, exc)
+            health.record_attempt(component, health.STATUS_FAILED, type(exc).__name__)
+        else:
+            # Recorded on every success, not just on recovery: this path is
+            # already gated by PRINCIPLES_COOLDOWN_HOURS above, so it is not hot
+            # and the OK write is what lets a resolved failure clear its streak
+            # (LIA-556 site 2).
+            health.record_attempt(component, health.STATUS_OK, 'extraction completed')
 
 
 def _maybe_auto_optimize(domain_presets: Optional[list] = None) -> None:
@@ -313,6 +356,8 @@ def _maybe_batch_judge(domain_presets: Optional[list] = None) -> None:
 
 def cmd_log_interaction(json_str: str) -> None:
     """Fire-and-forget logging + deferred batch judge, called by Node.js host."""
+    from . import health
+
     try:
         params = json.loads(json_str)
     except json.JSONDecodeError:
@@ -388,6 +433,11 @@ def cmd_log_interaction(json_str: str) -> None:
         _maybe_batch_judge(domain_presets)
     except Exception as exc:
         log.warning('evolution: batch judge failed — %s: %s', type(exc).__name__, exc)
+        health.record_attempt(
+            _JUDGE_DISPATCH_COMPONENT, health.STATUS_FAILED, type(exc).__name__
+        )
+    else:
+        _clear_dispatch_failure(_JUDGE_DISPATCH_COMPONENT)
 
     # Post-interaction maintenance check (non-blocking, best-effort).
     try:
@@ -395,6 +445,11 @@ def cmd_log_interaction(json_str: str) -> None:
         run_maintenance()
     except Exception as exc:
         log.warning('evolution: maintenance failed — %s: %s', type(exc).__name__, exc)
+        health.record_attempt(
+            _MAINTENANCE_DISPATCH_COMPONENT, health.STATUS_FAILED, type(exc).__name__
+        )
+    else:
+        _clear_dispatch_failure(_MAINTENANCE_DISPATCH_COMPONENT)
 
     # Feedback loop — user_signal: generate reflection for the PREVIOUS interaction.
     if user_signal and session_id:
