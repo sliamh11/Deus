@@ -145,6 +145,13 @@ def _make_judge_metric(judge, module: str):
             # A parse-error result carries a fallback score that is not a real
             # quality signal — treat it as failure so the gate can never mistake
             # unparseable judge output for a good prompt.
+            if getattr(result, "is_schema_error", False):
+                # Labelled explicitly rather than left to the except Exception
+                # below, which would catch float(None) and report it as a
+                # generic "metric error: TypeError" — a real judge fault
+                # disguised as a plumbing bug, on the metric backing the
+                # ship-if-better gate. LIA-580.
+                return {"score": 0.0, "feedback": "judge schema error — required dimension missing, scored 0.0"}
             if getattr(result, "is_parse_error", False):
                 return {"score": 0.0, "feedback": "judge parse error — scored 0.0"}
             return {"score": float(result.score), "feedback": result.rationale or ""}

@@ -179,6 +179,23 @@ DIM_DEFAULTS = {
 # required dimension behaves (that is LIA-580's scope, reviewed on its own diff).
 ABSTAINABLE_DIMS = ("tool_economy", "gate_audit", "completion_honesty")
 
+# The four LLM-judged dims. A judge response that omits one of these carries no
+# usable signal for it, and DIM_DEFAULTS would silently resolve the omission to
+# 0.0 — a scored verdict manufactured from nothing. LIA-580.
+REQUIRED_DIMS = ("quality", "safety", "tool_use", "personalization")
+
+
+class JudgeSchemaError(Exception):
+    """A judge response omitted a required dimension.
+
+    Deliberately NOT a subclass of ValueError. Every judge provider wraps its
+    normalization in `except (KeyError, ValueError)` and returns a fallback
+    carrying `safety=1.0` — a fabricated PASS on the one dimension where a
+    fabricated pass is most dangerous. A ValueError subclass would be swallowed
+    there and stored as if the judge had actually assessed the response.
+    Keep this inheriting from Exception.
+    """
+
 # Recognized key forms per dimension, for presence testing.
 #
 # MUST stay in lockstep with _normalize_dim below — it is the function that decides
@@ -209,6 +226,24 @@ def _dim_present(key: str, raw_dict: dict) -> bool:
     correct, and they are covered by tests today.
     """
     return any(form in raw_dict for form in _DIM_KEY_FORMS.get(key, (key,)))
+
+
+def require_dims(raw_dict: dict) -> None:
+    """Raise JudgeSchemaError if the raw judge output omits a required dimension.
+
+    MUST be called on the RAW parsed judge response, after it is parsed and
+    BEFORE any _normalize_dim call. Ordering is the whole correctness of this
+    check: _normalize_dim resolves a missing dimension through DIM_DEFAULTS, and
+    every provider then stores that result under the dimension's CANONICAL key.
+    Once that has happened the omission is unrecoverable — the dict looks
+    complete, and a presence check against it always passes. Placing this check
+    downstream (e.g. inside compose_score) makes it dead code at every real call
+    site; that is a defect this function's position exists to prevent, not a
+    hypothetical.
+    """
+    for key in REQUIRED_DIMS:
+        if not _dim_present(key, raw_dict):
+            raise JudgeSchemaError(key)
 
 
 def _normalize_dim(key: str, raw_dict: dict) -> float:
