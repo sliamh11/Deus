@@ -19,10 +19,41 @@ processed top-to-bottom by the orchestrating flow, so nothing downstream needs t
 conditionally-read secondary file happened to establish it first:
 ```bash
 REPO_ROOT=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || pwd)
+# In a LINKED WORKTREE, --show-toplevel returns the worktree's OWN path, not the repository it
+# belongs to -- a worktree genuinely is its own top level. Resolve through to the parent via the
+# common git dir: a bare `.git` in an ordinary checkout (so the case below is a no-op there), and
+# an absolute `<repo>/.git` inside a worktree.
+COMMON=$(git -C "$(pwd)" rev-parse --git-common-dir 2>/dev/null)
+case "$COMMON" in
+  */.git) REPO_ROOT=$(cd "$COMMON/.." && pwd) ;;
+esac
 ```
 Fails soft to `pwd` if the project isn't a git repo. `branches/external-mode.md`'s own sections
 reference this value; none of them re-derive it (same relationship as `$VAULT` below -- `external-
 mode.md` explicitly defers to skill.md for `$VAULT` and now does the same for `REPO_ROOT`).
+
+**The worktree case is load-bearing, not a nicety.** Three consumers downstream treat `REPO_ROOT`
+as the project's identity, and each fails SILENTLY when handed a worktree path -- in a way that
+reads as a legitimate negative rather than an error:
+
+1. **The memory-level gate** (`branches/external-mode.md`) hashes the path and reads
+   `~/.config/deus/projects/<md5>.json`. A worktree path hashes to a file that does not exist, so
+   the project's real `memory_level` / `save_summaries` are never read and defaults silently apply.
+   It looks like "no config, use defaults", not like a miss.
+2. **The retrospective opt-in** is keyed by `basename "$REPO_ROOT"`, so it looks for
+   `$VAULT/Retrospectives/external/<worktree-name>/` -- a phantom project named after the worktree.
+   A project that IS opted in reads as opted out.
+3. **Step 0.6's retro inbox** encodes `REPO_ROOT` into `~/.claude/projects/<encoded>/memory/`. A
+   worktree encodes to its own directory, orphaning staged candidates from the project's real
+   memory files.
+
+Wherever a project's convention is to work inside `git worktree` checkouts, this is the COMMON
+path for that project rather than an edge case -- so all three failures become the default
+experience there, not a rare one.
+
+Note that `project_path:` in the saved session log should still record the ACTUAL working
+directory (the worktree), not the parent. That field records where the session ran, and
+worktree-scoped is correct for it. Only the resolution of project IDENTITY needs the parent.
 
 ## Resolve vault path
 
@@ -122,14 +153,32 @@ elsewhere via `docs/decisions/standards-pack-priority.md` and `.claude/skills/re
 That implementation also normalizes Windows backslashes first, which this shell snippet doesn't --
 consistent with this whole feature already being POSIX-only by design throughout (`mkdir`-based
 locks, `set -C`, `shasum`/`sha256sum`, the `stat -f`/`stat -c` fallback), not a gap introduced here.
-Each git worktree of the same logical repo gets its OWN separate directory too (a worktree's
-`REPO_ROOT` is its own distinct absolute path), which is correct behavior for the inbox -- notes
-stay scoped to wherever the session that staged them actually ran.
+**Worktrees resolve to the PARENT repo's directory, deliberately.** An earlier version of this
+section argued the opposite -- that each worktree getting its own encoded directory was "correct
+behavior for the inbox", keeping notes scoped to wherever the session ran. That reasoning does not
+survive contact with what a worktree IS: worktrees are routinely deleted once their branch merges,
+and a candidate staged into a worktree-scoped inbox is deleted with it, having never been
+classified. Worse, it is orphaned from the project's actual `MEMORY.md`, which lives under the
+parent's encoded path -- so even before deletion the notes are filed away from the memory they
+belong with. The `REPO_ROOT` resolution at the top of this file now yields the parent for exactly
+this reason, and the encoding below therefore lands on the parent's directory.
+
+(Session-run provenance is not lost by this: the session log's own `project_path:` still records
+the actual working directory, worktree and all. It is only project IDENTITY that resolves to the
+parent.)
 
 Use an EXACT match against this deterministic encoding, not a glob, eliminating the substring-collision
 class entirely:
 ```bash
-REPO_ROOT="${REPO_ROOT:-$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || pwd)}"
+if [ -z "${REPO_ROOT:-}" ]; then
+  # Same two-step resolution as the top of this file - the worktree case must be handled HERE
+  # too, or the defense-in-depth fallback silently reintroduces the exact bug it guards against.
+  REPO_ROOT=$(git -C "$(pwd)" rev-parse --show-toplevel 2>/dev/null || pwd)
+  COMMON=$(git -C "$(pwd)" rev-parse --git-common-dir 2>/dev/null)
+  case "$COMMON" in
+    */.git) REPO_ROOT=$(cd "$COMMON/.." && pwd) ;;
+  esac
+fi
 ENCODED_ROOT=$(printf '%s' "$REPO_ROOT" | sed 's/\//-/g')
 CANDIDATE_DIR="$HOME/.claude/projects/${ENCODED_ROOT}/memory/"
 if [ -d "$CANDIDATE_DIR" ]; then
