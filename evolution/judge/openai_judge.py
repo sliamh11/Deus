@@ -93,7 +93,7 @@ from ..config import (
     OPENAI_JUDGE_MODEL,
 )
 from .base import BaseJudge, JudgeResult
-from .criteria import RUBRIC, compose_score, _normalize_dim
+from .criteria import RUBRIC, compose_score, render_response, _normalize_dim
 
 _RESPONSE_SCHEMA = {
     "type": "object",
@@ -519,7 +519,7 @@ def _build_eval_prompt(
     parts.append(f"**User prompt:**\n{prompt}\n")
     if tools_used:
         parts.append(f"**Tools used:** {', '.join(tools_used)}\n")
-    parts.append(f"**Agent response:**\n{response}\n")
+    parts.append(f"**Agent response:**\n{render_response(response)}\n")
     if strict_json:
         parts.append(
             "\nIMPORTANT: Respond with ONLY a valid JSON object. "

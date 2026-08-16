@@ -13,7 +13,7 @@ import urllib.error
 from typing import Optional
 
 from .base import BaseJudge, JudgeResult
-from .criteria import RUBRIC, compose_score, _normalize_dim
+from .criteria import RUBRIC, compose_score, render_response, _normalize_dim
 from ..config import OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_JUDGE_MODEL
 
 
@@ -164,7 +164,7 @@ def _build_eval_prompt(
     parts.append(f"**User prompt:**\n{prompt}\n")
     if tools_used:
         parts.append(f"**Tools used:** {', '.join(tools_used)}\n")
-    parts.append(f"**Agent response:**\n{response}\n")
+    parts.append(f"**Agent response:**\n{render_response(response)}\n")
     return "\n".join(parts)
 
 

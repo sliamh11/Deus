@@ -29,7 +29,7 @@ from .config import REFLECTION_THRESHOLD, MAX_REFLECTIONS_TO_GENERATE
 from .ilog.interaction_log import log_interaction, update_score
 from .storage import get_storage
 from .judge import make_runtime_judge
-from .reflexion.generator import generate_reflection
+from .reflexion.generator import generate_reflection, response_supports_reflection
 from .reflexion.store import save_reflection
 
 SESSIONS_DIR = Path(__file__).parent.parent / "data" / "sessions"
@@ -293,8 +293,10 @@ def run_backfill(
                   f"s={result.safety:.2f}  t={result.tool_use:.2f}  "
                   f"p={result.personalization:.2f}")
 
-        # Generate reflection(s) for low-scoring interactions
-        if result.score < REFLECTION_THRESHOLD:
+        # Generate reflection(s) for low-scoring interactions. An empty response
+        # records no evidence of what the agent did, so a judge-driven reflection
+        # would assert something the interaction cannot support (LIA-558).
+        if result.score < REFLECTION_THRESHOLD and response_supports_reflection(pair["response"]):
             try:
                 dims = {
                     "quality": result.quality,

@@ -12,9 +12,11 @@ import pytest
 from evolution.judge.criteria import (
     COMPOSITE_WEIGHTS,
     DIM_DEFAULTS,
+    EMPTY_RESPONSE_SENTINEL,
     RUBRIC,
     _normalize_dim,
     compose_score,
+    render_response,
 )
 
 
@@ -370,3 +372,54 @@ class TestHardenedQualityRubric:
     def test_brevity_protective_high_anchor(self):
         # Guards against overcorrection — terse-but-complete must stay a 5.
         assert "brevity is not a defect when the task is genuinely complete" in RUBRIC
+
+
+# ── render_response: an absent response must never render as a blank section ──
+# LIA-558. A bare "**Agent response:**" followed by nothing reads to the judge as
+# nothing worth noting, and it confabulates success from the instructions above.
+# Measured on gemma4:e4b at temperature 0: an empty response scored 5/5 while the
+# literal string "Done." scored 1/5.
+
+
+class TestRenderResponse:
+    def test_none_renders_sentinel(self):
+        assert render_response(None) == EMPTY_RESPONSE_SENTINEL
+
+    def test_empty_string_renders_sentinel(self):
+        assert render_response("") == EMPTY_RESPONSE_SENTINEL
+
+    @pytest.mark.parametrize(
+        "blank", [" ", "\t", "\n", "\r\n", "   \n\t  ", " ", "  "]
+    )
+    def test_whitespace_only_renders_sentinel(self, blank):
+        # Includes non-breaking and thin/em spaces: str.strip() covers the
+        # Unicode whitespace classes, and a response of only those carries no
+        # more evidence than "".
+        assert render_response(blank) == EMPTY_RESPONSE_SENTINEL
+
+    def test_real_response_passes_through_byte_identical(self):
+        assert render_response("hello world") == "hello world"
+
+    def test_surrounding_whitespace_on_real_content_is_preserved(self):
+        # Only wholly-blank responses are replaced; padding around real content
+        # must survive untouched, or non-empty prompts would not be byte-stable.
+        assert render_response("  hi  ") == "  hi  "
+        assert render_response("\n\nresult\n") == "\n\nresult\n"
+
+    def test_response_equal_to_sentinel_passes_through(self):
+        # Collision case: an agent may legitimately emit the sentinel text. The
+        # check keys on emptiness, never on the sentinel, so it is returned
+        # unchanged rather than mistaken for an absent response.
+        assert render_response(EMPTY_RESPONSE_SENTINEL) == EMPTY_RESPONSE_SENTINEL
+
+    def test_response_containing_sentinel_passes_through(self):
+        text = f"I nearly replied {EMPTY_RESPONSE_SENTINEL}, but here is the answer."
+        assert render_response(text) == text
+
+    def test_sentinel_reads_as_a_fact_not_a_verdict(self):
+        # Wording is load-bearing, not cosmetic: a more emphatic variant ("no
+        # response — the agent produced no output at all") lost an
+        # instructed-silence case by reading as a judgement rather than a fact.
+        lowered = EMPTY_RESPONSE_SENTINEL.lower()
+        for verdict_word in ("fail", "wrong", "bad", "error", "should", "never"):
+            assert verdict_word not in lowered
