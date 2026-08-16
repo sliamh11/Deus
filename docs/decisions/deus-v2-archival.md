@@ -57,7 +57,8 @@ Measured 2026-08-15, `origin/main` vs `deus-v2-origin/main`:
 
 - **Development has stopped.** V2's last commit is 2026-08-02. Since the fork,
   this repo has 121 commits to V2's 103, and essentially all of V2's arrived
-  before August.
+  before August. (All three figures have since moved — see
+  [Amendment — 2026-08-16](#amendment--2026-08-16-commit-count-evidence-re-measured).)
 - **It serves no traffic.** V2's `store/messages.db` was last written 2026-07-18.
   Its running daemon's entire recent log was credential-proxy OAuth refresh
   churn — some of it failing — on behalf of no conversations.
@@ -190,3 +191,48 @@ Restore the V2 daemons by re-enabling and bootstrapping each of the seven
 enable` followed by `launchctl bootstrap` for each, in the current user's GUI
 domain. The plists are untouched on disk and the repository is unmodified, so
 this decision is fully reversible.
+
+## Amendment — 2026-08-16: Commit-count evidence re-measured
+
+**Trigger**: the "Development has stopped" bullet under Evidence names V2's last
+commit as 2026-08-02. One commit landed on V2 after that date — on the same day
+this decision was accepted — so the figures are restated here rather than left
+to read as current.
+
+Both original figures were accurate as measured on 2026-08-15 and are kept above
+as what was measured. This section records a re-measurement, not a rewrite.
+
+**Measurement** (2026-08-16):
+
+| figure | measured 2026-08-15 | re-measured 2026-08-16 | command |
+|---|---|---|---|
+| this repo, commits since the fork | 121 | **147** | `git rev-list --count 38aa2470..origin/main` |
+| V2, commits since the fork | 103 | **104** | `gh api repos/sliamh11/deus-v2/compare/38aa2470...main --jq .total_commits` |
+| V2, last commit | 2026-08-02 | **2026-08-15** | `gh api repos/sliamh11/deus-v2/commits --jq '.[0].commit.author.date'` |
+
+V2's `+1` is [#86](https://github.com/sliamh11/deus-v2/pull/86) (`91b9e047`),
+merged 2026-08-15T21:14:54Z — the only V2 commit after the date the bullet
+names. It was opened at 21:09:47Z, 4h40m after this decision's own PR
+[#1193](https://github.com/sliamh11/Deus/pull/1193) merged at 16:29:30Z, and it
+carried the delivery half of an unrelated ticket (LIA-552). Nothing in this
+repository would have surfaced the archival at that push: no gate here
+meaningfully covers a cross-repo commit, as
+`.claude/rules/orchestration-rules.md` § Cross-Repo Worktree Handling records.
+The evidence is consistent with the decision not having been in view; it does
+not establish what was or was not read.
+
+This repo's `+26` is ordinary drift on an active repository and carries no
+signal on its own. The direction is what matters: the gap **widened**, 121:103
+to 147:104.
+
+The two halves of the original bullet therefore moved in opposite directions,
+and only one is strengthened. The **ratio** case is stronger than when it was
+written. The **recency** case is weaker: V2's last commit is not 13 days
+stale but same-day as this decision. The conclusion still holds on the ratio,
+on the traffic evidence below, and on the fact that the one commit is
+attributable and unrelated — not because V2 had gone quiet by the day this was
+accepted.
+
+**The decision is unchanged.** Status stays Accepted and the Backport assessment
+is untouched. The `com.deus-v2.*` jobs remain disabled and unloaded — re-verified
+2026-08-16, `launchctl list com.deus-v2.morning-report` exits 113.
