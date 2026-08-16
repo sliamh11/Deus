@@ -20,12 +20,14 @@ PREFIX = maintenance._JUDGE_HEALTH_PREFIX
 class _Result:
     """Minimal stand-in for a judge result. Only the fields _score_single reads."""
 
-    def __init__(self, score=0.8, is_parse_error=False):
+    def __init__(self, score=0.8, is_parse_error=False, model="gemma4:e4b"):
         self.score = score
         self.quality = self.safety = self.tool_use = self.personalization = score
         self.rationale = "r"
         self.is_parse_error = is_parse_error
         self.schema_version = 1
+        # LIA-558: _score_single now forwards the judge model to update_score.
+        self.model = model
 
 
 def _row(rid="i1"):
