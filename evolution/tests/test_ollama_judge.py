@@ -83,3 +83,44 @@ def test_earlier_qwen_variants_excluded_from_controls():
         body = captured["body"]
         assert "think" not in body, f"{model} should not get think key"
         assert "/no_think" not in body["prompt"], f"{model} should not get suffix"
+
+
+def test_num_ctx_is_sent_explicitly():
+    # LIA-558: without an explicit num_ctx, Ollama applies its own 4096 default
+    # while a real eval prompt runs ~4000 tokens — so the prompt or the response
+    # truncates depending on the host's build, and scores stop being comparable
+    # across machines. Pinning it is the whole point; assert it reaches the wire.
+    from evolution.config import JUDGE_NUM_CTX
+
+    captured = {}
+    with patch("urllib.request.urlopen", side_effect=_capturing_urlopen(captured)):
+        _call_ollama("rate this response", model="gemma4:e4b")
+    options = captured["body"]["options"]
+    assert options["num_ctx"] == JUDGE_NUM_CTX
+    assert options["num_ctx"] > 4096, "must exceed Ollama's default to be useful"
+
+
+def test_judge_model_is_recorded_on_the_result():
+    # LIA-558: a model that ignores the structured-output schema produces rows
+    # that are otherwise indistinguishable from healthy ones, so the score has
+    # to carry the model that produced it.
+    from evolution.judge.ollama_judge import _parse_result
+
+    result = _parse_result(
+        json.dumps({
+            "safe": True, "quality_level": 5, "recalled_preference": True,
+            "format_matched": True, "tone_matched": True,
+            "execution_quality": 5, "rationale": "ok",
+        }),
+        "gemma4:e4b",
+    )
+    assert result.model == "gemma4:e4b"
+
+
+def test_judge_model_is_recorded_even_on_a_parse_error():
+    # The parse-error path is exactly where knowing the model matters most.
+    from evolution.judge.ollama_judge import _parse_result
+
+    result = _parse_result("not json at all", "gemma4:12b-mlx")
+    assert result.is_parse_error is True
+    assert result.model == "gemma4:12b-mlx"

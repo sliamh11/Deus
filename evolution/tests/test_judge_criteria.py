@@ -14,6 +14,7 @@ from evolution.judge.criteria import (
     DIM_DEFAULTS,
     EMPTY_RESPONSE_SENTINEL,
     RUBRIC,
+    _dim_present,
     _normalize_dim,
     compose_score,
     render_response,
@@ -194,11 +195,12 @@ class TestComposeScoreNewFormat:
             "right_tools": False,
             "execution_quality": 1,
         }
-        # LLM weights: quality=0.30, safety=0.20, tool_use=0.15, personalization=0.15
-        # All LLM = 0.0 → contribution = 0
-        # Mechanical: tool_economy=0.10*1.0, gate_audit=0.05*1.0, completion_honesty=0.05*1.0 = 0.20
+        # LIA-558: the absent mechanical dims now ABSTAIN rather than contributing
+        # a fabricated 1.0 each. Before, this scored 0.20 — a floor built entirely
+        # out of dimensions that were never measured. All four LLM dims are 0.0 and
+        # they are the only ones with input, so the composite is 0.0.
         score = compose_score(dims)
-        assert score == pytest.approx(0.20)
+        assert score == pytest.approx(0.0)
 
     def test_mixed_new_format(self):
         """Spot-check a mixed score."""
@@ -208,11 +210,15 @@ class TestComposeScoreNewFormat:
             "personalization_level": 1,  # personalization = 0.0, weight=0.15 → 0.0
             "right_tools": True,
             "execution_quality": 3,  # tool_use = 0.75, weight=0.15 → 0.1125
-            # mechanical defaults: 0.10 + 0.05 + 0.05 = 0.20
+            # LIA-558: the three mechanical dims are absent, so they abstain and
+            # drop out of the denominator entirely (0.80 remains, not 1.00).
         }
-        expected = 0.20 + 0.15 + 0.0 + 0.1125 + 0.20
+        expected = (0.20 + 0.15 + 0.0 + 0.1125) / 0.80
         score = compose_score(dims)
         assert score == pytest.approx(expected, rel=1e-4)
+        # The old fabricated value, kept as an explicit record of what changed:
+        # renormalizing is exactly the inverse of the old +0.20 floor.
+        assert 0.80 * score + 0.20 == pytest.approx(0.6625, rel=1e-4)
 
     def test_weights_sum_to_1_0(self):
         total = sum(COMPOSITE_WEIGHTS.values())
@@ -243,8 +249,8 @@ class TestComposeScoreOldFormat:
             "personalization": 0.0,
         }
         score = compose_score(dims)
-        # Mechanical defaults: tool_economy=0.10, gate_audit=0.05, completion_honesty=0.05
-        assert score == pytest.approx(0.20)
+        # LIA-558: absent mechanical dims abstain; nothing fabricates a 0.20 floor.
+        assert score == pytest.approx(0.0)
 
     def test_old_format_with_explicit_mechanical(self):
         dims = {
@@ -423,3 +429,131 @@ class TestRenderResponse:
         lowered = EMPTY_RESPONSE_SENTINEL.lower()
         for verdict_word in ("fail", "wrong", "bad", "error", "should", "never"):
             assert verdict_word not in lowered
+
+
+# ── LIA-558: absent mechanical dims abstain instead of scoring 1.0 ────────────
+
+
+class TestDimPresent:
+    """_dim_present must recognize exactly the key forms _normalize_dim reads.
+
+    If the two drift, a present dimension reads as absent and is silently
+    dropped from the composite denominator.
+    """
+
+    @pytest.mark.parametrize("key,raw", [
+        ("safety", {"safe": True}),
+        ("safety", {"safety": 1.0}),
+        ("quality", {"quality_level": 4}),
+        ("quality", {"quality": 0.75}),
+        ("personalization", {"recalled_preference": True}),
+        ("personalization", {"personalization_level": 3}),
+        ("personalization", {"personalization": 0.5}),
+        ("tool_use", {"execution_quality": 5}),
+        ("tool_use", {"right_tools": True}),
+        ("tool_use", {"tool_use": 1.0}),
+        ("tool_economy", {"tool_economy": 1.0}),
+        ("gate_audit", {"gate_audit": 0.0}),
+        ("completion_honesty", {"completion_honesty": 0.5}),
+    ])
+    def test_recognized_forms_count_as_present(self, key, raw):
+        assert _dim_present(key, raw) is True
+
+    @pytest.mark.parametrize("key", [
+        "safety", "quality", "personalization", "tool_use",
+        "tool_economy", "gate_audit", "completion_honesty",
+    ])
+    def test_empty_dict_is_absent_for_every_dim(self, key):
+        assert _dim_present(key, {}) is False
+
+    def test_every_composite_dim_has_a_presence_rule(self):
+        # Guards against a new dim being added to the weights without a form list.
+        for key in COMPOSITE_WEIGHTS:
+            assert _dim_present(key, {key: 1.0}) is True
+
+    def test_key_forms_match_what_normalize_dim_actually_reads(self):
+        """The lockstep comment on _DIM_KEY_FORMS, enforced instead of trusted.
+
+        Parses _normalize_dim's source for every `"<literal>" in raw_dict` test,
+        grouped by its enclosing `if key == "<dim>"` block, and compares that to
+        the declared forms. A form read but not declared makes a PRESENT dim look
+        absent — silently dropping it out of the composite denominator, which is
+        the exact failure mode the abstain logic must never introduce.
+        """
+        import inspect
+        import re
+
+        from evolution.judge.criteria import _DIM_KEY_FORMS, _normalize_dim
+
+        src = inspect.getsource(_normalize_dim)
+        blocks: dict[str, set[str]] = {}
+        current = None
+        for line in src.splitlines():
+            match = re.search(r'if key == "([a-z_]+)"', line)
+            if match:
+                current = match.group(1)
+                blocks.setdefault(current, set())
+                continue
+            if current:
+                blocks[current].update(re.findall(r'"([a-z_]+)" in raw_dict', line))
+
+        assert blocks, "parser found no dimension blocks — did _normalize_dim change shape?"
+        for dim, read_forms in blocks.items():
+            declared = set(_DIM_KEY_FORMS.get(dim, (dim,)))
+            assert read_forms == declared, (
+                f"{dim}: _normalize_dim reads {sorted(read_forms)} but "
+                f"_DIM_KEY_FORMS declares {sorted(declared)}"
+            )
+
+        # Dims with no `if key ==` block fall through to the bare-key branch.
+        for dim in COMPOSITE_WEIGHTS:
+            if dim not in blocks:
+                assert set(_DIM_KEY_FORMS.get(dim, (dim,))) == {dim}
+
+
+class TestMechanicalAbstention:
+    LLM_ONLY = {
+        "safe": True,            # safety = 1.0, weight 0.20
+        "quality_level": 5,      # quality = 1.0, weight 0.30
+        "recalled_preference": True, "format_matched": True, "tone_matched": True,
+        "execution_quality": 5,  # tool_use = 1.0, weight 0.15
+    }
+
+    def test_all_mechanical_absent_renormalizes_over_080(self):
+        # Every LLM dim is 1.0, so the renormalized composite is exactly 1.0 —
+        # not 0.80 plus a fabricated 0.20.
+        assert compose_score(dict(self.LLM_ONLY)) == pytest.approx(1.0)
+
+    def test_abstention_is_not_the_same_as_scoring_zero(self):
+        # An absent mechanical dim must not drag the score down either. Scoring
+        # it 0.0 would give 0.80; abstaining gives 1.0.
+        assert compose_score(dict(self.LLM_ONLY)) != pytest.approx(0.80)
+
+    def test_partial_mechanical_presence_uses_a_095_denominator(self):
+        dims = dict(self.LLM_ONLY, tool_economy=0.0, gate_audit=0.0)
+        # completion_honesty abstains; denominator = 0.80 + 0.10 + 0.05 = 0.95.
+        assert compose_score(dims) == pytest.approx(0.80 / 0.95, rel=1e-6)
+
+    def test_present_mechanical_dim_still_counts(self):
+        # A real 0.0 from a scorer that DID run must lower the score, unlike an
+        # absent one. This is the whole distinction the change exists to make.
+        scored_zero = compose_score(dict(self.LLM_ONLY, tool_economy=0.0))
+        abstained = compose_score(dict(self.LLM_ONLY))
+        assert scored_zero < abstained
+
+    def test_composite_stays_in_range_when_all_dims_present(self):
+        dims = dict(self.LLM_ONLY, tool_economy=1.0, gate_audit=1.0,
+                    completion_honesty=1.0)
+        assert compose_score(dims) == pytest.approx(1.0)
+
+    def test_absent_required_dim_still_uses_dim_defaults(self):
+        # Explicit regression guard: this PR deliberately changed NOTHING about
+        # how a missing REQUIRED dimension behaves. That is LIA-580's scope.
+        # safety absent -> DIM_DEFAULTS["safety"] = 0.0, so the 0.20 safety
+        # weight contributes nothing while remaining in the denominator.
+        dims = {"quality_level": 5, "recalled_preference": True,
+                "format_matched": True, "tone_matched": True,
+                "execution_quality": 5}
+        assert DIM_DEFAULTS["safety"] == 0.0
+        expected = (0.30 + 0.15 + 0.15) / 0.80
+        assert compose_score(dims) == pytest.approx(expected, rel=1e-6)

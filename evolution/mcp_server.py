@@ -203,7 +203,7 @@ async def _async_judge_and_reflect(
             "tool_use": result.tool_use,
             "personalization": result.personalization,
         }
-        update_score(interaction_id, result.score, dims, schema_version=result.schema_version)
+        update_score(interaction_id, result.score, dims, schema_version=result.schema_version, judge_model=result.model)
 
         # The score is still recorded above; only the learning signal is withheld.
         # An empty response carries no evidence of what the agent did (LIA-558).

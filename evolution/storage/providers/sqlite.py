@@ -58,6 +58,7 @@ _UPDATABLE_INTERACTION_COLS = frozenset({
     "user_signal",
     "correction_mined_at",
     "judge_schema_version",
+    "judge_model",
     "metrics",
     # LIA-1011: set by maintenance.process_human_feedback() once a row has
     # been routed (skipped, errored-and-retriable-next-cycle excluded, or
@@ -307,6 +308,10 @@ class SQLiteStorageProvider(StorageProvider):
             # human_comment/scored_at are written only via the guarded
             # record_human_feedback() UPDATE. processed_at is set by
             # maintenance.process_human_feedback() once a row has been routed.
+            # LIA-558: which judge model produced judge_score/judge_dims. A model
+            # that ignores the structured-output schema yields plausible-looking
+            # rows that are otherwise indistinguishable from healthy ones.
+            ("judge_model", "TEXT"),
             ("source_ref", "TEXT"),
             ("human_score", "REAL"),
             ("human_comment", "TEXT"),

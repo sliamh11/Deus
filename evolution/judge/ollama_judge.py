@@ -14,7 +14,7 @@ from typing import Optional
 
 from .base import BaseJudge, JudgeResult
 from .criteria import RUBRIC, compose_score, render_response, _normalize_dim
-from ..config import OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_JUDGE_MODEL
+from ..config import OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_JUDGE_MODEL, JUDGE_NUM_CTX
 
 
 def _ollama_url(path: str) -> str:
@@ -90,6 +90,10 @@ def _call_ollama(prompt: str, model: str = OLLAMA_MODEL) -> str:
         "options": {
             "temperature": 0,
             "seed": 42,
+            # Explicit, not Ollama's 4096 default — a real eval prompt runs ~4000
+            # tokens, so at the default this truncates and the score shifts with
+            # the host's Ollama build rather than with the interaction. LIA-558.
+            "num_ctx": JUDGE_NUM_CTX,
         },
     }
     if "gemma4" in model.lower() or "qwen3" in model.lower():
@@ -134,7 +138,7 @@ class OllamaRuntimeJudge(BaseJudge):
     ) -> JudgeResult:
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
         raw = _call_ollama(eval_prompt, self.model)
-        return _parse_result(raw)
+        return _parse_result(raw, self.model)
 
     async def a_evaluate(
         self,
@@ -146,7 +150,7 @@ class OllamaRuntimeJudge(BaseJudge):
     ) -> JudgeResult:
         eval_prompt = _build_eval_prompt(prompt, response, tools_used, context, user_profile)
         raw = await _call_ollama_async(eval_prompt, self.model)
-        return _parse_result(raw)
+        return _parse_result(raw, self.model)
 
 
 def _build_eval_prompt(
@@ -171,7 +175,7 @@ def _build_eval_prompt(
 _JSON_BLOCK_RE = re.compile(r"\{[^{}]*\}")
 
 
-def _parse_result(raw: str) -> JudgeResult:
+def _parse_result(raw: str, model: Optional[str] = None) -> JudgeResult:
     # Defensive fallback: constrained decoding guarantees valid JSON, but older
     # Ollama versions silently ignore the `format` field — keep parsing guards.
     text = raw.strip()
@@ -206,6 +210,7 @@ def _parse_result(raw: str) -> JudgeResult:
             rationale="Parse error — neutral score assigned",
             raw_response=raw,
             is_parse_error=True,
+            model=model,
         )
 
     try:
@@ -223,6 +228,7 @@ def _parse_result(raw: str) -> JudgeResult:
             score=compose_score(dims),
             rationale=data.get("rationale", ""),
             raw_response=raw,
+            model=model,
             **dims,
         )
     except (KeyError, ValueError):
@@ -235,6 +241,7 @@ def _parse_result(raw: str) -> JudgeResult:
             rationale="Parse error — neutral score assigned",
             raw_response=raw,
             is_parse_error=True,
+            model=model,
         )
 
 

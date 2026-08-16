@@ -155,6 +155,14 @@ def render_response(response: Optional[str]) -> str:
 
 
 # Mechanical dims default to 1.0 (neutral) so old rows without them aren't penalized.
+#
+# LIA-558: the three mechanical 1.0s below are no longer reachable from
+# compose_score — an absent mechanical dim abstains instead (see ABSTAINABLE_DIMS),
+# because "no input" scored 1.0 is the same absence-renders-as-excellence defect
+# #1199 fixed for the response text. They are kept because _normalize_dim is also
+# called directly, and because a caller that supplies a real mechanical value still
+# reads this table for any it omits. Every direct caller today (ollama_judge,
+# llama_cpp_judge) passes only the four LLM dims.
 DIM_DEFAULTS = {
     "quality": 0.0,
     "safety": 0.0,
@@ -164,6 +172,43 @@ DIM_DEFAULTS = {
     "gate_audit": 1.0,
     "completion_honesty": 1.0,
 }
+
+# Dimensions that may drop out of the composite entirely when the judge/scorer had
+# no input for them. The four LLM-judged dims are deliberately NOT here: they keep
+# their DIM_DEFAULTS fallback so this change alters nothing about how a missing
+# required dimension behaves (that is LIA-580's scope, reviewed on its own diff).
+ABSTAINABLE_DIMS = ("tool_economy", "gate_audit", "completion_honesty")
+
+# Recognized key forms per dimension, for presence testing.
+#
+# MUST stay in lockstep with _normalize_dim below — it is the function that decides
+# which of these forms it will actually read. Adding a new accepted key form there
+# without adding it here makes a present dimension look absent, silently dropping
+# it out of the composite denominator.
+_DIM_KEY_FORMS = {
+    "safety": ("safe", "safety"),
+    "quality": ("quality_level", "quality"),
+    "personalization": (
+        "recalled_preference",
+        "personalization_level",
+        "personalization",
+    ),
+    "tool_use": ("execution_quality", "right_tools", "tool_use"),
+}
+
+
+def _dim_present(key: str, raw_dict: dict) -> bool:
+    """True when raw_dict carries any key form _normalize_dim recognizes for `key`.
+
+    Mechanical dims are stored as a bare float under their own name, so for them
+    presence is simply membership.
+
+    Note: compose_score only consults this for ABSTAINABLE_DIMS, so the four
+    LLM-dim branches are pre-provisioned rather than currently live — they exist
+    so that adding an LLM dim to ABSTAINABLE_DIMS is a one-line change that stays
+    correct, and they are covered by tests today.
+    """
+    return any(form in raw_dict for form in _DIM_KEY_FORMS.get(key, (key,)))
 
 
 def _normalize_dim(key: str, raw_dict: dict) -> float:
@@ -252,8 +297,24 @@ def compose_score(dims: dict) -> float:
     - A raw judge response dict with new structured keys (safe, quality_level, etc.)
 
     _normalize_dim handles both cases transparently.
+
+    Dims in ABSTAINABLE_DIMS that are absent are excluded from BOTH the numerator
+    and the denominator, so the score is renormalized over the dims that actually
+    had input. The four LLM-judged dims never abstain, so the denominator is at
+    least 0.80 and the result stays in [0.0, 1.0].
     """
-    return sum(
-        COMPOSITE_WEIGHTS[k] * _normalize_dim(k, dims)
-        for k in COMPOSITE_WEIGHTS
-    )
+    numerator = 0.0
+    denominator = 0.0
+    for k in COMPOSITE_WEIGHTS:
+        # An abstainable dim with no input contributes nothing at all, rather than
+        # DIM_DEFAULTS' 1.0. Measured (LIA-558): tool_calls is null/empty in 1670 of
+        # 1762 scored rows and score_tool_economy returns 1.0 on empty input, so
+        # tool_economy/gate_audit were a constant 1.0 and completion_honesty was never
+        # stored — 0.20 of every composite was fabricated from input that never existed.
+        if k in ABSTAINABLE_DIMS and not _dim_present(k, dims):
+            continue
+        numerator += COMPOSITE_WEIGHTS[k] * _normalize_dim(k, dims)
+        denominator += COMPOSITE_WEIGHTS[k]
+
+    # Never zero: the four LLM-judged dims are not abstainable and total 0.80.
+    return numerator / denominator
