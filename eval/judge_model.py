@@ -43,4 +43,4 @@ def make_judge(model: Optional[str] = None) -> DeepEvalBaseLLM:
     except NoProviderAvailableError:
         # Last resort: Claude proxy (kept for legacy compatibility)
         from evolution.judge.providers.claude_proxy import ClaudeProxyJudge
-        return ClaudeProxyJudge(model=model or os.environ.get("DEEPEVAL_JUDGE_MODEL", "claude-sonnet-4-5"))
+        return ClaudeProxyJudge(model=model or os.environ.get("DEEPEVAL_JUDGE_MODEL", "claude-sonnet-5"))
