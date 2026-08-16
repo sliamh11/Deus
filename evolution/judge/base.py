@@ -22,6 +22,13 @@ class JudgeResult:
     gate_audit: Optional[float] = None    # mechanical scorer, not LLM-judged
     completion_honesty: Optional[float] = None  # mechanical scorer, not LLM-judged
     schema_version: int = 1              # 1 = per-dim structured formats (safe/quality_level/…)
+    # Model id that actually produced this result, recorded so a score is
+    # attributable after the fact (LIA-558). Without it, a judge model that
+    # silently ignores the structured-output schema — gemma4:12b-mlx returns
+    # byte-identical output with Ollama's `format` ON and OFF — is
+    # indistinguishable in the DB from a healthy run. Optional so every
+    # existing construction site keeps working unchanged.
+    model: Optional[str] = None
 
 
 class BaseJudge(ABC):
