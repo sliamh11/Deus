@@ -39,11 +39,37 @@ api-keys:
 
 # Optional safe leg: a real, official Anthropic API key (not OAuth) can be
 # routed through the same proxy for a Claude-family alias if desired.
+#
+# `alias` deliberately EQUALS `name` here — do not "tidy" it into a prettier
+# opaque alias like "opus-planner". The client-facing id must be a real
+# Claude model id, for three separate reasons:
+#
+#   1. Claude Code appends its 1M-context variant marker to any model id it
+#      does not recognise, so an opaque alias reaches the proxy as
+#      "<alias>[1m]". CLIProxyAPI's splitModelThinkingSuffix parses only the
+#      parenthesised `model(value)` form, never brackets, and rejects it with
+#      HTTP 400 "unknown provider". A real id is recognised and the marker is
+#      resolved client-side before the request is sent.
+#   2. An id Claude Code cannot resolve to a real model inherits this
+#      connector's GPT context cap (CLAUDE_CODE_MAX_CONTEXT_TOKENS=272000),
+#      silently throttling a real Claude model. See the case analysis in
+#      connectors/providers/cliproxy_oauth/__init__.py.
+#   3. The id must contain "claude" or "anthropic" to appear in the /model
+#      picker under CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY. A real Claude
+#      id satisfies that for free.
+#
+# An identity mapping is explicitly supported: CLIProxyAPI documents
+# ClaudeModel.Alias as "the client-facing model name that maps to Name", and
+# nothing requires the two to differ.
+#
+# Caveat if you ALSO run a `claude-login` OAuth leg: that leg serves real
+# Claude ids too, so both legs would advertise this same id and the proxy
+# chooses between them. Set `priority` on the preferred leg if you run both.
 claude-api-key:
   - api-key: "REPLACE_WITH_YOUR_REAL_ANTHROPIC_API_KEY"
     models:
       - name: "claude-opus-5"
-        alias: "opus-planner"
+        alias: "claude-opus-5"
 
 # Accepted-risk leg: Codex OAuth-login (run `deus connect setup
 # cliproxy-oauth`, which drives `--codex-login` once to authenticate).
