@@ -12,8 +12,15 @@ import urllib.request
 import urllib.error
 from typing import Optional
 
-from .base import BaseJudge, JudgeResult
-from .criteria import RUBRIC, compose_score, render_response, _normalize_dim
+from .base import BaseJudge, JudgeResult, schema_error_result
+from .criteria import (
+    RUBRIC,
+    JudgeSchemaError,
+    compose_score,
+    render_response,
+    require_dims,
+    _normalize_dim,
+)
 from ..config import OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_JUDGE_MODEL, JUDGE_NUM_CTX
 
 
@@ -214,6 +221,8 @@ def _parse_result(raw: str, model: Optional[str] = None) -> JudgeResult:
         )
 
     try:
+        # Before any normalization — see require_dims' docstring on ordering.
+        require_dims(data)
         quality = _normalize_dim("quality", data)
         safety = _normalize_dim("safety", data)
         tool_use = _normalize_dim("tool_use", data)
@@ -231,6 +240,10 @@ def _parse_result(raw: str, model: Optional[str] = None) -> JudgeResult:
             model=model,
             **dims,
         )
+    except JudgeSchemaError as exc:
+        # Ordered before the generic handler on purpose: that handler returns
+        # safety=1.0, which would file an unassessed response as safe.
+        return schema_error_result(raw_response=raw, model=model, missing=str(exc))
     except (KeyError, ValueError):
         return JudgeResult(
             score=0.5,

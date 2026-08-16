@@ -28,6 +28,8 @@ class _Result:
         self.schema_version = 1
         # LIA-558: _score_single now forwards the judge model to update_score.
         self.model = model
+        # LIA-580: _score_single checks this before reading any score field.
+        self.is_schema_error = False
 
 
 def _row(rid="i1"):
