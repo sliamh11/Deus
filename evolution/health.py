@@ -256,10 +256,19 @@ def rollup(prefix: str) -> Dict[str, Any]:
         }
 
     worst = max(rows, key=lambda r: _STATUS_RANK.get(r["last_status"], _RANK_NEVER))
+    # `status` stays None for a never-attempted worst row, same as for zero rows
+    # — changing that would move _STATUS_RANK precedence and the exit-code
+    # contract. Only the reason distinguishes them, because "nothing has ever
+    # been recorded" and "cycles ran but none ever attempted work" are different
+    # facts and the caller could not previously tell them apart (LIA-556).
+    reason = worst["last_reason"]
+    if worst["last_status"] is None and reason is None:
+        never = sum(1 for r in rows if r["last_status"] is None)
+        reason = f"{never} of {len(rows)} components recorded skips but never attempted work"
     return {
         "component": prefix.rstrip("."),
         "status": worst["last_status"],
-        "reason": worst["last_reason"],
+        "reason": reason,
         "worst_component": worst["component"],
         "consecutive_failures": max(r["consecutive_failures"] or 0 for r in rows),
         "rows": rows,

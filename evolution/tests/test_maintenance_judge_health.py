@@ -283,3 +283,83 @@ def test_the_direct_script_entry_point_still_works():
         f"direct-script entry point broken:\n{result.stderr}"
     )
     assert "attempted relative import" not in result.stderr
+
+
+# ── LIA-556 site 4: failure KINDS, not just counts ────────────────────────────
+
+
+def test_failed_batch_names_the_exception_kinds(test_db, wire):
+    """A wholly failed batch is exactly when the reader needs to know whether it
+    died of timeouts, schema misses or auth — the count alone cannot say."""
+    def boom(**kw):
+        raise TimeoutError("judge timed out")
+
+    wire([_row("a"), _row("b")], evaluate=boom)
+    maintenance.judge_pending_interactions()
+
+    row = health.get(COMPONENT)
+    assert row["last_status"] == health.STATUS_FAILED
+    assert "TimeoutError x2" in row["last_reason"], row["last_reason"]
+
+
+def test_mixed_kinds_are_counted_separately(test_db, wire):
+    """Two DISTINCT kinds, so a set-based implementation that collapsed
+    `TimeoutError x1, TimeoutError x1` into `x1` would pass a single-kind test
+    and fail this one."""
+    seen = {"n": 0}
+
+    def mixed(**kw):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            raise TimeoutError("slow")
+        if seen["n"] == 2:
+            raise ValueError("bad")
+        r = _Result()
+        r.is_schema_error = True
+        return r
+
+    wire([_row("a"), _row("b"), _row("c")], evaluate=mixed)
+    maintenance.judge_pending_interactions()
+
+    reason = health.get(COMPONENT)["last_reason"]
+    assert "TimeoutError x1" in reason, reason
+    assert "ValueError x1" in reason, reason
+    assert "schema x1" in reason, reason
+
+
+def test_partial_failure_still_records_ok(test_db, wire):
+    """The bar stays where site 1 put it: >=1 usable score is OK, however many
+    rows fell over. An earlier design tripped on any single failed row, which
+    would have reddened the prefix the cockpit gates on for one flaky call."""
+    seen = {"n": 0}
+
+    def one_bad(**kw):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            raise TimeoutError("slow")
+        return _Result()
+
+    wire([_row("a"), _row("b")], evaluate=one_bad)
+    maintenance.judge_pending_interactions()
+
+    row = health.get(COMPONENT)
+    assert row["last_status"] == health.STATUS_OK, row["last_reason"]
+    assert "TimeoutError x1" in row["last_reason"], row["last_reason"]
+
+
+def test_batch_component_self_heals_after_failure(test_db, wire, monkeypatch):
+    """record_attempt(OK) is the only thing that clears a streak, so a component
+    that records FAILED but never OK is a one-way door."""
+    wire([_row()])
+    monkeypatch.setattr("evolution.judge.make_runtime_judge",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    maintenance.judge_pending_interactions()
+    assert health.get(COMPONENT)["last_status"] == health.STATUS_FAILED
+
+    wire([_row()])  # judge healthy again
+    maintenance.judge_pending_interactions()
+
+    row = health.get(COMPONENT)
+    assert row["last_status"] == health.STATUS_OK
+    assert row["consecutive_failures"] == 0
+    assert health.has_failure(PREFIX) is False
