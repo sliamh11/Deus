@@ -233,6 +233,11 @@ def run_backfill(
         "skipped_existing": 0,
         "processed": 0,
         "failed": 0,
+        # Rows dropped because the judge omitted a required dimension. Counted
+        # rather than merely skipped: a silent drop in the run summary would
+        # reintroduce, at the reporting layer, exactly the silent omission this
+        # guard exists to remove (LIA-580).
+        "schema_errors": 0,
         "reflections_generated": 0,
     }
 
@@ -281,6 +286,14 @@ def run_backfill(
             eval_suite="backfill",
             interaction_id=iid,
         )
+        if result.is_schema_error:
+            # Guard precedes every read: this function also formats result.score
+            # for output and branches on it against REFLECTION_THRESHOLD further
+            # down. judge_score stays NULL for the retry sweep. LIA-580.
+            stats["schema_errors"] += 1
+            if verbose:
+                print(f"  SKIP {iid}: {result.rationale}")
+            continue
         update_score(iid, result.score, {
             "quality": result.quality,
             "safety": result.safety,

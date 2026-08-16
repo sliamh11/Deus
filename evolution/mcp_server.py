@@ -197,6 +197,17 @@ async def _async_judge_and_reflect(
             tools_used=tools_used,
             user_profile=digest_for_group(group_folder),
         )
+        if result.is_schema_error:
+            # One guard placed before every use: this block goes on to store the
+            # score, branch on it against REFLECTION_THRESHOLD, and pass it into
+            # generate_reflection. Guarding only the store would still let a
+            # reflection be generated from a judge run that never assessed
+            # anything. judge_score stays NULL for the retry sweep. LIA-580.
+            log.warning(
+                "evolution: judge schema error for interaction %s — %s",
+                interaction_id, result.rationale,
+            )
+            return
         dims = {
             "quality": result.quality,
             "safety": result.safety,
