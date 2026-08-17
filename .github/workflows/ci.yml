@@ -262,13 +262,37 @@ jobs:
         if: steps.filter.outputs.agent-runner == 'true'
         with:
           node-version: 20
-      - name: Test agent-runner
+      # node 20 ships npm 10.8.2, and the whole npm 10.x line crashes with
+      # "Cannot read properties of null (reading 'edgesOut')" on the
+      # `npm install --no-save` step below. Reproduced against main's OWN
+      # agent-runner lockfile (no PR content involved) on 10.8.2, 10.9.4 and
+      # 10.9.7; 11.x is unaffected. npm 11 supports node 20 (engines:
+      # ^20.17.0 || >=22.9.0), so this pins the fix without moving node.
+      # Pinned exactly, not `npm@11`: the npm 10 bug survived three patch
+      # releases before anyone caught it, so bump this deliberately. See #1228.
+      - name: Pin npm 11.6.2 (node 20's bundled npm 10.x crashes on --no-save)
+        if: steps.filter.outputs.agent-runner == 'true'
+        run: npm i -g npm@11.6.2
+
+      # The next three steps were previously one step holding all three
+      # commands. The log's group header is derived from the run script's first
+      # line (the real job logged `##[group]Run npm ci`), so the crash below
+      # appeared under a group reading "npm ci" and was misread as a corrupt
+      # lockfile for two weeks. Split so each command logs under its own name.
+      - name: Install agent-runner dependencies
         if: steps.filter.outputs.agent-runner == 'true'
         working-directory: container/agent-runner
-        run: |
-          npm ci
-          # vitest isn't a declared dep (the container Dockerfile installs devDeps
-          # into the runtime image), so declaring it would bloat the agent image.
-          # Install ephemerally, pinned to the root's version (see root package-lock).
-          npm install --no-save vitest@4.1.8
-          npx vitest run
+        run: npm ci
+
+      # vitest isn't a declared dep (the container Dockerfile installs devDeps
+      # into the runtime image), so declaring it would bloat the agent image.
+      # Install ephemerally, pinned to the root's version (see root package-lock).
+      - name: Install vitest (ephemeral, not saved)
+        if: steps.filter.outputs.agent-runner == 'true'
+        working-directory: container/agent-runner
+        run: npm install --no-save vitest@4.1.8
+
+      - name: Run agent-runner tests
+        if: steps.filter.outputs.agent-runner == 'true'
+        working-directory: container/agent-runner
+        run: npx vitest run
