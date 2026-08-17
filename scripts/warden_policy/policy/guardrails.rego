@@ -13,12 +13,39 @@ default decision := {"allow": false, "reason": "guardrails policy produced no va
 # `supported` gates every non-default decision below. Found missing by adversarial plan-review:
 # an unrecognized root schema_version, an unrecognized input contract_version, or OPA serving a
 # stale ledger snapshot (generation mismatch, e.g. after a failed/ambiguous PUT even though OPA
-# itself is reachable) must all fall through to the default deny, not be silently accepted by a
-# rule that only checked the individual attestation record's own schema_version.
+# itself is reachable) must all fall through to a deny, not be silently accepted by a rule that
+# only checked the individual attestation record's own schema_version. For `git.commit`/
+# `file.write` operations specifically, a generation mismatch gets its own dedicated message
+# (see the decision rule right below `supported`, LIA-535) rather than the fully generic default
+# at the top of this file -- every other `not supported` cause, and every other/unrecognized
+# operation, still falls through to that generic default unchanged.
 supported if {
 	input.contract_version == 1
 	data.warden_attestations.schema_version == 1
 	data.warden_attestations.generation == input.expected_generation
+}
+
+# Distinguishes ledger staleness (self-healing infra desync, LIA-533) from every other
+# `supported`-gated denial and from the fully generic default above (LIA-535). Scoped to exactly
+# the two operations whose decision bodies all require `supported` (git.commit, file.write) --
+# NOT `input.operation != "attestation.verify"`, which would also swallow any unrecognized/future
+# operation value and misreport it as ledger staleness (caught by plan-review round 1). Excludes
+# attestation.verify specifically because that operation already has its own dedicated composite
+# deny message (below) covering "no SHIP found ... or OPA snapshot stale/unsupported" for BOTH
+# ledgers -- letting this rule also match attestation.verify inputs would create a genuine
+# multi-value `decision` conflict (OPA eval_conflict_error) whenever both conditions hold
+# simultaneously, which they can.
+decision := {
+	"allow": false,
+	"reason": sprintf(
+		"OPA ledger generation stale (expected %d, got %d) -- run `python3 scripts/warden_attest.py sync` or wait for the next self-heal tick (LIA-533)",
+		[input.expected_generation, data.warden_attestations.generation],
+	),
+} if {
+	input.operation in {"git.commit", "file.write"}
+	input.contract_version == 1
+	data.warden_attestations.schema_version == 1
+	data.warden_attestations.generation != input.expected_generation
 }
 
 enrolled if data.warden_attestations.config.enforced_repos[input.repo_id].enabled
@@ -39,6 +66,7 @@ valid_ship if {
 decision := {"allow": true, "reason": "repo not enrolled"} if {
 	supported
 	input.operation == "git.commit"
+	input.gate == "code-review"
 	not enrolled
 }
 
@@ -90,6 +118,84 @@ backend_verdict_map[backend] := backend_verdict(backend) if {
 	some backend in input.required_backends
 }
 
+# --- ai-eng-warden gate (LIA-524) -- purely additive, mirrors the code-review triple's shape
+# but reads `latest_by_backend` (role-keyed, per the ADR's "Gate-key vocabulary" table) instead
+# of `latest` (gate-keyed), with `input.backend` fixed to "hermes" by the Hermes-side shim.
+# Reuses `backend_verdict(backend)` (above) rather than re-deriving the lookup + record
+# re-validation -- smaller Rego surface, same defense-in-depth guarantees.
+
+ai_eng_warden_enrolled if data.warden_attestations.config.enforced_repos[input.repo_id].ai_eng_warden_enabled
+
+valid_ai_eng_warden_ship if backend_verdict(input.backend) == "SHIP"
+
+decision := {"allow": true, "reason": "repo not ai-eng-warden-enrolled"} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "ai-eng-warden"
+	not ai_eng_warden_enrolled
+}
+
+decision := {"allow": true, "reason": "matching ai-eng-warden SHIP"} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "ai-eng-warden"
+	ai_eng_warden_enrolled
+	valid_ai_eng_warden_ship
+}
+
+decision := {
+	"allow": false,
+	"reason": sprintf("no ai-eng-warden SHIP for staged tree %s", [input.subject_key]),
+} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "ai-eng-warden"
+	ai_eng_warden_enrolled
+	not valid_ai_eng_warden_ship
+}
+
+# --- verification-gate (LIA-524) -- purely additive, structurally identical to the code-review
+# triple above (git-tree subject, `latest` index, no backend -- CC's own `run_verification_gate`
+# is single-marker, not multi-backend, so mirroring that shape exactly is the faithful port).
+
+verification_gate_enrolled if data.warden_attestations.config.enforced_repos[input.repo_id].verification_gate_enabled
+
+valid_verification_ship if {
+	id := data.warden_attestations.latest[input.repo_id]["verification-gate"][input.subject_key]
+	att := data.warden_attestations.records[id]
+	att.schema_version == 1
+	att.repo_id == input.repo_id
+	att.gate == "verification-gate"
+	att.subject.key == input.subject_key
+	att.verdict == "SHIP"
+}
+
+decision := {"allow": true, "reason": "repo not verification-gate-enrolled"} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "verification-gate"
+	not verification_gate_enrolled
+}
+
+decision := {"allow": true, "reason": "matching verification-gate SHIP"} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "verification-gate"
+	verification_gate_enrolled
+	valid_verification_ship
+}
+
+decision := {
+	"allow": false,
+	"reason": sprintf("no verification-gate SHIP for staged tree %s", [input.subject_key]),
+} if {
+	supported
+	input.operation == "git.commit"
+	input.gate == "verification-gate"
+	verification_gate_enrolled
+	not valid_verification_ship
+}
+
 # --- Plan-review gate (LIA-523) -- purely additive. `enrolled`, `valid_ship`, and the three
 # "git.commit" decision bodies above are byte-unchanged; this section never reads or writes
 # `enforced_repos[repo_id].enabled`. Session-bound (not git-tree-bound): a plan-reviewer SHIP
@@ -119,7 +225,7 @@ valid_plan_review_ship if {
 	att.subject.session_id == input.session_id
 	att.verdict == "SHIP"
 	issued_ns := time.parse_rfc3339_ns(att.issued_at)
-	time.now_ns() - issued_ns < (plan_review_ttl_seconds * 1000000000)
+	time.now_ns() - issued_ns < plan_review_ttl_seconds * 1000000000
 }
 
 decision := {"allow": true, "reason": "repo not plan-review-enrolled"} if {
@@ -155,8 +261,11 @@ decision := {
 # gpt/glm co-gate backends -- permanent, by-design limitation, disclosed here and in the allow
 # reason string. No signing, no runner isolation -- same-host trust, same accepted-risk framing
 # as git-level-hard-backstop-design.md §3.3. A DENY is authoritative-to-block; an ALLOW means
-# "evidence found," never "fully reviewed." **DOES NOT ACTIVATE UNTIL LIA-534's gate-wiring lands
-# too -- see git-level-hard-backstop-design.md §3.6's corrected three-part precondition.**
+# "evidence found," never "fully reviewed." **DOES NOT ACTIVATE UNTIL LIA-539 (the credential-
+# separation implementation) lands -- LIA-531 merged as DESIGN ONLY and does not clear this gate
+# on its own; confirmed live via LIA-539's own Linear description, not via
+# git-level-hard-backstop-design.md §5, which is stale on this specific point as of this writing
+# (still cites LIA-531 alone -- needs its own follow-up, out of scope here).**
 
 cc_supported if {
 	input.contract_version == 1
@@ -165,7 +274,7 @@ cc_supported if {
 }
 
 valid_cc_mirrored_ship if {
-	id := data.warden_cc_attestations.latest_by_backend[input.repo_id]["code-reviewer"][input.subject_key]["claude"]
+	id := data.warden_cc_attestations.latest_by_backend[input.repo_id]["code-reviewer"][input.subject_key].claude
 	att := data.warden_cc_attestations.records[id]
 	att.schema_version == 1
 	att.repo_id == input.repo_id
@@ -173,10 +282,11 @@ valid_cc_mirrored_ship if {
 	att.subject.key == input.subject_key
 	att.backend == "claude"
 	att.verdict == "SHIP"
-	att.queued_at   # CC-only field (issue_if_newer sets it; Hermes's issue() never does) --
-	                # the real mis-targeted-document discriminator. Existence check: Rego's `if`
-	                # fails on undefined; the schema types this an integer >= 0, so no
-	                # legitimate value (including 0) is falsy here.
+	att.queued_at # CC-only field (issue_if_newer sets it; Hermes's issue() never does) --
+
+	# the real mis-targeted-document discriminator. Existence check: Rego's `if`
+	# fails on undefined; the schema types this an integer >= 0, so no
+	# legitimate value (including 0) is falsy here.
 	cc_supported
 }
 
@@ -208,12 +318,13 @@ decision := {"allow": true, "reason": "matching code-review SHIP (Hermes-native)
 decision := {"allow": true, "reason": "matching code-reviewer SHIP (Claude Code native, claude backend only -- gpt/glm not verified, permanent limitation)"} if {
 	input.operation == "attestation.verify"
 	input.gate == "code-review"
-	not hermes_path_ok   # deliberate defense-in-depth, provably redundant with cc_path_ok's own
-	                      # `not hermes_record_exists` given valid_ship and hermes_record_exists
-	                      # resolve the identical index lookup -- kept for clarity at zero cost,
-	                      # never remove `not hermes_record_exists` from cc_path_ok on the mistaken
-	                      # belief that THIS line alone still protects against Hermes-record
-	                      # override (mutation-verified, opa-warden-attestations-v1.md Phase 4).
+	not hermes_path_ok # deliberate defense-in-depth, provably redundant with cc_path_ok's own
+
+	# `not hermes_record_exists` given valid_ship and hermes_record_exists
+	# resolve the identical index lookup -- kept for clarity at zero cost,
+	# never remove `not hermes_record_exists` from cc_path_ok on the mistaken
+	# belief that THIS line alone still protects against Hermes-record
+	# override (mutation-verified, opa-warden-attestations-v1.md Phase 4).
 	cc_path_ok
 }
 

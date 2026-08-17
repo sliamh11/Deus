@@ -70,6 +70,11 @@ class TestSupportedForms(unittest.TestCase):
     def test_dash_c_path_form_supported(self):
         c = classify(f'git -C /path/to/repo -c core.hooksPath={_hooks()} commit --no-verify -m x')
         self.assertTrue(c.supported)
+        # LIA-524 Design section D (round 13-18): the corrected fix resolves identity FROM a
+        # safe -C target rather than rejecting -C outright -- this original assertion stays
+        # correct and must NOT be flipped. Added assertions only.
+        self.assertEqual(c.dash_c_target, "/path/to/repo")  # @oracle LIA-524: a safe -C value is captured verbatim on Classification
+        self.assertFalse(c.dash_c_rejected)  # @oracle LIA-524: a SAFE -C is never flagged rejected
 
     def test_message_equals_form(self):
         c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify --message=hello')
@@ -403,6 +408,105 @@ class TestHooksPathShellExpansionDivergence(unittest.TestCase):
     def test_safe_characters_only_still_supported(self):
         c = classify(f'git -c core.hooksPath={_hooks()} commit --no-verify -m x')
         self.assertTrue(c.supported)
+
+
+class TestDashCTargetAndRejectedFields(unittest.TestCase):
+    """Independent oracle for LIA-524 Design section D (`Classification.dash_c_target` /
+    `.dash_c_rejected`) -- authored from the plan's own final, round-18 design, blind to any
+    implementation: `command_parser.py` has neither field yet (confirmed by reading the file --
+    `Classification` currently declares only `is_commit_shaped`, `supported`, `reason`).
+
+    The round-18 design requires an ORDER-INDEPENDENT PRE-SCAN over the pre-`commit` token
+    prefix (not a check placed at any point WITHIN the existing sequential parsing loop --
+    three prior placements, rounds 15/16/17, were each tried and found bypassable by
+    attacker-controlled token order). `test_dash_c_target_survives_malformed_dash_c_appearing_
+    first_order_independence` below is the single test that discriminates a genuine
+    order-independent pre-scan from any of those three prior (broken) placements -- the most
+    important test in this whole ticket, per the dispatch brief.
+    """
+
+    def test_absent_dash_c_leaves_target_none_and_rejected_false(self):
+        c = classify(SUPPORTED())
+        self.assertIsNone(c.dash_c_target)  # @oracle LIA-524: no -C at all -> dash_c_target stays None
+        self.assertFalse(c.dash_c_rejected)  # @oracle LIA-524: no -C at all -> dash_c_rejected stays False
+
+    def test_unsafe_dash_c_value_rejected(self):
+        c = classify(f'git -C "$(touch /tmp/x)" -c core.hooksPath={_hooks()} commit --no-verify -m safe')
+        self.assertTrue(c.dash_c_rejected)  # @oracle LIA-524: command-substitution in the -C value is rejected
+        self.assertIsNone(c.dash_c_target)  # @oracle LIA-524: a rejected -C never leaves a usable target
+        self.assertFalse(c.supported)
+
+    def test_dash_c_safety_check_deferred_until_commit_confirmed(self):
+        # Round-14 Claude's false-block regression guard: a genuinely non-commit command merely
+        # containing a -C flag (and the substring "commit" elsewhere) must never be misclassified
+        # as commit-shaped just because the -C safety check ran too early.
+        c = classify("git -C /tmp log --grep=commit")
+        self.assertFalse(c.is_commit_shaped)  # @oracle LIA-524: -C safety check deferred until `commit` is confirmed as the subcommand
+
+    def test_dash_c_no_value_at_end_of_prefix_rejected(self):
+        # Round-17 addition: -C as the LAST token of the pre-`commit` prefix, with no value
+        # following it at all within that prefix -- mirrors the existing -c-with-no-value
+        # handling.
+        c = classify(f'git -c core.hooksPath={_hooks()} -C commit --no-verify -m x')
+        self.assertTrue(c.dash_c_rejected)  # @oracle LIA-524: -C with no value in the prefix must be rejected
+        self.assertIsNone(c.dash_c_target)
+        self.assertFalse(c.supported)
+
+    def test_safe_dash_c_survives_loop2_unrelated_defect(self):
+        # Round-16 addition: dash_c_target must survive a _blocked() return that fires from the
+        # SECOND parsing loop (missing --no-verify) -- not just the final success/hooksPath-value
+        # return. Proves the safety-check point is not deferred all the way to the end.
+        c = classify(f'git -C /path/to/repo -c core.hooksPath={_hooks()} commit -m x')  # missing --no-verify
+        self.assertEqual(c.dash_c_target, "/path/to/repo")  # @oracle LIA-524: round-16 -- safe -C survives an unrelated loop-2 (missing --no-verify) block
+        self.assertFalse(c.supported)
+        self.assertFalse(c.dash_c_rejected)
+
+    def test_safe_dash_c_survives_loop1_internal_defect(self):
+        # Round-17 addition: dash_c_target must survive a _blocked() return that fires from
+        # WITHIN the FIRST parsing loop (a malformed -c), before that loop's own break -- not
+        # just loop 2's returns.
+        c = classify(f'git -C /path/to/repo -c core.fsmonitor=x commit --no-verify -m x')
+        self.assertEqual(c.dash_c_target, "/path/to/repo")  # @oracle LIA-524: round-17 -- safe -C survives a loop-1-INTERNAL malformed -c block
+        self.assertFalse(c.supported)
+        self.assertFalse(c.dash_c_rejected)
+
+    def test_dash_c_target_survives_malformed_dash_c_appearing_first_order_independence(self):
+        # THE discriminating test for the whole -C mechanism (round 18): a malformed -c
+        # appearing BEFORE the safe -C in token order -- the exact reverse of the round-17 test
+        # above, which is precisely why round 17's "validate inline, the instant -C is parsed"
+        # fix passed its OWN test while remaining broken. command_parser's loop 1 is a single
+        # left-to-right pass that returns on the FIRST _blocked()-triggering token (already
+        # proven by the EXISTING, shipped test_dangerous_key_before_hookspath_blocked) -- a
+        # check placed at any point WITHIN that loop, however early, never reaches -C here,
+        # because the -c malformation short-circuits first. Only a dedicated, order-independent
+        # PRE-SCAN over the whole pre-`commit` prefix -- run once, before loop 1 even starts --
+        # can see -C regardless of what else surrounds it.
+        c = classify(f'git -c core.fsmonitor=x -C /path/to/repo commit --no-verify -m x')
+        # @oracle LIA-524: order-independence -- dash_c_target must be populated even though a
+        # malformed -c appears BEFORE -C in token order. Falsifies every "earliest point in the
+        # sequential loop" placement (rounds 15, 16, AND 17 all fail this specific test).
+        self.assertEqual(c.dash_c_target, "/path/to/repo")
+        self.assertFalse(c.supported)  # blocked on the -c malformation, not on -C
+        self.assertFalse(c.dash_c_rejected)  # dash_c_rejected means an UNSAFE -C value; this -C is safe
+
+    def test_second_dash_c_rejected(self):
+        # Round-18 addition: mirrors the file's EXISTING "reject a second -c" precedent
+        # (test_duplicate_hookspath_different_value_blocked) for -C.
+        c = classify(f'git -C /path/a -C /path/b -c core.hooksPath={_hooks()} commit --no-verify -m x')
+        self.assertTrue(c.dash_c_rejected)  # @oracle LIA-524: a second -C is rejected outright
+        self.assertIsNone(c.dash_c_target)
+        self.assertFalse(c.supported)
+
+    def test_dash_c_value_equal_to_literal_commit_token_fails_closed(self):
+        # Round-18-review informational addition: -C's own value literally equal to the token
+        # "commit" -- confirmed by fresh review to fail closed in every construction tried (the
+        # `tokens.index("commit", 1)` prefix-boundary computation always ends up truncating the
+        # pre-scan's prefix such that the triggering -C is left value-less or flagged as a
+        # second -C, both already-handled rejection paths). Only the robust invariant
+        # (never resolves to `.supported`) is asserted -- which specific rejection path fires is
+        # explicitly construction-dependent per the plan, not a fixed contract.
+        c = classify(f'git -C commit -c core.hooksPath={_hooks()} commit --no-verify -m x')
+        self.assertFalse(c.supported)  # @oracle LIA-524: -C value literally "commit" must fail closed, never silently mis-resolve
 
 
 if __name__ == "__main__":

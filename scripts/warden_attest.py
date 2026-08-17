@@ -2,7 +2,8 @@
 """Manual attestation CLI for scripts/warden_policy.
 
 Subcommands: enroll, unenroll, issue, inspect, check, sync, reconcile, plan-review,
-enable-plan-review, disable-plan-review.
+enable-plan-review, disable-plan-review, enable-ai-eng-warden, disable-ai-eng-warden,
+enable-verification-gate, disable-verification-gate.
 Typed exit codes: 0 OK, 1 usage error, 2 git/subject resolution error,
 3 not-activated (persisted but OPA PUT failed -- run `sync`), 6 CONFLICT
 (index changed mid-issuance).
@@ -85,7 +86,39 @@ def cmd_unenroll(args) -> int:
     return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
 
 
+# LIA-524: gate/backend compatibility contract for `issue`. A key present here means that
+# gate is `latest_by_backend`-keyed and `--backend` MUST equal the mapped value; a key in
+# _LATEST_ONLY_GATES means that gate is `latest`-keyed and `--backend` must be ABSENT
+# (any value silently misroutes the write to `latest_by_backend`, where the gate never reads
+# it -- a permanent false-block despite an apparently-successful issuance). A gate in neither
+# set (currently only `code-reviewer`) is left deliberately UNCONSTRAINED: it's structurally
+# `latest_by_backend`-keyed at the store layer (Phase 0), but this ticket owns no Hermes-side
+# issuance semantics for it, so the new validation neither requires nor forbids `--backend`.
+_BACKEND_REQUIRED_GATES = {"ai-eng-warden": "hermes"}
+_LATEST_ONLY_GATES = {"code-review", "plan-review", "verification-gate"}
+
+
 def cmd_issue(args) -> int:
+    if args.gate in _BACKEND_REQUIRED_GATES:
+        required = _BACKEND_REQUIRED_GATES[args.gate]
+        if args.backend != required:
+            _emit(args, {
+                "ok": False,
+                "error": f"--gate {args.gate} requires --backend {required} exactly "
+                         f"(got {args.backend!r}) -- a missing or wrong --backend value would "
+                         f"silently misroute this issuance to a location the gate never reads",
+            })
+            return EXIT_USAGE
+    elif args.gate in _LATEST_ONLY_GATES:
+        if args.backend is not None:
+            _emit(args, {
+                "ok": False,
+                "error": f"--gate {args.gate} is latest-indexed and does not accept --backend "
+                         f"-- passing one would silently misroute this issuance to "
+                         f"latest_by_backend, where this gate never reads it",
+            })
+            return EXIT_USAGE
+
     store = _store(args)
     repo_path = Path(args.repo)
     try:
@@ -98,6 +131,7 @@ def cmd_issue(args) -> int:
     result = store.issue(
         repo_id=repo_id, gate=args.gate, subject_key=subject_key, verdict=args.verdict,
         issuer_kind=args.issuer_kind, reviewer_id=args.reviewer_id, reason=args.reason,
+        backend=args.backend,
     )
 
     # Race check: recompute the subject after issuance -- if the index changed
@@ -198,6 +232,66 @@ def cmd_disable_plan_review(args) -> int:
     return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
 
 
+def cmd_enable_ai_eng_warden(args) -> int:
+    store = _store(args)
+    try:
+        repo_id = resolve_repo_id(Path(args.repo))
+    except GitSubjectError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_GIT_ERROR
+    result = store.set_ai_eng_warden_enabled(repo_id, True)
+    _emit(args, {"ok": result.ok, "activated": result.activated, "repo_id": repo_id,
+                  "generation": result.generation, "error": result.error})
+    return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
+
+
+def cmd_disable_ai_eng_warden(args) -> int:
+    store = _store(args)
+    try:
+        repo_id = resolve_repo_id(Path(args.repo))
+    except GitSubjectError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_GIT_ERROR
+    try:
+        result = store.set_ai_eng_warden_enabled(repo_id, False)
+    except AttestationStoreError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_USAGE
+    _emit(args, {"ok": result.ok, "activated": result.activated, "repo_id": repo_id,
+                  "generation": result.generation, "error": result.error})
+    return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
+
+
+def cmd_enable_verification_gate(args) -> int:
+    store = _store(args)
+    try:
+        repo_id = resolve_repo_id(Path(args.repo))
+    except GitSubjectError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_GIT_ERROR
+    result = store.set_verification_gate_enabled(repo_id, True)
+    _emit(args, {"ok": result.ok, "activated": result.activated, "repo_id": repo_id,
+                  "generation": result.generation, "error": result.error})
+    return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
+
+
+def cmd_disable_verification_gate(args) -> int:
+    store = _store(args)
+    try:
+        repo_id = resolve_repo_id(Path(args.repo))
+    except GitSubjectError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_GIT_ERROR
+    try:
+        result = store.set_verification_gate_enabled(repo_id, False)
+    except AttestationStoreError as exc:
+        _emit(args, {"ok": False, "error": str(exc)})
+        return EXIT_USAGE
+    _emit(args, {"ok": result.ok, "activated": result.activated, "repo_id": repo_id,
+                  "generation": result.generation, "error": result.error})
+    return EXIT_OK if result.activated else EXIT_NOT_ACTIVATED
+
+
 def cmd_check(args) -> int:
     """Dry-run: build the exact OPA input for the given command and print the live decision."""
     store = _store(args)
@@ -272,6 +366,12 @@ def main(argv=None) -> int:
     p_issue.add_argument("--issuer-kind", default="manual", choices=["manual", "script"])
     p_issue.add_argument("--reviewer-id", required=True)
     p_issue.add_argument("--reason", required=True)
+    p_issue.add_argument(
+        "--backend", default=None,
+        help="required (and must equal 'hermes') for --gate ai-eng-warden; rejected for the "
+             "latest-only gates (code-review, plan-review, verification-gate); unconstrained "
+             "for code-reviewer",
+    )
     p_issue.set_defaults(func=cmd_issue)
 
     p_inspect = sub.add_parser("inspect")
@@ -294,6 +394,22 @@ def main(argv=None) -> int:
     p_disable_pr = sub.add_parser("disable-plan-review")
     p_disable_pr.add_argument("--repo", required=True)
     p_disable_pr.set_defaults(func=cmd_disable_plan_review)
+
+    p_enable_aiew = sub.add_parser("enable-ai-eng-warden")
+    p_enable_aiew.add_argument("--repo", required=True)
+    p_enable_aiew.set_defaults(func=cmd_enable_ai_eng_warden)
+
+    p_disable_aiew = sub.add_parser("disable-ai-eng-warden")
+    p_disable_aiew.add_argument("--repo", required=True)
+    p_disable_aiew.set_defaults(func=cmd_disable_ai_eng_warden)
+
+    p_enable_vg = sub.add_parser("enable-verification-gate")
+    p_enable_vg.add_argument("--repo", required=True)
+    p_enable_vg.set_defaults(func=cmd_enable_verification_gate)
+
+    p_disable_vg = sub.add_parser("disable-verification-gate")
+    p_disable_vg.add_argument("--repo", required=True)
+    p_disable_vg.set_defaults(func=cmd_disable_verification_gate)
 
     p_check = sub.add_parser("check")
     p_check.add_argument("--repo", required=True)

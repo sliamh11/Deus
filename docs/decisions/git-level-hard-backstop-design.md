@@ -489,6 +489,44 @@ in place above rather than left stale — see the "Done" markers throughout §3.
   all-or-nothing toggle that would also block the solo-dev review-count bypass this repo
   legitimately relies on; the ruleset-based approach achieves the narrower goal.
 
+## LIA-536 implementation notes (found during the live end-to-end verification pass)
+
+- **`--ephemeral` self-hosted runners self-clean their own credentials AND self-update mid-session,
+  both confirmed via the runner's own log, not assumed from docs.** After completing its one job,
+  the runner process itself printed `√ Removed .credentials` / `√ Removed .runner` and exited —
+  confirmed via `gh api repos/<owner>/<repo>/actions/runners` returning an empty list immediately
+  after, no manual deregistration API call needed for the GitHub-side registration (only the local
+  install directory on disk needs manual removal — GitHub's side is already clean). Separately,
+  the runner auto-updated itself (observed 2.328.0 → 2.336.0) *before* running its one job,
+  triggered by GitHub Actions' own runner-version enforcement — this is normal, not a
+  misconfiguration, and costs ~1 minute the first time a newly-downloaded runner binary is behind
+  the platform's currently-required minimum version.
+- **A required-check reporting step gated on the wrong predecessor step silently reintroduces the
+  permanently-pending trap this design's own actor-guard mechanism (§3.3 mitigation (b)) exists to close** —
+  found and fixed during implementation, not in the original design pass. If the "post the Check
+  Run" step's `if:` condition checks `steps.verify.outcome != 'skipped'` (the step that runs the
+  actual OPA query), a checkout/fetch failure EARLIER in the job (a real infra hiccup, not an
+  attacker action) makes GitHub Actions cascade-skip the verify step by default — and gating on
+  verify's own outcome then ALSO skips the reporting step, leaving the check permanently pending
+  rather than explicitly failed. The fix: gate the reporting step on the outcome of the step that
+  is GENUINELY unconditional in the job (the actor guard, which has no `if:` at all and always
+  resolves to `success` or `failure`, never `skipped`) — never on a step that GitHub's own default
+  cascade can skip for reasons unrelated to the check's own pass/fail logic. General lesson for
+  authoring any required-check-reporting GitHub Actions job: identify which single step is
+  genuinely unconditional for the whole job, and gate the final reporting step on THAT step's
+  outcome specifically, not on the outcome of whichever step happens to compute the "real" result.
+- **Self-hosted runner workspaces persist across separate job invocations** (unlike GitHub-hosted
+  runners, which are always fresh) — found by the GPT code-reviewer co-gate during this same
+  implementation pass, not anticipated in the original design. A successful run's intermediate
+  result files can survive on disk into a LATER job; if that later job's own checkout/fetch then
+  fails (skipping the real query step via the cascade above), a reporting step that trusts the
+  mere existence of a leftover result file can misreport the STALE prior success against the NEW
+  commit being evaluated. Any workflow writing intermediate files to a self-hosted runner's
+  workspace must explicitly clean known filenames at the start of the job (ideally folded into the
+  same unconditional first step named above, so a cleanup failure can't itself introduce a new
+  skip-cascade) rather than assuming a fresh workspace the way a GitHub-hosted runner would provide
+  for free.
+
 ## Rollback
 
 - **Disable the backstop**: `gh api -X PUT repos/sliamh11/Deus/rulesets/<id> -f enforcement=disabled`

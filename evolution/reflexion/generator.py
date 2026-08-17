@@ -9,6 +9,28 @@ import re
 from typing import Optional
 
 from ..generative import generate
+from ..judge.criteria import render_response
+
+
+def response_supports_reflection(response: Optional[str]) -> bool:
+    """Whether an interaction's response can support a claim about agent behaviour.
+
+    False when the response is absent or whitespace-only. Such an interaction
+    records no evidence of what the agent did: nothing distinguishes "ran and
+    correctly stayed silent" from "never ran". Callers whose trigger is the
+    JUDGE's own score must not generate a reflection from one — asserting either
+    failure or excellence would be unsupported (LIA-558).
+
+    Callers triggered by a HUMAN signal are exempt and deliberately do not call
+    this: there a person supplied the evidence, so the reflection is grounded
+    even when the stored response is empty.
+
+    Retire this once execution evidence (tool calls, exit status, a completion
+    marker) is recorded alongside the response — at that point the record can
+    answer the question and the judge should be allowed to.
+    """
+    return bool((response or "").strip())
+
 
 _REFLECTION_PROMPT = """Analyze this low-scoring AI interaction and extract an actionable lesson.
 
@@ -59,7 +81,7 @@ def generate_reflection(
     """
     formatted = _REFLECTION_PROMPT.format(
         prompt=prompt[:1500],
-        response=(response or "")[:1500],
+        response=render_response(response)[:1500],
         tools=", ".join(tools_used or []) or "none",
         score=score,
         dims=json.dumps(dims or {}),
@@ -110,7 +132,7 @@ def generate_positive_reflection(
     """
     formatted = _POSITIVE_PROMPT.format(
         prompt=prompt[:1500],
-        response=(response or "")[:1500],
+        response=render_response(response)[:1500],
         tools=", ".join(tools_used or []) or "none",
         score=score,
         dims=json.dumps(dims or {}),

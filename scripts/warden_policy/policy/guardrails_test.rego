@@ -167,6 +167,24 @@ test_deny_stale_opa_generation_mismatch if {
 	not decision.allow with input as inp with data.warden_attestations as base_attestations
 }
 
+# LIA-535: git.commit/file.write generation mismatches get a distinct, diagnostic reason instead
+# of the fully generic default -- proves the new decision body actually fires with the right text,
+# not just that allow is false (test_deny_stale_opa_generation_mismatch above only checks that).
+test_deny_stale_opa_generation_mismatch_has_distinct_reason if {
+	inp := object.union(base_input(subject_reviewed), {"expected_generation": 4})
+	decision.reason == "OPA ledger generation stale (expected 4, got 5) -- run `python3 scripts/warden_attest.py sync` or wait for the next self-heal tick (LIA-533)" with input as inp with data.warden_attestations as base_attestations
+}
+
+# LIA-535 round-1 regression test: an unrecognized operation with a stale expected_generation must
+# still fall through to the fully generic default, not get misclassified as ledger staleness. This
+# is the exact scenario plan-review round 1 caught against the original, too-broad
+# `input.operation != "attestation.verify"` guard.
+test_deny_unrecognized_operation_with_stale_generation_still_hits_generic_default if {
+	inp := object.union(base_input(subject_reviewed), {"operation": "something.else", "expected_generation": 4})
+	not decision.allow with input as inp with data.warden_attestations as base_attestations
+	decision.reason == "guardrails policy produced no valid decision" with input as inp with data.warden_attestations as base_attestations
+}
+
 test_deny_malformed_store_missing_records_key if {
 	att := {
 		"schema_version": 1, "generation": 5,
@@ -215,9 +233,14 @@ test_backend_verdict_defense_in_depth_subject_mismatch if {
 	not m.glm
 }
 
-test_backend_verdict_map_allows_unenrolled_repo_regardless_of_gate if {
+test_git_commit_default_deny_for_non_code_review_gate_unenrolled if {
+	# LIA-524 step 4a: the "repo not enrolled" body is now gate-scoped to input.gate ==
+	# "code-review" (previously matched ANY gate, which would have conflicted with the new
+	# ai-eng-warden/verification-gate bodies below). A gate="code-reviewer" query no longer
+	# matches this body -- it now correctly falls through to the file's own default deny,
+	# not an implicit allow.
 	inp := object.union(migrated_input("code-reviewer", ["claude"]), {"repo_id": repo_unenrolled})
-	decision.allow with input as inp with data.warden_attestations as attestations_with_backend
+	not decision.allow with input as inp with data.warden_attestations as attestations_with_backend
 }
 
 test_backend_verdict_empty_when_opa_generation_stale if {
@@ -609,6 +632,23 @@ test_attestation_verify_deny_stale_hermes_generation_with_real_ship_present if {
 	not decision.allow with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
 }
 
+# LIA-535 exclusion-proof: attestation.verify must NOT match the new git.commit/file.write-scoped
+# generation-mismatch rule -- it keeps its own composite deny message. This also proves there's no
+# Rego eval_conflict_error: if the new rule's `input.operation in {...}` guard were dropped
+# entirely, this exact input would satisfy BOTH the new rule's condition and the existing
+# attestation.verify fallback's `not hermes_path_ok, not cc_path_ok` condition simultaneously, and
+# `opa test` would report eval_conflict_error for this test rather than PASS/FAIL. (The round-1-
+# rejected `!= "attestation.verify"` guard does NOT trigger this specific conflict -- it still
+# excludes attestation.verify correctly; its bug was misclassifying unrecognized operations
+# instead, covered by test_deny_unrecognized_operation_with_stale_generation_still_hits_generic_default above.)
+test_attestation_verify_stale_hermes_generation_keeps_composite_message if {
+	inp := object.union(attestation_verify_input(subject_cc_mirrored), {"expected_generation": 4})
+	decision.reason == sprintf(
+		"no SHIP found for %s (Hermes-native or Claude-Code-mirrored; or an explicit non-SHIP Hermes verdict exists; or OPA snapshot stale/unsupported)",
+		[subject_cc_mirrored],
+	) with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
+}
+
 test_attestation_verify_allow_hermes_native_precedence_when_cc_evidence_also_exists if {
 	# Code-reviewer finding: no fixture previously had BOTH a fresh Hermes SHIP and a valid
 	# CC-mirrored SHIP for the SAME subject -- the normal production state once LIA-534 lands (a
@@ -717,4 +757,237 @@ test_attestation_verify_git_commit_bodies_never_fire_for_attestation_verify if {
 	d := decision with input as inp with data.warden_attestations as base_attestations with data.warden_cc_attestations as base_cc_attestations
 	d.reason != "matching code-review SHIP"
 	d.reason != "repo not enrolled"
+}
+
+# --- ai-eng-warden / verification-gate (LIA-524) -------------------------------------------
+#
+# Independent oracle, authored blind to the implementation: neither the ai-eng-warden nor the
+# verification-gate decision-body triple exists in this file yet (confirmed by reading the file
+# before writing this section -- the only "git.commit"-scoped bodies today are the three
+# "code-review" ones at :39-62, and the "repo not enrolled" body at :39-43 has no `input.gate`
+# guard at all, unlike its two siblings). Per the plan (LIA-524, Design steps 4/4a and B.3):
+#   - step 4a retrofits `input.gate == "code-review"` onto the existing :39-43 "repo not
+#     enrolled" body -- without it, ANY new gate-scoped query against a repo whose code-review
+#     `enabled` happens to be false/absent hits that pre-existing ungated body regardless of
+#     which gate was actually asked about.
+#   - ai-eng-warden is `latest_by_backend`-indexed, backend fixed to "hermes" by the shim,
+#     mirroring the "Multi-backend facts" `backend_verdict`/`backend_verdict_map` shape.
+#   - verification-gate is `latest`-indexed, single-verdict, structurally identical in shape to
+#     the existing code-review triple (no backend concept).
+#   - each new gate gets its OWN "not enrolled" allow body (round-11's informational note),
+#     independent from code-review's and from each other's.
+#
+# Because step 4a is itself unimplemented right now, repo_ai_eng_only/repo_verification_only
+# below are deliberately given `enabled: false` (code-review's OWN switch) -- this makes them
+# double as regression fixtures for step 4a: TODAY, querying either of these repos for ANY gate
+# already spuriously matches the pre-existing ungated "repo not enrolled" body and returns
+# allow=true, which is why several "must deny" tests below are ALSO genuinely red right now (not
+# just the "must allow" ones) -- see the confirmed-red report for exactly which.
+
+repo_ai_eng_only := "git-common-dir-sha256:9999000000000000000000000000000000000000000000000000000000000"
+repo_verification_only := "git-common-dir-sha256:9090000000000000000000000000000000000000000000000000000000000"
+
+subject_ai_ship := "git-tree:sha1:9999999999999999999999999999999999999999"
+subject_ai_wrong_backend := "git-tree:sha1:9797979797979797979797979797979797979797"
+subject_ai_wrong_subject := "git-tree:sha1:9696969696969696969696969696969696969696"
+subject_ai_wrong_repo := "git-tree:sha1:9595959595959595959595959595959595959595"
+subject_verif_ship := "git-tree:sha1:9494949494949494949494949494949494949494"
+subject_verif_wrong_gate_record := "git-tree:sha1:9292929292929292929292929292929292929292"
+
+ai_eng_input(repo_id, subject_key) := {
+	"contract_version": 1,
+	"enforcement_point": "hermes.pre_tool_call",
+	"operation": "git.commit",
+	"repo_id": repo_id,
+	"subject_key": subject_key,
+	"expected_generation": 5,
+	"gate": "ai-eng-warden",
+	"backend": "hermes",
+}
+
+verification_gate_input(repo_id, subject_key) := {
+	"contract_version": 1,
+	"enforcement_point": "hermes.pre_tool_call",
+	"operation": "git.commit",
+	"repo_id": repo_id,
+	"subject_key": subject_key,
+	"expected_generation": 5,
+	"gate": "verification-gate",
+}
+
+attestations_lia524 := object.union(base_attestations, {
+	"config": {"enforced_repos": object.union(base_attestations.config.enforced_repos, {
+		repo_ai_eng_only: {"enabled": false, "enrolled_at": "2026-08-08T00:00:00Z", "ai_eng_warden_enabled": true},
+		repo_verification_only: {"enabled": false, "enrolled_at": "2026-08-08T00:00:00Z", "verification_gate_enabled": true},
+	})},
+	"records": object.union(base_attestations.records, {
+		"att-ai-ship": {
+			"id": "att-ai-ship", "schema_version": 1, "repo_id": repo_ai_eng_only, "gate": "ai-eng-warden",
+			"subject": {"kind": "git-tree", "key": subject_ai_ship, "digest": {"algorithm": "sha1", "value": "9999999999999999999999999999999999999999"}},
+			"verdict": "SHIP", "backend": "hermes",
+			"issuer": {"kind": "script", "reviewer_id": "ai-eng-warden@hermes"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "ok",
+		},
+		"att-ai-wrong-backend": {
+			# Indexed under the "hermes" key below, but the record's OWN backend field says
+			# "gpt" -- defense-in-depth, same principle as the existing att-wrong-subject fixture.
+			"id": "att-ai-wrong-backend", "schema_version": 1, "repo_id": repo_ai_eng_only, "gate": "ai-eng-warden",
+			"subject": {"kind": "git-tree", "key": subject_ai_wrong_backend, "digest": {"algorithm": "sha1", "value": "9797979797979797979797979797979797979797"}},
+			"verdict": "SHIP", "backend": "gpt",
+			"issuer": {"kind": "script", "reviewer_id": "ai-eng-warden@gpt"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "SHIP for a DIFFERENT backend, misfiled under the hermes key below",
+		},
+		"att-ai-wrong-subject": {
+			"id": "att-ai-wrong-subject", "schema_version": 1, "repo_id": repo_ai_eng_only, "gate": "ai-eng-warden",
+			"subject": {"kind": "git-tree", "key": "git-tree:sha1:9191919191919191919191919191919191919191", "digest": {"algorithm": "sha1", "value": "9191919191919191919191919191919191919191"}},
+			"verdict": "SHIP", "backend": "hermes",
+			"issuer": {"kind": "script", "reviewer_id": "ai-eng-warden@hermes"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "SHIP for a DIFFERENT subject, misfiled under subject_ai_wrong_subject below",
+		},
+		"att-ai-wrong-repo": {
+			# Indexed under repo_ai_eng_only's own bucket below, but the record's OWN repo_id
+			# field points at repo_unenrolled -- defense-in-depth, same principle as the CC
+			# fixture set's att-cc-record-repo-mismatch.
+			"id": "att-ai-wrong-repo", "schema_version": 1, "repo_id": repo_unenrolled, "gate": "ai-eng-warden",
+			"subject": {"kind": "git-tree", "key": subject_ai_wrong_repo, "digest": {"algorithm": "sha1", "value": "9595959595959595959595959595959595959595"}},
+			"verdict": "SHIP", "backend": "hermes",
+			"issuer": {"kind": "script", "reviewer_id": "ai-eng-warden@hermes"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "SHIP for a DIFFERENT repo_id, misfiled under repo_ai_eng_only's bucket below",
+		},
+		"att-verif-ship": {
+			"id": "att-verif-ship", "schema_version": 1, "repo_id": repo_verification_only, "gate": "verification-gate",
+			"subject": {"kind": "git-tree", "key": subject_verif_ship, "digest": {"algorithm": "sha1", "value": "9494949494949494949494949494949494949494"}},
+			"verdict": "SHIP",
+			"issuer": {"kind": "script", "reviewer_id": "verification-gate@hermes"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "ok",
+		},
+		"att-verif-wrong-gate": {
+			# Indexed under the verification-gate bucket below, but the record's OWN gate field
+			# says "code-review" -- defense-in-depth, same principle as the existing
+			# att-4-wrong-gate fixture.
+			"id": "att-verif-wrong-gate", "schema_version": 1, "repo_id": repo_verification_only, "gate": "code-review",
+			"subject": {"kind": "git-tree", "key": subject_verif_wrong_gate_record, "digest": {"algorithm": "sha1", "value": "9292929292929292929292929292929292929292"}},
+			"verdict": "SHIP",
+			"issuer": {"kind": "script", "reviewer_id": "verification-gate@hermes"},
+			"issued_at": "2026-08-08T00:00:00Z", "reason": "SHIP for a DIFFERENT gate, misfiled under verification-gate below",
+		},
+	}),
+	"latest_by_backend": {
+		repo_ai_eng_only: {
+			"ai-eng-warden": {
+				subject_ai_ship: {"hermes": "att-ai-ship"},
+				subject_ai_wrong_backend: {"hermes": "att-ai-wrong-backend"},
+				subject_ai_wrong_subject: {"hermes": "att-ai-wrong-subject"},
+				subject_ai_wrong_repo: {"hermes": "att-ai-wrong-repo"},
+			},
+		},
+	},
+	"latest": object.union(base_attestations.latest, {
+		repo_verification_only: {
+			"verification-gate": {
+				subject_verif_ship: "att-verif-ship",
+				subject_verif_wrong_gate_record: "att-verif-wrong-gate",
+			},
+		},
+	}),
+})
+
+# --- ai-eng-warden: enrollment isolation (round-4/4a) ---------------------------------------
+
+test_ai_eng_warden_allow_repo_enrolled_in_code_review_only if {
+	# Round-4 case 1: repo_a is enrolled in code-review ONLY (base_attestations: enabled=true,
+	# no ai_eng_warden_enabled at all) -- queried against gate == "ai-eng-warden" must resolve
+	# via THAT gate's own not-enrolled body. TODAY, repo_a's code-review `enabled` is true, so
+	# the pre-existing ungated catch-all does NOT fire either (it requires `not enrolled`) --
+	# decision falls to the file's default deny right now. Genuinely red.
+	inp := ai_eng_input(repo_a, subject_new)
+	decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: a repo enrolled in code-review only must still resolve via ai-eng-warden's OWN not-enrolled body
+	decision.reason != "guardrails policy produced no valid decision" with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: must not silently fall through to the file's generic default deny
+}
+
+test_verification_gate_allow_repo_enrolled_in_code_review_only if {
+	inp := verification_gate_input(repo_a, subject_new)
+	decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: a repo enrolled in code-review only must still resolve via verification-gate's OWN not-enrolled body
+	decision.reason != "guardrails policy produced no valid decision" with input as inp with data.warden_attestations as attestations_lia524
+}
+
+test_ai_eng_warden_enrollment_does_not_grant_verification_gate_enrollment if {
+	# Round-4 case 2: mutual isolation between the two NEW triples (not just isolation from the
+	# pre-existing code-review triple). NOT independently red today (repo_ai_eng_only's
+	# code-review `enabled` is false, so the pre-existing ungated catch-all already -- and,
+	# until step 4a lands, will continue to -- coincidentally return allow=true here for the
+	# wrong reason); this pins the correct post-implementation behavior for regression coverage.
+	inp := verification_gate_input(repo_ai_eng_only, subject_new)
+	decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: ai-eng-warden enrollment must not grant verification-gate enrollment
+}
+
+test_verification_gate_enrollment_does_not_grant_ai_eng_warden_enrollment if {
+	inp := ai_eng_input(repo_verification_only, subject_new)
+	decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: verification-gate enrollment must not grant ai-eng-warden enrollment
+}
+
+# --- ai-eng-warden: ship validation -----------------------------------------------------------
+
+test_ai_eng_warden_allow_valid_ship if {
+	inp := ai_eng_input(repo_ai_eng_only, subject_ai_ship)
+	decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: enrolled + valid hermes-backend SHIP must allow
+}
+
+test_ai_eng_warden_deny_no_ship if {
+	# repo_ai_eng_only is ENROLLED (ai_eng_warden_enabled=true) but has no record at all for
+	# subject_new -- must deny. Genuinely red right now: repo_ai_eng_only's code-review
+	# `enabled` is false, so the pre-existing ungated catch-all currently returns allow=true
+	# for ANY gate/subject on this repo -- this is exactly the step-4a bug this test catches.
+	inp := ai_eng_input(repo_ai_eng_only, subject_new)
+	not decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: enrolled + no attestation at all must deny, never fall through to the pre-existing ungated catch-all
+}
+
+test_ai_eng_warden_deny_wrong_backend_defense_in_depth if {
+	inp := ai_eng_input(repo_ai_eng_only, subject_ai_wrong_backend)
+	not decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: latest_by_backend pointer's own record.backend must be re-checked, not trusted from the index alone
+}
+
+test_ai_eng_warden_deny_wrong_subject_defense_in_depth if {
+	inp := ai_eng_input(repo_ai_eng_only, subject_ai_wrong_subject)
+	not decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: latest_by_backend pointer's own record.subject.key must be re-checked, not trusted from the index alone
+}
+
+test_ai_eng_warden_deny_wrong_repo_defense_in_depth if {
+	inp := ai_eng_input(repo_ai_eng_only, subject_ai_wrong_repo)
+	not decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: latest_by_backend pointer's own record.repo_id must be re-checked, not trusted from the index alone
+}
+
+test_ai_eng_warden_deny_wrong_input_backend if {
+	# A genuinely valid "hermes" SHIP exists for this subject, but the QUERY itself carries a
+	# different backend -- must never match a "hermes"-keyed record via a mismatched backend.
+	inp := object.union(ai_eng_input(repo_ai_eng_only, subject_ai_ship), {"backend": "gpt"})
+	not decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: a real hermes SHIP must not satisfy a query for a different input.backend
+}
+
+test_ai_eng_warden_deny_stale_opa_generation if {
+	inp := object.union(ai_eng_input(repo_ai_eng_only, subject_ai_ship), {"expected_generation": 4})
+	not decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: a stale OPA generation snapshot must deny even with an otherwise-valid SHIP present
+}
+
+# --- verification-gate: ship validation -------------------------------------------------------
+
+test_verification_gate_allow_valid_ship if {
+	inp := verification_gate_input(repo_verification_only, subject_verif_ship)
+	decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: enrolled + valid SHIP must allow
+}
+
+test_verification_gate_deny_no_ship if {
+	# Genuinely red right now for the same step-4a reason as test_ai_eng_warden_deny_no_ship.
+	inp := verification_gate_input(repo_verification_only, subject_new)
+	not decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: enrolled + no attestation at all must deny, never fall through to the pre-existing ungated catch-all
+}
+
+test_verification_gate_deny_record_gate_mismatch_defense_in_depth if {
+	inp := verification_gate_input(repo_verification_only, subject_verif_wrong_gate_record)
+	not decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: latest pointer's own record.gate must be re-checked, not trusted from the index alone
+}
+
+test_verification_gate_deny_stale_opa_generation if {
+	inp := object.union(verification_gate_input(repo_verification_only, subject_verif_ship), {"expected_generation": 4})
+	not decision.allow with input as inp with data.warden_attestations as attestations_lia524 # @oracle LIA-524: a stale OPA generation snapshot must deny even with an otherwise-valid SHIP present
 }

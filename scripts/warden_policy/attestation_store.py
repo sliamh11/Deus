@@ -327,6 +327,48 @@ class AttestationStore:
                 entry["plan_review_enabled"] = False
         return self._mutate(_apply)
 
+    def set_ai_eng_warden_enabled(self, repo_id: str, enabled: bool) -> WriteResult:
+        """Independent, additive on/off switch for the ai-eng-warden gate (LIA-524).
+
+        Structurally identical to `set_plan_review_enabled` -- see that method's docstring
+        for the full rationale (independent surface from code-review, auto-vivifies a fresh
+        entry, raise-if-absent on disable)."""
+        def _apply(inner):
+            entry = inner["config"]["enforced_repos"].get(repo_id)
+            if enabled:
+                if entry is None:
+                    entry = inner["config"]["enforced_repos"][repo_id] = {
+                        "enabled": False,
+                        "enrolled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                entry["ai_eng_warden_enabled"] = True
+            else:
+                if entry is None:
+                    raise AttestationStoreError(f"repo {repo_id} was never enrolled")
+                entry["ai_eng_warden_enabled"] = False
+        return self._mutate(_apply)
+
+    def set_verification_gate_enabled(self, repo_id: str, enabled: bool) -> WriteResult:
+        """Independent, additive on/off switch for the verification-gate (LIA-524).
+
+        Structurally identical to `set_plan_review_enabled` -- see that method's docstring
+        for the full rationale (independent surface from code-review, auto-vivifies a fresh
+        entry, raise-if-absent on disable)."""
+        def _apply(inner):
+            entry = inner["config"]["enforced_repos"].get(repo_id)
+            if enabled:
+                if entry is None:
+                    entry = inner["config"]["enforced_repos"][repo_id] = {
+                        "enabled": False,
+                        "enrolled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                    }
+                entry["verification_gate_enabled"] = True
+            else:
+                if entry is None:
+                    raise AttestationStoreError(f"repo {repo_id} was never enrolled")
+                entry["verification_gate_enabled"] = False
+        return self._mutate(_apply)
+
     def issue(
         self, *, repo_id: str, gate: str, subject_key: str, verdict: str,
         issuer_kind: str, reviewer_id: str, reason: str, backend: str | None = None,
