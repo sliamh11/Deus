@@ -23,8 +23,14 @@ dist/
 .claude/worktree-markers/
 # Co-gate backend verdict markers (user-local; per-role @<backend>)
 .claude/.*@*
-# Co-gate loop backups (timestamped runtime ephemera)
-.claude/.co-gate-loop-*.bak-*
+# Co-gate loop counters + their timestamped backups (per-role runtime ephemera)
+.claude/.co-gate-loop-*
+# Per-role cross-review context files + their timestamped backups. The
+# plan-reviewer one is already matched by .claude/.plan-*.md below, but only
+# incidentally, and that pattern misses every .bak- copy.
+.claude/.*-cross-review.md*
+# Warden memo, rebuilt on every gated edit
+.claude/.warden-memo.md
 # Plan revise log + scratch plan docs (host-local working notes)
 .claude/plan-revise-log.jsonl
 .claude/.plan-*.md
@@ -33,6 +39,9 @@ dist/
 
 # Warden config (user-local toggle state and custom instructions)
 .claude/wardens/config.json
+# OPA shadow-observer toggle (absent == off; deliberately NOT in config.json so
+# nothing iterating warden entries sees a pseudo-warden)
+.claude/wardens/opa-shadow.json
 
 # Claude Code runtime artifacts
 .claude/scheduled_tasks.lock
@@ -162,3 +171,8 @@ src/private/
 
 # Architecture Explorer — generated graph data (re-run build.py to regenerate)
 tools/architecture-explorer/graph-data.js
+
+# attestation-verify workflow (LIA-536) — CI job working files, also produced by a local
+# standalone run of the workflow's own Report Check Run step (for verifying it directly)
+result.json
+check_run_payload.json

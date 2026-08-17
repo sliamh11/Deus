@@ -136,6 +136,19 @@ class Classification:
     is_commit_shaped: bool
     supported: bool
     reason: str
+    #: The raw `-C <path>` value (LIA-524), if `-C` was present in the pre-`commit` token
+    #: prefix and its value passed the safety check. `None` if `-C` was absent, or if it was
+    #: present but failed the safety check (see `dash_c_rejected` -- the two are mutually
+    #: exclusive by construction). Callers resolve repo identity from this instead of `cwd`
+    #: when set -- `-C` genuinely redirects which repository the eventual `git` invocation
+    #: operates on, so trusting `cwd` alone lets an enrolled repo's ledger check be bypassed
+    #: by pointing `-C` elsewhere while running from an unenrolled directory.
+    dash_c_target: str | None = None
+    #: True iff `-C` was present but its value failed the safety check (unsafe characters, no
+    #: value, or more than one `-C`). Distinct from `supported=False` for any OTHER reason --
+    #: callers must fail closed UNCONDITIONALLY on this, never falling back to `cwd`, since an
+    #: unsafe `-C` value means repo identity is genuinely unknowable.
+    dash_c_rejected: bool = False
 
 
 _UNSUPPORTED_PREFIX = "unsupported commit form -- "
@@ -149,8 +162,77 @@ def _not_commit_shaped() -> Classification:
     return Classification(is_commit_shaped=False, supported=False, reason="not a commit command")
 
 
-def _blocked(reason: str) -> Classification:
-    return Classification(is_commit_shaped=True, supported=False, reason=_UNSUPPORTED_PREFIX + reason + _REATTEST_SUFFIX)
+def _blocked(
+    reason: str, *, dash_c_target: str | None = None, dash_c_rejected: bool = False,
+) -> Classification:
+    return Classification(
+        is_commit_shaped=True,
+        supported=False,
+        reason=_UNSUPPORTED_PREFIX + reason + _REATTEST_SUFFIX,
+        dash_c_target=dash_c_target,
+        dash_c_rejected=dash_c_rejected,
+    )
+
+
+def _scan_dash_c(tokens: list[str]) -> tuple[str | None, str | None]:
+    """Locate `-C <path>` in the pre-`commit` token prefix, independent of anything else in
+    that prefix (LIA-524, round 18 -- the fourth and final placement design; see
+    docs/decisions/opa-warden-attestations-v1.md's history if this needs revisiting).
+
+    Rounds 15-17 each tried validating `-C` at a different POSITION inside the main
+    sequential parsing loop below (after both loops; right after the loop's own `commit`
+    break; inline at the exact token where `-C` is parsed) -- all three were wrong for the
+    same underlying reason: that loop is a single left-to-right pass that returns immediately
+    from the FIRST `_blocked()`-triggering token it hits (confirmed by this file's own
+    `test_dangerous_key_before_hookspath_blocked`), and real git accepts `-c`/`-C` in EITHER
+    order with identical effect -- an attacker-controlled token order can place a malformed
+    `-c` BEFORE `-C` in the string, short-circuiting the loop before it ever reaches `-C`'s
+    branch. No position WITHIN that loop can be order-independent; only a separate pass that
+    doesn't short-circuit on anything except `-C` itself can be.
+
+    Returns (dash_c_target, dash_c_reject_reason) -- exactly one of which is non-None, or both
+    None if `-C` was absent from the prefix entirely. Does not affect `is_commit_shaped`
+    determination in any way (that remains the main loop's own job) -- for a genuine non-commit
+    command this scan simply runs harmlessly and its result is discarded by the caller.
+    """
+    try:
+        commit_idx = tokens.index("commit", 1)
+        prefix = tokens[1:commit_idx]
+    except ValueError:
+        prefix = tokens[1:]
+
+    dash_c_target: str | None = None
+    dash_c_seen_count = 0
+    dash_c_reject_reason: str | None = None
+    j = 0
+    while j < len(prefix):
+        if prefix[j] == "-C":
+            dash_c_seen_count += 1
+            if j + 1 >= len(prefix):
+                dash_c_reject_reason = "'-C' with no value"
+            elif not _SAFE_HOOKS_PATH_RE.fullmatch(prefix[j + 1]):
+                dash_c_reject_reason = (
+                    "'-C' target must contain only plain path characters (no $, ~, *, {, }, "
+                    "or other shell metacharacters) -- run from within the target repository "
+                    "instead"
+                )
+            else:
+                dash_c_target = prefix[j + 1]
+            j += 2
+            continue
+        j += 1
+
+    if dash_c_seen_count > 1:
+        # A second `-C` is rejected outright -- mirrors this file's existing handling of a
+        # second `-c` (only a single `-c core.hooksPath=<dir>` is recognized). Real git
+        # composes cascading `-C` values (a later relative `-C` resolves against the previous
+        # one's target, not the process cwd); correctly reproducing that semantic is out of
+        # scope for v1, so multiple `-C` is rejected the same allowlist-conservative way a
+        # second `-c` already is, rather than left ambiguous.
+        dash_c_reject_reason = "more than one '-C' global option -- only a single '-C <path>' is recognized"
+        dash_c_target = None
+
+    return dash_c_target, dash_c_reject_reason
 
 
 def classify(command: str) -> Classification:
@@ -169,6 +251,15 @@ def classify(command: str) -> Classification:
     if not tokens or tokens[0] != "git":
         return _not_commit_shaped()
 
+    # LIA-524: order-independent `-C` pre-scan, run ONCE before the main sequential loop
+    # below even starts -- see `_scan_dash_c`'s own docstring for why this must not be folded
+    # into that loop's own token-by-token traversal. Purely a computation at this point (does
+    # not itself return early on a safe or absent `-C`); only an UNSAFE `-C` value triggers an
+    # immediate block here, before any of the main loop's own logic runs.
+    dash_c_target, dash_c_reject_reason = _scan_dash_c(tokens)
+    if dash_c_reject_reason is not None:
+        return _blocked(dash_c_reject_reason, dash_c_rejected=True)
+
     i = 1
     saw_hooks_path_override = False
     hooks_path_value = None
@@ -182,7 +273,7 @@ def classify(command: str) -> Classification:
             continue
         if tok == "-c":
             if i + 1 >= len(tokens):
-                return _blocked("`-c` with no value")
+                return _blocked("`-c` with no value", dash_c_target=dash_c_target)
             # Exactly one `-c` is recognized, and it must be `core.hooksPath` --
             # matching the module's ALLOWLIST design (see docstring). A second `-c`
             # of ANY kind is rejected outright, not just one with a different key:
@@ -195,7 +286,8 @@ def classify(command: str) -> Classification:
             if saw_hooks_path_override:
                 return _blocked(
                     "more than one `-c` global option -- only a single "
-                    "`-c core.hooksPath=<dir>` is recognized"
+                    "`-c core.hooksPath=<dir>` is recognized",
+                    dash_c_target=dash_c_target,
                 )
             key_value = tokens[i + 1]
             key = key_value.split("=", 1)[0]
@@ -204,7 +296,8 @@ def classify(command: str) -> Classification:
                     f"`-c {key}=...` is not the recognized `-c core.hooksPath` override "
                     "-- other `-c` keys (e.g. `core.fsmonitor`, `credential.helper`) are "
                     "known git-config code-execution vectors independent of shell "
-                    "substitution and are never allowed here"
+                    "substitution and are never allowed here",
+                    dash_c_target=dash_c_target,
                 )
             saw_hooks_path_override = True
             hooks_path_value = key_value.split("=", 1)[1] if "=" in key_value else ""
@@ -221,7 +314,8 @@ def classify(command: str) -> Classification:
     if not saw_hooks_path_override:
         return _blocked(
             "missing required global option `-c core.hooksPath=<empty-dir>` "
-            "(must come BEFORE `commit` -- `git -c core.hooksPath=<dir> commit ...`)."
+            "(must come BEFORE `commit` -- `git -c core.hooksPath=<dir> commit ...`).",
+            dash_c_target=dash_c_target,
         )
 
     saw_no_verify = False
@@ -236,16 +330,18 @@ def classify(command: str) -> Classification:
             continue
         if tok in _FLAG_TAKES_VALUE:
             if i + 1 >= len(tokens):
-                return _blocked(f"`{tok}` with no value")
+                return _blocked(f"`{tok}` with no value", dash_c_target=dash_c_target)
             i += 2
             continue
         if "=" in tok and tok.split("=", 1)[0] in (_FLAG_TAKES_VALUE | {"--message", "--author"}):
             i += 1
             continue
-        return _blocked(f"unrecognized or index-mutating commit option `{tok}`")
+        return _blocked(
+            f"unrecognized or index-mutating commit option `{tok}`", dash_c_target=dash_c_target,
+        )
 
     if not saw_no_verify:
-        return _blocked("missing required `--no-verify`.")
+        return _blocked("missing required `--no-verify`.", dash_c_target=dash_c_target)
 
     # Checked once every other supported-form requirement is already confirmed (same ordering
     # discipline as the substitution-marker check below): validating the hooksPath VALUE earlier
@@ -255,14 +351,19 @@ def classify(command: str) -> Classification:
         return _blocked(
             "`-c core.hooksPath=<dir>` must point to an existing, absolute, EMPTY "
             "directory -- a missing, relative, non-directory, or non-empty path "
-            "defeats the hook-suppression this override exists for"
+            "defeats the hook-suppression this override exists for",
+            dash_c_target=dash_c_target,
         )
 
     # Defense-in-depth, checked LAST -- see the module docstring.
     if _contains_command_substitution(tokens):
         return _blocked(
             "commit contains a shell command- or process-substitution marker "
-            "(backtick, $(, <(, or >() in a value"
+            "(backtick, $(, <(, or >() in a value",
+            dash_c_target=dash_c_target,
         )
 
-    return Classification(is_commit_shaped=True, supported=True, reason="supported commit form")
+    return Classification(
+        is_commit_shaped=True, supported=True, reason="supported commit form",
+        dash_c_target=dash_c_target,
+    )

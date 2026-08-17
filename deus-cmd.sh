@@ -35,6 +35,12 @@ _file_mtime() {
 # invocation. Plain `deus` still defaults to Claude unless env/config says
 # otherwise.
 if [ "$1" = "codex" ] || [ "$1" = "claude" ] || [ "$1" = "fcc" ]; then
+  # A literally-typed backend prefix is the deterministic escape hatch for
+  # `deus connect default <id>` (deus-cmd.sh, #1171-followup) -- it must
+  # ALWAYS bypass any global default connector, regardless of config state.
+  # Plain, non-exported: this signal only needs to survive within this
+  # script's own process, not leak into anything it launches.
+  _DEUS_EXPLICIT_PREFIX=1
   if [ "$1" = "claude" ]; then
     export DEUS_CLI_AGENT="claude"
     export DEUS_AGENT_BACKEND="claude"
@@ -46,6 +52,96 @@ if [ "$1" = "codex" ] || [ "$1" = "claude" ] || [ "$1" = "fcc" ]; then
     export DEUS_AGENT_BACKEND="openai"
   fi
   shift
+fi
+
+# deus connect <id> [claude-args...] — route to a non-Claude model via a
+# registered connector, staying on the same identity/vault/preferences
+# pipeline the block above uses instead of a self-contained branch (that
+# would bypass identity/vault/memory-level/preferences/portable-skills
+# entirely — the exact defect this design avoids). list/setup/status are
+# immediate, self-contained utility commands with no `claude` launch; the
+# default arm signals via DEUS_CONNECT_ID and clears positional params so
+# the shared dispatcher below still matches `home|""|--print-identity`
+# regardless of what followed the connector id.
+if [ "$1" = "connect" ]; then
+  shift
+  case "${1:-}" in
+    ""|list)
+      python3 "$SCRIPT_DIR/scripts/connectors_cli.py" list
+      exit $?
+      ;;
+    status)
+      shift
+      # `--` stops argparse from treating a leading-dash id (e.g. a
+      # mistyped "--help") as a flag on the `status` subparser itself --
+      # without it, `deus connect status --help` silently prints argparse's
+      # own help and exits 0 instead of erroring on an unknown connector.
+      # (deus connect, #1171-followup)
+      python3 "$SCRIPT_DIR/scripts/connectors_cli.py" status -- "$1"
+      exit $?
+      ;;
+    setup)
+      shift
+      if [ -z "${1:-}" ]; then
+        echo "Usage: deus connect setup <id>" >&2
+        python3 "$SCRIPT_DIR/scripts/connectors_cli.py" list >&2
+        exit 1
+      fi
+      # Do NOT call _ensure_portable_skills here -- this early prefix-
+      # dispatch block runs before that function is DEFINED; shell scripts
+      # execute top-to-bottom, so calling it this early would hit "command
+      # not found" on every invocation. Just signal and shift; the actual
+      # call happens right after the function's own definition, before the
+      # main case "$1" in ... dispatcher begins.
+      export DEUS_CONNECT_SETUP_ID="$1"
+      ;;
+    default)
+      shift
+      # Do NOT call _read_config_key/_write_config_key here -- same
+      # ordering constraint as `setup` above: this early prefix-dispatch
+      # block runs before those functions are DEFINED. Signal only; the
+      # real work happens in the deferred continuation right after
+      # _ensure_portable_skills's own definition (deus-cmd.sh, #1171-
+      # followup). Plain, non-exported scalar -- an exported sentinel
+      # would leak into the launched session and anything it subsequently
+      # runs, the same class of bug the DEUS_CONNECT_ID/SETUP_ID sentinels
+      # already guard against elsewhere in this file. "${1:-show}" (not
+      # "${1:-}") so the continuation can tell "arm fired with no arg,
+      # i.e. the bare 'deus connect default' show-current-value form" apart
+      # from "arm never fired at all" -- both would otherwise read as an
+      # empty/unset variable.
+      _DEUS_CONNECT_DEFAULT_ARG="${1:-show}"
+      ;;
+    *)
+      # Do NOT reuse CLI_AGENT/_normalize_cli_agent -- deus fcc's own
+      # runtime dispatch on that chain is confirmed dead code today, not a
+      # safe pattern to extend for a new launch path.
+      export DEUS_CONNECT_ID="$1"
+      shift
+      DEUS_CONNECT_ARGS=("$@")   # preserve trailing claude args separately
+      # --agents/--name/-n are injected by launch_connect() itself (below) --
+      # a user-supplied one here would silently override the required
+      # inline agents or the resume-identification tag, since passthrough
+      # args are appended AFTER the injected ones (--agents is also a
+      # documented top-level `deus` flag, so this is a plausible collision,
+      # not just theoretical). Claude's CLI also accepts the equals form
+      # (--agents=<json>, --name=<name>), which a token-only match would
+      # miss entirely -- must reject both forms. (deus connect, #1171)
+      for _dc_arg in "${DEUS_CONNECT_ARGS[@]}"; do
+        case "$_dc_arg" in
+          --agents|--agents=*|--name|--name=*|-n|--settings|--settings=*)
+            echo "Error: deus connect already injects $_dc_arg -- pass a different flag." >&2
+            exit 1
+            ;;
+        esac
+      done
+      set --                     # force the shared dispatcher below into
+                                  # home|""|--print-identity, so the
+                                  # connector launch (not setup -- see
+                                  # above) gets the full identity/vault/
+                                  # preferences/portable-skills pipeline
+      ;;
+  esac
 fi
 
 _read_config_key() {
@@ -175,6 +271,274 @@ _deus_freshness_check() {
   fi
   return 0
 }
+
+# >>> auto-sync
+# Passive background auto-sync: on every plain `deus` call, fetch+ff-merge (and, when
+# HEAD actually moves, rebuild+restart / push) two repos in a single detached, non-
+# blocking background subshell. User-confirmed design (LIA-529+, 2026-08-08): unlike
+# _deus_freshness_check above (read-only nudge), this one actually mutates git state.
+# Step A (this checkout) borrows deploy's diff-gated restart, not sync's unconditional
+# one. Step B (a second, generic repo) is entirely config-driven — deus-cmd.sh itself
+# must never hardcode any real repo/fork identity (public-repo-generic).
+
+# Stash-safe wrapper: snapshots a dirty tree, runs "$@", restores. Never a bare `git
+# stash`/`pop` — the stash stack is shared across worktrees/concurrent sessions, so the
+# entry is located by a unique tag, not stack position. On a stash-apply conflict,
+# `git reset --merge` restores a clean tree while leaving the stash entry recoverable —
+# a bare failed apply alone leaves literal conflict markers in the working file, which
+# would corrupt deus-cmd.sh itself if a Deus-side conflict landed there.
+_auto_sync_stash_run() {
+  local repo="$1"; shift
+  local tag="deus-auto-sync-$(basename "$repo")-$$-$(date +%s 2>/dev/null || echo 0)"
+  local dirty=false
+  # Tracked (unstaged/staged) AND untracked changes all count as dirty -- an
+  # untracked-only tree is invisible to `git diff`/`--cached` but can still collide
+  # with an incoming ff-only merge (a real failure shape: the merge itself refuses
+  # to run rather than overwrite an untracked file), so it must be stashed too.
+  if ! git -C "$repo" diff --quiet 2>/dev/null || ! git -C "$repo" diff --cached --quiet 2>/dev/null \
+     || [ -n "$(git -C "$repo" ls-files --others --exclude-standard 2>/dev/null)" ]; then
+    dirty=true
+  fi
+  if ! $dirty; then
+    "$@"
+    return $?
+  fi
+  git -C "$repo" stash push -u -m "$tag" >/dev/null 2>&1 || return 1
+  local sha
+  sha=$(git -C "$repo" stash list --format='%H %gs' 2>/dev/null | grep -F "$tag" | head -1 | cut -d' ' -f1)
+  if [ -z "$sha" ]; then
+    echo "AUTO-SYNC WARNING: could not identify our own stash entry in $repo after push (tag: $tag) — aborting this sync, changes remain stashed (recoverable via: git -C \"$repo\" stash list)." >&2
+    return 1
+  fi
+  "$@"
+  local run_status=$?
+  # --index: restore the original staged/unstaged split, not just file contents.
+  # Without it, any staged changes in the snapshotted tree come back unstaged --
+  # a silent mutation of the user's own git state beyond what this helper promises.
+  if git -C "$repo" stash apply --index "$sha" >/dev/null 2>&1; then
+    # Deliberately NOT dropping the stash entry here. `git stash drop` only
+    # accepts the positional `stash@{N}` form (confirmed empirically: it
+    # rejects a raw commit SHA outright, unlike `apply`, which accepts one
+    # directly) -- so cleanup would require resolving our SHA to its CURRENT
+    # position via a fresh `stash list`, then dropping that position. Any
+    # concurrent process pushing a stash between those two commands shifts
+    # every existing entry's position, and `stash drop` would delete THEIR
+    # entry instead of ours. This is a real, in-scope threat here, not
+    # theoretical -- the shared stash stack is explicitly used by concurrent
+    # sessions/tools in this repo's own git-safety convention. There is no
+    # atomic "drop by content identity" primitive to use instead. Leaving a
+    # successfully-applied stash entry behind is harmless (recoverable,
+    # prunable manually) -- racing to delete the wrong one is not.
+    echo "AUTO-SYNC: synced $repo -- local stash entry left in place (never auto-dropped, to avoid a race with concurrent stash activity); safe to 'git -C \"$repo\" stash drop' manually once you've confirmed it's no longer needed." >&2
+    return $run_status
+  else
+    git -C "$repo" reset --merge >/dev/null 2>&1
+    # reset --merge only cleans tracked/index state -- a failed --index apply can
+    # have already partially restored untracked files from the stash's untracked-
+    # files parent (3rd parent, present when stashed with -u) before hitting the
+    # tracked-file conflict, and those are left behind (confirmed empirically: the
+    # content survives, duplicated between the leftover file and the still-
+    # preserved stash, but the tree is not actually clean afterward as claimed).
+    #
+    # NEVER auto-delete them, even after verifying (via git hash-object) that a
+    # path's on-disk content exactly matches the stash's own blob at this
+    # instant: this worker runs detached in the background while the user keeps
+    # working, and a hash-check followed by `rm -f` is still two separate
+    # operations -- a concurrent process can replace that exact path with its
+    # own new content in the gap between the check and the delete, and `rm -f`
+    # would destroy it. No amount of "check right before acting" closes this;
+    # POSIX offers no atomic "delete this path only if its content still
+    # matches X" primitive. Confirmed as a real, in-scope risk (co-gate review,
+    # twice: once for the tracked-state case below, again here for the
+    # untracked case) -- concurrent work during this detached worker is
+    # explicitly part of the threat model, not a corner case to wave off.
+    # Purely informational: log which leftover paths match the stash's own
+    # content (safe for the USER to manually delete, with their own judgment
+    # about what's happened on disk since) vs. which don't (content already
+    # differs -- almost certainly someone else's work, leave it alone and
+    # don't even mention it as "our" residue).
+    #
+    # -z: plain `ls-tree --name-only` C-quotes (octal-escapes) non-ASCII or
+    # otherwise special filenames by default (core.quotepath) -- confirmed
+    # empirically this silently breaks matching for e.g. Hebrew/accented names
+    # (a real pattern in this vault). NUL-delimited output sidesteps quoting.
+    local untracked_parent _entry _blob_sha _uf _actual_sha
+    untracked_parent=$(git -C "$repo" log -1 --format='%P' "$sha" 2>/dev/null | awk '{print $3}')
+    if [ -n "$untracked_parent" ]; then
+      git -C "$repo" ls-tree -rz "$untracked_parent" 2>/dev/null | while IFS= read -r -d '' _entry; do
+        [ -z "$_entry" ] && continue
+        _blob_sha="${_entry%%$'\t'*}"
+        _blob_sha="${_blob_sha##* }"
+        _uf="${_entry#*$'\t'}"
+        [ -z "$_uf" ] && continue
+        git -C "$repo" ls-files --error-unmatch -- "$_uf" >/dev/null 2>&1 && continue
+        [ -e "$repo/$_uf" ] || continue
+        _actual_sha=$(git -C "$repo" hash-object -- "$_uf" 2>/dev/null)
+        [ "$_actual_sha" = "$_blob_sha" ] || continue
+        echo "AUTO-SYNC INFO: $repo/$_uf still matches the preserved stash's own content -- likely safe to remove manually if no longer needed (never auto-deleted, to avoid a TOCTOU race with concurrent work at that path)." >&2
+      done
+    fi
+    # No tracked-state cleanup beyond `reset --merge` above either: an earlier
+    # draft added an unconditional `reset --hard HEAD` "safety net" for
+    # git-version-agnostic behavior, but that's the exact same TOCTOU danger as
+    # the untracked case, for tracked files -- and unlike the untracked case,
+    # there's no single blob to verify a partial merge result against even for
+    # logging purposes. Never proven necessary on this git version either
+    # (ablated and re-tested clean during review). Removed rather than made
+    # unsafe-by-design; `reset --merge`'s own behavior is what's relied on for
+    # tracked state, same as before this feature ever added the extra step.
+    echo "AUTO-SYNC WARNING: stash apply conflict in $repo after sync — tree restored via 'git reset --merge', stash NOT dropped (ref: $sha, recoverable via: git -C \"$repo\" stash list)." >&2
+    return 1
+  fi
+}
+
+# Fetch + ff-only merge only — never a real merge, rebase, or reset on divergence.
+_auto_sync_fetch_merge() {
+  local repo="$1" remote="$2"
+  git -C "$repo" fetch --quiet "$remote" main >/dev/null 2>&1 || return 1
+
+  # Refuse rather than silently overwrite a locally-ignored file the incoming
+  # commit starts tracking — a real git gap, see docs/decisions/live-command-freshness.md
+  # Decision 4.
+  local incoming ignored collision _f
+  incoming=$(git -C "$repo" diff --name-only "HEAD..$remote/main" 2>/dev/null)
+  ignored=$(git -C "$repo" ls-files --others --ignored --exclude-standard 2>/dev/null)
+  if [ -n "$incoming" ] && [ -n "$ignored" ]; then
+    collision=""
+    while IFS= read -r _f; do
+      [ -z "$_f" ] && continue
+      if printf '%s\n' "$ignored" | grep -F -x -q "$_f" 2>/dev/null; then
+        collision="${collision:+$collision }$_f"
+      fi
+    done <<AUTOSYNCEOF
+$incoming
+AUTOSYNCEOF
+    if [ -n "$collision" ]; then
+      echo "AUTO-SYNC WARNING: refusing to merge in $repo — incoming change would silently overwrite locally-ignored file(s): $collision" >&2
+      return 1
+    fi
+  fi
+
+  git -C "$repo" merge --ff-only "$remote/main" >/dev/null 2>&1
+}
+
+# Step A — this checkout. Every guard fails silently, checked before any mutation.
+_auto_sync_step_a() {
+  local repo="$SCRIPT_DIR"
+  # Linked-worktree guard (matches deploy's PRIVATE-WIPE precedent): never build/restart
+  # from anything but the primary checkout.
+  [ "$(git -C "$repo" rev-parse --git-dir 2>/dev/null)" = "$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" ] || return 0
+  local branch
+  branch=$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null)
+  [ "$branch" = "main" ] || return 0
+  git -C "$repo" remote get-url origin >/dev/null 2>&1 || return 0
+
+  local before after
+  before=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+  # No restart on a stash-restore conflict, even if HEAD moved — known limitation,
+  # see docs/decisions/live-command-freshness.md Decision 4.
+  _auto_sync_stash_run "$repo" _auto_sync_fetch_merge "$repo" origin || return 0
+  after=$(git -C "$repo" rev-parse HEAD 2>/dev/null)
+
+  # Restart gated on ACTUAL HEAD movement, not "merge exited 0" (an already-up-to-date
+  # ff-only merge is a no-op success) — deploy's pattern, not sync's unconditional one.
+  if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
+    _build_and_restart --quiet >/dev/null 2>&1
+  fi
+}
+
+# Step B — a second, generic repo. Fully config-driven and fully independent of Step A:
+# a failure/absence here never affects Step A, and vice versa. deus-cmd.sh itself must
+# never contain any real repo/fork identity — only these three config key reads.
+_auto_sync_step_b() {
+  # NEVER name this local `path` -- it is a zsh special parameter tied to $PATH;
+  # `local path` blanks $PATH for the rest of this function (silently breaking
+  # every subsequent git/python3 call), and this file's shebang is zsh, not bash.
+  # Confirmed empirically: the entire step was a silent no-op in production zsh
+  # until this was caught and fixed.
+  local sync_path upstream_id fork_id
+  sync_path=$(_read_config_key secondary_sync_path)
+  upstream_id=$(_read_config_key secondary_sync_upstream_identity)
+  fork_id=$(_read_config_key secondary_sync_fork_identity)
+  [ -n "$sync_path" ] && [ -n "$upstream_id" ] && [ -n "$fork_id" ] || return 0
+  case "$sync_path" in
+    "~"*) sync_path="$HOME${sync_path#\~}" ;;
+  esac
+  [ -d "$sync_path" ] || return 0
+  git -C "$sync_path" rev-parse --git-dir >/dev/null 2>&1 || return 0
+
+  local branch
+  branch=$(git -C "$sync_path" symbolic-ref --short -q HEAD 2>/dev/null)
+  [ "$branch" = "main" ] || return 0
+
+  # Identity-verified on BOTH sides — not just "a remote named origin/fork exists".
+  local origin_url fork_url
+  origin_url=$(git -C "$sync_path" remote get-url origin 2>/dev/null)
+  fork_url=$(git -C "$sync_path" remote get-url fork 2>/dev/null)
+  case "$origin_url" in *"$upstream_id"*) ;; *) return 0 ;; esac
+  case "$fork_url" in *"$fork_id"*) ;; *) return 0 ;; esac
+
+  local before after
+  before=$(git -C "$sync_path" rev-parse HEAD 2>/dev/null)
+  # See Step A's NOTE above — same known, documented, non-blocking limitation applies
+  # here (no push on a stash-restore conflict, even if HEAD moved).
+  _auto_sync_stash_run "$sync_path" _auto_sync_fetch_merge "$sync_path" origin || return 0
+  after=$(git -C "$sync_path" rev-parse HEAD 2>/dev/null)
+
+  # Push only on real movement. Never force — a rejected push is logged, never retried.
+  if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
+    if ! git -C "$sync_path" push fork main >/dev/null 2>&1; then
+      echo "AUTO-SYNC WARNING: push to fork main failed/rejected for $sync_path — not retried this run." >&2
+    fi
+  fi
+}
+
+_deus_auto_sync_worker() {
+  _auto_sync_step_a
+  _auto_sync_step_b
+}
+
+# Entry point — called once per `deus` invocation, right after _deus_freshness_check.
+_deus_auto_sync() {
+  [[ "$OSTYPE" == darwin* || "$OSTYPE" == linux* ]] || return 0
+  case "$1" in sync|deploy|root|--print-identity|""|-h|--help|help) return 0 ;; esac
+  local _as_arg
+  for _as_arg in "$@"; do
+    [ "$_as_arg" = "--print-identity" ] && return 0
+  done
+  # DEUS_AUTO_SYNC=0 kill switch for the whole feature -- LIA-529
+  [ "$DEUS_AUTO_SYNC" = "0" ] && return 0
+  [ "$(_read_config_key auto_sync_enabled)" = "false" ] && return 0
+
+  local stamp_dir="$HOME/.config/deus" now
+  now=$(date +%s 2>/dev/null) || return 0
+  mkdir -p "$stamp_dir" 2>/dev/null || return 0
+
+  # Atomic throttle+lock via `mkdir` (POSIX-guaranteed atomic on a single caller,
+  # unlike a separate read-stamp/compare/write-stamp sequence — two concurrent `deus`
+  # invocations could otherwise both pass that check and spawn overlapping
+  # fetch/merge/build/restart/push work against the same repo). The lock dir's own
+  # mtime IS the throttle stamp — no separate stamp file. Own lock, independent of
+  # _deus_freshness_check's stamp — different cadence semantics (this path mutates
+  # state; that one only reads).
+  local lock="$stamp_dir/.auto-sync.lock"
+  if ! mkdir "$lock" 2>/dev/null; then
+    local lock_mtime
+    lock_mtime=$(_file_mtime "$lock" 2>/dev/null) || return 0
+    [ $(( now - lock_mtime )) -lt 600 ] 2>/dev/null && return 0
+    # Stale (crashed/killed prior run, or a genuinely elapsed window) — reclaim.
+    # rmdir+mkdir isn't atomic as a pair: two callers reclaiming at the exact same
+    # instant can both succeed (a narrow, low-consequence race bounded to this one
+    # ~600s boundary, not the whole window like the original stamp-file bug).
+    rmdir "$lock" 2>/dev/null
+    mkdir "$lock" 2>/dev/null || return 0
+  fi
+
+  local log="$stamp_dir/auto-sync.log"
+  ( _deus_auto_sync_worker >>"$log" 2>&1 & ) >/dev/null 2>&1
+  return 0
+}
+# <<< auto-sync
 
 _fcc_validate_model_name() {
   if ! printf '%s' "$1" | grep -qE '^[a-zA-Z0-9_./:@-]+$'; then
@@ -365,6 +729,7 @@ PORTABLE_SKILLS=(
   wardens
   add-editor
   add-understand-anything
+  add-connector
 )
 
 _ensure_portable_skills() {
@@ -390,6 +755,145 @@ _ensure_portable_skills() {
 
 # Nudge if the live tree has drifted off/behind main (warn-only, throttled).
 _deus_freshness_check "$@"
+# Passive background auto-sync (mutating — see the auto-sync sentinel block above).
+_deus_auto_sync "$@"
+
+# `deus connect setup <id>` continuation — signaled by the early prefix-
+# dispatch block above. Deferred to here (the earliest point the function
+# genuinely exists) rather than called from that block directly. Runs
+# outside the home/external-project pipeline below on purpose: routing
+# `setup` through that pipeline would run project onboarding for whatever
+# directory the user happens to be in, an unintended mutation. (deus
+# connect, #1171)
+if [ -n "$DEUS_CONNECT_SETUP_ID" ]; then
+  _connect_setup_id="$DEUS_CONNECT_SETUP_ID"
+  unset DEUS_CONNECT_SETUP_ID   # exported vars leak into every child process --
+                                # the claude session this launches (and anything
+                                # IT launches, e.g. add-connector's own
+                                # verification step running "deus connect <id>")
+                                # must not inherit a stale setup sentinel that
+                                # would hijack that nested launch back into
+                                # /add-connector.
+  _ensure_portable_skills
+  # `deus connect setup` must work from any directory (that's the whole
+  # point of the PORTABLE_SKILLS fix above) -- but the launched session gets
+  # none of the normal Deus context pipeline (no --append-system-prompt),
+  # and the skill's own commands (e.g. "python3 scripts/connectors_cli.py
+  # list") use repo-relative paths, matching every other portable skill's
+  # convention. Without cd'ing first, those commands would fail the moment
+  # this is invoked from outside $SCRIPT_DIR.
+  cd "$SCRIPT_DIR" && exec claude "/add-connector $_connect_setup_id"
+fi
+
+# `deus connect default <id>/off/<bare>` — signaled by the early connect
+# prefix-dispatch block above via _DEUS_CONNECT_DEFAULT_ARG. Deferred to
+# here for the same ordering reason as the setup continuation above:
+# _read_config_key/_write_config_key/_normalize_cli_agent aren't defined
+# until well after that early block runs. (deus connect, #1171-followup)
+if [ -n "$_DEUS_CONNECT_DEFAULT_ARG" ]; then
+  _dc_default_arg="$_DEUS_CONNECT_DEFAULT_ARG"
+  unset _DEUS_CONNECT_DEFAULT_ARG
+  case "$_dc_default_arg" in
+    show)
+      _dc_current="$(_read_config_key default_connect)"
+      if [ -n "$_dc_current" ]; then
+        echo "Default connector: $_dc_current"
+      else
+        echo "No default connector set."
+      fi
+      exit 0
+      ;;
+    off|clear)
+      _write_config_key default_connect ""
+      echo "Default connector cleared."
+      exit 0
+      ;;
+    *)
+      # `--` stops argparse from treating a leading-dash id as a flag on
+      # the `is-configured` subparser -- without it, e.g. `deus connect
+      # default --help` reaches argparse's own -h/--help handling (exit 0,
+      # no error), sailing straight past this validation gate and letting
+      # "--help" get written into default_connect as if it were a real
+      # connector id. Confirmed via direct reproduction. (#1171-followup)
+      if ! python3 "$SCRIPT_DIR/scripts/connectors_cli.py" is-configured -- "$_dc_default_arg" >/dev/null 2>&1; then
+        echo "Error: connector '$_dc_default_arg' is not configured -- run 'deus connect setup $_dc_default_arg' first." >&2
+        exit 1
+      fi
+      # A standing security-posture change, not a low-stakes indexing
+      # action like `deus arch`'s own prompt -- non-interactive/piped
+      # invocation fails closed rather than silently proceeding.
+      if [ ! -t 0 ]; then
+        echo "Error: setting a default connector requires interactive confirmation -- run this from an interactive terminal." >&2
+        exit 1
+      fi
+      echo "Setting '$_dc_default_arg' as your default connector means every future bare"
+      echo "'deus'/'deus home' session -- in any project, any directory -- will silently"
+      echo "route through it instead of Claude, until you run 'deus connect default off'."
+      echo ""
+      echo "The only guaranteed way to force plain Claude regardless of this default is"
+      echo "'deus claude' (explicit, typed that invocation). Note: a persistent Claude"
+      echo "preference alone -- 'deus backend set claude', or the DEUS_CLI_AGENT/"
+      echo "DEUS_AGENT_BACKEND environment variables -- does NOT block this default. This"
+      echo "tool cannot distinguish an explicit \"I want Claude\" choice from simply never"
+      echo "having configured anything, so all of those are treated the same way once a"
+      echo "default connector is set."
+      echo ""
+      printf "Continue? [y/N] "
+      read -r _dc_confirm
+      case "$_dc_confirm" in
+        [Yy]*) ;;
+        *)
+          echo "Cancelled. No change made."
+          exit 1
+          ;;
+      esac
+      _write_config_key default_connect "$_dc_default_arg"
+      echo "Default connector set to '$_dc_default_arg'."
+      exit 0
+      ;;
+  esac
+fi
+
+# Implicit default-connector injection — activates ONLY on a truly bare
+# launch: no literal claude/codex/fcc prefix typed this invocation
+# (_DEUS_EXPLICIT_PREFIX, the deterministic escape hatch), no explicit
+# `deus connect <id>` already in flight (DEUS_CONNECT_ID), $1 is exactly
+# "home" or empty (never any other subcommand -- init/arch/backend/etc),
+# AND --print-identity is absent from EVERY position, not just $1 -- that
+# query path must stay a pure, side-effect-free read (matching
+# _deus_freshness_check's/_deus_auto_sync's own every-position scan for
+# the identical flag, not just this file's convention by coincidence).
+# _normalize_cli_agent() = "claude" also folds in DEUS_CLI_AGENT/
+# DEUS_AGENT_BACKEND env vars and the persistent `agent_backend` config
+# key -- this means a user who explicitly ran `deus backend set claude` is
+# NOT distinguishable from one who configured nothing; both are eligible
+# for this injection. Disclosed, accepted limitation (see the confirmation
+# text above and the backend-set note below) rather than new persisted
+# state to track the distinction -- `deus claude` already resolves it
+# deterministically for anyone who wants guaranteed non-redirected Claude.
+# (deus connect, #1171-followup)
+_dc_print_identity_present=""
+for _dc_pi_arg in "$@"; do
+  [ "$_dc_pi_arg" = "--print-identity" ] && _dc_print_identity_present=1
+done
+if [ -z "$_DEUS_EXPLICIT_PREFIX" ] && [ -z "$DEUS_CONNECT_ID" ] \
+   && [ -z "$_dc_print_identity_present" ] \
+   && { [ "$1" = "home" ] || [ -z "$1" ]; }; then
+  if [ "$(_normalize_cli_agent)" = "claude" ]; then
+    _default_connect_id="$(_read_config_key default_connect)"
+    if [ -n "$_default_connect_id" ]; then
+      export DEUS_CONNECT_ID="$_default_connect_id"
+      DEUS_CONNECT_ARGS=()
+      # Distinguishes this from an explicit `deus connect <id>` invocation
+      # so launch_connect()'s error message (if the connector has since
+      # become unconfigured) can point at the actually-relevant remedy
+      # ("deus connect default off") instead of "deus connect setup <id>"
+      # -- the user typed nothing connector-related this time and may not
+      # remember a default is even set.
+      _DEUS_CONNECT_ID_IMPLICIT=1
+    fi
+  fi
+fi
 
 case "$1" in
   init|onboard)
@@ -658,6 +1162,20 @@ sys.exit(1)
         _write_env_key "DEUS_AGENT_BACKEND" "$NEW_BACKEND"
         echo "Default backend set to: $INPUT"
         echo "Takes effect on next 'deus' launch. Background service uses .env."
+        # $INPUT is only "claude" for one of the 4 canonical literals above --
+        # a default connector can only ever intercept bare `deus` when
+        # _normalize_cli_agent() resolves to exactly "claude" (deus connect,
+        # #1171-followup), so this note would be actively misleading if
+        # printed for codex/ollama/llama-cpp, where default_connect can't
+        # apply regardless of whether it's set.
+        if [ "$INPUT" = "claude" ]; then
+          _dc_default_check="$(_read_config_key default_connect)"
+          if [ -n "$_dc_default_check" ]; then
+            echo "Note: a default connector ($_dc_default_check) is also configured -- bare"
+            echo "'deus' still routes there unless you use 'deus claude' explicitly. Run"
+            echo "'deus connect default off' to fully disable."
+          fi
+        fi
         ;;
       model)
         if [ -z "$2" ]; then
@@ -809,6 +1327,12 @@ sys.exit(1)
     done
     # Print mode must never exec an interactive UI — the query flag wins.
     if [ "$AGENTS_MODE" = "true" ] && [ "$PRINT_IDENTITY" != "true" ]; then
+      # If a default connector injected DEUS_CONNECT_ID earlier in this
+      # invocation (deus connect, #1171-followup), it must not leak into
+      # `claude agents` -- that process doesn't read the var today, but
+      # this matches the file's own leak discipline elsewhere (see
+      # launch_connect's own `unset DEUS_CONNECT_ID` for the same reason).
+      unset DEUS_CONNECT_ID
       exec claude agents
     fi
     # Keep captured stdout pure in print mode: progress noise ("Reading
@@ -869,6 +1393,41 @@ sys.exit(1)
     # Exporting a frozen token causes 401s after token rotation because
     # the CLI prioritizes the env var over the credentials file.
     [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
+
+    # Cockpit verdict (LIA-552). Reads the one-line cache the daily healthcheck
+    # writes — no interpreter start, no DB, no network, so there is nothing that
+    # can hang and no timeout to enforce (neither `timeout` nor `gtimeout` ships
+    # with macOS). Sits in the non-print-identity branch because other code
+    # parses that output and must stay byte-clean.
+    #
+    # Mirrors cockpit_healthcheck.py --brief, including its staleness window
+    # (ARTIFACT_MAX_AGE_SEC, 36h). Keep the two in step: a cached verdict with
+    # no age check would leave a dead scheduler showing yesterday's "OK"
+    # forever, which is the exact no-news-looks-like-good-news failure this
+    # whole ticket exists to remove.
+    _cockpit_line="${DEUS_HOME:-$HOME/.deus}/cockpit_health.line"
+    _cockpit_max_age=129600
+    if [ -r "$_cockpit_line" ]; then
+      # BSD stat (macOS) vs GNU stat (Linux) take different flags.
+      _cockpit_mtime=$(stat -f %m "$_cockpit_line" 2>/dev/null || stat -c %Y "$_cockpit_line" 2>/dev/null)
+      _cockpit_age=$(( $(date +%s) - ${_cockpit_mtime:-0} ))
+      _cockpit_verdict=$(head -n 1 "$_cockpit_line" 2>/dev/null)
+      if [ -z "$_cockpit_mtime" ]; then
+        printf '  cockpit: cannot read healthcheck timestamp\n'
+      elif [ -z "$_cockpit_verdict" ]; then
+        # An empty file is a checker that died mid-write, not a clean bill.
+        printf '  cockpit: healthcheck result is empty — the checker may have failed mid-write\n'
+      elif [ "$_cockpit_age" -gt "$_cockpit_max_age" ]; then
+        printf '  cockpit: last result is %sh old — healthcheck may not be running\n' \
+          "$(( _cockpit_age / 3600 ))"
+      elif [ "$_cockpit_verdict" != "OK" ]; then
+        # Quiet when healthy, or the report becomes noise the user learns to skip.
+        printf '  cockpit: %s\n' "$_cockpit_verdict"
+      fi
+    else
+      printf '  cockpit: no healthcheck result on record\n'
+    fi
+    unset _cockpit_line _cockpit_max_age _cockpit_mtime _cockpit_age _cockpit_verdict
     fi
     # Launch claude with bypass mode; fall back to normal mode if user declines
     launch_claude() {
@@ -911,14 +1470,145 @@ sys.exit(1)
       fi
     }
 
+    launch_connect() {
+      # deus connect (#1171)
+      local id="$DEUS_CONNECT_ID"
+      unset DEUS_CONNECT_ID   # exported vars leak into every child process --
+                              # this must not leak into the claude process
+                              # about to be launched (or anything it
+                              # subsequently runs, e.g. a nested
+                              # "deus connect <other-id>" call from inside a
+                              # tool call).
+      local env_output py_exit agents_json agents_py_exit was_implicit
+      local _dc_clear_var settings_args
+      was_implicit="$_DEUS_CONNECT_ID_IMPLICIT"
+      unset _DEUS_CONNECT_ID_IMPLICIT
+      # `--` guards against a leading-dash id reaching argparse as a flag --
+      # $id can now come from a PERSISTED default_connect value (this
+      # feature's whole point), not just a one-shot typo, so a poisoned
+      # value here would silently misbehave on every future bare launch,
+      # not just the one invocation that introduced it. (#1171-followup)
+      env_output="$(python3 "$SCRIPT_DIR/scripts/connectors_cli.py" env -- "$id")"
+      py_exit=$?
+      if [ "$py_exit" -ne 0 ] || [ -z "$env_output" ]; then
+        echo "Error: connector '$id' is unknown or not configured."
+        if [ -n "$was_implicit" ]; then
+          # This id came from the implicit default-connector injection
+          # (deus connect default <id>), not a literal `deus connect <id>`
+          # this invocation -- the user typed nothing connector-related and
+          # may not remember a default is even set, so the explicit-
+          # invocation-only "run setup" remedy below is the wrong fix here.
+          echo "A default connector is configured -- run 'deus connect default off' to"
+          echo "disable it, or 'deus connect setup $id' to reconfigure it."
+        else
+          echo "Run: deus connect setup $id"
+        fi
+        return 1
+      fi
+      eval "$env_output"
+
+      # Reserved env-var convention (connectors/base.py's env_for_launch()
+      # docstring): a connector may set DEUS_CONNECT_SETTINGS_JSON to have
+      # its value forwarded as `claude --settings <json>` for this one
+      # launch only -- e.g. cliproxy-oauth uses it to force
+      # autoCompactEnabled on for its GPT-5.6 sessions (272K real context
+      # window) without touching the user's global ~/.claude/settings.json.
+      # Conditional append (mirrors launch_codex()'s codex_args pattern
+      # above) so a connector that never sets it (e.g. ollama) never gets a
+      # bare `--settings ""` appended. Unset immediately after reading, same
+      # leak-prevention rationale as the DEUS_CONNECT_ID unset above -- must
+      # not survive into a nested "deus connect <other-id>" call.
+      # Tracked: #1185
+      settings_args=()
+      if [ -n "$DEUS_CONNECT_SETTINGS_JSON" ]; then
+        settings_args=(--settings "$DEUS_CONNECT_SETTINGS_JSON")
+      fi
+      unset DEUS_CONNECT_SETTINGS_JSON
+
+      # Claude Code's own authentication precedence (confirmed against
+      # code.claude.com/docs/en/authentication's "Authentication precedence"
+      # section, plus code.claude.com/docs/en/amazon-bedrock for Mantle)
+      # ranks cloud-provider selection (CLAUDE_CODE_USE_BEDROCK/VERTEX/
+      # FOUNDRY/MANTLE) above ANTHROPIC_AUTH_TOKEN, which itself outranks
+      # ANTHROPIC_API_KEY. A user with any of these already set ambiently
+      # (e.g. an existing corporate gateway/cloud-provider config) would
+      # have the connector launch silently authenticate against THAT
+      # instead of routing through the connector's own engine at all --
+      # not an error, just silently wrong. Clear them for this launch
+      # specifically; a bare `claude`/`deus claude` outside this connector
+      # session is unaffected.
+      #
+      # connector-aware: only unset a var the connector's own env_output
+      # did NOT itself set. Needed because the `ollama` connector (unlike
+      # cliproxy_oauth) sets ANTHROPIC_AUTH_TOKEN=ollama as its actual
+      # credential -- an unconditional unset here would erase it
+      # immediately after eval sets it, silently breaking auth. The match
+      # is anchored to a real line start (`$'\n'"$env_output"` / matching
+      # `*$'\n'"export ...="*`), not a bare substring: `env_output` is
+      # newline-delimited `export KEY=value` lines (connectors_cli.py's
+      # cmd_env), and shlex.quote() does not escape `=`, so a bare
+      # substring match could false-positive on a connector value that
+      # happens to contain the literal text `export ANTHROPIC_AUTH_TOKEN=`
+      # elsewhere in the string.
+      # CLAUDE_CODE_MAX_CONTEXT_TOKENS (added below) isn't an auth-
+      # precedence var like the other five in this list -- it's a
+      # connector-scoped context-window override (see connectors/
+      # providers/cliproxy_oauth's env_for_launch(), 272000 for GPT-5.6's
+      # real Codex-OAuth window) that needs the identical connector-aware
+      # leak-prevention treatment: without it, a NESTED `deus connect
+      # <other-id>` call from inside this launched session would inherit
+      # the outer connector's exported value and apply the wrong threshold
+      # to an unrelated connector's model. Caught by code-reviewer's GPT
+      # backend on this diff.
+      for _dc_clear_var in ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_MAX_CONTEXT_TOKENS; do
+        case $'\n'"$env_output" in
+          *$'\n'"export ${_dc_clear_var}="*) ;;  # connector set it itself -- leave it
+          *) unset "$_dc_clear_var" ;;
+        esac
+      done
+
+      agents_json="$(python3 "$SCRIPT_DIR/scripts/connectors_cli.py" agents-json -- "$id")"
+      agents_py_exit=$?
+      if [ "$agents_py_exit" -ne 0 ] || [ -z "$agents_json" ]; then
+        echo "Error: connector '$id' produced invalid subagent definitions."
+        return 1
+      fi
+
+      # That var silently collapses every subagent's model to one if ever
+      # set -- unset on every connect launch, not just during onboarding.
+      unset CLAUDE_CODE_SUBAGENT_MODEL
+
+      echo "warning: Connected via $id -- non-Claude model, do not resume bare."
+
+      # "$@" here is launch_connect's own positional params, forwarded from
+      # launch_agent's "$@" below -- this is the pipeline's assembled
+      # context (e.g. --append-system-prompt "$FULL_PROMPT"). --agents is
+      # injected only here, at the final launch_claude call, never earlier
+      # in any positional-parameter list the AGENTS_MODE scan above sees --
+      # that scan string-matches a literal "--agents" token appearing
+      # anywhere in "$@" and execs `claude agents` (Claude's own
+      # agent-management TUI) instead of a normal launch if it appears
+      # before this point. (deus connect, #1171)
+      launch_claude "$@" --agents "$agents_json" --name "connect:$id (non-Claude)" "${settings_args[@]}" "${DEUS_CONNECT_ARGS[@]}"
+      return $?
+    }
+
     launch_agent() {
+      # deus connect (#1171)
+      if [ -n "$DEUS_CONNECT_ID" ]; then
+        launch_connect "$@"
+        return $?
+      fi
       if [ "$CLI_AGENT" = "fcc" ]; then
         launch_fcc "$@"
         return $?
       fi
       if [ "$CLI_AGENT" = "ollama" ]; then
-        echo "Error: Ollama backend is not yet available as a CLI agent."
-        echo "Use 'deus backend set claude' or 'deus backend set openai' instead."
+        echo "Error: 'deus backend set ollama' is not a CLI agent -- use"
+        echo "'deus connect ollama' instead (routes via Ollama's native"
+        echo "Anthropic-API mode; run 'deus connect setup ollama' first if"
+        echo "not yet configured). 'deus backend set claude/openai' remains"
+        echo "for the persisted-backend model, unrelated to deus connect."
         return 1
       fi
       if [ "$CLI_AGENT" = "llama-cpp" ]; then
@@ -1249,7 +1939,15 @@ $STARTUP_INSTRUCTION"
         printf '%s' "$FULL_PROMPT" >&3
         exit 0
       fi
-      if [ "$TUI_DEFAULT" = "true" ]; then
+      # deus connect always forces the plain-claude path below, ignoring
+      # tui_default entirely: env-var redirection would propagate into the
+      # TUI's own claude subprocess for free (Rust's Command inherits the
+      # full parent environment), but --agents/--name are CLI flags the
+      # TUI's own Rust code constructs per-turn with no propagation path
+      # without modifying that binary -- a partial-parity variant risks
+      # confusing, undocumented behavior more than it's worth. (deus
+      # connect, #1171)
+      if [ "$TUI_DEFAULT" = "true" ] && [ -z "$DEUS_CONNECT_ID" ]; then
         cd "$CURRENT_DIR" && _launch_tui_with_context "$FULL_PROMPT" "" "external"
       fi
       launch_agent --append-system-prompt "$FULL_PROMPT"
@@ -1302,7 +2000,9 @@ $STARTUP_INSTRUCTION"
       printf '%s' "$FULL_PROMPT" >&3
       exit 0
     fi
-    if [ "$TUI_DEFAULT" = "true" ]; then
+    # deus connect always forces the plain-claude path (see the matching
+    # comment in external-project mode above for why). (#1171)
+    if [ "$TUI_DEFAULT" = "true" ] && [ -z "$DEUS_CONNECT_ID" ]; then
       cd "$HOME/deus" && _launch_tui_with_context "$FULL_PROMPT" "$INITIAL_MSG" "home"
     fi
 
@@ -1733,6 +2433,10 @@ $STARTUP_INSTRUCTION"
     echo "  deus            Launch in current directory (external project mode if not ~/deus)"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
     echo "  deus fcc        Launch with proxy model (see: deus provider, deus model)"
+    echo "  deus connect    Launch via a registered non-Claude connector (list|setup|status <id> | <id>)"
+    echo "                    deus connect default <id>|off  Persist a connector as the global default"
+    echo "                    for every bare 'deus'/'deus home' launch ('clear' is an accepted synonym"
+    echo "                    for 'off'; escape hatch: 'deus claude')"
     echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
     echo "  deus init       Onboard the current project: index it for code intelligence"
     echo "                    (codegraph + code_search) and register it (alias: onboard)"

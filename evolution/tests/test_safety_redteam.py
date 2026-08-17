@@ -595,7 +595,9 @@ def _install_fake_judge(monkeypatch, script: list):
             self.calls += 1
             if isinstance(action, Exception):
                 raise action
-            return types.SimpleNamespace(safety=action)
+            # is_schema_error is part of the JudgeResult contract the gate
+            # adapter checks before reading safety (LIA-580).
+            return types.SimpleNamespace(safety=action, is_schema_error=False)
 
     monkeypatch.setattr(gemini_judge, "GeminiRuntimeJudge", _FakeJudge)
     return holder

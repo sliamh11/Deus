@@ -136,12 +136,18 @@ describe('ensureContainerRuntimeRunning', () => {
 
 // --- cleanupOrphans ---
 
-describe('cleanupOrphans', () => {
-  it('stops orphaned deus containers', () => {
-    // docker ps returns container names, one per line
-    mockExecFileSync.mockReturnValueOnce('deus-group1-111\ndeus-group2-222\n');
+// Instance ids are always 8 lowercase hex (see config.deusInstanceId).
+const MINE = 'a1b2c3d4';
+const THEIRS = '99887766';
 
-    cleanupOrphans();
+describe('cleanupOrphans', () => {
+  it('stops orphaned deus containers stamped with this instance', () => {
+    // docker ps returns container names, one per line
+    mockExecFileSync.mockReturnValueOnce(
+      `deus-group1-111-i${MINE}\ndeus-group2-222-i${MINE}\n`,
+    );
+
+    cleanupOrphans(MINE);
 
     // ps call + 2 stop calls, all via execFileSync
     expect(mockExecFileSync).toHaveBeenCalledTimes(3);
@@ -154,25 +160,77 @@ describe('cleanupOrphans', () => {
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       2,
       CONTAINER_RUNTIME_BIN,
-      ['stop', '-t', '1', 'deus-group1-111'],
+      ['stop', '-t', '1', `deus-group1-111-i${MINE}`],
       { stdio: 'pipe', timeout: 15000 },
     );
     expect(mockExecFileSync).toHaveBeenNthCalledWith(
       3,
       CONTAINER_RUNTIME_BIN,
-      ['stop', '-t', '1', 'deus-group2-222'],
+      ['stop', '-t', '1', `deus-group2-222-i${MINE}`],
       { stdio: 'pipe', timeout: 15000 },
     );
     expect(logger.info).toHaveBeenCalledWith(
-      { count: 2, names: ['deus-group1-111', 'deus-group2-222'] },
+      {
+        count: 2,
+        names: [`deus-group1-111-i${MINE}`, `deus-group2-222-i${MINE}`],
+      },
       'Stopped orphaned containers',
+    );
+  });
+
+  it('leaves containers belonging to another live instance alone (LIA-491)', () => {
+    mockExecFileSync.mockReturnValueOnce(
+      `deus-mine-1-i${MINE}\ndeus-theirs-2-i${THEIRS}\n`,
+    );
+
+    cleanupOrphans(MINE);
+
+    // ps + exactly one stop: only ours.
+    expect(mockExecFileSync).toHaveBeenCalledTimes(2);
+    expect(mockExecFileSync).toHaveBeenNthCalledWith(
+      2,
+      CONTAINER_RUNTIME_BIN,
+      ['stop', '-t', '1', `deus-mine-1-i${MINE}`],
+      { stdio: 'pipe', timeout: 15000 },
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      { count: 1, names: [`deus-mine-1-i${MINE}`] },
+      'Stopped orphaned containers',
+    );
+  });
+
+  it('warns about unstamped pre-LIA-491 containers without stopping them', () => {
+    mockExecFileSync.mockReturnValueOnce('deus-legacy-111\n');
+
+    cleanupOrphans(MINE);
+
+    // ps only — nothing stopped.
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { count: 1, names: ['deus-legacy-111'] },
+      expect.stringContaining('unstamped'),
+    );
+  });
+
+  it('does not treat a group folder that looks like an instance id as a stamp', () => {
+    // A folder legally named `iabcdef12-...` produces this legacy name. It must
+    // be classified as unstamped, not mistaken for another instance (LIA-491).
+    mockExecFileSync.mockReturnValueOnce('deus-iabcdef12-mygroup-111\n');
+
+    cleanupOrphans(MINE);
+
+    expect(mockExecFileSync).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      { count: 1, names: ['deus-iabcdef12-mygroup-111'] },
+      expect.stringContaining('unstamped'),
     );
   });
 
   it('does nothing when no orphans exist', () => {
     mockExecFileSync.mockReturnValueOnce('');
 
-    cleanupOrphans();
+    cleanupOrphans(MINE);
 
     expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     expect(logger.info).not.toHaveBeenCalled();
@@ -183,7 +241,7 @@ describe('cleanupOrphans', () => {
       throw new Error('docker not available');
     });
 
-    cleanupOrphans(); // should not throw
+    cleanupOrphans(MINE); // should not throw
 
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ err: expect.any(Error) }),
@@ -192,8 +250,11 @@ describe('cleanupOrphans', () => {
   });
 
   it('continues stopping remaining containers when one stop fails', () => {
-    // ps call returns two orphans
-    mockExecFileSync.mockReturnValueOnce('deus-a-1\ndeus-b-2\n');
+    // ps call returns two orphans, both stamped as ours so both are eligible —
+    // this test's subject is partial-failure recovery, not ownership.
+    mockExecFileSync.mockReturnValueOnce(
+      `deus-a-1-i${MINE}\ndeus-b-2-i${MINE}\n`,
+    );
     // First stop fails
     mockExecFileSync.mockImplementationOnce(() => {
       throw new Error('already stopped');
@@ -201,11 +262,11 @@ describe('cleanupOrphans', () => {
     // Second stop succeeds
     mockExecFileSync.mockReturnValueOnce('');
 
-    cleanupOrphans(); // should not throw
+    cleanupOrphans(MINE); // should not throw
 
     expect(mockExecFileSync).toHaveBeenCalledTimes(3);
     expect(logger.info).toHaveBeenCalledWith(
-      { count: 2, names: ['deus-a-1', 'deus-b-2'] },
+      { count: 2, names: [`deus-a-1-i${MINE}`, `deus-b-2-i${MINE}`] },
       'Stopped orphaned containers',
     );
   });

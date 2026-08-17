@@ -77,7 +77,12 @@ jobs:
         # only sparse skipif guards and memory_indexer does a bare `import
         # sqlite_vec`, so they are NOT safe to run before it is present. Installing
         # it up front lets every python test step run in the same environment.
-        run: python3 -m pip install pytest 'httpx>=0.27,<1.0' sqlite-vec==0.1.6
+        #
+        # pyyaml is installed here for the connectors tests below: connectors/
+        # providers/cliproxy_oauth does a bare `import yaml` at module load
+        # (CLIProxyAPI's own config format is YAML), so it must be present before
+        # that step runs too.
+        run: python3 -m pip install pytest 'httpx>=0.27,<1.0' sqlite-vec==0.1.6 pyyaml
 
       - name: Pattern drift check
         run: python3 scripts/drift_check.py --all --base origin/${{ github.base_ref }}
@@ -162,6 +167,9 @@ jobs:
 
       - name: Evolution tests
         run: python3 -m pytest evolution/tests/ -v
+
+      - name: Connectors tests
+        run: python3 -m pytest connectors/tests/ scripts/tests/test_connectors_cli.py -v
 
       - name: Validate commits
         uses: wagoid/commitlint-github-action@v6

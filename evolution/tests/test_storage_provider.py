@@ -977,6 +977,85 @@ class TestSQLiteCompactionAndBatchJudge:
         assert len(results) == 1
         assert results[0]["id"] == "cmp1"
 
+    # ── LIA-564: an interaction with no response text must never be selected ──
+    # The summary permanently replaces the prompt, so a blank "Assistant:"
+    # section gets confabulated into the record.
+
+    def test_compaction_ws_matches_python(self):
+        """The TRIM set must stay identical to what str.strip() removes.
+
+        It is a literal for import speed, so nothing keeps it in sync
+        automatically — if a future Python adds a whitespace codepoint, this
+        fails rather than silently reopening the gap.
+        """
+        import sys
+
+        from evolution.storage.providers.sqlite import _COMPACTION_WS
+
+        derived = "".join(
+            chr(c) for c in range(sys.maxunicode + 1) if chr(c).isspace()
+        )
+        assert _COMPACTION_WS == derived
+
+    @pytest.mark.parametrize(
+        "blank, label",
+        [("", "empty"), (" ", "space"), ("\t", "tab"), ("\n", "newline"),
+         ("\r\n", "crlf"), ("  \t\n ", "mixed"),
+         ("\u00a0", "nbsp"), ("\u2028", "line_sep"), ("\u3000", "ideographic"),
+         ("\u00a0\t\u2003", "unicode_mixed")],
+    )
+    def test_get_compactable_skips_blank_responses(self, sqlite_provider, blank, label):
+        # tab/newline are the cases one-argument TRIM would have let through;
+        # the Unicode ones are what an ASCII-only char set would have missed.
+        sqlite_provider.log_interaction(
+            prompt="x" * 400, response=blank, group_folder="g",
+            timestamp="2020-01-01T00:00:00Z", interaction_id=f"blank_{label}",
+        )
+        sqlite_provider.update_interaction(f"blank_{label}", judge_score=0.8)
+
+        assert sqlite_provider.get_compactable_interactions(days=7) == []
+
+    def test_get_compactable_skips_null_response(self, sqlite_provider):
+        # Already-compacted rows: compact_interaction NULLs the response and
+        # leaves a <=500-char summary as the prompt, so without this they get
+        # re-summarised into a summary of a summary.
+        sqlite_provider.log_interaction(
+            prompt="s" * 400, response=None, group_folder="g",
+            timestamp="2020-01-01T00:00:00Z", interaction_id="already_compacted",
+        )
+        sqlite_provider.update_interaction("already_compacted", judge_score=0.8)
+
+        assert sqlite_provider.get_compactable_interactions(days=7) == []
+
+    def test_get_compactable_still_selects_padded_real_content(self, sqlite_provider):
+        # Over-exclusion control: this passes without the guard too, so it is not
+        # coverage of the fix. It earns its place as the only test here that
+        # catches a days/ws binding swap — that makes datetime() return NULL and
+        # the query select nothing, which every `== []` assertion above would
+        # happily accept.
+        sqlite_provider.log_interaction(
+            prompt="x" * 400, response="  a genuine answer  ", group_folder="g",
+            timestamp="2020-01-01T00:00:00Z", interaction_id="padded",
+        )
+        sqlite_provider.update_interaction("padded", judge_score=0.8)
+
+        results = sqlite_provider.get_compactable_interactions(days=7)
+        assert [r["id"] for r in results] == ["padded"]
+
+    def test_get_compactable_selects_content_padded_with_unicode_whitespace(
+        self, sqlite_provider
+    ):
+        # The full-Unicode TRIM set must strip padding without eating the content
+        # it surrounds — the over-broad failure the widened set could introduce.
+        sqlite_provider.log_interaction(
+            prompt="x" * 400, response="\u00a0real answer\u3000", group_folder="g",
+            timestamp="2020-01-01T00:00:00Z", interaction_id="uni_padded",
+        )
+        sqlite_provider.update_interaction("uni_padded", judge_score=0.8)
+
+        results = sqlite_provider.get_compactable_interactions(days=7)
+        assert [r["id"] for r in results] == ["uni_padded"]
+
     def test_get_compactable_skips_short_prompts(self, sqlite_provider):
         sqlite_provider.log_interaction(
             prompt="short", response="r", group_folder="g",

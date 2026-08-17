@@ -29,6 +29,20 @@ log = logging.getLogger(__name__)
 # corrupted/poisoned DB row can't sneak a payload through DROP TABLE.
 _SAFE_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# Whitespace set for the compaction selector's TRIM: every codepoint Python's
+# str.strip() removes, so the SQL check matches it exactly. SQLite's
+# one-argument TRIM strips ASCII space only, which would let a tab- or
+# NBSP-only response read as non-empty. Kept as a literal because deriving it
+# means scanning 1.1M codepoints at import; test_compaction_ws_matches_python
+# asserts it stays in sync.
+_COMPACTION_WS = (
+    "\u0009\u000a\u000b\u000c\u000d\u001c"
+    "\u001d\u001e\u001f\u0020\u0085\u00a0"
+    "\u1680\u2000\u2001\u2002\u2003\u2004"
+    "\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
+
 # Allow-list for update_interaction(**fields). Each entry must correspond to a
 # column on `interactions` that the rest of the codebase legitimately writes
 # after initial insert. Adding a new entry is intentional — never widen this
@@ -44,6 +58,7 @@ _UPDATABLE_INTERACTION_COLS = frozenset({
     "user_signal",
     "correction_mined_at",
     "judge_schema_version",
+    "judge_model",
     "metrics",
     # LIA-1011: set by maintenance.process_human_feedback() once a row has
     # been routed (skipped, errored-and-retriable-next-cycle excluded, or
@@ -293,6 +308,10 @@ class SQLiteStorageProvider(StorageProvider):
             # human_comment/scored_at are written only via the guarded
             # record_human_feedback() UPDATE. processed_at is set by
             # maintenance.process_human_feedback() once a row has been routed.
+            # LIA-558: which judge model produced judge_score/judge_dims. A model
+            # that ignores the structured-output schema yields plausible-looking
+            # rows that are otherwise indistinguishable from healthy ones.
+            ("judge_model", "TEXT"),
             ("source_ref", "TEXT"),
             ("human_score", "REAL"),
             ("human_comment", "TEXT"),
@@ -1134,6 +1153,14 @@ class SQLiteStorageProvider(StorageProvider):
     # ── Compaction & batch judging ──────────────────────────────────────────
 
     def get_compactable_interactions(self, days: int, limit: int = 50) -> list[dict]:
+        # Rows with no response text are excluded: the summary permanently
+        # replaces the prompt, so a blank "Assistant:" section gets confabulated
+        # into the record. Filtered in SQL so no caller can bypass it and
+        # rejected rows never consume a LIMIT slot (LIA-564).
+        #
+        # Binding order is load-bearing and only half-safe: swapping ws with
+        # limit raises, but swapping it with days makes datetime() return NULL
+        # and the query silently returns zero rows.
         db = self._connect()
         rows = db.execute(
             """
@@ -1143,10 +1170,12 @@ class SQLiteStorageProvider(StorageProvider):
               AND LENGTH(prompt) > 300
               AND eval_suite != 'maintenance'
               AND group_folder != '__maintenance__'
+              AND response IS NOT NULL
+              AND TRIM(response, ?) != ''
             ORDER BY timestamp ASC
             LIMIT ?
             """,
-            (f"-{days}", limit),
+            (f"-{days}", _COMPACTION_WS, limit),
         ).fetchall()
         db.close()
         return [dict(r) for r in rows]

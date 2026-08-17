@@ -12,6 +12,22 @@ import { SCHEDULED_JOBS, buildScheduledJobPlist } from './service.js';
 describe('scheduled python jobs (LIA-254 generic refactor)', () => {
   const maintenance = SCHEDULED_JOBS.find((j) => j.id === 'maintenance');
   const morning = SCHEDULED_JOBS.find((j) => j.id === 'morning-report');
+  const cockpit = SCHEDULED_JOBS.find((j) => j.id === 'cockpit-healthcheck');
+
+  it('schedules the cockpit healthcheck between maintenance and the report', () => {
+    // Ordering is the point, not just presence: it must run AFTER the 04:30
+    // maintenance run so it grades that run, and BEFORE the 07:00 morning
+    // report so the report can read a fresh verdict (LIA-552).
+    expect(cockpit).toEqual({
+      id: 'cockpit-healthcheck',
+      scriptRelPath: 'scripts/cockpit_healthcheck.py',
+      hour: 6,
+      minute: 45,
+      description: 'Deus cockpit healthcheck',
+    });
+    expect(cockpit!.hour).toBeGreaterThan(maintenance!.hour);
+    expect(cockpit!.hour).toBeLessThan(morning!.hour);
+  });
 
   it('preserves the maintenance job spec (regression guard for the refactor)', () => {
     // The 04:30 KB maintenance job is live-critical — the generic extraction

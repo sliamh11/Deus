@@ -4,6 +4,7 @@
  */
 import { execFileSync } from 'child_process';
 
+import { deusInstanceId } from './config.js';
 import { FatalError } from './errors/index.js';
 import { logger } from './logger.js';
 import { detectProxyBindHost, hostGatewayArgs } from './platform.js';
@@ -115,26 +116,55 @@ export function ensureContainerRuntimeRunning(): void {
   });
 }
 
-/** Kill orphaned Deus containers from previous runs. */
-export function cleanupOrphans(): void {
+/** Trailing `-i<8hex>` instance stamp written by container-runner (LIA-491). */
+const INSTANCE_SUFFIX_RE = /-i([0-9a-f]{8})$/;
+
+/**
+ * Kill orphaned Deus containers left by a previous run OF THIS INSTALL.
+ *
+ * Runs on every daemon startup, so it must never touch containers belonging to
+ * a different, concurrently-running daemon — doing so killed live conversations
+ * (LIA-491). Ownership is decided by the `-i<8hex>` suffix each container is
+ * named with; anything not stamped with THIS install's id is left alone.
+ */
+export function cleanupOrphans(instanceId: string = deusInstanceId()): void {
   try {
     const output = execFileSync(
       CONTAINER_RUNTIME_BIN,
       ['ps', '--filter', 'name=deus-', '--format', '{{.Names}}'],
       { stdio: ['pipe', 'pipe', 'pipe'], encoding: 'utf-8' },
     );
-    const orphans = output.trim().split('\n').filter(Boolean);
-    for (const name of orphans) {
+    const names = output.trim().split('\n').filter(Boolean);
+
+    const mine: string[] = [];
+    const unstamped: string[] = [];
+    for (const name of names) {
+      const stamp = INSTANCE_SUFFIX_RE.exec(name)?.[1];
+      if (stamp === instanceId) mine.push(name);
+      else if (stamp === undefined) unstamped.push(name);
+      // else: stamped by another live install — never ours to stop.
+    }
+
+    for (const name of mine) {
       try {
         stopContainerSync(name);
       } catch {
         /* already stopped */
       }
     }
-    if (orphans.length > 0) {
+    if (mine.length > 0) {
       logger.info(
-        { count: orphans.length, names: orphans },
+        { count: mine.length, names: mine },
         'Stopped orphaned containers',
+      );
+    }
+    // Containers created before LIA-491 carry no stamp. Stopping them would
+    // reintroduce the cross-install sweep this fix removes (an older build's
+    // live containers are also unstamped), so surface them instead of guessing.
+    if (unstamped.length > 0) {
+      logger.warn(
+        { count: unstamped.length, names: unstamped },
+        'Found unstamped Deus containers from a pre-LIA-491 build — not stopping them; remove manually if they are stale',
       );
     }
   } catch (err) {
