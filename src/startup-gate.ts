@@ -299,7 +299,26 @@ export function printStartupReport(report: StartupCheckReport): void {
 
   lines.push(BORDER_BOT);
 
+  // The banner's severity has to match its worst finding, per the three levels
+  // this gate is built around. Emitting the whole box at error level — "✓ API
+  // credentials OK" included — made 46% of every ERROR record in deus.log a
+  // non-error, which poisons any alerting built on severity (LIA-553).
+  //
+  // A fatal banner stays at error: it is the last thing written before
+  // index.ts exits 1, so demoting it would hide a real unrecoverable failure.
+  //
+  // Tradeoff: a suggest-only banner now sits at info, so LOG_LEVEL=warn would
+  // filter it out along with its "Run /setup" hint. Nothing sets LOG_LEVEL
+  // today (it defaults to info), and a deployment that raises it is asking for
+  // exactly that filtering — but it is the one thing this change makes less
+  // visible.
+  const level = hasFatals
+    ? 'error'
+    : report.warnings.length > 0
+      ? 'warn'
+      : 'info';
+
   for (const line of lines) {
-    logger.error(line);
+    logger[level](line);
   }
 }

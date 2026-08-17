@@ -1,0 +1,51 @@
+# Example CLIProxyAPI config for driving Claude Code with mixed-provider models.
+#
+# SECURITY: this file has NO env-var indirection (verified: CLIProxyAPI's config
+# format takes literal values only, unlike LiteLLM's `os.environ/VAR` style).
+# NEVER fill in real keys/tokens directly in this tracked file. Instead:
+#   cp config.yaml config.local.yaml
+# and put real values in config.local.yaml (already gitignored — see .gitignore
+# in this directory), then run CLIProxyAPI with --config config.local.yaml.
+#
+# Mechanism this relies on (verified against Claude Code's docs during design):
+# once Claude Code's ANTHROPIC_BASE_URL points at a non-Anthropic endpoint, it
+# skips its own model-name validation and passes whatever string you give it
+# (via /model, ANTHROPIC_MODEL, or a subagent's `model:` frontmatter) straight
+# through to that endpoint. The `alias` values below are exactly those strings.
+#
+# See README.md's "Known open risks" section before using this for real —
+# in particular, the OAuth-login leg (Codex) carries a real, documented account-
+# ban risk that is different in kind from every other risk here: it has no
+# rollback.
+#
+# Placeholder model IDs: "gpt-5.6-luna" / "gpt-5.6-sol" are illustrative names
+# from the design conversation this config came from — NOT confirmed real
+# OpenAI/Codex model IDs. Confirm the real upstream names before using this.
+# "claude-opus-5" is a real, current Anthropic model ID.
+
+port: 8317
+auth-dir: "~/.cli-proxy-api"
+
+# Inbound auth: what Claude Code authenticates to THIS proxy with.
+# Replace with your own value in config.local.yaml — never a real secret here.
+api-keys:
+  - "REPLACE_WITH_YOUR_OWN_INBOUND_KEY"
+
+# Safe leg: real, official Anthropic API key (not OAuth) for Opus 5.
+# "use the official claude API key, no need to set the base url" (verified
+# comment from CLIProxyAPI's own config.example.yaml).
+claude-api-key:
+  - api-key: "REPLACE_WITH_YOUR_REAL_ANTHROPIC_API_KEY"
+    models:
+      - name: "claude-opus-5"
+        alias: "opus-planner"
+
+# Accepted-risk leg: Codex OAuth-login (run `--codex-login` once to authenticate;
+# see README setup). This reuses a ChatGPT/Codex subscription rather than a real
+# API key — see README's "Known open risks" before relying on this.
+oauth-model-alias:
+  codex:
+    - name: "gpt-5.6-luna" # placeholder — confirm real upstream name
+      alias: "luna-max"
+    - name: "gpt-5.6-sol" # placeholder — confirm real upstream name
+      alias: "sol"

@@ -108,6 +108,13 @@ def main():
         "compress_sweep", [compress_sweep], dry_run, timeout=600,
     )
 
+    # LIA-527 Phase 2: reclaims cc-write-queue job files a crashed/killed detached worker
+    # missed. Single-best-effort-no-retry design -- see cc_write_queue_sweep.py's docstring.
+    cc_write_queue_sweep = str(SCRIPTS_DIR / "maintenance" / "cc_write_queue_sweep.py")
+    results["cc_write_queue_sweep"] = run_task(
+        "cc_write_queue_sweep", [cc_write_queue_sweep], dry_run,
+    )
+
     # ── Weekly tasks (Sunday or --weekly) ────────────────────────────────────
 
     if run_weekly:
