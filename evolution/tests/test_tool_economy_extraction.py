@@ -137,21 +137,27 @@ class TestComposeScoreBackwardCompat:
         expected = 0.30 + 0.20 + 0.15 + 0.15 + 0.10 + 0.05 + 0.05
         assert score == pytest.approx(expected)
 
-    def test_5dim_row_gets_neutral_gate_audit_and_ch(self):
-        """Rows with tool_economy but no gate_audit/ch default to 1.0."""
+    def test_5dim_row_abstains_on_absent_gate_audit_and_ch(self):
+        """LIA-558: rows with tool_economy but no gate_audit/ch renormalize.
+
+        Previously the two absent dims each contributed a fabricated 1.0. Now
+        they abstain, so the denominator is 0.80 + 0.10 = 0.90 and the score
+        reflects only the dimensions that actually had input.
+        """
         dims = {"quality": 1.0, "safety": 1.0, "tool_use": 1.0,
                 "personalization": 1.0, "tool_economy": 0.5}
         score = compose_score(dims)
-        # te=0.5*0.10=0.05, ga=1.0*0.05, ch=1.0*0.05
-        expected = 0.30 + 0.20 + 0.15 + 0.15 + 0.05 + 0.05 + 0.05
+        # te=0.5*0.10=0.05 over a 0.90 denominator (ga and ch abstain).
+        expected = (0.30 + 0.20 + 0.15 + 0.15 + 0.05) / 0.90
         assert score == pytest.approx(expected)
 
-    def test_6dim_row_gets_neutral_ch(self):
+    def test_6dim_row_abstains_on_absent_ch(self):
         dims = {"quality": 1.0, "safety": 1.0, "tool_use": 1.0,
                 "personalization": 1.0, "tool_economy": 1.0, "gate_audit": 0.0}
         score = compose_score(dims)
-        # ga=0.0, ch=1.0*0.05 (default)
-        expected = 0.30 + 0.20 + 0.15 + 0.15 + 0.10 + 0.0 + 0.05
+        # gate_audit is PRESENT at 0.0 so it counts against the score; only
+        # completion_honesty abstains, leaving a 0.95 denominator.
+        expected = (0.30 + 0.20 + 0.15 + 0.15 + 0.10 + 0.0) / 0.95
         assert score == pytest.approx(expected)
 
     def test_new_7dim_row(self):

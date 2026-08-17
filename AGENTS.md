@@ -171,6 +171,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/add-voice-transcription` | Add OpenAI Whisper voice transcription |
 | `/add-whatsapp` | Add WhatsApp as a channel |
 | `/add-youtube-transcript` | Add YouTube transcript extraction |
+| `/checklist-design` | On-demand UX/UI audit against checklist.design's checklist library |
 | `/checkpoint` | Save a mid-session continuity checkpoint |
 | `/code-review` | Run multi-agent code review |
 | `/codebase-design` | Shared vocabulary for designing deep modules — interface depth, seams, testability |
@@ -193,11 +194,13 @@ renaming a repo-owned skill, update this table in the same change.
 | `/preserve` | Save durable memories from the current conversation |
 | `/project-settings` | View or modify external project memory settings |
 | `/prototype` | Build a throwaway prototype to validate a state model or UI direction |
+| `/repo-visualiser` | Map a repo at latest main as a rotatable, animated isometric system map — cited 3D buildings, live payload pulses |
 | `/research` | Investigate a question against primary sources; write findings to a file (background agent) |
 | `/resolving-merge-conflicts` | Disciplined resolution of an in-progress git merge/rebase conflict |
 | `/resume` | Load recent work and memory context |
 | `/review-logs` | Review Deus system health logs |
 | `/setup` | Run first-time installation and configuration |
+| `/show-me` | Explain the current topic visually — diagrams, code-shape sketches, focused HTML artifacts |
 | `/tdd` | Test-driven development loop — red-green-refactor, behavior-first |
 | `/teach` | Teach a skill or concept over multiple sessions (stateful teaching workspace) |
 | `/update-skills` | Update installed skill branches from upstream |

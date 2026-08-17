@@ -84,7 +84,26 @@ def decide(payload: dict) -> dict:
     if not classification.is_commit_shaped:
         return {}
 
+    if classification.dash_c_rejected:
+        # LIA-524: an unsafe `-C` value makes repo identity UNKNOWABLE -- fail closed
+        # UNCONDITIONALLY, before any repo/enrollment lookup. Never fall back to `cwd` here:
+        # that fallback is exactly the flaw this check exists to close (an untrustworthy `-C`
+        # value must not silently degrade to "pretend -C wasn't there").
+        result = _block(classification.reason)
+        log_entry.update(decision="block", reason=classification.reason, fail_closed=True)
+        _log(log_entry)
+        return result
+
+    # LIA-524: `-C <path>` genuinely redirects which repository the eventual `git`
+    # invocation operates on -- resolving identity from `cwd` alone would let an enrolled
+    # repo's ledger check be bypassed by running from an unenrolled directory and pointing
+    # `-C` at the enrolled target. A relative `-C` value resolves against `cwd`, matching
+    # git's own real `-C` semantics (git resolves a relative `-C` against its own process
+    # cwd at invocation time).
     repo_path = Path(cwd)
+    if classification.dash_c_target:
+        target = Path(classification.dash_c_target)
+        repo_path = target if target.is_absolute() else Path(cwd) / target
     store = AttestationStore(LEDGER_PATH, opa_base_url=OPA_URL)
 
     # The shared lock is held across the ENTIRE read-then-decide sequence below, including the
@@ -135,6 +154,11 @@ def decide(payload: dict) -> dict:
                 "repo_id": repo_id,
                 "subject_key": subject_key,
                 "expected_generation": inner["generation"],
+                # Required now that guardrails.rego's "code-review" decision bodies are
+                # gate-scoped (Phase 0 of the Claude-Code-gate-to-OPA migration) -- an
+                # omitted gate would make input.gate undefined, and undefined ==/!= never
+                # fires in Rego, silently falling through to the file's own default deny.
+                "gate": "code-review",
             }
 
             remaining = SHIM_SELF_DEADLINE_SECONDS - (time.monotonic() - start)

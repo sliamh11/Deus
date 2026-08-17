@@ -214,6 +214,7 @@ def _compute_state_fingerprint(worktree: Path) -> tuple[str | None, str | None]:
 
 def _fresh_entry(
     data: dict[str, Any], warden: str, worktree: Path, fail_open: bool = True,
+    check_fingerprint: bool = True,
 ) -> dict[str, Any] | None:
     """Return ``data[warden]`` if it should be trusted right now, else ``None``.
 
@@ -224,6 +225,17 @@ def _fresh_entry(
       must stay visible and blocking, or ``mark_warden``'s post-REVISE
       TRIVIAL-bypass guard (which reads ``_last_verdict``) would be silently
       defeated by the very edit someone makes to FIX the REVISE.
+    - ``check_fingerprint=False`` (LIA-516): a SHIP/TRIVIAL entry is returned
+      UNCHANGED without ever comparing fingerprints — same outcome as the
+      legacy-entry branch below, but explicit and role-driven. Exists for
+      ``plan-reviewer``'s model-backend reads (``run_plan_review_gate``'s
+      ``_evaluate_backends(..., skip_claude=True)``): that SHIP approves the
+      *plan text* (intent), not a diff snapshot, so a ``diff_hash`` change on
+      the first implementation edit must NOT stale it — correct invalidation
+      for that role already happens via ``run_session_init`` and
+      ``run_plan_mode_invalidator`` explicitly clearing
+      ``plan-reviewer@<backend>`` on session start / a new plan, not via this
+      fingerprint.
     - SHIP/TRIVIAL entry with no ``head_sha``/``diff_hash`` recorded (a legacy,
       pre-LIA-382 entry): returned UNCHANGED — the staleness check is skipped,
       not treated as automatically stale, so this fix doesn't retroactively
@@ -245,6 +257,8 @@ def _fresh_entry(
         return None
     if entry.get("verdict") not in _STALENESS_ELIGIBLE_VERDICTS:
         return entry
+    if not check_fingerprint:
+        return entry
     stored_head = entry.get("head_sha")
     stored_diff = entry.get("diff_hash")
     if stored_head is None or stored_diff is None:
@@ -257,7 +271,9 @@ def _fresh_entry(
     return None  # stale
 
 
-def _read_verdict(marker_name: str, repo_root: Path) -> str | None:
+def _read_verdict(
+    marker_name: str, repo_root: Path, *, check_fingerprint: bool = True,
+) -> str | None:
     """Return the verdict string for *marker_name* from .warden-verdicts.json.
 
     Maps the marker name (e.g. ``"code-reviewed"``) to the warden key used in
@@ -265,13 +281,18 @@ def _read_verdict(marker_name: str, repo_root: Path) -> str | None:
     if the file is absent, malformed, the entry is missing, or (LIA-382) a
     SHIP/TRIVIAL entry's fingerprint no longer matches the worktree's current
     state — see ``_fresh_entry``.
+
+    ``check_fingerprint=False`` (LIA-516) skips that fingerprint comparison
+    entirely — see ``_fresh_entry``'s docstring for when this is appropriate
+    (plan-reviewer's model-backend reads only; every other caller keeps the
+    default).
     """
     warden = _entry.MARKER_NAMES.get(marker_name)
     if not warden:
         return None
     data = _read_verdicts(repo_root)
     worktree = _entry._resolve_verdict_worktree(repo_root)
-    entry = _fresh_entry(data, warden, worktree)
+    entry = _fresh_entry(data, warden, worktree, check_fingerprint=check_fingerprint)
     if not isinstance(entry, dict):
         return None
     v = entry.get("verdict")

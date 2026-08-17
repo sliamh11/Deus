@@ -14,6 +14,7 @@
 - Show commit message and wait for approval before committing.
 - Source edits require /plan mode + plan-reviewer SHIP for non-trivial changes. Trivial-bypass: touch marker with stated judgment.
 - After drafting a plan in /plan mode, immediately invoke plan-reviewer (`Agent(subagent_type="plan-reviewer")`) with the plan summary as the prompt — do not ask the user, do not call ExitPlanMode first. Trigger: when you would otherwise present the plan or ask to proceed. On non-Claude-Code backends, the PreToolUse gate is the backstop.
+- Do NOT call `ExitPlanMode` between a plan-reviewer SHIP and the edits it approved. `plan-mode-invalidator` fires on the same `ExitPlanMode` event as `plan-review-gate` and clears `.plan-reviewed` plus every `plan-reviewer@<backend>` verdict immediately — so the very next Edit/Write re-blocks, needing a fresh plan-reviewer round even though nothing about the plan changed. The practical sequence is SHIP → mark → edit; if the harness's own plan-mode UI still needs closing, defer `ExitPlanMode` until all edits for that plan are already done.
 - Never proceed while a review agent is running. Wait for its verdict.
 - REVISE from any warden means re-run after fixes until SHIP, against a bounded artifact (bounding is the round-count-circuit-breaker re-scope checkpoint in `plan-review-rules.md` — never a self-declared exemption) — no exceptions, no "close enough," no time-pressure rationalization. Never touch markers, commit, or proceed on REVISE.
 - Two distinct review-loop non-convergence mechanisms, with different fixes, are detailed in `plan-review-rules.md`'s `round-count-circuit-breaker` (moving-target: a growing/patched artifact — re-scope after 5 unconverged rounds) and `reviewer-coverage-diversity` (sampling: a single pass doesn't achieve full claim coverage even on a static artifact — prefer parallel independent reviewers over more serial rounds when findings aren't traceable to prior fixes).
@@ -22,6 +23,7 @@
 
 ## Verification & Honesty
 - Never speculate. Only state verified facts. If unsure, say so.
+- Clear `__pycache__`/`.pytest_cache` before trusting a `pytest` run on a file being actively edited — stale bytecode can produce a false pass or fail. Use `-p no:cacheprovider` or `rm -rf __pycache__ .pytest_cache` first.
 - Delegated review findings must include grep evidence, not just conclusions.
 - Check production logs before optimizing synthetic benchmarks.
 - Predict outcome before running expensive operations. Skip if predictable.
@@ -43,7 +45,7 @@
 - Before modifying any function, query `codegraph_callers` to know the blast radius. A change with 2 callers is not the same risk as a change with 50.
 - Never open-code `grep -r` or `find -name` as the first move -- semantic search identifies the landscape, structural queries map the connections, exact search confirms specifics.
 - Read re-bills its full byte size on every subsequent turn (measured: 81.6% of tool-result bytes in large subagent transcripts). Default to `offset`/`limit` or grep-then-read; read a file whole only when the task genuinely needs it entire — same rule as `patterns/general-code.md` § Context hygiene (LIA-379).
-- Codegraph-first is hook-enforced on the main thread (`.claude/settings.json`) and on gated subagents that carry their own frontmatter hook (code-explorer/general/planner/keystone). When authoring a `Workflow` (or dispatching a subagent that has no frontmatter hook) over a codegraph-indexed repo, bake the codegraph-first mandate INTO the `agent()` prompts -- such a `workflow-subagent` inherits no exploration hook (settings.json hooks reach only the main thread), so its prompt is the only lever.
+- Codegraph-first is guidance, not a hard block: a PreToolUse `ExitPlanMode` advisory (`codegraph-cite-check`, `.claude/settings.json`) validates the symbols and `file:line` references cited in a submitted PLAN against the live codegraph index and nudges (never blocks) on unresolved citations -- it catches invented/stale citations, not missing grep-policing. When authoring a `Workflow` (or dispatching any subagent) over a codegraph-indexed repo, bake the codegraph-first mandate INTO the `agent()` prompts -- no PreToolUse hook enforces this on subagents (the old per-agent frontmatter hook was retired along with the transcript-scanning gate it belonged to), so the prompt is the only lever.
 
 ## Memory & Context
 - Before implementing a feature, search memory (`memory_tree.py query "<topic>"`) for prior decisions and research. Cite the retrieved path.

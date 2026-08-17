@@ -8,7 +8,7 @@ from ..base import BaseJudge, JudgeResult
 from ..provider import JudgeProvider
 
 PROXY_BASE_URL = os.environ.get("CREDENTIAL_PROXY_URL", "http://localhost:3001")
-CLAUDE_JUDGE_MODEL = os.environ.get("DEEPEVAL_JUDGE_MODEL", "claude-sonnet-4-5")
+CLAUDE_JUDGE_MODEL = os.environ.get("DEEPEVAL_JUDGE_MODEL", "claude-sonnet-5")
 
 
 class ClaudeProxyRuntimeJudge(BaseJudge):

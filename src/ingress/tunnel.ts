@@ -68,25 +68,121 @@ export function extractPublicUrl(api: unknown): string | null {
   return https?.public_url ?? any?.public_url ?? null;
 }
 
-/** GET ngrok's local API; resolves null if nothing is listening on :4040. */
-function fetchTunnelsApi(): Promise<unknown> {
+/** Absolute wall-clock budget for the whole :4040 probe. */
+const PROBE_TIMEOUT_MS = 1500;
+
+/** Body bytes to buffer before giving up on parsing (ngrok's payload is tiny). */
+const MAX_PROBE_BODY_BYTES = 1024 * 1024;
+
+/**
+ * Outcome of probing :4040. Only `free` permits starting our own ngrok — the
+ * pre-flight is a fail-closed check, so anything short of proof that the port
+ * is unoccupied must block.
+ */
+export type PortProbe =
+  | { state: 'free' }
+  | { state: 'occupied'; api: unknown }
+  | { state: 'indeterminate'; detail: string };
+
+/**
+ * Classify a failed request to ngrok's local API. Pure, so the fail-closed
+ * policy is unit-testable without a socket.
+ *
+ * NGROK_API is a literal IPv4 loopback address with no DNS lookup, so a port
+ * with no listener answers ECONNREFUSED essentially immediately. That makes
+ * ECONNREFUSED the ONLY evidence that the port is genuinely free. Every other
+ * error code means something engaged with the socket and then failed (e.g. a
+ * live listener that accepts and then resets), which is not proof of absence.
+ */
+export function classifyProbeError(code: string | undefined): PortProbe {
+  if (code === 'ECONNREFUSED') return { state: 'free' };
+  return {
+    state: 'indeterminate',
+    detail: `request failed with ${code ?? 'an unknown error'}`,
+  };
+}
+
+/**
+ * Probe ngrok's local API on :4040.
+ *
+ * Any HTTP response at all means something is listening — including one whose
+ * body does not parse, which previously read as "free" and let a second ngrok
+ * launch into a session conflict.
+ */
+export function probeNgrokApi(apiUrl: string = NGROK_API): Promise<PortProbe> {
   return new Promise((resolve) => {
-    const req = http.get(NGROK_API, (res) => {
+    // Response headers are all the pre-flight actually needs: if anything
+    // answered, the port is taken. The body is only read so the post-spawn URL
+    // poll can reuse this probe.
+    let sawHeaders = false;
+    let settled = false;
+    // Assigned below, once `req` exists; `finish` only reads it at call time.
+    let deadline: NodeJS.Timeout | undefined = undefined;
+
+    /** Once headers arrived the port is occupied, whatever happened next. */
+    const givenHeaders = (detail: string): PortProbe =>
+      sawHeaders
+        ? { state: 'occupied', api: null }
+        : { state: 'indeterminate', detail };
+
+    const finish = (probe: PortProbe): void => {
+      if (settled) return;
+      settled = true;
+      if (deadline) clearTimeout(deadline);
+      req.destroy();
+      resolve(probe);
+    };
+
+    const req = http.get(apiUrl, (res) => {
+      sawHeaders = true;
       const chunks: Buffer[] = [];
-      res.on('data', (c) => chunks.push(c));
+      let bytes = 0;
+      res.on('data', (c: Buffer) => {
+        bytes += c.length;
+        if (bytes > MAX_PROBE_BODY_BYTES) {
+          // Occupied beyond doubt — we simply cannot use this body.
+          finish({ state: 'occupied', api: null });
+          return;
+        }
+        chunks.push(c);
+      });
       res.on('end', () => {
         try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+          finish({
+            state: 'occupied',
+            api: JSON.parse(Buffer.concat(chunks).toString('utf-8')),
+          });
         } catch {
-          resolve(null);
+          // A response that is not JSON still proves the port is taken.
+          finish({ state: 'occupied', api: null });
         }
       });
+      // An unhandled 'error' on the response would otherwise throw.
+      const aborted = (): void =>
+        finish(givenHeaders('response aborted before the body completed'));
+      res.on('error', aborted);
+      res.on('aborted', aborted);
     });
-    req.on('error', () => resolve(null));
-    req.setTimeout(1500, () => {
-      req.destroy();
-      resolve(null);
-    });
+
+    req.on('error', (err: NodeJS.ErrnoException) =>
+      finish(
+        sawHeaders
+          ? { state: 'occupied', api: null }
+          : classifyProbeError(err.code),
+      ),
+    );
+    // 'close' always fires once the request finishes, for any reason.
+    req.on('close', () =>
+      finish(givenHeaders('connection closed before a usable response')),
+    );
+
+    // An ABSOLUTE deadline, deliberately not req.setTimeout: that one measures
+    // socket INACTIVITY, so a peer streaming chunks forever would keep resetting
+    // it while 'end'/'aborted'/'error'/'close' never fire — hanging the
+    // pre-flight, and with it startup.
+    deadline = setTimeout(() => {
+      finish(givenHeaders(`no usable response within ${PROBE_TIMEOUT_MS}ms`));
+    }, PROBE_TIMEOUT_MS);
   });
 }
 
@@ -95,8 +191,10 @@ const sleep = (ms: number): Promise<void> =>
 
 /**
  * Start ngrok and resolve once the public URL is known. Fails CLOSED:
- *  - a foreign ngrok already on :4040 (e.g. the legacy launchd agent) → throw
+ *  - anything already answering on :4040 (e.g. the legacy launchd agent) → throw
  *    with an actionable unload hint, rather than silently sharing the session;
+ *  - :4040 not provably free — a timeout, or any request error other than
+ *    ECONNREFUSED → throw, since only a refused connection proves no listener;
  *  - ngrok binary missing (ENOENT) → throw;
  *  - URL not resolved within the timeout → throw.
  * Supervises a single restart on unexpected exit (not on an auth-error exit).
@@ -105,12 +203,21 @@ export async function startTunnel(deps: TunnelDeps): Promise<TunnelHandle> {
   const timeoutMs = deps.startTimeoutMs ?? 15_000;
 
   // Pre-flight: detect a foreign ngrok holding :4040 (free tier = 1 session).
-  const existing = await fetchTunnelsApi();
-  if (existing !== null) {
+  // Fail closed — proceed only on positive proof that the port is free.
+  const probe = await probeNgrokApi();
+  if (probe.state === 'occupied') {
     throw new Error(
-      'ingress-tunnel: ngrok API already responding on :4040 — another ngrok ' +
-        'is running. Stop it first (macOS launchd: launchctl unload ' +
+      'ingress-tunnel: something is already responding on :4040 — another ngrok ' +
+        'is likely running. Stop it first (macOS launchd: launchctl unload ' +
         '~/Library/LaunchAgents/com.deus.ngrok.plist; Linux/WSL: kill $(pgrep ngrok)).',
+    );
+  }
+  if (probe.state === 'indeterminate') {
+    throw new Error(
+      `ingress-tunnel: could not confirm :4040 is free (${probe.detail}). ` +
+        'Refusing to start a second ngrok, because a free loopback port refuses ' +
+        'the connection immediately — anything else suggests a process is holding it. ' +
+        'Check what owns :4040 (macOS/Linux: lsof -nP -iTCP:4040 -sTCP:LISTEN).',
     );
   }
 
@@ -154,7 +261,13 @@ export async function startTunnel(deps: TunnelDeps): Promise<TunnelHandle> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await sleep(500);
-    const url = extractPublicUrl(await fetchTunnelsApi());
+    // Here we want the payload if our own ngrok has come up yet, so anything
+    // other than a parsed response simply means "not ready, keep polling".
+    // This is deliberately NOT the fail-closed reading used by the pre-flight.
+    const probed = await probeNgrokApi();
+    const url = extractPublicUrl(
+      probed.state === 'occupied' ? probed.api : null,
+    );
     if (url) {
       logger.info({ url }, 'ingress-tunnel: tunnel up');
       return {

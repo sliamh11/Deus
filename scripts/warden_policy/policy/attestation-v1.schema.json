@@ -23,15 +23,23 @@
           "required": ["enforced_repos"],
           "additionalProperties": false,
           "properties": {
+            "plan_review_ttl_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Session-bound plan-review attestations older than this are treated as expired by guardrails.rego (LIA-523). Optional -- Rego's own `default plan_review_ttl_seconds := 7200` applies when absent."
+            },
             "enforced_repos": {
               "type": "object",
-              "description": "Keyed by repo_id. Absent or enabled=false means the repo is outside enforcement scope (commits allow, unconditionally, before any commit-form check).",
+              "description": "Keyed by repo_id. Absent or enabled=false means the repo is outside code-review enforcement scope (commits allow, unconditionally, before any commit-form check). plan_review_enabled is a second, independent, additive on/off switch for the plan-review gate -- absent means plan-review enforcement is off for this repo, regardless of the code-review `enabled` value. Deliberately NOT additionalProperties:false so new sibling switches can be added without a migration (LIA-523).",
               "additionalProperties": {
                 "type": "object",
                 "required": ["enabled", "enrolled_at"],
                 "properties": {
                   "enabled": { "type": "boolean" },
-                  "enrolled_at": { "type": "string", "format": "date-time" }
+                  "enrolled_at": { "type": "string", "format": "date-time" },
+                  "plan_review_enabled": { "type": "boolean" },
+                  "ai_eng_warden_enabled": { "type": "boolean" },
+                  "verification_gate_enabled": { "type": "boolean" }
                 }
               }
             }
@@ -52,6 +60,20 @@
               "additionalProperties": { "type": "string", "pattern": "^att-" }
             }
           }
+        },
+        "latest_by_backend": {
+          "type": "object",
+          "description": "repo_id -> gate -> subject_key -> backend -> attestation id. Additive, optional -- populated only for multi-backend migrated gates (code-reviewer, ai-eng-warden); `latest` is never touched by these writes. Absent entirely on a ledger that has never issued a backend-scoped attestation.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": { "type": "string", "pattern": "^att-" }
+              }
+            }
+          }
         }
       }
     }
@@ -65,26 +87,41 @@
         "id": { "type": "string", "pattern": "^att-" },
         "schema_version": { "const": 1 },
         "repo_id": { "type": "string", "pattern": "^git-common-dir-sha256:[0-9a-f]{64}$" },
-        "gate": { "type": "string", "enum": ["code-review"] },
+        "gate": { "type": "string", "enum": ["code-review", "code-reviewer", "ai-eng-warden", "plan-review", "verification-gate"] },
         "subject": {
           "type": "object",
-          "required": ["kind", "key", "digest"],
-          "additionalProperties": false,
+          "required": ["kind"],
           "properties": {
-            "kind": { "const": "git-tree" },
-            "key": { "type": "string", "pattern": "^git-tree:(sha1|sha256):[0-9a-f]+$" },
-            "digest": {
-              "type": "object",
-              "required": ["algorithm", "value"],
-              "additionalProperties": false,
-              "properties": {
-                "algorithm": { "type": "string", "enum": ["sha1", "sha256"] },
-                "value": { "type": "string" }
+            "kind": { "type": "string", "enum": ["git-tree", "session"] }
+          },
+          "if": { "properties": { "kind": { "const": "git-tree" } } },
+          "then": {
+            "required": ["kind", "key", "digest"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "git-tree" },
+              "key": { "type": "string", "pattern": "^git-tree:(sha1|sha256):[0-9a-f]+$" },
+              "digest": {
+                "type": "object",
+                "required": ["algorithm", "value"],
+                "additionalProperties": false,
+                "properties": {
+                  "algorithm": { "type": "string", "enum": ["sha1", "sha256"] },
+                  "value": { "type": "string" }
+                }
               }
+            }
+          },
+          "else": {
+            "required": ["kind", "session_id"],
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "session" },
+              "session_id": { "type": "string", "minLength": 1, "description": "Opaque Hermes session identifier -- stored raw, not hashed/digested (nothing sensitive to redact, unlike a repo-relative git path)." }
             }
           }
         },
-        "verdict": { "type": "string", "enum": ["SHIP", "REVISE", "BLOCK"] },
+        "verdict": { "type": "string", "enum": ["SHIP", "REVISE", "BLOCK", "COULD_NOT_RUN"] },
         "issuer": {
           "type": "object",
           "required": ["kind", "reviewer_id"],
@@ -95,7 +132,8 @@
           }
         },
         "issued_at": { "type": "string", "format": "date-time" },
-        "reason": { "type": "string" }
+        "reason": { "type": "string" },
+        "backend": { "type": "string", "description": "Present only for multi-backend migrated-gate attestations (indexed under latest_by_backend); absent for legacy single-attestation records indexed under latest." }
       }
     }
   }

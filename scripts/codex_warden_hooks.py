@@ -13,6 +13,7 @@ import os
 import platform
 import re
 import shlex
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,13 @@ from warden_review.constants import (  # noqa: E402
     cross_review_file,
     loop_file,
     store_key,
+)
+
+# LLM-sensitive file patterns (LIA-524): shared with the Hermes-side ai-eng-warden gate so
+# the two harnesses can't silently drift on what counts as an LLM-sensitive diff.
+from warden_policy.llm_file_patterns import (  # noqa: E402
+    AI_ENG_BASENAMES as _AI_ENG_BASENAMES,
+    AI_ENG_DIR_PREFIXES as _AI_ENG_DIR_PREFIXES,
 )
 
 # Warden-hooks capsules (LIA-306): pure leaf modules extracted from this file. Re-imported
@@ -124,6 +132,13 @@ HOOK_SPECS: tuple[HookSpec, ...] = (
         "plan-mode-invalidator",
         3,
         "Invalidating Deus plan review",
+    ),
+    HookSpec(
+        "PreToolUse",
+        "ExitPlanMode",
+        "codegraph-cite-check",
+        5,
+        "Checking Deus codegraph citations",
     ),
     HookSpec("PreToolUse", "Bash", "code-review-gate", 5, "Checking Deus code review"),
     HookSpec("PreToolUse", "Bash", "ai-eng-gate", 5, "Checking AI engineering review"),
@@ -244,7 +259,32 @@ HOOK_SPECS: tuple[HookSpec, ...] = (
 )
 
 PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.MULTILINE)
-GIT_COMMIT_RE = re.compile(r"(^|[;&|]\s*)git(?:\s+-C\s+\S+)?\s+commit(\s|$)")
+#: Trigger regex for the commit-time warden gates. LIA-518: broadened to cover
+#: `--no-pager`/other global flags, cumulative `-C`, quoted `-C` paths, `env`/`VAR=val`/
+#: `sudo` wrapping, and multiline commands. Line-start anchor is `^[ \t]*` (horizontal
+#: whitespace only), NOT `^\s*` -- the latter is O(n^2) under MULTILINE on long runs of
+#: blank lines (see test_git_commit_re_no_redos_on_consecutive_newlines). The generic
+#: `-<letter>` short-flag alternative excludes `C`/`c` specifically (they have their own
+#: dedicated branches below) -- including them there let a `-C`/`-c` token be consumed
+#: two ambiguous ways, which CodeQL's py/redos caught as exponential-backtracking (see
+#: test_git_commit_re_no_redos_on_ambiguous_flag_alternation). The `-C`/env-var value
+#: alternatives also exclude quote characters from their bare-token fallback
+#: (`[^'"\s]+`/`[^'"\s]*`, not `\S+`/`\S*`) for the same reason: an unquoted fallback
+#: that CAN match quoted content overlaps with the quoted alternative and is the same
+#: ReDoS shape (test_git_commit_re_no_redos_on_ambiguous_quoted_value_alternation). Known
+#: non-goals (trigger heuristic, not adversarial-complete; see LIA-517): unquoted
+#: `-C $(...)` args and embedded/partial quoting in `-c`/`--long=value` aren't parsed
+#: (e.g. `-c user.name="John Doe"` doesn't match). Deliberate accepted false positive: a
+#: heredoc merely mentioning "git commit" on its own line now also matches -- fail-closed
+#: is the correct tradeoff for a gate whose job is "never silently skip review."
+GIT_COMMIT_RE = re.compile(
+    r"(?:^[ \t]*|[;&|]\s*)"
+    r"(?:(?:sudo\s+)?(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|[^'\"\s]*)\s+)*)?"
+    r"git\s+"
+    r"(?:-C\s+(?:'[^']*'|\"[^\"]*\"|[^'\"\s]+)\s+|-c\s+\S+\s+|--\S+\s+|-[A-BD-Za-bd-z]\s+)*"
+    r"commit(?:\s|$)",
+    re.MULTILINE,
+)
 SECURITY_PATH_RE = re.compile(
     r"(auth|session|credential|token|oauth|secret|proxy|security|trust|encrypt|decrypt|permission)",
     re.IGNORECASE,
@@ -553,266 +593,6 @@ def _marker_dir_for_worktree(repo_root: Path, worktree_root: Path) -> Path:
         ).hexdigest()[:12]
         return base / "worktree-markers" / wt_id
     return base
-
-
-# ---------------------------------------------------------------------------
-# Codegraph-first gate (LIA-121 / RETRO-2026-05-29-01)
-# ---------------------------------------------------------------------------
-
-#: Filesystem code-search commands; blocked as a primary token before a
-#: codegraph/code_search call. See ``_bash_is_code_search``.
-_CODE_SEARCH_COMMANDS = frozenset(
-    {"grep", "egrep", "fgrep", "rg", "ripgrep", "ag", "ack", "find"}
-)
-
-#: Minimum number of assistant turns in a transcript before we trust that a
-#: missing codegraph call is deliberate vs. the gate being blind.  Below this
-#: threshold the gate blocks normally (agent might not have had a chance to
-#: call codegraph yet); at or above it with zero recognized tool_use blocks of
-#: any kind, the gate logs a canary and fails open.
-_BLIND_DETECTION_THRESHOLD = 5
-
-
-def _line_is_codegraph_toolcall(obj: Any) -> bool:
-    """True if *obj* (a parsed JSONL transcript line) is a codegraph/
-    code_search tool_use -- or a ToolSearch that selects one.
-
-    This is the SHARED predicate used by both the live transcript scan
-    (``_scan_transcript_for_codegraph``) and the CI fixture test
-    (``test_codegraph_transcript_fixture``).  Keep both callers in sync.
-
-    Rules:
-    * Outer ``type`` must be ``"assistant"`` (not ``"user"`` / ``"attachment"``).
-    * ``message.content`` must be a list containing a block where
-      ``type == "tool_use"`` AND either:
-      - ``name`` starts with ``"mcp__codegraph__"`` or ``"mcp__code-search__"``
-      - ``name == "ToolSearch"`` AND ``input.query`` contains
-        ``"mcp__codegraph__"`` or ``"mcp__code-search__"``
-
-    False-positive sources explicitly excluded (caller type ``"user"``
-    or non-``"tool_use"`` block types) are safe because we check outer type
-    and inner block type strictly.
-    """
-    if not isinstance(obj, dict):
-        return False
-    if obj.get("type") != "assistant":
-        return False
-    msg = obj.get("message")
-    if not isinstance(msg, dict):
-        return False
-    content = msg.get("content")
-    if not isinstance(content, list):
-        return False
-    for blk in content:
-        if not isinstance(blk, dict) or blk.get("type") != "tool_use":
-            continue
-        name = str(blk.get("name") or "")
-        if name.startswith("mcp__codegraph__") or name.startswith("mcp__code-search__"):
-            return True
-        if name == "ToolSearch":
-            inp = blk.get("input")
-            query = str(inp.get("query") or "") if isinstance(inp, dict) else ""
-            q = query.lower()
-            if "mcp__codegraph__" in q or "mcp__code-search__" in q:
-                return True
-    return False
-
-
-def _scan_transcript_for_codegraph(
-    transcript_path: str,
-) -> tuple[bool, int, int, int] | None:
-    """Read the transcript JSONL at *transcript_path* and return
-    ``(found, assistant_turns, any_tool_uses, prior_search_attempts)``,
-    or ``None`` on IO error.
-
-    * ``found``: True if any line satisfies ``_line_is_codegraph_toolcall``.
-    * ``assistant_turns``: count of lines with outer ``type == "assistant"``.
-    * ``any_tool_uses``: count of tool_use blocks seen across all lines
-      (used to detect parse blindness: if assistant_turns is high but
-      any_tool_uses is zero, the format may have changed).
-    * ``prior_search_attempts``: count of tool_use blocks whose name is
-      ``"Grep"`` or ``"Glob"``, or ``"Bash"`` with a primary code-search
-      command (per ``_bash_is_code_search``).  The current hook's search
-      attempt is NOT yet in the transcript when the hook fires, so this
-      counts only PAST attempts — exactly what the escalating-deny message
-      needs.
-    * Returns ``None`` when the file cannot be opened (missing path, permission
-      error).  The caller should treat ``None`` as a fail-open signal.
-
-    Parse errors on individual lines are silently skipped (partial writes are
-    expected on a live transcript).
-    """
-    path = Path(transcript_path)
-    found = False
-    assistant_turns = 0
-    any_tool_uses = 0
-    prior_search_attempts = 0
-    try:
-        with path.open(encoding="utf-8", errors="replace") as fh:
-            for raw in fh:
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    obj = json.loads(raw)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if not isinstance(obj, dict):
-                    continue
-                if obj.get("type") == "assistant":
-                    assistant_turns += 1
-                    msg = obj.get("message")
-                    if isinstance(msg, dict):
-                        content = msg.get("content")
-                        if isinstance(content, list):
-                            for blk in content:
-                                if isinstance(blk, dict) and blk.get("type") == "tool_use":
-                                    any_tool_uses += 1
-                                    blk_name = blk.get("name", "")
-                                    if blk_name in ("Grep", "Glob"):
-                                        prior_search_attempts += 1
-                                    elif blk_name == "Bash":
-                                        blk_input = blk.get("input")
-                                        if isinstance(blk_input, dict):
-                                            cmd = blk_input.get("command", "")
-                                            if isinstance(cmd, str) and _bash_is_code_search(cmd):
-                                                prior_search_attempts += 1
-                if _line_is_codegraph_toolcall(obj):
-                    found = True
-                    # Answer known; the turn/tool_use counters are only consulted
-                    # by the caller's blindness branch when found is False.
-                    break
-    except OSError:
-        return None
-    return found, assistant_turns, any_tool_uses, prior_search_attempts
-
-
-def _resolve_agent_transcript(event: dict[str, Any]) -> str:
-    """Return the transcript file the gate should scan for THIS agent.
-
-    For a Task-spawned subagent the hook event's ``transcript_path`` points at the
-    PARENT session file (``.../<session_id>.jsonl``), which contains only the main
-    agent's activity (its ``Agent`` delegation) -- NOT the subagent's own tool
-    calls.  Those are written to ``.../<session_id>/subagents/agent-<agent_id>.jsonl``.
-    When ``agent_id`` is present we scan that per-subagent file, which both fixes
-    the production path AND gives natural per-invocation isolation (each subagent
-    invocation has its own file, so a codegraph call by one never unblocks a
-    parallel sibling).  For the main thread / ``--agent`` runs there is no
-    ``agent_id`` and ``transcript_path`` is already the agent's own file.
-
-    We deliberately do NOT fall back to the parent file when the derived subagent
-    file is absent: the parent is the wrong file and scanning it would false-block.
-    Returning the (possibly not-yet-existing) subagent path lets
-    ``_scan_transcript_for_codegraph`` return ``None`` -> the gate fails open.
-
-    Empirically validated (LIA-121): the PreToolUse event for a Task-spawned
-    subagent carries ``agent_id`` + ``agent_type``; the derived file exists at
-    tool-call time and holds the subagent's ``tool_use`` entries.
-
-    Workflow-spawned subagents write their transcript DEEPER, at
-    ``.../<session_id>/subagents/workflows/wf_<run>/agent-<agent_id>.jsonl``, so the
-    flat derivation misses and the gate would silently fail open (observed: 3
-    ``codegraph-gate CANARY`` fail-opens). Those fires came from a GATED agent (e.g.
-    code-explorer) invoked AS a workflow subagent, carrying its OWN frontmatter hook
-    -- a workflow subagent with no frontmatter hook is not gated at all (settings.json
-    hooks reach only the main thread), which is why ``core-behavioral-rules`` makes the
-    prompt the lever for those. When the flat path is absent we resolve
-    the file under this session's ``subagents/workflows/*/`` -- only on a flat-path
-    miss, so the common Task path and the "not yet written -> fail open" behavior are
-    unchanged.
-    """
-    tp = str(event.get("transcript_path") or "")
-    if not tp:
-        return ""
-    agent_id = str(event.get("agent_id") or "")
-    if agent_id:
-        # Path().name strips directory components; the regex below then ENFORCES the
-        # "bare identifier" assumption -- a crafted agent_id with glob metacharacters
-        # (*, ?, []) could otherwise match a SIBLING agent's file via the glob and
-        # falsely unblock a grep-first agent. On an unexpected shape we fail open via
-        # the flat path rather than glob.
-        safe_id = Path(agent_id).name
-        subagents_dir = Path(tp).with_suffix("") / "subagents"
-        direct = subagents_dir / f"agent-{safe_id}.jsonl"
-        if direct.exists():
-            return str(direct)
-        # Flat path absent: resolve the deeper workflow location with a precise,
-        # non-recursive glob (known layout: subagents/workflows/wf_*/). A future
-        # layout change is caught by drift_check.check_codegraph_transcript_format,
-        # not silently absorbed here.
-        if re.fullmatch(r"[A-Za-z0-9_-]+", safe_id):
-            try:
-                match = next(
-                    iter(subagents_dir.glob(f"workflows/*/agent-{safe_id}.jsonl")),
-                    None,
-                )
-            except OSError:
-                match = None
-            if match is not None:
-                return str(match)
-        # Not-yet-written, or an unexpected id shape: return the flat path so the
-        # scan fails open (unchanged prior behavior).
-        return str(direct)
-    return tp
-
-
-def _log_gate_line(repo_root: Path, label: str, message: str) -> None:
-    """Append a labelled codegraph-gate entry to the warden audit log.
-
-    Shared writer for the gate's out-of-band signals (CANARY parse-blindness,
-    FAILOPEN availability fallback) so a silent no-op is VISIBLE in the warden
-    log rather than invisible.
-    """
-    try:
-        log = _audit_log_path(repo_root)
-        log.parent.mkdir(parents=True, exist_ok=True)
-        stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        with log.open("a", encoding="utf-8") as fh:
-            fh.write(f"{stamp} | codegraph-gate   | {label:<8}| {message}\n")
-    except Exception:
-        pass
-
-
-def _log_gate_canary(repo_root: Path, message: str) -> None:
-    """Log a parse-blindness canary: the transcript-scanning gate detected a
-    rich transcript with zero recognized tool_use blocks, so it may have gone
-    blind to a changed transcript format. Makes the silent no-op visible."""
-    _log_gate_line(repo_root, "CANARY", message)
-
-
-def _bash_is_code_search(command: str) -> bool:
-    """True if *command*'s PRIMARY token is a filesystem code search.
-
-    Strips leading ``VAR=val`` assignments and ``sudo``. A search that appears
-    only after a pipe/``;``/``&&`` (an output filter, e.g. ``ls | grep x``) is
-    not the primary token and is allowed. Unparseable commands are not blocked
-    (fail-open on ambiguity).
-    """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return False
-    i = 0
-    while i < len(tokens):
-        tok = tokens[i]
-        if (
-            "=" in tok
-            and not tok.startswith("-")
-            and tok.split("=", 1)[0].isidentifier()
-        ):
-            i += 1  # skip leading VAR=val assignment
-            continue
-        break
-    if i < len(tokens) and tokens[i] == "sudo":
-        i += 1
-    if i >= len(tokens):
-        return False
-    base = tokens[i].rsplit("/", 1)[-1]  # handle /usr/bin/grep
-    if base in _CODE_SEARCH_COMMANDS:
-        return True
-    if base == "git" and i + 1 < len(tokens) and tokens[i + 1] == "grep":
-        return True
-    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1144,255 +924,494 @@ def run_session_init(repo_root: Path) -> int:
     return 0
 
 
-def _codegraph_deny_message(prior_searches: int) -> str:
-    """Return an escalating deny message for the codegraph-first gate.
+# ---------------------------------------------------------------------------
+# Codegraph citation check (advisory) -- replaces the transcript-scanning
+# codegraph-first gate (LIA-121 / RETRO-2026-05-29-01). That gate proved
+# "codegraph was called earlier" by scanning the session transcript (Claude-
+# Code-only, fragile to format drift); this validates the citations in a
+# submitted PLAN against the live codegraph index instead, and only advises.
+# ---------------------------------------------------------------------------
 
-    The message tier is based on how many search-tool attempts (Grep, Glob, or
-    Bash code-search) the agent has already made in its transcript, giving a
-    repeatedly-blocked agent increasingly explicit instructions instead of
-    cycling on the same polite hint.
+#: Generic words that are not useful symbol citations. Applied ONLY to
+#: unqualified (single-segment) tokens: a qualified citation such as
+#: ``RuntimeRegistry::get`` is unambiguous precisely BECAUSE of its qualifier,
+#: so stoplisting its final segment would discard valid, well-grounded
+#: citations and falsely report "cites no code symbols".
+_CITE_STOPLIST = frozenset(
+    {
+        "main", "test", "tests", "run", "get", "set", "init", "index", "true",
+        "false", "none", "null", "git", "npm", "bash", "sh", "python",
+        "python3", "node", "json", "todo", "note", "and", "not", "for", "the",
+        "this", "that", "with",
+    }
+)
 
-    * prior_searches == 0  → polite hint (tier 0, preserved wording).
-    * 1 <= prior_searches <= 2 → imperative + exact two-step sequence (tier 1).
-    * prior_searches >= 3  → tier-1 text PLUS Read fallback for when the
-      codegraph MCP server is unavailable (tier 2).
+#: Backtick-delimited spans; a citation must be explicitly marked as code.
+_IDENT_IN_BACKTICKS = re.compile(r"`([^`\n]{1,200})`")
+
+#: Identifier grammar. Accepts BOTH ``::`` and ``.`` as qualifier separators.
+#: Measured against the live index: ``qualified_name`` contains ``::`` in 2776
+#: of 15123 rows (18%) versus ``.`` in 2055 -- ``::`` is this indexer's
+#: cross-language separator (``DoomLoopDetector::record`` typescript,
+#: ``invoke_agent::_drain_stderr`` python), not a Rust-ism. A ``.``-only
+#: grammar silently dropped the index's single most common qualified shape.
+_IDENT_RE = re.compile(
+    r"^[A-Za-z_$][A-Za-z0-9_$]*(?:(?:::|\.)[A-Za-z_$][A-Za-z0-9_$]*)*$"
+)
+
+#: ``path/to/file.ext:LINE``. The extension cap is 16, NOT 6: this repo tracks
+#: ``setup/com.deus.gcal-keepalive.plist.template`` and
+#: ``integrations/gcal/credentials.json.example``, so a 6-char cap silently
+#: ignored real citations and could trigger the "cites nothing" nudge on a
+#: properly grounded plan. ``-?\d+`` captures a malformed negative line number
+#: so it is reported unresolved rather than silently dropped. This also
+#: matches host:port shapes (``0.0.0.0:3005``); ``_looks_like_host_port``
+#: filters those out below before they become citation candidates.
+_FILE_LINE_RE = re.compile(r"([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]{1,16}):(-?\d+)")
+
+#: Dotted-quad shape, e.g. ``0.0.0.0`` or ``127.0.0.1``.
+_IPV4_LIKE_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+#: TLD-shaped final segments seen in real host:port citations (e.g.
+#: ``api.anthropic.com:443``). Deliberately separate from
+#: ``_FILENAME_EXTENSION_SUFFIXES``: that set includes real file extensions
+#: (``md``, ``json``, ``yml``...) that DO appear in legitimate file:line
+#: citations, so reusing it here would wrongly drop a citation like
+#: ``docs/decisions/ADR-001.md:20`` from extraction entirely. None of these
+#: TLDs are real file extensions in this repo's index (confirmed via direct
+#: query).
+_HOST_TLDS = frozenset({
+    "com", "net", "org", "io", "dev", "ai", "co", "app", "gov", "edu",
+})
+
+#: Upper bound on citations examined per artifact (bounds DB round trips).
+_MAX_CITE_CANDIDATES = 40
+
+#: Minimum identifier length worth checking.
+_MIN_CITE_LEN = 3
+
+#: Cap on bytes read while counting a cited file's lines, so a huge or binary
+#: file cannot stall the hook.
+_CITE_FILE_READ_CAP = 4_000_000
+
+
+def _looks_like_host_port(path: str) -> bool:
+    """True if *path* is shaped like a ``host:port`` address, not a file.
+
+    ``_FILE_LINE_RE`` matches ``0.0.0.0:3005`` as file=``0.0.0.0``,
+    line=``3005``, and ``api.anthropic.com:443`` as file=``api.anthropic.com``,
+    line=``443`` -- both real, in-repo false positives. A genuine file
+    extension is never purely numeric (no repo tracks a ``.3005``-style
+    extension) and never a common network TLD, and a dotted-quad path is
+    never a real relative file path either.
     """
-    tier0 = (
-        "[codegraph-first-gate] Call a codegraph or code_search tool first "
-        '(ToolSearch "select:mcp__codegraph__codegraph_context"), then retry. '
-        "core-behavioral-rules.md § Code Exploration."
-    )
-    tier1 = (
-        "[codegraph-first-gate] Blocked again — stop retrying search. "
-        "Run these two calls, in order, THEN retry: "
-        '(1) ToolSearch(query="select:mcp__codegraph__codegraph_context"); '
-        "(2) codegraph_context with your question. "
-        "core-behavioral-rules.md § Code Exploration."
-    )
-    tier2 = (
-        tier1
-        + " If ToolSearch returns no codegraph tool (the MCP server is down), "
-        "use Read on the specific files you need instead — do not keep retrying grep/find."
-    )
-    if prior_searches == 0:
-        return tier0
-    if prior_searches <= 2:
-        return tier1
-    return tier2
+    if _IPV4_LIKE_RE.match(path):
+        return True
+    ext = path.rsplit(".", 1)[-1].lower()
+    if ext.isdigit():
+        return True
+    return ext in _HOST_TLDS
 
 
-#: Server names that satisfy the codegraph-first gate — mirrors the
-#: ``mcp__codegraph__`` / ``mcp__code-search__`` tool prefixes detected by
-#: ``_line_is_codegraph_toolcall``.
-_CODEGRAPH_SERVER_NAMES = ("codegraph", "code-search")
+def _cite_split_segments(token: str) -> list[str]:
+    """Split *token* on both qualifier separators (``::`` and ``.``)."""
+    return [seg for seg in re.split(r"::|\.", token) if seg]
 
 
-def _codegraph_config_paths(repo_root: Path) -> list[Path]:
-    """Claude Code config files that may register the codegraph/code-search MCP
-    servers. All are read and their server names unioned (order irrelevant).
-    A separate function so tests can monkeypatch the lookup deterministically."""
-    paths: list[Path] = []
-    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR")
-    if cfg_dir:
-        paths.append(Path(cfg_dir).expanduser() / ".claude.json")
-    paths.append(Path.home() / ".claude.json")
-    paths.append(repo_root / ".mcp.json")
-    # De-dup (CLAUDE_CONFIG_DIR may alias ~/.claude.json) so we never read a file twice.
-    seen: set[Path] = set()
-    out: list[Path] = []
-    for p in paths:
-        try:
-            key = p.resolve()
-        except OSError:
-            key = p
-        if key not in seen:
-            seen.add(key)
-            out.append(p)
-    return out
+#: Non-code file extensions and TLD-shaped suffixes. A qualified token whose
+#: FINAL segment matches one of these reads as "cite the file/host X.ext"
+#: rather than "X is a member of the module/class X" -- e.g. ``MEMORY_TREE.md``,
+#: ``com.deus.plist``, ``api.anthropic.com`` all shape-match "qualified" but
+#: are real, non-invented citations a code-symbol index can never contain.
+#: ``ts``/``py``/``js``/``mjs`` are deliberately NOT here: this repo's own
+#: index holds thousands of real code nodes under those extensions (confirmed
+#: via direct query), so those citations genuinely can resolve.
+_FILENAME_EXTENSION_SUFFIXES = frozenset({
+    "md", "json", "yml", "yaml", "txt", "db", "plist", "cpp", "ini", "toml",
+    "lock", "cfg", "log", "csv", "html", "template", "example",
+    "sh", "rego", "exe", "service", "jsonl", "com",
+})
+
+#: Standard-library / built-in namespace roots across the languages this repo
+#: uses (Python, TypeScript/JavaScript, Rust) -- a qualified citation rooted
+#: in one of these (e.g. ``os.replace``, ``Promise.all``, ``path.join``) is
+#: excluded from gating the nudge, same as an unqualified miss. Safe by
+#: construction regardless of set membership: this filter only ever runs on
+#: tokens that ALREADY failed the DB lookup (see its call site in
+#: ``high_confidence_unresolved`` below), so it can never suppress a citation
+#: that genuinely resolves. Real, accepted tradeoff: an invented method on a
+#: stdlib root (``os.totallyNotARealStdlibCall``) also goes silent --
+#: unavoidable, the index can't tell it apart from ``os.replace`` either way.
+_STDLIB_NAMESPACE_ROOTS = frozenset({
+    "os", "sys", "re", "json", "datetime", "pathlib", "subprocess", "shlex",
+    "fcntl", "sqlite3", "itertools", "functools", "collections", "typing",
+    "asyncio", "threading", "logging", "argparse", "hashlib", "shutil",
+    "path", "tempfile", "time", "random", "socket", "glob", "math",
+    "signal", "struct", "copy", "string", "inspect",
+    "Promise", "JSON", "Object", "Array", "Math", "console", "process",
+    "Buffer", "Map", "Set", "Date", "Error",
+    "std", "mpsc", "fs", "io", "thread", "libc",
+})
 
 
-def _codegraph_mcp_available(repo_root: Path) -> tuple[bool, str]:
-    """Return ``(available, reason)``: is a codegraph/code-search MCP server
-    registered? Reads the configs in ``_codegraph_config_paths`` and unions
-    ``mcpServers`` + ``projects[repo].mcpServers``.
-
-    ``available`` is True ONLY when such a server is found. Every other outcome
-    (not registered, corrupt config, no config at all) returns False so the gate
-    falls back to grep — an agent cannot satisfy a gate for a server it cannot
-    call, so blocking would brick it. ``reason`` distinguishes the cases for the
-    FAILOPEN log. (A real fresh instance has a ``~/.claude.json`` without the
-    server → the "not registered" branch; tests force availability via the
-    autouse fixture's ``CLAUDE_CONFIG_DIR``.)
+def _looks_like_uncheckable_qualified(token: str) -> bool:
+    """True if a QUALIFIED *token* is structurally unresolvable regardless
+    of whether it names something real or invented -- a filename-shaped
+    citation or a stdlib/builtin namespace reference. Such a token can never
+    gate the nudge; see ``high_confidence_unresolved`` in
+    ``run_codegraph_cite_check``.
     """
-    server_names: set[str] = set()
-    any_file_present = False
-    any_parsed = False
-    for path in _codegraph_config_paths(repo_root):
-        try:
-            if not path.exists():
-                continue
-            any_file_present = True
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+    segments = _cite_split_segments(token)
+    if len(segments) < 2:
+        return False
+    if segments[-1].lower() in _FILENAME_EXTENSION_SUFFIXES:
+        return True
+    return segments[0] in _STDLIB_NAMESPACE_ROOTS
+
+
+def _cite_keys(token: str) -> list[str]:
+    """Lookup keys that may satisfy a citation.
+
+    A qualified token yields the form as written PLUS the same segments
+    rejoined with the OTHER separator, so a human-written
+    ``DoomLoopDetector.record`` still matches this indexer's
+    ``DoomLoopDetector::record`` and vice versa.
+
+    The bare final segment is deliberately NOT a key. Allowing it would let
+    ``NonexistentModule.resolveThing`` validate merely because some
+    ``resolveThing`` exists somewhere -- which defeats the entire point of an
+    invented-name detector. A qualified citation must match a qualified symbol.
+    """
+    segments = _cite_split_segments(token)
+    if len(segments) <= 1:
+        return [token]
+    other = "::".join(segments) if "." in token else ".".join(segments)
+    return [token, other]
+
+
+def _looks_like_symbol(token: str, had_parens: bool) -> bool:
+    """True if *token* reads as a code identifier rather than a prose word.
+
+    Requires a qualifier (``.`` / ``::``), an underscore, an internal case
+    transition, or explicit ``()``. Without this filter, always reporting
+    unresolved citations would fire on nearly every plan (``config``,
+    ``widget``) and the nudge would be trained away as noise. This is a shape
+    rule, not a tuned threshold.
+    """
+    if had_parens or "_" in token or "." in token or "::" in token:
+        return True
+    return bool(re.search(r"[a-z][A-Z]", token))
+
+
+def _extract_citations(
+    text: str,
+) -> tuple[list[tuple[str, list[str]]], list[tuple[str, int]]]:
+    """Return ``(identifier_candidates, file_line_candidates)`` found in *text*.
+
+    Identifier candidates are ``(display, keys)`` -- validated when ANY key
+    resolves, reported once by ``display`` when none do.
+    """
+    idents: list[tuple[str, list[str]]] = []
+    seen_idents: set[str] = set()
+    for raw in _IDENT_IN_BACKTICKS.findall(text):
+        token = raw.strip()
+        had_parens = token.endswith("()")
+        if had_parens:
+            token = token[:-2].strip()
+        if len(token) < _MIN_CITE_LEN or not _IDENT_RE.match(token):
             continue
-        any_parsed = True
-        if not isinstance(data, dict):
+        segments = _cite_split_segments(token)
+        # Stoplist applies to UNQUALIFIED tokens only -- see _CITE_STOPLIST.
+        if len(segments) <= 1 and token.lower() in _CITE_STOPLIST:
             continue
-        top = data.get("mcpServers")
-        if isinstance(top, dict):
-            server_names.update(top.keys())
-        projects = data.get("projects")
-        if isinstance(projects, dict):
-            proj = projects.get(str(repo_root))
-            if isinstance(proj, dict) and isinstance(proj.get("mcpServers"), dict):
-                server_names.update(proj["mcpServers"].keys())
-    if any(name in server_names for name in _CODEGRAPH_SERVER_NAMES):
-        return True, ""
-    if any_parsed:
-        return False, "no codegraph/code-search MCP server registered — grep allowed (fresh instance?)"
-    if any_file_present:
-        return False, "Claude MCP config unreadable — grep allowed"
-    return False, "no Claude MCP config found — grep allowed"
+        if not _looks_like_symbol(token, had_parens):
+            continue
+        if token in seen_idents:
+            continue
+        seen_idents.add(token)
+        idents.append((token, _cite_keys(token)))
+
+    file_lines: list[tuple[str, int]] = []
+    seen_fl: set[tuple[str, int]] = set()
+    for path_raw, line_raw in _FILE_LINE_RE.findall(text):
+        if _looks_like_host_port(path_raw):
+            continue
+        try:
+            line = int(line_raw)
+        except ValueError:
+            continue
+        key = (path_raw, line)
+        if key in seen_fl:
+            continue
+        seen_fl.add(key)
+        file_lines.append(key)
+
+    # Bound total work. Independent caps: a single shared budget filled
+    # identifiers-first would silently zero out file:line validation entirely
+    # on any plan with >= _MAX_CITE_CANDIDATES identifier citations.
+    idents = idents[:_MAX_CITE_CANDIDATES]
+    file_lines = file_lines[:_MAX_CITE_CANDIDATES]
+    return idents, file_lines
 
 
-def _log_codegraph_availability_failopen(
-    repo_root: Path, event: dict[str, Any], reason: str
-) -> None:
-    """Record an availability fail-open to the warden log, ONCE per session.
+def _resolve_cited_path(raw: str, work_root: Path, repo_root: Path) -> Path | None:
+    """Resolve a cited path against the checkout the artifact describes.
 
-    Dedup marker is session-keyed (from ``transcript_path``) and lives under the
-    state dir (``~/.deus``), not the repo. A legitimately-fresh instance logs once
-    per session (no per-grep spam); a *misread* on an instance that should enforce
-    resurfaces every new session instead of being permanently silenced.
+    Order matters: this repo nests its worktrees INSIDE the main checkout, so an
+    absolute worktree path is ALSO under ``repo_root``. Relativizing against
+    ``repo_root`` first and rejoining to ``work_root`` would duplicate the
+    worktrees prefix and falsely mark a valid citation unresolved.
+
+    Returns ``None`` for a path that escapes the checkout.
     """
-    try:
-        tp = str(event.get("transcript_path") or "")
-        session_id = Path(tp).stem if tp else "unknown"
-        if not session_id:
-            session_id = "unknown"
-        state_dir = Path(os.environ.get("DEUS_STATE_DIR", Path.home() / ".deus"))
-        marker = state_dir / f".codegraph-avail-logged-{session_id}"
-        if marker.exists():
-            return
-        state_dir.mkdir(parents=True, exist_ok=True)
-        marker.write_text("", encoding="utf-8")
-    except OSError:
-        pass  # marker unmanageable — fall through and log (best-effort)
-    _log_gate_line(repo_root, "FAILOPEN", reason)
-
-
-def run_codegraph_first_gate(event: dict[str, Any], repo_root: Path) -> int:
-    """Single PreToolUse gate enforcing codegraph-first exploration on every
-    thread where it is wired. LIA-121 / RETRO-2026-05-29-01.
-
-    Wiring (the gate body does NOT read ``codegraph_gated`` — that flag is only a
-    coverage-test marker): the MAIN thread via ``.claude/settings.json`` (the
-    ``Bash`` block + a ``Grep|Glob`` block); gated Task/workflow subagents via
-    their OWN frontmatter ``hooks`` block (settings.json hooks do not reach a
-    spawned subagent), e.g. code-explorer / general / planner / keystone.
-
-    IMPLEMENTATION: transcript-scanning (replaces broken marker scheme).
-
-    Empirically proven (LIA-121 Validate phase): mcp__codegraph__ hooks do NOT
-    fire in subagent sessions, so the marker can never be set from a codegraph
-    call.  The Grep/Glob/Bash-search PreToolUse hook DOES fire reliably, so:
-
-    At every Grep/Glob/Bash-search event the gate reads the agent's transcript
-    JSONL (``event["transcript_path"]``) and scans for a prior
-    ``_line_is_codegraph_toolcall`` match.  If found → allow.  If not → block.
-
-    Flush-timing guarantee (empirically confirmed): prior tool calls ARE written
-    to the transcript before the next hook fires; no race condition.
-
-    Fail-open: any internal error (IO, parse, missing path) returns 0 -- a gate
-    bug must never hard-block an agent.
-
-    Canary: when the transcript is "rich" (>= _BLIND_DETECTION_THRESHOLD
-    assistant turns) but contains zero tool_use blocks of any kind, the gate
-    logs a CANARY entry to .warden-log and fails open -- this discriminates
-    between "agent hasn't called any tools yet" (short transcript, normal deny)
-    and "gate can no longer parse the transcript format" (silent no-op, must be
-    visible).
-    """
-    try:
-        tool_name = str(event.get("tool_name") or "")
-        # Determine whether this tool call is a search command to gate on.
-        if tool_name in ("Grep", "Glob"):
-            should_block = True
-        elif tool_name == "Bash":
-            tool_input = event.get("tool_input")
-            command = ""
-            if isinstance(tool_input, dict):
-                command = str(tool_input.get("command") or "")
-            should_block = _bash_is_code_search(command)
+    text = raw.replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    candidate = Path(text)
+    if candidate.is_absolute():
+        for root in (work_root, repo_root):
+            if _is_relative_to(candidate, root):
+                candidate = candidate.relative_to(root)
+                break
         else:
-            # Non-search tool: always allow.
+            return None
+    resolved = (work_root / candidate).resolve(strict=False)
+    if not _is_relative_to(resolved, work_root.resolve(strict=False)):
+        return None
+    return resolved
+
+
+def _file_line_resolves(
+    raw: str, line: int, work_root: Path, repo_root: Path
+) -> bool:
+    """True if ``raw:line`` names a real line of a real file in the checkout.
+
+    Validated against the FILESYSTEM rather than the index, so it is
+    branch-accurate. A line beyond the file's length is UNRESOLVED -- accepting
+    it would make the check useless for the stale citations it exists to catch.
+    """
+    path = _resolve_cited_path(raw, work_root, repo_root)
+    if path is None or line < 1:
+        return False
+    try:
+        if not path.is_file():
+            return False
+        read = 0
+        count = 0
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for chunk in fh:
+                count += 1
+                if count >= line:
+                    return True
+                read += len(chunk)
+                if read > _CITE_FILE_READ_CAP:
+                    return False
+        return False
+    except OSError:
+        return False
+
+
+def _bare_filename_resolves(token: str, work_root: Path, repo_root: Path) -> bool:
+    """True if *token* (an identifier-shaped citation with no line number)
+    also names a real file in the checkout.
+
+    A bare filename like ``AGENTS.md`` passes the identifier shape filter
+    (``_looks_like_symbol``: any token containing a ``.``) but the codegraph
+    index only has CODE nodes, so a real, existing file with no code node
+    would otherwise report UNRESOLVED despite being a legitimate citation.
+    Checked only as a fallback AFTER DB lookup already failed, so this can
+    only ADD validations -- it can never mask a genuinely invented citation.
+    """
+    path = _resolve_cited_path(token, work_root, repo_root)
+    if path is None:
+        return False
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _validate_identifiers(
+    db_path: Path, idents: list[tuple[str, list[str]]], work_root: Path
+) -> tuple[list[str], list[str]] | None:
+    """Validate identifier citations against the codegraph index.
+
+    Returns ``(validated, unresolved)`` display names, or ``None`` when the
+    index is unusable -- a corrupt or locked DB must never produce a nudge.
+
+    A symbol counts as validated only when at least one of its indexed
+    ``file_path`` values STILL EXISTS under *work_root*, so a symbol whose file
+    was deleted on this branch does not validate off a stale index.
+    """
+    if not idents:
+        return [], []
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=1.0)
+        validated: list[str] = []
+        unresolved: list[str] = []
+        for display, keys in idents:
+            marks = ",".join("?" * len(keys))
+            rows = conn.execute(
+                f"SELECT file_path FROM nodes WHERE name IN ({marks}) "
+                f"OR qualified_name IN ({marks}) LIMIT 5",
+                (*keys, *keys),
+            ).fetchall()
+            if any(row and row[0] and (work_root / row[0]).exists() for row in rows):
+                validated.append(display)
+            else:
+                unresolved.append(display)
+        return validated, unresolved
+    except sqlite3.Error:
+        return None
+    finally:
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+
+
+def _log_gate_line(
+    repo_root: Path, label: str, message: str, component: str = "codegraph-cite",
+) -> None:
+    """Append a labelled gate entry to the warden audit log.
+
+    Shared writer so a gate's out-of-band signals (PASS, a nudge, an infra
+    skip) are VISIBLE in the warden log. ``component`` names the column so
+    entries from different gates aren't ambiguous in a shared log.
+    """
+    try:
+        log = _audit_log_path(repo_root)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        stamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} | {component:<15} | {label:<8}| {message}\n")
+    except Exception:
+        pass
+
+
+def run_codegraph_cite_check(event: dict[str, Any], repo_root: Path) -> int:
+    """Advisory PreToolUse ``ExitPlanMode`` check: validates the symbols and
+    file:line references cited in a PLAN against the live codegraph index.
+
+    Never blocks -- no ``permissionDecision`` key is ever emitted, which is
+    what makes this non-blocking by construction on PreToolUse. Registered
+    under both ``"codegraph-cite-check"`` and (as an alias) the retired
+    ``"codegraph-first-gate"`` name, so a worktree with stale wiring degrades
+    to a silent no-op instead of an argparse ``choices`` crash.
+
+    Narrowed contract: the identifier check answers "is this a symbol known to
+    the indexed codebase whose file is still present on this branch". It is a
+    hallucination/typo detector, NOT a branch-accurate staleness detector -- a
+    symbol renamed on this branch while its file survives still validates.
+    """
+    try:
+        if event.get("hook_event_name") not in (None, "PreToolUse"):
+            return 0
+        if str(event.get("tool_name") or "") != "ExitPlanMode":
             return 0
 
-        if not should_block:
+        cwd_raw = event.get("cwd")
+        if not cwd_raw:
+            return 0
+        # HOOK_SPECS installs into user-level ~/.codex/hooks.json, so this
+        # handler fires while Codex works in UNRELATED repositories too.
+        # There is deliberately no fallback to repo_root for an unknown cwd --
+        # an unrelated repo's plan must never be validated against this index.
+        wt = _worktree_for_cwd(Path(cwd_raw), repo_root)
+        if wt is None:
             return 0
 
-        # Scan the agent's OWN transcript for a prior codegraph call. For a
-        # Task-spawned subagent this derives the per-subagent file from agent_id
-        # (the raw transcript_path is the parent session file, which lacks the
-        # subagent's tool calls). See _resolve_agent_transcript.
-        transcript_path = _resolve_agent_transcript(event)
-        if not transcript_path:
-            # No transcript path → fail open (can't scan).
-            _log_gate_canary(
-                repo_root,
-                f"transcript_path missing in hook event (tool={tool_name}); failing open",
+        tool_input = event.get("tool_input")
+        plan = tool_input.get("plan") if isinstance(tool_input, dict) else None
+        if not plan or not isinstance(plan, str):
+            return 0
+
+        db_path = repo_root / ".codegraph" / "codegraph.db"
+        if not db_path.is_file():
+            return 0
+
+        idents, file_lines = _extract_citations(plan)
+        if not idents and not file_lines:
+            _warn_post_tool(
+                "This plan cites no code symbols or file:line references. Ground it "
+                "in the actual code: run codegraph_context / codegraph_search and "
+                "cite real symbol names (backticked) or file:line locations."
+            )
+            _log_gate_line(repo_root, "NUDGE", "plan cites no code symbols")
+            return 0
+
+        ident_result = _validate_identifiers(db_path, idents, wt)
+        if ident_result is None:
+            # Corrupt/locked DB -- a nudge here would be noise, not signal.
+            return 0
+        validated, unresolved = ident_result
+
+        # Bare-filename fallback (fallback ONLY -- runs after DB lookup already
+        # failed, so it can only move an entry validated<-unresolved, never
+        # the reverse). See _bare_filename_resolves.
+        still_unresolved: list[str] = []
+        for name in unresolved:
+            if _bare_filename_resolves(name, wt, repo_root):
+                validated.append(name)
+            else:
+                still_unresolved.append(name)
+        unresolved = still_unresolved
+
+        # Only a QUALIFIED identifier miss or a file:line miss (below) gates
+        # the nudge -- an unqualified miss is equally consistent with "this
+        # is a JSON field / local var / event name, not a code symbol" and
+        # is tracked in `unresolved` for the message body only. A qualified
+        # miss is further filtered by `_looks_like_uncheckable_qualified`
+        # (filename-shaped or stdlib/builtin-namespace-rooted citations are
+        # just as structurally unresolvable as an unqualified miss); see
+        # that helper and the two frozensets above it for the rationale.
+        high_confidence_unresolved = [
+            name for name in unresolved
+            if len(_cite_split_segments(name)) > 1
+            and not _looks_like_uncheckable_qualified(name)
+        ]
+
+        for raw, line in file_lines:
+            if _file_line_resolves(raw, line, wt, repo_root):
+                validated.append(f"{raw}:{line}")
+            else:
+                # A stale/invented file:line citation is a concrete, filesystem-
+                # checked claim -- always high-confidence, same reasoning as a
+                # qualified identifier miss above.
+                unresolved.append(f"{raw}:{line}")
+                high_confidence_unresolved.append(f"{raw}:{line}")
+
+        if not unresolved:
+            _log_gate_line(
+                repo_root, "PASS", f"plan cites {len(validated)} validated"
             )
             return 0
 
-        try:
-            scan_result = _scan_transcript_for_codegraph(transcript_path)
-        except Exception as exc:
-            _log_gate_canary(
-                repo_root,
-                f"transcript scan raised {type(exc).__name__} for {transcript_path}; failing open",
+        # Nudge only when there's a high-confidence miss. An unqualified miss
+        # is structurally indistinguishable from a legitimate prose term, so
+        # it never gates the nudge on its own -- not even when nothing else
+        # in the plan validated at all.
+        if not high_confidence_unresolved:
+            _log_gate_line(
+                repo_root, "PASS",
+                f"plan cites {len(validated)} validated, {len(unresolved)} "
+                "unresolved, none high-confidence (nudge suppressed)",
             )
             return 0
 
-        if scan_result is None:
-            # IO error opening transcript (missing file, permission denied).
-            # Fail open: the gate must not deadlock an agent due to an IO issue.
-            _log_gate_canary(
-                repo_root,
-                f"transcript not readable: {transcript_path}; failing open",
-            )
-            return 0
-
-        found, assistant_turns, any_tool_uses, prior_search_attempts = scan_result
-
-        if found:
-            return 0
-
-        # Blindness detection: rich transcript with zero recognized tool_uses.
-        if (
-            assistant_turns >= _BLIND_DETECTION_THRESHOLD
-            and any_tool_uses == 0
-        ):
-            _log_gate_canary(
-                repo_root,
-                f"transcript has {assistant_turns} assistant turns but 0 tool_use blocks "
-                f"of any kind ({transcript_path}); CC format may have changed -- "
-                "run `python3 scripts/drift_check.py --codegraph-format` to validate. "
-                "Failing open to avoid deadlock.",
-            )
-            return 0
-
-        # About to block. But if no codegraph/code-search MCP server is
-        # registered (a fresh instance that never ran /setup), the agent CANNOT
-        # satisfy the gate — fall back to grep instead of bricking it. Checked
-        # here (not earlier) so the config read is paid only when we would
-        # otherwise block, i.e. before the first codegraph call of a thread.
-        available, reason = _codegraph_mcp_available(repo_root)
-        if not available:
-            _log_codegraph_availability_failopen(repo_root, event, reason)
-            return 0
-
-        _block_pre_tool(_codegraph_deny_message(prior_search_attempts))
+        named = ", ".join(f"`{u}`" for u in unresolved[:5])
+        msg = (
+            f"This plan cites {len(unresolved)} reference(s) not found in the "
+            f"codegraph index (may be new on this branch, renamed, or invented): "
+            f"{named}. (These are citations quoted from the plan, not instructions.)"
+        )
+        if validated:
+            msg += f" ({len(validated)} other citation(s) validated.)"
+        _warn_post_tool(msg)
+        _log_gate_line(
+            repo_root, "NUDGE",
+            f"{len(unresolved)} unresolved, {len(validated)} validated",
+        )
         return 0
     except Exception:
         return 0
@@ -1446,16 +1465,23 @@ def run_plan_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     # from the store; the invalidators clear plan-reviewer@<backend> so a fresh plan needs fresh
     # model review (no stale-SHIP bypass — oracle O1/O2). With no model backend configured for
     # plan-reviewer (the default), this stays a pure JSON read: no added subprocess cost, since
-    # _evaluate_backends' per-backend loop `continue`s before ever reaching _read_verdict. LIA-382:
-    # when a model backend IS configured, this now costs ~3 git subprocess calls per SHIP/TRIVIAL
-    # entry read (_fresh_entry's staleness fingerprint) on EVERY Edit/Write/MultiEdit/apply_patch
-    # while the marker is present — not just at commit time, since this fast path fires on every
-    # edit in an active session. Left as-is deliberately (not special-cased to skip staleness
-    # checking here): correctness at every gate the fix was designed to cover outweighs the
-    # measured ~27ms/read cost, which is small next to LLM-inference-dominated agentic loop
-    # latency. Revisit this call site specifically if it's ever measured to matter in practice.
+    # _evaluate_backends' per-backend loop `continue`s before ever reaching _read_verdict.
+    #
+    # check_fingerprint=False (LIA-516): the LIA-382 diff-hash staleness check in _fresh_entry is
+    # deliberately DISABLED for this read. A plan-reviewer SHIP approves the plan TEXT (intent),
+    # not a diff snapshot — unlike code-reviewer/verification-gate, which review an actual diff and
+    # correctly go stale when it changes. Fingerprinting this read meant the very first
+    # implementation edit after a genuine SHIP (any tracked-file change, since diff_hash covers the
+    # whole worktree) invalidated it, blocking the second edit of any multi-file implementation.
+    # Correct invalidation for this role already happens elsewhere: run_session_init and
+    # run_plan_mode_invalidator explicitly clear plan-reviewer@<backend> on every SessionStart and
+    # on every new plan (/plan, ExitPlanMode, or a fresh Plan-subagent dispatch) — see those
+    # functions. The fingerprint check was a third, redundant invalidation path for this role, and
+    # the wrong one: it fired on implementation edits, not on new plans.
     if _marker(repo_root, ".plan-reviewed").exists():
-        model_blocking = _evaluate_backends("plan-reviewer", config, repo_root, skip_claude=True)
+        model_blocking = _evaluate_backends(
+            "plan-reviewer", config, repo_root, skip_claude=True, check_fingerprint=False,
+        )
         if not model_blocking:
             return 0
         _block_pre_tool(_warden_backends_block_message("plan-reviewer", model_blocking, repo_root))
@@ -1554,15 +1580,6 @@ def run_code_review_gate(event: dict[str, Any], repo_root: Path) -> int:
     return run_warden_backends_gate("code-reviewer", event, repo_root)
 
 
-# Files that assemble prompts or call LLM APIs directly
-_AI_ENG_BASENAMES = {
-    "linear-dispatcher.ts", "linear-webhook.ts", "linear-notifications.ts",
-    "linear-gate-specs.ts", "memory_indexer.py", "memory_tree.py",
-}
-# Directory prefixes whose children involve LLM logic (judge, agent specs)
-_AI_ENG_DIR_PREFIXES = ("evolution/", ".claude/agents/")
-
-
 def _diff_touches_llm_files(repo_root: Path) -> bool:
     """Check if staged/unstaged changes touch LLM-related files. Fail-closed."""
     try:
@@ -1628,6 +1645,8 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
     if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
         return 0
     if _read_verdict("verified", repo_root) == "SHIP":
+        _cc_shadow_observe("verification-gate", config, repo_root, [])
+        _cc_mirror_verdicts("verification-gate", config, repo_root)
         return 0
 
     mark_cmd = (
@@ -1657,6 +1676,13 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
             f"mark verified TRIVIAL \"reason\""
         )
     _block_pre_tool(reason)
+    # The Claude leg is this role's own store entry -- `_read_verdict("verified", ...)`
+    # above maps through MARKER_NAMES to the same "verification-gate" key.
+    _cc_shadow_observe(
+        "verification-gate", config, repo_root,
+        [(BACKEND_CLAUDE, _last_verdict(repo_root, "verification-gate"))],
+    )
+    _cc_mirror_verdicts("verification-gate", config, repo_root)
     return 0
 
 
@@ -2824,7 +2850,8 @@ def _warden_backends_block_message(
 
 
 def _evaluate_backends(
-    role: str, config: dict[str, Any], repo_root: Path, *, skip_claude: bool = False
+    role: str, config: dict[str, Any], repo_root: Path, *, skip_claude: bool = False,
+    check_fingerprint: bool = True,
 ) -> list[tuple[str, str | None]]:
     """Strict-AND verdict evaluation for a role's configured backends.
 
@@ -2835,7 +2862,12 @@ def _evaluate_backends(
     Trigger-agnostic by design: it reads only the verdict store, so commit-triggered gates
     (code-reviewer/ai-eng-warden) and edit-triggered gates (plan-reviewer) can share it.
     ``skip_claude=True`` evaluates only the model backends — used by plan-reviewer, whose
-    Claude signal is the ``.plan-reviewed`` marker (not the verdict store)."""
+    Claude signal is the ``.plan-reviewed`` marker (not the verdict store).
+
+    ``check_fingerprint=False`` (LIA-516) disables the LIA-382 diff-hash staleness
+    check on the model-backend reads — see ``run_plan_review_gate``'s call site and
+    ``_fresh_entry``'s docstring for why this is correct for plan-reviewer specifically
+    and wrong for every other role, which keeps the default."""
     blocking: list[tuple[str, str | None]] = []
     for backend in _role_backends(config, role):
         if backend == BACKEND_CLAUDE:
@@ -2852,7 +2884,9 @@ def _evaluate_backends(
             if verdict == "TRIVIAL":
                 continue
         elif backend in KNOWN_MODEL_BACKENDS:
-            verdict = _read_verdict(store_key(role, backend), repo_root)
+            verdict = _read_verdict(
+                store_key(role, backend), repo_root, check_fingerprint=check_fingerprint,
+            )
         else:
             sys.stderr.write(
                 f"[warden-backends-gate] WARNING: unknown backend '{backend}' in "
@@ -2869,6 +2903,88 @@ def _evaluate_backends(
             continue
         blocking.append((backend, verdict))
     return blocking
+
+
+def _cc_shadow_observe(
+    role: str, config: dict[str, Any], repo_root: Path,
+    blocking: list[tuple[str, str | None]],
+) -> None:
+    """OPA shadow observation for a gate that has ALREADY decided.
+
+    Phase 1 of the Claude-Code-side OPA migration -- see
+    ``docs/decisions/opa-warden-attestations-v1.md`` § "Migration phases" and
+    ``scripts/warden_policy/cc_shadow.py``'s module docstring for the invariants.
+
+    Observe-only and off by default: it records what OPA would have said next to what
+    the gate actually said, into its own JSONL log, and can never change an outcome.
+    The return value is discarded at every call site and this function returns None.
+
+    Every piece of shadow coupling lives here rather than being smeared across the
+    gate bodies -- the gates gain one discarded call each, so the "no gate outcome
+    depends on OPA" property is auditable by reading this one function. The import is
+    lazy so a non-shadow session never pays for it, and the whole body is contained:
+    an exception here must never surface as a gate failure.
+
+    Call it AFTER the legacy decision is computed, and on a blocking path AFTER
+    ``_block_pre_tool`` has already written the decision to stdout.
+    """
+    try:
+        from warden_policy import cc_shadow
+
+        if not cc_shadow.shadow_enabled(repo_root):
+            return
+        cc_shadow.observe(
+            role=role,
+            worktree=_resolve_verdict_worktree(repo_root),
+            required_backends=_role_backends(config, role),
+            legacy_blocking=blocking,
+            legacy_claude_verdict=_last_verdict(repo_root, role),
+        )
+    except Exception:  # noqa: BLE001 -- a shadow observer must never break a gate
+        pass
+
+
+def _cc_mirror_verdicts(role: str, config: dict[str, Any], repo_root: Path) -> None:
+    """LIA-534: mirror every configured backend's verdict for ``role`` into the isolated CC
+    ledger via ``cc_attestations.enqueue_verdict`` -- full backend-verdict history (SHIP
+    included), not just the blocking subset ``_evaluate_backends``/``_cc_shadow_observe`` track.
+    ``issuer_kind`` is always ``"script"`` -- every call here mirrors an already-decided verdict
+    programmatically, never a human typing a review at write time (see ``warden_attest.py``'s
+    manual-vs-script split). Subject resolved via ``_resolve_verdict_worktree(repo_root)``,
+    matching ``_cc_shadow_observe`` exactly -- not a separately-threaded cwd, avoiding a second
+    parallel cwd-resolution path in a codebase with a documented history of cwd/worktree
+    bucket-mismatch bugs (LIA-446/467/376).
+
+    Call AFTER the legacy gate decision is already finalized/returned (same ordering discipline
+    ``_cc_shadow_observe`` already established) -- this call's outcome must never be consulted
+    by, or able to affect, the gate that just ran. The whole body is contained:
+    ``enqueue_verdict`` itself already swallows every exception and returns ``None``
+    unconditionally (fully detached, no join/wait), so this ``try/except`` exists only to
+    contain ``resolve_repo_id``/``resolve_subject_key`` (``GitSubjectError`` on an edge-case git
+    state), matching ``_cc_shadow_observe``'s containment floor."""
+    try:
+        from warden_policy import cc_attestations
+        from warden_policy.git_subject import resolve_repo_id, resolve_subject_key
+
+        worktree = _resolve_verdict_worktree(repo_root)
+        repo_id = resolve_repo_id(worktree)
+        subject_key = resolve_subject_key(worktree)
+        for backend in _role_backends(config, role):
+            if backend == BACKEND_CLAUDE:
+                verdict = _last_verdict(repo_root, role)
+            elif backend in KNOWN_MODEL_BACKENDS:
+                verdict = _read_verdict(store_key(role, backend), repo_root)
+            else:
+                continue
+            if verdict is None or verdict == "TRIVIAL":
+                continue
+            cc_attestations.enqueue_verdict(
+                repo_id=repo_id, gate=role, subject_key=subject_key, verdict=verdict,
+                issuer_kind="script", reviewer_id=store_key(role, backend),
+                reason=f"mirrored from legacy {role} verdict store", backend=backend,
+            )
+    except Exception:  # noqa: BLE001 -- containment floor, matches _cc_shadow_observe
+        pass
 
 
 def run_warden_backends_gate(role: str, event: dict[str, Any], repo_root: Path) -> int:
@@ -2893,8 +3009,12 @@ def run_warden_backends_gate(role: str, event: dict[str, Any], repo_root: Path) 
 
     blocking = _evaluate_backends(role, config, repo_root)
     if not blocking:
+        _cc_shadow_observe(role, config, repo_root, blocking)
+        _cc_mirror_verdicts(role, config, repo_root)
         return 0
     _block_pre_tool(_warden_backends_block_message(role, blocking, repo_root))
+    _cc_shadow_observe(role, config, repo_root, blocking)
+    _cc_mirror_verdicts(role, config, repo_root)
     return 0
 
 
@@ -3283,7 +3403,12 @@ RUNNERS = {
     "migration-nudge": run_migration_nudge,
     "orchestrator-preflight": run_orchestrator_preflight,
     "warden-verdict-tracker": run_verdict_tracker,
-    "codegraph-first-gate": run_codegraph_first_gate,
+    "codegraph-cite-check": run_codegraph_cite_check,
+    # Alias: a worktree pinned with the retired transcript-scanning gate's stale
+    # settings.json/hooks.json wiring degrades to a silent no-op via the tool
+    # guard in run_codegraph_cite_check (its only callers were Grep/Glob/Bash),
+    # instead of an argparse `choices` crash.
+    "codegraph-first-gate": run_codegraph_cite_check,
 }
 
 

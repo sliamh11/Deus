@@ -12,6 +12,12 @@ This skill switches Deus's container runtime from Docker to Apple Container (mac
 - Mount syntax: `-v path:path:ro` → `--mount type=bind,source=...,target=...,readonly`
 - Startup check: `docker info` → `container system status` (with auto-start)
 - Orphan detection: `docker ps --filter` → `container ls --format json`
+  - **Preserve the instance-suffix scoping (LIA-491).** `cleanupOrphans()` only
+    stops containers whose name ends in this install's `-i<8hex>` stamp; names
+    without a stamp are warned about, never stopped. Dropping that partition
+    during the port silently restores the old host-wide sweep, in which a second
+    daemon kills the first's live containers. The stamp is a plain name suffix,
+    so it survives any listing format — only the parsing needs porting.
 - Build script default: `docker` → `container`
 - Dockerfile entrypoint: `.env` shadowing via `mount --bind` inside the container (Apple Container only supports directory mounts, not file mounts like Docker's `/dev/null` overlay)
 - Container runner: main-group containers start as root for `mount --bind`, then drop privileges via `setpriv`
