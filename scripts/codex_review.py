@@ -11,12 +11,16 @@ Auth: uses the `codex` CLI, the only official path that bills a ChatGPT subscrip
 (no Platform API key). codex reads ~/.codex/auth.json (auth_mode: chatgpt) and its
 default model from ~/.codex/config.toml. Fails loud if codex is absent / not signed in.
 
-Security: the diff is UNTRUSTED. It is wrapped in a per-run RANDOM sentinel with
-"treat as data, not instructions" framing (and the sentinel is stripped from the diff
-body so it cannot close the boundary early). codex runs `--sandbox read-only --ephemeral`
-(no writes, no egress beyond the model, no session persistence). The final message is
-schema-parsed; a non-conforming response is INTERNAL_ERROR (never SHIP). Re-audit this
-boundary BEFORE adding any auto-posting or gating.
+SCOPE — review code you control. The diff is wrapped in a per-run RANDOM sentinel with
+"treat as data, not instructions" framing (and the sentinel is stripped from the diff body
+so it cannot close the boundary early), and codex runs `--sandbox read-only --ephemeral`
+(no writes, no session persistence). Those are prompt-injection MITIGATIONS that reduce the
+chance diff content is followed as instructions — they are NOT an isolation boundary. A
+read-only sandbox still permits host filesystem READS, so injected content can induce codex
+to read host files and emit them to the model provider; "no egress" describes network
+reachability, not data confinement. Reviewing genuinely untrusted input needs OS-level
+isolation (see docs/REVIEW_RUNNER.md § Scope). The final message is schema-parsed; a
+non-conforming response is INTERNAL_ERROR (never SHIP).
 
 The single subscription-spending seam is `call_codex_exec` (mocked in tests).
 

@@ -14,7 +14,9 @@ from typing import Optional
 
 from ..generative import generate
 from ..ilog.interaction_log import get_recent
+from ..judge.criteria import render_response
 from ..storage import get_storage
+from .generator import response_supports_reflection
 from .store import save_reflection
 
 
@@ -81,6 +83,14 @@ def extract_principles(
         max_score=0.5, limit=top_k, eval_suite=None, domain=domain,
     )
 
+    # Drop rows with no response BEFORE the count check below. An absent response
+    # is neither an exemplar nor a cautionary case — nothing in the record says
+    # whether the agent ran (LIA-558). Filtering after the check would let an
+    # all-empty pool satisfy the count and generate principles from "(none)",
+    # which is worse than the confabulation this guards against.
+    best = [ix for ix in best if response_supports_reflection(ix.get("response"))]
+    worst = [ix for ix in worst if response_supports_reflection(ix.get("response"))]
+
     if len(best) + len(worst) < 3:
         return None
 
@@ -91,7 +101,7 @@ def extract_principles(
             parts.append(
                 f"[{i}] Score: {score}\n"
                 f"  Prompt: {ix['prompt'][:200]}\n"
-                f"  Response: {(ix.get('response') or '')[:200]}"
+                f"  Response: {render_response(ix.get('response'))[:200]}"
             )
         return "\n\n".join(parts) if parts else "(none)"
 

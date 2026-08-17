@@ -7,6 +7,7 @@ path exists on disk. These tests exercise both sources of references in
 isolation using a temporary project tree.
 """
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -1260,3 +1261,143 @@ class TestWorktreeAutoBase:
         })
         assert drift_check._worktree_auto_base(tmp_path) is None
         assert "falling back to mtime mode" in capsys.readouterr().err
+
+
+# ── codegraph DB schema check (replaces the retired transcript-format gate) ──
+
+class TestMainCheckoutRoot:
+    """_main_checkout_root derives the MAIN repo root the same way
+    warden-shim.sh does (--git-common-dir with the trailing /.git stripped),
+    so codegraph-cite-check's DB lookup and the hook dispatcher agree on the
+    same checkout by construction. Hermetic: git is mocked."""
+
+    @staticmethod
+    def _patch_git(monkeypatch, common_dir):
+        monkeypatch.setattr(
+            drift_check, "_git_output",
+            lambda cmd, project_root: common_dir if cmd[:1] == ["rev-parse"] else None,
+        )
+
+    def test_resolves_main_root_from_linked_worktree(self, monkeypatch, tmp_path):
+        self._patch_git(monkeypatch, "/main/.git")
+        assert drift_check._main_checkout_root(tmp_path) == Path("/main")
+
+    def test_resolves_main_root_from_main_checkout_itself(self, monkeypatch, tmp_path):
+        # Absolute form even in the main checkout (--path-format=absolute), so
+        # this branch is exercised identically regardless of worktree-ness.
+        self._patch_git(monkeypatch, str(tmp_path / ".git"))
+        assert drift_check._main_checkout_root(tmp_path) == tmp_path
+
+    def test_falls_back_to_project_root_when_git_fails(self, monkeypatch, tmp_path):
+        self._patch_git(monkeypatch, None)
+        assert drift_check._main_checkout_root(tmp_path) == tmp_path
+
+
+class TestCodegraphDbSchema:
+    def test_skips_when_db_absent(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(drift_check, "_main_checkout_root", lambda p: p)
+        rc = drift_check.check_codegraph_db_schema(tmp_path)
+        assert rc == 0
+        assert "SKIP" in capsys.readouterr().out
+
+    def test_skips_when_db_unreadable(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(drift_check, "_main_checkout_root", lambda p: p)
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        (cg_dir / "codegraph.db").write_bytes(b"not a real sqlite database")
+        rc = drift_check.check_codegraph_db_schema(tmp_path)
+        assert rc == 0
+        assert "SKIP" in capsys.readouterr().out
+
+    def test_ok_when_schema_has_required_columns(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(drift_check, "_main_checkout_root", lambda p: p)
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        conn = sqlite3.connect(str(cg_dir / "codegraph.db"))
+        conn.execute(
+            "CREATE TABLE nodes (name TEXT, qualified_name TEXT, file_path TEXT, "
+            "start_line INTEGER, end_line INTEGER)"
+        )
+        conn.commit()
+        conn.close()
+        rc = drift_check.check_codegraph_db_schema(tmp_path)
+        assert rc == 0
+        assert "OK" in capsys.readouterr().out
+
+    def test_fails_when_required_column_missing(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(drift_check, "_main_checkout_root", lambda p: p)
+        cg_dir = tmp_path / ".codegraph"
+        cg_dir.mkdir()
+        conn = sqlite3.connect(str(cg_dir / "codegraph.db"))
+        # Missing qualified_name -- simulates a schema migration.
+        conn.execute(
+            "CREATE TABLE nodes (name TEXT, file_path TEXT, "
+            "start_line INTEGER, end_line INTEGER)"
+        )
+        conn.commit()
+        conn.close()
+        rc = drift_check.check_codegraph_db_schema(tmp_path)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "FAIL" in out
+        assert "qualified_name" in out
+
+
+class TestCheckAllBumpForwarding:
+    """check_all must forward `bump` to the drift sub-check (LIA-472).
+
+    Before the fix, the CLI's `elif` chain matched `--all` before `--bump`, and
+    `check_all` had no `bump` parameter at all -- so `--all --bump` silently did
+    nothing. These tests pin the forwarding, and that the default stays False so
+    CI's `--all --base ...` invocation remains non-mutating.
+    """
+
+    def _setup(self, tmp_path, monkeypatch):
+        """Minimal valid tree (mirrors TestCheckContradictions.test_not_in_check_all)
+        so check_all's other sub-checks don't sys.exit before we can observe the
+        forwarding, plus a spy replacing drift_check.main. Returns the call log.
+        """
+        _make_pattern_tree(tmp_path, {
+            "demo.md": "---\ngoverns:\n  - src/\nlast_verified: \"2026-04-09\"\n"
+                       "test_tasks:\n  - \"do a thing\"\n  - \"do b\"\n  - \"do c\"\n---\nbody\n"
+        })
+        (tmp_path / "src").mkdir()
+        (tmp_path / "docs").mkdir()
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+
+        calls: list[dict] = []
+
+        def fake_main(base_ref=None, bump=False):
+            calls.append({"base_ref": base_ref, "bump": bump})
+            return 0
+
+        monkeypatch.setattr(drift_check, "main", fake_main)
+        return calls
+
+    def test_forwards_bump_true(self, tmp_path, monkeypatch, capsys):
+        calls = self._setup(tmp_path, monkeypatch)
+
+        drift_check.check_all(tmp_path, bump=True)
+
+        capsys.readouterr()
+        assert len(calls) == 1
+        assert calls[0]["bump"] is True
+
+    def test_defaults_to_no_bump(self, tmp_path, monkeypatch, capsys):
+        """Omitting bump must not mutate -- this is what keeps CI safe."""
+        calls = self._setup(tmp_path, monkeypatch)
+
+        drift_check.check_all(tmp_path)
+
+        capsys.readouterr()
+        assert len(calls) == 1
+        assert calls[0]["bump"] is False
+
+    def test_bump_composes_with_base_ref(self, tmp_path, monkeypatch, capsys):
+        """`--all --base <ref> --bump` must forward both, not one or the other."""
+        calls = self._setup(tmp_path, monkeypatch)
+
+        drift_check.check_all(tmp_path, base_ref="origin/main", bump=True)
+
+        capsys.readouterr()
+        assert calls[0] == {"base_ref": "origin/main", "bump": True}

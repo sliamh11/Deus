@@ -1,0 +1,178 @@
+name: Attestation Verify (git-level hard backstop)
+
+# LIA-536, implementing docs/decisions/git-level-hard-backstop-design.md. This is the
+# `attestation-verify` check the `main-attestation-backstop` ruleset will require once activated
+# -- as of this file landing, that ruleset does NOT exist yet (created disabled as a later,
+# separate step of LIA-536, after this workflow merges and its one live test-PR run confirms it
+# actually posts a Check Run correctly). Re-queries
+# `deus.wardens.decision`'s Phase-4 `attestation.verify` block (LIA-530,
+# scripts/warden_policy/policy/guardrails.rego ~150-228) server-side, on the self-hosted runner
+# registered for this repo, against the local ledgers + loopback OPA daemon -- the same
+# infrastructure scripts/hermes_warden_gate.py already relies on locally.
+#
+# Trust model (design doc §3.3): `pull_request_target` runs THIS file's definition and
+# scripts/warden_policy/attestation_verify_check.py from the BASE branch, never from the PR --
+# closing the "a PR edits the verifier to always report success" vector. The actor guard below is
+# the first step that touches any PR-derived data, before any checkout, so a non-owner PR is
+# rejected before any PR-derived code or content is fetched or executed. The PR's head commit is
+# only ever `git fetch`ed (shallow, blobless) into the trusted checkout to resolve its tree sha --
+# never checked out, never executed.
+#
+# Residual, disclosed, NOT-closed-by-this-file gap (design doc §3.4, this ticket's plan §9): a
+# same-repo PR that adds/edits a DIFFERENT workflow (triggered on plain `pull_request`, so it runs
+# the PR's own content) could forge a same-named Check Run directly via the Checks API, bypassing
+# this file entirely. Closing that requires LIA-531 (credential separation) -- tracked separately,
+# not attempted here. The `main-attestation-backstop` ruleset (once created) will stay
+# `enforcement: "disabled"` until LIA-531 lands.
+#
+# TEMPORARY `paths:` filter: no self-hosted runner is registered for this repo as of this file
+# landing (that registration is a deliberately separate, later, EPHEMERAL step -- see LIA-536's
+# plan design decision #8 -- bounded to one live test-PR run, then torn down). Without a runner,
+# `pull_request_target` with no path filter would queue an unpickable job on EVERY future PR to
+# this repo indefinitely (fail-closed, not a security gap -- nothing requires this check yet since
+# the ruleset doesn't exist -- but real Actions-UI clutter across every concurrent PR in this
+# repo). Scoped narrowly for now. Removal is tracked as its own activation precondition in
+# docs/decisions/git-level-hard-backstop-design.md's "### 5. Not yet started" section, alongside
+# LIA-531/LIA-534/ruleset-creation -- MUST be removed before `main-attestation-backstop` is ever
+# activated, since the whole point of the backstop is universal PR coverage, not just PRs touching
+# these paths. The one live test-PR run this ticket still needs (design doc §5, the
+# required-status-check-registration verification item) MUST itself touch one of these two paths,
+# or the workflow will not trigger at all for it.
+on:
+  pull_request_target:
+    paths:
+      - '.github/workflows/attestation-verify.yml'
+      - 'scripts/warden_policy/**'
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  verify:
+    name: attestation-verify-job
+    runs-on: [self-hosted, lia536-verify]
+    timeout-minutes: 5
+    steps:
+      - name: Actor guard (must run before any checkout)
+        id: actor_guard
+        # Unconditional step -- never gated by `if:`, since GitHub's required-check evaluation
+        # treats a `skipped` conclusion as PASSING, silently defeating this ruleset's
+        # `bypass_actors: []`. For a non-owner actor this step posts an explicit `failure`
+        # Check Run directly via the Checks API BEFORE calling exit 1 -- a bare exit here would
+        # skip every later step (including whatever posts a Check Run), leaving the check
+        # permanently pending rather than failed, which is the same "looks blocked, isn't"
+        # trap this whole mechanism exists to close, reached a different way.
+        #
+        # Also cleans stale result.json/check_run_payload.json here, as this step's own first
+        # action -- folded in (rather than a separate preceding step) so a failure in the
+        # cleanup itself cannot cascade-skip this step and strand the check pending instead of
+        # failed. Self-hosted runner workspaces persist across job invocations (unlike
+        # GitHub-hosted runners, which are always fresh) -- without this, a successful run's
+        # result files can survive on disk, and if a LATER job's checkout/fetch step then fails
+        # (before "Query attestation-verify decision" ever runs, cascade-skipped), the Report
+        # Check Run step would read the STALE success file and post it against the NEW head SHA
+        # -- turning an infrastructure failure into a falsely-passing required check.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_ACTOR: ${{ github.event.pull_request.user.login }}
+          REPO_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          rm -f result.json check_run_payload.json
+          if [ "$PR_ACTOR" != "$REPO_OWNER" ]; then
+            gh api "repos/${GH_REPO}/check-runs" \
+              -f name="attestation-verify" \
+              -f head_sha="$HEAD_SHA" \
+              -f status="completed" \
+              -f conclusion="failure" \
+              -f output[title]="non-owner actor" \
+              -f output[summary]="attestation-verify only evaluates PRs from the repository owner." \
+              > /dev/null
+            echo "::error::non-owner actor ($PR_ACTOR) -- posted failure Check Run, exiting"
+            exit 1
+          fi
+          echo "actor guard passed: $PR_ACTOR"
+
+      - name: Checkout base branch (trusted -- never the PR head)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          # No `ref:` override -- pull_request_target's default checkout ref is the base branch,
+          # so the verifier script that actually runs is always the trusted base-branch version.
+
+      - name: Fetch PR head commit (object only -- never checked out, never executed)
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 --filter=blob:none origin "$HEAD_SHA"
+
+      - name: Query attestation-verify decision
+        id: verify
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/warden_policy/attestation_verify_check.py \
+            --repo-path "$GITHUB_WORKSPACE" --head-sha "$HEAD_SHA" --json > result.json
+          cat result.json
+          python3 -c 'import json,sys; sys.exit(0 if json.load(open("result.json"))["conclusion"]=="success" else 1)'
+
+      - name: Report Check Run
+        # Runs whenever the actor guard actually passed -- regardless of what happened after
+        # (checkout/fetch infra failure, a verify-step crash, a malformed result.json). Gated on
+        # actor_guard specifically, NOT on steps.verify.outcome: a checkout/fetch failure skips
+        # "Query attestation-verify decision" entirely by GitHub's default cascade, and gating on
+        # that step's own outcome would then ALSO skip this reporting step -- leaving the check
+        # permanently pending rather than failed, the same class of trap the actor guard's own
+        # inline-report-before-exit-1 mechanism exists to close. A non-owner actor is the one case
+        # that correctly skips this step, since the actor guard already reported failure itself.
+        if: always() && steps.actor_guard.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          # Never trust result.json's mere existence -- `> result.json` in the query step creates
+          # a 0-byte file even when the piped command crashed before writing anything, so `[ -f ]`
+          # alone would take the "parse it" branch on an empty file and abort under `set -e`
+          # before ever reaching `gh api`. This script reads defensively (missing file, empty
+          # file, invalid JSON, or an unexpected conclusion value) and ALWAYS writes a valid
+          # payload, never raising.
+          python3 - <<'PYEOF'
+          import json
+
+          conclusion, title, summary = (
+              "failure", "verifier did not complete",
+              "no valid result.json (crash, timeout, or an earlier step failed) -- treated as failure",
+          )
+          try:
+              with open("result.json") as f:
+                  data = json.load(f)
+              c = data.get("conclusion")
+              if c in ("success", "failure"):
+                  conclusion = c
+                  title = data.get("title", title)
+                  summary = data.get("summary", summary)
+              else:
+                  title, summary = "malformed result.json", f"conclusion field was {c!r}, not success/failure"
+          except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+              pass
+          with open("check_run_payload.json", "w") as f:
+              json.dump({"conclusion": conclusion, "title": title, "summary": summary}, f)
+          PYEOF
+          CONCLUSION=$(python3 -c 'import json;print(json.load(open("check_run_payload.json"))["conclusion"])')
+          TITLE=$(python3 -c 'import json;print(json.load(open("check_run_payload.json"))["title"])')
+          SUMMARY=$(python3 -c 'import json;print(json.load(open("check_run_payload.json"))["summary"])')
+          gh api "repos/${GH_REPO}/check-runs" \
+            -f name="attestation-verify" \
+            -f head_sha="$HEAD_SHA" \
+            -f status="completed" \
+            -f conclusion="$CONCLUSION" \
+            -f output[title]="$TITLE" \
+            -f output[summary]="$SUMMARY" \
+            > /dev/null

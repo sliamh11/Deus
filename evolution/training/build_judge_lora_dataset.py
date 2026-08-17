@@ -38,7 +38,13 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from evolution.judge.criteria import RUBRIC, COMPOSITE_WEIGHTS, DIM_DEFAULTS, compose_score
+from evolution.judge.criteria import (
+    RUBRIC,
+    COMPOSITE_WEIGHTS,
+    DIM_DEFAULTS,
+    compose_score,
+    render_response,
+)
 from evolution.storage import get_storage
 from evolution.training._provenance import git_sha, git_dirty, sha256_file
 
@@ -60,7 +66,10 @@ def build_eval_prompt(prompt: str, response: str, tools_used=None, context=None)
     parts.append(f"**User prompt:**\n{prompt}\n")
     if tools_used:
         parts.append(f"**Tools used:** {', '.join(tools_used)}\n")
-    parts.append(f"**Agent response:**\n{response}\n")
+    # No-op in practice — is_chat_interaction() already filters empty responses
+    # out of the dataset. Routed through the shared seam anyway so this builder
+    # keeps its promise of matching the production judge prompt byte for byte.
+    parts.append(f"**Agent response:**\n{render_response(response)}\n")
     return "\n".join(parts)
 
 

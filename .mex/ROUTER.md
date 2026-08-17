@@ -16,6 +16,7 @@
 | memory / startup-gate | `patterns/general-code.md` | `docs/decisions/INDEX.md` (mandatory) |
 | env-var-add | `patterns/deployment.md` | `docs/ENVIRONMENT.md` |
 | monitor-watch | `patterns/monitor-resilience.md` | — |
+| hook-change | `patterns/hook-change.md` | `docs/SDK_DEEP_DIVE.md` (hook input/output types) |
 | general-code (fallback) | `patterns/general-code.md` | — |
 
 ## Precedence
