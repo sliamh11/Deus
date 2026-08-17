@@ -35,6 +35,12 @@ _file_mtime() {
 # invocation. Plain `deus` still defaults to Claude unless env/config says
 # otherwise.
 if [ "$1" = "codex" ] || [ "$1" = "claude" ] || [ "$1" = "fcc" ]; then
+  # A literally-typed backend prefix is the deterministic escape hatch for
+  # `deus connect default <id>` (deus-cmd.sh, #1171-followup) -- it must
+  # ALWAYS bypass any global default connector, regardless of config state.
+  # Plain, non-exported: this signal only needs to survive within this
+  # script's own process, not leak into anything it launches.
+  _DEUS_EXPLICIT_PREFIX=1
   if [ "$1" = "claude" ]; then
     export DEUS_CLI_AGENT="claude"
     export DEUS_AGENT_BACKEND="claude"
@@ -66,7 +72,12 @@ if [ "$1" = "connect" ]; then
       ;;
     status)
       shift
-      python3 "$SCRIPT_DIR/scripts/connectors_cli.py" status "$1"
+      # `--` stops argparse from treating a leading-dash id (e.g. a
+      # mistyped "--help") as a flag on the `status` subparser itself --
+      # without it, `deus connect status --help` silently prints argparse's
+      # own help and exits 0 instead of erroring on an unknown connector.
+      # (deus connect, #1171-followup)
+      python3 "$SCRIPT_DIR/scripts/connectors_cli.py" status -- "$1"
       exit $?
       ;;
     setup)
@@ -83,6 +94,23 @@ if [ "$1" = "connect" ]; then
       # call happens right after the function's own definition, before the
       # main case "$1" in ... dispatcher begins.
       export DEUS_CONNECT_SETUP_ID="$1"
+      ;;
+    default)
+      shift
+      # Do NOT call _read_config_key/_write_config_key here -- same
+      # ordering constraint as `setup` above: this early prefix-dispatch
+      # block runs before those functions are DEFINED. Signal only; the
+      # real work happens in the deferred continuation right after
+      # _ensure_portable_skills's own definition (deus-cmd.sh, #1171-
+      # followup). Plain, non-exported scalar -- an exported sentinel
+      # would leak into the launched session and anything it subsequently
+      # runs, the same class of bug the DEUS_CONNECT_ID/SETUP_ID sentinels
+      # already guard against elsewhere in this file. "${1:-show}" (not
+      # "${1:-}") so the continuation can tell "arm fired with no arg,
+      # i.e. the bare 'deus connect default' show-current-value form" apart
+      # from "arm never fired at all" -- both would otherwise read as an
+      # empty/unset variable.
+      _DEUS_CONNECT_DEFAULT_ARG="${1:-show}"
       ;;
     *)
       # Do NOT reuse CLI_AGENT/_normalize_cli_agent -- deus fcc's own
@@ -101,7 +129,7 @@ if [ "$1" = "connect" ]; then
       # miss entirely -- must reject both forms. (deus connect, #1171)
       for _dc_arg in "${DEUS_CONNECT_ARGS[@]}"; do
         case "$_dc_arg" in
-          --agents|--agents=*|--name|--name=*|-n)
+          --agents|--agents=*|--name|--name=*|-n|--settings|--settings=*)
             echo "Error: deus connect already injects $_dc_arg -- pass a different flag." >&2
             exit 1
             ;;
@@ -757,6 +785,116 @@ if [ -n "$DEUS_CONNECT_SETUP_ID" ]; then
   cd "$SCRIPT_DIR" && exec claude "/add-connector $_connect_setup_id"
 fi
 
+# `deus connect default <id>/off/<bare>` — signaled by the early connect
+# prefix-dispatch block above via _DEUS_CONNECT_DEFAULT_ARG. Deferred to
+# here for the same ordering reason as the setup continuation above:
+# _read_config_key/_write_config_key/_normalize_cli_agent aren't defined
+# until well after that early block runs. (deus connect, #1171-followup)
+if [ -n "$_DEUS_CONNECT_DEFAULT_ARG" ]; then
+  _dc_default_arg="$_DEUS_CONNECT_DEFAULT_ARG"
+  unset _DEUS_CONNECT_DEFAULT_ARG
+  case "$_dc_default_arg" in
+    show)
+      _dc_current="$(_read_config_key default_connect)"
+      if [ -n "$_dc_current" ]; then
+        echo "Default connector: $_dc_current"
+      else
+        echo "No default connector set."
+      fi
+      exit 0
+      ;;
+    off|clear)
+      _write_config_key default_connect ""
+      echo "Default connector cleared."
+      exit 0
+      ;;
+    *)
+      # `--` stops argparse from treating a leading-dash id as a flag on
+      # the `is-configured` subparser -- without it, e.g. `deus connect
+      # default --help` reaches argparse's own -h/--help handling (exit 0,
+      # no error), sailing straight past this validation gate and letting
+      # "--help" get written into default_connect as if it were a real
+      # connector id. Confirmed via direct reproduction. (#1171-followup)
+      if ! python3 "$SCRIPT_DIR/scripts/connectors_cli.py" is-configured -- "$_dc_default_arg" >/dev/null 2>&1; then
+        echo "Error: connector '$_dc_default_arg' is not configured -- run 'deus connect setup $_dc_default_arg' first." >&2
+        exit 1
+      fi
+      # A standing security-posture change, not a low-stakes indexing
+      # action like `deus arch`'s own prompt -- non-interactive/piped
+      # invocation fails closed rather than silently proceeding.
+      if [ ! -t 0 ]; then
+        echo "Error: setting a default connector requires interactive confirmation -- run this from an interactive terminal." >&2
+        exit 1
+      fi
+      echo "Setting '$_dc_default_arg' as your default connector means every future bare"
+      echo "'deus'/'deus home' session -- in any project, any directory -- will silently"
+      echo "route through it instead of Claude, until you run 'deus connect default off'."
+      echo ""
+      echo "The only guaranteed way to force plain Claude regardless of this default is"
+      echo "'deus claude' (explicit, typed that invocation). Note: a persistent Claude"
+      echo "preference alone -- 'deus backend set claude', or the DEUS_CLI_AGENT/"
+      echo "DEUS_AGENT_BACKEND environment variables -- does NOT block this default. This"
+      echo "tool cannot distinguish an explicit \"I want Claude\" choice from simply never"
+      echo "having configured anything, so all of those are treated the same way once a"
+      echo "default connector is set."
+      echo ""
+      printf "Continue? [y/N] "
+      read -r _dc_confirm
+      case "$_dc_confirm" in
+        [Yy]*) ;;
+        *)
+          echo "Cancelled. No change made."
+          exit 1
+          ;;
+      esac
+      _write_config_key default_connect "$_dc_default_arg"
+      echo "Default connector set to '$_dc_default_arg'."
+      exit 0
+      ;;
+  esac
+fi
+
+# Implicit default-connector injection — activates ONLY on a truly bare
+# launch: no literal claude/codex/fcc prefix typed this invocation
+# (_DEUS_EXPLICIT_PREFIX, the deterministic escape hatch), no explicit
+# `deus connect <id>` already in flight (DEUS_CONNECT_ID), $1 is exactly
+# "home" or empty (never any other subcommand -- init/arch/backend/etc),
+# AND --print-identity is absent from EVERY position, not just $1 -- that
+# query path must stay a pure, side-effect-free read (matching
+# _deus_freshness_check's/_deus_auto_sync's own every-position scan for
+# the identical flag, not just this file's convention by coincidence).
+# _normalize_cli_agent() = "claude" also folds in DEUS_CLI_AGENT/
+# DEUS_AGENT_BACKEND env vars and the persistent `agent_backend` config
+# key -- this means a user who explicitly ran `deus backend set claude` is
+# NOT distinguishable from one who configured nothing; both are eligible
+# for this injection. Disclosed, accepted limitation (see the confirmation
+# text above and the backend-set note below) rather than new persisted
+# state to track the distinction -- `deus claude` already resolves it
+# deterministically for anyone who wants guaranteed non-redirected Claude.
+# (deus connect, #1171-followup)
+_dc_print_identity_present=""
+for _dc_pi_arg in "$@"; do
+  [ "$_dc_pi_arg" = "--print-identity" ] && _dc_print_identity_present=1
+done
+if [ -z "$_DEUS_EXPLICIT_PREFIX" ] && [ -z "$DEUS_CONNECT_ID" ] \
+   && [ -z "$_dc_print_identity_present" ] \
+   && { [ "$1" = "home" ] || [ -z "$1" ]; }; then
+  if [ "$(_normalize_cli_agent)" = "claude" ]; then
+    _default_connect_id="$(_read_config_key default_connect)"
+    if [ -n "$_default_connect_id" ]; then
+      export DEUS_CONNECT_ID="$_default_connect_id"
+      DEUS_CONNECT_ARGS=()
+      # Distinguishes this from an explicit `deus connect <id>` invocation
+      # so launch_connect()'s error message (if the connector has since
+      # become unconfigured) can point at the actually-relevant remedy
+      # ("deus connect default off") instead of "deus connect setup <id>"
+      # -- the user typed nothing connector-related this time and may not
+      # remember a default is even set.
+      _DEUS_CONNECT_ID_IMPLICIT=1
+    fi
+  fi
+fi
+
 case "$1" in
   init|onboard)
     # Onboard a project into Deus code intelligence (codegraph + code_search)
@@ -1024,6 +1162,20 @@ sys.exit(1)
         _write_env_key "DEUS_AGENT_BACKEND" "$NEW_BACKEND"
         echo "Default backend set to: $INPUT"
         echo "Takes effect on next 'deus' launch. Background service uses .env."
+        # $INPUT is only "claude" for one of the 4 canonical literals above --
+        # a default connector can only ever intercept bare `deus` when
+        # _normalize_cli_agent() resolves to exactly "claude" (deus connect,
+        # #1171-followup), so this note would be actively misleading if
+        # printed for codex/ollama/llama-cpp, where default_connect can't
+        # apply regardless of whether it's set.
+        if [ "$INPUT" = "claude" ]; then
+          _dc_default_check="$(_read_config_key default_connect)"
+          if [ -n "$_dc_default_check" ]; then
+            echo "Note: a default connector ($_dc_default_check) is also configured -- bare"
+            echo "'deus' still routes there unless you use 'deus claude' explicitly. Run"
+            echo "'deus connect default off' to fully disable."
+          fi
+        fi
         ;;
       model)
         if [ -z "$2" ]; then
@@ -1175,6 +1327,12 @@ sys.exit(1)
     done
     # Print mode must never exec an interactive UI — the query flag wins.
     if [ "$AGENTS_MODE" = "true" ] && [ "$PRINT_IDENTITY" != "true" ]; then
+      # If a default connector injected DEUS_CONNECT_ID earlier in this
+      # invocation (deus connect, #1171-followup), it must not leak into
+      # `claude agents` -- that process doesn't read the var today, but
+      # this matches the file's own leak discipline elsewhere (see
+      # launch_connect's own `unset DEUS_CONNECT_ID` for the same reason).
+      unset DEUS_CONNECT_ID
       exec claude agents
     fi
     # Keep captured stdout pure in print mode: progress noise ("Reading
@@ -1235,6 +1393,41 @@ sys.exit(1)
     # Exporting a frozen token causes 401s after token rotation because
     # the CLI prioritizes the env var over the credentials file.
     [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
+
+    # Cockpit verdict (LIA-552). Reads the one-line cache the daily healthcheck
+    # writes — no interpreter start, no DB, no network, so there is nothing that
+    # can hang and no timeout to enforce (neither `timeout` nor `gtimeout` ships
+    # with macOS). Sits in the non-print-identity branch because other code
+    # parses that output and must stay byte-clean.
+    #
+    # Mirrors cockpit_healthcheck.py --brief, including its staleness window
+    # (ARTIFACT_MAX_AGE_SEC, 36h). Keep the two in step: a cached verdict with
+    # no age check would leave a dead scheduler showing yesterday's "OK"
+    # forever, which is the exact no-news-looks-like-good-news failure this
+    # whole ticket exists to remove.
+    _cockpit_line="${DEUS_HOME:-$HOME/.deus}/cockpit_health.line"
+    _cockpit_max_age=129600
+    if [ -r "$_cockpit_line" ]; then
+      # BSD stat (macOS) vs GNU stat (Linux) take different flags.
+      _cockpit_mtime=$(stat -f %m "$_cockpit_line" 2>/dev/null || stat -c %Y "$_cockpit_line" 2>/dev/null)
+      _cockpit_age=$(( $(date +%s) - ${_cockpit_mtime:-0} ))
+      _cockpit_verdict=$(head -n 1 "$_cockpit_line" 2>/dev/null)
+      if [ -z "$_cockpit_mtime" ]; then
+        printf '  cockpit: cannot read healthcheck timestamp\n'
+      elif [ -z "$_cockpit_verdict" ]; then
+        # An empty file is a checker that died mid-write, not a clean bill.
+        printf '  cockpit: healthcheck result is empty — the checker may have failed mid-write\n'
+      elif [ "$_cockpit_age" -gt "$_cockpit_max_age" ]; then
+        printf '  cockpit: last result is %sh old — healthcheck may not be running\n' \
+          "$(( _cockpit_age / 3600 ))"
+      elif [ "$_cockpit_verdict" != "OK" ]; then
+        # Quiet when healthy, or the report becomes noise the user learns to skip.
+        printf '  cockpit: %s\n' "$_cockpit_verdict"
+      fi
+    else
+      printf '  cockpit: no healthcheck result on record\n'
+    fi
+    unset _cockpit_line _cockpit_max_age _cockpit_mtime _cockpit_age _cockpit_verdict
     fi
     # Launch claude with bypass mode; fall back to normal mode if user declines
     launch_claude() {
@@ -1286,30 +1479,95 @@ sys.exit(1)
                               # subsequently runs, e.g. a nested
                               # "deus connect <other-id>" call from inside a
                               # tool call).
-      local env_output py_exit agents_json agents_py_exit
-      env_output="$(python3 "$SCRIPT_DIR/scripts/connectors_cli.py" env "$id")"
+      local env_output py_exit agents_json agents_py_exit was_implicit
+      local _dc_clear_var settings_args
+      was_implicit="$_DEUS_CONNECT_ID_IMPLICIT"
+      unset _DEUS_CONNECT_ID_IMPLICIT
+      # `--` guards against a leading-dash id reaching argparse as a flag --
+      # $id can now come from a PERSISTED default_connect value (this
+      # feature's whole point), not just a one-shot typo, so a poisoned
+      # value here would silently misbehave on every future bare launch,
+      # not just the one invocation that introduced it. (#1171-followup)
+      env_output="$(python3 "$SCRIPT_DIR/scripts/connectors_cli.py" env -- "$id")"
       py_exit=$?
       if [ "$py_exit" -ne 0 ] || [ -z "$env_output" ]; then
         echo "Error: connector '$id' is unknown or not configured."
-        echo "Run: deus connect setup $id"
+        if [ -n "$was_implicit" ]; then
+          # This id came from the implicit default-connector injection
+          # (deus connect default <id>), not a literal `deus connect <id>`
+          # this invocation -- the user typed nothing connector-related and
+          # may not remember a default is even set, so the explicit-
+          # invocation-only "run setup" remedy below is the wrong fix here.
+          echo "A default connector is configured -- run 'deus connect default off' to"
+          echo "disable it, or 'deus connect setup $id' to reconfigure it."
+        else
+          echo "Run: deus connect setup $id"
+        fi
         return 1
       fi
       eval "$env_output"
 
+      # Reserved env-var convention (connectors/base.py's env_for_launch()
+      # docstring): a connector may set DEUS_CONNECT_SETTINGS_JSON to have
+      # its value forwarded as `claude --settings <json>` for this one
+      # launch only -- e.g. cliproxy-oauth uses it to force
+      # autoCompactEnabled on for its GPT-5.6 sessions (272K real context
+      # window) without touching the user's global ~/.claude/settings.json.
+      # Conditional append (mirrors launch_codex()'s codex_args pattern
+      # above) so a connector that never sets it (e.g. ollama) never gets a
+      # bare `--settings ""` appended. Unset immediately after reading, same
+      # leak-prevention rationale as the DEUS_CONNECT_ID unset above -- must
+      # not survive into a nested "deus connect <other-id>" call.
+      # Tracked: #1185
+      settings_args=()
+      if [ -n "$DEUS_CONNECT_SETTINGS_JSON" ]; then
+        settings_args=(--settings "$DEUS_CONNECT_SETTINGS_JSON")
+      fi
+      unset DEUS_CONNECT_SETTINGS_JSON
+
       # Claude Code's own authentication precedence (confirmed against
       # code.claude.com/docs/en/authentication's "Authentication precedence"
-      # section) ranks cloud-provider selection (CLAUDE_CODE_USE_BEDROCK/
-      # VERTEX/FOUNDRY) above ANTHROPIC_AUTH_TOKEN, which itself outranks
-      # ANTHROPIC_API_KEY -- the one var this connector actually sets above.
-      # A user with any of these already set ambiently (e.g. an existing
-      # corporate gateway/cloud-provider config) would have the connector
-      # launch silently authenticate against THAT instead of routing through
-      # CLIProxyAPI at all -- not an error, just silently wrong. Clear them
-      # for this launch specifically; a bare `claude`/`deus claude` outside
-      # this connector session is unaffected.
-      unset ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY
+      # section, plus code.claude.com/docs/en/amazon-bedrock for Mantle)
+      # ranks cloud-provider selection (CLAUDE_CODE_USE_BEDROCK/VERTEX/
+      # FOUNDRY/MANTLE) above ANTHROPIC_AUTH_TOKEN, which itself outranks
+      # ANTHROPIC_API_KEY. A user with any of these already set ambiently
+      # (e.g. an existing corporate gateway/cloud-provider config) would
+      # have the connector launch silently authenticate against THAT
+      # instead of routing through the connector's own engine at all --
+      # not an error, just silently wrong. Clear them for this launch
+      # specifically; a bare `claude`/`deus claude` outside this connector
+      # session is unaffected.
+      #
+      # connector-aware: only unset a var the connector's own env_output
+      # did NOT itself set. Needed because the `ollama` connector (unlike
+      # cliproxy_oauth) sets ANTHROPIC_AUTH_TOKEN=ollama as its actual
+      # credential -- an unconditional unset here would erase it
+      # immediately after eval sets it, silently breaking auth. The match
+      # is anchored to a real line start (`$'\n'"$env_output"` / matching
+      # `*$'\n'"export ...="*`), not a bare substring: `env_output` is
+      # newline-delimited `export KEY=value` lines (connectors_cli.py's
+      # cmd_env), and shlex.quote() does not escape `=`, so a bare
+      # substring match could false-positive on a connector value that
+      # happens to contain the literal text `export ANTHROPIC_AUTH_TOKEN=`
+      # elsewhere in the string.
+      # CLAUDE_CODE_MAX_CONTEXT_TOKENS (added below) isn't an auth-
+      # precedence var like the other five in this list -- it's a
+      # connector-scoped context-window override (see connectors/
+      # providers/cliproxy_oauth's env_for_launch(), 272000 for GPT-5.6's
+      # real Codex-OAuth window) that needs the identical connector-aware
+      # leak-prevention treatment: without it, a NESTED `deus connect
+      # <other-id>` call from inside this launched session would inherit
+      # the outer connector's exported value and apply the wrong threshold
+      # to an unrelated connector's model. Caught by code-reviewer's GPT
+      # backend on this diff.
+      for _dc_clear_var in ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_MANTLE CLAUDE_CODE_MAX_CONTEXT_TOKENS; do
+        case $'\n'"$env_output" in
+          *$'\n'"export ${_dc_clear_var}="*) ;;  # connector set it itself -- leave it
+          *) unset "$_dc_clear_var" ;;
+        esac
+      done
 
-      agents_json="$(python3 "$SCRIPT_DIR/scripts/connectors_cli.py" agents-json "$id")"
+      agents_json="$(python3 "$SCRIPT_DIR/scripts/connectors_cli.py" agents-json -- "$id")"
       agents_py_exit=$?
       if [ "$agents_py_exit" -ne 0 ] || [ -z "$agents_json" ]; then
         echo "Error: connector '$id' produced invalid subagent definitions."
@@ -1331,7 +1589,7 @@ sys.exit(1)
       # anywhere in "$@" and execs `claude agents` (Claude's own
       # agent-management TUI) instead of a normal launch if it appears
       # before this point. (deus connect, #1171)
-      launch_claude "$@" --agents "$agents_json" --name "connect:$id (non-Claude)" "${DEUS_CONNECT_ARGS[@]}"
+      launch_claude "$@" --agents "$agents_json" --name "connect:$id (non-Claude)" "${settings_args[@]}" "${DEUS_CONNECT_ARGS[@]}"
       return $?
     }
 
@@ -1346,8 +1604,11 @@ sys.exit(1)
         return $?
       fi
       if [ "$CLI_AGENT" = "ollama" ]; then
-        echo "Error: Ollama backend is not yet available as a CLI agent."
-        echo "Use 'deus backend set claude' or 'deus backend set openai' instead."
+        echo "Error: 'deus backend set ollama' is not a CLI agent -- use"
+        echo "'deus connect ollama' instead (routes via Ollama's native"
+        echo "Anthropic-API mode; run 'deus connect setup ollama' first if"
+        echo "not yet configured). 'deus backend set claude/openai' remains"
+        echo "for the persisted-backend model, unrelated to deus connect."
         return 1
       fi
       if [ "$CLI_AGENT" = "llama-cpp" ]; then
@@ -2173,6 +2434,9 @@ $STARTUP_INSTRUCTION"
     echo "  deus codex      Launch with Codex (OpenAI) for this session"
     echo "  deus fcc        Launch with proxy model (see: deus provider, deus model)"
     echo "  deus connect    Launch via a registered non-Claude connector (list|setup|status <id> | <id>)"
+    echo "                    deus connect default <id>|off  Persist a connector as the global default"
+    echo "                    for every bare 'deus'/'deus home' launch ('clear' is an accepted synonym"
+    echo "                    for 'off'; escape hatch: 'deus claude')"
     echo "  deus home       Launch in home mode (~/deus) regardless of current directory"
     echo "  deus init       Onboard the current project: index it for code intelligence"
     echo "                    (codegraph + code_search) and register it (alias: onboard)"

@@ -53,6 +53,23 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `MAX_CONCURRENT_CONTAINERS` | `5` | Max parallel agent containers |
 | `IDLE_TIMEOUT` | `1800000` | Idle container shutdown timeout in ms |
 | `CONTAINER_MAX_OUTPUT_SIZE` | `10485760` | Max output size per container in bytes (10 MB) |
+| `DEUS_INSTANCE_ID` | derived from the install path | Identifies this install so orphan cleanup only stops its *own* containers (LIA-491) |
+
+### `DEUS_INSTANCE_ID`
+
+Every container is named with a trailing `-i<8hex>` stamp, and startup orphan
+cleanup only stops containers carrying **this** install's stamp. Without it a
+second daemon on the same host would stop live containers belonging to the
+first, killing conversations mid-flight.
+
+The default derives from the install directory, which is stable across restarts
+(so a crashed run's orphans are still reaped) and distinct between installs (so
+concurrent daemons leave each other alone). **You only need to set this if two
+daemons deliberately share one working copy** — otherwise leave it unset.
+
+The value is **hashed, not used verbatim**, so any string works; it just has to
+differ between instances. Containers created before this existed carry no stamp
+and are reported at startup rather than stopped — remove them manually if stale.
 
 ## Credential Proxy
 
@@ -71,6 +88,7 @@ All variables are set in `.env` at the project root. Copy `.env.example` to get 
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
 | `OLLAMA_MODEL` | `gemma4:e4b` | Default Ollama judge model (override per-surface with `EVOLUTION_OLLAMA_JUDGE_MODEL`) |
 | `EVOLUTION_OLLAMA_JUDGE_MODEL` | (falls back to `OLLAMA_MODEL`) | Per-surface override for the evolution-loop Ollama judge model (mirrors `LLAMA_CPP_JUDGE_MODEL`). The override model must be pulled in Ollama or judge construction fails |
+| `EVOLUTION_JUDGE_NUM_CTX` | `8192` | Context window sent with every Ollama judge call. Set explicitly because Ollama's own default is 4096 while a real eval prompt runs ~4000 tokens — at the default, the prompt or the response truncates depending on the host's Ollama build and judge scores stop being comparable across machines (LIA-558) |
 | `OLLAMA_EMBED_MODEL` | `embeddinggemma` | Ollama embedding model |
 | `LLAMA_CPP_BASE_URL` | `http://localhost:8080/v1` | llama.cpp HTTP base URL (OpenAI-compatible `/v1` prefix); consumed by evolution-loop providers |
 | `LLAMA_CPP_MODEL` | (empty — server default) | Catch-all model override. Empty = use whatever llama-server has loaded (single-model) OR auto-pick (router mode) |

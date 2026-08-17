@@ -13,10 +13,14 @@ from typing import Optional
 
 from .base import Connector
 
-# `deus connect list`/`setup <id>`/`status <id>` are reserved command words —
-# a connector id can never take one of these (see deus-cmd.sh's `connect`
-# prefix-dispatch branch).
-RESERVED_IDS = frozenset({"list", "setup", "status"})
+# `deus connect list`/`setup <id>`/`status <id>`/`default <id>`, plus
+# `default`'s own sub-namespace (`show`/`off`/`clear`), are reserved command
+# words — a connector id can never take one of these (see deus-cmd.sh's
+# `connect` prefix-dispatch branch and the `default)` arm's deferred
+# continuation). Without this, e.g. a connector literally named "default"
+# would be permanently unreachable via `deus connect default` -- that case
+# arm always intercepts it first, before the launch catch-all ever runs.
+RESERVED_IDS = frozenset({"list", "setup", "status", "default", "show", "off", "clear"})
 
 
 class ConnectorRegistrationError(ValueError):

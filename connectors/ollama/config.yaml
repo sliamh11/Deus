@@ -1,0 +1,23 @@
+# Tracked, placeholder-only config for the `ollama` connector
+# (deus connect setup ollama writes the real version to
+# ~/.config/deus/connectors/ollama/config.local.yaml — OUTSIDE this repo
+# entirely, never here).
+#
+# Unlike cliproxy_oauth, there is no OAuth token and no inbound API key to
+# protect here -- Ollama's native Anthropic-API mode authenticates with the
+# fixed literal ANTHROPIC_AUTH_TOKEN=ollama (not a real secret). This file
+# only ever holds the local Ollama host and which locally-pulled model
+# backs the deus-ollama-local subagent -- nothing sensitive.
+
+host: "http://localhost:11434"
+
+# Which locally-pulled Ollama model tag backs the deus-ollama-local
+# subagent. `deus connect setup ollama` confirms this against a real
+# `ollama list` -- never invent a plausible-looking tag, unlike a
+# remote-account GPT id that can't be locally enumerated.
+deus-model-map:
+  deus-ollama-local: "REPLACE_WITH_A_REAL_PULLED_MODEL_TAG"
+
+# Default model for the session itself (ANTHROPIC_MODEL) when no /model
+# switch has been made yet.
+default-model-alias: "REPLACE_WITH_A_REAL_PULLED_MODEL_TAG"

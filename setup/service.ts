@@ -865,6 +865,20 @@ export const SCHEDULED_JOBS: ScheduledJobSpec[] = [
     minute: 0,
     description: 'Deus morning memory report',
   },
+  {
+    // 06:45 sits after the 04:30 maintenance run so it grades that run's
+    // outcome rather than the previous day's, and before the 07:00 morning
+    // report, which reads the verdict this run leaves on disk — so the 15-minute
+    // gap is load-bearing, not spare room. morning_report.py's _read_cockpit
+    // consumes ~/.deus/cockpit_health.json, and renders nothing at all when this
+    // job is not installed, so moving or removing this entry silently drops the
+    // cockpit line from the daily digest (LIA-552).
+    id: 'cockpit-healthcheck',
+    scriptRelPath: 'scripts/cockpit_healthcheck.py',
+    hour: 6,
+    minute: 45,
+    description: 'Deus cockpit healthcheck',
+  },
 ];
 
 function jobTaskName(id: string): string {

@@ -144,6 +144,36 @@ def test_update_score_writes_score_and_dims():
     assert parsed_dims["quality"] == 0.9
 
 
+# ── LIA-558: the judge model that produced a score is recorded with it ───────
+
+
+def test_update_score_records_the_judge_model():
+    iid = log_interaction(prompt="Test", response="Resp", group_folder="g")
+    dims = {"quality": 0.9, "safety": 1.0, "tool_use": 0.8, "personalization": 0.7}
+    update_score(iid, 0.85, dims, judge_model="gemma4:e4b")
+
+    conn = open_db()
+    row = conn.execute(
+        "SELECT judge_model FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert row["judge_model"] == "gemma4:e4b"
+
+
+def test_update_score_without_a_model_leaves_it_null():
+    # Backward compatibility: the argument is optional, so every pre-existing
+    # caller keeps working and simply records nothing.
+    iid = log_interaction(prompt="Test", response="Resp", group_folder="g")
+    update_score(iid, 0.5, {"quality": 0.5})
+
+    conn = open_db()
+    row = conn.execute(
+        "SELECT judge_model FROM interactions WHERE id = ?", [iid]
+    ).fetchone()
+    conn.close()
+    assert row["judge_model"] is None
+
+
 # ── LIA-214: credit retrieved reflections at scoring time ────────────────────
 
 

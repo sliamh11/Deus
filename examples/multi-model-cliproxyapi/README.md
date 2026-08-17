@@ -78,6 +78,23 @@ mapped it to in `config.yaml`.
    `plan-writer` / `implementer` / `reviewer-sol` / `reviewer-opus` available
    as pinned-model subagent types via the `Agent` tool.
 
+   **Pin subagents to a real model id, never to a gateway alias.** The Claude
+   agents here pin `claude-opus-5`, not the `opus-planner` alias defined in
+   `config.yaml`, and that difference is deliberate — do not "tidy" it into
+   matching the alias. Claude Code appends its 1M-context variant marker to a
+   model id it does not recognise, and a gateway alias is such an id, so the
+   pin reaches the proxy as `opus-planner[1m]`. CLIProxyAPI's
+   `splitModelThinkingSuffix` parses only the parenthesised `model(value)`
+   form, not brackets, and rejects it:
+
+   ```
+   [claude-code:unrecognized_model] {"model":"opus-planner[1m]","query_source":"agent:custom:reviewer-opus"}
+   -> HTTP 400  "unknown provider for model opus-planner[1m]"
+   ```
+
+   Only the subagent-pin path is affected — the `/model` switching in step 8
+   takes an alias fine.
+
 ## Verify the files themselves before relying on them
 
 ```

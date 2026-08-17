@@ -1490,15 +1490,23 @@ def check_codegraph_db_schema(project_root: Path) -> int:
     return 0
 
 
-def check_all(project_root: Path, base_ref: str | None = None) -> int:
+def check_all(
+    project_root: Path, base_ref: str | None = None, bump: bool = False
+) -> int:
     """Run every fast check in sequence and aggregate exit codes.
 
     Runs: drift (main), paths, adr, test_tasks, coverage. The worst exit code
     wins. Coverage is informational (always returns 0) so it contributes only
     its report, never a failure.
+
+    `bump` is forwarded to the drift sub-check so `--all --bump` actually
+    touches drifted pattern files. Before this existed the CLI's `elif` chain
+    matched `--all` first and dropped `--bump` silently, which made the tool's
+    own "Run with --bump" remediation a no-op when combined with `--all`.
+    Defaults to False so CI's `--all --base ...` stays non-mutating.
     """
     print("=== drift (mtime) ===")
-    drift_rc = main(base_ref=base_ref)
+    drift_rc = main(base_ref=base_ref, bump=bump)
     print("\n=== paths ===")
     paths_rc = check_paths(project_root)
     print("\n=== index completeness ===")
@@ -2314,7 +2322,10 @@ if __name__ == "__main__":
     elif args.validate is not None:
         sys.exit(check_validate(PROJECT_ROOT, args.validate or None))
     elif args.all:
-        sys.exit(check_all(PROJECT_ROOT, base_ref=drift_base))
+        # `--bump` must be forwarded here, not just handled by the standalone
+        # `elif args.bump` branch below: this branch matches first when both
+        # flags are passed, so without this the combination is a silent no-op.
+        sys.exit(check_all(PROJECT_ROOT, base_ref=drift_base, bump=args.bump))
     elif args.coverage:
         sys.exit(check_coverage(PROJECT_ROOT))
     elif args.paths:

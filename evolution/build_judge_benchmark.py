@@ -188,6 +188,7 @@ def main() -> None:
 
     written = 0
     parse_fail = 0
+    schema_fail = 0  # rows excluded because the judge omitted a required dim (LIA-580)
     with out_path.open("a", encoding="utf-8") as f:
         for i, row in enumerate(sampled, 1):
             if row["id"] in done:
@@ -198,6 +199,14 @@ def main() -> None:
                 tools_used=json.loads(row["tools_used"]) if row.get("tools_used") else None,
                 user_profile=digest,
             )
+            if result.is_schema_error:
+                # Never write a fixture row whose ground-truth score is absent —
+                # this file BUILDS the labelled fixture every judge comparison is
+                # scored against, so a placeholder here would silently corrupt
+                # the benchmark's own ground truth. LIA-580.
+                schema_fail += 1
+                print(f"  SKIP {row.get('id', '?')}: {result.rationale}", flush=True)
+                continue
             if result.is_parse_error:
                 parse_fail += 1
             rec = build_record(row, result, digest, rubric_version)
@@ -217,7 +226,8 @@ def main() -> None:
                 pass
     uniq = sorted(set(round(v, 3) for v in pvals))
     print(f"\n[done] wrote {written} new (total {len(done)+written}) → {out_path}")
-    print(f"[done] parse_fail={parse_fail}/{written} | personalization unique values={uniq}")
+    print(f"[done] parse_fail={parse_fail}/{written} | schema_fail={schema_fail} (excluded) "
+          f"| personalization unique values={uniq}")
     if len(uniq) <= 1:
         print("WARNING: personalization labels are constant — digest injection may not be working.",
               file=sys.stderr)
