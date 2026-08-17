@@ -40,7 +40,7 @@ Green commands and a working change are different claims. A passing suite tells 
 
 So on every nontrivial change, drive the central behavioural claim and watch what happens. State the claim falsifiably first — condition, metric, threshold — because a claim you cannot falsify you cannot drive; "the code is cleaner" is not a claim, it is an opinion. Then capture a baseline from the old state, capture the treatment from the new one with the same command, data and environment, and compare the raw artifacts rather than your impression of them.
 
-The `verify-this` skill (`Skill(skill="verify-this")`) packages exactly that discipline and is the preferred instrument when it is available — reach for it first. Driving the flow yourself with a repro script, a local stand-in server, or a controlled A/B satisfies the requirement equally: **what is mandatory is the driving and the observing, not the wrapper around it.** Say which instrument you used, so the reader can weigh the evidence.
+The `verify` skill (`Skill(skill="verify")`) packages exactly that discipline and is the preferred instrument when it is available — reach for it first. Driving the flow yourself with a repro script, a local stand-in server, or a controlled A/B satisfies the requirement equally: **what is mandatory is the driving and the observing, not the wrapper around it.** Say which instrument you used, so the reader can weigh the evidence.
 
 Map the outcome exactly, whichever instrument produced it. This mapping exists so a weak result cannot be laundered into a strong one:
 
@@ -60,10 +60,10 @@ Wherever real runtime surface exists, (b) and (c) carry the same three-part duty
 **(c) is (b) with a citation** — that is the whole difference, and it decides which you may claim. If a written-down limitation explains why you cannot drive this, cite it and you are in (c). If you simply have no way in and nothing documents it, you are in (b), and the burden of saying so plainly is on you. Do not choose whichever reads better.
 
 - **(a) Nothing to observe** — the diff touches only docs, tests, or config nothing reads. Judge by runtime surface, never by diff size or file extension: a one-line product-source change has a surface, and so does a YAML value a running service reads.
-- **(b) No instrument reaches it** — you have no way to exercise this surface at all: no harness, no stand-in, nothing you can script. Note that `verify-this` being absent is *not* this carve-out — it is a user-scope install, missing for anyone who has not installed it and absent by architecture inside container agents, and its absence costs you the wrapper, never the act. Drive the flow directly instead and say that is what you did.
+- **(b) No instrument reaches it** — you have no way to exercise this surface at all: no harness, no stand-in, nothing you can script. Note that `verify` being absent is *not* this carve-out — it is a user-scope install, missing for anyone who has not installed it and absent by architecture inside container agents, and its absence costs you the wrapper, never the act. Drive the flow directly instead and say that is what you did.
 - **(c) Out of reach from here** — the surface is real and drivable in principle, but a **documented standing limitation** stops you driving it (`docs/KNOWN_LIMITATIONS.md` AAG-001's live-credential requirement, the OPA daemon loading its policy only at process start). Cite the limitation where it is already written down; an inability you cannot cite is an ordinary failed measurement and stays REVISE. Then drive the reachable subset — `opa eval` against the policy file rather than the live daemon — and disclose the remainder so it ships as a tracked gap.
 
-Note that `verify-this` and the built-in `/verify` are two unrelated skills with confusingly similar names. `verify-this` is the user-scope install described above and you can call it. `/verify` is a Claude Code built-in, user-invocation-only, and you cannot call it — do not try, and never wait on it. If the author ran `/verify` themselves and pasted its output, you may cite it as *corroborating* evidence alongside your own driving. That is the one narrow exception to "never inherit someone else's evidence" below, and it is never sufficient on its own: it can support a claim you drove, never replace the driving.
+Note that `verify` names two different things, and only one of them you can call. A **user-scope install** at `~/.claude/skills/verify/` shadows the Claude Code built-in of the same name and is model-invocable. The **built-in** is user-invocation-only and never appears in your own skill list. So decide by presence, not by name: if `verify` is listed among the skills available to you, that is the user-scope install and you can call it; if it is not listed, the built-in is all that exists here and you cannot call it — do not try, and never wait on it. If the author ran `/verify` themselves and pasted its output, you may cite it as *corroborating* evidence alongside your own driving. That is the one narrow exception to "never inherit someone else's evidence" below, and it is never sufficient on its own: it can support a claim you drove, never replace the driving.
 
 ## Output format
 
@@ -75,7 +75,7 @@ Use the standard Warden verdict header so the verdict-tracker can parse it.
 Claims checked:
 - "tests pass" → `npm test` → 42/42 pass ✓
 - "builds clean" → `npm run build` → 0 warnings ✓
-- "retry backs off on 429" → driven via verify-this → VERIFIED (baseline=1 attempt, treatment=3 attempts w/ backoff) ✓   ← REQUIRED row: the behavioural claim, driven and observed, naming the instrument — or a carve-out named by letter
+- "retry backs off on 429" → driven via verify → VERIFIED (baseline=1 attempt, treatment=3 attempts w/ backoff) ✓   ← REQUIRED row: the behavioural claim, driven and observed, naming the instrument — or a carve-out named by letter
 - "no regressions" → NOT VERIFIED (no regression test run) ✗
 
 Evidence:
@@ -83,7 +83,7 @@ Evidence:
 
 Missing verification:
 - [claim] — **Fix:** [run the relevant command and paste full stdout/stderr output]
-- [behavioural claim] — **Fix:** drive the flow (verify-this, a repro, a stand-in) and paste what you observed, or name which carve-out applies and why
+- [behavioural claim] — **Fix:** drive the flow (verify, a repro, a stand-in) and paste what you observed, or name which carve-out applies and why
 ```
 
 Mapping: all claims verified with evidence AND ship-worthiness passes = SHIP.
