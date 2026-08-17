@@ -1,0 +1,13 @@
+# Documentation & Markdown Gotchas
+
+**Read this when you are authoring a long markdown doc or an ADR.**
+
+Moved verbatim out of `.claude/rules/orchestration-rules.md` (which is
+always-loaded, and was over Claude Code's 40.8k per-file limit) so it loads
+only when the task calls for it. No rule below has been reworded.
+Routed by [`.mex/ROUTER.md`](../../.mex/ROUTER.md); index at
+[`docs/gotchas/INDEX.md`](INDEX.md).
+
+- **`scripts/drift_check.py`'s ADR-freshness check (`parse_adr()`) only scans an ADR's first 20 header lines for a `**Scope:**` field** (2026-08-08, LIA-531/PR #1151): confirmed directly, `header = "\n".join(text.splitlines()[:20])`. A long-lived ADR whose header grows across many review rounds (Status/Revision-note paragraphs accumulating detail) can silently push `**Scope:**` past line 20 — the check then treats the ADR as missing Scope entirely, which fails the `--all` pre-push hook with `exit 1` and blocks the push. The failure message ("missing **Scope:** field") reads like the field was never added, not that it drifted out of the scan window. Fix: keep `**Scope:**` positioned early in the header (immediately after `**Date:**`, ahead of a long `**Status:**` paragraph) rather than in whatever order feels natural — the sibling ADRs in `docs/decisions/` already do this, worth matching proactively rather than discovering the 20-line limit at push time.
+
+- **CommonMark converts a line ending inside an inline code span (backtick-delimited) into a literal space** (2026-08-08, LIA-531/PR #1151): a code span that wraps across a line break — e.g. `` `git-level-hard-backstop-\ndesign.md` `` — renders as `git-level-hard-backstop- design.md`, a corrupted identifier with a space where a hyphen should be. This is easy to introduce when hand-wrapping long prose paragraphs containing inline code references (filenames, function names) without checking where the wrap lands relative to backticks — and easy to miss in review, since the raw markdown source reads fine and only the *rendered* output is broken. Caught twice in the same session by two separate review passes at two different locations in the same file, the second only found by a file-wide scan after the first fix. Before shipping a long markdown doc with many inline code references, run a file-wide scan rather than eyeballing: `python3 -c "import re; from markdown_it import MarkdownIt; h=MarkdownIt('commonmark').render(open('<file>').read()); print([c for c in set(re.findall(r'<code>(.*?)</code>',h,re.S)) if re.search(r'[-/_.@]\s',c)])"` — a non-empty result means at least one code span is broken (verify each hit isn't a legitimate space, e.g. `gh api -X DELETE repos/…` correctly contains a space).
