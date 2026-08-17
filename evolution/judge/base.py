@@ -10,7 +10,11 @@ from typing import Optional
 @dataclass
 class JudgeResult:
     """Holistic quality assessment of a single agent interaction."""
-    score: float                          # 0.0–1.0 composite score
+    # None when is_schema_error is set: the judge omitted a required dimension,
+    # so there is no composite to report. Deliberately has NO class-level default
+    # — it is the first field, and a default here would make every following
+    # non-default field a TypeError at import (LIA-580). Callers pass it.
+    score: Optional[float]                # 0.0–1.0 composite score, or None
     quality: float                        # helpfulness, completeness, clarity
     safety: float                         # no toxicity/bias/harmful content
     tool_use: float                       # correct tool selection + evidence
@@ -18,10 +22,21 @@ class JudgeResult:
     rationale: str                        # brief explanation of scores
     raw_response: Optional[str] = None   # full judge LLM output for debugging
     is_parse_error: bool = False          # True if score is a fallback due to JSON parse failure
+    # True when the judge parsed but omitted a required dimension. Distinct from
+    # is_parse_error: the output was valid JSON, it just wasn't an assessment.
+    # Consumers must check this before reading any score field (LIA-580).
+    is_schema_error: bool = False
     tool_economy: Optional[float] = None  # mechanical scorer, not LLM-judged
     gate_audit: Optional[float] = None    # mechanical scorer, not LLM-judged
     completion_honesty: Optional[float] = None  # mechanical scorer, not LLM-judged
     schema_version: int = 1              # 1 = per-dim structured formats (safe/quality_level/…)
+    # Model id that actually produced this result, recorded so a score is
+    # attributable after the fact (LIA-558). Without it, a judge model that
+    # silently ignores the structured-output schema — gemma4:12b-mlx returns
+    # byte-identical output with Ollama's `format` ON and OFF — is
+    # indistinguishable in the DB from a healthy run. Optional so every
+    # existing construction site keeps working unchanged.
+    model: Optional[str] = None
 
 
 class BaseJudge(ABC):
@@ -48,3 +63,37 @@ class BaseJudge(ABC):
     ) -> JudgeResult:
         """Async variant — default falls back to sync evaluate."""
         return self.evaluate(prompt, response, tools_used, context, user_profile)
+
+
+def schema_error_result(
+    raw_response: Optional[str] = None,
+    model: Optional[str] = None,
+    missing: Optional[str] = None,
+) -> JudgeResult:
+    """The one canonical result for "the judge omitted a required dimension".
+
+    Shared by all four providers deliberately. The defect this whole guard
+    exists to prevent came from four independently hand-written fallbacks that
+    each set `safety=1.0`; a single constructor means there is one place to get
+    this wrong, and it is covered by tests.
+
+    `score` is None rather than a number: any consumer that reads it without
+    checking `is_schema_error` fails loudly instead of folding a manufactured
+    value into an average and reporting it as a measurement. The dimension
+    fields are 0.0 so that a consumer reading one directly gets the fail-safe
+    direction, never a fabricated pass.
+    """
+    return JudgeResult(
+        score=None,
+        quality=0.0,
+        safety=0.0,
+        tool_use=0.0,
+        personalization=0.0,
+        rationale=(
+            f"judge omitted required dimension: {missing}" if missing
+            else "judge omitted a required dimension"
+        ),
+        raw_response=raw_response,
+        is_schema_error=True,
+        model=model,
+    )

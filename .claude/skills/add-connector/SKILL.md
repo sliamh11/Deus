@@ -47,9 +47,9 @@ inherited from another user), still walk through Phase 2 (select) and
 Phase 3 (risk acknowledgment) — Phase 3 is required every time, regardless
 of configuration state, per its own rule; skipping it here would let an
 already-configured install proceed straight to a real connector launch
-without ever showing the risks. Only Phases 4-9 (install/authenticate/
+without ever showing the risks. Only Phases 4-8 (install/authenticate/
 write-config) are skippable on an already-configured connector — jump from
-Phase 3 straight to Phase 10 (Verify) unless the user explicitly wants to
+Phase 3 straight to Phase 9 (Verify) unless the user explicitly wants to
 reconfigure.
 
 **`cliproxy-oauth`-specific one-time check, added for the model-picker-
@@ -57,8 +57,8 @@ visibility follow-up — this is a deliberate, documented exception to this
 skill's normal connector-generic design, not a pattern to copy for a
 future connector.** An already-configured `cliproxy-oauth` install
 predating this feature has no `claude-gpt-*` discovery aliases in its real
-config, and the normal skip straight to Phase 10 would never surface the
-migration step needed to add them. Before jumping to Phase 10 on an
+config, and the normal skip straight to Phase 9 would never surface the
+migration step needed to add them. Before jumping to Phase 9 on an
 already-configured `cliproxy-oauth`, run:
 ```bash
 if [ -f ~/.config/deus/connectors/cliproxy/config.local.yaml ]; then
@@ -71,8 +71,36 @@ If the count is below 3 (a fresh install has 0; a partially-applied manual
 edit could have 1 or 2 — `-c` counts matches rather than a bare presence
 check specifically so a partial edit isn't mistaken for a complete one),
 walk through Phase 7's "Already configured? Add discovery aliases
-manually" subsection before continuing to Phase 10 — every other Phase
-4-9 step still stays skipped.
+manually" subsection before continuing to Phase 9 — every other Phase
+4-8 step still stays skipped.
+
+**Second `cliproxy-oauth`-specific one-time check, added for the
+per-model reasoning-effort feature — same reasoning as the check above,
+same deliberate exception.** An already-configured install predating this
+feature has no `payload.override` block, and the normal skip straight to
+Phase 9 would never surface the migration step needed to add it:
+```bash
+if [ -f ~/.config/deus/connectors/cliproxy/config.local.yaml ]; then
+  grep -c 'reasoning\.effort' ~/.config/deus/connectors/cliproxy/config.local.yaml
+else
+  echo 0
+fi
+```
+If the count is below 3, walk through Phase 7's "Already configured? Add
+reasoning-effort overrides manually" subsection before continuing to
+Phase 9 (in addition to the discovery-alias check above, if that one also
+applies) — every other Phase 4-8 step still stays skipped.
+
+**Also for any already-configured `cliproxy-oauth` install (regardless of
+the check above)**: if it predates the credential-fallthrough fix, it may
+have gone through the old (now-deleted) Phase 8 flow, which left a
+plaintext copy of the connector's inbound key sitting in
+`~/.claude.json`'s `customApiKeyResponses.approved` array — orphaned and
+functionally dead once this connector authenticates via
+`ANTHROPIC_AUTH_TOKEN`, but still real credential material at rest.
+Cleanup for this is tracked as a separate follow-up (not yet built) —
+flag it to the user rather than hand-editing their `~/.claude.json`
+yourself.
 
 ## Phase 2: Which connector
 
@@ -101,7 +129,12 @@ selected in Phase 2:
 >    separate HTTP client — see `examples/multi-model-cliproxyapi/README.md`'s
 >    "Known open risks" for the full account, including real dated ban
 >    reports in CLIProxyAPI's own issue tracker for other providers. Unlike
->    a config mistake, there is no rollback if this fires.
+>    a config mistake, there is no rollback if this fires. This leg was
+>    dormant for every install predating the credential-fallthrough fix
+>    (a `~/.claude.json` approval-check mismatch meant the connector's key
+>    was silently never used, so this OAuth leg was never actually
+>    exercised) — it becomes genuinely live for the first time once that
+>    fix lands, not something that "was already happening."
 > 2. **Anthropic explicitly disclaims support** for routing Claude Code to
 >    non-Claude models through any gateway
 >    (https://code.claude.com/docs/en/llm-gateway) — a support-scope
@@ -139,7 +172,10 @@ selected in Phase 2:
 >    were already reachable via `ANTHROPIC_MODEL`/typed `/model` — this
 >    just makes it easier to notice at a glance which model is actually
 >    selected, which is a mitigation of confusion, not a new risk in its
->    own right.
+>    own right. Discovery itself never fired at all before the
+>    credential-fallthrough fix (see risk 1) — this goes from a picker
+>    showing nothing extra to one showing exactly these 3 curated models,
+>    not from an unfiltered catalog down to 3.
 > 7. **(ollama only) A small/weak local model can silently produce
 >    lower-quality or subtly wrong tool-use sequences** — misread
 >    instructions, bad tool-call arguments, incomplete reasoning — while
@@ -149,10 +185,18 @@ selected in Phase 2:
 >    silently degrading task correctness, not about where the model comes
 >    from, and it carries no distinct warning signal beyond noticing the
 >    output itself looks off.
+> 8. **(cliproxy-oauth only) A background/`--bg` session launched from
+>    inside a connector session loses the model redirect.** Claude Code
+>    strips `ANTHROPIC_AUTH_TOKEN` (this connector's credential mechanism)
+>    when starting a background session against a custom
+>    `ANTHROPIC_BASE_URL` — a background session spawned this way silently
+>    falls back to your normal Claude access instead of the connector's
+>    model, rather than erroring or redirecting. Disclosed as a known
+>    consequence, not something this connector tries to prevent.
 
-AskUserQuestion: Confirm you understand and accept the risks above (risk 6
-applies only to `cliproxy-oauth`; risk 7 applies only to `ollama`) before
-continuing?
+AskUserQuestion: Confirm you understand and accept the risks above (risks
+6 and 8 apply only to `cliproxy-oauth`; risk 7 applies only to `ollama`)
+before continuing?
 - Yes, continue
 - No, cancel setup
 
@@ -189,10 +233,10 @@ point Phase 5 hasn't collected the user's real host yet and a live check
 here could only ever reach the default `localhost:11434` (silently wrong
 for a non-default-host setup, with no way to recover except repeating the
 same failing check). Service liveness — against the real configured host —
-is checked in Phase 10's `verify-setup`, after Phase 7 writes it. If
+is checked in Phase 9's `verify-setup`, after Phase 7 writes it. If
 `not installed`, tell the user to install Ollama
 (https://ollama.com/download); if it's installed but the service isn't
-running (menu-bar app on macOS / systemd unit on Linux), Phase 10 will
+running (menu-bar app on macOS / systemd unit on Linux), Phase 9 will
 catch that instead, with the real host. This connector never manages the
 Ollama service itself — no daemon to start on the user's behalf, unlike
 `cliproxy-oauth`'s launchd plist.
@@ -206,7 +250,7 @@ least 64000 before continuing:
 - **CLI/systemd-managed install**: `export OLLAMA_CONTEXT_LENGTH=65536`
   in the service's environment, then restart the service.
 
-Phase 10's `verify-setup` checks this automatically (via `/api/ps`'s
+Phase 9's `verify-setup` checks this automatically (via `/api/ps`'s
 `context_length`) and fails if it's still too small — but flag it now so
 the user isn't surprised by a failed verify later.
 
@@ -231,6 +275,13 @@ the user isn't surprised by a failed verify later.
   exact same value as its plain-alias twin** (e.g. `claude-gpt-sol`'s
   `name` = `sol`'s `name`) — a mismatch wouldn't error, CLIProxyAPI would
   just silently treat them as two different upstream models.
+- **Reasoning effort per model** — CLIProxyAPI force-sets the outbound
+  Codex `reasoning.effort` for each of the 3 GPT models via a config-side
+  override (confirmed live: it overrides whatever Claude Code itself
+  sends, regardless). Tracked-template defaults are `sol`=`high`,
+  `terra`=`high`, `luna`=`xhigh` (Codex's ceiling — there's no `max`
+  level on this protocol). Offer the user each default and let them
+  change any of them. Accepted values: `low`/`medium`/`high`/`xhigh`.
 - **Default model** for the session itself when no `/model` switch has been
   made — recommend `luna-max` (max reasoning effort) unless the user
   prefers otherwise. This is separate from picker visibility: the plain
@@ -297,9 +348,15 @@ Where `<json values>` is a JSON object:
   "anthropic_api_key": "<optional, only if the user opted in>",
   "model_map": {"deus-gpt-sol": "sol", "deus-gpt-terra": "terra", "deus-gpt-luna": "luna-max"},
   "default_model_alias": "luna-max",
+  "effort_map": {"deus-gpt-luna": "xhigh"},
   "binary_path": "<absolute path from: command -v cli-proxy-api>"
 }
 ```
+
+`effort_map` is optional — only include the subagents whose effort level
+the user changed from the tracked template's defaults (Phase 5). Omitting
+it, or omitting a specific subagent's key, leaves that subagent at its
+template default (`sol`=`high`, `terra`=`high`, `luna`=`xhigh`).
 
 This writes the real config to
 `~/.config/deus/connectors/cliproxy/config.local.yaml` — **outside any
@@ -323,9 +380,15 @@ overwrite it on their behalf.
 
 **Then hand-edit the real upstream model id strings** collected in Phase 5
 into `~/.config/deus/connectors/cliproxy/config.local.yaml`'s
-`oauth-model-alias.codex[].name` fields (the `write-config` call above does
-not touch these — only `deus-model-map`, `api-keys`, `claude-api-key`, and
-`default-model-alias`).
+`oauth-model-alias.codex[].name` fields **and** the matching
+`payload.override[].models[].name` field for each GPT model (the
+`write-config` call above does not touch either — only `deus-model-map`,
+`api-keys`, `claude-api-key`, `default-model-alias`, and — new for the
+reasoning-effort feature — `payload.override[].params["reasoning.effort"]`
+when `effort_map` was given). Keep each model's `oauth-model-alias.name`
+and `payload.override[].models[].name` identical, same requirement as the
+`claude-gpt-*` picker-discovery twin's name — a mismatch wouldn't error,
+the effort override would just silently stop matching any real request.
 
 Load the daemon:
 
@@ -368,6 +431,44 @@ changes and reloads automatically on write (confirmed:
 own gateway discovery re-queries `/v1/models` on each new session start,
 so the very next `deus connect cliproxy-oauth` launch picks this up.
 
+### Already configured (cliproxy-oauth)? Add reasoning-effort overrides manually
+
+**For an existing `config.local.yaml` predating the per-model
+reasoning-effort feature** (reached via Phase 1's second check on an
+already-configured `cliproxy-oauth`) — same rule as the discovery-alias
+subsection above: do NOT re-run `write-config`, for the same reason (it
+rebuilds the file from the tracked template, discarding the real upstream
+`name` values already hand-edited in). Instead, hand-edit
+`~/.config/deus/connectors/cliproxy/config.local.yaml` directly, adding a
+top-level `payload.override` block — reuse the SAME real upstream `name`
+value already present for each existing plain alias (`sol`/`terra`/
+`luna-max`), never the tracked template's placeholder names:
+
+```yaml
+payload:
+  override:
+    - models:
+        - name: "<same real name as the existing sol entry, verbatim>"
+          protocol: "codex"
+      params:
+        "reasoning.effort": "high"
+    - models:
+        - name: "<same real name as the existing terra entry, verbatim>"
+          protocol: "codex"
+      params:
+        "reasoning.effort": "high"
+    - models:
+        - name: "<same real name as the existing luna entry, verbatim>"
+          protocol: "codex"
+      params:
+        "reasoning.effort": "xhigh"
+```
+
+Ask the user for each level the same way Phase 5 would for a fresh
+setup (defaults shown above; accepted values `low`/`medium`/`high`/
+`xhigh`). No daemon restart needed — same fsnotify-based config watcher
+as the discovery-alias subsection above, since it's the same config file.
+
 **ollama (no daemon):**
 ```bash
 echo '<json values>' | python3 scripts/connectors_cli.py write-config ollama
@@ -386,26 +487,7 @@ Writes only `~/.config/deus/connectors/ollama/config.local.yaml` — no
 launchd plist, no daemon to load or kickstart. Ollama's own service is
 already running (confirmed in Phase 4) and this connector never manages it.
 
-## Phase 8: `~/.claude.json` pre-approval
-
-**cliproxy-oauth only.** Read-merge the connector's inbound key into
-`~/.claude.json`'s `customApiKeyResponses.approved` array — back up the
-file first (`cp ~/.claude.json ~/.claude.json.bak-<date>`), then merge
-(never overwrite the whole array — other entries may already exist).
-
-**ollama: not applicable, based on docs — not yet confirmed by a live run.**
-`env_for_launch()` sets `ANTHROPIC_API_KEY=""` (empty) and authenticates via
-`ANTHROPIC_AUTH_TOKEN=ollama` instead, which Claude Code's own auth
-precedence resolves before `ANTHROPIC_API_KEY` — the custom-API-key
-approval prompt this phase exists to pre-answer is keyed off
-`ANTHROPIC_API_KEY` being set, so it's expected not to trigger. This is
-reasoned from `code.claude.com/docs/en/authentication`'s precedence order,
-not yet observed in a real run (no live Ollama setup existed at
-implementation time to test against). Treat Phase 10's live check as the
-first real confirmation of this — if a prompt does appear there, that's a
-genuine finding to fix, not an expected step to route around.
-
-## Phase 9: Validate subagent definitions
+## Phase 8: Validate subagent definitions
 
 ```bash
 python3 scripts/connectors_cli.py agents-json <id>
@@ -415,7 +497,7 @@ python3 scripts/connectors_cli.py agents-json <id>
 prints valid, non-empty JSON — no file templates to install, `deus
 connect`'s launch mechanism passes these inline via `claude --agents`.
 
-## Phase 10: Verify
+## Phase 9: Verify
 
 ```bash
 python3 scripts/connectors_cli.py verify-setup <id>
@@ -449,7 +531,7 @@ deus connect <id>
   and session-resume visibility are both disclosed tradeoffs, not
   guarantees — see Phase 3).
 
-## Phase 11: Set as default (optional)
+## Phase 10: Set as default (optional)
 
 By default, every future session still needs `deus connect <id>` typed
 explicitly — a bare `deus`/`deus home` is never affected. If you want this
@@ -529,10 +611,12 @@ never written to disk.
    ```bash
    rm ~/.config/deus/connectors/cliproxy/config.local.yaml
    ```
-3. Revert the `~/.claude.json` `customApiKeyResponses.approved` entry added
-   in Phase 8 (remove that one key, keep the rest of the array intact).
-4. Confirm: `python3 scripts/connectors_cli.py status cliproxy-oauth` now
+3. Confirm: `python3 scripts/connectors_cli.py status cliproxy-oauth` now
    reports "not configured".
+4. If this install predates the credential-fallthrough fix, it may still
+   have the orphaned `~/.claude.json` residue described in Phase 1's
+   migration-check subsection — removing the connector's own config here
+   doesn't touch that file.
 
 **ollama:**
 1. Remove the real local config (no launchd daemon to unload — this

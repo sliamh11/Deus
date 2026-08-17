@@ -100,6 +100,14 @@ def rejudge(interactions: list[dict]) -> list[dict]:
             print(f"  [{i+1}/{total}] ERROR: {exc} ({int(elapsed*1000)}ms)", file=sys.stderr)
             continue
         elapsed = time.time() - t0
+        if result.is_schema_error:
+            # Skip the record: new_score is None, and every downstream
+            # consumer here formats it or feeds it into a delta/pearson.
+            # A skipped row lowers n honestly; a substituted number would
+            # not. LIA-580.
+            print(f"  [{i+1}/{total}] SCHEMA ERROR, excluded: {result.rationale}",
+                  file=sys.stderr)
+            continue
         item["new_score"] = result.score
         item["new_dims"] = {
             "quality": result.quality,

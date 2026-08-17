@@ -215,6 +215,8 @@ class _Res:
     rationale: str = "ok"
     raw_response: str = "{}"
     is_parse_error: bool = False
+    # LIA-580: benchmark_judge checks this before appending to its score arrays.
+    is_schema_error: bool = False
 
 
 def test_benchmark_passes_digest_and_records_per_dim(monkeypatch):

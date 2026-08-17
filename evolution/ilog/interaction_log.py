@@ -87,6 +87,7 @@ def update_score(
     dims: dict,
     parse_error: bool = False,
     schema_version: int = 1,
+    judge_model: Optional[str] = None,
 ) -> None:
     """Attach judge score and dimension breakdown to a logged interaction.
 
@@ -103,6 +104,7 @@ def update_score(
         judge_dims=json.dumps(dims),
         parse_error=int(parse_error),
         judge_schema_version=schema_version,
+        judge_model=judge_model,
     )
     _credit_retrieved_reflections(store, interaction_id, score)
 
