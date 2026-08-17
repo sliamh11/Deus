@@ -205,6 +205,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/teach` | Teach a skill or concept over multiple sessions (stateful teaching workspace) |
 | `/update-skills` | Update installed skill branches from upstream |
 | `/use-local-whisper` | Switch voice transcription to local whisper.cpp |
+| `/verify` | Prove or disprove that a change works by exercising it at its real surface and comparing a control capture against a treatment capture |
 | `/wardens` | View, toggle, and configure warden quality gates |
 | `/wayfinder` | Chart a large effort as decision tickets on the issue tracker; resolve them one at a time |
 | `/writing-great-skills` | Reference for authoring predictable skills — leading words, progressive disclosure |
