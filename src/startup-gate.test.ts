@@ -379,7 +379,30 @@ describe('printStartupReport', () => {
 
   beforeEach(() => {
     mockLogger.error.mockClear();
+    mockLogger.warn.mockClear();
+    mockLogger.info.mockClear();
   });
+
+  // The banner's level now depends on its worst finding (LIA-553), so the
+  // content assertions below read from whichever level was used. Only the
+  // dedicated severity tests at the end care which one that is.
+  function bannerLines(): string[] {
+    return [
+      ...mockLogger.error.mock.calls,
+      ...mockLogger.warn.mock.calls,
+      ...mockLogger.info.mock.calls,
+    ].flat() as string[];
+  }
+
+  function allOutput(): string {
+    return bannerLines().join('\n');
+  }
+
+  function expectSilent(): void {
+    expect(mockLogger.error).not.toHaveBeenCalled();
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+    expect(mockLogger.info).not.toHaveBeenCalled();
+  }
 
   function makeReport(
     overrides: Partial<StartupCheckReport> = {},
@@ -398,7 +421,7 @@ describe('printStartupReport', () => {
       { name: 'API credentials', level: 'fatal', ok: true, hint: '' },
     ];
     printStartupReport(makeReport({ passed }));
-    expect(mockLogger.error).not.toHaveBeenCalled();
+    expectSilent();
   });
 
   it('prints nothing when fatals/warnings/suggestions are all empty even with passed items', () => {
@@ -407,7 +430,7 @@ describe('printStartupReport', () => {
       { name: 'Check B', level: 'warn', ok: true, hint: '' },
     ];
     printStartupReport(makeReport({ passed }));
-    expect(mockLogger.error).not.toHaveBeenCalled();
+    expectSilent();
   });
 
   it('uses "FAILED" in the title when there are fatals', () => {
@@ -420,7 +443,7 @@ describe('printStartupReport', () => {
       },
     ];
     printStartupReport(makeReport({ fatals }));
-    const allCalls = mockLogger.error.mock.calls.flat().join('\n');
+    const allCalls = allOutput();
     expect(allCalls).toContain('FAILED');
   });
 
@@ -440,7 +463,7 @@ describe('printStartupReport', () => {
       },
     ];
     printStartupReport(makeReport({ fatals }));
-    const allCalls = mockLogger.error.mock.calls.flat().join('\n');
+    const allCalls = allOutput();
     expect(allCalls).toContain('2 fatal error(s)');
     expect(allCalls).toContain('cannot start');
   });
@@ -455,7 +478,7 @@ describe('printStartupReport', () => {
       },
     ];
     printStartupReport(makeReport({ warnings }));
-    const allCalls = mockLogger.error.mock.calls.flat().join('\n');
+    const allCalls = allOutput();
     expect(allCalls).toContain('running with limited functionality');
     expect(allCalls).not.toContain('FAILED');
   });
@@ -470,7 +493,7 @@ describe('printStartupReport', () => {
       },
     ];
     printStartupReport(makeReport({ suggestions }));
-    const allCalls = mockLogger.error.mock.calls.flat().join('\n');
+    const allCalls = allOutput();
     expect(allCalls).toContain('running with limited functionality');
   });
 
@@ -484,7 +507,7 @@ describe('printStartupReport', () => {
       },
     ];
     printStartupReport(makeReport({ warnings }));
-    const calls = mockLogger.error.mock.calls.flat();
+    const calls = bannerLines();
     expect(calls[0]).toMatch(/^╔/);
     expect(calls[calls.length - 1]).toMatch(/^╚/);
   });
@@ -499,7 +522,7 @@ describe('printStartupReport', () => {
       },
     ];
     printStartupReport(makeReport({ warnings }));
-    const calls = mockLogger.error.mock.calls.flat();
+    const calls = bannerLines();
     const widths = calls.map((line) => [...(line as string)].length);
     const first = widths[0];
     for (const w of widths) {
@@ -517,7 +540,7 @@ describe('printStartupReport', () => {
       },
     ];
     printStartupReport(makeReport({ fatals }));
-    const allCalls = mockLogger.error.mock.calls.flat().join('\n');
+    const allCalls = allOutput();
     expect(allCalls).toContain('✗');
   });
 
@@ -529,7 +552,7 @@ describe('printStartupReport', () => {
       { name: 'Channels', level: 'suggest', ok: false, hint: 'No channels' },
     ];
     printStartupReport(makeReport({ passed, suggestions }));
-    const allCalls = mockLogger.error.mock.calls.flat().join('\n');
+    const allCalls = allOutput();
     expect(allCalls).toContain('✓');
   });
 
@@ -540,11 +563,64 @@ describe('printStartupReport', () => {
       { name: 'Memory vault', level: 'warn', ok: false, hint: longHint },
     ];
     printStartupReport(makeReport({ warnings }));
-    const calls = mockLogger.error.mock.calls.flat();
+    const calls = bannerLines();
     const widths = calls.map((line) => [...(line as string)].length);
     const expectedWidth = widths[0]; // take from border line
     for (const w of widths) {
       expect(w).toBe(expectedWidth);
     }
+  });
+
+  // ── severity mapping (LIA-553) ──────────────────────────────────────────
+  //
+  // The banner used to go out entirely at error level, which made 46% of all
+  // ERROR records in deus.log non-errors — measured over 161 startup events,
+  // every one of them a suggestion-level "No groups registered yet". These
+  // three tests pin the level to the report's worst finding so that noise
+  // cannot come back, and so a genuinely fatal banner is never demoted.
+
+  it('logs at error level when there are fatals', () => {
+    const fatals: CheckResult[] = [
+      { name: 'API credentials', level: 'fatal', ok: false, hint: 'Set a key' },
+    ];
+    printStartupReport(makeReport({ fatals }));
+    expect(mockLogger.error).toHaveBeenCalled();
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+    expect(mockLogger.info).not.toHaveBeenCalled();
+  });
+
+  it('logs at warn level when there are warnings but no fatals', () => {
+    const warnings: CheckResult[] = [
+      { name: 'Memory vault', level: 'warn', ok: false, hint: 'Not found' },
+    ];
+    const suggestions: CheckResult[] = [
+      { name: 'Channels', level: 'suggest', ok: false, hint: 'No channels' },
+    ];
+    printStartupReport(makeReport({ warnings, suggestions }));
+    expect(mockLogger.warn).toHaveBeenCalled();
+    expect(mockLogger.error).not.toHaveBeenCalled();
+    expect(mockLogger.info).not.toHaveBeenCalled();
+  });
+
+  it('logs at info level when there are only suggestions', () => {
+    // The production case: 160 of 161 real startups took this path and were
+    // logged as errors.
+    const suggestions: CheckResult[] = [
+      {
+        name: 'Registered groups',
+        level: 'suggest',
+        ok: false,
+        hint: 'No groups registered yet. Use /setup to add your first',
+      },
+    ];
+    const passed: CheckResult[] = [
+      { name: 'API credentials', level: 'fatal', ok: true, hint: '' },
+    ];
+    printStartupReport(makeReport({ suggestions, passed }));
+    expect(mockLogger.info).toHaveBeenCalled();
+    expect(mockLogger.error).not.toHaveBeenCalled();
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+    // and the whole banner went to that one level, not just part of it
+    expect(mockLogger.info.mock.calls.length).toBe(bannerLines().length);
   });
 });

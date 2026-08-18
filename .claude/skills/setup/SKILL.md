@@ -244,19 +244,42 @@ skills = ['compress', 'resume', 'checkpoint', 'preserve', 'preferences', 'projec
 failed = []
 
 for skill in skills:
-    src = src_base / skill / 'skill.md'
+    src_dir = src_base / skill
+    src = src_dir / 'skill.md'
+    if not src.is_file():
+        failed.append(f'{skill} (no skill.md in repo)')
+        continue
+
     dest_dir = dest_base / skill
-    dest = dest_dir / 'skill.md'
+
+    # deus (deus-cmd.sh _ensure_portable_skills) installs these as DIRECTORY
+    # symlinks into the repo. A file written inside such a link resolves to the
+    # repo's own tracked source, so unlinking it would DELETE that source and
+    # leave a link to nothing. Settle the link itself; never descend into it.
+    if dest_dir.is_symlink():
+        if dest_dir.resolve() == src_dir.resolve():
+            print(f'  ✓ {skill} (already linked)')
+            continue
+        dest_dir.unlink()   # wrong target or dangling: replace the LINK, not its contents
+
     dest_dir.mkdir(parents=True, exist_ok=True)
+    if dest_dir.is_symlink():   # rechecked next to the write, not just at loop top
+        failed.append(f'{skill} (destination is a symlink; refusing to write through it)')
+        continue
+
+    dest = dest_dir / 'skill.md'
     if dest.exists() or dest.is_symlink():
         dest.unlink()
     try:
         dest.symlink_to(src.resolve())
         print(f'  ✓ {skill} (symlink)')
     except OSError:
-        # Windows without Developer Mode — fall back to copy
-        shutil.copy2(src, dest)
-        print(f'  ✓ {skill} (copied — re-run setup after repo updates)')
+        try:
+            # Windows without Developer Mode — fall back to copy
+            shutil.copy2(src, dest)
+            print(f'  ✓ {skill} (copied — re-run setup after repo updates)')
+        except OSError as e:
+            failed.append(f'{skill} ({e})')
 
 if failed:
     print(f'  ✗ failed: {failed}', file=sys.stderr)
@@ -268,6 +291,12 @@ if failed:
 - **Windows (Developer Mode on):** creates symlinks
 - **Windows (Developer Mode off):** falls back to file copy — user must re-run setup after updating the repo
 - Idempotent — safe to re-run anytime
+- **Already dir-symlinked by `deus`?** Reported as `already linked` and left alone.
+  `deus-cmd.sh`'s `_ensure_portable_skills` points `~/.claude/skills/<skill>` at the
+  repo directory itself, so anything written *inside* that path lands on the repo's
+  own tracked file. The step detects this and performs no writes rather than
+  deleting the source it was meant to link to.
+- A skill that fails is reported and skipped; the rest still install.
 
 **If any skill fails:** warn the user and continue — the other skills still install. The commands at `.claude/commands/` (home-mode-only) remain as fallback.
 

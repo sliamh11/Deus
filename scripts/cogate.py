@@ -29,7 +29,8 @@ and runs the GPT half.
 Exit codes (typed, agent-native — see scripts/_exit_codes.py):
     0  SUCCESS        co-gate will PASS (Claude accepted AND GPT SHIP; or --skip-gpt + accepted)
     2  USAGE_ERROR    bad arguments, or the Claude mark was REFUSED (e.g. bg-session TRIVIAL,
-                      or a TRIVIAL bypass after a prior REVISE/BLOCK) — GPT is NOT run
+                      or a TRIVIAL bypass after a prior REVISE/BLOCK), or the Claude half
+                      would run on a known non-Anthropic model (LIA-560) — GPT is NOT run
     5  INTERNAL_ERROR a recorded verdict is REVISE/BLOCK — the gate will BLOCK
     4/5/7             GPT COULD_NOT_RUN (auth/internal/rate): the gate fails OPEN (non-blocking),
                       but this exits non-zero + warns LOUDLY so the operator sees GPT did not run
@@ -48,6 +49,7 @@ import codex_warden  # noqa: E402  (the GPT half is its main(), invoked in-proce
 import codex_warden_hooks as whooks  # noqa: E402  (mark_warden, bucket resolution, readback)
 from _agent_io import agent_output, is_agent_context  # noqa: E402
 from _exit_codes import INTERNAL_ERROR, SUCCESS, USAGE_ERROR  # noqa: E402
+from warden_review import model_family  # noqa: E402  (Claude-half model-family guard, LIA-560)
 from warden_review.constants import BACKEND_GPT, store_key  # noqa: E402
 from warden_hooks.verdict_store import _fresh_entry, _read_verdicts  # noqa: E402
 
@@ -122,6 +124,19 @@ def main(argv: list[str] | None = None) -> int:
             bucket = _verdicts_path(marker_root)
         except Exception:  # pragma: no cover — display-only
             bucket = None
+
+    # 1b) Refuse to record a "claude" verdict that a non-Claude model would produce (LIA-560).
+    #     In a gateway session the roles' `model: sonnet` pin resolves through
+    #     ANTHROPIC_DEFAULT_SONNET_MODEL, which may name a GPT model — the co-gate would then
+    #     print `claude: SHIP` for GPT-reviewed-by-GPT. Checked BEFORE the mark so a block
+    #     records nothing and burns no GPT call. Only ever blocks on positive evidence; every
+    #     other outcome warns and proceeds. See model_family.py for why that asymmetry matters.
+    family_verdict, family_msg = model_family.check_claude_half(args.role, wt)
+    if family_verdict == model_family.BLOCK:
+        sys.stderr.write(family_msg + "\n")
+        return USAGE_ERROR
+    if family_msg:
+        sys.stderr.write(family_msg + "\n")
 
     # 2) Mark the Claude verdict into that bucket. mark_warden enforces the bg-session TRIVIAL
     #    refusal + the post-REVISE/BLOCK guard for free; a non-zero return means REFUSED.

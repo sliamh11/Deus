@@ -12,6 +12,7 @@ import importlib.util
 import json
 import sqlite3
 import sys
+import types
 from pathlib import Path
 
 _MOD_PATH = (
@@ -210,14 +211,19 @@ def _setup_sources(tmp_path: Path, *, with_main=True):
     log = tmp_path / "maintenance.log"
     log.write_text(_LOG)
     db = _make_db(tmp_path, with_main=with_main)
+    # --cockpit is pinned to tmp_path so no test ever reads the developer's real
+    # ~/.deus/cockpit_health.json. Paired with cockpit_expected=lambda: False at
+    # each call site, which keeps the real launchd plist out of the test too.
     return ["--health", str(health), "--maint-log", str(log),
-            "--db", str(db), "--data-dir", str(tmp_path / "data")]
+            "--db", str(db), "--data-dir", str(tmp_path / "data"),
+            "--cockpit", str(tmp_path / "no-cockpit.json")]
 
 
 def test_main_delivers_to_control_group(tmp_path: Path):
     argv = _setup_sources(tmp_path, with_main=True)
     deliver = _Recorder()
-    code = mr.main(argv=argv, deliverer=deliver, notifier=_Recorder(), now=NOW)
+    code = mr.main(argv=argv, deliverer=deliver, notifier=_Recorder(), now=NOW,
+                   cockpit_expected=lambda: False)
     assert code == 0
     assert len(deliver.calls) == 1
     data_dir, folder, jid, text, ts = deliver.calls[0]
@@ -228,7 +234,8 @@ def test_main_delivers_to_control_group(tmp_path: Path):
 def test_main_no_control_group_skips_and_notifies(tmp_path: Path):
     argv = _setup_sources(tmp_path, with_main=False)
     deliver, notify = _Recorder(), _Recorder()
-    code = mr.main(argv=argv, deliverer=deliver, notifier=notify, now=NOW)
+    code = mr.main(argv=argv, deliverer=deliver, notifier=notify, now=NOW,
+                   cockpit_expected=lambda: False)
     assert code == 0
     assert deliver.calls == []        # no chat delivery
     assert len(notify.calls) == 1     # desktop fallback instead
@@ -237,8 +244,206 @@ def test_main_no_control_group_skips_and_notifies(tmp_path: Path):
 def test_main_no_data_is_benign_skip(tmp_path: Path):
     argv = ["--health", str(tmp_path / "nope.jsonl"),
             "--maint-log", str(tmp_path / "nope.log"),
-            "--db", str(tmp_path / "nope.db"), "--data-dir", str(tmp_path / "data")]
+            "--db", str(tmp_path / "nope.db"), "--data-dir", str(tmp_path / "data"),
+            "--cockpit", str(tmp_path / "nope.json")]
     deliver = _Recorder()
-    code = mr.main(argv=argv, deliverer=deliver, notifier=_Recorder(), now=NOW)
+    code = mr.main(argv=argv, deliverer=deliver, notifier=_Recorder(), now=NOW,
+                   cockpit_expected=lambda: False)
     assert code == 0
     assert deliver.calls == []
+
+
+# ── cockpit verdict (LIA-552) ───────────────────────────────────────────────────
+
+def _cockpit(**kw) -> dict:
+    base = {"checked_at": NOW, "probes": [{"probe": "memory", "status": "OK"}]}
+    base.update(kw)
+    return base
+
+
+def _write_cockpit(tmp_path: Path, obj) -> Path:
+    p = tmp_path / "cockpit_health.json"
+    p.write_text(json.dumps(obj))
+    return p
+
+
+class TestReadCockpit:
+    """A malformed artifact must never take down the unattended report."""
+
+    def test_reads_valid_artifact(self, tmp_path: Path):
+        assert mr._read_cockpit(_write_cockpit(tmp_path, _cockpit())) is not None
+
+    def test_missing_file(self, tmp_path: Path):
+        assert mr._read_cockpit(tmp_path / "nope.json") is None
+
+    def test_malformed_json(self, tmp_path: Path):
+        p = tmp_path / "c.json"
+        p.write_text("{not json")
+        assert mr._read_cockpit(p) is None
+
+    def test_non_dict_top_level(self, tmp_path: Path):
+        assert mr._read_cockpit(_write_cockpit(tmp_path, [1, 2])) is None
+
+    def test_string_checked_at_rejected(self, tmp_path: Path):
+        assert mr._read_cockpit(_write_cockpit(tmp_path, _cockpit(checked_at="yesterday"))) is None
+
+    def test_bool_checked_at_rejected(self, tmp_path: Path):
+        # bool subclasses int, so a bare isinstance(..., (int, float)) would
+        # accept JSON `true` and compute an age off 1.0.
+        assert mr._read_cockpit(_write_cockpit(tmp_path, _cockpit(checked_at=True))) is None
+
+    def test_non_list_probes_rejected(self, tmp_path: Path):
+        assert mr._read_cockpit(_write_cockpit(tmp_path, _cockpit(probes={"a": 1}))) is None
+
+    def test_non_dict_probe_entry_rejects_whole_artifact(self, tmp_path: Path):
+        # Skipping the bad entry instead would still count it toward the probe
+        # total, manufacturing a false-clean "N OK" out of garbage.
+        bad = _cockpit(probes=[{"probe": "memory", "status": "OK"}, "garbage"])
+        assert mr._read_cockpit(_write_cockpit(tmp_path, bad)) is None
+
+
+class TestCockpitExpected:
+    def test_true_for_each_posix_marker(self, tmp_path: Path, monkeypatch):
+        # Each platform's install marker must count on its own — checking only
+        # the macOS plist would silently omit every verdict on Linux installs.
+        for i in range(3):
+            marker = tmp_path / f"marker{i}"
+            marker.write_text("")
+            markers = [tmp_path / "absent-a", tmp_path / "absent-b", tmp_path / "absent-c"]
+            markers[i] = marker
+            monkeypatch.setattr(mr, "COCKPIT_JOB_MARKERS", tuple(markers))
+            assert mr._cockpit_expected() is True
+
+    def test_false_when_no_marker_present(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(mr, "COCKPIT_JOB_MARKERS", (tmp_path / "absent",))
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert mr._cockpit_expected() is False
+
+    def test_windows_falls_back_to_task_scheduler(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(mr, "COCKPIT_JOB_MARKERS", (tmp_path / "absent",))
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(mr.subprocess, "run",
+                            lambda *a, **k: types.SimpleNamespace(returncode=0))
+        assert mr._cockpit_expected() is True
+
+    def test_windows_query_failure_reports_not_expected(self, tmp_path: Path, monkeypatch):
+        # Cannot tell -> say "not expected" rather than emit a daily warning we
+        # are not sure is warranted.
+        monkeypatch.setattr(mr, "COCKPIT_JOB_MARKERS", (tmp_path / "absent",))
+        monkeypatch.setattr(sys, "platform", "win32")
+
+        def _boom(*a, **k):
+            raise OSError("schtasks missing")
+
+        monkeypatch.setattr(mr.subprocess, "run", _boom)
+        assert mr._cockpit_expected() is False
+
+
+class TestFormatCockpit:
+    def test_not_expected_renders_nothing(self):
+        assert mr._format_cockpit(None, False, NOW) == []
+        assert mr._format_cockpit(_cockpit(), False, NOW) == []
+
+    def test_expected_but_missing_warns(self):
+        out = mr._format_cockpit(None, True, NOW)
+        assert len(out) == 1 and "no verdict on record" in out[0]
+
+    def test_every_line_is_attributable_to_the_cockpit(self):
+        # An unlabelled top-level line renders under "Maintenance (04:30)",
+        # whose own convention is `  ⚠️ {warn}` — so a bare warning would read
+        # as a maintenance warning. Every line must carry the label or be
+        # indented beneath one that does.
+        stale = _cockpit(checked_at=NOW - (mr.COCKPIT_MAX_AGE_SEC + 3600),
+                         probes=[{"probe": "a", "status": "FAILED"}])
+        for case in (mr._format_cockpit(None, True, NOW),
+                     mr._format_cockpit(stale, True, NOW),
+                     mr._format_cockpit(_cockpit(), True, NOW)):
+            assert case, "expected verdict must render something"
+            assert case[0].startswith("Cockpit (06:45):"), case[0]
+            for extra in case[1:]:
+                assert extra.startswith("  "), extra
+
+    def test_all_ok_summary(self):
+        out = "\n".join(mr._format_cockpit(_cockpit(), True, NOW))
+        assert "Cockpit (06:45): 1 OK" in out
+        assert "not OK" not in out
+
+    def test_non_ok_probe_listed_with_raw_status(self):
+        c = _cockpit(probes=[
+            {"probe": "memory", "status": "OK"},
+            {"probe": "evolution.optimizer", "status": "FAILED",
+             "observed": "python3 cannot import dspy"},
+        ])
+        out = "\n".join(mr._format_cockpit(c, True, NOW))
+        assert "Cockpit (06:45): 1 OK, 1 not OK" in out
+        assert "FAILED evolution.optimizer (ONGOING) — python3 cannot import dspy" in out
+
+    def test_degraded_and_unknown_keep_their_own_status(self):
+        # The cockpit ranks OK/DEGRADED/UNKNOWN/FAILED distinctly; collapsing
+        # every non-OK into one label would discard that.
+        c = _cockpit(probes=[{"probe": "a", "status": "DEGRADED"},
+                             {"probe": "b", "status": "UNKNOWN"}])
+        out = "\n".join(mr._format_cockpit(c, True, NOW))
+        assert "DEGRADED a" in out and "UNKNOWN b" in out
+
+    def test_regression_tagged_new(self):
+        c = _cockpit(probes=[{"probe": "a", "status": "FAILED", "is_regression": True}])
+        assert "(NEW)" in "\n".join(mr._format_cockpit(c, True, NOW))
+
+    def test_stale_verdict_warns(self):
+        c = _cockpit(checked_at=NOW - (mr.COCKPIT_MAX_AGE_SEC + 3600))
+        out = "\n".join(mr._format_cockpit(c, True, NOW))
+        assert "verdict is" in out and "old" in out
+
+    def test_fresh_verdict_does_not_warn(self):
+        out = "\n".join(mr._format_cockpit(_cockpit(), True, NOW))
+        assert "old (healthcheck" not in out
+
+
+class TestCockpitInMain:
+    def test_missing_verdict_does_not_trigger_benign_skip(self, tmp_path: Path):
+        # The whole point: when a verdict was expected and is absent, the report
+        # must still run. Gating the early return on presence would exit exactly
+        # then — the one case that most needs reporting.
+        argv = ["--health", str(tmp_path / "nope.jsonl"),
+                "--maint-log", str(tmp_path / "nope.log"),
+                "--db", str(tmp_path / "nope.db"), "--data-dir", str(tmp_path / "data"),
+                "--cockpit", str(tmp_path / "nope.json")]
+        notify = _Recorder()
+        code = mr.main(argv=argv, deliverer=_Recorder(), notifier=notify, now=NOW,
+                       cockpit_expected=lambda: True)
+        assert code == 0
+        assert len(notify.calls) == 1
+        assert "Cockpit (06:45): ⚠️ no verdict on record" in notify.calls[0][1]
+
+    def test_stale_artifact_after_uninstall_is_still_a_benign_skip(
+        self, tmp_path: Path, capsys
+    ):
+        # Uninstalling the scheduled healthcheck leaves its last verdict on disk.
+        # _format_cockpit renders nothing once `expected` is False, so with no
+        # health snapshot and no maintenance log there is genuinely nothing to
+        # say — but a guard that also required the artifact to be ABSENT would
+        # miss the skip and deliver a header-and-fallbacks-only digest daily.
+        argv = ["--health", str(tmp_path / "nope.jsonl"),
+                "--maint-log", str(tmp_path / "nope.log"),
+                "--db", str(tmp_path / "nope.db"), "--data-dir", str(tmp_path / "data"),
+                "--cockpit", str(_write_cockpit(tmp_path, _cockpit()))]
+        deliver, notify = _Recorder(), _Recorder()
+        code = mr.main(argv=argv, deliverer=deliver, notifier=notify, now=NOW,
+                       cockpit_expected=lambda: False)
+        assert code == 0
+        assert deliver.calls == [] and notify.calls == []
+        assert "nothing to report" in capsys.readouterr().out
+
+    def test_verdict_reaches_the_delivered_digest(self, tmp_path: Path):
+        argv = _setup_sources(tmp_path, with_main=True)
+        c = _cockpit(probes=[{"probe": "evolution.optimizer", "status": "FAILED",
+                              "observed": "python3 cannot import dspy"}])
+        argv[argv.index("--cockpit") + 1] = str(_write_cockpit(tmp_path, c))
+        deliver = _Recorder()
+        code = mr.main(argv=argv, deliverer=deliver, notifier=_Recorder(), now=NOW,
+                       cockpit_expected=lambda: True)
+        assert code == 0
+        text = deliver.calls[0][3]
+        assert "Cockpit (06:45): 0 OK, 1 not OK" in text
+        assert "FAILED evolution.optimizer" in text

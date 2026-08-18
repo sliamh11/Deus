@@ -51,6 +51,13 @@ OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
 # construction raises (and the exception is swallowed on the fire-and-forget hot path).
 OLLAMA_JUDGE_MODEL = os.environ.get("EVOLUTION_OLLAMA_JUDGE_MODEL", OLLAMA_MODEL)
 
+# Explicit context window for judge calls (LIA-558). Ollama's own default is 4096,
+# while a real eval prompt runs ~4000 tokens (the RUBRIC alone is ~1880), so at the
+# default the input or the output truncates depending on the host's Ollama build —
+# and a truncated judge response scores differently. Pinning it here makes judge
+# scores comparable across machines instead of silently host-dependent.
+JUDGE_NUM_CTX = int(os.environ.get("EVOLUTION_JUDGE_NUM_CTX", "8192"))
+
 # ── llama.cpp ────────────────────────────────────────────────────────────────
 
 # Base URL for the local llama-server (OpenAI-compatible /v1 prefix).

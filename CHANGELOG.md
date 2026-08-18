@@ -4,6 +4,72 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.29.0](https://github.com/sliamh11/Deus/compare/v1.28.0...v1.29.0) (2026-08-17)
+
+
+### Features
+
+* **cliproxy-oauth:** auto-compact GPT-5.6 sessions at their real 272K context window ([#1185](https://github.com/sliamh11/Deus/issues/1185)) ([3fd66e3](https://github.com/sliamh11/Deus/commit/3fd66e39b9b5f8760b1d8ae9b1512f2caca1a561))
+* **cogate:** refuse to record a Claude verdict a GPT model produced ([#1203](https://github.com/sliamh11/Deus/issues/1203)) ([1077032](https://github.com/sliamh11/Deus/commit/1077032074dea525a464fcfede05f6511d046649))
+* **deus-cmd:** passive background auto-sync for the live install (LIA-529+) ([#1156](https://github.com/sliamh11/Deus/issues/1156)) ([5350119](https://github.com/sliamh11/Deus/commit/5350119e426b54b3b4d97637026bd64523164c77))
+* **deus-connect:** add deus connect multi-model connector system ([#1171](https://github.com/sliamh11/Deus/issues/1171)) ([63eebc2](https://github.com/sliamh11/Deus/commit/63eebc24ac5a9f21d90d0376d13e20dcf85bde84))
+* **deus-connect:** add global default-connector persistence ([#1172](https://github.com/sliamh11/Deus/issues/1172)) ([308df68](https://github.com/sliamh11/Deus/commit/308df6829fa5ac4286fead1975cc32feebac06e5))
+* **deus-connect:** add native ollama connector ([#1173](https://github.com/sliamh11/Deus/issues/1173)) ([043c28c](https://github.com/sliamh11/Deus/commit/043c28c42326b829e2cc0b9f8a39c48dc2589b7a))
+* **deus-connect:** live model-picker visibility for cliproxy-oauth ([#1174](https://github.com/sliamh11/Deus/issues/1174)) ([1648637](https://github.com/sliamh11/Deus/commit/16486370c6692c0ad13db432a2e2b9dc5a13e4fa))
+* **deus-connect:** per-model reasoning-effort control for cliproxy-oauth ([#1181](https://github.com/sliamh11/Deus/issues/1181)) ([864ca9b](https://github.com/sliamh11/Deus/commit/864ca9b6a25f62a7c5d7db687ea073ce189e8d7a))
+* **evolution:** add opt-in GPT-5.6 judge provider (codex-exec, sandboxed) ([#1099](https://github.com/sliamh11/Deus/issues/1099)) ([e2282aa](https://github.com/sliamh11/Deus/commit/e2282aa9b201fea3b12a6d3ed2e16ba46235131b))
+* **evolution:** make auto-optimize failures loud and detectable (LIA-551) ([#1187](https://github.com/sliamh11/Deus/issues/1187)) ([6e9a45d](https://github.com/sliamh11/Deus/commit/6e9a45d7e9571acb19e4a0aa414cfc4cb8cb4fc6))
+* **evolution:** retro-2026-08-02 follow-ups ([#1101](https://github.com/sliamh11/Deus/issues/1101)) ([4a1f02a](https://github.com/sliamh11/Deus/commit/4a1f02aaa65ba040a22e97adae0f7266c5d066d2))
+* **health:** add a cockpit healthcheck that probes work, not liveness ([#1196](https://github.com/sliamh11/Deus/issues/1196)) ([864ee25](https://github.com/sliamh11/Deus/commit/864ee25300fe6121f010127b5d96ab6f1d13b5d1))
+* **hermes:** add OPA/Rego guardrails v1 for Hermes code-review gate (LIA-515) ([#1105](https://github.com/sliamh11/Deus/issues/1105)) ([2844325](https://github.com/sliamh11/Deus/commit/284432563ddb3a901af1c5279e780b315de16bb2))
+* **morning-report:** surface the cockpit verdict in the daily digest (LIA-552) ([#1213](https://github.com/sliamh11/Deus/issues/1213)) ([b4d9c90](https://github.com/sliamh11/Deus/commit/b4d9c903121bfc410e0264889bb97f4b8643b5b4))
+* **review:** add backend-neutral review-runner CLI for any agent platform ([#1115](https://github.com/sliamh11/Deus/issues/1115)) ([c4961d5](https://github.com/sliamh11/Deus/commit/c4961d5a4252db3bc9fb85b825f80945efcb183c))
+* **rules:** add hard-baked ADHD-style CLI output-shape rule ([#1180](https://github.com/sliamh11/Deus/issues/1180)) ([d1f6b66](https://github.com/sliamh11/Deus/commit/d1f6b6685c430dc4083e512d415305aac58b498e))
+* **scripts:** re-check + precision measurement for procedure nodes (LIA-511) ([#1097](https://github.com/sliamh11/Deus/issues/1097)) ([b98bf76](https://github.com/sliamh11/Deus/commit/b98bf76b7461a8b355ce3f92f35aa915d87b8b74))
+* **skills:** add repo-visualiser skill ([#1198](https://github.com/sliamh11/Deus/issues/1198)) ([7e68947](https://github.com/sliamh11/Deus/commit/7e6894786e0e975dda6aedcc5570d05b8262fe8a))
+* **skills:** add show-me skill from humanlayer/skills ([#1179](https://github.com/sliamh11/Deus/issues/1179)) ([5973b98](https://github.com/sliamh11/Deus/commit/5973b9806430a69d6d605541ce20e60bd5eb8f2c))
+* **skills:** add the verify skill — run it AND contrast it against a control ([#1227](https://github.com/sliamh11/Deus/issues/1227)) ([2cd697d](https://github.com/sliamh11/Deus/commit/2cd697dd6a5271b45e926f324e91c94beec52fd9))
+* **ux-reviewer:** wire checklist.design into UX research + new audit skill ([#1133](https://github.com/sliamh11/Deus/issues/1133)) ([8d455c9](https://github.com/sliamh11/Deus/commit/8d455c905763061478f18afa916ef66f50327bf5))
+* **warden-policy:** isolated CC attestation write path (LIA-527 Phase 2) ([#1138](https://github.com/sliamh11/Deus/issues/1138)) ([e70d068](https://github.com/sliamh11/Deus/commit/e70d068c76a4043dbf496088b72de4415400b0c3))
+* **wardens:** attestation-verify cutover Rego rule (LIA-530) ([#1142](https://github.com/sliamh11/Deus/issues/1142)) ([ea5578f](https://github.com/sliamh11/Deus/commit/ea5578ff2dcae94d5ce4cd1ce89274379d3175b3))
+* **wardens:** attestation-verify workflow + query script (LIA-536) ([#1146](https://github.com/sliamh11/Deus/issues/1146)) ([7700963](https://github.com/sliamh11/Deus/commit/7700963d59b828ec426e9f470d5f2f841f01c6c9))
+* **wardens:** extend Hermes OPA gate coverage to ai-eng-warden + verification-gate (LIA-524) ([#1153](https://github.com/sliamh11/Deus/issues/1153)) ([f8e2b85](https://github.com/sliamh11/Deus/commit/f8e2b85e01b576d944f177ef293e3c1343f2331f))
+* **wardens:** hermes plan-review gate (LIA-523) ([#1137](https://github.com/sliamh11/Deus/issues/1137)) ([ee00fb5](https://github.com/sliamh11/Deus/commit/ee00fb58a22a4e340587694d01f038a0cff7570c))
+* **wardens:** OPA-wiring Phase 0 -- inert infra for Claude Code gate migration ([#1118](https://github.com/sliamh11/Deus/issues/1118)) ([c287ec7](https://github.com/sliamh11/Deus/commit/c287ec71bc3f2e44af878626d8aee87fefb68bc6))
+* **wardens:** OPA-wiring Phase 1 -- read-only shadow observer for the Claude Code gates ([#1122](https://github.com/sliamh11/Deus/issues/1122)) ([d5dd67e](https://github.com/sliamh11/Deus/commit/d5dd67ec49c79030b848e28aefd05666ae69b23f))
+* **wardens:** require driven behavioural verification in verification-gate ([#1201](https://github.com/sliamh11/Deus/issues/1201)) ([5c549fa](https://github.com/sliamh11/Deus/commit/5c549faee31f1f1ad223a75a95679edb12c6d7dc))
+* **wardens:** wire cc_attestations.enqueue_verdict into gate call sites (LIA-534) ([#1144](https://github.com/sliamh11/Deus/issues/1144)) ([dd90400](https://github.com/sliamh11/Deus/commit/dd90400dfa12bd81299c15ada59cb1eeeb822dad))
+
+
+### Bug Fixes
+
+* **ci:** make safety-recall always post a status on pull requests ([#1103](https://github.com/sliamh11/Deus/issues/1103)) ([8f31d22](https://github.com/sliamh11/Deus/commit/8f31d22961862f4d646c37ffbf4440a0b279088f))
+* **ci:** pin npm 11.6.2 so test-agent-runner can pass at all ([#1231](https://github.com/sliamh11/Deus/issues/1231)) ([5e2d3a1](https://github.com/sliamh11/Deus/commit/5e2d3a199c3e4721b8060f382438907296c8642b)), closes [#1228](https://github.com/sliamh11/Deus/issues/1228)
+* **connectors:** give the cliproxy Claude leg a resolvable model id ([#1217](https://github.com/sliamh11/Deus/issues/1217)) ([ab5dbbc](https://github.com/sliamh11/Deus/commit/ab5dbbc512ced7010e0b42ab9d8b3389d49447ac))
+* **container:** scope orphan cleanup to this install's containers (LIA-491) ([#1197](https://github.com/sliamh11/Deus/issues/1197)) ([abec9e7](https://github.com/sliamh11/Deus/commit/abec9e798661ebbfa8bf870987db423318af53ea))
+* **deus-connect:** route cliproxy-oauth credential via ANTHROPIC_AUTH_TOKEN ([#1176](https://github.com/sliamh11/Deus/issues/1176)) ([4779eb9](https://github.com/sliamh11/Deus/commit/4779eb9f9e8b861b085ef378a7788a769c9d7494))
+* **deus-connect:** widen Codex effort levels to include "max" ([#1183](https://github.com/sliamh11/Deus/issues/1183)) ([7b1cc4f](https://github.com/sliamh11/Deus/commit/7b1cc4fd0c68759709e134bd2482a90a245f6b36))
+* **evolution:** record batch-judge outcomes instead of returning a bare 0 ([#1192](https://github.com/sliamh11/Deus/issues/1192)) ([1f8dd22](https://github.com/sliamh11/Deus/commit/1f8dd2256fdc6faeafe3acc4ad6c7e4017d9103b))
+* **evolution:** record the remaining hot-path swallows (LIA-556 sites 2-5) ([#1221](https://github.com/sliamh11/Deus/issues/1221)) ([7df975c](https://github.com/sliamh11/Deus/commit/7df975ce93922a1735d8cd8c897b35619f24dda6))
+* **evolution:** refuse to score a judge response missing a required dimension (LIA-580) ([#1212](https://github.com/sliamh11/Deus/issues/1212)) ([099f36f](https://github.com/sliamh11/Deus/commit/099f36fe3f9b7a6bf6e98e6feddd955adc6d632d))
+* **evolution:** stop compaction fabricating a record from an absent response ([#1200](https://github.com/sliamh11/Deus/issues/1200)) ([ffbe6b2](https://github.com/sliamh11/Deus/commit/ffbe6b27e04016d377931420a7382b74ce069dfe))
+* **evolution:** stop the judge composite fabricating a score from absent input (LIA-558) ([#1209](https://github.com/sliamh11/Deus/issues/1209)) ([5622a0b](https://github.com/sliamh11/Deus/commit/5622a0bbe74929120c14468f8951019220cf650f))
+* **evolution:** stop the judge reading an absent response as evidence ([#1199](https://github.com/sliamh11/Deus/issues/1199)) ([837d373](https://github.com/sliamh11/Deus/commit/837d37357d08fa87be5bf6e42e5962e6fbc1bb72))
+* **hermes:** close residual -c flag injection gaps in commit classifier ([#1108](https://github.com/sliamh11/Deus/issues/1108)) ([4c45c3b](https://github.com/sliamh11/Deus/commit/4c45c3b2123697bbf600e10f7e4d8c0179aa0a7f))
+* **ingress:** make the ngrok pre-flight honour its fail-closed contract (LIA-447) ([#1206](https://github.com/sliamh11/Deus/issues/1206)) ([79bf9d2](https://github.com/sliamh11/Deus/commit/79bf9d26f2d00e7c5564bcdeb84243630dca2c08))
+* **scripts:** forward --bump through drift_check's --all branch (LIA-472) ([#1194](https://github.com/sliamh11/Deus/issues/1194)) ([8de7901](https://github.com/sliamh11/Deus/commit/8de79016f87ee50695fef626682f656142c85e6e))
+* **security:** fail closed when the sender allowlist is corrupt (LIA-447) ([#1205](https://github.com/sliamh11/Deus/issues/1205)) ([5e0c215](https://github.com/sliamh11/Deus/commit/5e0c215372875b0f537a4e51ed971d63a3bd8671))
+* **startup-gate:** log the startup banner at its own severity, not error ([#1189](https://github.com/sliamh11/Deus/issues/1189)) ([ce26b35](https://github.com/sliamh11/Deus/commit/ce26b35c2e97ed87a642c59d0e6cf733c7a197f4))
+* **stop-hook:** downgrade bg compress gate from hard block to advisory ([#1106](https://github.com/sliamh11/Deus/issues/1106)) ([318b8bb](https://github.com/sliamh11/Deus/commit/318b8bbfdbdc329dcb124bd7966ad0e0cd359895))
+* **wardens:** bind verdict-store entries to git-state fingerprint (LIA-382) ([#1102](https://github.com/sliamh11/Deus/issues/1102)) ([def9231](https://github.com/sliamh11/Deus/commit/def9231286d0533914728ae00abce27b098d17bb))
+* **wardens:** broaden GIT_COMMIT_RE to close commit-gate bypasses (LIA-518) ([#1119](https://github.com/sliamh11/Deus/issues/1119)) ([137afc6](https://github.com/sliamh11/Deus/commit/137afc6cc4b9b47f16cce8fceb528082c8126c8d))
+* **wardens:** close stale-result-file false-pass on self-hosted runner (LIA-536) ([#1150](https://github.com/sliamh11/Deus/issues/1150)) ([9da9c5e](https://github.com/sliamh11/Deus/commit/9da9c5e576ba60e2244bdb239c132fba74102720))
+* **wardens:** distinguish OPA ledger staleness from a real review gap (LIA-535) ([#1161](https://github.com/sliamh11/Deus/issues/1161)) ([ecceb38](https://github.com/sliamh11/Deus/commit/ecceb38044ce22e54f2d58cb58e7bc139feefbfc))
+* **wardens:** exempt plan-reviewer model-backend verdicts from diff-hash staleness (LIA-516) ([#1117](https://github.com/sliamh11/Deus/issues/1117)) ([08f1ef8](https://github.com/sliamh11/Deus/commit/08f1ef82bd1f530f464b40ab2a8f569c9a06beb5))
+* **wardens:** opa test merge error on schema JSON files (LIA-538) ([#1160](https://github.com/sliamh11/Deus/issues/1160)) ([ccc5ff5](https://github.com/sliamh11/Deus/commit/ccc5ff5ba3dfd571220e97920a81fcf56ad75f13))
+* **wardens:** resolve opa fmt formatting drift in guardrails.rego (LIA-542) ([#1168](https://github.com/sliamh11/Deus/issues/1168)) ([488b5a7](https://github.com/sliamh11/Deus/commit/488b5a7712ae644b37c804bff8f15c23188b1947))
+* **wardens:** self-heal OPA/disk ledger desync via periodic reconciliation (LIA-533) ([#1140](https://github.com/sliamh11/Deus/issues/1140)) ([9da708f](https://github.com/sliamh11/Deus/commit/9da708ff2346afe434a16ec8089470f881fb4bc3))
+
 ## [1.28.0](https://github.com/sliamh11/Deus/compare/v1.27.0...v1.28.0) (2026-07-29)
 
 

@@ -29,7 +29,7 @@ from .config import REFLECTION_THRESHOLD, MAX_REFLECTIONS_TO_GENERATE
 from .ilog.interaction_log import log_interaction, update_score
 from .storage import get_storage
 from .judge import make_runtime_judge
-from .reflexion.generator import generate_reflection
+from .reflexion.generator import generate_reflection, response_supports_reflection
 from .reflexion.store import save_reflection
 
 SESSIONS_DIR = Path(__file__).parent.parent / "data" / "sessions"
@@ -233,6 +233,11 @@ def run_backfill(
         "skipped_existing": 0,
         "processed": 0,
         "failed": 0,
+        # Rows dropped because the judge omitted a required dimension. Counted
+        # rather than merely skipped: a silent drop in the run summary would
+        # reintroduce, at the reporting layer, exactly the silent omission this
+        # guard exists to remove (LIA-580).
+        "schema_errors": 0,
         "reflections_generated": 0,
     }
 
@@ -281,20 +286,30 @@ def run_backfill(
             eval_suite="backfill",
             interaction_id=iid,
         )
+        if result.is_schema_error:
+            # Guard precedes every read: this function also formats result.score
+            # for output and branches on it against REFLECTION_THRESHOLD further
+            # down. judge_score stays NULL for the retry sweep. LIA-580.
+            stats["schema_errors"] += 1
+            if verbose:
+                print(f"  SKIP {iid}: {result.rationale}")
+            continue
         update_score(iid, result.score, {
             "quality": result.quality,
             "safety": result.safety,
             "tool_use": result.tool_use,
             "personalization": result.personalization,
-        }, schema_version=result.schema_version)
+        }, schema_version=result.schema_version, judge_model=result.model)
 
         if verbose:
             print(f"  score={result.score:.2f}  q={result.quality:.2f}  "
                   f"s={result.safety:.2f}  t={result.tool_use:.2f}  "
                   f"p={result.personalization:.2f}")
 
-        # Generate reflection(s) for low-scoring interactions
-        if result.score < REFLECTION_THRESHOLD:
+        # Generate reflection(s) for low-scoring interactions. An empty response
+        # records no evidence of what the agent did, so a judge-driven reflection
+        # would assert something the interaction cannot support (LIA-558).
+        if result.score < REFLECTION_THRESHOLD and response_supports_reflection(pair["response"]):
             try:
                 dims = {
                     "quality": result.quality,
@@ -392,6 +407,7 @@ def main() -> None:
     print(f"  already processed    : {stats['skipped_existing']}")
     print(f"  newly processed      : {stats['processed']}")
     print(f"  failed               : {stats['failed']}")
+    print(f"  judge schema errors  : {stats['schema_errors']}")
     print(f"  reflections generated: {stats['reflections_generated']}")
 
 

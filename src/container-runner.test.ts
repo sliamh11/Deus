@@ -7,6 +7,7 @@ import {
   vi,
   afterEach,
 } from 'vitest';
+import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
 import path from 'path';
@@ -34,6 +35,7 @@ vi.mock('./config.js', () => ({
   DATA_DIR: '/tmp/deus-test-data',
   DEUS_CONTEXT_FILE_MAX_CHARS: '12345',
   DEUS_OPENAI_MODEL: 'gpt-test-model',
+  deusInstanceId: () => 'a1b2c3d4',
   GROUPS_DIR: '/tmp/deus-test-groups',
   HOME_DIR: '/tmp/deus-test-home',
   IDLE_TIMEOUT: 1800000, // 30min
@@ -2477,5 +2479,53 @@ describe('readAvailableTools (LIA-154)', () => {
   it('returns [] when the JSON is not an array', () => {
     fsMocked.readFileSync.mockReturnValue(JSON.stringify({ tools: ['Bash'] }));
     expect(readAvailableTools(logsDir, 'g-1')).toEqual([]);
+  });
+});
+
+// --- container naming / instance stamping (LIA-491) ---
+
+describe('container name instance stamping', () => {
+  /** Run the agent once and return the `--name` value handed to spawn. */
+  async function nameForFolder(folder: string): Promise<string> {
+    vi.mocked(spawn).mockClear();
+    fakeProc = createFakeProcess();
+    void runContainerAgent(
+      { ...testGroup, folder },
+      testInput,
+      () => {},
+      async () => {},
+    );
+    // spawn happens after async mount/token setup, so wait for the call.
+    for (let i = 0; i < 100 && !vi.mocked(spawn).mock.calls.length; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const args = vi.mocked(spawn).mock.calls[0][1] as string[];
+    return args[args.indexOf('--name') + 1];
+  }
+
+  beforeEach(() => {
+    fakeProc = createFakeProcess();
+  });
+
+  it('stamps the container name with this instance id as a suffix', async () => {
+    const name = await nameForFolder('test-group');
+    // deusInstanceId is mocked to 'a1b2c3d4' in this file's config mock.
+    expect(name).toMatch(/^deus-test-group-\d+-ia1b2c3d4$/);
+  });
+
+  it('stays within the 63-char limit for a maximum-length folder', async () => {
+    // GROUP_FOLDER_PATTERN allows up to 64 chars; Apple Container caps
+    // container ids at 63.
+    const name = await nameForFolder('a'.repeat(64));
+    expect(name.length).toBeLessThanOrEqual(63);
+    expect(name).toMatch(/-ia1b2c3d4$/);
+  });
+
+  it('keeps long folders sharing a prefix distinct via a digest of the full name', async () => {
+    // Both share the first 27 chars, so plain truncation would collide.
+    const a = await nameForFolder(`${'x'.repeat(30)}-alpha`);
+    const b = await nameForFolder(`${'x'.repeat(30)}-beta`);
+    const stripTimestamp = (n: string) => n.replace(/-\d+-i[0-9a-f]{8}$/, '');
+    expect(stripTimestamp(a)).not.toBe(stripTimestamp(b));
   });
 });
