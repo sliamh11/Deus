@@ -213,16 +213,34 @@ def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> Non
             last_dt = datetime.fromisoformat(last["extracted_at"])
             if datetime.now(timezone.utc) - last_dt < timedelta(hours=PRINCIPLES_COOLDOWN_HOURS):
                 continue
-        # Data-count check + extraction (extract_principles handles its own min_new gate)
+        # Data-count check + extraction, then record the outcome three ways:
+        # skipped (no call), failed (called, empty or raised), or OK.
         component = _PRINCIPLES_HEALTH_PREFIX + domain_key
         try:
-            extract_principles(domain=domain)
+            result = extract_principles(domain=domain)
         except Exception as exc:
             log.warning('evolution: principles extraction failed for domain=%s — %s: %s',
                         domain, type(exc).__name__, exc)
             health.record_attempt(component, health.STATUS_FAILED, type(exc).__name__)
         else:
-            # Recorded on every success, not just on recovery: this path is
+            if result is None:
+                # No LLM call was made (too little new data, too few usable
+                # examples), so this is not an attempt — `record_skip`, which
+                # touches only `last_skipped_at`, same as `_maybe_auto_optimize`.
+                log.info('evolution: principles extraction skipped for domain=%s '
+                         '(insufficient data)', domain)
+                health.record_skip(component)
+                continue
+            if not result.strip():
+                # Falsy but not None: the call ran and spent its cooldown and
+                # tokens (principles.py returns after `_record_extraction`), so
+                # an empty result is a failed attempt, not a skip.
+                log.warning('evolution: principles extraction produced no text '
+                            'for domain=%s', domain)
+                health.record_attempt(component, health.STATUS_FAILED,
+                                      'empty generation')
+                continue
+            # Recorded on every real success, not just on recovery: this path is
             # already gated by PRINCIPLES_COOLDOWN_HOURS above, so it is not hot
             # and the OK write is what lets a resolved failure clear its streak
             # (LIA-556 site 2).

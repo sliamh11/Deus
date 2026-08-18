@@ -164,9 +164,10 @@ def record_skip(component: str) -> None:
     record: it can neither flip the status nor overwrite the diagnostic cause.
     Both were real bugs before this shape.
 
-    Deliberately takes no `reason` argument. There is exactly one skip path
-    (the below-threshold early return in cli.py), so the explanation is
-    constant and derivable from the threshold config. Storing it in a column
+    Deliberately takes no `reason` argument. Every skip path is a
+    below-threshold early return in cli.py (the optimizer's, and principles
+    extraction's insufficient-data return), so the explanation is constant and
+    derivable from the threshold config. Storing it in a column
     was tried and produced three further defects — `rollup()` reads
     `last_reason` only and would have reported None for a skip-only component;
     the column needed an ALTER TABLE that every reader would execute, adding

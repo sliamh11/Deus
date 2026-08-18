@@ -96,6 +96,10 @@ class ModelResult:
         return self.parse_errors / self.total if self.total else 0.0
 
     @property
+    def schema_error_rate(self) -> float:
+        return self.schema_errors / self.total if self.total else 0.0
+
+    @property
     def avg_latency(self) -> float:
         return statistics.mean(self.latencies) if self.latencies else 0.0
 
@@ -551,12 +555,23 @@ def print_comparison(results: list[ModelResult], trivial_baselines: Optional[dic
         print("\nNo results to compare.")
         return
 
-    # Sort by composite: correlation (40%) + inverse MAE (30%) + inverse parse rate (30%)
+    # Sort by composite: correlation (40%) + inverse MAE (30%) + inverse error rate (30%),
+    # where the error rate covers BOTH parse failures and schema-invalid records.
+    #
+    # Schema errors are added to parse errors and the result clamped at 0, rather than
+    # making a frequently-schema-invalid model outright ineligible: both are the model
+    # failing to produce a valid, complete assessment, so treating them additively keeps
+    # the two failure modes symmetric without inventing an eligibility threshold we have
+    # no evidence for yet. Before this, schema-invalid records were skipped entirely, so a
+    # model that omitted required dimensions was graded only on the favourable subset it
+    # did answer — and one that was schema-invalid on every record still received the full
+    # error-free component (LIA-580). If a frequently-schema-invalid model still tops the
+    # ranking after this change, that is the signal to revisit toward ineligibility.
     def composite(r: ModelResult) -> float:
         corr = max(r.pearson, 0)
         mae_score = max(0, 1 - r.mae)
-        parse_score = 1 - r.parse_error_rate
-        return 0.4 * corr + 0.3 * mae_score + 0.3 * parse_score
+        error_score = max(0.0, 1 - r.parse_error_rate - r.schema_error_rate)
+        return 0.4 * corr + 0.3 * mae_score + 0.3 * error_score
 
     ranked = sorted(results, key=composite, reverse=True)
 
@@ -888,6 +903,9 @@ def main() -> None:
             comp_pearson = _pearson(r.scores, r.ground_truth)
             payload.append({
                 "model": r.model, "n": len(r.scores), "parse_errors": r.parse_errors,
+                # schema_errors + total alongside parse_errors so a consumer can tell a
+                # complete benchmark from one computed on a reduced subset (LIA-580).
+                "schema_errors": r.schema_errors, "total": r.total,
                 "composite_pearson": comp_pearson,
                 "composite_ci": _bootstrap_ci(r.scores, r.ground_truth, _pearson),
                 "incremental_pearson_vs_log_length": (

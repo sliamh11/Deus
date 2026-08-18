@@ -416,6 +416,25 @@ class TestCockpitInMain:
         assert len(notify.calls) == 1
         assert "Cockpit (06:45): ⚠️ no verdict on record" in notify.calls[0][1]
 
+    def test_stale_artifact_after_uninstall_is_still_a_benign_skip(
+        self, tmp_path: Path, capsys
+    ):
+        # Uninstalling the scheduled healthcheck leaves its last verdict on disk.
+        # _format_cockpit renders nothing once `expected` is False, so with no
+        # health snapshot and no maintenance log there is genuinely nothing to
+        # say — but a guard that also required the artifact to be ABSENT would
+        # miss the skip and deliver a header-and-fallbacks-only digest daily.
+        argv = ["--health", str(tmp_path / "nope.jsonl"),
+                "--maint-log", str(tmp_path / "nope.log"),
+                "--db", str(tmp_path / "nope.db"), "--data-dir", str(tmp_path / "data"),
+                "--cockpit", str(_write_cockpit(tmp_path, _cockpit()))]
+        deliver, notify = _Recorder(), _Recorder()
+        code = mr.main(argv=argv, deliverer=deliver, notifier=notify, now=NOW,
+                       cockpit_expected=lambda: False)
+        assert code == 0
+        assert deliver.calls == [] and notify.calls == []
+        assert "nothing to report" in capsys.readouterr().out
+
     def test_verdict_reaches_the_delivered_digest(self, tmp_path: Path):
         argv = _setup_sources(tmp_path, with_main=True)
         c = _cockpit(probes=[{"probe": "evolution.optimizer", "status": "FAILED",

@@ -1408,8 +1408,15 @@ sys.exit(1)
     _cockpit_line="${DEUS_HOME:-$HOME/.deus}/cockpit_health.line"
     _cockpit_max_age=129600
     if [ -r "$_cockpit_line" ]; then
-      # BSD stat (macOS) vs GNU stat (Linux) take different flags.
-      _cockpit_mtime=$(stat -f %m "$_cockpit_line" 2>/dev/null || stat -c %Y "$_cockpit_line" 2>/dev/null)
+      # Use the portable helper, never an open-coded `stat -f ... || stat -c ...`
+      # chain: on GNU stat, -f means "show filesystem status", so %m is read as a
+      # FILE OPERAND — the filesystem report for the real file lands on stdout
+      # before the nonzero exit triggers the fallback, and both outputs end up
+      # concatenated in the same command substitution. _cockpit_mtime would be
+      # multiline and nonnumeric, breaking the $(( )) below. 2>/dev/null hides
+      # the stderr, not the stdout pollution. _file_mtime branches on $OSTYPE
+      # instead, and returns empty on failure — which the guards below handle.
+      _cockpit_mtime=$(_file_mtime "$_cockpit_line")
       _cockpit_age=$(( $(date +%s) - ${_cockpit_mtime:-0} ))
       _cockpit_verdict=$(head -n 1 "$_cockpit_line" 2>/dev/null)
       if [ -z "$_cockpit_mtime" ]; then

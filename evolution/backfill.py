@@ -407,6 +407,7 @@ def main() -> None:
     print(f"  already processed    : {stats['skipped_existing']}")
     print(f"  newly processed      : {stats['processed']}")
     print(f"  failed               : {stats['failed']}")
+    print(f"  judge schema errors  : {stats['schema_errors']}")
     print(f"  reflections generated: {stats['reflections_generated']}")
 
 

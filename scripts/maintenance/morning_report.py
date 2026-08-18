@@ -387,11 +387,18 @@ def main(argv: "list[str] | None" = None, deliverer=_deliver, notifier=macos_not
     cockpit = _read_cockpit(args.cockpit)
     expected = cockpit_expected()
 
-    # Nothing to report at all (fresh install, no run yet): benign skip. Keyed
-    # on whether a cockpit verdict was EXPECTED, not on whether one is present —
-    # gating on presence would exit precisely when the verdict is missing, which
-    # is the one case that most needs reporting.
-    if latest is None and maint is None and cockpit is None and not expected:
+    # Nothing to report at all (fresh install, or the cockpit job uninstalled
+    # after having run): benign skip. Keyed on whether a cockpit verdict was
+    # EXPECTED, never on whether one is present — presence cuts both ways and
+    # neither direction is a reason to report. Requiring the artifact to be
+    # ABSENT would keep the skip from firing once the scheduled job is
+    # uninstalled but its last JSON artifact is still on disk, and since
+    # _format_cockpit deliberately renders nothing when `expected` is False,
+    # that stale file would buy a header-and-fallbacks-only digest every single
+    # day. Requiring it to be PRESENT would exit precisely when an expected
+    # verdict is missing — the one case that most needs reporting — which
+    # `not expected` already rules out on its own.
+    if latest is None and maint is None and not expected:
         print("morning_report: no health snapshot or maintenance log yet — nothing to report")
         return 0
 

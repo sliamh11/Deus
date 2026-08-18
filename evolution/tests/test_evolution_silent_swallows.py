@@ -56,7 +56,10 @@ def test_principles_success_records_ok_and_self_heals(test_db, principles):
     cli._maybe_auto_extract_principles(["coding"])
     assert health.has_failure(cli._PRINCIPLES_HEALTH_PREFIX) is True
 
-    principles(lambda domain=None: None)  # recovered
+    # A truthy return is a REAL extraction. Returning None here would be a
+    # skip, not a recovery, and deliberately records nothing at all — see
+    # test_principles_health_skip.py.
+    principles(lambda domain=None: "1. Be concrete.")  # recovered
     cli._maybe_auto_extract_principles(["coding"])
 
     row = health.get(cli._PRINCIPLES_HEALTH_PREFIX + "coding")
@@ -74,6 +77,9 @@ def test_one_broken_domain_does_not_taint_a_healthy_one(test_db, monkeypatch):
     def selective(domain=None):
         if domain == "coding":
             raise RuntimeError("boom")
+        # Truthy: a real extraction, which is what records OK. A None return
+        # would be a skip and would record nothing (test_principles_health_skip.py).
+        return "1. Be concrete."
 
     monkeypatch.setattr("evolution.reflexion.principles.extract_principles", selective)
     cli._maybe_auto_extract_principles(["coding", "study"])
