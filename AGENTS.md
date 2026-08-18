@@ -194,6 +194,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/preserve` | Save durable memories from the current conversation |
 | `/project-settings` | View or modify external project memory settings |
 | `/prototype` | Build a throwaway prototype to validate a state model or UI direction |
+| `/repo-visualiser` | Map a repo at latest main as a rotatable, animated isometric system map — cited 3D buildings, live payload pulses |
 | `/research` | Investigate a question against primary sources; write findings to a file (background agent) |
 | `/resolving-merge-conflicts` | Disciplined resolution of an in-progress git merge/rebase conflict |
 | `/resume` | Load recent work and memory context |
@@ -206,6 +207,7 @@ renaming a repo-owned skill, update this table in the same change.
 | `/to-tickets` | Decompose a plan into dependency-ordered tracer-bullet tickets and publish them to whatever tracker this project uses (Linear/Asana/GitHub Issues/local files) |
 | `/update-skills` | Update installed skill branches from upstream |
 | `/use-local-whisper` | Switch voice transcription to local whisper.cpp |
+| `/verify` | Prove or disprove that a change works by exercising it at its real surface and comparing a control capture against a treatment capture |
 | `/wardens` | View, toggle, and configure warden quality gates |
 | `/wayfinder` | Chart a large effort as decision tickets on the issue tracker; resolve them one at a time |
 | `/writing-great-skills` | Reference for authoring predictable skills — leading words, progressive disclosure |

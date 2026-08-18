@@ -260,25 +260,27 @@ class CliproxyOauthConnector(Connector):
             # override correctly. That is the primary, intended path this
             # override exists for.
             #
-            # Known, NOT-fully-covered gap: connectors/cliproxy/config.yaml
-            # also configures `claude-gpt-sol`/`terra`/`luna` picker-
+            # The Claude leg no longer hits case (1). connectors/cliproxy/
+            # config.yaml's `claude-api-key` leg maps its client-facing id
+            # to a REAL Claude model id (`claude-opus-5`, alias == name), so
+            # Claude Code resolves it and applies that model's own context
+            # window rather than inheriting this GPT cap. That was not true
+            # while the leg advertised the opaque alias "opus-planner": a
+            # `/model`-switch to it INCORRECTLY inherited this 272K cap,
+            # artificially throttling a real Claude model. The identity
+            # mapping is load-bearing for that reason and is pinned by a
+            # drift test -- see the config's own comment before changing it.
+            #
+            # Still-open gap: the `claude-gpt-sol`/`terra`/`luna` picker-
             # discovery aliases (deliberately `claude-`-prefixed so
             # CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY surfaces them in
-            # the /model picker) and a separate real-Claude-model leg
-            # (`claude-api-key` -> "opus-planner", for `opus-planner`).
-            # `opus-planner` itself is NOT `claude-`-prefixed and Claude
-            # Code cannot resolve that opaque proxy alias to a real Claude
-            # model -- so it hits case (1) too, meaning if a user ever
-            # `/model`-switches to `opus-planner` mid-session, it
-            # INCORRECTLY inherits this 272K cap (a real Claude model
-            # artificially throttled). Conversely, the `claude-gpt-*`
-            # picker-discovery aliases hit case (3) -- this override does
-            # NOT apply to them at all, so a user reaching a GPT model via
-            # the /model picker (rather than subagent dispatch) gets NO
+            # the /model picker) hit case (3) -- this override does NOT
+            # apply to them at all, so a user reaching a GPT model via the
+            # /model picker (rather than subagent dispatch) gets NO
             # correction and is exposed to the original silent-wrong-
-            # threshold problem this override exists to fix. Both gaps are
+            # threshold problem this override exists to fix. That gap is
             # scoped to manual /model-switching only, not the primary
-            # dispatched-subagent path, and are not fixed by this override
+            # dispatched-subagent path, and is not fixed by this override
             # -- Claude Code has no mechanism to resolve an opaque proxy
             # alias to its real upstream model or context window.
             "CLAUDE_CODE_MAX_CONTEXT_TOKENS": "272000",
@@ -292,9 +294,9 @@ class CliproxyOauthConnector(Connector):
             # this one launch only. Session-wide, with no per-subagent
             # override (Claude Code has no such mechanism) -- so any
             # portion of the session using a real Claude model (e.g.
-            # `opus-planner`) also auto-compacts more eagerly than the
+            # `claude-opus-5`) also auto-compacts more eagerly than the
             # user's global default would, independent of the context-
-            # window gaps documented above.
+            # window gap documented above.
             "DEUS_CONNECT_SETTINGS_JSON": '{"autoCompactEnabled": true}',
         }
 
@@ -363,9 +365,9 @@ class CliproxyOauthSetupHandler(ConnectorSetupHandler):
             # placeholder claude-api-key block entirely rather than
             # carrying REPLACE_WITH_YOUR_REAL_ANTHROPIC_API_KEY through into
             # the real config. CLIProxyAPI would register that sentinel as
-            # a live provider leg, and a later `/model opus-planner` (or
-            # whatever alias it maps to) would 401 for a reason nothing
-            # surfaces.
+            # a live provider leg, and a later `/model claude-opus-5` (or
+            # whatever id that leg advertises) would 401 for a reason
+            # nothing surfaces.
             placeholder.pop("claude-api-key", None)
         model_map = values["model_map"]
         placeholder["deus-model-map"] = model_map

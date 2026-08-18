@@ -17,8 +17,15 @@ from ..config import (
     JUDGE_RETRY_COUNT,
     load_api_key,
 )
-from .base import BaseJudge, JudgeResult
-from .criteria import RUBRIC, compose_score, _normalize_dim
+from .base import BaseJudge, JudgeResult, schema_error_result
+from .criteria import (
+    RUBRIC,
+    JudgeSchemaError,
+    compose_score,
+    render_response,
+    require_dims,
+    _normalize_dim,
+)
 
 _client = None
 
@@ -144,7 +151,7 @@ def _build_eval_prompt(
     parts.append(f"**User prompt:**\n{prompt}\n")
     if tools_used:
         parts.append(f"**Tools used:** {', '.join(tools_used)}\n")
-    parts.append(f"**Agent response:**\n{response}\n")
+    parts.append(f"**Agent response:**\n{render_response(response)}\n")
     if strict_json:
         parts.append(
             "\nIMPORTANT: Respond with ONLY a valid JSON object. "
@@ -197,6 +204,9 @@ def _parse_result(raw: str) -> JudgeResult:
         )
 
     try:
+        # Before any normalization — see require_dims' docstring on ordering.
+        # This provider sends no schema at all, so it is the real exposure.
+        require_dims(data)
         quality = _normalize_dim("quality", data)
         safety = _normalize_dim("safety", data)
         tool_use = _normalize_dim("tool_use", data)
@@ -213,6 +223,10 @@ def _parse_result(raw: str) -> JudgeResult:
             raw_response=raw,
             **dims,
         )
+    except JudgeSchemaError as exc:
+        # Ordered before the generic handler: that handler's fallback sets
+        # safety=1.0, filing an unassessed response as safe.
+        return schema_error_result(raw_response=raw, missing=str(exc))
     except (KeyError, ValueError) as exc:
         import sys
         print(

@@ -36,7 +36,7 @@ except ImportError:
 
 from .judge import make_runtime_judge
 from .ilog.interaction_log import log_interaction, update_score
-from .reflexion.generator import generate_reflection
+from .reflexion.generator import generate_reflection, response_supports_reflection
 from .reflexion.retriever import format_reflections_block, get_reflections
 from .reflexion.store import increment_helpful, save_reflection
 
@@ -197,15 +197,28 @@ async def _async_judge_and_reflect(
             tools_used=tools_used,
             user_profile=digest_for_group(group_folder),
         )
+        if result.is_schema_error:
+            # One guard placed before every use: this block goes on to store the
+            # score, branch on it against REFLECTION_THRESHOLD, and pass it into
+            # generate_reflection. Guarding only the store would still let a
+            # reflection be generated from a judge run that never assessed
+            # anything. judge_score stays NULL for the retry sweep. LIA-580.
+            log.warning(
+                "evolution: judge schema error for interaction %s — %s",
+                interaction_id, result.rationale,
+            )
+            return
         dims = {
             "quality": result.quality,
             "safety": result.safety,
             "tool_use": result.tool_use,
             "personalization": result.personalization,
         }
-        update_score(interaction_id, result.score, dims, schema_version=result.schema_version)
+        update_score(interaction_id, result.score, dims, schema_version=result.schema_version, judge_model=result.model)
 
-        if result.score < REFLECTION_THRESHOLD:
+        # The score is still recorded above; only the learning signal is withheld.
+        # An empty response carries no evidence of what the agent did (LIA-558).
+        if result.score < REFLECTION_THRESHOLD and response_supports_reflection(response):
             generated_contents: set[str] = set()
             for _ in range(MAX_REFLECTIONS_TO_GENERATE):
                 content, category = generate_reflection(

@@ -3,7 +3,7 @@ governs:
   - evolution/
   - eval/
   - scripts/memory_indexer.py
-last_verified: "2026-08-13" # bumped for LIA-1011 human-feedback test rewrite (evolution/tests/test_human_feedback.py)
+last_verified: "2026-08-16" # auto-bump @1786888245
 test_tasks:
   - "Add a new DeepEval metric under eval/ for the core_qa test suite"
   - "Add a new judge backend to evolution/judge/ using the provider registry"
@@ -37,6 +37,8 @@ Before any change to `evolution/`, read `docs/decisions/INDEX.md`. Three decisio
 | `~/.deus/evolution.db` | `evolution/` | No — scored interactions, reflections | `DEUS_EVOLUTION_DB` |
 
 **Tests that monkeypatch the database path** must use `EVOLUTION_DB_PATH`, not the old `DB_PATH`. Using `DB_PATH` silently tests against the wrong database file.
+
+**Never call `monkeypatch.undo()` in a test that touches the DB.** It reverses *every* patch on that monkeypatch instance — including the `test_db` fixture's `EVOLUTION_DB_PATH` redirect — so any write after it lands in the real `~/.deus/evolution.db`. This is data loss, not untidiness: an `OK` write to `subsystem_health` zeroes `consecutive_failures` and clears `first_failed_at`, so running the suite can erase a genuine production failure streak. Use `with monkeypatch.context() as scoped:` around only the patch you need reverted. Verify by snapshotting the real DB before and after a full run — it must be byte-identical. (2026-08-15, LIA-551/PR #1187: five stray rows reached the live DB before this was caught. Systemic conftest guard tracked in LIA-555.)
 
 ## Concurrency limits
 

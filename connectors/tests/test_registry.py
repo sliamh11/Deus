@@ -489,6 +489,49 @@ class TestCliproxyOauthWriteConfig:
             )
 
 
+class TestTrackedConfigClaudeLegAlias:
+    """The `claude-api-key` leg's client-facing id must be a real Claude
+    model id, not an opaque alias -- enforced here because nothing else
+    enforces it and the failure modes are both silent.
+
+    An id Claude Code cannot resolve (a) reaches the proxy carrying the
+    1M-context variant marker, which CLIProxyAPI's splitModelThinkingSuffix
+    rejects with "unknown provider" (it parses only the parenthesised
+    `model(value)` form), and (b) inherits this connector's GPT context cap
+    of 272K, silently throttling a real Claude model. Both were live while
+    the leg advertised "opus-planner". The identity mapping is the fix, so
+    it is load-bearing rather than cosmetic.
+    """
+
+    def test_claude_leg_alias_is_the_real_model_id(self):
+        import connectors.providers.cliproxy_oauth as mod
+
+        cfg = yaml.safe_load(mod.TRACKED_CONFIG.read_text())
+        legs = cfg.get("claude-api-key") or []
+        assert legs, "tracked template lost its claude-api-key leg"
+
+        for leg in legs:
+            models = leg.get("models") or []
+            assert models, "claude-api-key leg has no models[] entries"
+            for entry in models:
+                name, alias = entry["name"], entry["alias"]
+                assert alias == name, (
+                    f"claude-api-key alias {alias!r} must equal its upstream "
+                    f"name {name!r} -- an opaque alias is unresolvable to "
+                    f"Claude Code, so it is rejected when the 1M-context "
+                    f"marker is appended and it silently inherits the 272K "
+                    f"GPT context cap"
+                )
+                # Independent of the identity check above: the id must also
+                # survive the gateway-discovery filter, which requires
+                # "claude" or "anthropic" in the id to list it in /model.
+                assert "claude" in alias or "anthropic" in alias, (
+                    f"claude-api-key alias {alias!r} would not appear in the "
+                    f"/model picker under "
+                    f"CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"
+                )
+
+
 class TestTrackedConfigPickerDiscoveryAliases:
     """Regression coverage for a documentation-only invariant that has no
     other enforcement: each claude-gpt-* picker-discovery alias's `name`

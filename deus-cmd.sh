@@ -1393,6 +1393,41 @@ sys.exit(1)
     # Exporting a frozen token causes 401s after token rotation because
     # the CLI prioritizes the env var over the credentials file.
     [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
+
+    # Cockpit verdict (LIA-552). Reads the one-line cache the daily healthcheck
+    # writes — no interpreter start, no DB, no network, so there is nothing that
+    # can hang and no timeout to enforce (neither `timeout` nor `gtimeout` ships
+    # with macOS). Sits in the non-print-identity branch because other code
+    # parses that output and must stay byte-clean.
+    #
+    # Mirrors cockpit_healthcheck.py --brief, including its staleness window
+    # (ARTIFACT_MAX_AGE_SEC, 36h). Keep the two in step: a cached verdict with
+    # no age check would leave a dead scheduler showing yesterday's "OK"
+    # forever, which is the exact no-news-looks-like-good-news failure this
+    # whole ticket exists to remove.
+    _cockpit_line="${DEUS_HOME:-$HOME/.deus}/cockpit_health.line"
+    _cockpit_max_age=129600
+    if [ -r "$_cockpit_line" ]; then
+      # BSD stat (macOS) vs GNU stat (Linux) take different flags.
+      _cockpit_mtime=$(stat -f %m "$_cockpit_line" 2>/dev/null || stat -c %Y "$_cockpit_line" 2>/dev/null)
+      _cockpit_age=$(( $(date +%s) - ${_cockpit_mtime:-0} ))
+      _cockpit_verdict=$(head -n 1 "$_cockpit_line" 2>/dev/null)
+      if [ -z "$_cockpit_mtime" ]; then
+        printf '  cockpit: cannot read healthcheck timestamp\n'
+      elif [ -z "$_cockpit_verdict" ]; then
+        # An empty file is a checker that died mid-write, not a clean bill.
+        printf '  cockpit: healthcheck result is empty — the checker may have failed mid-write\n'
+      elif [ "$_cockpit_age" -gt "$_cockpit_max_age" ]; then
+        printf '  cockpit: last result is %sh old — healthcheck may not be running\n' \
+          "$(( _cockpit_age / 3600 ))"
+      elif [ "$_cockpit_verdict" != "OK" ]; then
+        # Quiet when healthy, or the report becomes noise the user learns to skip.
+        printf '  cockpit: %s\n' "$_cockpit_verdict"
+      fi
+    else
+      printf '  cockpit: no healthcheck result on record\n'
+    fi
+    unset _cockpit_line _cockpit_max_age _cockpit_mtime _cockpit_age _cockpit_verdict
     fi
     # Launch claude with bypass mode; fall back to normal mode if user declines
     launch_claude() {

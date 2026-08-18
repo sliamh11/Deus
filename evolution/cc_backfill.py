@@ -293,6 +293,9 @@ def run_cc_backfill(
         "skipped_existing": 0,
         "processed": 0,
         "failed": 0,
+        # See backfill.py — a dropped row must be counted, not silently absent
+        # from the run summary (LIA-580).
+        "schema_errors": 0,
         "reflections_generated": 0,
     }
 
@@ -327,7 +330,11 @@ def run_cc_backfill(
             print("Logging interactions without scores. Run maintenance to judge later.")
             judge = None
 
-    from .reflexion.generator import generate_reflection, generate_positive_reflection
+    from .reflexion.generator import (
+        generate_reflection,
+        generate_positive_reflection,
+        response_supports_reflection,
+    )
     from .reflexion.store import save_reflection
     from .judge.mechanical import score_tool_economy, score_gate_audit, score_completion_honesty
     from .judge.criteria import compose_score
@@ -381,6 +388,14 @@ def run_cc_backfill(
                 stats["processed"] += 1
                 continue
 
+            if result.is_schema_error:
+                # Guard before the dims-build, not just before update_score:
+                # this file computes its own composite via compose_score(dims)
+                # below, a second caller-side scoring path. LIA-580.
+                stats["schema_errors"] += 1
+                if verbose:
+                    print(f"  SKIP {iid}: {result.rationale}")
+                continue
             tool_calls = pair.get("tool_calls", [])
             te_score, te_diag = score_tool_economy(tool_calls)
             ga_score, ga_diag = score_gate_audit(tool_calls)
@@ -396,7 +411,7 @@ def run_cc_backfill(
                 "completion_honesty": ch_score,
             }
             composite = compose_score(dims)
-            update_score(iid, composite, dims, parse_error=result.is_parse_error, schema_version=result.schema_version)
+            update_score(iid, composite, dims, parse_error=result.is_parse_error, schema_version=result.schema_version, judge_model=result.model)
 
             if verbose:
                 print(f"  score={composite:.2f}  q={result.quality:.2f}  "
@@ -404,8 +419,10 @@ def run_cc_backfill(
                       f"p={result.personalization:.2f}  te={te_score:.2f}  "
                       f"ga={ga_score:.2f}  ch={ch_score:.2f}")
 
-            # Generate reflections
-            if not result.is_parse_error:
+            # Generate reflections. The response guard is hoisted above the
+            # corrective/positive split on purpose: an empty response supports
+            # neither verdict, so BOTH branches must be withheld (LIA-558).
+            if not result.is_parse_error and response_supports_reflection(pair["response"]):
                 if composite < REFLECTION_THRESHOLD:
                     try:
                         content, category = generate_reflection(
