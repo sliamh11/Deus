@@ -1341,9 +1341,24 @@ def _rrf_fuse(
 def _rerank_cross_encoder(query: str, candidates: list[dict]) -> list[dict] | None:
     """Rerank atom candidates using a cross-encoder. Returns None on failure."""
     global _cross_encoder
-    from sentence_transformers import CrossEncoder
-    if _cross_encoder is None:
-        _cross_encoder = CrossEncoder(RERANKER_MODEL)
+    # Import AND construction live inside the guard, not just .predict() below.
+    # sentence_transformers is optional, and CrossEncoder(...) additionally
+    # reaches for a model cache, so both are ordinary failure modes on a fresh
+    # or minimal install. With them outside the guard, --query died instead of
+    # degrading to unreranked results, contradicting this function's own
+    # documented contract (#1169). Exception, not ImportError: a missing/corrupt
+    # model cache, a network fetch, or a torch init error are none of them
+    # ImportError, and each crashed the same way.
+    try:
+        from sentence_transformers import CrossEncoder
+        if _cross_encoder is None:
+            _cross_encoder = CrossEncoder(RERANKER_MODEL)
+    except Exception as exc:
+        print(
+            f"  WARN: cross-encoder unavailable, skipping rerank: {str(exc)[:120]}",
+            file=sys.stderr,
+        )
+        return None
     pairs = [(query, a["chunk"] or "") for a in candidates]
     try:
         scores = _cross_encoder.predict(pairs).tolist()
