@@ -80,13 +80,16 @@ const CHANNEL_FORMATS: Record<string, string> = {
  * Generate a CLAUDE.md from a .template file, replacing placeholders.
  * Only writes if the target CLAUDE.md does not already exist (never overwrite customizations).
  */
-function generateClaudeMdFromTemplate(
+export function generateClaudeMdFromTemplate(
   templatePath: string,
   outputPath: string,
   vars: { assistantName: string; channelFormat?: string },
 ): boolean {
   if (fs.existsSync(outputPath)) {
-    logger.info({ file: outputPath }, 'CLAUDE.md already exists, skipping generation');
+    logger.info(
+      { file: outputPath },
+      'CLAUDE.md already exists, skipping generation',
+    );
     return false;
   }
 
@@ -97,8 +100,29 @@ function generateClaudeMdFromTemplate(
 
   let content = fs.readFileSync(templatePath, 'utf-8');
   content = content.replace(/\{\{ASSISTANT_NAME\}\}/g, vars.assistantName);
+  // Substitute only a real value. Substituting a falsy one with '' would
+  // DELETE the placeholder and quietly emit a broken sentence, which the guard
+  // below could no longer detect -- trading a visible corruption for an
+  // invisible one. Leaving it in place lets that guard be the single point of
+  // enforcement (#1165).
   if (vars.channelFormat) {
     content = content.replace(/\{\{CHANNEL_FORMAT\}\}/g, vars.channelFormat);
+  }
+
+  // Never write a template that still carries placeholders. This function
+  // early-returns when the output already exists, so a corrupted file is
+  // PERMANENT -- setup will never regenerate it and nothing reports it.
+  // Refusing to write keeps the failure recoverable: fix the input, re-run,
+  // and the normal path produces a correct file because none exists yet.
+  const leftover = [...content.matchAll(/\{\{[A-Z0-9_]+\}\}/g)].map(
+    (m) => m[0],
+  );
+  if (leftover.length > 0) {
+    logger.error(
+      { file: outputPath, placeholders: [...new Set(leftover)] },
+      'Refusing to write CLAUDE.md with unsubstituted placeholders — fix the inputs and re-run',
+    );
+    return false;
   }
 
   fs.mkdirSync(path.dirname(outputPath), { recursive: true });
