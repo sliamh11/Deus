@@ -2795,3 +2795,233 @@ class TestCalibrateSweepCache:
             assert sim.embed_text is counting_embed
         finally:
             db.close()
+
+
+# ── P3: project-scoped memory retrieval ──────────────────────────────────────
+
+
+class TestProjectColumnMigration:
+    def test_fresh_db_has_project_column(self, tmp_db):
+        cols = [r[1] for r in tmp_db.execute("PRAGMA table_info(nodes)").fetchall()]
+        assert "project" in cols
+
+    def test_vault_node_project_is_null(self, tmp_db, stub_embed):
+        mt.upsert_node(
+            tmp_db, node_id="vn1", path="Persona/INDEX.md", title="Vault",
+            description="a vault node", level=0, node_type="persona-index",
+            embedding=stub_embed("a vault node"), content_hash_val="hv1",
+        )
+        row = tmp_db.execute("SELECT project FROM nodes WHERE id = 'vn1'").fetchone()
+        assert row[0] is None
+
+    def test_migration_backfills_legacy_external_rows(self, tmp_path):
+        """A pre-P3 DB (no `project` column) with bare-prefix external rows —
+        including one nested under the real `procedures/` subdirectory that
+        already exists in production — gets backfilled to project='deus' on
+        first open, and the migration is idempotent on a second open."""
+        db_path = tmp_path / "legacy.db"
+        raw = sqlite3.connect(db_path)
+        raw.execute(
+            """
+            CREATE TABLE nodes (
+                id TEXT PRIMARY KEY, path TEXT NOT NULL, title TEXT,
+                description TEXT NOT NULL, level INTEGER NOT NULL DEFAULT 0,
+                type TEXT, updated_at INTEGER NOT NULL, content_hash TEXT NOT NULL,
+                orphaned_at TEXT DEFAULT NULL, orphan_reason TEXT DEFAULT NULL,
+                atom_kind TEXT DEFAULT 'knowledge'
+            )
+            """
+        )
+        raw.execute(
+            "INSERT INTO nodes (id, path, title, description, updated_at, content_hash) "
+            "VALUES ('n1', 'auto-memory/feedback_x.md', 'X', 'desc', 0, 'h1')"
+        )
+        raw.execute(
+            "INSERT INTO nodes (id, path, title, description, updated_at, content_hash) "
+            "VALUES ('n2', 'auto-memory/procedures/proc_y.md', 'Y', 'desc', 0, 'h2')"
+        )
+        raw.execute(
+            "INSERT INTO nodes (id, path, title, description, updated_at, content_hash) "
+            "VALUES ('n3', 'Persona/INDEX.md', 'Vault', 'desc', 0, 'h3')"
+        )
+        raw.commit()
+        raw.close()
+
+        db2 = mt.open_db(db_path)
+        try:
+            rows = {r[0]: r[1] for r in db2.execute("SELECT id, project FROM nodes").fetchall()}
+        finally:
+            db2.close()
+        assert rows["n1"] == "deus"
+        assert rows["n2"] == "deus", "procedures/ nesting must not be misparsed as a project id"
+        assert rows["n3"] is None
+
+        # Idempotent: reopening doesn't error and doesn't duplicate the column.
+        db3 = mt.open_db(db_path)
+        try:
+            cols = [r[1] for r in db3.execute("PRAGMA table_info(nodes)").fetchall()]
+            assert cols.count("project") == 1
+        finally:
+            db3.close()
+
+
+class TestSplitNamespacedPath:
+    def test_bare_path_has_no_project(self):
+        assert mt.split_namespaced_path("feedback_x.md") == (None, "feedback_x.md")
+
+    def test_nested_bare_path_not_misparsed(self):
+        # The real production collision: a genuine subdirectory under the
+        # bare namespace must not be read as a project qualifier.
+        assert mt.split_namespaced_path("procedures/proc_y.md") == (None, "procedures/proc_y.md")
+
+    def test_qualified_path_splits(self):
+        assert mt.split_namespaced_path("widget-co::feedback_x.md") == ("widget-co", "feedback_x.md")
+
+    def test_marker_inside_a_directory_segment_is_not_a_qualifier(self):
+        # "::" appearing after a "/" means the head contains "/", which the
+        # split rejects as a qualifier (defensive: an unexpected on-disk name
+        # should never be silently treated as a project marker).
+        assert mt.split_namespaced_path("sub/dir::name.md") == (None, "sub/dir::name.md")
+
+    def test_namespaced_path_round_trip_bare(self):
+        assert mt.namespaced_path("feedback_x.md", None) == "auto-memory/feedback_x.md"
+        assert mt.namespaced_path("feedback_x.md", "deus") == "auto-memory/feedback_x.md"
+
+    def test_namespaced_path_round_trip_qualified(self):
+        full = mt.namespaced_path("feedback_x.md", "widget-co")
+        assert full == "auto-memory/widget-co::feedback_x.md"
+        rest = full[len(mt.EXTERNAL_NAMESPACE):]
+        assert mt.split_namespaced_path(rest) == ("widget-co", "feedback_x.md")
+
+
+class TestProjectScopedRetrieve:
+    @pytest.fixture
+    def scoped_db(self, tmp_db, stub_embed):
+        mt.upsert_node(
+            tmp_db, node_id="v1", path="Persona/INDEX.md", title="Vault",
+            description="a global vault node about onboarding",
+            level=0, node_type="persona-index",
+            embedding=stub_embed("a global vault node about onboarding"),
+            content_hash_val="h1", project=None,
+        )
+        mt.upsert_node(
+            tmp_db, node_id="d1", path="auto-memory/feedback_deus.md", title="Deus fb",
+            description="deus project feedback about onboarding",
+            level=0, node_type="feedback",
+            embedding=stub_embed("deus project feedback about onboarding"),
+            content_hash_val="h2", project="deus",
+        )
+        mt.upsert_node(
+            tmp_db, node_id="p1", path="auto-memory/other-proj::feedback_x.md", title="Other fb",
+            description="other project feedback about onboarding",
+            level=0, node_type="feedback",
+            embedding=stub_embed("other project feedback about onboarding"),
+            content_hash_val="h3", project="other-proj",
+        )
+        tmp_db.commit()
+        return tmp_db
+
+    def test_project_scope_none_matches_unscoped_call(self, scoped_db):
+        explicit_none = mt.retrieve(scoped_db, "onboarding", k=10, use_abstain=False, project_scope=None)
+        no_arg = mt.retrieve(scoped_db, "onboarding", k=10, use_abstain=False)
+        assert sorted(r["path"] for r in explicit_none["results"]) == \
+            sorted(r["path"] for r in no_arg["results"])
+        assert {r["path"] for r in no_arg["results"]} == {
+            "Persona/INDEX.md", "auto-memory/feedback_deus.md", "auto-memory/other-proj::feedback_x.md",
+        }
+
+    def test_project_scope_excludes_foreign_project(self, scoped_db):
+        result = mt.retrieve(scoped_db, "onboarding", k=10, use_abstain=False, project_scope="deus")
+        paths = {r["path"] for r in result["results"]}
+        assert paths == {"Persona/INDEX.md", "auto-memory/feedback_deus.md"}
+        assert "auto-memory/other-proj::feedback_x.md" not in paths
+
+    def test_project_scope_null_project_always_visible(self, scoped_db):
+        for scope in ("deus", "other-proj", "yet-another-project"):
+            result = mt.retrieve(scoped_db, "onboarding", k=10, use_abstain=False, project_scope=scope)
+            paths = {r["path"] for r in result["results"]}
+            assert "Persona/INDEX.md" in paths, f"vault node must be visible under scope={scope}"
+
+    def test_retrieve_with_policy_forwards_project_scope(self, scoped_db, monkeypatch):
+        # has_trigger path irrelevant here; just confirm the kwarg threads through
+        # to the primary retrieve() call inside retrieve_with_policy.
+        seen = {}
+        real_retrieve = mt.retrieve
+
+        def _spy(db, query, **kwargs):
+            seen["project_scope"] = kwargs.get("project_scope")
+            return real_retrieve(db, query, **kwargs)
+
+        monkeypatch.setattr(mt, "retrieve", _spy)
+        mt.retrieve_with_policy(scoped_db, "onboarding", project_scope="deus")
+        assert seen["project_scope"] == "deus"
+
+
+class TestReindexExternalProjectTagging:
+    @pytest.fixture
+    def deus_dir(self, tmp_path):
+        d = tmp_path / "deus_auto_memory"
+        d.mkdir()
+        (d / "feedback_a.md").write_text(
+            "---\nname: A\ndescription: a deus rule\ntype: feedback\n---\nBody\n"
+        )
+        return d
+
+    @pytest.fixture
+    def widget_dir(self, tmp_path):
+        d = tmp_path / "widget_auto_memory"
+        d.mkdir()
+        (d / "feedback_b.md").write_text(
+            "---\nname: B\ndescription: a widget-co rule\ntype: feedback\n---\nBody\n"
+        )
+        return d
+
+    def test_default_project_is_deus_bare_namespace(self, tmp_db, deus_dir):
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external(tmp_db, deus_dir)
+        row = tmp_db.execute(
+            "SELECT path, project FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()
+        assert row == ("auto-memory/feedback_a.md", "deus")
+
+    def test_qualified_project_gets_marker_and_column(self, tmp_db, widget_dir):
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external(tmp_db, widget_dir, project="widget-co")
+        row = tmp_db.execute(
+            "SELECT path, project FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()
+        assert row == ("auto-memory/widget-co::feedback_b.md", "widget-co")
+
+    def test_cross_project_reindex_does_not_orphan_other_projects(self, tmp_db, deus_dir, widget_dir):
+        """Regression: an early version of this scoping change filtered the
+        orphan sweep by EXTERNAL_NAMESPACE alone, so reindexing one project's
+        directory would wrongly orphan every OTHER project's nodes (they're
+        never in THIS call's walked_paths since that dir was never walked)."""
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external(tmp_db, deus_dir)
+            mt.reindex_external(tmp_db, widget_dir, project="widget-co")
+
+        before = sorted(
+            tmp_db.execute("SELECT path, project FROM nodes WHERE orphaned_at IS NULL").fetchall()
+        )
+        assert before == [
+            ("auto-memory/feedback_a.md", "deus"),
+            ("auto-memory/widget-co::feedback_b.md", "widget-co"),
+        ]
+
+        # Re-run deus's own reindex — must not touch widget-co's node.
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external(tmp_db, deus_dir)
+
+        after = sorted(
+            tmp_db.execute("SELECT path, project FROM nodes WHERE orphaned_at IS NULL").fetchall()
+        )
+        assert after == before
+
+    def test_reindex_external_one_tags_project(self, tmp_db, widget_dir):
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external_one(tmp_db, widget_dir, "feedback_b.md", project="widget-co")
+        row = tmp_db.execute(
+            "SELECT path, project FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()
+        assert row == ("auto-memory/widget-co::feedback_b.md", "widget-co")

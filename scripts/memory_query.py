@@ -27,7 +27,7 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import memory_tree as mt  # noqa: E402
-from auto_memory_dir import resolve_auto_memory_dir  # noqa: E402
+from auto_memory_dir import DEUS_PROJECT_ID, resolve_auto_memory_dir  # noqa: E402
 from injection_dedup import block_key, load_seen, save_seen  # noqa: E402
 
 LOG_FILE = Path(os.environ.get(
@@ -41,11 +41,36 @@ LOG_FILE = Path(os.environ.get(
 AUTO_MEM_DIR = resolve_auto_memory_dir()
 
 
+def _external_file_for_path(path: str) -> Path:
+    """Resolve an external-namespace node's file from AUTO_MEM_DIR.
+
+    P4 (write-side project tagging) is deliberately deferred, and so is
+    physical-directory resolution for a qualified path's OWN project --
+    that requires the SAME directory-naming convention Claude Code used
+    when it wrote the node, which for a project indexed from a linked
+    worktree is that worktree's raw CLAUDE_PROJECT_DIR (see
+    resolve_auto_memory_dir's encoding), NOT the worktree-normalized id
+    resolve_project_id() computes for DB scoping. Building a physical path
+    from the normalized id (an earlier version of this function did) is
+    wrong the moment a qualified node was indexed from a worktree --
+    flagged in code review as a real inconsistency, not a hypothetical
+    one. Reconstructing the correct directory needs the raw dir stored
+    at index time, which is a P4 design decision, not made yet. Until
+    P4 lands both halves together, every external node's file resolves
+    the same way it always has: from the CURRENT session's AUTO_MEM_DIR,
+    keyed only by the node's own relative path (any `::` project
+    qualifier is stripped by split_namespaced_path and otherwise
+    ignored here).
+    """
+    rest = path[len(mt.EXTERNAL_NAMESPACE):]
+    _, rel = mt.split_namespaced_path(rest)
+    return AUTO_MEM_DIR / rel
+
+
 def _read_node_file(path: str) -> str | None:
     vault = mt.resolve_vault_path()
     if path.startswith(mt.EXTERNAL_NAMESPACE):
-        filename = path[len(mt.EXTERNAL_NAMESPACE):]
-        full = AUTO_MEM_DIR / filename
+        full = _external_file_for_path(path)
         if not full.is_file():
             full = vault / path
     else:
@@ -402,6 +427,7 @@ def recall(
     max_context_chars: int | None = None,
     exclude_paths: set[str] | None = None,
     dedup_store: str | None = None,
+    project_scope: str | None = None,
 ) -> dict:
     """Retrieve memory context for a query.
 
@@ -423,7 +449,10 @@ def recall(
         # opts procedures IN by passing exclude_kinds without "procedure" (the
         # hook passes {"standard"} when DEUS_PROCEDURE_MEMORY=1).
         _excl = exclude_kinds if exclude_kinds is not None else frozenset({"standard", "procedure"})
-        raw = mt.retrieve(db, query, k=k, abstain_threshold=threshold, concepts=concepts, exclude_kinds=_excl)
+        raw = mt.retrieve(
+            db, query, k=k, abstain_threshold=threshold, concepts=concepts,
+            exclude_kinds=_excl, project_scope=project_scope,
+        )
         # LIA-337 intent gate (1 of 2): detect procedure candidates here (db open);
         # classify runs after db.close() so no network call holds the connection.
         _proc_ids: set[str] = set()

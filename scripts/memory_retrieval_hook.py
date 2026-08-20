@@ -43,6 +43,7 @@ def main() -> None:
     # Deferred: avoid ~200ms Ollama import on early bail-out paths above.
     import session_concepts as sc
     import memory_query as mq
+    import auto_memory_dir as amd
 
     concepts: list[str] | None = None
     if session_id:
@@ -81,6 +82,17 @@ def main() -> None:
         dedup_store = str(idd.store_path_for_session(session_id))
         dedup_max_chars = MAX_CONTEXT_CHARS - mq.WRAP_OVERHEAD_CHARS
 
+    # P3: scope retrieval candidates to the current project -- OPT-IN kill-switch.
+    # Write-side tagging (P4) hasn't shipped yet, so every pre-existing external
+    # node is migration-backfilled to project='deus' (see memory_tree.py's ALTER
+    # TABLE migration). Passing a non-deus project_scope today would filter out
+    # ALL of them for every non-Deus session -- a live regression until P4 tags
+    # nodes under their real project. Strict "1" match, same convention as
+    # DEUS_PROCEDURE_MEMORY above. Once P4 ships, this flag flips on (or is
+    # removed) in LIA-122, the follow-up that indexes per-project memory and
+    # wires this gate on.
+    project_scope = amd.resolve_project_id() if os.environ.get("DEUS_PROJECT_SCOPE", "").strip() == "1" else None
+
     result = mq.recall(
         prompt,
         k=TOP_K,
@@ -90,6 +102,7 @@ def main() -> None:
         exclude_kinds=exclude_kinds,
         max_context_chars=dedup_max_chars,
         dedup_store=dedup_store,
+        project_scope=project_scope,
     )
 
     context = result["context"]

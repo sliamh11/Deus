@@ -32,7 +32,7 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 from _exit_codes import SUCCESS, ABSTAIN, USAGE_ERROR, NOT_FOUND, AUTH_ERROR, INTERNAL_ERROR
 from _agent_io import is_agent_context, compact_json, select_fields
 from _time import local_now, utc_now  # noqa: E402
-from auto_memory_dir import resolve_auto_memory_dir  # noqa: E402
+from auto_memory_dir import DEUS_PROJECT_ID, resolve_auto_memory_dir  # noqa: E402
 
 
 def _utc_iso() -> str:
@@ -194,6 +194,43 @@ ORPHAN_CONFIRM_DELAY_S = 0.05
 def is_external_namespace(path: str) -> bool:
     """True if path belongs to an external population (e.g. auto-memory/)."""
     return path.startswith(EXTERNAL_NAMESPACE)
+
+
+# Marker separating a project qualifier from the relative filename inside a
+# NEW-project external-namespace path: `auto-memory/<project-id>::<rel>`.
+# EXTERNAL_NAMESPACE itself stays "auto-memory/" (unqualified) so the 21
+# pre-existing bare-prefix nodes keep byte-identical paths/ULIDs. Chosen over
+# a `<project-id>/` subdirectory scheme because the real Deus auto-memory dir
+# already nests a genuine `procedures/` subdirectory under the bare prefix
+# (verified: `auto-memory/procedures/*.md`) — a first-path-segment split
+# would misparse that as a project id. "::" cannot occur in a relative path
+# produced by `Path.rglob("*.md")` on any OS, so it's an unambiguous marker.
+_PROJECT_NS_SEP = "::"
+
+
+def split_namespaced_path(rest: str) -> tuple[str | None, str]:
+    """Split the part of an external-namespace path AFTER EXTERNAL_NAMESPACE
+    into (project_id, relative_filename).
+
+    Returns (None, rest) for a legacy bare-prefix path (no marker, or a
+    string that merely contains "::" inside what would be a directory
+    segment) — callers treat None as DEUS_PROJECT_ID. Returns (project_id,
+    tail) for a genuinely qualified path.
+    """
+    if _PROJECT_NS_SEP in rest:
+        head, _, tail = rest.partition(_PROJECT_NS_SEP)
+        if head and "/" not in head:
+            return head, tail
+    return None, rest
+
+
+def namespaced_path(rel: str, project: str | None) -> str:
+    """Inverse of split_namespaced_path: build a full node path under
+    EXTERNAL_NAMESPACE for `rel`, qualified by `project` when it names a
+    project other than the legacy/bare Deus population."""
+    if project and project != DEUS_PROJECT_ID:
+        return f"{EXTERNAL_NAMESPACE}{project}{_PROJECT_NS_SEP}{rel}"
+    return f"{EXTERNAL_NAMESPACE}{rel}"
 
 
 # ── Retrieval policy (ported from ~/deus-memory-evo exp_0006) ─────────────────
@@ -708,6 +745,29 @@ def open_db(db_path: Path = None) -> sqlite3.Connection:
     except sqlite3.OperationalError as e:
         if "duplicate column" not in str(e).lower():
             raise
+    try:
+        db.execute("ALTER TABLE nodes ADD COLUMN project TEXT DEFAULT NULL")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+    else:
+        # First time this DB gets the `project` column: backfill every
+        # existing external-namespace row (vault rows never match the LIKE
+        # and stay NULL/global). Fires exactly once per DB — subsequent
+        # opens hit the "duplicate column" branch above and skip this, so a
+        # later reindex_external(project=...) call's explicit tagging is
+        # never overwritten by this migration re-running.
+        _backup_db()
+        for (nid, npath) in db.execute(
+            "SELECT id, path FROM nodes WHERE path LIKE ? || '%'",
+            (EXTERNAL_NAMESPACE,),
+        ).fetchall():
+            pid, _ = split_namespaced_path(npath[len(EXTERNAL_NAMESPACE):])
+            db.execute(
+                "UPDATE nodes SET project = ? WHERE id = ?",
+                (pid or DEUS_PROJECT_ID, nid),
+            )
+        db.commit()
     db.execute("""
         CREATE TABLE IF NOT EXISTS edges (
             src_id     TEXT NOT NULL,
@@ -808,6 +868,7 @@ def upsert_node(
     content_hash_val: str,
     body_text: str | None = None,
     atom_kind: str = "knowledge",
+    project: str | None = None,
 ) -> None:
     """Insert or update a node + its embedding + FTS5 index. Soft-deletes
     prior versions by path if the ID has changed."""
@@ -827,8 +888,8 @@ def upsert_node(
     )
     db.execute(
         """
-        INSERT INTO nodes (id, path, title, description, level, type, updated_at, content_hash, atom_kind)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO nodes (id, path, title, description, level, type, updated_at, content_hash, atom_kind, project)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             path = excluded.path,
             title = excluded.title,
@@ -838,10 +899,11 @@ def upsert_node(
             updated_at = excluded.updated_at,
             content_hash = excluded.content_hash,
             atom_kind = excluded.atom_kind,
+            project = excluded.project,
             orphaned_at = NULL,
             orphan_reason = NULL
         """,
-        (node_id, path, title, description, level, node_type, now, content_hash_val, atom_kind),
+        (node_id, path, title, description, level, node_type, now, content_hash_val, atom_kind, project),
     )
     if embedding is not None and sqlite_vec is not None:
         rowid = _rowid_for(node_id)
@@ -1456,6 +1518,7 @@ def retrieve(
     use_coherence_gate: bool = DEFAULT_USE_COHERENCE_GATE,
     min_entity_overlap: int = DEFAULT_MIN_ENTITY_OVERLAP,
     exclude_kinds: set[str] | None = None,
+    project_scope: str | None = None,
 ) -> dict[str, Any]:
     """4-phase retrieval: flat cosine → FTS5 BM25 → graph expansion → abstain.
 
@@ -1463,14 +1526,30 @@ def retrieve(
     Reciprocal Rank Fusion reorders the union. Abstain still gates on raw
     cosine confidence so calibrated thresholds are preserved.
 
+    `project_scope` narrows the Phase 1 CANDIDATE SELECT itself (P3) —
+    never a post-hoc results filter (a measured-worse approach: a
+    foreign-project node's score can suppress a correct abstain, and
+    removing it after scoring just loses the abstain too). A node with
+    `project IS NULL` (every vault node, plus any node never tagged) stays
+    visible under every scope. `project_scope=None` runs the EXACT SAME SQL
+    as before this parameter existed — no behavior change for any existing
+    caller that doesn't pass it.
+
     Returns {results: [{id, path, score, route}], confidence, fell_back, trace}.
     """
     qv = query_vec if query_vec is not None else embed_text(query)
 
-    # Phase 1: flat cosine over all active nodes.
-    all_nodes = db.execute(
-        "SELECT id, path, title, atom_kind FROM nodes WHERE orphaned_at IS NULL"
-    ).fetchall()
+    # Phase 1: flat cosine over all active nodes (optionally project-scoped).
+    if project_scope:
+        all_nodes = db.execute(
+            "SELECT id, path, title, atom_kind FROM nodes "
+            "WHERE orphaned_at IS NULL AND (project IS NULL OR project = ?)",
+            (project_scope,),
+        ).fetchall()
+    else:
+        all_nodes = db.execute(
+            "SELECT id, path, title, atom_kind FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchall()
     node_lookup: dict[str, tuple[str, str]] = {}  # nid → (path, title)
     cosine_scores: dict[str, float] = {}
     scored: list[tuple[str, str, str, float, str]] = []
@@ -1694,6 +1773,7 @@ def retrieve_with_policy(
     k: int = DEFAULT_TOP_K,
     low_threshold: float = DEFAULT_LOW_THRESHOLD,
     abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
+    project_scope: str | None = None,
 ) -> dict[str, Any]:
     """Retrieval with persona-trigger gating, focused retries, supplementary
     hints, and adaptive K. Ported from ~/deus-memory-evo exp_0006 (round 1
@@ -1712,6 +1792,10 @@ def retrieve_with_policy(
       else POLICY_K_LOW_CONF.
     - Supplementary hints: for below-threshold Persona queries whose primary
       result might miss a key path, merge the top-1 of a focused hint query.
+
+    `project_scope` (P3) is forwarded unchanged to every internal
+    :func:`retrieve` call (primary, focused retry, supplementary hints) —
+    None preserves today's unscoped behavior exactly.
     """
     has_trigger, trigger_words = _query_persona_triggers(query)
     policy_trace: list[str] = []
@@ -1719,6 +1803,7 @@ def retrieve_with_policy(
     primary = retrieve(
         db, query, k=max(k, POLICY_K_LOW_CONF),
         low_threshold=low_threshold, abstain_threshold=abstain_threshold,
+        project_scope=project_scope,
     )
 
     fell_back = primary["fell_back"]
@@ -1738,6 +1823,7 @@ def retrieve_with_policy(
             retry = retrieve(
                 db, retry_alias, k=max(k, POLICY_K_LOW_CONF),
                 low_threshold=low_threshold, abstain_threshold=abstain_threshold,
+                project_scope=project_scope,
             )
             if not retry["fell_back"] and retry["results"]:
                 fell_back = False
@@ -1784,6 +1870,7 @@ def retrieve_with_policy(
             hint_res = retrieve(
                 db, hint, k=1,
                 low_threshold=low_threshold, abstain_threshold=abstain_threshold,
+                project_scope=project_scope,
             )
             if hint_res["fell_back"] or not hint_res["results"]:
                 continue
@@ -2128,6 +2215,7 @@ def _index_external_file(
     ns_path: str,
     *,
     skip_embed: bool = False,
+    project: str | None = None,
 ) -> dict[str, int]:
     """Upsert ONE external (auto-memory) file into the tree under ``ns_path``.
 
@@ -2136,6 +2224,11 @@ def _index_external_file(
     orphan-sweep, back up, or commit. Callers own those (the walk + sweep are
     what make a full reindex destructive; keeping them out of here is what makes
     the single-file admit non-destructive — LIA-341). Returns per-file counts.
+
+    ``project`` tags the node's ``project`` column (P3 scoping); ``ns_path``
+    must already be namespaced consistently with it via
+    :func:`namespaced_path` — this function does not derive one from the
+    other.
     """
     c = {"indexed": 0, "embedded": 0, "skipped": 0, "id_written": 0}
     try:
@@ -2190,6 +2283,7 @@ def _index_external_file(
         content_hash_val=ch,
         body_text=_body_from_content(content),
         atom_kind=fm.get("atom_kind", "knowledge"),
+        project=project or DEUS_PROJECT_ID,
     )
     c["indexed"] += 1
     return c
@@ -2201,6 +2295,7 @@ def reindex_external_one(
     rel_path: str,
     *,
     skip_embed: bool = False,
+    project: str | None = None,
 ) -> dict[str, int]:
     """Index a SINGLE auto-memory file without the orphan sweep (LIA-341).
 
@@ -2220,9 +2315,9 @@ def reindex_external_one(
     if not pr.exists():
         raise FileNotFoundError(f"file not found: {pr}")
 
-    ns_path = EXTERNAL_NAMESPACE + str(pr.relative_to(external_dir))
+    ns_path = namespaced_path(str(pr.relative_to(external_dir)), project)
     counts = {"indexed": 0, "embedded": 0, "skipped": 0, "id_written": 0}
-    sub = _index_external_file(db, pr, ns_path, skip_embed=skip_embed)
+    sub = _index_external_file(db, pr, ns_path, skip_embed=skip_embed, project=project)
     for k, v in sub.items():
         counts[k] += v
     db.commit()
@@ -2237,10 +2332,13 @@ def reindex_external(
     external_dir: Path,
     *,
     skip_embed: bool = False,
+    project: str | None = None,
 ) -> dict[str, int]:
     """Index auto-memory files from an external directory into the tree.
 
-    Files are stored with the `auto-memory/<filename>` namespace prefix to
+    Files are stored with the `auto-memory/<filename>` namespace prefix
+    (unqualified, legacy/Deus) or `auto-memory/<project>::<filename>`
+    (P3: when `project` names a project other than DEUS_PROJECT_ID) to
     avoid vault path collisions. Frontmatter mapping: `name` -> title,
     `description` -> embedding source, `type` -> kept as-is.
 
@@ -2267,26 +2365,33 @@ def reindex_external(
         if p.name == "MEMORY.md":
             continue
 
-        ns_path = EXTERNAL_NAMESPACE + str(rel_to_ext)
+        ns_path = namespaced_path(str(rel_to_ext), project)
         walked_paths.add(ns_path)
 
-        sub = _index_external_file(db, p, ns_path, skip_embed=skip_embed)
+        sub = _index_external_file(db, p, ns_path, skip_embed=skip_embed, project=project)
         for k, v in sub.items():
             counts[k] += v
 
-    # Orphan external nodes no longer on disk.
+    # Orphan external nodes no longer on disk. Scoped to THIS call's project
+    # (P3): reindex_external only walks one project's external_dir, so
+    # walked_paths only ever contains that project's ns_paths — sweeping
+    # every auto-memory/* node regardless of project would wrongly orphan
+    # every OTHER project's nodes on their very first unrelated reindex.
+    effective_project = project or DEUS_PROJECT_ID
     now_iso = _utc_iso()
     ext_active = db.execute(
-        "SELECT id, path FROM nodes WHERE orphaned_at IS NULL AND path LIKE ? || '%'",
-        (EXTERNAL_NAMESPACE,),
+        "SELECT id, path FROM nodes WHERE orphaned_at IS NULL AND path LIKE ? || '%' AND project = ?",
+        (EXTERNAL_NAMESPACE, effective_project),
     ).fetchall()
     for (nid, npath) in ext_active:
         if npath not in walked_paths:
             # LIA-336: a rename-gap during rglob can briefly hide a live file;
-            # confirm it's truly gone on disk before orphaning. ns_path was built
-            # as EXTERNAL_NAMESPACE + rel_to_ext, so strip the prefix to recover
-            # the path under external_dir.
-            ext_file = external_dir / npath[len(EXTERNAL_NAMESPACE):]
+            # confirm it's truly gone on disk before orphaning. Recover the
+            # path under external_dir via split_namespaced_path (strips both
+            # EXTERNAL_NAMESPACE and, for a qualified path, the project
+            # marker) rather than a raw prefix-strip.
+            _, ext_rel = split_namespaced_path(npath[len(EXTERNAL_NAMESPACE):])
+            ext_file = external_dir / ext_rel
             if not _confirm_orphan(ext_file, require_id=False):
                 continue
             db.execute(

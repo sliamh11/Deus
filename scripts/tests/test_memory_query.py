@@ -180,6 +180,59 @@ class TestFileReading:
         assert content == "vault fallback"
 
 
+class TestExternalFileForPath:
+    """P3: _read_node_file always resolves an external node from the
+    CURRENT session's AUTO_MEM_DIR, stripping (but not yet acting on) any
+    `::` project qualifier in the path -- physical resolution of another
+    project's own directory is a P4 write-side decision, deferred."""
+
+    def test_bare_path_resolves_via_auto_mem_dir(self, fake_auto_mem):
+        full = mq._external_file_for_path("auto-memory/feedback_test.md")
+        assert full == fake_auto_mem / "feedback_test.md"
+
+    def test_deus_qualified_path_resolves_via_auto_mem_dir(self, fake_auto_mem):
+        # A path explicitly tagged with the DEUS_PROJECT_ID sentinel (not
+        # just bare) must resolve identically to the bare form.
+        full = mq._external_file_for_path(f"auto-memory/{mq.DEUS_PROJECT_ID}::feedback_test.md")
+        assert full == fake_auto_mem / "feedback_test.md"
+
+    def test_qualified_path_falls_back_to_session_auto_mem_dir(self, fake_auto_mem):
+        # P4 (write-side tagging + physical-directory resolution for a
+        # qualified path's OWN project) is deferred -- see
+        # _external_file_for_path's docstring for why building a physical
+        # path from the normalized project id is wrong once a qualified
+        # node was indexed from a worktree. Until P4 lands, a qualified
+        # path resolves the same as a bare one: through AUTO_MEM_DIR,
+        # keyed only by the relative filename.
+        full = mq._external_file_for_path("auto-memory/widget-co::feedback_b.md")
+        assert full == fake_auto_mem / "feedback_b.md"
+
+    def test_read_node_file_strips_qualifier_and_reads_from_auto_mem_dir(self, fake_auto_mem):
+        (fake_auto_mem / "feedback_b.md").write_text("widget-co content", encoding="utf-8")
+        content = mq._read_node_file("auto-memory/widget-co::feedback_b.md")
+        assert content == "widget-co content"
+
+
+class TestRecallProjectScope:
+    def test_project_scope_forwarded_to_retrieve(self):
+        with patch.object(mt, "retrieve", return_value=FAKE_RETRIEVE_ABSTAIN) as mock_ret, \
+             patch.object(mt, "open_db") as mock_db:
+            mock_db.return_value.close = lambda: None
+            mq.recall("test", source="test", project_scope="widget-co")
+
+        _, kwargs = mock_ret.call_args
+        assert kwargs["project_scope"] == "widget-co"
+
+    def test_default_project_scope_is_none(self):
+        with patch.object(mt, "retrieve", return_value=FAKE_RETRIEVE_ABSTAIN) as mock_ret, \
+             patch.object(mt, "open_db") as mock_db:
+            mock_db.return_value.close = lambda: None
+            mq.recall("test", source="test")
+
+        _, kwargs = mock_ret.call_args
+        assert kwargs["project_scope"] is None
+
+
 class TestContextFormatting:
     def test_empty_on_fell_back(self):
         assert mq._format_context([], fell_back=True) == ""
