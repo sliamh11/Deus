@@ -210,7 +210,7 @@ def test_ollama_returns_none_on_os_error(mi_auto):
     assert result is None
 
 
-def test_ollama_returns_empty_on_json_decode_error(mi_auto, capsys):
+def test_ollama_returns_none_on_json_decode_error(mi_auto, capsys):
     bad_body = json.dumps({"response": "not json at all"}).encode()
     resp = MagicMock()
     resp.read.return_value = bad_body
@@ -220,28 +220,28 @@ def test_ollama_returns_empty_on_json_decode_error(mi_auto, capsys):
     with patch("urllib.request.urlopen", return_value=resp):
         result = mi_auto._extract_entities_ollama("text")
 
-    assert result == {"entities": [], "relationships": []}
+    assert result is None  # #1166: a failure is not a successful empty result
     captured = capsys.readouterr()
     assert "WARN" in captured.err
     assert "malformed JSON" in captured.err
 
 
-def test_ollama_returns_empty_on_http_error(mi_auto, capsys):
+def test_ollama_returns_none_on_http_error(mi_auto, capsys):
     with patch("urllib.request.urlopen",
                side_effect=urllib.error.HTTPError(None, 404, "Not Found", {}, None)):
         result = mi_auto._extract_entities_ollama("text")
 
-    assert result == {"entities": [], "relationships": []}
+    assert result is None  # #1166: a failure is not a successful empty result
     captured = capsys.readouterr()
     assert "WARN" in captured.err
     assert "HTTP 404" in captured.err
 
 
-def test_ollama_returns_empty_on_unexpected_error(mi_auto, capsys):
+def test_ollama_returns_none_on_unexpected_error(mi_auto, capsys):
     with patch("urllib.request.urlopen", side_effect=ValueError("unexpected")):
         result = mi_auto._extract_entities_ollama("text")
 
-    assert result == {"entities": [], "relationships": []}
+    assert result is None  # #1166: a failure is not a successful empty result
     captured = capsys.readouterr()
     assert "WARN" in captured.err
 
@@ -288,6 +288,9 @@ def test_provider_ollama_strict_returns_empty_when_not_reachable(mi_ollama, caps
             result = mi_ollama.extract_entities_and_relations("some content")
 
     mock_gemini.assert_not_called()
+    # The PUBLIC function still returns an empty dict here, deliberately: with
+    # provider=ollama there is no fallback to reach, so it warns and degrades.
+    # Only the INTERNAL _extract_entities_ollama returns None (#1166).
     assert result == {"entities": [], "relationships": []}
     captured = capsys.readouterr()
     assert "WARN" in captured.err

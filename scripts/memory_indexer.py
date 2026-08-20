@@ -2038,8 +2038,11 @@ def _atom_prompt(content: str) -> str:
 def _extract_atoms_ollama(content: str) -> "list[dict] | None":
     """Extract atoms via Ollama (Gemma4). Mirrors _extract_entities_ollama.
 
-    Returns the parsed atom list, or None when Ollama is unreachable (so the
-    caller can fall back to Gemini). Other failures return [] (skip extraction).
+    Returns the parsed atom list on success -- [] meaning "ran successfully and
+    found no atoms". Returns None for ANY failure (unreachable, HTTP error,
+    malformed response, unexpected), so the caller can fall back to Gemini.
+    The two are not interchangeable: only None triggers that fallback, so a
+    failure that returned [] disabled extraction silently (#1166).
     Keyless — this is the path that lets --extract/--add run without a Gemini key.
     """
     import urllib.request  # lazy: only needed when the Ollama path is taken
@@ -2092,20 +2095,38 @@ def _extract_atoms_ollama(content: str) -> "list[dict] | None":
             data = json.loads(resp.read().decode())
         raw = data.get("response", "").strip()
         result = json.loads(raw)
+        # Syntactically valid JSON in the WRONG SHAPE is not a successful empty
+        # extraction -- it is an unusable result, and must reach the fallback
+        # like any other failure. `{}` or `[]` previously fell through to `[]`
+        # here, which claimed success and skipped Gemini (#1166).
+        if not isinstance(result, dict) or not isinstance(result.get("atoms"), list):
+            print(
+                f"  WARN: Ollama atom extraction returned an unexpected shape: {str(result)[:120]}",
+                file=sys.stderr,
+            )
+            return None
         # Cap defensively (prompt asks for 2-5), mirroring the entity path's ceiling.
-        atoms = (result.get("atoms", []) if isinstance(result, dict) else [])[:10]
+        # An empty list here IS a genuine "found nothing" and correctly stays [].
+        atoms = result["atoms"][:10]
         return [a for a in atoms if isinstance(a, dict) and "text" in a and "category" in a]
+    # Return contract (see extract_atoms): None means "no usable result from
+    # Ollama -- try the fallback"; [] means "ran successfully, found no atoms".
+    # Every branch below is the former, so every branch returns None. Returning
+    # [] here used to claim a successful empty extraction, which both hid the
+    # failure AND skipped the Gemini fallback that exists for exactly this --
+    # so pointing DEUS_OLLAMA_ATOM_MODEL at an un-pulled model disabled atom
+    # extraction for the whole run (#1166).
     except urllib.error.HTTPError as exc:
         print(f"  WARN: Ollama atom extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
-        return []
+        return None
     except (ConnectionRefusedError, OSError):
         return None
     except json.JSONDecodeError as exc:
         print(f"  WARN: Ollama atom extraction malformed JSON: {str(exc)[:120]}", file=sys.stderr)
-        return []
+        return None
     except Exception as exc:
         print(f"  WARN: Ollama atom extraction failed: {exc}", file=sys.stderr)
-        return []
+        return None
 
 
 def _extract_atoms_gemini(content: str) -> list[dict]:
@@ -2343,7 +2364,9 @@ def _extract_entities_ollama(content: str) -> "dict | None":
     Returns a dict with the same schema consumed by the DB layer:
       {"entities": [{"name": str, "entity_type": str, "summary": str}],
        "relationships": [{"source": str, "target": str, "rel_type": str}]}
-    or None when Ollama is not reachable.
+    An empty dict means "ran successfully, found nothing". Returns None for ANY
+    failure (unreachable, HTTP error, malformed response, unexpected), so the
+    caller can fall back to Gemini — only None triggers that fallback (#1166).
     """
     import urllib.request
 
@@ -2402,31 +2425,44 @@ def _extract_entities_ollama(content: str) -> "dict | None":
             data = json.loads(resp.read().decode())
         raw = data.get("response", "").strip()
         result = json.loads(raw)
-        if isinstance(result, dict) and "entities" in result:
-            ents = [
-                e for e in result.get("entities", [])[:10]
-                if isinstance(e, dict)
-                and isinstance(e.get("name"), str) and e["name"]
-                and isinstance(e.get("entity_type"), str)
-            ]
-            rels = [
-                r for r in result.get("relationships", [])[:10]
-                if isinstance(r, dict)
-                and "source" in r and "target" in r and "rel_type" in r
-            ]
-            return {"entities": ents, "relationships": rels}
-        return {"entities": [], "relationships": []}
+        # Wrong-shape response is an unusable result, not a successful empty one
+        # -- same reasoning as the atom path above (#1166). `relationships` stays
+        # optional, as before; only the `entities` envelope is required.
+        if not isinstance(result, dict) or not isinstance(result.get("entities"), list):
+            print(
+                f"  WARN: Ollama entity extraction returned an unexpected shape: {str(result)[:120]}",
+                file=sys.stderr,
+            )
+            return None
+        ents = [
+            e for e in result["entities"][:10]
+            if isinstance(e, dict)
+            and isinstance(e.get("name"), str) and e["name"]
+            and isinstance(e.get("entity_type"), str)
+        ]
+        rels_raw = result.get("relationships")
+        rels = [
+            r for r in (rels_raw if isinstance(rels_raw, list) else [])[:10]
+            if isinstance(r, dict)
+            and "source" in r and "target" in r and "rel_type" in r
+        ]
+        return {"entities": ents, "relationships": rels}
+    # Same return contract as the atom path above (see
+    # extract_entities_and_relations): None means "no usable result -- try the
+    # fallback"; an empty dict means "ran successfully, found nothing". These
+    # branches returned the empty dict, which skipped the Gemini fallback and
+    # silently disabled entity extraction on a bad model id (#1166).
     except urllib.error.HTTPError as exc:
         print(f"  WARN: Ollama entity extraction HTTP {exc.code}: {str(exc)[:120]}", file=sys.stderr)
-        return {"entities": [], "relationships": []}
+        return None
     except (ConnectionRefusedError, OSError):
         return None
     except json.JSONDecodeError as exc:
         print(f"  WARN: Ollama entity extraction malformed JSON: {str(exc)[:120]}", file=sys.stderr)
-        return {"entities": [], "relationships": []}
+        return None
     except Exception as exc:
         print(f"  WARN: Ollama entity extraction failed: {exc}", file=sys.stderr)
-        return {"entities": [], "relationships": []}
+        return None
 
 
 def _extract_entities_and_relations_gemini(content: str) -> dict:
