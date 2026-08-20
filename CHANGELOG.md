@@ -4,6 +4,19 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.29.1](https://github.com/sliamh11/Deus/compare/v1.29.0...v1.29.1) (2026-08-20)
+
+
+### Bug Fixes
+
+* **channels:** store chat metadata before the message so the first one is not dropped ([#1255](https://github.com/sliamh11/Deus/issues/1255)) ([26197a9](https://github.com/sliamh11/Deus/commit/26197a9c63f56f3ecebfc61432b052724370e9fe))
+* **container:** build the image the runtime actually runs ([#1258](https://github.com/sliamh11/Deus/issues/1258)) ([06f32c9](https://github.com/sliamh11/Deus/commit/06f32c97aa27e08bbdc783d38548bc6c708a6c78))
+* **memory:** distinguish an unusable Ollama result from a genuinely empty one ([#1257](https://github.com/sliamh11/Deus/issues/1257)) ([adc38c2](https://github.com/sliamh11/Deus/commit/adc38c2df851cd8c514dca49d4a786ef95e9c52b))
+* **memory:** let the cross-encoder reranker degrade instead of crashing ([#1256](https://github.com/sliamh11/Deus/issues/1256)) ([dfee6c2](https://github.com/sliamh11/Deus/commit/dfee6c2b60bd7bcb3feb07ae20bd8e421d58816b))
+* **setup:** refuse to write a CLAUDE.md that still contains placeholders ([#1259](https://github.com/sliamh11/Deus/issues/1259)) ([4fe84f3](https://github.com/sliamh11/Deus/commit/4fe84f3aef3e5d0b3e4c5baaaf09521b4380a7bc))
+* **wardens:** accept the TRIVIAL bypass the verification-gate advertises ([#1260](https://github.com/sliamh11/Deus/issues/1260)) ([7b71c37](https://github.com/sliamh11/Deus/commit/7b71c373e23b97ee8039587bede09ded4a6e879a))
+* **whatsapp:** actually reconnect after a retriable close so pairing can complete ([#1253](https://github.com/sliamh11/Deus/issues/1253)) ([8bbb730](https://github.com/sliamh11/Deus/commit/8bbb7300d6bfe85cf612270df7a1378d811fb549))
+
 ## [1.29.0](https://github.com/sliamh11/Deus/compare/v1.28.0...v1.29.0) (2026-08-17)
 
 
