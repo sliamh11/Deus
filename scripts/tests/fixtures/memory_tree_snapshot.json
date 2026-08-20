@@ -1,13 +1,13 @@
 {
-  "created": "2026-04-25",
+  "created": "2026-08-20",
   "min_retrieval_recall": 0.90,
   "last_measured": {
-    "retrieval_recall": 0.923,
-    "retrieval_queries": 52,
-    "abstain_accuracy": 0.318,
+    "retrieval_recall": 0.983,
+    "retrieval_queries": 60,
+    "abstain_accuracy": 0.636,
     "abstain_queries": 22,
     "embedding_provider": "ollama",
     "embedding_model": "embeddinggemma"
   },
-  "notes": "Re-measured 2026-06-10 after trimming 62 stale labels (vault migration lost their target files; dropped entries recoverable from git history) and recovering the tree via scaffold-root. Retrieval corpus shrank 75 -> 52 queries, so each miss now costs ~1.9pp vs ~1.3pp. 4 remaining misses are dilution cases. Abstain accuracy is measured with raw retrieve (no policy threshold) against a small 10-node tree, hence low; the runtime hook applies its own abstain threshold."
+  "notes": "Regenerated 2026-08-20 after closing step 4 of feedback_memory_placement.md: added 8 canary queries covering the Migrated/*.md pointer layer created by the 2026-07-28 vault migration (fixture grew 74 -> 82 queries, all 8 new ones tagged 'single' and hitting on first try). retrieval_recall (0.983, 59/60) is computed the SAME way check_bench_snapshot() computes it in scripts/drift_check.py -- non-abstain items only, retrieve()+top-5 hit check -- NOT the blended recall_at_k the benchmark() CLI reports (0.72/82, which folds in abstain-tagged items scored as misses per docs/decisions/benchmark-regression-gate.md's rejection of that blended metric). abstain_accuracy/abstain_queries are carried through from benchmark()'s own abstain-threshold-applying calculation (22 abstain-tagged queries across abstain-far/abstain-near/abstain-vocab), which check_bench_snapshot() does not independently recompute. Self-verified: `python3 scripts/drift_check.py --bench-snapshot` passes against this snapshot post-regen."
 }
