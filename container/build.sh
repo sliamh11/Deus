@@ -7,12 +7,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-IMAGE_NAME="deus-agent"
-TAG="${1:-latest}"
+# Build the image the RUNTIME will actually run. src/config.ts:94 reads
+# CONTAINER_IMAGE (default deus-agent:latest) and container-runner.ts:287 runs
+# it, so a build that ignored CONTAINER_IMAGE produced an image nothing would
+# start -- and made two instances on one host clobber each other's
+# deus-agent:latest (#1164).
+DEFAULT_IMAGE="deus-agent:${1:-latest}"
+IMAGE_REF="${CONTAINER_IMAGE:-$DEFAULT_IMAGE}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 
+# Env wins over the positional tag: matching what the runtime will run is the
+# whole point, and a CLI arg that silently diverged from it would reintroduce
+# this bug. Announce the conflict rather than swallowing the argument.
+if [ -n "${CONTAINER_IMAGE:-}" ] && [ -n "${1:-}" ]; then
+  echo "WARN: CONTAINER_IMAGE is set; ignoring tag argument '$1' and building ${CONTAINER_IMAGE}" >&2
+fi
+
 echo "Building Deus agent container image..."
-echo "Image: ${IMAGE_NAME}:${TAG}"
+echo "Image: ${IMAGE_REF}"
 
 # Stage skill agent files for the container build.
 # Each skill with an agent.ts gets its own directory under container/skill-agents/.
@@ -50,14 +62,14 @@ if [ -d ".claude/skills" ]; then
 fi
 
 # Build from project root so Dockerfile can access staged files
-${CONTAINER_RUNTIME} build -t "${IMAGE_NAME}:${TAG}" -f container/Dockerfile .
+${CONTAINER_RUNTIME} build -t "${IMAGE_REF}" -f container/Dockerfile .
 
 # Clean up staging directory
 rm -rf "$STAGING_DIR"
 
 echo ""
 echo "Build complete!"
-echo "Image: ${IMAGE_NAME}:${TAG}"
+echo "Image: ${IMAGE_REF}"
 echo ""
 echo "Test with:"
-echo "  echo '{\"prompt\":\"What is 2+2?\",\"groupFolder\":\"test\",\"chatJid\":\"test@g.us\",\"isMain\":false}' | ${CONTAINER_RUNTIME} run -i ${IMAGE_NAME}:${TAG}"
+echo "  echo '{\"prompt\":\"What is 2+2?\",\"groupFolder\":\"test\",\"chatJid\":\"test@g.us\",\"isMain\":false}' | ${CONTAINER_RUNTIME} run -i ${IMAGE_REF}"
