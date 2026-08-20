@@ -5633,3 +5633,90 @@ def test_buckets_with_ship_excludes_current_bucket(tmp_path):
     )
 
     assert hooks._buckets_with_ship("code-reviewer", "gpt", repo, current) == []
+
+
+# ── #1167: the gate must accept the bypass it advertises ─────────────────────
+#
+# run_verification_gate compared == "SHIP" while its own block message told the
+# operator to run `mark verified TRIVIAL`. Following that instruction printed
+# success, stored "TRIVIAL" verbatim, and then re-blocked -- a failure that only
+# surfaced on the next write. TRIVIAL satisfies the Claude side exactly like
+# SHIP, which is the convention _evaluate_backends already implements.
+
+
+def test_verification_gate_allows_after_trivial_marker(tmp_path, capsys):
+    """The advertised bypass must actually satisfy the gate (#1167)."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "verification-gate", "TRIVIAL", "config-only", "mark")
+
+    rc = hooks.run_verification_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    # The defect: previously this re-blocked despite the mark reporting success.
+    assert capsys.readouterr().out == ""
+
+
+def test_verification_gate_still_allows_after_ship(tmp_path, capsys):
+    """MUST NOT REGRESS: SHIP keeps working."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "verification-gate", "SHIP", "verified", "mark")
+
+    rc = hooks.run_verification_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_verification_gate_still_blocks_with_no_verdict(tmp_path, capsys):
+    """MUST NOT REGRESS: absence of a verdict still blocks."""
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+
+    rc = hooks.run_verification_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    reason = json.loads(capsys.readouterr().out)["hookSpecificOutput"][
+        "permissionDecisionReason"
+    ]
+    assert "no verification-gate approval marker" in reason
+
+
+def test_verification_gate_still_blocks_after_revise(tmp_path, capsys):
+    """MUST NOT REGRESS: a blocking verdict still blocks, and still refuses the bypass.
+
+    This is the case that would matter most if the change were wrong: REVISE must
+    not become bypassable, and the message must not start advertising TRIVIAL.
+    """
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    hooks._write_verdict(repo, "verification-gate", "REVISE", "not done", "agent")
+
+    rc = hooks.run_verification_gate(bash_event(repo, "git commit -m test"), repo)
+
+    assert rc == 0
+    reason = json.loads(capsys.readouterr().out)["hookSpecificOutput"][
+        "permissionDecisionReason"
+    ]
+    assert "last verification-gate verdict was REVISE" in reason
+    assert "Trivial bypass is not permitted" in reason
+
+
+def test_marking_trivial_still_refused_in_background_session(tmp_path, monkeypatch, capsys):
+    """MUST NOT REGRESS: bg sessions still cannot record TRIVIAL at all.
+
+    The gate now accepts TRIVIAL, so the constraint that autonomous runs cannot
+    PRODUCE one is what keeps the bypass human-only. If this regresses, the
+    change is wrong.
+    """
+    hooks = load_hooks()
+    repo = git_repo(tmp_path)
+    monkeypatch.setattr(hooks, "_is_bg_session", lambda: True)
+
+    rc = hooks.mark_warden("verified", "TRIVIAL", "config-only", repo)
+
+    assert rc == 2
+    assert "not permitted in background sessions" in capsys.readouterr().err
+    # And nothing was recorded, so the gate cannot then be satisfied by it.
+    assert hooks._read_verdict("verified", repo) is None
