@@ -170,3 +170,54 @@ def test_bucket_prefers_bucket_then_state(wfc):
     assert wfc._bucket({"bucket": "PASS"}) == "pass"
     assert wfc._bucket({"state": "FAILURE"}) == "failure"
     assert wfc._bucket({}) == ""
+
+
+# ── CLI entry point (`main`) exit codes ─────────────────────────────────────
+#
+# The rest of this file exercises `wait_for_required_checks` directly, which
+# leaves the actual `sys.exit` code returned by `main()` untested. A caller
+# gating a merge script on `$?` cares about that mapping specifically, so
+# lock it in explicitly: green -> 0, not-green/unreadable -> non-zero
+# (INTERNAL_ERROR), usage error -> non-zero (USAGE_ERROR). Confirmed by direct
+# invocation against a real PR (see PR body) that this already holds on
+# origin/main; these tests guard against a future regression, not a fix.
+
+
+def test_main_exit_code_zero_when_green(wfc, monkeypatch):
+    monkeypatch.setattr(
+        wfc, "wait_for_required_checks",
+        lambda pr, **kw: (True, "all 2 required checks green"),
+    )
+    assert wfc.main(["1"]) == wfc.SUCCESS
+
+
+def test_main_exit_code_nonzero_when_not_green(wfc, monkeypatch):
+    monkeypatch.setattr(
+        wfc, "wait_for_required_checks",
+        lambda pr, **kw: (False, "required checks not green: ['ci(fail)']"),
+    )
+    rc = wfc.main(["1"])
+    assert rc != wfc.SUCCESS
+    assert rc == wfc.INTERNAL_ERROR
+
+
+def test_main_exit_code_nonzero_when_unreadable_after_retries(wfc, monkeypatch):
+    """Reproduces the exact reported scenario: gh unreadable after retries
+    prints NOT GREEN — the exit code must not be 0."""
+    monkeypatch.setattr(
+        wfc, "wait_for_required_checks",
+        lambda pr, **kw: (False, "gh pr checks unreadable after 5 retries"),
+    )
+    rc = wfc.main(["45"])
+    assert rc != wfc.SUCCESS
+    assert rc == wfc.INTERNAL_ERROR
+
+
+def test_main_exit_code_usage_error_on_bad_args(wfc, monkeypatch):
+    monkeypatch.setattr(
+        wfc, "wait_for_required_checks",
+        lambda pr, **kw: (True, "should never be called"),
+    )
+    rc = wfc.main(["1", "--interval", "0"])
+    assert rc == wfc.USAGE_ERROR
+    assert rc != wfc.SUCCESS
