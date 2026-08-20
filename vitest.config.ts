@@ -6,6 +6,11 @@ export default defineConfig({
       'src/**/*.test.ts',
       'setup/**/*.test.ts',
       'scripts/spikes/**/*.test.ts',
+      // TypeScript tests for standalone scripts/ tools. scripts/tests/ is
+      // otherwise Python (test_*.py), so the *.test.ts suffix keeps the two
+      // suites from colliding and lets `npx vitest run` (the required `ci`
+      // check) gate them.
+      'scripts/tests/**/*.test.ts',
       // deus-v2-cmd.mjs (LIA-434) lives at repo root, mirroring deus-cmd.sh /
       // scripts/migrate.mjs's build-free top-level placement — its test needs
       // an explicit entry since it's outside the globs above.
