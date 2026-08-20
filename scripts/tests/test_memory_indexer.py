@@ -5067,3 +5067,53 @@ def test_rerank_happy_path_sorts_by_descending_score(mi, monkeypatch):
     assert result is not None
     assert [a["chunk"] for a in result] == ["high", "low"]
     assert result[0]["_ce_score"] == 0.9
+
+
+# ── #1166 (plan-review round 4): malformed FIELD TYPES, not just wrong envelope ──
+#
+# `{"atoms": "none"}` is a dict containing the expected key, but the value is not
+# a list. Iterating it would filter down to [] and masquerade as a successful
+# empty extraction. The guard checks the field's TYPE, not merely key presence.
+
+
+def test_atoms_non_list_field_returns_none(mi, monkeypatch):
+    """`{"atoms": "none"}` is unusable, not 'found nothing'."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse('{"response": "{\\"atoms\\": \\"none\\"}"}'),
+    )
+
+    assert mi._extract_atoms_ollama("some content") is None
+
+
+def test_entities_non_list_field_returns_none(mi, monkeypatch):
+    """Entity twin: `{"entities": "none"}` is unusable too."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse('{"response": "{\\"entities\\": \\"none\\"}"}'),
+    )
+
+    assert mi._extract_entities_ollama("some content") is None
+
+
+def test_entities_non_list_relationships_is_tolerated(mi, monkeypatch):
+    """`relationships` is OPTIONAL by contract, so a bad type is treated as absent.
+
+    Deliberately NOT routed to None: the field was already optional before this
+    change (`result.get("relationships", [])`), and a response carrying valid
+    entities is still usable. Documenting the asymmetry so it reads as a decision
+    rather than an oversight.
+    """
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse(
+            '{"response": "{\\"entities\\": [{\\"name\\": \\"docker\\", \\"entity_type\\": \\"tool\\"}],'
+            ' \\"relationships\\": \\"none\\"}"}'
+        ),
+    )
+
+    result = mi._extract_entities_ollama("some content")
+
+    assert result is not None
+    assert [e["name"] for e in result["entities"]] == ["docker"]
+    assert result["relationships"] == []
