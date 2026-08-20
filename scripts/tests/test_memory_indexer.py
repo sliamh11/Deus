@@ -4763,3 +4763,220 @@ def test_ensure_client_defers_missing_key_failure(mi, monkeypatch):
     monkeypatch.setattr(mi, "_client", None)
     with pytest.raises(SystemExit):
         mi._ensure_client()
+
+
+# ── #1166: an Ollama failure must be distinguishable from "found nothing" ────
+#
+# The return contract: None means "no usable result -- try the fallback";
+# [] (or an empty dict) means "ran successfully, found nothing". Only None
+# triggers the Gemini fallback in `auto` mode. The failure branches returned the
+# empty value, so a wrong DEUS_OLLAMA_*_MODEL disabled extraction for the whole
+# run AND skipped the fallback that exists for exactly that case.
+
+
+class _FakeHTTPResponse:
+    """Context-manager stand-in for urlopen's response."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+    def read(self):
+        return self._payload.encode()
+
+
+def _http_error(code=404):
+    import urllib.error
+
+    return urllib.error.HTTPError(
+        "http://localhost:11434/api/generate", code, "Not Found", {}, None
+    )
+
+
+def test_atoms_http_error_returns_none_so_fallback_runs(mi, monkeypatch):
+    """A 404 (e.g. un-pulled model) must not look like a successful empty run."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(_http_error()),
+    )
+
+    assert mi._extract_atoms_ollama("some content") is None
+
+
+def test_atoms_malformed_json_returns_none(mi, monkeypatch):
+    """A garbage response is not a successful empty extraction either."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse('{"response": "not json at all"}'),
+    )
+
+    assert mi._extract_atoms_ollama("some content") is None
+
+
+def test_atoms_empty_success_still_returns_empty_list(mi, monkeypatch):
+    """MUST NOT REGRESS: a real, successful, empty extraction stays []."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse('{"response": "{\\"atoms\\": []}"}'),
+    )
+
+    result = mi._extract_atoms_ollama("some content")
+
+    assert result == []
+    assert result is not None
+
+
+def test_extract_atoms_falls_back_to_gemini_on_http_error(mi, monkeypatch):
+    """The behavioural point: auto mode must reach the fallback on an HTTP failure."""
+    monkeypatch.setattr(mi, "ATOM_PROVIDER", "auto")
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(_http_error()),
+    )
+    called = []
+    monkeypatch.setattr(
+        mi, "_extract_atoms_gemini", lambda c: called.append(c) or [{"text": "x", "category": "y"}]
+    )
+
+    result = mi.extract_atoms("some content")
+
+    assert called, "Gemini fallback was never reached — the HTTP failure was swallowed"
+    assert result == [{"text": "x", "category": "y"}]
+
+
+def test_extract_atoms_does_not_fall_back_on_genuine_empty(mi, monkeypatch):
+    """MUST NOT REGRESS: an honest empty result must not spend a Gemini call."""
+    monkeypatch.setattr(mi, "ATOM_PROVIDER", "auto")
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse('{"response": "{\\"atoms\\": []}"}'),
+    )
+    called = []
+    monkeypatch.setattr(mi, "_extract_atoms_gemini", lambda c: called.append(c) or [])
+
+    result = mi.extract_atoms("some content")
+
+    assert not called, "fallback ran for a genuinely empty extraction"
+    assert result == []
+
+
+def test_entities_http_error_returns_none_so_fallback_runs(mi, monkeypatch):
+    """The entity path is the atom path's twin and must behave identically."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(_http_error()),
+    )
+
+    assert mi._extract_entities_ollama("some content") is None
+
+
+def test_extract_entities_falls_back_to_gemini_on_http_error(mi, monkeypatch):
+    """Same behavioural point, entity side."""
+    monkeypatch.setattr(mi, "ENTITY_PROVIDER", "auto")
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: (_ for _ in ()).throw(_http_error()),
+    )
+    sentinel = {"entities": [{"name": "n", "entity_type": "t"}], "relationships": []}
+    called = []
+    monkeypatch.setattr(
+        mi,
+        "_extract_entities_and_relations_gemini",
+        lambda c: called.append(c) or sentinel,
+    )
+
+    result = mi.extract_entities_and_relations("some content")
+
+    assert called, "Gemini fallback was never reached on the entity path"
+    assert result == sentinel
+
+
+# ── #1166 (code-review round 1): wrong SHAPE is also "no usable result" ──────
+#
+# Fixing only the exception branches left the success path able to emit the same
+# false signal: syntactically valid JSON in the wrong shape fell through to the
+# empty value, which claims a successful empty extraction and skips the fallback.
+
+
+def test_atoms_wrong_shape_returns_none(mi, monkeypatch):
+    """Valid JSON, wrong envelope -> unusable, not 'found nothing'."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse('{"response": "{}"}'),
+    )
+
+    assert mi._extract_atoms_ollama("some content") is None
+
+
+def test_atoms_non_dict_json_returns_none(mi, monkeypatch):
+    """A bare JSON array is not the contract either."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse('{"response": "[]"}'),
+    )
+
+    assert mi._extract_atoms_ollama("some content") is None
+
+
+def test_atoms_wrong_shape_reaches_fallback(mi, monkeypatch):
+    """The behavioural point: a wrong-shape response must reach Gemini."""
+    monkeypatch.setattr(mi, "ATOM_PROVIDER", "auto")
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse('{"response": "{}"}'),
+    )
+    called = []
+    monkeypatch.setattr(
+        mi, "_extract_atoms_gemini", lambda c: called.append(c) or [{"text": "x", "category": "y"}]
+    )
+
+    result = mi.extract_atoms("some content")
+
+    assert called, "wrong-shape response was swallowed as a successful empty extraction"
+    assert result == [{"text": "x", "category": "y"}]
+
+
+def test_entities_wrong_shape_returns_none(mi, monkeypatch):
+    """Entity twin: same rule."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse('{"response": "{}"}'),
+    )
+
+    assert mi._extract_entities_ollama("some content") is None
+
+
+def test_entities_empty_envelope_still_succeeds(mi, monkeypatch):
+    """MUST NOT REGRESS: a well-formed empty envelope is a real empty result."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse(
+            '{"response": "{\\"entities\\": [], \\"relationships\\": []}"}'
+        ),
+    )
+
+    result = mi._extract_entities_ollama("some content")
+
+    assert result == {"entities": [], "relationships": []}
+    assert result is not None
+
+
+def test_entities_relationships_remain_optional(mi, monkeypatch):
+    """MUST NOT REGRESS: relationships was optional before and stays optional."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_a, **_k: _FakeHTTPResponse(
+            '{"response": "{\\"entities\\": [{\\"name\\": \\"docker\\", \\"entity_type\\": \\"tool\\"}]}"}'
+        ),
+    )
+
+    result = mi._extract_entities_ollama("some content")
+
+    assert result is not None
+    assert [e["name"] for e in result["entities"]] == ["docker"]
+    assert result["relationships"] == []
