@@ -105,9 +105,12 @@ export class McpChannelAdapter implements Channel {
           imageData: meta?.imageData as string | undefined,
         };
 
-        opts.onMessage(chatJid, msg);
-
-        // Also emit chat metadata
+        // Chat metadata MUST be emitted before the message: messages.chat_jid
+        // has a foreign key onto chats(jid) (db.ts), better-sqlite3 enforces
+        // foreign keys by default, and storeMessage does not upsert its parent.
+        // Emitting the message first meant the FIRST message in a newly
+        // registered chat violated the constraint and was lost, with the user
+        // simply seeing no reply (#1163). webhook.ts has always had this order.
         opts.onChatMetadata(
           chatJid,
           msg.timestamp,
@@ -115,6 +118,8 @@ export class McpChannelAdapter implements Channel {
           opts.name,
           data.is_group as boolean | undefined,
         );
+
+        opts.onMessage(chatJid, msg);
       },
     );
   }

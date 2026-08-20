@@ -4980,3 +4980,90 @@ def test_entities_relationships_remain_optional(mi, monkeypatch):
     assert result is not None
     assert [e["name"] for e in result["entities"]] == ["docker"]
     assert result["relationships"] == []
+# ── #1169: the reranker must degrade, not crash ──────────────────────────────
+#
+# `_rerank_cross_encoder` documents "Returns None on failure", and both call
+# sites act on that (`if reranked is not None: ...`). But the import and the
+# CrossEncoder construction used to sit OUTSIDE the try, so the two most likely
+# failures on a fresh install -- the optional dep being absent, and the model
+# cache being missing -- propagated out of --query instead of degrading.
+
+
+def _reset_cross_encoder(mod):
+    """Clear the module-level singleton so each case starts cold."""
+    mod._cross_encoder = None
+
+
+def test_rerank_returns_none_when_sentence_transformers_missing(mi, monkeypatch):
+    """A missing optional dependency degrades instead of crashing (#1169)."""
+    _reset_cross_encoder(mi)
+    # Force the import to fail deterministically, so the test does not depend on
+    # whether this machine happens to have sentence_transformers installed.
+    monkeypatch.setitem(sys.modules, "sentence_transformers", None)
+
+    result = mi._rerank_cross_encoder("q", [{"chunk": "a"}, {"chunk": "b"}])
+
+    assert result is None
+
+
+def test_rerank_returns_none_when_model_construction_fails(mi, monkeypatch):
+    """A model-cache/torch failure is not an ImportError -- it must degrade too."""
+    _reset_cross_encoder(mi)
+
+    class _Boom:
+        def __init__(self, *_a, **_k):
+            raise OSError("model cache missing")
+
+    stub = types.ModuleType("sentence_transformers")
+    stub.CrossEncoder = _Boom
+    monkeypatch.setitem(sys.modules, "sentence_transformers", stub)
+
+    result = mi._rerank_cross_encoder("q", [{"chunk": "a"}])
+
+    assert result is None
+
+
+def test_rerank_returns_none_when_predict_fails(mi, monkeypatch):
+    """Pre-existing behaviour preserved: a predict failure still returns None."""
+    _reset_cross_encoder(mi)
+
+    class _PredictBoom:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def predict(self, _pairs):
+            raise RuntimeError("inference exploded")
+
+    stub = types.ModuleType("sentence_transformers")
+    stub.CrossEncoder = _PredictBoom
+    monkeypatch.setitem(sys.modules, "sentence_transformers", stub)
+
+    result = mi._rerank_cross_encoder("q", [{"chunk": "a"}])
+
+    assert result is None
+
+
+def test_rerank_happy_path_sorts_by_descending_score(mi, monkeypatch):
+    """The fix must not disturb a working reranker."""
+    _reset_cross_encoder(mi)
+
+    class _Scores:
+        def tolist(self):
+            return [0.1, 0.9]
+
+    class _Working:
+        def __init__(self, *_a, **_k):
+            pass
+
+        def predict(self, _pairs):
+            return _Scores()
+
+    stub = types.ModuleType("sentence_transformers")
+    stub.CrossEncoder = _Working
+    monkeypatch.setitem(sys.modules, "sentence_transformers", stub)
+
+    result = mi._rerank_cross_encoder("q", [{"chunk": "low"}, {"chunk": "high"}])
+
+    assert result is not None
+    assert [a["chunk"] for a in result] == ["high", "low"]
+    assert result[0]["_ce_score"] == 0.9
