@@ -1644,7 +1644,18 @@ def run_verification_gate(event: dict[str, Any], repo_root: Path) -> int:
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
     if not isinstance(command, str) or not GIT_COMMIT_RE.search(command):
         return 0
-    if _read_verdict("verified", repo_root) == "SHIP":
+    # TRIVIAL satisfies this gate exactly like SHIP, matching the convention the
+    # backends gate already implements and documents (see the TRIVIAL branch in
+    # _evaluate_backends). This gate used to compare == "SHIP" while its own
+    # block message advertised `mark verified TRIVIAL` -- so following that
+    # instruction printed success, stored "TRIVIAL" verbatim, and then re-blocked
+    # on the next write (#1167).
+    #
+    # This does not widen the bypass. Every constraint on TRIVIAL lives in
+    # mark_warden and is unchanged: refused outright in background sessions,
+    # refused after any blocking verdict, and audit-logged on every use. The
+    # blocking-verdict branch below still declines to advertise it at all.
+    if _read_verdict("verified", repo_root) in ("SHIP", "TRIVIAL"):
         _cc_shadow_observe("verification-gate", config, repo_root, [])
         _cc_mirror_verdicts("verification-gate", config, repo_root)
         return 0
