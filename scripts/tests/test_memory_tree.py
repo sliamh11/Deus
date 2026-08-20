@@ -3025,3 +3025,232 @@ class TestReindexExternalProjectTagging:
             "SELECT path, project FROM nodes WHERE orphaned_at IS NULL"
         ).fetchone()
         assert row == ("auto-memory/widget-co::feedback_b.md", "widget-co")
+
+
+class TestReindexExternalAllProjects:
+    """LIA-122/P4: multi-project walk over <projects_root>/*/memory/."""
+
+    @pytest.fixture
+    def projects_root(self, tmp_path):
+        root = tmp_path / "claude_projects"
+
+        # This-repo's own dir -- must map to project="deus" (bare namespace),
+        # not its literal dirname. Its `memory` entry is a SYMLINK to a
+        # separate real target, mirroring the live
+        # ~/.claude/projects/-Users-<user>-Deus/memory -> ~/.deus/auto-memory
+        # layout -- a bare `find` on this root returns 0 hits; only a
+        # resolve-then-rglob walk finds its files (regression coverage for
+        # that trap).
+        deus_dir = root / "-fake-deus-repo"
+        deus_dir.mkdir(parents=True)
+        deus_target = tmp_path / "real_deus_auto_memory"
+        deus_target.mkdir()
+        (deus_target / "feedback_a.md").write_text(
+            "---\nname: A\ndescription: a deus rule\ntype: feedback\n---\nBody\n"
+        )
+        (deus_target / "_retro-inbox.md").write_text("staging buffer, no frontmatter\n")
+        (deus_dir / "memory").symlink_to(deus_target, target_is_directory=True)
+
+        # Another project, plain directory (no symlink).
+        widget_dir = root / "-Users-someone-widget-co"
+        (widget_dir / "memory").mkdir(parents=True)
+        (widget_dir / "memory" / "feedback_b.md").write_text(
+            "---\nname: B\ndescription: a widget-co rule\ntype: feedback\n---\nBody\n"
+        )
+
+        # A dir with no memory/ subdir at all -- must be skipped, not error.
+        (root / "-Users-someone-no-memory-dir").mkdir(parents=True)
+
+        return root, deus_dir.name
+
+    def test_walks_all_projects_and_tags_deus_bare(self, tmp_db, projects_root, monkeypatch):
+        root, deus_dir_name = projects_root
+        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            counts = mt.reindex_external_all_projects(tmp_db, root)
+
+        assert counts["projects_walked"] == 2
+        assert counts["indexed"] == 2  # feedback_a + feedback_b; _retro-inbox skipped
+        assert "errors" not in counts
+
+        rows = set(
+            tmp_db.execute(
+                "SELECT path, project FROM nodes WHERE orphaned_at IS NULL"
+            ).fetchall()
+        )
+        # LIA-123: only the provable this-repo directory is tagged
+        # DEUS_PROJECT_ID in the DB `project` column. widget-co's raw
+        # dirname is NOT a resolve_project_id()-derived identity, so its DB
+        # column is NULL -- the path-namespace qualifier
+        # (`-Users-someone-widget-co::`) is unaffected and stays exactly as
+        # before, since that's what physically locates the file on disk.
+        assert rows == {
+            ("auto-memory/feedback_a.md", "deus"),
+            ("auto-memory/-Users-someone-widget-co::feedback_b.md", None),
+        }
+
+    def test_mistagged_row_self_corrects_to_null_on_rerun(self, tmp_db, projects_root, monkeypatch):
+        """LIA-123 upgrade path: a row written by the pre-fix code (DB
+        `project` column = the raw dirname, bypassing resolve_project_id())
+        must self-correct to NULL the next time this directory is reindexed
+        -- no manual migration, no separate backfill command. upsert_node's
+        `ON CONFLICT(id) DO UPDATE SET project = excluded.project` already
+        fires on every walk regardless of content-hash change, so a plain
+        rerun is sufficient."""
+        root, deus_dir_name = projects_root
+        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external_all_projects(tmp_db, root)
+
+        # Simulate a stale row from the pre-fix version of this function,
+        # which tagged the DB column with the raw dirname instead of NULL.
+        node_id = tmp_db.execute(
+            "SELECT id FROM nodes WHERE path = ?",
+            ("auto-memory/-Users-someone-widget-co::feedback_b.md",),
+        ).fetchone()[0]
+        tmp_db.execute(
+            "UPDATE nodes SET project = ? WHERE id = ?",
+            ("-Users-someone-widget-co", node_id),
+        )
+        tmp_db.commit()
+        assert tmp_db.execute(
+            "SELECT project FROM nodes WHERE id = ?", (node_id,)
+        ).fetchone()[0] == "-Users-someone-widget-co"
+
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external_all_projects(tmp_db, root)
+
+        row = tmp_db.execute(
+            "SELECT path, project FROM nodes WHERE id = ?", (node_id,)
+        ).fetchone()
+        assert row == ("auto-memory/-Users-someone-widget-co::feedback_b.md", None)
+
+    def test_skips_underscore_prefixed_files(self, tmp_db, projects_root, monkeypatch):
+        root, deus_dir_name = projects_root
+        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt.reindex_external_all_projects(tmp_db, root)
+        paths = [
+            r[0] for r in tmp_db.execute(
+                "SELECT path FROM nodes WHERE orphaned_at IS NULL"
+            ).fetchall()
+        ]
+        assert not any("_retro-inbox" in p for p in paths)
+
+    def test_idempotent_rerun(self, tmp_db, projects_root, monkeypatch):
+        root, deus_dir_name = projects_root
+        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            first = mt.reindex_external_all_projects(tmp_db, root)
+            second = mt.reindex_external_all_projects(tmp_db, root)
+        assert first["indexed"] == 2
+        assert second["id_written"] == 0
+        assert tmp_db.execute(
+            "SELECT count(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0] == 2  # no duplicates
+
+    def test_no_id_writeback_does_not_mutate_source(self, tmp_db, projects_root, monkeypatch):
+        root, deus_dir_name = projects_root
+        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        widget_file = root / "-Users-someone-widget-co" / "memory" / "feedback_b.md"
+        before = widget_file.read_text()
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            counts = mt.reindex_external_all_projects(tmp_db, root, no_id_writeback=True)
+        assert widget_file.read_text() == before
+        assert "id:" not in before  # confirm the file genuinely had no id before
+        assert counts["indexed"] == 2
+        assert counts["id_written"] == 0
+        # The node is still indexed (in-memory id), just not persisted to disk.
+        assert tmp_db.execute(
+            "SELECT count(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0] == 2
+
+    def test_no_id_writeback_rerun_reuses_id_no_orphan_no_reembed(
+        self, tmp_db, projects_root, monkeypatch
+    ):
+        """LIA-123 discriminator: two consecutive no_id_writeback runs over
+        the same id-less file must produce ONE active row (no accumulating
+        orphans) and must NOT re-embed on the second run (same id -> same
+        row -> upsert_node's content-hash check finds nothing changed).
+        Fails against the pre-fix behaviour, which minted a fresh id (and
+        therefore a fresh row + a forced re-embed) on every run."""
+        root, deus_dir_name = projects_root
+        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        widget_file = root / "-Users-someone-widget-co" / "memory" / "feedback_b.md"
+        assert "id:" not in widget_file.read_text()  # genuinely id-less
+
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            first = mt.reindex_external_all_projects(tmp_db, root, no_id_writeback=True)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            second = mt.reindex_external_all_projects(tmp_db, root, no_id_writeback=True)
+
+        assert first["indexed"] == 2
+        assert first["embedded"] == 2
+        assert second["indexed"] == 2
+        # Second run must not re-embed: same id, same content, same hash.
+        assert second["embedded"] == 0
+
+        # No accumulating orphans: total rows == active rows across both runs.
+        active = tmp_db.execute(
+            "SELECT count(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0]
+        total = tmp_db.execute("SELECT count(*) FROM nodes").fetchone()[0]
+        assert active == 2
+        assert total == 2  # no superseded/orphaned rows at all
+
+    def test_include_and_exclude_by_dirname(self, tmp_db, projects_root, monkeypatch):
+        root, deus_dir_name = projects_root
+        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            only_widget = mt.reindex_external_all_projects(
+                tmp_db, root, include={"-Users-someone-widget-co"},
+            )
+        assert only_widget["projects_walked"] == 1
+        assert only_widget["per_project"] == {"-Users-someone-widget-co": {
+            "indexed": 1, "embedded": 1, "skipped": 0, "orphaned": 0, "id_written": 1,
+        }}
+
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            exclude_wins = mt.reindex_external_all_projects(
+                tmp_db, root,
+                include={"-Users-someone-widget-co", deus_dir_name},
+                exclude={"-Users-someone-widget-co"},
+            )
+        assert exclude_wins["projects_walked"] == 1
+        assert deus_dir_name in exclude_wins["per_project"]
+
+    def test_continues_past_a_failing_project(self, tmp_db, projects_root, monkeypatch):
+        root, deus_dir_name = projects_root
+        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+
+        real_walk = mt._reindex_dir_walk
+
+        def _boom_for_widget(db, external_dir, **kwargs):
+            if "widget-co" in str(external_dir):
+                raise RuntimeError("simulated corruption")
+            return real_walk(db, external_dir, **kwargs)
+
+        monkeypatch.setattr(mt, "_reindex_dir_walk", _boom_for_widget)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            counts = mt.reindex_external_all_projects(tmp_db, root)
+
+        assert counts["errors"] == {"-Users-someone-widget-co": "simulated corruption"}
+        assert counts["indexed"] == 1  # deus project still indexed
+        assert tmp_db.execute(
+            "SELECT count(*) FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchone()[0] == 1
+
+    def test_missing_projects_root_raises(self, tmp_db, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            mt.reindex_external_all_projects(tmp_db, tmp_path / "nonexistent")
+
+    def test_cli_all_projects_dispatch(self, tmp_path, projects_root, monkeypatch):
+        root, deus_dir_name = projects_root
+        monkeypatch.setattr(mt, "DB_PATH", tmp_path / "cli.db")
+        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            rc = mt.main([
+                "reindex-external", "--all-projects",
+                "--projects-root", str(root), "--json",
+            ])
+        assert rc == mt.SUCCESS

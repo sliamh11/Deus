@@ -42,28 +42,29 @@ AUTO_MEM_DIR = resolve_auto_memory_dir()
 
 
 def _external_file_for_path(path: str) -> Path:
-    """Resolve an external-namespace node's file from AUTO_MEM_DIR.
+    """Resolve an external-namespace node's file.
 
-    P4 (write-side project tagging) is deliberately deferred, and so is
-    physical-directory resolution for a qualified path's OWN project --
-    that requires the SAME directory-naming convention Claude Code used
-    when it wrote the node, which for a project indexed from a linked
-    worktree is that worktree's raw CLAUDE_PROJECT_DIR (see
-    resolve_auto_memory_dir's encoding), NOT the worktree-normalized id
-    resolve_project_id() computes for DB scoping. Building a physical path
-    from the normalized id (an earlier version of this function did) is
-    wrong the moment a qualified node was indexed from a worktree --
-    flagged in code review as a real inconsistency, not a hypothetical
-    one. Reconstructing the correct directory needs the raw dir stored
-    at index time, which is a P4 design decision, not made yet. Until
-    P4 lands both halves together, every external node's file resolves
-    the same way it always has: from the CURRENT session's AUTO_MEM_DIR,
-    keyed only by the node's own relative path (any `::` project
-    qualifier is stripped by split_namespaced_path and otherwise
-    ignored here).
+    LIA-122/P4: `reindex_external_all_projects` (memory_tree.py) tags each
+    multi-project-walked node's `project` qualifier with the LITERAL on-disk
+    `~/.claude/projects/<dirname>` basename -- not a worktree-normalized id
+    -- so that qualifier IS the physical directory name Claude Code already
+    uses. For a qualified path whose project isn't the DEUS_PROJECT_ID
+    sentinel, try reconstructing `~/.claude/projects/<project>/memory/<rel>`
+    directly. Falls back to the CURRENT session's AUTO_MEM_DIR (the
+    pre-P4 behavior) when that reconstructed file doesn't exist -- keeps
+    bare/legacy paths, DEUS_PROJECT_ID-qualified paths, and any qualifier
+    that isn't (or is no longer) a real project directory working exactly
+    as before.
+
+    Uses `Path.home()` rather than `os.path.expanduser` so tests can
+    monkeypatch it without touching the real filesystem.
     """
     rest = path[len(mt.EXTERNAL_NAMESPACE):]
-    _, rel = mt.split_namespaced_path(rest)
+    project, rel = mt.split_namespaced_path(rest)
+    if project and project != DEUS_PROJECT_ID:
+        candidate = Path.home() / ".claude" / "projects" / project / "memory" / rel
+        if candidate.is_file():
+            return candidate
     return AUTO_MEM_DIR / rel
 
 

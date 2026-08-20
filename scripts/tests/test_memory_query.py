@@ -181,10 +181,12 @@ class TestFileReading:
 
 
 class TestExternalFileForPath:
-    """P3: _read_node_file always resolves an external node from the
-    CURRENT session's AUTO_MEM_DIR, stripping (but not yet acting on) any
-    `::` project qualifier in the path -- physical resolution of another
-    project's own directory is a P4 write-side decision, deferred."""
+    """LIA-122/P4: bare and DEUS_PROJECT_ID-qualified paths always resolve
+    via the current session's AUTO_MEM_DIR. A qualified path for another
+    project resolves physically through
+    ~/.claude/projects/<project>/memory/<rel> (the project tag IS the
+    literal on-disk directory name a multi-project reindex assigns) when
+    that file exists there, and falls back to AUTO_MEM_DIR otherwise."""
 
     def test_bare_path_resolves_via_auto_mem_dir(self, fake_auto_mem):
         full = mq._external_file_for_path("auto-memory/feedback_test.md")
@@ -196,21 +198,45 @@ class TestExternalFileForPath:
         full = mq._external_file_for_path(f"auto-memory/{mq.DEUS_PROJECT_ID}::feedback_test.md")
         assert full == fake_auto_mem / "feedback_test.md"
 
-    def test_qualified_path_falls_back_to_session_auto_mem_dir(self, fake_auto_mem):
-        # P4 (write-side tagging + physical-directory resolution for a
-        # qualified path's OWN project) is deferred -- see
-        # _external_file_for_path's docstring for why building a physical
-        # path from the normalized project id is wrong once a qualified
-        # node was indexed from a worktree. Until P4 lands, a qualified
-        # path resolves the same as a bare one: through AUTO_MEM_DIR,
-        # keyed only by the relative filename.
+    def test_qualified_path_resolves_physically_when_present(self, fake_auto_mem, tmp_path, monkeypatch):
+        fake_home = tmp_path / "fake_home"
+        proj_mem = fake_home / ".claude" / "projects" / "widget-co" / "memory"
+        proj_mem.mkdir(parents=True)
+        (proj_mem / "feedback_b.md").write_text("widget-co physical content", encoding="utf-8")
+        monkeypatch.setattr(mq.Path, "home", staticmethod(lambda: fake_home))
+
+        full = mq._external_file_for_path("auto-memory/widget-co::feedback_b.md")
+        assert full == proj_mem / "feedback_b.md"
+
+    def test_qualified_path_falls_back_to_session_auto_mem_dir_when_absent(
+        self, fake_auto_mem, tmp_path, monkeypatch
+    ):
+        # The reconstructed ~/.claude/projects/widget-co/memory/feedback_b.md
+        # does not exist under this fake home, so resolution falls back to
+        # AUTO_MEM_DIR, exactly like the pre-P4 behavior.
+        fake_home = tmp_path / "fake_home_empty"
+        fake_home.mkdir()
+        monkeypatch.setattr(mq.Path, "home", staticmethod(lambda: fake_home))
+
         full = mq._external_file_for_path("auto-memory/widget-co::feedback_b.md")
         assert full == fake_auto_mem / "feedback_b.md"
 
-    def test_read_node_file_strips_qualifier_and_reads_from_auto_mem_dir(self, fake_auto_mem):
+    def test_read_node_file_strips_qualifier_and_reads_from_auto_mem_dir(self, fake_auto_mem, tmp_path, monkeypatch):
+        fake_home = tmp_path / "fake_home_empty2"
+        fake_home.mkdir()
+        monkeypatch.setattr(mq.Path, "home", staticmethod(lambda: fake_home))
         (fake_auto_mem / "feedback_b.md").write_text("widget-co content", encoding="utf-8")
         content = mq._read_node_file("auto-memory/widget-co::feedback_b.md")
         assert content == "widget-co content"
+
+    def test_read_node_file_reads_physical_project_dir_when_present(self, tmp_path, monkeypatch):
+        fake_home = tmp_path / "fake_home3"
+        proj_mem = fake_home / ".claude" / "projects" / "widget-co" / "memory"
+        proj_mem.mkdir(parents=True)
+        (proj_mem / "feedback_c.md").write_text("real widget-co node", encoding="utf-8")
+        monkeypatch.setattr(mq.Path, "home", staticmethod(lambda: fake_home))
+        content = mq._read_node_file("auto-memory/widget-co::feedback_c.md")
+        assert content == "real widget-co node"
 
 
 class TestRecallProjectScope:

@@ -183,3 +183,38 @@ class TestResolveProjectId:
         )
         assert amd.resolve_project_id() == amd._encode_project_dir(other_repo.as_posix())
         assert amd.resolve_project_id() != amd.DEUS_PROJECT_ID
+
+
+class TestResolveThisRepoDirName:
+    """LIA-122/P4: reindex_external_all_projects's "is this the deus dir"
+    check must use a worktree-unwound path, exactly like resolve_project_id
+    -- a raw Path(__file__) walk-up resolves to the WORKTREE's own root when
+    loaded from a linked worktree (this repo's default dev layout), which
+    would silently misclassify the entire real "deus" corpus. Same fixture
+    technique as TestResolveProjectId (git-common-dir mocked, hermetic)."""
+
+    def test_normal_checkout_matches_raw_encoding(self, monkeypatch):
+        this_repo = Path(amd.__file__).resolve().parent.parent
+        monkeypatch.setattr(
+            amd, "_git_output",
+            lambda cmd, cwd: ".git" if tuple(cmd) == ("rev-parse", "--git-common-dir") else None,
+        )
+        assert amd.resolve_this_repo_dir_name() == amd._encode_project_dir(this_repo.as_posix())
+
+    def test_linked_worktree_still_encodes_the_real_repo(self, monkeypatch):
+        """The exact bug plan-review caught: from a linked worktree, this
+        must return the MAIN repo's encoded dirname, not the worktree's."""
+        this_repo = Path(amd.__file__).resolve().parent.parent
+        worktree_git_dir = this_repo / ".claude" / "worktrees" / "some-agent" / ".git"
+
+        # Simulate __file__ resolving inside the worktree by pointing
+        # _git_output's --git-common-dir answer at the real repo's .git,
+        # exactly as `git rev-parse --git-common-dir` does when run from
+        # inside a linked worktree.
+        monkeypatch.setattr(
+            amd, "_git_output",
+            lambda cmd, cwd: str(this_repo / ".git") if tuple(cmd) == ("rev-parse", "--git-common-dir") else None,
+        )
+        result = amd.resolve_this_repo_dir_name()
+        assert result == amd._encode_project_dir(this_repo.as_posix())
+        assert result != amd._encode_project_dir(str(worktree_git_dir.parent))

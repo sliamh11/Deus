@@ -32,7 +32,11 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 from _exit_codes import SUCCESS, ABSTAIN, USAGE_ERROR, NOT_FOUND, AUTH_ERROR, INTERNAL_ERROR
 from _agent_io import is_agent_context, compact_json, select_fields
 from _time import local_now, utc_now  # noqa: E402
-from auto_memory_dir import DEUS_PROJECT_ID, resolve_auto_memory_dir  # noqa: E402
+from auto_memory_dir import (  # noqa: E402
+    DEUS_PROJECT_ID,
+    resolve_auto_memory_dir,
+    resolve_this_repo_dir_name,
+)
 
 
 def _utc_iso() -> str:
@@ -757,6 +761,20 @@ def open_db(db_path: Path = None) -> sqlite3.Connection:
         # opens hit the "duplicate column" branch above and skip this, so a
         # later reindex_external(project=...) call's explicit tagging is
         # never overwritten by this migration re-running.
+        #
+        # LIA-123: a bare path (pid is None) is the pre-existing legacy/deus
+        # population and is provably DEUS_PROJECT_ID. A QUALIFIED path's
+        # `pid` is only the raw path-namespace marker split off the path —
+        # this migration has no way to tell whether it was a resolved id
+        # (a trusted `reindex_external(project=...)` caller) or a raw
+        # `~/.claude/projects/<dirname>` basename (the pre-fix
+        # `reindex_external_all_projects`, which bypassed
+        # resolve_project_id() entirely). Since it can't prove which, it
+        # must not guess — tag NULL, matching retrieve()'s
+        # `(project IS NULL OR project = ?)` predicate: a NULL row stays
+        # visible under every scope (over-visible, never invisible), unlike
+        # trusting an unproven raw dirname that could silently vanish from
+        # scoped retrieval the moment DEUS_PROJECT_SCOPE is enabled.
         _backup_db()
         for (nid, npath) in db.execute(
             "SELECT id, path FROM nodes WHERE path LIKE ? || '%'",
@@ -765,7 +783,7 @@ def open_db(db_path: Path = None) -> sqlite3.Connection:
             pid, _ = split_namespaced_path(npath[len(EXTERNAL_NAMESPACE):])
             db.execute(
                 "UPDATE nodes SET project = ? WHERE id = ?",
-                (pid or DEUS_PROJECT_ID, nid),
+                (DEUS_PROJECT_ID if pid is None else None, nid),
             )
         db.commit()
     db.execute("""
@@ -2215,7 +2233,8 @@ def _index_external_file(
     ns_path: str,
     *,
     skip_embed: bool = False,
-    project: str | None = None,
+    db_project: str | None = None,
+    no_id_writeback: bool = False,
 ) -> dict[str, int]:
     """Upsert ONE external (auto-memory) file into the tree under ``ns_path``.
 
@@ -2225,10 +2244,32 @@ def _index_external_file(
     what make a full reindex destructive; keeping them out of here is what makes
     the single-file admit non-destructive — LIA-341). Returns per-file counts.
 
-    ``project`` tags the node's ``project`` column (P3 scoping); ``ns_path``
-    must already be namespaced consistently with it via
+    ``db_project`` tags the node's ``project`` DB column verbatim (P3
+    scoping) — passed through with NO fallback to DEUS_PROJECT_ID here. That
+    fallback decision belongs to each *caller*, which knows whether its
+    ``ns_path``'s path-namespace qualifier is a provable project identity
+    (LIA-123: e.g. this repo's own directory) or an unresolvable one that
+    must stay NULL. ``ns_path`` must already be namespaced consistently via
     :func:`namespaced_path` — this function does not derive one from the
-    other.
+    other, and does not derive ``db_project`` from ``ns_path`` either.
+
+    ``no_id_writeback`` (LIA-122/P4): when True, an id-less file is indexed
+    without :func:`_write_id_to_frontmatter` mutating the source — this is
+    the reversibility mode for running against real data without committing
+    to a write. It is repeat-safe (LIA-123 hardening): rather than minting a
+    fresh :func:`make_id` on every run, it first looks up a live row already
+    at ``ns_path`` and reuses that row's id when one exists. A naive
+    fresh-id-every-run version is NOT merely a cosmetic "row churns" wart —
+    ``upsert_node`` supersedes (soft-deletes) the prior id's row on every
+    such run, and this DB is soft-delete-only (no reclaim), so a scheduled
+    trigger indexing the same id-less file on an hourly cadence would leak
+    one permanent orphan row per file per run AND force a full re-embed of
+    that "new" node every time (the dominant cost on the retrieval path).
+    Reusing the id removes both: same id -> same row -> ``upsert_node``'s
+    own content-hash check decides whether re-embedding is even needed.
+    Only when NO live row exists yet (this file's first ever appearance) is
+    a fresh id minted, exactly as before. Files that already carry ``id:``
+    are unaffected either way — this whole branch is id-less-file-only.
     """
     c = {"indexed": 0, "embedded": 0, "skipped": 0, "id_written": 0}
     try:
@@ -2245,9 +2286,18 @@ def _index_external_file(
 
     node_id = fm.get("id")
     if not node_id:
-        node_id = make_id()
-        _write_id_to_frontmatter(path, node_id)
-        c["id_written"] += 1
+        if no_id_writeback:
+            # LIA-123: reuse the id already indexed at this ns_path (if any)
+            # instead of minting a fresh one every run -- see docstring.
+            existing_row = db.execute(
+                "SELECT id FROM nodes WHERE path = ? AND orphaned_at IS NULL",
+                (ns_path,),
+            ).fetchone()
+            node_id = existing_row[0] if existing_row else make_id()
+        else:
+            node_id = make_id()
+            _write_id_to_frontmatter(path, node_id)
+            c["id_written"] += 1
 
     title = fm.get("name") or path.stem
     node_type = fm.get("type", "feedback")
@@ -2283,7 +2333,7 @@ def _index_external_file(
         content_hash_val=ch,
         body_text=_body_from_content(content),
         atom_kind=fm.get("atom_kind", "knowledge"),
-        project=project or DEUS_PROJECT_ID,
+        project=db_project,
     )
     c["indexed"] += 1
     return c
@@ -2296,6 +2346,7 @@ def reindex_external_one(
     *,
     skip_embed: bool = False,
     project: str | None = None,
+    no_id_writeback: bool = False,
 ) -> dict[str, int]:
     """Index a SINGLE auto-memory file without the orphan sweep (LIA-341).
 
@@ -2317,7 +2368,15 @@ def reindex_external_one(
 
     ns_path = namespaced_path(str(pr.relative_to(external_dir)), project)
     counts = {"indexed": 0, "embedded": 0, "skipped": 0, "id_written": 0}
-    sub = _index_external_file(db, pr, ns_path, skip_embed=skip_embed, project=project)
+    # `project` here is a direct caller-supplied identity (CLI --add always
+    # targets THIS session's own auto-memory dir), trusted the same way
+    # reindex_external's is -- LIA-123's NULL-unless-provable rule targets
+    # reindex_external_all_projects's invented-from-dirname case, not this
+    # explicit kwarg.
+    sub = _index_external_file(
+        db, pr, ns_path, skip_embed=skip_embed, db_project=project or DEUS_PROJECT_ID,
+        no_id_writeback=no_id_writeback,
+    )
     for k, v in sub.items():
         counts[k] += v
     db.commit()
@@ -2327,31 +2386,34 @@ def reindex_external_one(
     return counts
 
 
-def reindex_external(
+def _reindex_dir_walk(
     db: sqlite3.Connection,
     external_dir: Path,
     *,
     skip_embed: bool = False,
     project: str | None = None,
+    db_project: str | None = None,
+    no_id_writeback: bool = False,
 ) -> dict[str, int]:
-    """Index auto-memory files from an external directory into the tree.
+    """Walk ONE already-resolved directory, upsert its files, and orphan-sweep
+    nodes no longer on disk. Shared by :func:`reindex_external` (single dir)
+    and :func:`reindex_external_all_projects` (multi-dir, LIA-122/P4).
 
-    Files are stored with the `auto-memory/<filename>` namespace prefix
-    (unqualified, legacy/Deus) or `auto-memory/<project>::<filename>`
-    (P3: when `project` names a project other than DEUS_PROJECT_ID) to
-    avoid vault path collisions. Frontmatter mapping: `name` -> title,
-    `description` -> embedding source, `type` -> kept as-is.
+    ``project`` is the PATH-NAMESPACE qualifier (unchanged meaning): it
+    decides ``ns_path`` via :func:`namespaced_path` and therefore which
+    on-disk directory :func:`memory_query._external_file_for_path` can
+    reconstruct later. ``db_project`` is a SEPARATE, deliberately
+    independent value for the DB ``project`` column (LIA-123) — pass
+    ``None`` explicitly when the caller cannot prove the identity (see
+    :func:`reindex_external_all_projects`), rather than reusing ``project``,
+    which may be nothing more than a raw ``~/.claude/projects/<dirname>``
+    basename with no relationship to :func:`auto_memory_dir.resolve_project_id`.
 
-    ULID write-back is idempotent: files already carrying `id:` are not
-    modified. Bypasses REBUILD_MIN_RETENTION (separate population).
+    Caller owns ``_backup_db()``, ``db.commit()``, and ``_emit_audit()`` —
+    kept out of here so a multi-dir walker can choose its own transaction/
+    backup boundaries per directory.
     """
     counts = {"indexed": 0, "embedded": 0, "skipped": 0, "orphaned": 0, "id_written": 0}
-    _backup_db()
-
-    external_dir = external_dir.expanduser().resolve()
-    if not external_dir.is_dir():
-        raise FileNotFoundError(f"DEUS_AUTO_MEMORY_DIR not found: {external_dir}")
-
     skip_dirs = {"ARCHIVE", ".git"}
     walked_paths: set[str] = set()
 
@@ -2364,33 +2426,58 @@ def reindex_external(
             continue
         if p.name == "MEMORY.md":
             continue
+        if p.name.startswith("_"):
+            # LIA-122: staging buffers like `_retro-inbox.md` are not topic
+            # files — they lack frontmatter by design and are never meant to
+            # be indexed as nodes.
+            continue
 
         ns_path = namespaced_path(str(rel_to_ext), project)
         walked_paths.add(ns_path)
 
-        sub = _index_external_file(db, p, ns_path, skip_embed=skip_embed, project=project)
+        sub = _index_external_file(
+            db, p, ns_path, skip_embed=skip_embed, db_project=db_project,
+            no_id_writeback=no_id_writeback,
+        )
         for k, v in sub.items():
             counts[k] += v
 
-    # Orphan external nodes no longer on disk. Scoped to THIS call's project
-    # (P3): reindex_external only walks one project's external_dir, so
-    # walked_paths only ever contains that project's ns_paths — sweeping
-    # every auto-memory/* node regardless of project would wrongly orphan
-    # every OTHER project's nodes on their very first unrelated reindex.
-    effective_project = project or DEUS_PROJECT_ID
+    # Orphan external nodes no longer on disk. Scoped to THIS call's
+    # directory (P3): a single directory walk only ever populates that
+    # directory's ns_paths — sweeping every auto-memory/* node regardless of
+    # directory would wrongly orphan every OTHER directory's nodes on their
+    # very first unrelated reindex.
+    #
+    # LIA-123: branch on the PATH-PREFIX (path-namespace qualifier), never on
+    # the DB `project` column. `db_project` is now legitimately NULL for
+    # every unresolvable directory (see reindex_external_all_projects), so
+    # filtering candidates by `project = ?` would either (a) bind NULL and
+    # match nothing via SQL `=` semantics, silently disabling the sweep for
+    # every NULL-tagged directory, or (b) if rewritten as `project IS ?`,
+    # collide two DIFFERENT unresolvable directories' NULL-tagged nodes into
+    # one sweep set — e.g. two known-stray dirs for the same project at
+    # different historical paths (e.g. `-Users-<user>-Desktop-Dev-<project>`
+    # and `-Users-<user>-Dev-<project>`) would each orphan the other's
+    # nodes. The path-namespace qualifier (what `namespaced_path`/
+    # `split_namespaced_path` already encode) is what actually partitions
+    # "this directory's nodes" from everyone else's, independent of what the
+    # DB column says.
+    expected_tag = project if (project and project != DEUS_PROJECT_ID) else None
     now_iso = _utc_iso()
     ext_active = db.execute(
-        "SELECT id, path FROM nodes WHERE orphaned_at IS NULL AND path LIKE ? || '%' AND project = ?",
-        (EXTERNAL_NAMESPACE, effective_project),
+        "SELECT id, path FROM nodes WHERE orphaned_at IS NULL AND path LIKE ? || '%'",
+        (EXTERNAL_NAMESPACE,),
     ).fetchall()
     for (nid, npath) in ext_active:
+        tag, ext_rel = split_namespaced_path(npath[len(EXTERNAL_NAMESPACE):])
+        if tag != expected_tag:
+            continue
         if npath not in walked_paths:
             # LIA-336: a rename-gap during rglob can briefly hide a live file;
-            # confirm it's truly gone on disk before orphaning. Recover the
-            # path under external_dir via split_namespaced_path (strips both
+            # confirm it's truly gone on disk before orphaning. ext_rel is
+            # already recovered above via split_namespaced_path (strips both
             # EXTERNAL_NAMESPACE and, for a qualified path, the project
             # marker) rather than a raw prefix-strip.
-            _, ext_rel = split_namespaced_path(npath[len(EXTERNAL_NAMESPACE):])
             ext_file = external_dir / ext_rel
             if not _confirm_orphan(ext_file, require_id=False):
                 continue
@@ -2401,9 +2488,184 @@ def reindex_external(
             _fts_delete(db, nid)
             counts["orphaned"] += 1
 
+    return counts
+
+
+def reindex_external(
+    db: sqlite3.Connection,
+    external_dir: Path,
+    *,
+    skip_embed: bool = False,
+    project: str | None = None,
+    no_id_writeback: bool = False,
+) -> dict[str, int]:
+    """Index auto-memory files from an external directory into the tree.
+
+    Files are stored with the `auto-memory/<filename>` namespace prefix
+    (unqualified, legacy/Deus) or `auto-memory/<project>::<filename>`
+    (P3: when `project` names a project other than DEUS_PROJECT_ID) to
+    avoid vault path collisions. Frontmatter mapping: `name` -> title,
+    `description` -> embedding source, `type` -> kept as-is.
+
+    ULID write-back is idempotent: files already carrying `id:` are not
+    modified (unless ``no_id_writeback`` — see :func:`_index_external_file`).
+    Bypasses REBUILD_MIN_RETENTION (separate population).
+    """
+    _backup_db()
+
+    external_dir = external_dir.expanduser().resolve()
+    if not external_dir.is_dir():
+        raise FileNotFoundError(f"DEUS_AUTO_MEMORY_DIR not found: {external_dir}")
+
+    counts = _reindex_dir_walk(
+        db, external_dir, skip_embed=skip_embed, project=project,
+        # This function always indexes a directory the CALLER already
+        # trusts as `project`'s own data (its docstring's `project` kwarg is
+        # the P3/resolve_project_id()-derived identity, not an invented
+        # dirname) — unlike reindex_external_all_projects, whose per-dir tag
+        # is unproven. Preserve the pre-LIA-123 DEUS_PROJECT_ID fallback
+        # here explicitly, at the caller, rather than inside
+        # _index_external_file.
+        db_project=project or DEUS_PROJECT_ID,
+        no_id_writeback=no_id_writeback,
+    )
     db.commit()
     _emit_audit({"action": "reindex_external", "dir": str(external_dir), **counts})
     return counts
+
+
+def reindex_external_all_projects(
+    db: sqlite3.Connection,
+    projects_root: Path,
+    *,
+    skip_embed: bool = False,
+    no_id_writeback: bool = False,
+    include: set[str] | None = None,
+    exclude: set[str] | None = None,
+) -> dict[str, Any]:
+    """Walk EVERY ``<projects_root>/<dir>/memory/`` and index each as its own
+    project (LIA-122/P4).
+
+    Each on-disk project directory's own basename becomes the ``project``
+    PATH-NAMESPACE tag/qualifier — this deliberately does NOT go through
+    ``auto_memory_dir.resolve_project_id()``'s worktree-unwinding (that
+    computation is for the CURRENT session's own identity; here we're
+    enumerating other sessions' historical directories, whose names are
+    already the ground truth for WHERE their files live on disk). The one
+    exception is THIS repo's own directory, which maps to
+    ``DEUS_PROJECT_ID`` (via ``resolve_this_repo_dir_name()``, itself
+    worktree-unwound) to stay backward-compatible with the pre-existing
+    bare-namespace population.
+
+    LIA-123: the raw dirname is NOT trustworthy as the DB ``project``
+    SCOPING column, even though it's exactly right as the path-namespace
+    qualifier above. ``resolve_project_id()`` (auto_memory_dir.py) applies
+    worktree-normalization that a bare dirname comparison does not — a
+    directory indexed from a linked worktree gets a DIFFERENT raw dirname
+    than ``resolve_project_id()`` would compute for that same logical
+    project at retrieval time, so tagging the DB column with the raw dirname
+    would make the node silently vanish from scoped retrieval the instant
+    ``DEUS_PROJECT_SCOPE`` is enabled (the exact defect this fix closes).
+    The only directory this function can PROVE an identity for is its own
+    repo (the ``dir_name == this_repo_dir`` comparison below, which shares
+    ``resolve_this_repo_dir_name()``'s worktree-unwinding lineage with
+    ``resolve_project_id()`` — see that function's docstring). Every other
+    directory's DB ``project`` column is left NULL rather than guessed:
+    ``retrieve()``'s predicate is ``(project IS NULL OR project = ?)``, so a
+    NULL-tagged node stays visible under every scope, like a vault node —
+    over-visible, never invisible. Known stray/duplicate dirs for the same
+    real project at different historical paths (e.g.
+    ``-Users-<user>-Desktop-Dev-<project>`` and
+    ``-Users-<user>-Dev-<project>``) both land here: both get
+    ``db_project=None`` rather than a hardcoded exclude, and the orphan-sweep
+    fix in :func:`_reindex_dir_walk` (branches on path-prefix, not the now
+    frequently-NULL DB column) is what stops them cross-orphaning each
+    other's nodes.
+
+    ``include``/``exclude`` filter by directory basename; not mutually
+    exclusive — a name in both is excluded (exclude wins). Lets an operator
+    drop a known stray/duplicate project dir at run time without hardcoding
+    personal directory names into this script.
+
+    One ``_backup_db()`` up front. Each project directory is indexed in its
+    own try/except: a failure rolls back that project's partial writes,
+    records it under ``errors``, and moves on to the next directory — these
+    are independently-owned corpora, so one corrupted file in project A must
+    not abort indexing for projects B and C. Commits after each successful
+    project.
+    """
+    projects_root = projects_root.expanduser()
+    if not projects_root.is_dir():
+        raise FileNotFoundError(f"projects root not found: {projects_root}")
+
+    _backup_db()
+    this_repo_dir = resolve_this_repo_dir_name()
+
+    totals = {"indexed": 0, "embedded": 0, "skipped": 0, "orphaned": 0, "id_written": 0}
+    per_project: dict[str, dict[str, int]] = {}
+    errors: dict[str, str] = {}
+    seen_real_dirs: set[Path] = set()
+
+    for d in sorted(projects_root.iterdir()):
+        mem_dir = d / "memory"
+        if not mem_dir.is_dir():
+            continue
+        dir_name = d.name
+        if include is not None and dir_name not in include:
+            continue
+        if exclude is not None and dir_name in exclude:
+            continue
+        if _PROJECT_NS_SEP in dir_name:
+            # A basename containing "::" would round-trip through
+            # split_namespaced_path() incorrectly (misparsed project/rel
+            # split) -- skip rather than misfile nodes under it.
+            errors[dir_name] = f"directory name contains {_PROJECT_NS_SEP!r}, skipped"
+            continue
+
+        project = DEUS_PROJECT_ID if dir_name == this_repo_dir else dir_name
+        # LIA-123: the DB `project` column is a SEPARATE value from the
+        # path-namespace `project` above — see this function's docstring.
+        # Only the provable this-repo case gets DEUS_PROJECT_ID; every other
+        # directory's raw dirname is unproven and stays NULL.
+        db_project = DEUS_PROJECT_ID if dir_name == this_repo_dir else None
+        try:
+            # LIA-122: `memory` can itself be a symlink (this repo's own dir
+            # points at ~/.deus/auto-memory) -- resolve before rglob so the
+            # walk traverses the real target. A bare `find` on a symlinked
+            # root returns 0 results; resolving first sidesteps that
+            # entirely. `.resolve()` itself can raise (symlink loop,
+            # permission error) -- keep it INSIDE the try so one corrupted
+            # project directory's symlink can't abort the walk for every
+            # remaining directory, matching this function's own contract.
+            real_mem_dir = mem_dir.resolve()
+            if real_mem_dir in seen_real_dirs:
+                # Two project directories symlinking to the same physical
+                # target would otherwise double-index every file under it.
+                # Not observed in the live corpus today, but nothing
+                # prevents it later.
+                continue
+            seen_real_dirs.add(real_mem_dir)
+
+            counts = _reindex_dir_walk(
+                db, real_mem_dir, skip_embed=skip_embed, project=project,
+                db_project=db_project,
+                no_id_writeback=no_id_writeback,
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad project must not abort the walk
+            db.rollback()
+            errors[dir_name] = str(exc)
+            continue
+
+        db.commit()
+        per_project[dir_name] = counts
+        for k, v in counts.items():
+            totals[k] += v
+
+    result: dict[str, Any] = {**totals, "projects_walked": len(per_project), "per_project": per_project}
+    if errors:
+        result["errors"] = errors
+    _emit_audit({"action": "reindex_external_all_projects", "dir": str(projects_root), **totals})
+    return result
 
 
 def sync_atom_kinds(
@@ -3514,6 +3776,29 @@ def main(argv: list[str] | None = None) -> int:
         "shared resolver; no orphan sweep, unlike the bare full reindex)",
     )
     p_ext.add_argument("--skip-embed", action="store_true", help="Skip embedding API calls")
+    p_ext.add_argument(
+        "--all-projects", action="store_true",
+        help="Walk every <projects-root>/*/memory/ dir, each indexed under its own "
+        "project tag (LIA-122), instead of the single DEUS_AUTO_MEMORY_DIR",
+    )
+    p_ext.add_argument(
+        "--projects-root", metavar="PATH",
+        help="Root walked by --all-projects (default: ~/.claude/projects)",
+    )
+    p_ext.add_argument(
+        "--no-id-writeback", action="store_true",
+        help="Index without writing generated ids back into source frontmatter "
+        "(reversible mode — applies to --all-projects, --add, and the default path)",
+    )
+    p_ext.add_argument(
+        "--include", metavar="DIR,DIR,...",
+        help="--all-projects only: index ONLY these project directory basenames",
+    )
+    p_ext.add_argument(
+        "--exclude", metavar="DIR,DIR,...",
+        help="--all-projects only: skip these project directory basenames "
+        "(wins over --include if a name is in both)",
+    )
     p_ext.add_argument("--json", action="store_true")
 
     p_sync = sub.add_parser(
@@ -3694,12 +3979,42 @@ def main(argv: list[str] | None = None) -> int:
         return SUCCESS
 
     if args.cmd == "reindex-external":
+        if args.all_projects:
+            projects_root = (
+                Path(args.projects_root).expanduser() if args.projects_root
+                else Path("~/.claude/projects").expanduser()
+            )
+            include = set(args.include.split(",")) if args.include else None
+            exclude = set(args.exclude.split(",")) if args.exclude else None
+            try:
+                counts = reindex_external_all_projects(
+                    db, projects_root, skip_embed=args.skip_embed,
+                    no_id_writeback=args.no_id_writeback,
+                    include=include, exclude=exclude,
+                )
+            except FileNotFoundError as exc:
+                print(f"ABORT: {exc}", file=sys.stderr)
+                return USAGE_ERROR
+            if args.json:
+                print(json.dumps(counts, indent=2))
+            else:
+                print(
+                    f"reindex-external --all-projects: projects={counts['projects_walked']} "
+                    f"indexed={counts['indexed']} embedded={counts['embedded']} "
+                    f"orphaned={counts['orphaned']} id_written={counts['id_written']} "
+                    f"skipped={counts['skipped']}"
+                )
+                if counts.get("errors"):
+                    for name, err in counts["errors"].items():
+                        print(f"  ERROR {name}: {err}", file=sys.stderr)
+            return SUCCESS
         if args.add:
             # Non-destructive single-file admit: resolve the canonical dir
             # ourselves (the safe path, unlike the destructive bare reindex).
             try:
                 counts = reindex_external_one(
-                    db, resolve_auto_memory_dir(), args.add, skip_embed=args.skip_embed
+                    db, resolve_auto_memory_dir(), args.add, skip_embed=args.skip_embed,
+                    no_id_writeback=args.no_id_writeback,
                 )
             except (FileNotFoundError, ValueError) as exc:
                 print(f"ABORT: {exc}", file=sys.stderr)
@@ -3719,7 +4034,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"ABORT: {EXTERNAL_DIR_ENV} not set", file=sys.stderr)
             return USAGE_ERROR
         try:
-            counts = reindex_external(db, Path(ext_dir), skip_embed=args.skip_embed)
+            counts = reindex_external(
+                db, Path(ext_dir), skip_embed=args.skip_embed,
+                no_id_writeback=args.no_id_writeback,
+            )
         except (FileNotFoundError, ValueError) as exc:
             print(f"ABORT: {exc}", file=sys.stderr)
             return USAGE_ERROR

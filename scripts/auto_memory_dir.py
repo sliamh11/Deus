@@ -128,6 +128,22 @@ def resolve_project_root() -> Path | None:
     return _unwind_worktree(Path(project_dir).expanduser())
 
 
+def resolve_this_repo_dir_name() -> str:
+    """The literal ``~/.claude/projects/<dirname>`` encoding of THIS repo,
+    worktree-unwound.
+
+    Shares `_unwind_worktree` with `resolve_project_id()` deliberately: a raw
+    `Path(__file__).resolve().parent.parent` (no unwind) resolves to the
+    *worktree's* root when this module is loaded from a linked worktree --
+    the default dev layout for this repo -- which would compute the wrong
+    directory name and misclassify the real "deus" auto-memory population
+    under a stray per-worktree project tag on every `--all-projects` run
+    launched from a worktree session (LIA-122).
+    """
+    this_repo = _unwind_worktree(Path(__file__).resolve().parent.parent)
+    return _encode_project_dir(this_repo.as_posix())
+
+
 def resolve_project_id() -> str | None:
     """Stable project identifier for memory-tree scoping.
 
