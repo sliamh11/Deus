@@ -216,17 +216,33 @@ def _maybe_auto_extract_principles(domain_presets: Optional[list] = None) -> Non
         # Data-count check + extraction (extract_principles handles its own min_new gate)
         component = _PRINCIPLES_HEALTH_PREFIX + domain_key
         try:
-            extract_principles(domain=domain)
+            result = extract_principles(domain=domain)
         except Exception as exc:
             log.warning('evolution: principles extraction failed for domain=%s — %s: %s',
                         domain, type(exc).__name__, exc)
             health.record_attempt(component, health.STATUS_FAILED, type(exc).__name__)
         else:
-            # Recorded on every success, not just on recovery: this path is
-            # already gated by PRINCIPLES_COOLDOWN_HOURS above, so it is not hot
-            # and the OK write is what lets a resolved failure clear its streak
-            # (LIA-556 site 2).
-            health.record_attempt(component, health.STATUS_OK, 'extraction completed')
+            # Three outcomes, not two. "Did not raise" is not "did work", and
+            # conflating them let a skip clear a real FAILED streak (#1248).
+            if result is None:
+                # Returned before the single generate() call — either the
+                # min_new data-count gate or the <3-usable-examples gate. No
+                # LLM call, no cooldown consumed, nothing attempted. record_skip
+                # touches only last_skipped_at, so it is structurally incapable
+                # of clearing a streak or overwriting a diagnostic cause.
+                health.record_skip(component)
+            elif not result.strip():
+                # The generate() call DID happen: extract_principles returns its
+                # text only after _record_extraction has already run, so the
+                # cooldown and the tokens are spent. Producing nothing is a
+                # failed attempt, not a skip.
+                health.record_attempt(component, health.STATUS_FAILED, 'empty generation')
+            else:
+                # Recorded on every success, not just on recovery: this path is
+                # already gated by PRINCIPLES_COOLDOWN_HOURS above, so it is not hot
+                # and the OK write is what lets a resolved failure clear its streak
+                # (LIA-556 site 2).
+                health.record_attempt(component, health.STATUS_OK, 'extraction completed')
 
 
 def _maybe_auto_optimize(domain_presets: Optional[list] = None) -> None:

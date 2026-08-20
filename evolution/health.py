@@ -164,14 +164,20 @@ def record_skip(component: str) -> None:
     record: it can neither flip the status nor overwrite the diagnostic cause.
     Both were real bugs before this shape.
 
-    Deliberately takes no `reason` argument. There is exactly one skip path
-    (the below-threshold early return in cli.py), so the explanation is
-    constant and derivable from the threshold config. Storing it in a column
-    was tried and produced three further defects — `rollup()` reads
-    `last_reason` only and would have reported None for a skip-only component;
-    the column needed an ALTER TABLE that every reader would execute, adding
-    DDL lock exposure on a concurrently-written file; and it deviated from
-    patterns/eval-change.md. The field is simply not written.
+    Deliberately takes no `reason` argument, and callers must not grow one.
+    Every skip site is an early return from its own explicit gate, so the gate
+    condition IS the explanation and it is constant per site — derivable from
+    the config or the query that guards it, never varying call to call. Current
+    sites, illustrative rather than exhaustive: the below-threshold return in
+    `_maybe_auto_optimize` (cli.py), the empty-queue return in
+    `judge_pending_interactions` (maintenance.py), and the `min_new` and
+    usable-examples gates reached through `_maybe_auto_extract_principles`
+    (cli.py). Storing a reason in a column was tried and produced three further
+    defects — `rollup()` reads `last_reason` only and would have reported None
+    for a skip-only component; the column needed an ALTER TABLE that every
+    reader would execute, adding DDL lock exposure on a concurrently-written
+    file; and it deviated from patterns/eval-change.md. The field is simply not
+    written.
 
     On the INSERT branch `last_status` is left as SQL NULL, so a
     never-attempted component is never confused with a healthy one.
