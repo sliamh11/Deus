@@ -56,7 +56,10 @@ def test_principles_success_records_ok_and_self_heals(test_db, principles):
     cli._maybe_auto_extract_principles(["coding"])
     assert health.has_failure(cli._PRINCIPLES_HEALTH_PREFIX) is True
 
-    principles(lambda domain=None: None)  # recovered
+    # Recovered. The stub must return generated TEXT, not None: None is the
+    # return of a skip that never reached the LLM, and a skip is precisely what
+    # must NOT clear a streak (see the skip tests below).
+    principles(lambda domain=None: _GENERATED)
     cli._maybe_auto_extract_principles(["coding"])
 
     row = health.get(cli._PRINCIPLES_HEALTH_PREFIX + "coding")
@@ -74,6 +77,7 @@ def test_one_broken_domain_does_not_taint_a_healthy_one(test_db, monkeypatch):
     def selective(domain=None):
         if domain == "coding":
             raise RuntimeError("boom")
+        return _GENERATED
 
     monkeypatch.setattr("evolution.reflexion.principles.extract_principles", selective)
     cli._maybe_auto_extract_principles(["coding", "study"])
@@ -82,6 +86,169 @@ def test_one_broken_domain_does_not_taint_a_healthy_one(test_db, monkeypatch):
         == health.STATUS_FAILED
     assert health.get(cli._PRINCIPLES_HEALTH_PREFIX + "study")["last_status"] \
         == health.STATUS_OK
+
+
+# ── Site 2, continued: a skip is not an attempt (#1248) ───────────────────────
+#
+# `extract_principles` returns None on two ordinary paths, BOTH of which return
+# before the single `generate()` call: the `min_new` data-count gate
+# (principles.py:71-76) and the "<3 usable examples once empty responses are
+# filtered" gate (principles.py:94-95). Neither did any work, so neither is an
+# attempt — and because record_attempt(OK) is the only write that zeroes
+# `consecutive_failures` and nulls `first_failed_at`, recording one as OK
+# laundered a live FAILED streak into a clean bill of health.
+#
+# The two gate tests drive the REAL `extract_principles` with only its data
+# sources stubbed, so they are pinned to the actual early-return sites rather
+# than to a hand-made stub that merely agrees with them.
+
+_GENERATED = "1. Answer the question asked.\n2. Cite the file you changed."
+
+
+@pytest.fixture
+def real_extraction(monkeypatch):
+    """Run the real `extract_principles`, with only its data sources stubbed.
+
+    `principles.py` binds `get_storage` and `get_recent` at MODULE level, so
+    these patch the names in that module rather than at their definition sites
+    — patching `evolution.storage.get_storage` alone would not be seen here (it
+    is seen in cli.py only because cli.py imports it inside the function body).
+
+    Returns a setter taking `new_count` (what the min_new gate compares) and
+    `rows` (what `get_recent` yields for both the best and worst queries).
+    """
+    def _wire(new_count, rows=(), generated=_GENERATED):
+        store = type("S", (), {
+            "get_last_extraction": lambda self, d: None,
+            "count_new_scored": lambda self, since_timestamp=None, domain=None: new_count,
+            "record_extraction": lambda self, **kw: None,
+        })()
+        monkeypatch.setattr("evolution.storage.get_storage", lambda *a, **k: store)
+        monkeypatch.setattr("evolution.reflexion.principles.get_storage",
+                            lambda *a, **k: store)
+        monkeypatch.setattr("evolution.reflexion.principles.get_recent",
+                            lambda **kw: list(rows))
+        monkeypatch.setattr("evolution.reflexion.principles.generate",
+                            lambda *a, **k: generated)
+        monkeypatch.setattr("evolution.reflexion.principles.save_reflection",
+                            lambda **kw: None)
+    return _wire
+
+
+def _row(response="a real answer"):
+    return {"prompt": "p", "response": response, "judge_score": 0.9}
+
+
+def test_min_new_gate_records_a_skip_not_ok(test_db, real_extraction):
+    """AC1: below the min_new threshold, nothing ran — so nothing is recorded
+    as having run."""
+    real_extraction(new_count=0)  # default min_new is 5
+
+    cli._maybe_auto_extract_principles(["coding"])
+
+    row = health.get(cli._PRINCIPLES_HEALTH_PREFIX + "coding")
+    assert row["last_status"] != health.STATUS_OK, \
+        "a below-threshold skip must not be recorded as a successful extraction"
+    assert row["last_status"] is None, "a skip must not invent a status at all"
+    assert row["last_skipped_at"] is not None, "the skip itself must be recorded"
+
+
+def test_usable_examples_gate_records_a_skip_not_ok(test_db, real_extraction):
+    """AC2: past min_new, but the empty-response filter leaves <3 usable rows.
+
+    Four rows in, three of them response-less: `response_supports_reflection`
+    drops those, leaving 1 + 1 = 2 < 3. Still no LLM call, still not an attempt.
+    """
+    rows = [_row(), _row(""), _row(None), _row("   ")]
+    real_extraction(new_count=99, rows=rows)
+
+    cli._maybe_auto_extract_principles(["coding"])
+
+    row = health.get(cli._PRINCIPLES_HEALTH_PREFIX + "coding")
+    assert row["last_status"] != health.STATUS_OK, \
+        "an insufficient-examples skip must not be recorded as a successful extraction"
+    assert row["last_status"] is None
+    assert row["last_skipped_at"] is not None
+
+
+@pytest.mark.parametrize("gate,new_count,rows", [
+    ("min_new", 0, ()),
+    ("usable_examples", 99, (_row(), _row(""), _row(None))),
+])
+def test_a_skip_does_not_clear_a_live_failure_streak(
+    test_db, real_extraction, gate, new_count, rows,
+):
+    """AC3: the actual bug. A real FAILED streak must survive both skip paths.
+
+    Parametrised over both gates because they are separate `return None` sites
+    and a fix that caught only one would still launder the other.
+    """
+    component = cli._PRINCIPLES_HEALTH_PREFIX + "coding"
+    health.record_attempt(component, health.STATUS_FAILED, "no API key")
+    health.record_attempt(component, health.STATUS_FAILED, "no API key")
+    before = health.get(component)
+    assert before["consecutive_failures"] == 2
+
+    real_extraction(new_count=new_count, rows=rows)
+    cli._maybe_auto_extract_principles(["coding"])
+
+    after = health.get(component)
+    assert after["last_status"] == health.STATUS_FAILED, f"{gate} skip cleared the status"
+    assert after["consecutive_failures"] == 2, f"{gate} skip reset the streak counter"
+    assert after["last_reason"] == "no API key", f"{gate} skip overwrote the diagnostic cause"
+    assert after["first_failed_at"] == before["first_failed_at"], \
+        f"{gate} skip moved the start of the streak"
+    assert health.has_failure(cli._PRINCIPLES_HEALTH_PREFIX) is True, \
+        f"{gate} skip hid an unresolved failure from the cockpit gate"
+
+
+def test_empty_generation_records_failed_not_skipped(test_db, principles):
+    """AC4: the third case, and the easy one to miss.
+
+    `extract_principles` returns the generation text AFTER `_record_extraction`
+    has already run, so an empty string means the LLM call really happened and
+    consumed both its cooldown and its tokens. That is a failed attempt — not a
+    skip, and certainly not an OK.
+    """
+    principles(lambda domain=None: "   \n  ")
+
+    cli._maybe_auto_extract_principles(["coding"])
+
+    row = health.get(cli._PRINCIPLES_HEALTH_PREFIX + "coding")
+    assert row["last_status"] == health.STATUS_FAILED
+    assert row["last_reason"] == "empty generation"
+    assert row["consecutive_failures"] == 1
+
+
+def test_a_real_extraction_still_clears_a_streak(test_db, real_extraction):
+    """AC5: the LIA-556 intent is preserved — self-heal still works, but now
+    only for an extraction that actually produced output."""
+    component = cli._PRINCIPLES_HEALTH_PREFIX + "coding"
+    health.record_attempt(component, health.STATUS_FAILED, "no API key")
+    assert health.has_failure(cli._PRINCIPLES_HEALTH_PREFIX) is True
+
+    real_extraction(new_count=99, rows=[_row(), _row(), _row()])
+    cli._maybe_auto_extract_principles(["coding"])
+
+    row = health.get(component)
+    assert row["last_status"] == health.STATUS_OK
+    assert row["last_reason"] == "extraction completed"
+    assert row["consecutive_failures"] == 0
+    assert row["first_failed_at"] is None
+    assert health.has_failure(cli._PRINCIPLES_HEALTH_PREFIX) is False
+
+
+def test_skip_only_history_is_never_attempted_not_healthy(test_db, real_extraction):
+    """AC6: a component that has never extracted anything must not report as
+    healthy — to `rollup()` or to anything reading it."""
+    real_extraction(new_count=0)
+    cli._maybe_auto_extract_principles(["coding"])
+
+    roll = health.rollup(cli._PRINCIPLES_HEALTH_PREFIX)
+    assert roll["status"] is None, "never-attempted must not surface as OK"
+    assert "never attempted" in roll["reason"]
+    # ...and it is still not a failure, so it must not trip the cockpit gate.
+    assert health.has_failure(cli._PRINCIPLES_HEALTH_PREFIX) is False
 
 
 # ── Site 3: the outermost dispatch guards ─────────────────────────────────────
