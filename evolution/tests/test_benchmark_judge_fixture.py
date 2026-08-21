@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from evolution import benchmark_judge as bj
+from evolution.judge.base import schema_error_result
 
 
 # ── metrics ──────────────────────────────────────────────────────────────────
@@ -280,3 +281,222 @@ def test_print_comparison_with_trivial_baselines(capsys):
     out = capsys.readouterr().out
     assert "Trivial baselines" in out and "log-length r=0.300" in out
     assert "Δ vs log-len" in out
+
+
+# ── schema errors reach the ranking (#1245) ──────────────────────────────────
+#
+# Schema-invalid records leave the sample entirely (`continue` before both
+# appends), so a model that keeps omitting a required dimension has its
+# correlation and MAE computed only on the subset it answered validly, while
+# `parse_error_rate` — the ranking's only error term — stays untouched. It
+# therefore collects the full error-free weight, and omitting a dimension is
+# REWARDED relative to answering it badly. This ranking selects the judge that
+# grades everything downstream, so the failure is self-reinforcing.
+
+
+def _mr(model, *, scores, truth, total, parse_errors=0, schema_errors=0):
+    mr = bj.ModelResult(model=model)
+    mr.scores = list(scores)
+    mr.ground_truth = list(truth)
+    mr.total = total
+    mr.parse_errors = parse_errors
+    mr.schema_errors = schema_errors
+    return mr
+
+
+def _printed_composite(out, model):
+    """Read a model's Composite value back off the ranked table.
+
+    `composite` is a closure inside `print_comparison` with no importable name,
+    so the printed table is the observable surface — which is also what a human
+    acts on. The rank-1 row carries a trailing ` ***` winner marker, so tokens
+    are filtered before taking the last numeric field.
+    """
+    row = next(line for line in out.splitlines()
+               if f" {model} " in line and line.strip()[0].isdigit())
+    return float([t for t in row.split() if t != "***"][-1])
+
+
+def test_schema_errors_demote_an_otherwise_equivalent_model(capsys):
+    """AC1: identical stats, but one model kept omitting a required dimension."""
+    clean = _mr("clean", scores=[0.1, 0.5, 0.9], truth=[0.2, 0.4, 0.8], total=10)
+    dirty = _mr("dirty", scores=[0.1, 0.5, 0.9], truth=[0.2, 0.4, 0.8], total=10,
+                schema_errors=5)
+
+    bj.print_comparison([dirty, clean])  # deliberately passed worst-first
+    out = capsys.readouterr().out
+
+    assert out.index("clean") < out.index("dirty"), \
+        "a model with a high schema-error rate must rank below an equivalent clean one"
+    assert "*** Winner: clean" in out
+
+
+def test_a_flattering_subset_does_not_beat_an_honest_full_sample(capsys):
+    """AC1, the scenario the issue is actually about — and the one that inverts
+    the incentive.
+
+    `skimmer` answered only 3 of 10 records and schema-errored the other 7, so
+    its correlation and MAE are computed on the 3 it happened to get right,
+    while its parse-error rate stays 0 and it collects the full error-free
+    weight. `honest` answered all 10 with slightly looser agreement. On main the
+    skimmer wins, so omitting a required dimension is rewarded relative to
+    answering it badly — and this ranking picks the judge that grades
+    everything downstream.
+    """
+    skimmer = _mr("skimmer", scores=[0.2, 0.5, 0.8], truth=[0.2, 0.5, 0.8],
+                  total=10, schema_errors=7)
+    honest = _mr("honest",
+                 scores=[0.15, 0.3, 0.45, 0.5, 0.55, 0.6, 0.7, 0.8, 0.85, 0.95],
+                 truth=[0.2, 0.35, 0.4, 0.55, 0.5, 0.65, 0.75, 0.75, 0.9, 0.9],
+                 total=10)
+
+    bj.print_comparison([skimmer, honest])
+    out = capsys.readouterr().out
+
+    assert _printed_composite(out, "honest") > _printed_composite(out, "skimmer"), \
+        "a model that skipped 7 of 10 records must not outrank one that answered all 10"
+    assert "*** Winner: honest" in out
+
+
+def test_all_schema_errors_cannot_win(capsys):
+    """AC2, comparative half: a model that never returned a valid assessment
+    must not be recommended over one that did."""
+    broken = _mr("broken", scores=[], truth=[], total=8, schema_errors=8)
+    ok = _mr("ok", scores=[0.1, 0.5, 0.9], truth=[0.2, 0.4, 0.8], total=8)
+
+    bj.print_comparison([broken, ok])
+    out = capsys.readouterr().out
+
+    assert "*** Winner: ok" in out
+    assert "*** Winner: broken" not in out
+
+
+def test_all_schema_errors_not_recommended_even_when_sole_candidate(capsys):
+    """AC2, degenerate half — the case ranking alone cannot fix.
+
+    With one candidate there is nothing to rank it against, so the formula
+    cannot demote it: it is `ranked[0]` at composite 0.0 and the tool would
+    still print a winner AND an `export OLLAMA_MODEL=` line, which is active
+    advice to adopt a judge that never produced a valid assessment.
+    """
+    broken = _mr("broken", scores=[], truth=[], total=8, schema_errors=8)
+
+    bj.print_comparison([broken])
+    out = capsys.readouterr().out
+
+    assert "*** Winner:" not in out, "a judge with no usable records must not be a winner"
+    assert "export OLLAMA_MODEL=" not in out, \
+        "must not advise adopting a judge that never returned a valid assessment"
+    assert "no usable records" in out.lower()
+
+
+def test_ranked_table_shows_the_schema_error_count(capsys):
+    """AC4: the compact table a human scans must show the cause of a demotion.
+
+    Before this change the only error column was ParseErr, so a schema-demoted
+    model showed no reason at all in the ranked table.
+    """
+    dirty = _mr("dirty", scores=[0.1, 0.5, 0.9], truth=[0.2, 0.4, 0.8], total=10,
+                schema_errors=5)
+
+    bj.print_comparison([dirty])
+    out = capsys.readouterr().out
+
+    assert "SchemaErr" in out, "the ranked table needs a schema-error column"
+    assert "5/10" in out, "the schema-error count must appear in the ranked row"
+
+
+def test_no_schema_errors_leaves_the_composite_unchanged(capsys):
+    """AC5: unchanged output for any run that has no schema errors.
+
+    The new term is `max(0.0, 1 - parse_rate - schema_rate)`; with
+    schema_errors == 0 and parse_errors <= total the clamp is a no-op, so this
+    reduces exactly to the old `1 - parse_error_rate`. Asserted numerically
+    against the pre-change formula rather than against golden text.
+    """
+    mr = _mr("m", scores=[0.1, 0.5, 0.9], truth=[0.2, 0.4, 0.8], total=10,
+             parse_errors=2)
+
+    expected = (0.4 * max(mr.pearson, 0)
+                + 0.3 * max(0, 1 - mr.mae)
+                + 0.3 * (1 - mr.parse_error_rate))
+
+    bj.print_comparison([mr])
+    out = capsys.readouterr().out
+
+    assert abs(_printed_composite(out, "m") - expected) < 5e-4, \
+        f"composite changed for a run with no schema errors: " \
+        f"{_printed_composite(out, 'm')} vs {expected}"
+
+
+def test_schema_error_rate_property():
+    assert _mr("m", scores=[], truth=[], total=8, schema_errors=2).schema_error_rate == 0.25
+    assert bj.ModelResult(model="m").schema_error_rate == 0.0, "no division by zero at total=0"
+
+
+# ── the counters are disjoint per record (AC3) ───────────────────────────────
+
+
+@dataclass
+class _ParseRes:
+    """A record the rationale-substring check flags."""
+    score: float = 0.5
+    quality: float = 0.5
+    safety: float = 1.0
+    tool_use: float = 1.0
+    personalization: float = 0.25
+    rationale: str = "Parse error: could not decode"
+    raw_response: str = "not json"
+    is_parse_error: bool = True
+    is_schema_error: bool = False
+
+
+def _interaction(i):
+    return {"id": f"i{i}", "prompt": "P", "response": "R", "tools_used": None,
+            "ground_truth_score": 0.6}
+
+
+def test_parse_and_schema_errors_never_double_count(monkeypatch):
+    """AC3: assert disjointness rather than relying on it staying true.
+
+    Driven through the real `benchmark()` loop and exercising BOTH parse-error
+    increment sites — the `except Exception` branch (which continues) and the
+    rationale-substring check (which does not) — plus a schema-error record.
+    The additive penalty is only safe because no single record can increment
+    both counters.
+
+    The schema record comes from the real `schema_error_result()` rather than a
+    hand-written stand-in, so a regression in the rationale text it produces —
+    the thing that keeps it clear of the parse-error substring check — fails
+    this test too, not just a change in how benchmark_judge consumes it.
+    """
+    scripted = [
+        schema_error_result(raw_response='{"quality": 0.5}', missing="safety"),
+        _ParseRes(), _Res(), "raise",
+    ]
+
+    class _FakeJudge:
+        def __init__(self, model):
+            self.model = model
+            self.calls = 0
+
+        def evaluate(self, prompt, response, tools_used=None, user_profile=None):
+            r = scripted[self.calls]
+            self.calls += 1
+            if r == "raise":
+                raise RuntimeError("provider exploded")
+            return r
+
+    monkeypatch.setattr(bj, "OllamaRuntimeJudge", _FakeJudge)
+    monkeypatch.setattr(bj, "_check_model_pulled", lambda m: None)
+
+    interactions = [_interaction(i) for i in range(4)]
+    mr = bj.benchmark(["gemma4:e4b"], interactions, verbose=False)[0]
+
+    assert mr.total == 4
+    # One schema error; two parse errors, one per increment site.
+    assert mr.schema_errors == 1
+    assert mr.parse_errors == 2
+    # The invariant the additive penalty rests on: no record counted twice.
+    assert mr.parse_errors + mr.schema_errors <= mr.total
+    assert mr.schema_error_rate + mr.parse_error_rate <= 1.0
