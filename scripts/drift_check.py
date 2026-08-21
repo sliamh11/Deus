@@ -481,11 +481,7 @@ def main(base_ref: str | None = None, bump: bool = False) -> int:
             for r in drifted_patterns:
                 p = PROJECT_ROOT / "patterns" / r["pattern"]
                 text = p.read_text()
-                updated = re.sub(
-                    r'(last_verified:\s*)"?\d{4}-\d{2}-\d{2}"?.*',
-                    rf'\g<1>"{today}" # auto-bump @{ts}',
-                    text,
-                )
+                updated = _rewrite_last_verified(text, today, ts)
                 if updated != text:
                     p.write_text(updated)
                     print(f"  bumped {r['pattern']} → {today}")
@@ -617,6 +613,40 @@ def parse_adr(adr_path: Path) -> dict | None:
     scopes = [_normalize_path(s) for s in scope_raw.split(",") if s.strip()]
 
     return {"date": date_match.group(1), "scopes": scopes}
+
+
+#: Splits an already-bumped tail into the machine stamp and anything this
+#: function previously preserved, so a re-bump restamps without re-wrapping.
+_AUTO_BUMP_TAIL = re.compile(r'#\s*auto-bump\s*@\d+\s*(?:\|\s*(?P<kept>.*?))?\s*$')
+
+
+def _rewrite_last_verified(text: str, today: str, ts: int) -> str:
+    """Stamp `last_verified:` with `today`, keeping any human note on that line.
+
+    A kept note carries the date it described, since this also moves the date —
+    otherwise the note would read as a review nobody performed (#1251).
+    Idempotent: pre-push bumps constantly, so a tail written here is restamped
+    rather than wrapped again.
+    """
+    def _replace(m: re.Match) -> str:
+        old_date, tail = m.group("date"), m.group("tail").strip()
+        kept = None
+        if tail:
+            already = _AUTO_BUMP_TAIL.fullmatch(tail)
+            if already:
+                kept = (already.group("kept") or "").strip() or None
+            else:
+                # A bare "#" carries nothing worth pinning a date to.
+                note = tail.lstrip("#").strip()
+                kept = f"{old_date}: {note}" if note else None
+        stamp = f"# auto-bump @{ts}"
+        return f'{m.group("key")}"{today}" {stamp}' + (f" | {kept}" if kept else "")
+
+    return re.sub(
+        r'(?P<key>last_verified:\s*)"?(?P<date>\d{4}-\d{2}-\d{2})"?(?P<tail>.*)',
+        _replace,
+        text,
+    )
 
 
 def parse_last_verified(pattern_path: Path) -> str | None:

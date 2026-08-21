@@ -1401,3 +1401,169 @@ class TestCheckAllBumpForwarding:
 
         capsys.readouterr()
         assert calls[0] == {"base_ref": "origin/main", "bump": True}
+
+
+# ── the bump must not destroy human annotations (#1251) ───────────────────────
+#
+# pre-push bumps on every drifted push, and the rewrite replaced the whole tail
+# of the `last_verified:` line — destroying any human note. Preserving the text
+# alone is not enough: the date moves too, so the note must stay pinned to the
+# date it described rather than appear to describe today's bump.
+
+_TODAY = "2026-08-21"
+_TS = 1787310214
+
+
+class TestRewriteLastVerified:
+    def test_plain_line_is_unchanged_in_form(self):
+        """AC3: a line with no comment behaves exactly as before the fix."""
+        out = drift_check._rewrite_last_verified(
+            'last_verified: "2026-05-16"\n', _TODAY, _TS,
+        )
+        assert out == f'last_verified: "{_TODAY}" # auto-bump @{_TS}\n'
+
+    def test_unquoted_date_is_still_handled(self):
+        out = drift_check._rewrite_last_verified(
+            "last_verified: 2026-05-16\n", _TODAY, _TS,
+        )
+        assert out == f'last_verified: "{_TODAY}" # auto-bump @{_TS}\n'
+
+    def test_existing_auto_bump_is_restamped(self):
+        out = drift_check._rewrite_last_verified(
+            'last_verified: "2026-08-20" # auto-bump @1787222734\n', _TODAY, _TS,
+        )
+        assert out == f'last_verified: "{_TODAY}" # auto-bump @{_TS}\n'
+
+    def test_human_annotation_survives(self):
+        """AC1: the whole point. The note is kept, pinned to its own date."""
+        out = drift_check._rewrite_last_verified(
+            'last_verified: "2026-08-15" # reviewed against LIA-491 (src/x.ts)\n',
+            _TODAY, _TS,
+        )
+        assert "reviewed against LIA-491 (src/x.ts)" in out
+        assert f'last_verified: "{_TODAY}"' in out
+        # The note describes the OLD date's review, not today's bump.
+        assert "2026-08-15: reviewed against LIA-491" in out
+
+    @pytest.mark.parametrize("original", [
+        # AC2, widened: the issue names only debugging.md, but three pattern
+        # files carry a live annotation. Copied verbatim from the real files.
+        'last_verified: "2026-08-15" # reviewed against LIA-491 (src/container-runner.ts naming)',
+        'last_verified: "2026-08-15" # reviewed against LIA-491 (src/config.ts deusInstanceId)',
+        'last_verified: "2026-08-16" # reviewed against LIA-447 (src/sender-allowlist.ts fail-closed)',
+    ])
+    def test_every_live_annotation_in_the_repo_survives(self, original):
+        note = original.split("# ", 1)[1]
+        old_date = original.split('"')[1]
+
+        out = drift_check._rewrite_last_verified(original + "\n", _TODAY, _TS)
+
+        assert note in out, "the human note must survive verbatim"
+        assert f"{old_date}: {note}" in out, "and stay attached to the date it described"
+        assert f'last_verified: "{_TODAY}"' in out
+
+    def test_repeated_bumps_do_not_grow_the_line(self):
+        """This line is rewritten on nearly every push, so a naive re-append
+        would nest without bound."""
+        line = 'last_verified: "2026-08-15" # reviewed against LIA-491 (src/x.ts)\n'
+
+        once = drift_check._rewrite_last_verified(line, _TODAY, _TS)
+        twice = drift_check._rewrite_last_verified(once, "2026-09-01", 1789000000)
+        thrice = drift_check._rewrite_last_verified(twice, "2026-09-02", 1789100000)
+
+        assert twice.count("reviewed against LIA-491") == 1
+        assert thrice.count("reviewed against LIA-491") == 1
+        assert thrice.count("auto-bump") == 1
+        # Only the date and stamp move; the preserved segment is byte-stable.
+        assert twice.split("|", 1)[1] == thrice.split("|", 1)[1]
+        assert '2026-08-15: reviewed against LIA-491 (src/x.ts)' in thrice
+
+    def test_bare_hash_tail_is_not_pinned_to_a_date(self):
+        """A comment marker with no content has nothing worth preserving, and
+        must not leave a dangling `<date>: `."""
+        out = drift_check._rewrite_last_verified(
+            'last_verified: "2026-08-15" #\n', _TODAY, _TS,
+        )
+        assert out == f'last_verified: "{_TODAY}" # auto-bump @{_TS}\n'
+
+    def test_empty_preserved_segment_does_not_double_wrap(self):
+        """Degenerate form only this tool could write."""
+        out = drift_check._rewrite_last_verified(
+            'last_verified: "2026-08-20" # auto-bump @1787222734 |\n', _TODAY, _TS,
+        )
+        assert out.count("auto-bump") == 1
+        assert out.count("|") <= 1
+        assert f'last_verified: "{_TODAY}"' in out
+
+    def test_only_the_last_verified_line_is_touched(self):
+        text = (
+            "---\n"
+            'last_verified: "2026-08-15" # reviewed against LIA-491 (src/x.ts)\n'
+            "governs:\n"
+            "  - src/container-runner.ts\n"
+            "---\n"
+            "\n"
+            "# Debugging\n"
+            "Body text mentioning 2026-08-15 should not move.\n"
+        )
+        out = drift_check._rewrite_last_verified(text, _TODAY, _TS)
+
+        assert "Body text mentioning 2026-08-15 should not move." in out
+        assert "  - src/container-runner.ts\n" in out
+        assert out.count("last_verified:") == 1
+
+
+class TestBumpEndToEnd:
+    """AC4: the drift check still detects and reports drift — the fix must not
+    be reached by weakening the check."""
+
+    def _setup(self, tmp_path, monkeypatch, front_matter):
+        (tmp_path / "patterns").mkdir()
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "x.ts").write_text("export const x = 1;\n")
+        (tmp_path / "patterns" / "INDEX.md").write_text(
+            "| pattern |\n|---|\n| `patterns/debugging.md` |\n"
+        )
+        p = tmp_path / "patterns" / "debugging.md"
+        p.write_text(
+            "---\n"
+            f"{front_matter}\n"
+            "governs:\n"
+            "  - src/x.ts\n"
+            "---\n"
+            "\nBody.\n"
+        )
+
+        monkeypatch.setattr(drift_check, "PROJECT_ROOT", tmp_path)
+        # The governed file is newer than the pattern → DRIFTED. Both times come
+        # from the same helper, so the fake keys off the path rather than
+        # returning one constant.
+        monkeypatch.setattr(
+            drift_check, "_git_commit_time",
+            lambda path, root: 1000.0 if path.name == "debugging.md" else 2000.0,
+        )
+        return p
+
+    def test_bump_reports_drift_and_preserves_the_annotation(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        p = self._setup(
+            tmp_path, monkeypatch,
+            'last_verified: "2026-08-15" # reviewed against LIA-491 (src/x.ts)',
+        )
+
+        rc = drift_check.main(bump=True)
+        out = capsys.readouterr().out
+
+        assert "DRIFTED" in out, "the drift check must still report drift"
+        assert rc == 0, "--bump resolves the drift it just reported"
+        assert "reviewed against LIA-491 (src/x.ts)" in p.read_text(), \
+            "the annotation must survive a real end-to-end bump"
+
+    def test_bump_still_stamps_a_plain_line(self, tmp_path, monkeypatch, capsys):
+        p = self._setup(tmp_path, monkeypatch, 'last_verified: "2026-05-16"')
+
+        drift_check.main(bump=True)
+        capsys.readouterr()
+
+        assert "# auto-bump @" in p.read_text()
