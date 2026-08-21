@@ -96,6 +96,12 @@ class ModelResult:
         return self.parse_errors / self.total if self.total else 0.0
 
     @property
+    def schema_error_rate(self) -> float:
+        # Same denominator as parse_error_rate: `total` is incremented once per
+        # interaction, so the two rates are fractions of the same attempted set.
+        return self.schema_errors / self.total if self.total else 0.0
+
+    @property
     def avg_latency(self) -> float:
         return statistics.mean(self.latencies) if self.latencies else 0.0
 
@@ -551,12 +557,18 @@ def print_comparison(results: list[ModelResult], trivial_baselines: Optional[dic
         print("\nNo results to compare.")
         return
 
-    # Sort by composite: correlation (40%) + inverse MAE (30%) + inverse parse rate (30%)
+    # Sort by composite: correlation (40%) + inverse MAE (30%) + inverse error rate (30%)
     def composite(r: ModelResult) -> float:
         corr = max(r.pearson, 0)
         mae_score = max(0, 1 - r.mae)
-        parse_score = 1 - r.parse_error_rate
-        return 0.4 * corr + 0.3 * mae_score + 0.3 * parse_score
+        # Both counters mean "the judge returned no valid, complete assessment",
+        # so they are penalised symmetrically — additive rather than an
+        # eligibility gate, which would need a threshold no evidence supports.
+        # Additive is only safe because the two are disjoint per record: a
+        # schema error's rationale can never contain "Parse error", and the
+        # except-branch parse error continues before the schema check (#1245).
+        error_score = max(0.0, 1 - r.parse_error_rate - r.schema_error_rate)
+        return 0.4 * corr + 0.3 * mae_score + 0.3 * error_score
 
     ranked = sorted(results, key=composite, reverse=True)
 
@@ -576,7 +588,7 @@ def print_comparison(results: list[ModelResult], trivial_baselines: Optional[dic
     print("BENCHMARK RESULTS (ranked by composite score)")
     print(f"{'='*80}")
     header = f"{'Rank':<5} {'Model':<25} {'Pearson':>8} {'Spearman':>9} " \
-             f"{'MAE':>6} {'ParseErr':>9} {'Latency':>8} {'Composite':>10}"
+             f"{'MAE':>6} {'ParseErr':>9} {'SchemaErr':>10} {'Latency':>8} {'Composite':>10}"
     if log_len_r is not None:
         header += f" {'Δ vs log-len':>13}"
     print(header)
@@ -588,11 +600,26 @@ def print_comparison(results: list[ModelResult], trivial_baselines: Optional[dic
         row = (
             f"{i+1:<5} {r.model:<25} {r.pearson:>8.3f} {r.spearman:>9.3f} "
             f"{r.mae:>6.3f} {r.parse_errors:>4}/{r.total:<4} "
+            # The cause of a schema demotion, in the compact table rather than
+            # only in the verbose per-model summary (#1245).
+            f"{r.schema_errors:>5}/{r.total:<4} "
             f"{r.avg_latency:>7.1f}s {comp:>9.3f}"
         )
         if log_len_r is not None:
             row += f" {r.pearson - log_len_r:>+13.3f}"
         print(row + marker)
+
+    if not ranked[0].scores:
+        # Every record was dropped before entering a statistic, so this model's
+        # correlation and MAE are not measurements. Ranking cannot catch this on
+        # its own — with one candidate there is nothing to prefer over it — and
+        # recommending it would emit an `export OLLAMA_MODEL=` line for a judge
+        # that never returned a valid assessment (#1245).
+        print(f"\nNo winner: {ranked[0].model} has no usable records "
+              f"({ranked[0].schema_errors} schema / {ranked[0].parse_errors} parse "
+              f"errors out of {ranked[0].total}). Fix the judge output before "
+              f"trusting any ranking above.")
+        return
 
     print(f"\n*** Winner: {ranked[0].model}")
 
