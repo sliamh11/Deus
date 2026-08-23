@@ -511,6 +511,322 @@ class TestIntentGate:
         assert not result["fell_back"]
 
 
+# ── LIA-124: two-sided intent match ──────────────────────────────────────────
+
+_TARGET_NODE = (
+    "auto-memory/procedures/"
+    "establish-that-a-measured-negative-is-real-before-recording-it.md"
+)
+
+# The two acceptance queries from LIA-124. Both classify "factual" by
+# construction — stating a measured absence IS the target node's trigger.
+_ACCEPTANCE_QUERIES = [
+    "the grep came back clean",
+    "nothing matched so I am recording that it is absent",
+]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_trigger_cache(tmp_path, monkeypatch):
+    """Never read or write the real ~/.deus/intent_trigger_cache.json in tests."""
+    monkeypatch.setattr(mq, "_TRIGGER_CACHE_PATH", tmp_path / "trigger_cache.json")
+    monkeypatch.setattr(mq, "_trigger_intent_memo", {})
+
+
+class TestTwoSidedIntentMatch:
+    """A procedure whose OWN trigger classifies factual survives a factual query.
+
+    The gate only ever NARROWS here: every case that dropped before LIA-124 and
+    is not explicitly exempted must still drop.
+    """
+
+    def _run(self, fake, *, triggers, node_verdict):
+        with patch.object(mq, "_procedure_ids", return_value={"p1"}), \
+             patch.object(mq, "_procedure_triggers", return_value=triggers), \
+             patch.object(mq, "_node_trigger_intent", return_value=node_verdict), \
+             patch.object(mq, "classify_intent", return_value="factual"), \
+             patch.object(mt, "retrieve", return_value=fake), \
+             patch.object(mt, "open_db") as mock_db:
+            mock_db.return_value.close = lambda: None
+            return mq.recall("any query", exclude_kinds={"standard"}, source="test")
+
+    def test_factual_trigger_exempts_procedure(self, fake_vault):
+        # The LIA-124 defect: factual query + factual-triggered node -> KEEP.
+        fake = _fake_retrieve([_PROC, _FACT])
+        result = self._run(
+            fake, triggers={"p1": ("confirm an absence is genuine", "h1")},
+            node_verdict="factual",
+        )
+        assert result["paths"] == ["proc1.md", "INFRA.md"]
+        assert "intent_gate:exempt=1" in fake["trace"]
+        assert "intent_gate:dropped=0" in fake["trace"]
+
+    def test_procedural_trigger_still_drops(self, fake_vault):
+        # Status quo preserved: an ordinary how-to procedure still gets dropped.
+        fake = _fake_retrieve([_PROC, _FACT])
+        result = self._run(
+            fake, triggers={"p1": ("how to rebuild the container image", "h1")},
+            node_verdict="procedural",
+        )
+        assert result["paths"] == ["INFRA.md"]
+        assert "intent_gate:dropped=1" in fake["trace"]
+        assert "intent_gate:exempt=0" in fake["trace"]
+
+    def test_dropped_and_exempt_always_emitted_together(self, fake_vault):
+        # A lone `dropped=0` reads as "gate did nothing" when it in fact
+        # exempted every candidate — both counts must always appear.
+        fake = _fake_retrieve([_PROC, _FACT])
+        self._run(
+            fake, triggers={"p1": ("confirm an absence is genuine", "h1")},
+            node_verdict="factual",
+        )
+        gate = [t for t in fake["trace"] if t.startswith("intent_gate:")]
+        assert "intent_gate:dropped=0" in gate
+        assert "intent_gate:exempt=1" in gate
+
+    def test_trigger_lookup_failure_is_traced(self, fake_vault):
+        # A schema regression must be visible in the retrieval log, not only
+        # on stderr — otherwise it looks identical to "no procedure surfaced".
+        fake = _fake_retrieve([_PROC, _FACT])
+        self._run(fake, triggers={}, node_verdict="factual")
+        assert "intent_gate:triggers_unavailable" in fake["trace"]
+
+    def test_node_classifier_unavailable_keeps_procedure(self, fake_vault):
+        # Fail-safe direction: None must never make the gate MORE aggressive.
+        fake = _fake_retrieve([_PROC, _FACT])
+        result = self._run(
+            fake, triggers={"p1": ("some trigger text", "h1")}, node_verdict=None,
+        )
+        assert result["paths"] == ["proc1.md", "INFRA.md"]
+        assert "intent_gate:exempt=1" in fake["trace"]
+
+    def test_unknown_trigger_text_drops(self, fake_vault):
+        # No description / db error -> unknown -> drop, exactly as before LIA-124.
+        fake = _fake_retrieve([_PROC, _FACT])
+        result = self._run(fake, triggers={}, node_verdict="factual")
+        assert result["paths"] == ["INFRA.md"]
+        assert "intent_gate:dropped=1" in fake["trace"]
+
+    def test_triggers_not_fetched_when_no_procedure_surfaced(self, fake_vault):
+        # Latency bound: the extra query never runs on a procedure-free result set.
+        fake = _fake_retrieve([_FACT])
+        with patch.object(mq, "_procedure_ids", return_value=set()), \
+             patch.object(mq, "_procedure_triggers") as mock_trig, \
+             patch.object(mt, "retrieve", return_value=fake), \
+             patch.object(mt, "open_db") as mock_db:
+            mock_db.return_value.close = lambda: None
+            mq.recall("q", exclude_kinds={"standard"}, source="test")
+        # Called once with an empty set (cheap early return), never with ids.
+        assert mock_trig.call_args is None or mock_trig.call_args[0][1] == set()
+
+
+class TestProcedureTriggers:
+    """`description` is the trigger text — never `title`, never a fallback."""
+
+    class _FakeDb:
+        def __init__(self, rows):
+            self._rows = rows
+            self.sql = None
+
+        def execute(self, sql, params):
+            self.sql = sql
+            self._params = params
+            return self
+
+        def fetchall(self):
+            return self._rows
+
+    def test_selects_description_not_title(self):
+        db = self._FakeDb([("p1", "a full description", "hash1")])
+        out = mq._procedure_triggers(db, {"p1"})
+        assert out == {"p1": ("a full description", "hash1")}
+        assert "description" in db.sql
+        assert "title" not in db.sql  # measured: title flips the verdict
+
+    def test_blank_description_is_unknown(self):
+        db = self._FakeDb([("p1", "   ", "hash1"), ("p2", None, "hash2")])
+        assert mq._procedure_triggers(db, {"p1", "p2"}) == {}
+
+    def test_db_error_returns_empty(self):
+        class _Boom:
+            def execute(self, *a, **k):
+                raise RuntimeError("no such column")
+
+        assert mq._procedure_triggers(_Boom(), {"p1"}) == {}
+
+    def test_empty_ids_short_circuits(self):
+        class _NeverCalled:
+            def execute(self, *a, **k):
+                raise AssertionError("must not query on an empty id set")
+
+        assert mq._procedure_triggers(_NeverCalled(), set()) == {}
+
+
+class TestTriggerIntentCache:
+    def test_cache_hit_avoids_second_classify(self):
+        with patch.object(mq, "classify_intent", return_value="factual") as mock_cls:
+            assert mq._node_trigger_intent("p1", "h1", "text") == "factual"
+            assert mq._node_trigger_intent("p1", "h1", "text") == "factual"
+        assert mock_cls.call_count == 1
+
+    def test_changed_content_hash_reclassifies(self):
+        with patch.object(mq, "classify_intent", return_value="factual") as mock_cls:
+            mq._node_trigger_intent("p1", "h1", "text")
+            mq._node_trigger_intent("p1", "h2", "edited text")
+        assert mock_cls.call_count == 2
+
+    def test_unavailable_verdict_is_not_cached(self):
+        with patch.object(mq, "classify_intent", return_value=None) as mock_cls:
+            assert mq._node_trigger_intent("p1", "h1", "text") is None
+            assert mq._node_trigger_intent("p1", "h1", "text") is None
+        assert mock_cls.call_count == 2  # transient — must retry, not stick
+
+    def test_corrupt_cache_file_fails_open(self):
+        mq._TRIGGER_CACHE_PATH.write_text("{not json", encoding="utf-8")
+        assert mq._load_trigger_cache() == {}
+        with patch.object(mq, "classify_intent", return_value="factual"):
+            assert mq._node_trigger_intent("p1", "h1", "text") == "factual"
+
+    def test_bogus_cached_label_ignored(self):
+        mq._TRIGGER_CACHE_PATH.write_text(
+            json.dumps({"version": mq._TRIGGER_CACHE_VERSION,
+                        "entries": {"p1:h1": "banana"}}), encoding="utf-8",
+        )
+        assert mq._load_trigger_cache() == {}
+
+    def test_version_mismatch_discards_cache(self):
+        mq._TRIGGER_CACHE_PATH.write_text(
+            json.dumps({"version": mq._TRIGGER_CACHE_VERSION + 1,
+                        "entries": {"p1:h1": "factual"}}), encoding="utf-8",
+        )
+        assert mq._load_trigger_cache() == {}
+
+    def test_save_merges_instead_of_replacing(self):
+        # Data-integrity rule: a concurrent writer's entry must survive.
+        mq._save_trigger_cache({"other:h9": "procedural"})
+        with patch.object(mq, "classify_intent", return_value="factual"):
+            mq._node_trigger_intent("p1", "h1", "text")
+        assert mq._load_trigger_cache() == {
+            "other:h9": "procedural", "p1:h1": "factual",
+        }
+
+    def test_save_leaves_no_temp_files_behind(self):
+        mq._save_trigger_cache({"p1:h1": "factual"})
+        strays = list(mq._TRIGGER_CACHE_PATH.parent.glob(".intent-trigger-*.tmp"))
+        assert strays == []
+
+    def test_unwritable_cache_dir_does_not_raise(self, monkeypatch):
+        # A path whose parent cannot be created. Root is read-only on macOS and
+        # /proc is a non-writable virtual fs on Linux, so mkdir raises OSError
+        # on both; _save_trigger_cache must swallow it and still return a verdict.
+        monkeypatch.setattr(mq, "_TRIGGER_CACHE_PATH", Path("/proc/nope/cache.json"))
+        with patch.object(mq, "classify_intent", return_value="factual"):
+            assert mq._node_trigger_intent("p1", "h1", "text") == "factual"
+
+
+# ── LIA-124 real-classifier checks ───────────────────────────────────────────
+# These run the REAL local classifier on both sides of the gate. They cannot use
+# the live memory tree: conftest's autouse `isolate_memory_tree_paths` redirects
+# DB_PATH to tmp so no test can read or pollute the production store (2026-04-15
+# test-pollution guard). The production-store acceptance run is recorded in the
+# PR body instead; what stays in-repo is portable and user-agnostic.
+#
+# The trigger text below is a verbatim copy of the target node's description,
+# so a drift between this copy and the real node shows up as a failing
+# classification here rather than as silently inert retrieval in production.
+# Skipped (never failed) when Ollama is unavailable, so CI without a local model
+# stays green.
+
+_BEFORE_YOU_WRITE_IT_DOWN_TRIGGER = (
+    "Confirm an absence is genuine before writing it down as a finding. Empty "
+    "list, empty dict, zero results, wrong key, missing field, KeyError, "
+    "unverified return shape, empty output, no matches, exit code read through "
+    'a pipe. Use when about to record a result whose substance is an absence -- '
+    '"nothing matched", "no blocks found", "the count is zero", "it exited '
+    'clean", "the sweep came back clean" -- during measurement or diagnosis, '
+    "not only during a merge gate. The absence need not come from a search: an "
+    "empty list, dict, or field read back from an API, library, or command "
+    "whose OUTPUT SHAPE you have not verified is the same observation, and the "
+    "likeliest cause is that you read a key or index that does not exist rather "
+    "than that the thing is genuinely absent. NOT for an absence that is "
+    "incidental rather than the finding itself (a grep used only to navigate, a "
+    "cleanup that found nothing to clean), NOT when the tool already "
+    "distinguishes empty-set from error in its own output shape (a JSON body "
+    "with an explicit `count: 0`), and NOT a reason to re-run an expensive "
+    "operation whose negative result was already confirmed once."
+)
+
+
+def _classifier_available() -> bool:
+    try:
+        return mq.classify_intent("how do I rebuild the container") is not None
+    except Exception:
+        return False
+
+
+_LIVE = pytest.mark.skipif(
+    not _classifier_available(),
+    reason="local intent classifier (Ollama) unavailable",
+)
+
+
+@_LIVE
+def test_before_you_write_it_down_trigger_classifies_factual():
+    """The node's own trigger text must classify factual, or the fix is inert.
+
+    Measured 2026-08-23, 3/3 at temperature 0. This is the load-bearing
+    assumption of the whole two-sided match: if this text ever classifies
+    "procedural", the exemption stops firing and the node goes back to being
+    dropped on exactly the queries it exists to answer.
+    """
+    assert mq.classify_intent(_BEFORE_YOU_WRITE_IT_DOWN_TRIGGER) == "factual"
+
+
+@_LIVE
+def test_node_title_alone_would_break_the_fix():
+    """Regression guard on the column choice: title must NOT be used.
+
+    The title classifies "procedural" while the description classifies
+    "factual" (both 3/3). If `_procedure_triggers` were ever changed to read
+    or fall back to `title`, the gate would drop the exact node LIA-124
+    protects while every other test stayed green.
+    """
+    title = "establish-that-a-measured-negative-is-real-before-recording-it"
+    assert mq.classify_intent(title) == "procedural"
+
+
+@_LIVE
+@pytest.mark.parametrize("query", _ACCEPTANCE_QUERIES)
+def test_acceptance_query_keeps_procedure_at_top1(query):
+    """LIA-124 acceptance, asserted at TOP-1 — not top-5.
+
+    `drift_check --bench-snapshot` checks top-5 while the retrieval hook injects
+    top-3, which is why it passed at 95% on 2026-08-23 with retrieval visibly
+    broken. Index 0 is the assertion that could not have passed before the fix.
+
+    Ranking is stubbed to the measured production scores (target #1 at 0.530,
+    the unrelated node recall() used to inject instead at 0.312); both intent
+    classifications are real.
+    """
+    fake = _fake_retrieve([
+        {"id": "p1", "path": _TARGET_NODE, "score": 0.530, "route": "rrf"},
+        {"id": "n2", "path": "Migrated/unrelated.md", "score": 0.312, "route": "rrf"},
+    ])
+    with patch.object(mq, "_procedure_ids", return_value={"p1"}), \
+         patch.object(
+             mq, "_procedure_triggers",
+             return_value={"p1": (_BEFORE_YOU_WRITE_IT_DOWN_TRIGGER, "live-hash")},
+         ), \
+         patch.object(mt, "retrieve", return_value=fake), \
+         patch.object(mt, "open_db") as mock_db:
+        mock_db.return_value.close = lambda: None
+        result = mq.recall(query, k=3, source="test-lia124", exclude_kinds={"standard"})
+
+    assert result["paths"], f"nothing injected for {query!r}"
+    assert result["paths"][0] == _TARGET_NODE
+    assert "intent_gate:exempt=1" in fake["trace"]
+
+
 class _FakeResp:
     def __init__(self, status, body):
         self.status = status

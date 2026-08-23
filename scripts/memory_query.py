@@ -15,6 +15,7 @@ import json
 import os
 import secrets
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -380,6 +381,144 @@ def _procedure_ids(db, result_ids: list[str]) -> set[str]:
     return {r[0] for r in rows}
 
 
+# ── LIA-124: two-sided intent match ──────────────────────────────────────────
+# The LIA-337 gate above drops EVERY procedure on a factual query. That inverts
+# for a procedure whose TRIGGER IS the act of stating a factual finding — e.g.
+# `establish-that-a-measured-negative-is-real-before-recording-it`, which exists
+# to fire the moment you write down "nothing matched". Such a query classifies
+# factual by construction, so the node was dropped precisely when it was needed
+# (measured 2026-08-23: raw retrieve ranked it #1 at 0.530 for "nothing matched
+# so I am recording that it is absent"; recall() injected an unrelated node at
+# 0.312 instead).
+#
+# The fix classifies the NODE's own trigger too, and drops only when BOTH sides
+# say procedural. This strictly NARROWS the drop condition — the gate can never
+# become more aggressive than it is today.
+# Path override only, not a feature gate: the two-sided match is defaults-on via
+# DEUS_PROCEDURE_INTENT_GATE and never branches on this. No caller sets it today
+# — tests isolate the cache by monkeypatching _TRIGGER_CACHE_PATH (LIA-124).
+_TRIGGER_CACHE_PATH = Path(
+    os.environ.get("DEUS_INTENT_TRIGGER_CACHE", "~/.deus/intent_trigger_cache.json")
+).expanduser()
+
+# Bump to invalidate every cached node-trigger verdict at once — the classifier
+# model chain or _INTENT_PROMPT_TEMPLATE changing makes old verdicts unsound,
+# and the content_hash key alone cannot see that (the NODE did not change).
+_TRIGGER_CACHE_VERSION = 1
+
+# Process-local memo over the on-disk cache, so repeated candidates inside one
+# recall() (and across recalls in a long-lived MCP server) classify once.
+_trigger_intent_memo: dict[str, str] = {}
+
+
+def _procedure_triggers(db, proc_ids: set[str]) -> dict[str, tuple[str, str]]:
+    """Map procedure id -> (description, content_hash) from the OPEN db.
+
+    `description` is the ONLY trigger text. NOT `title`, not a concatenation,
+    and no fallback chain: measured 3/3 at temperature 0 on the target node,
+    the title ("establish-that-a-measured-negative-is-real-before-recording-it")
+    classifies *procedural* while the 1133-char description classifies
+    *factual*. Feeding the title would drop the exact node this fix protects,
+    with every test still green — so the column choice is load-bearing.
+
+    Any failure returns {} -> the caller treats the trigger as unknown and
+    drops, which is today's behaviour exactly (never more aggressive).
+    """
+    if not proc_ids:
+        return {}
+    try:
+        ids = sorted(proc_ids)
+        placeholders = ",".join("?" * len(ids))
+        rows = db.execute(
+            f"SELECT id, description, content_hash FROM nodes WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+        return {
+            r[0]: (r[1], r[2] or "")
+            for r in rows
+            if isinstance(r[1], str) and r[1].strip()
+        }
+    except Exception as exc:  # sqlite error, schema drift, mock db in tests
+        print(f"[deus] procedure_triggers failed: {exc}", file=sys.stderr)
+        return {}
+
+
+def _load_trigger_cache() -> dict[str, str]:
+    """Node-trigger verdicts from disk; missing or corrupt file fails open.
+
+    A version mismatch is treated as no cache at all, so a future change to the
+    classifier or prompt can force wholesale re-classification by bumping
+    _TRIGGER_CACHE_VERSION rather than asking anyone to delete a file by hand.
+    """
+    try:
+        data = json.loads(_TRIGGER_CACHE_PATH.read_text(encoding="utf-8"))
+        if data.get("version") != _TRIGGER_CACHE_VERSION:
+            return {}
+        entries = data.get("entries", {})
+        return {
+            k: v for k, v in entries.items()
+            if isinstance(k, str) and v in ("procedural", "factual")
+        }
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _save_trigger_cache(new_entries: dict[str, str]) -> None:
+    """Merge `new_entries` into the on-disk cache and persist atomically.
+
+    Merge-don't-replace: two memory_query processes classifying different
+    procedures concurrently would otherwise clobber each other (last writer
+    wins). Re-reads immediately before writing, and swaps via os.replace so a
+    crash mid-write cannot leave a truncated file behind. Best-effort
+    throughout — a failed write just means the next process re-classifies.
+    """
+    try:
+        _TRIGGER_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        merged = {**_load_trigger_cache(), **new_entries}
+        payload = json.dumps({"version": _TRIGGER_CACHE_VERSION, "entries": merged},
+                             sort_keys=True)
+        fd, tmp = tempfile.mkstemp(
+            dir=str(_TRIGGER_CACHE_PATH.parent), prefix=".intent-trigger-", suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+            os.replace(tmp, _TRIGGER_CACHE_PATH)
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        return
+
+
+def _node_trigger_intent(node_id: str, content_hash: str, text: str) -> str | None:
+    """Classify a procedure node's OWN trigger text, memoized by content.
+
+    Keyed on `node_id:content_hash`, so editing a node's description re-classifies
+    rather than serving a stale verdict. Returns None when every classifier tier
+    is unavailable — the caller then KEEPS the procedure (fail-safe = recall,
+    the same direction the query-side gate already errs in).
+    """
+    key = f"{node_id}:{content_hash}"
+    if key in _trigger_intent_memo:
+        return _trigger_intent_memo[key]
+
+    disk = _load_trigger_cache()
+    if key in disk:
+        _trigger_intent_memo[key] = disk[key]
+        return disk[key]
+
+    verdict = classify_intent(text)
+    if verdict is None:
+        return None  # transient: never cached, so a later call retries
+    _trigger_intent_memo[key] = verdict
+    _save_trigger_cache({key: verdict})  # merges against a fresh disk read
+    return verdict
+
+
 def _atom_fallback(query: str, k: int, *, max_context_chars: int | None = None) -> str | None:
     """Best-effort fallback: query atoms when tree abstains. Returns None on any failure."""
     if ATOM_DIST_THRESHOLD <= 0:
@@ -457,8 +596,13 @@ def recall(
         # LIA-337 intent gate (1 of 2): detect procedure candidates here (db open);
         # classify runs after db.close() so no network call holds the connection.
         _proc_ids: set[str] = set()
+        _proc_triggers: dict[str, tuple[str, str]] = {}
         if _INTENT_GATE_ENABLED and "procedure" not in _excl and not raw["fell_back"]:
             _proc_ids = _procedure_ids(db, [r["id"] for r in raw["results"]])
+            # LIA-124: the node-side trigger text, read while the db is still
+            # open. Classification itself happens after close(), same as the
+            # query-side classify.
+            _proc_triggers = _procedure_triggers(db, _proc_ids)
     finally:
         db.close()
 
@@ -469,8 +613,33 @@ def recall(
     if _proc_ids:
         intent = classify_intent(query)
         if intent == "factual":
-            kept = [r for r in raw["results"] if r["id"] not in _proc_ids]
+            # LIA-124: two-sided match. A procedure survives a factual query when
+            # its OWN trigger does not classify procedural — i.e. the procedure
+            # exists to fire on a statement of fact, so this query IS its trigger.
+            # An unknown trigger (no description, or a db error) still drops,
+            # preserving pre-LIA-124 behaviour; None from the classifier keeps,
+            # matching the query-side fail-safe.
+            if not _proc_triggers:
+                # Visible in the retrieval log, not just stderr: distinguishes a
+                # schema regression / db error from "no procedure surfaced".
+                raw["trace"].append("intent_gate:triggers_unavailable")
+            kept, exempt = [], 0
+            for r in raw["results"]:
+                if r["id"] not in _proc_ids:
+                    kept.append(r)
+                    continue
+                trigger = _proc_triggers.get(r["id"])
+                if trigger is None:
+                    continue  # unknown trigger -> drop (status quo)
+                text, chash = trigger
+                if _node_trigger_intent(r["id"], chash, text) != "procedural":
+                    kept.append(r)
+                    exempt += 1
+            # Both counts, always, and never one without the other: a lone
+            # `dropped=0` reads as "the gate did nothing" when in fact it may
+            # have intervened for every candidate and exempted them all.
             raw["trace"].append(f"intent_gate:dropped={len(raw['results']) - len(kept)}")
+            raw["trace"].append(f"intent_gate:exempt={exempt}")
             raw["results"] = kept
         elif intent == "procedural":
             raw["trace"].append("intent_gate:kept")
