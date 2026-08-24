@@ -1,5 +1,5 @@
 ---
-name: research
+name: deep-research
 description: Multi-stage research pipeline with evidence-quality ratings and citations. Classifies intent, clarifies scope, then routes to shallow (single-pass) or deep (parallel fan-out) research. Composes with Parallel AI MCP when available.
 user_invocable: true
 triggers:
