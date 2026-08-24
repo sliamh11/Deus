@@ -59,7 +59,7 @@
     "@commitlint/cli": "^21.1.0",
     "@commitlint/config-conventional": "21.1.0",
     "@eslint/js": "^10.0.1",
-    "@langchain/anthropic": "^1.5.1",
+    "@langchain/anthropic": "^1.5.8",
     "@langchain/core": "^1.2.2",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^26.2.0",
