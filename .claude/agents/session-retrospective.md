@@ -73,8 +73,9 @@ Step 7's Procedure Candidates already work:
   entry -- a hard always-on rule, not a recall-surfaced one) -> route action: "promote to
   `~/.claude/rules/*.md` (+ mirror to `Communication-Style-Prompt.md`/config `persona` for Codex)"
 - **repo-specific, insight/behavior** (references a file/symbol/PR/migration/product-concept unique
-  to this repo) -> route action: "project CC memory (`project_*.md`/`feedback_*.md` +
-  `MEMORY.md` pointer)"
+  to this repo) -> route action: "project CC memory (`project_*.md`/`feedback_*.md` in the
+  project's memory dir -- NO `MEMORY.md` pointer; that index was retired 2026-08-26 per LIA-137
+  and retrieval finds these files without one)"
 - **repo-specific, procedure/workflow** (a repeatable multi-step thing, not a one-off fact) -> route
   action: "flag for `/learn-procedure`"
 - **redundant** (high overlap with an existing rule/procedure/skill already surfaced by the
@@ -220,26 +221,57 @@ Read these in full. Focus on: `## Decisions Made`, `## Key Learnings`, `## Pendi
 
 ### Step 5: Behavioral drift check
 
-**Locate MEMORY.md via the exact-path encoding, not a basename-substring glob** -- this is the same
-`~/.claude/projects/<path>/` namespace `compress/skill.md` Step 0.6 and `branches/external-mode.md`
-condition (a) both had to convert away from a glob for the identical reason: `*$(basename
-$REPO_ROOT)*` can uniquely substring-match a completely different repo's tracked directory (e.g.
-`project` matching `project-other`), silently pulling a WRONG repo's `MEMORY.md` -- including its
-CRITICAL rules -- into this run's Behavioral Drift section, with no error signal since the wrong
-match still "succeeds." No ownership claim is needed here (this step only reads, never writes into
-that directory), just the same exact-match lookup:
+**Read the rules themselves, not an index that points at them.**
+
+This step used to read `MEMORY.md` and extract lines tagged `**(CRITICAL)**`. That input no longer
+exists: per-project `MEMORY.md` was retired on 2026-08-26 (LIA-137) once retrieval stopped
+depending on it. The old spec's failure mode is the reason this section is worth reading carefully
+-- it said *"if not found, skip and note 'memory index not found'"*, which renders an **empty
+Behavioral Drift section**, and an empty section is indistinguishable from "no drift found." A
+retrospective that silently stops checking drift is worse than one that does not claim to.
+
+The replacement is strictly richer, because the rule files ARE the behavioural contract rather
+than pointers to it. Measured 2026-08-26: 152 host rules + 3 repo rules, against the retired
+index's 9 CRITICAL tags.
+
 ```bash
+# 1. Host-level behavioural rules -- injected into every turn, so they are the
+#    strongest statement of intended behaviour available.
+HOST_RULES="$HOME/.claude/rules"
+
+# 2. Repo-level rules for the project under retrospective. Same exact-path
+#    discipline as before: NEVER a basename-substring glob. `*$(basename
+#    $REPO_ROOT)*` can uniquely match a different repo (e.g. `project` matching
+#    `project-other`) and pull the WRONG repo's rules in with no error signal,
+#    because the wrong match still "succeeds".
+REPO_RULES="$REPO_ROOT/.claude/rules"
+
+# 3. Captured procedures for this project, located by the exact encoding.
 ENCODED_ROOT=$(printf '%s' "$REPO_ROOT" | sed 's/\//-/g')
-MEMORY_FILE="$HOME/.claude/projects/${ENCODED_ROOT}/memory/MEMORY.md"
-[ -f "$MEMORY_FILE" ] || MEMORY_FILE=""
+PROCEDURES="$HOME/.claude/projects/${ENCODED_ROOT}/memory/procedures"
+
+RULE_COUNT=$( { ls "$HOST_RULES"/*.md "$REPO_RULES"/*.md "$PROCEDURES"/*.md; } 2>/dev/null | wc -l | tr -d ' ')
 ```
 
-If not found (`MEMORY_FILE` empty), skip and note "memory index not found" in Scope.
+**Fail loudly, never silently.** If `RULE_COUNT` is 0, do NOT skip and do NOT emit an empty
+Behavioral Drift section. Write the section with the single line:
 
-If found:
-1. Read MEMORY.md index. Extract lines tagged `**(CRITICAL)**` (~15 entries).
-2. For each CRITICAL rule, read its `.md` file.
-3. Scan session-log bodies for evidence: explicit mentions, behavior contradicting the rule, user corrections.
+> **UNKNOWN -- no rule sources readable.** Checked `<HOST_RULES>`, `<REPO_RULES>`, `<PROCEDURES>`.
+> This is a broken input, not an absence of drift.
+
+and name it in Scope as a defect in this run, not a property of the window. The distinction is the
+whole point: "no drift observed" and "drift not checked" must never render the same way.
+
+When sources are found:
+1. Read the rule files. Host rules and repo rules are both in scope; procedures describe
+   *how* things are done and are weaker evidence of intended behaviour than a rule, so prefer
+   rules when the two disagree.
+2. Do not attempt to read all 150+ in full. Select by relevance to what the session window
+   actually did -- a rule about deploy safety is only checkable against a window containing a
+   deploy -- and say in the output how many were examined out of how many exist, so a reader can
+   see the coverage rather than assume it.
+3. Scan session-log bodies for evidence: explicit mentions, behaviour contradicting the rule,
+   user corrections.
 
 Evidence quality: an explicit user correction is strong evidence. A decision entry is moderate. Absence of evidence is NOT adherence -- mark as "Unobservable."
 

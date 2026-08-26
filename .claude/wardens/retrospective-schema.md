@@ -74,11 +74,18 @@ opt-in gate — see `branches/external-mode.md`.
 - `Session-Logs/` contains both flat files and subdirectory-per-day layouts.
 - Files named `*compact-only*` are near-empty maintenance sessions -- include in
   window count but they rarely carry pattern signal.
-- MEMORY.md lives at `$HOME/.claude/projects/<exact-path-encoded-REPO_ROOT>/memory/MEMORY.md` --
-  the directory name is Claude Code's own exact full-path encoding (`/` -> `-`), NOT a
-  `*<repo-name>*` substring glob (a glob can uniquely match a different repo's tracked directory).
-  The agent discovers it automatically via `session-retrospective.md` Step 5's exact-match lookup.
-- Only read CRITICAL-tagged feedback entries for behavioral drift (not all 80+).
+- Behavioral drift reads the RULE FILES, not an index of them. Per-project `MEMORY.md` was retired
+  on 2026-08-26 (LIA-137); the old "read MEMORY.md, extract `**(CRITICAL)**` tags" path no longer
+  has an input, and its "skip if not found" branch rendered an empty Behavioral Drift section that
+  read identically to "no drift found". Sources are now `~/.claude/rules/`, the project's own
+  `<REPO_ROOT>/.claude/rules/`, and `$HOME/.claude/projects/<exact-path-encoded-REPO_ROOT>/memory/
+  procedures/`. The encoding is Claude Code's own exact full-path form (`/` -> `-`), NEVER a
+  `*<repo-name>*` substring glob -- a glob can uniquely match a different repo's tracked directory
+  and succeed while being wrong. See `session-retrospective.md` Step 5.
+- Do not read every rule (150+). Select by relevance to what the window actually did, and report
+  how many were examined out of how many exist so coverage is visible rather than assumed.
+- Zero readable rule sources is a BROKEN INPUT, not an absence of drift. Emit an explicit UNKNOWN
+  naming the paths checked; never an empty section.
 
 ## required_sections
 
