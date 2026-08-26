@@ -6,17 +6,44 @@ Why this exists: several call sites piped ``gh pr checks --watch`` through
 ``tail``/``grep``, which masks gh's non-zero exit and can wave a failing PR
 through a merge gate. This helper owns the poll loop, parses the checks JSON
 explicitly, and returns an authoritative ``(green: bool, detail: str)`` — never
-a masked exit. The zero-registered-checks case (gh can report exit 0 + ``[]``)
-is disambiguated against an unfiltered query so "no required checks" is never
-mistaken for "all green" (fail-closed).
+a masked exit.
+
+Three states are kept distinct; collapsing any two of them is how this gate
+previously became unpassable:
+
+(a) required checks exist and are green            -> exit 0
+(b) required checks exist and are red or pending   -> not green
+(c) NO required checks exist at all                -> the named
+    ``NO REQUIRED CHECKS`` path below, never a silent green
+
+State (c) is permanent on a private repo without GitHub Pro: branch protection
+cannot be enabled there (``gh api repos/OWNER/REPO/branches/main/protection``
+answers 403), so no branch ever has a required check. ``gh pr checks --required``
+then exits non-zero with its explanation on STDERR and STDOUT EMPTY. That
+signature is recognised explicitly and routed to (c); any OTHER unreadable
+result stays an unreadable read and burns the retry budget. "gh could not be
+read" and "gh says there are no required checks" are different facts and do not
+share an exit code.
+
+The (c) path re-queries WITHOUT ``--required`` and additionally asserts
+``mergeStateStatus == CLEAN``, and says so in its detail string. It fails closed
+on every ambiguity: an unreadable unfiltered query, an unreadable merge state,
+or any merge state other than CLEAN is not green.
+
+Granularity: ``gh pr checks`` reports individual check runs (jobs), which is the
+level at which a verdict is actually decided. The run ROLLUP is not used and must
+not be — a run reads ``failure`` when any job fails, including irrelevant ones —
+and neither is ``gh run watch``, which prints step-level exit codes for steps
+inside jobs that still conclude ``success``. The job-level equivalent for a raw
+run is ``gh run view <id> --json jobs -q '.jobs[] | (.conclusion) + " " + (.name)'``.
 
 Poll cadence/ceiling are env-overridable (``DEUS_CI_POLL_INTERVAL`` /
 ``DEUS_CI_POLL_TIMEOUT`` / ``DEUS_CI_POLL_RETRIES``) — operational tuning knobs
 with safe defaults, not feature gates (and ``scripts/ci/`` is flag-lint
 excluded). Cross-platform: arg-list subprocess, no shell.
 
-Exit codes: 0 = required checks green; 5 = not green / timeout / unreadable;
-2 = usage error.
+Exit codes: 0 = green (required checks, or the explicit no-required-checks
+path); 5 = not green / timeout / unreadable; 2 = usage error.
 """
 from __future__ import annotations
 
@@ -38,6 +65,19 @@ from _exit_codes import INTERNAL_ERROR, SUCCESS, USAGE_ERROR  # noqa: E402
 _PENDING = "pending"
 _PASSING = frozenset({"pass", "skipping"})
 
+# Distinct from None. None means "gh could not be read"; this means "gh was read
+# fine and reported that the branch has no required checks at all" — state (c).
+# Two different facts, so two different values; see the module docstring.
+NO_REQUIRED_CHECKS = object()
+
+# Prefix stamped on every state-(c) detail string so the path is named in the
+# output rather than being inferred from a bare "green".
+_NO_REQ = "NO REQUIRED CHECKS CONFIGURED: "
+
+# gh's stderr when a branch has no required checks, e.g.
+#   no required checks reported on the 'my-branch' branch
+_NO_REQ_STDERR = "no required checks"
+
 
 def _run(argv: list[str], timeout: int = 60):
     """Arg-list subprocess (no shell). Returns the CompletedProcess, or None on
@@ -49,11 +89,21 @@ def _run(argv: list[str], timeout: int = 60):
 
 
 def _query_checks(pr: int, *, required: bool):
-    """Return the parsed checks list for a PR, or None if gh produced no JSON.
+    """Return the parsed checks list for a PR.
 
-    None is deliberately ambiguous — a transient gh failure OR a "no checks"
-    message — and is disambiguated by the caller via the required/unfiltered
-    pair plus the retry budget.
+    Three possible returns, deliberately distinct:
+
+    * ``list``               — gh was read; these are the checks (possibly ``[]``)
+    * ``NO_REQUIRED_CHECKS`` — gh was read and says the branch has NO required
+      checks (``--required`` only). A definitive answer, not a failure.
+    * ``None``               — gh could not be read. Genuinely ambiguous, and
+      the only value the caller retries on.
+
+    The ``NO_REQUIRED_CHECKS`` signature is narrow on purpose: non-zero exit,
+    EMPTY stdout, and gh's own wording on stderr. Anything else — partial
+    output, an auth error, an unrecognised message — stays ``None`` and burns
+    the retry budget, because misreading a real failure as "no required checks"
+    would open the gate.
     """
     argv = ["gh", "pr", "checks", str(pr), "--json", "name,state,bucket"]
     if required:
@@ -63,11 +113,70 @@ def _query_checks(pr: int, *, required: bool):
         return None
     out = (proc.stdout or "").strip()
     if not out.startswith("["):
-        return None  # "no checks" message / error text, not a JSON array
+        if required and not out and _NO_REQ_STDERR in (proc.stderr or "").lower():
+            return NO_REQUIRED_CHECKS
+        return None  # error text / unrecognised message, not a JSON array
     try:
         return json.loads(out)
     except json.JSONDecodeError:
         return None
+
+
+def _merge_state(pr: int):
+    """Return the PR's ``mergeStateStatus`` upper-cased, or None if unreadable.
+
+    None is treated as failure by the caller — this is a merge gate, so an
+    unreadable merge state is never waved through.
+    """
+    proc = _run(["gh", "pr", "view", str(pr), "--json", "mergeStateStatus"])
+    if proc is None or proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads((proc.stdout or "").strip() or "{}")
+    except json.JSONDecodeError:
+        return None
+    return str(payload.get("mergeStateStatus") or "").upper() or None
+
+
+def _resolve_without_required(pr: int):
+    """State (c): decide a PR that has NO required checks at all.
+
+    Returns a terminal ``(green, detail)`` tuple, or a ``str`` reason meaning
+    "not decidable yet, keep polling". Every detail string is prefixed so the
+    caller's output names this path instead of implying a normal verdict.
+
+    Green here needs BOTH halves: every unfiltered check passing AND
+    ``mergeStateStatus == CLEAN``. Either half unreadable, or a merge state that
+    is anything other than CLEAN, is not green.
+    """
+    allchecks = _query_checks(pr, required=False)
+    if allchecks is None:
+        return f"{_NO_REQ}unfiltered `gh pr checks` unreadable"
+    if not allchecks:
+        return f"{_NO_REQ}no checks registered yet"
+
+    buckets = [_bucket(c) for c in allchecks]
+    if _PENDING in buckets:
+        pend = [c.get("name") for c in allchecks if _bucket(c) == _PENDING]
+        return f"{_NO_REQ}still pending: {pend}"
+
+    not_green = [
+        f"{c.get('name')}({_bucket(c) or '?'})"
+        for c in allchecks
+        if _bucket(c) not in _PASSING
+    ]
+    if not_green:
+        return False, f"{_NO_REQ}checks not green: {not_green}"
+
+    state = _merge_state(pr)
+    if state is None:
+        return False, f"{_NO_REQ}all {len(allchecks)} checks pass but mergeStateStatus is unreadable — failing closed"
+    if state != "CLEAN":
+        return False, f"{_NO_REQ}all {len(allchecks)} checks pass but mergeStateStatus={state}, not CLEAN"
+    return True, (
+        f"{_NO_REQ}fell back to unfiltered `gh pr checks` — "
+        f"all {len(allchecks)} checks green and mergeStateStatus=CLEAN"
+    )
 
 
 def _bucket(check: dict) -> str:
@@ -84,9 +193,10 @@ def wait_for_required_checks(
     """Poll a PR's required checks until they settle. Returns ``(green, detail)``.
 
     ``green`` is True only when every required check is in a passing/skipping
-    bucket. A PR with zero required checks is NEVER reported green (fail-closed):
-    if other checks exist, none are *required* (definitive False); if no checks
-    exist at all it is treated as not-yet-registered and retried until timeout.
+    bucket — or, when the branch has NO required checks at all, via the explicit
+    ``NO REQUIRED CHECKS CONFIGURED`` path, which additionally requires
+    ``mergeStateStatus == CLEAN`` and names itself in ``detail``. An unreadable
+    gh is never that path: it stays a retried unreadable read and fails closed.
     """
     deadline = time.monotonic() + timeout
     transient = 0
@@ -94,7 +204,7 @@ def wait_for_required_checks(
         required = _query_checks(pr, required=True)
 
         if required is None:
-            # No JSON from the required query — transient error or "no checks".
+            # gh genuinely unreadable — transient error, auth failure, drift.
             if time.monotonic() >= deadline:
                 return False, f"timed out after {timeout}s (gh unreadable)"
             transient += 1
@@ -104,14 +214,17 @@ def wait_for_required_checks(
             continue
         transient = 0
 
-        if not required:
-            # Zero required checks. Disambiguate against an unfiltered query so
-            # an empty `[]` is never mistaken for "all green".
-            allchecks = _query_checks(pr, required=False)
-            if allchecks:
-                return False, "no required checks configured (checks exist but none required)"
+        if required is NO_REQUIRED_CHECKS or not required:
+            # State (c). Reached two ways that mean the same thing: gh errored
+            # with its no-required-checks message (private repo, no branch
+            # protection — the permanent case), or it returned a readable `[]`.
+            # Both are definitive "zero required checks", so neither is retried
+            # as an unreadable read.
+            outcome = _resolve_without_required(pr)
+            if isinstance(outcome, tuple):
+                return outcome
             if time.monotonic() >= deadline:
-                return False, f"no checks registered after {timeout}s"
+                return False, f"{outcome} — timed out after {timeout}s"
             time.sleep(interval)
             continue
 

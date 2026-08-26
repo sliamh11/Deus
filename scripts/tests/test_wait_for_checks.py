@@ -104,30 +104,218 @@ def test_pending_then_green(wfc, monkeypatch):
     assert green is True
 
 
-# ── zero-registered-checks disambiguation ────────────────────────────────────
+# ── state (c): no required checks configured ─────────────────────────────────
+#
+# These lock in the ROUTING, not merely the outcome. The bug this section exists
+# for was that `_query_checks` collapsed "gh says no required checks" into the
+# same None as "gh could not be read", so the zero-checks branch was unreachable
+# and every PR on a repo without branch protection died on the retry budget.
+# Asserting only "green on a repo with no required checks" would still pass if
+# someone bolted on a parallel state and left the original branch dead — so
+# these assert which path was taken, via the `NO REQUIRED CHECKS CONFIGURED`
+# stamp that only that path emits.
 
 
-def test_no_checks_registered_is_not_green(wfc, monkeypatch):
-    """Required `[]` + unfiltered `[]` → checks not registered yet → retried to
-    timeout, never reported green."""
-    monkeypatch.setattr(wfc, "_query_checks", lambda pr, *, required: [])
+class _Proc:
+    """Minimal stand-in for subprocess.CompletedProcess."""
+
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _gh_no_required(branch="my-branch"):
+    """gh's real signature for a branch with no required checks: non-zero exit,
+    EMPTY stdout, message on stderr. Captured from a live run."""
+    return _Proc(
+        returncode=1,
+        stdout="",
+        stderr=f"no required checks reported on the '{branch}' branch\n",
+    )
+
+
+def test_query_checks_maps_gh_no_required_to_its_own_sentinel(wfc, monkeypatch):
+    """The routing fix itself: gh's no-required-checks signature must NOT come
+    back as None (the unreadable value), or the retry budget eats it."""
+    monkeypatch.setattr(wfc, "_run", lambda argv, timeout=60: _gh_no_required())
+    assert _query(wfc, required=True) is wfc.NO_REQUIRED_CHECKS
+    assert _query(wfc, required=True) is not None
+
+
+def _query(wfc, *, required):
+    return wfc._query_checks(1, required=required)
+
+
+def test_query_checks_keeps_other_failures_unreadable(wfc, monkeypatch):
+    """Fail closed on anything that is not gh's exact wording — an auth error
+    must stay `None` so it is retried, never mistaken for "none required"."""
+    monkeypatch.setattr(
+        wfc, "_run",
+        lambda argv, timeout=60: _Proc(1, "", "gh: Bad credentials (HTTP 401)\n"),
+    )
+    assert _query(wfc, required=True) is None
+
+
+def test_query_checks_ignores_the_signature_on_the_unfiltered_query(wfc, monkeypatch):
+    """`--required` is the only query that can legitimately answer "none
+    required"; the unfiltered one saying so would be nonsense, so stay closed."""
+    monkeypatch.setattr(wfc, "_run", lambda argv, timeout=60: _gh_no_required())
+    assert _query(wfc, required=False) is None
+
+
+def test_query_checks_stays_unreadable_when_stdout_is_not_empty(wfc, monkeypatch):
+    """Partial output alongside the message means something else went wrong."""
+    monkeypatch.setattr(
+        wfc, "_run",
+        lambda argv, timeout=60: _Proc(1, "garbage", "no required checks reported\n"),
+    )
+    assert _query(wfc, required=True) is None
+
+
+def _routed(wfc, monkeypatch, *, allchecks, merge_state, required=None):
+    """Drive the loop from the sentinel through state (c)."""
+    sentinel = wfc.NO_REQUIRED_CHECKS if required is None else required
+
+    def fake(pr, *, required):
+        return sentinel if required else allchecks
+
+    monkeypatch.setattr(wfc, "_query_checks", fake)
+    monkeypatch.setattr(wfc, "_merge_state", lambda pr: merge_state)
     monkeypatch.setattr(wfc.time, "sleep", lambda s: None)
     monkeypatch.setattr(wfc.time, "monotonic", _advancing_clock())
-    green, detail = wfc.wait_for_required_checks(1, interval=0, timeout=1)
+    return wfc.wait_for_required_checks(1, interval=0, timeout=1)
+
+
+def test_no_required_checks_green_names_the_path(wfc, monkeypatch):
+    """State (c) green: all unfiltered checks pass AND mergeStateStatus=CLEAN.
+    Must never be a bare "green" — the detail names the fallback it took."""
+    green, detail = _routed(
+        wfc, monkeypatch,
+        allchecks=[{"name": "ci", "bucket": "pass"}, {"name": "lint", "bucket": "pass"}],
+        merge_state="CLEAN",
+    )
+    assert green is True
+    assert "NO REQUIRED CHECKS CONFIGURED" in detail
+    assert "mergeStateStatus=CLEAN" in detail
+
+
+def test_readable_empty_required_list_takes_the_same_path(wfc, monkeypatch):
+    """A readable `[]` from --required means the same thing as the sentinel, so
+    it routes to state (c) too — not to the retry budget."""
+    green, detail = _routed(
+        wfc, monkeypatch,
+        allchecks=[{"name": "ci", "bucket": "pass"}],
+        merge_state="CLEAN",
+        required=[],
+    )
+    assert green is True
+    assert "NO REQUIRED CHECKS CONFIGURED" in detail
+
+
+def test_no_required_checks_red_is_not_green(wfc, monkeypatch):
+    """State (b) reached through the (c) path: a failing check still fails."""
+    green, detail = _routed(
+        wfc, monkeypatch,
+        allchecks=[{"name": "ci", "bucket": "pass"}, {"name": "test-windows", "bucket": "fail"}],
+        merge_state="CLEAN",
+    )
+    assert green is False
+    assert "NO REQUIRED CHECKS CONFIGURED" in detail
+    assert "test-windows" in detail
+
+
+def test_no_required_checks_unclean_merge_state_fails_closed(wfc, monkeypatch):
+    """All checks pass but the PR is not mergeable — the second half of the
+    assertion is what stops this being a rubber stamp."""
+    green, detail = _routed(
+        wfc, monkeypatch,
+        allchecks=[{"name": "ci", "bucket": "pass"}],
+        merge_state="DIRTY",
+    )
+    assert green is False
+    assert "mergeStateStatus=DIRTY" in detail
+
+
+def test_no_required_checks_unreadable_merge_state_fails_closed(wfc, monkeypatch):
+    """Cannot determine mergeability → not green. This is a merge gate."""
+    green, detail = _routed(
+        wfc, monkeypatch,
+        allchecks=[{"name": "ci", "bucket": "pass"}],
+        merge_state=None,
+    )
+    assert green is False
+    assert "failing closed" in detail
+
+
+def test_no_required_checks_unreadable_unfiltered_fails_closed(wfc, monkeypatch):
+    """Sentinel reached but the fallback query itself is unreadable → not green,
+    and it times out rather than guessing."""
+    green, detail = _routed(wfc, monkeypatch, allchecks=None, merge_state="CLEAN")
+    assert green is False
+    assert "unreadable" in detail
+
+
+def test_no_required_checks_pending_is_not_green(wfc, monkeypatch):
+    """A pending check on the (c) path polls to the deadline, never green."""
+    green, detail = _routed(
+        wfc, monkeypatch,
+        allchecks=[{"name": "ci", "bucket": "pending"}],
+        merge_state="CLEAN",
+    )
+    assert green is False
+    assert "still pending" in detail
+
+
+def test_no_checks_registered_at_all_is_not_green(wfc, monkeypatch):
+    """No checks whatsoever → not-yet-registered → retried to timeout, never
+    reported green."""
+    green, detail = _routed(wfc, monkeypatch, allchecks=[], merge_state="CLEAN")
     assert green is False
     assert "no checks registered" in detail
 
 
-def test_checks_exist_but_none_required_fails_closed(wfc, monkeypatch):
-    """Required `[]` while unfiltered has checks → none are *required* → False."""
+def test_end_to_end_from_raw_gh_output_to_green(wfc, monkeypatch):
+    """The whole chain with nothing above `_run` faked: gh's real
+    no-required-checks stderr in, a named state-(c) green out.
 
-    def fake(pr, *, required):
-        return [] if required else [{"name": "advisory", "bucket": "pass"}]
+    The other state-(c) tests inject the sentinel directly, so they would still
+    pass if `_query_checks` were left mapping gh's message to None. This one
+    would not — it is the test that actually holds the dead branch open.
+    """
+    calls = []
 
-    monkeypatch.setattr(wfc, "_query_checks", fake)
+    def fake_run(argv, timeout=60):
+        calls.append(argv)
+        if "--required" in argv:
+            return _gh_no_required()
+        if argv[1] == "pr" and argv[2] == "checks":
+            return _Proc(0, '[{"name":"ci","bucket":"pass"}]', "")
+        return _Proc(0, '{"mergeStateStatus":"CLEAN"}', "")
+
+    monkeypatch.setattr(wfc, "_run", fake_run)
+    monkeypatch.setattr(wfc.time, "sleep", lambda s: None)
     green, detail = wfc.wait_for_required_checks(1, interval=0, timeout=10)
+    assert green is True
+    assert "NO REQUIRED CHECKS CONFIGURED" in detail
+    # And it got there without burning retries on a "transient" read.
+    assert sum("--required" in a for a in calls) == 1
+
+
+def test_gh_unreadable_is_still_retried_not_routed_to_state_c(wfc, monkeypatch):
+    """The separation the whole fix rests on: a genuine unreadable read must NOT
+    reach the no-required-checks path. Asserts by the message, since the (c)
+    path would have stamped its own prefix."""
+    monkeypatch.setattr(wfc, "_query_checks", lambda pr, *, required: None)
+    monkeypatch.setattr(
+        wfc, "_merge_state",
+        lambda pr: pytest.fail("state (c) must not be reached on an unreadable read"),
+    )
+    monkeypatch.setattr(wfc.time, "sleep", lambda s: None)
+    green, detail = wfc.wait_for_required_checks(1, interval=0, timeout=600, retries=2)
     assert green is False
-    assert "none required" in detail
+    assert "unreadable after 2 retries" in detail
+    assert "NO REQUIRED CHECKS CONFIGURED" not in detail
 
 
 # ── timeout & retry ──────────────────────────────────────────────────────────
