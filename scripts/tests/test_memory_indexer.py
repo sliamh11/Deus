@@ -1803,6 +1803,190 @@ def test_cmd_prune_soft_deletes_orphans(mi, fresh_vault, capsys):
     db.close()
 
 
+def test_migrate_prefix_repairs_a_move(mi, fresh_vault, capsys, tmp_path):
+    """LIA-137: repoint moved rows, preserving metadata, reviving narrowly.
+
+    Reproduces 2026-08-26: rows address an OLD vault path, the files live at a
+    NEW one, and prune already orphaned some as `file_deleted`. A re-index
+    would restore the count and destroy the typing (it took the real corpus
+    from 2079 typed atoms to 0). A path rewrite must not.
+    """
+    db = mi.open_db()
+    old = tmp_path / "OldVault" / "Atoms"
+    new = tmp_path / "NewVault" / "Atoms"
+    new.mkdir(parents=True)
+    for i in range(6):
+        (new / f"atom_{i}.md").write_text("x", encoding="utf-8")
+        oa = "2026-08-26" if i < 4 else None
+        reason = "file_deleted" if i < 3 else ("ttl" if i == 3 else None)
+        db.execute(
+            "INSERT INTO entries (path, date, chunk, type, category, confidence, "
+            "orphaned_at, orphan_reason) VALUES (?,'2024-01-01','c','atom',?,?,?,?)",
+            [str(old / f"atom_{i}.md"), "methodology", 0.8, oa, reason])
+    db.commit()
+
+    # A wrong destination must write nothing at all.
+    mi.cmd_migrate_prefix(str(old), str(tmp_path / "WrongVault" / "Atoms"))
+    assert "REFUSING" in capsys.readouterr().out
+    assert db.execute("SELECT count(*) FROM entries WHERE path LIKE ?",
+                      [str(old) + "%"]).fetchone()[0] == 6, "refusal must not write"
+
+    mi.cmd_migrate_prefix(str(old), str(new))
+    assert db.execute("SELECT count(*) FROM entries WHERE path LIKE ?",
+                      [str(new) + "%"]).fetchone()[0] == 6
+    # The three file_deleted orphans revive; the TTL orphan does NOT.
+    assert db.execute(
+        "SELECT orphan_reason FROM entries WHERE orphaned_at IS NOT NULL "
+        "AND type='atom'").fetchall() == [("ttl",)]
+    cat, conf = db.execute(
+        "SELECT category, confidence FROM entries WHERE type='atom' LIMIT 1").fetchone()
+    assert (cat, conf) == ("methodology", 0.8), "metadata must survive a migration"
+    db.close()
+
+
+def test_migrate_prefix_uses_literal_prefix_not_sql_like(mi, fresh_vault, tmp_path):
+    """The prefix must match literally, with a path-component boundary.
+
+    SQL `LIKE` would treat `_` and `%` as wildcards -- and every filename here
+    is full of underscores -- and has no component boundary, so `/vault` would
+    also match `/vault2`. Either one rewrites rows the caller never named.
+    """
+    db = mi.open_db()
+    # BARE directory prefixes, no trailing component -- that is where LIKE
+    # actually over-matches. Measured: prefix `/v/vlt` LIKE-matches
+    # `/v/vlt2/a.md`, and `/v/my_dir` LIKE-matches `/v/myXdir/a.md` because
+    # `_` is a single-character wildcard. Both would be rewritten silently.
+    target = tmp_path / "vlt"
+    sibling = tmp_path / "vlt2"          # must NOT be touched
+    under_wild = tmp_path / "my_dir"     # exercises the `_` wildcard
+    decoy_wild = tmp_path / "myXdir"     # `_` would match the X
+    new = tmp_path / "moved"
+    for d in (target, sibling, under_wild, decoy_wild, new):
+        d.mkdir(parents=True)
+        (d / "a.md").write_text("x", encoding="utf-8")
+
+    for d in (target, sibling, under_wild, decoy_wild):
+        db.execute("INSERT INTO entries (path, date, chunk, type, confidence) "
+                   "VALUES (?, '2024-01-01', 'c', 'atom', 0.5)", [str(d / "a.md")])
+    db.commit()
+
+    mi.cmd_migrate_prefix(str(target), str(new))
+    assert db.execute("SELECT count(*) FROM entries WHERE path = ?",
+                      [str(new / "a.md")]).fetchone()[0] == 1
+    assert db.execute("SELECT count(*) FROM entries WHERE path = ?",
+                      [str(sibling / "a.md")]).fetchone()[0] == 1, \
+        "a sibling directory must not be swept up by a bare prefix"
+
+    mi.cmd_migrate_prefix(str(under_wild), str(new))
+    assert db.execute("SELECT count(*) FROM entries WHERE path = ?",
+                      [str(decoy_wild / "a.md")]).fetchone()[0] == 1, \
+        "`_` in a prefix must be literal, not a SQL single-char wildcard"
+    db.close()
+
+
+@pytest.mark.parametrize("old_sfx,new_sfx", [("", ""), ("/", ""), ("", "/"), ("/", "/")])
+def test_migrate_prefix_tolerates_trailing_slashes(mi, fresh_vault, tmp_path,
+                                                   old_sfx, new_sfx):
+    """Callers spell these by hand; a lone trailing slash must not corrupt paths.
+
+    Unnormalised, OLD `/vault/` with NEW `/moved` yields `/movedatom.md` --
+    every file then reads as missing and a valid migration is refused. The
+    mirror case stores a doubled separator.
+    """
+    db = mi.open_db()
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    for d in (src, dst):
+        d.mkdir(parents=True)
+    (src / "a.md").write_text("x", encoding="utf-8")
+    (dst / "a.md").write_text("x", encoding="utf-8")
+    db.execute("INSERT INTO entries (path, date, chunk, type, confidence) "
+               "VALUES (?, '2024-01-01', 'c', 'atom', 0.5)", [str(src / "a.md")])
+    db.commit()
+
+    mi.cmd_migrate_prefix(str(src) + old_sfx, str(dst) + new_sfx)
+
+    stored = db.execute("SELECT path FROM entries WHERE type='atom'").fetchone()[0]
+    assert stored == str(dst / "a.md"), f"corrupted path: {stored!r}"
+    db.close()
+
+
+def test_migrate_prefix_restores_fts_on_reactivation(mi, fresh_vault, tmp_path):
+    """Reactivated rows must be searchable IMMEDIATELY, not after open_db().
+
+    Orphaning deletes the entries_fts row (LIA-370(b)). Un-orphaning without
+    the inverse leaves the entry live in `entries` and absent from keyword
+    search -- present to one layer, invisible to the other. `_backfill_fts`
+    does repair it on the next open, but that makes correctness depend on an
+    unrelated function running later, and that guard has already failed once
+    (LIA-370(c)). Asserted on the SAME connection, before any reopen.
+    """
+    db = mi.open_db()
+    src = tmp_path / "src"
+    dst = tmp_path / "dst"
+    for d in (src, dst):
+        d.mkdir(parents=True)
+    (dst / "a.md").write_text("x", encoding="utf-8")
+    cur = db.execute(
+        "INSERT INTO entries (path, date, chunk, type, confidence, "
+        "orphaned_at, orphan_reason) VALUES (?, '2024-01-01', ?, 'atom', 0.5, "
+        "'2026-08-26', 'file_deleted')",
+        [str(src / "a.md"), "findable sentinel chunk"])
+    entry_id = cur.lastrowid
+    mi._fts_delete_entry(db, entry_id)   # what prune did on the way in
+    db.commit()
+    assert db.execute("SELECT count(*) FROM entries_fts WHERE rowid = ?",
+                      [entry_id]).fetchone()[0] == 0
+
+    mi.cmd_migrate_prefix(str(src), str(dst))
+
+    assert db.execute("SELECT orphaned_at FROM entries WHERE id = ?",
+                      [entry_id]).fetchone()[0] is None
+    assert db.execute("SELECT count(*) FROM entries_fts WHERE rowid = ?",
+                      [entry_id]).fetchone()[0] == 1, \
+        "reactivated row must be back in entries_fts on this connection"
+    db.close()
+
+
+def test_cmd_prune_refuses_bulk_orphan(mi, fresh_vault, capsys, tmp_path):
+    """LIA-137: prune must not silently orphan a large SHARE of the corpus.
+
+    A vault that MOVED makes every row fail `Path.exists()` while nothing was
+    deleted. On 2026-08-26 that lost 847 of 2079 atoms (39%) in one nightly
+    run, each individual decision locally correct. The guard keys on bulk --
+    not on a missing parent, because a single row pointing at a path that
+    never existed is merely stale and must still prune.
+    """
+    db = mi.open_db()
+    d = tmp_path / "notes"
+    d.mkdir()
+    for i in range(40):
+        f = d / f"atom_{i}.md"
+        f.write_text("x", encoding="utf-8")
+        db.execute(
+            "INSERT INTO entries (path, date, chunk, type, confidence) "
+            "VALUES (?, '2024-01-01', 'c', 'atom', 0.5)", [str(f)])
+    db.commit()
+
+    import shutil
+    shutil.rmtree(d)          # the whole directory goes -- a MOVE
+
+    mi.cmd_prune(dry_run=False)
+    held = db.execute(
+        "SELECT count(*) FROM entries WHERE type='atom' AND orphaned_at IS NULL"
+    ).fetchone()[0]
+    assert held == 40, "a vanished directory must NOT be treated as 40 deletions"
+    assert "REFUSING" in capsys.readouterr().out
+
+    # The escape hatch still works, so a genuine bulk delete is not blocked.
+    mi.cmd_prune(dry_run=False, force_orphan_missing=True)
+    remaining = db.execute(
+        "SELECT count(*) FROM entries WHERE type='atom' AND orphaned_at IS NULL"
+    ).fetchone()[0]
+    assert remaining == 0, "--force-orphan-missing must override the guard"
+    db.close()
+
+
 # ── KB Phase 1: Domain tagging ──────────────────────────────────────────────
 
 

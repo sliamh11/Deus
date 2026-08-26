@@ -79,6 +79,47 @@ def main():
 
     print("\n── Daily ──")
     results["memory_gc"] = run_task("memory_gc", [gc], dry_run)
+
+    # LIA-137: index the project-memory store nightly.
+    #
+    # Read this before assuming it protects `--prune` below: it does NOT, and
+    # an earlier version of this comment wrongly claimed it did. These are two
+    # SEPARATE stores. `reindex-external` populates `nodes` in
+    # memory_tree.db from ~/.claude/projects/*/memory/. `--prune` evaluates
+    # `entries` in memory.db, holding atoms under the vault's Atoms/ dir.
+    # Reindexing one cannot re-register the other's rows.
+    #
+    # What this step is actually for: `nodes` had NO automatic indexing at
+    # all, which is why 311 files across 18 projects were invisible to
+    # retrieval until today. Running it nightly makes new and moved
+    # project-memory files self-registering instead of waiting for someone to
+    # notice.
+    #
+    # What protects `entries` from the 847-atom move-vs-delete loss is the
+    # bulk-orphan guard inside cmd_prune, plus `--migrate-prefix` for
+    # recovery. Not this line.
+    #
+    # It still runs BEFORE prune: adding before removing is the right default
+    # even across stores, and the ordering test pins it.
+    #
+    # Caveat, disclosed rather than glossed: this step also REMOVES. The walk
+    # orphans nodes as `missing_file` (memory_tree.py), so calling it "the
+    # adding half" is incomplete. By reading, the sweep is scoped by
+    # expected_tag and gated by _confirm_orphan (LIA-336), so a project dir
+    # vanishing from the projects root is never walked and its nodes are never
+    # swept -- the 847-atom shape should not reproduce here. An in-project
+    # move WOULD sweep, and `nodes` has no bulk guard equivalent to the one
+    # cmd_prune just gained for `entries`. That gap is UNVERIFIED: a
+    # verification pass could not build a driving fixture (the project
+    # resolver rejects synthetic dirs). Treat as a known unknown, not a
+    # cleared risk.
+    tree = str(SCRIPTS_DIR / "memory_tree.py")
+    results["reindex_external"] = run_task(
+        "reindex_external",
+        [tree, "reindex-external", "--all-projects", "--no-id-writeback"],
+        dry_run,
+    )
+
     results["prune"] = run_task("prune", [indexer, "--prune"], dry_run)
     results["decay"] = run_task("decay", [indexer, "--decay"], dry_run)
     results["health"] = run_task("health", [indexer, "--health"], dry_run)

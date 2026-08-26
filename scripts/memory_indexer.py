@@ -537,6 +537,31 @@ def entry_exists(db: sqlite3.Connection, path: str) -> bool:
     return row is not None
 
 
+def _fts_reinsert_entry(db: sqlite3.Connection, entry_id: int) -> None:
+    """Restore an entry's row in entries_fts when it is un-orphaned (LIA-137).
+
+    The exact inverse of :func:`_fts_delete_entry`. Orphaning deletes the FTS
+    row, so reactivating without this leaves the entry live in ``entries`` and
+    absent from keyword search -- present to one layer, invisible to the other,
+    which is the carrying-layer shape this whole ticket is about.
+
+    ``_backfill_fts`` does repair it on the next ``open_db()``, but relying on
+    that means correctness depends on an unrelated function running later, and
+    that guard has already failed once (LIA-370(c)). Pairing the write with its
+    inverse keeps the invariant local. DELETE-then-INSERT so a re-run cannot
+    duplicate the row.
+    """
+    try:
+        db.execute("DELETE FROM entries_fts WHERE rowid = ?", [entry_id])
+        db.execute(
+            "INSERT INTO entries_fts(rowid, chunk) "
+            "SELECT id, chunk FROM entries WHERE id = ? AND orphaned_at IS NULL",
+            [entry_id],
+        )
+    except sqlite3.OperationalError:
+        pass  # FTS5 unavailable -- same silent degradation as the delete path
+
+
 def _fts_delete_entry(db: sqlite3.Connection, entry_id: int) -> None:
     """Remove an entry's row from the derived entries_fts index (LIA-370(b)).
 
@@ -4182,7 +4207,89 @@ def cmd_health(save: bool = True) -> None:
             print(f"\n[snapshot saved → {HEALTH_LOG_PATH}]")
 
 
-def cmd_prune(dry_run: bool = False):
+def cmd_migrate_prefix(old: str, new: str, dry_run: bool = False):
+    """LIA-137: repoint entries whose files MOVED, preserving every column.
+
+    A vault relocation leaves every `entries.path` under the old prefix
+    unresolvable. Re-indexing "fixes" the count and destroys the metadata --
+    measured on 2026-08-26, `--add-dir --no-extract` took the corpus from 2079
+    typed atoms to `Atoms: 0`, confidence 0.816 -> 0.000, categories NULL.
+    A path rewrite preserves all of it.
+
+    Reactivation is narrow on purpose. Only rows orphaned as `file_deleted`
+    are un-orphaned, because that is the only orphan reason a move falsifies;
+    `ttl`, `manual`, `re-indexed` and `superseded` decisions stand. And a row
+    is reactivated only once its NEW path is present on disk.
+    """
+    db = open_db()
+    # Literal prefix matching, in Python, deliberately NOT SQL `LIKE`.
+    # `LIKE` treats `_` and `%` as wildcards, and every filename in this corpus
+    # is full of underscores (`feedback_alembic_heads_at_merge_time.md`), so a
+    # LIKE-based prefix would over-match. `LIKE` also has no path-component
+    # boundary, so `/vault` would match `/vault2`. Both would rewrite rows the
+    # caller never named.
+    # Normalise BOTH prefixes before anything else. Callers spell these by
+    # hand and a trailing slash on one side but not the other silently
+    # corrupts every rewritten path: OLD `/vault/` with NEW `/moved` yields
+    # `/movedatom.md` (refused as missing), and OLD `/vault` with NEW
+    # `/moved/` stores a doubled separator.
+    old = old.rstrip(os.sep) or os.sep
+    new = new.rstrip(os.sep) or os.sep
+    boundary = old + os.sep
+    rows = [
+        r for r in db.execute(
+            "SELECT id, path, orphaned_at, orphan_reason FROM entries").fetchall()
+        if r[1] == old or r[1].startswith(boundary)
+    ]
+    if not rows:
+        print(f"No entries under prefix: {old}")
+        db.close()
+        return
+
+    rewritten = reactivated = 0
+    missing_after: list[str] = []
+    for entry_id, path_str, orphaned_at, reason in rows:
+        new_path = new + path_str[len(old):]
+        exists = Path(new_path).exists()
+        if not exists:
+            missing_after.append(new_path)
+        if not dry_run:
+            db.execute("UPDATE entries SET path = ? WHERE id = ?", [new_path, entry_id])
+        rewritten += 1
+        if orphaned_at is not None and reason == "file_deleted":
+            # No `else` branch: any non-existent destination triggers the
+            # blanket refusal below, so a row can never reach here with
+            # exists=False. A `left_orphaned` counter was removed rather than
+            # kept printing a constant 0, which reads like a measurement.
+            if exists:
+                if not dry_run:
+                    db.execute(
+                        "UPDATE entries SET orphaned_at = NULL, orphan_reason = NULL "
+                        "WHERE id = ?", [entry_id])
+                    _fts_reinsert_entry(db, entry_id)
+                reactivated += 1
+
+    if missing_after:
+        # Never point rows at nothing: this is the calibration check. If the
+        # new prefix is wrong, everything lands here and nothing is claimed.
+        print(f"REFUSING: {len(missing_after)} of {rewritten} rewritten paths do "
+              f"not exist on disk. The new prefix is probably wrong.")
+        for m in missing_after[:5]:
+            print(f"    {m}")
+        db.rollback()
+        db.close()
+        return
+
+    if not dry_run:
+        db.commit()
+    prefix = "[dry-run] " if dry_run else ""
+    print(f"{prefix}migrate-prefix: {rewritten} rewritten, "
+          f"{reactivated} reactivated (FTS restored)")
+    print(f"{prefix}  {old}  ->  {new}")
+    db.close()
+
+
+def cmd_prune(dry_run: bool = False, force_orphan_missing: bool = False):
     """Enforce TTL-based expiry and clean up DB orphans.
 
     - Atoms whose TTL has elapsed get expired_at set (soft-delete).
@@ -4230,8 +4337,75 @@ def cmd_prune(dry_run: bool = False):
     orphans = 0
     now = utc_now().strftime("%Y-%m-%d %H:%M:%S")
     all_atom_rows = db.execute("SELECT id, path FROM entries WHERE type = 'atom' AND orphaned_at IS NULL").fetchall()
+
+    # LIA-137 move-vs-delete guard.
+    #
+    # `Path.exists()` answers "is there a file here", but the question that
+    # matters is "is this still how we refer to this file". A vault that MOVED
+    # makes every one of its rows fail the first question while nothing was
+    # deleted at all. On 2026-08-26 that cost 847 atoms (39% of the corpus) in
+    # a single nightly run, silently, because each individual orphan decision
+    # was locally correct.
+    #
+    # The signal is BULK, not a missing parent on its own -- a single row
+    # pointing at a path that never existed is just stale, and holding that
+    # back would make prune useless. What must never happen silently is
+    # losing a large SHARE of the corpus in one run. So the guard trips only
+    # when the batch is both a big fraction and a non-trivial count, and it
+    # names the vanished directories as the likely cause.
+    #
+    # The thresholds are a judgement call, not a measurement: 10% and 10 rows.
+    # The 847-atom incident was 39% of 2079. A tiny corpus, or a handful of
+    # genuinely deleted notes, stays under both and prunes normally.
+    missing = [(i, p) for i, p in all_atom_rows if not Path(p).exists()]
+    live_total = len(all_atom_rows)
+    share = (len(missing) / live_total) if live_total else 0.0
+    bulk_orphan = len(missing) >= 10 and share >= 0.10
+    if bulk_orphan and not force_orphan_missing:
+        vanished_dirs = sorted({str(Path(p).parent) for _, p in missing
+                                if not Path(p).parent.is_dir()})
+        print(f"{'[dry-run] ' if dry_run else ''}"
+              f"REFUSING to orphan {len(missing)} of {live_total} rows "
+              f"({share:.0%} of the corpus) in a single run.")
+        # Always show WHAT would have been orphaned. An earlier version printed
+        # the sample only when parent dirs had vanished, so an operator facing a
+        # genuine bulk deletion got a bare refusal naming nothing -- a guard
+        # that blocks without saying what it blocked just gets overridden blind.
+        print(f"    Held back ({min(len(missing), 5)} of {len(missing)} shown):")
+        for _, p in missing[:5]:
+            print(f"      {p}")
+        if len(missing) > 5:
+            print(f"      ... and {len(missing) - 5} more")
+
+        if vanished_dirs:
+            print("    Their parent directories are gone, so the files MOVED "
+                  "rather than being deleted:")
+            for d in vanished_dirs[:5]:
+                print(f"      {d}")
+            if len(vanished_dirs) > 5:
+                print(f"      ... and {len(vanished_dirs) - 5} more")
+            print("    Recover with a PATH MIGRATION, not a re-index. Re-indexing")
+            print("    rewrites atom rows and strips their typing (it cost the")
+            print("    whole corpus its categories and confidence on 2026-08-26):")
+            print("      memory_indexer.py --migrate-prefix '<old dir>' '<new dir>'")
+        else:
+            print("    Every parent directory still exists, so this looks like a "
+                  "real bulk deletion rather than a move.")
+        # Named regardless of cause: the flag is the only override, even when
+        # no directory is missing. Its name reads oddly in that case, so say so
+        # rather than leaving the operator to guess it does not apply.
+        print("    To proceed anyway: --force-orphan-missing "
+              "(the sole override, whatever the cause).")
+        if dry_run:
+            print("    NOTE: --dry-run cannot preview the individual orphan "
+                  "decisions while the guard holds. Use "
+                  "--dry-run --force-orphan-missing to see them.")
+
     for entry_id, path_str in all_atom_rows:
         if not Path(path_str).exists():
+            # Held back by the bulk guard above unless explicitly overridden.
+            if bulk_orphan and not force_orphan_missing:
+                continue
             if dry_run:
                 print(f"  [dry-run] would orphan: {Path(path_str).name}")
             else:
@@ -4522,6 +4696,11 @@ def main() -> int:
                        help="Sweep stale entries_fts rows for already-orphaned entries (LIA-370 backfill; backs up first)")
     group.add_argument("--prune", action="store_true",
                        help="Enforce TTL expiry + clean orphan DB rows (no API call)")
+    group.add_argument("--migrate-prefix", nargs=2, metavar=("OLD", "NEW"),
+                       help="Repoint entries whose files MOVED: rewrite every path "
+                            "under OLD to NEW, preserving all metadata, and un-orphan "
+                            "rows that were marked file_deleted once their new path "
+                            "exists. Use this, NOT a re-index, after moving a vault")
     group.add_argument("--invalidate", metavar="PATH",
                        help="Manually invalidate (soft-delete) an atom by path")
     group.add_argument("--gaps", action="store_true",
@@ -4576,6 +4755,14 @@ def main() -> int:
                         help="Skip saving snapshot for --health (useful for CI/dry-run)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview --prune changes without applying them")
+    parser.add_argument("--force-orphan-missing", action="store_true",
+                        help="--prune only: orphan rows whose files are missing even "
+                             "when that is a large share of the corpus. Held back by "
+                             "default because a bulk disappearance usually means the "
+                             "files MOVED, not that they were deleted (LIA-137: cost "
+                             "847 atoms, 39%% of the corpus, in one run). Pass this "
+                             "only for a genuine bulk deletion; for a move use "
+                             "--migrate-prefix instead, which preserves metadata.")
     parser.add_argument("--reason", default="manual",
                         help="Reason for --invalidate (default: manual)")
     parser.add_argument("--newer", action="store_true",
@@ -4634,7 +4821,12 @@ def main() -> int:
         print(json.dumps(gc_fts(), indent=2))
         return
     if args.prune:
-        cmd_prune(dry_run=args.dry_run)
+        cmd_prune(dry_run=args.dry_run,
+                  force_orphan_missing=getattr(args, "force_orphan_missing", False))
+        return
+    if getattr(args, "migrate_prefix", None):
+        old, new = args.migrate_prefix
+        cmd_migrate_prefix(old, new, dry_run=args.dry_run)
         return
     if args.invalidate:
         cmd_invalidate(args.invalidate, reason=args.reason)

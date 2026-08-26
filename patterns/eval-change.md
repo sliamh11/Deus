@@ -3,7 +3,7 @@ governs:
   - evolution/
   - eval/
   - scripts/memory_indexer.py
-last_verified: "2026-08-16" # auto-bump @1786888245
+last_verified: "2026-08-26" # auto-bump @1787734904
 test_tasks:
   - "Add a new DeepEval metric under eval/ for the core_qa test suite"
   - "Add a new judge backend to evolution/judge/ using the provider registry"

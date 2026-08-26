@@ -68,6 +68,28 @@ def test_maintenance_has_daily_tasks(maint):
         assert task in source, f"Daily task '{task}' not found in main()"
 
 
+def test_reindex_runs_before_prune(maint):
+    """LIA-137: adding runs before removing, on the same schedule.
+
+    The nightly loop used to prune without ever reindexing anything. Note the
+    two stores though -- `reindex-external` feeds `nodes` (memory_tree.db)
+    while `--prune` evaluates `entries` (memory.db), so this ordering is NOT
+    what protects atoms from the 847-atom move-vs-delete loss; the bulk guard
+    in cmd_prune and `--migrate-prefix` are. Adding before removing is still
+    the right default, and this pins it so a later edit cannot quietly flip
+    it.
+
+    Asserting on ORDER, not mere presence.
+    """
+    import inspect
+    source = inspect.getsource(maint.main)
+    assert "reindex-external" in source, "nightly maintenance must reindex"
+    assert source.index("reindex-external") < source.index('"--prune"'), (
+        "reindex-external must run BEFORE --prune; reversing the order "
+        "reintroduces the move-vs-delete data loss"
+    )
+
+
 def test_maintenance_has_weekly_gate(maint):
     """Weekly tasks should be gated by day-of-week check."""
     import inspect
