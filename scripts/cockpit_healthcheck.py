@@ -49,7 +49,9 @@ import argparse
 import glob
 import gzip
 import json
+import logging
 import os
+import plistlib
 import sqlite3
 import subprocess
 import sys
@@ -109,6 +111,146 @@ def _launch_agent_installed(label: str) -> bool:
     daily about something the user deliberately never set up.
     """
     return (Path.home() / "Library" / "LaunchAgents" / f"{label}.plist").is_file()
+
+
+# launchd job kinds. One "is there a PID" rule cannot serve all of these: a
+# scheduled job that finished correctly looks identical to a daemon that died,
+# and reporting the former as FAILED is the permanent false alarm this module
+# exists to remove.
+RESIDENT = "resident"    # KeepAlive: true -- must always be running
+SCHEDULED = "scheduled"  # StartInterval/StartCalendarInterval
+RUN_ONCE = "run_once"    # RunAtLoad only -- runs once at login, exits
+
+# A dict-valued KeepAlive has NO bucket here, deliberately. It carries
+# conditions (SuccessfulExit, Crashed, NetworkState, PathState...) whose current
+# state decides whether being stopped is correct, and this probe cannot evaluate
+# them. Three review rounds each produced a different confident rule for it --
+# stopped+nonzero is FAILED, then UNKNOWN, then stopped+zero is OK -- and every
+# one was wrong for a predicate somebody could name: `SuccessfulExit: true`
+# requires relaunch AFTER a clean exit, so even exit 0 while stopped can mean
+# broken. No such job exists on this host, so none of it was ever calibrated.
+# Classifying it as unknown-shape is the honest answer and keeps the calibrated
+# majority shippable. Evaluating the predicates is its own ticket.
+
+
+def _never_ran(exit_status: str) -> bool:
+    """Has this job never completed a run?
+
+    `launchctl list` prints "-" in the Status column for a job that has never
+    run. Any numeric value -- including a negative one, which is a signal
+    termination -- means a run completed and its result is knowable.
+
+    One helper rather than the same expression in each verdict branch: three
+    branches consult it, and a change to the sentinel format that updated only
+    two of them would be invisible until it produced a wrong verdict.
+    """
+    return not exit_status.lstrip("-").isdigit()
+
+
+def _launch_agent_kind(label: str) -> str | None:
+    """Classify a launchd job so its verdict is judged on the right thing.
+
+    KeepAlive is the discriminator, NOT RunAtLoad. RunAtLoad is set on only 4 of
+    the 7 jobs here and appears across every bucket, so it separates nothing.
+
+    Returns None when the plist cannot be read or matches no known shape. The
+    caller turns that into UNKNOWN rather than guessing a bucket -- a wrong
+    bucket yields a confident verdict about the wrong proposition, which is the
+    defect this probe was rewritten to stop producing.
+    """
+    path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+    try:
+        with path.open("rb") as fh:
+            spec = plistlib.load(fh)
+    # Measured: malformed XML raises xml.parsers.expat.ExpatError, which is NOT
+    # a ValueError and so escapes the narrower tuple. A single bad plist would
+    # then crash the whole healthcheck instead of degrading one probe to
+    # UNKNOWN. A bare Exception is deliberate: every parse failure means the
+    # same thing here (this job cannot be classified), and a checker that dies
+    # is strictly worse than one that says it does not know.
+    except Exception as exc:
+        # Logged so a future refactor's own AttributeError cannot masquerade as
+        # "malformed plist" forever. The user-facing behaviour stays UNKNOWN --
+        # a checker that dies is strictly worse than one that says it does not
+        # know -- but the diagnostic must not vanish with it.
+        # .warning(), NOT .debug(): main() never calls logging.basicConfig, so
+        # the root logger sits at its default WARNING level and a debug record
+        # is dropped before any handler sees it. A diagnostic that only fires
+        # under caplog is not a diagnostic -- it is a fix that does not fix.
+        logging.getLogger(__name__).warning(
+            "cannot classify %s: %r", path, exc)
+        return None
+    if not isinstance(spec, dict):
+        # A valid plist whose root is an array or string loads without error and
+        # then AttributeErrors on .get(). Not classifiable either.
+        return None
+    # KeepAlive is checked FIRST and deliberately wins over an interval key: a
+    # job asking to be kept alive must be running whatever else it declares. No
+    # current job sets both, so this precedence is a decision rather than an
+    # accident of ordering -- and it is untested by the calibration set.
+    keep_alive = spec.get("KeepAlive")
+    # `KeepAlive: {}` is a legal but degenerate construct: a dict with no
+    # conditions. Test isinstance BEFORE truthiness, or the empty dict is falsy
+    # and silently falls through to the interval/RunAtLoad checks -- classifying
+    # a keep-alive job as something that is meant to finish. No conditions to be
+    # unmet means launchd keeps it running, so it belongs with RESIDENT.
+    if isinstance(keep_alive, dict):
+        # Unclassifiable by design -- see the note beside the kind constants.
+        # Whether a stopped conditional job is healthy depends on a predicate
+        # this probe cannot evaluate, so no verdict is available and UNKNOWN is
+        # the honest report.
+        return None
+    if keep_alive is True:
+        return RESIDENT
+    if "StartInterval" in spec or "StartCalendarInterval" in spec:
+        return SCHEDULED
+    if spec.get("RunAtLoad"):
+        return RUN_ONCE
+    # e.g. a purely WatchPaths-triggered job. None exists here today, so there
+    # is no positive evidence for any bucket -- and no calibration for one.
+    return None
+
+
+def _deus_service_labels() -> tuple[str, ...] | None:
+    """Every installed com.deus job, discovered rather than hardcoded.
+
+    A hardcoded tuple is how five of seven jobs went unwatched while one of them
+    failed nightly (LIA-136). Discovery keeps new jobs covered by default.
+
+    Returns None when the directory cannot be read. That is loss of probe
+    coverage, not an occasion to fall back to a shorter list: falling back would
+    let the cockpit report OK from two probes while an undiscovered job fails.
+    An empty tuple is different -- it is a real observation that nothing is
+    installed.
+
+    The literal dot matters: a bare `com.deus*` glob also matches
+    `com.deus-v2.plist`, which some installs carry but never run (see the note
+    in run_probes). Checked against that decoy before adopting.
+    """
+    agents = Path.home() / "Library" / "LaunchAgents"
+    # iterdir(), NOT glob(). Measured: Path.glob() returns [] for BOTH a missing
+    # directory AND an unreadable one, and raises in neither case -- so an
+    # OSError branch around glob is unreachable and every failure would present
+    # as a successful empty discovery. iterdir() raises FileNotFoundError and
+    # PermissionError respectively, which is the distinction this function
+    # exists to make.
+    try:
+        entries = list(agents.iterdir())
+    except OSError:
+        return None
+    # "com.deus.plist" itself satisfies startswith("com.deus.") and
+    # endswith(".plist"), so the comprehension already yields the bare
+    # "com.deus" label -- no separate insert, which would duplicate it. The
+    # `com.deus.` prefix with its literal dot is what excludes the
+    # "com.deus-v2.plist" decoy (see the note in run_probes).
+    labels = sorted(
+        e.name[: -len(".plist")]
+        for e in entries
+        # is_file() as well as the name: a DIRECTORY named com.deus.x.plist
+        # would otherwise be discovered and probed as a job.
+        if e.name.startswith("com.deus.") and e.name.endswith(".plist") and e.is_file()
+    )
+    return tuple(labels)
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -502,15 +644,75 @@ def probe_service(label: str, now: float) -> Result | None:
         return Result(probe, UNKNOWN, observed=f"launchctl unavailable: {exc}",
                       expected="launchctl to be runnable",
                       remedy="this probe assumes macOS launchd")
+    kind = _launch_agent_kind(label)
     for line in proc.stdout.splitlines()[1:]:
         parts = line.split("\t")
         if len(parts) >= 3 and parts[2].strip() == label:
             pid = parts[0].strip()
-            if pid == "-":
-                return Result(probe, FAILED, observed=f"loaded but not running (exit {parts[1].strip()})",
+            exit_status = parts[1].strip()
+            running = pid != "-"
+
+            if kind is None:
+                # Unreadable plist, or a trigger shape with no bucket (e.g.
+                # WatchPaths). There is no positive evidence for any verdict.
+                return Result(probe, UNKNOWN,
+                              observed=f"pid={pid} exit={exit_status}, unrecognised job shape",
+                              expected="a classifiable launchd job",
+                              remedy=f"inspect ~/Library/LaunchAgents/{label}.plist")
+
+            if kind == RESIDENT:
+                if running:
+                    return Result(probe, OK, observed=f"running pid={pid}",
+                                  expected="a live PID (KeepAlive)")
+                # Deliberately asymmetric with every other kind: a never-run
+                # status ("-") is FAILED here, not UNKNOWN. An unconditional
+                # KeepAlive job that has never started IS the anomaly -- launchd
+                # starts it on load and restarts it on exit, so "no PID and no
+                # completed run" is the failure, not an absence of evidence.
+                # The sibling kinds are all supposed to finish; this one is not.
+                never_ran = _never_ran(exit_status)
+                detail = "never started" if never_ran else f"exit {exit_status}"
+                return Result(probe, FAILED,
+                              observed=f"KeepAlive job not running ({detail})",
                               expected="a live PID",
                               remedy=f"launchctl kickstart -k gui/$(id -u)/{label}")
-            return Result(probe, OK, observed=f"running pid={pid}", expected="a live PID")
+
+            # SCHEDULED and RUN_ONCE: the job is meant to finish, so an absent
+            # PID is expected and says nothing on its own.
+            #
+            # `running` is checked FIRST, the same order the RESIDENT branch
+            # uses above -- keep that convention for every kind. LastExitStatus
+            # holds the PREVIOUS invocation's code until the current one exits;
+            # launchd does not clear it while a job is mid-run. Asserting on it
+            # while the job is running would report FAILED for a job that failed
+            # once and is now legitimately re-running, which is the same false
+            # alarm this rewrite exists to remove.
+            #
+            # NOTE: phase 1 does not check staleness -- exit 0 from a run that
+            # last happened long ago still reports OK. A last-run signal needs a
+            # per-job sentinel; log mtime cannot distinguish ran-and-was-silent
+            # from did-not-run (judge_runner's log is 0 bytes). Tracked separately.
+            if running:
+                return Result(probe, OK,
+                              observed=f"running pid={pid} (previous exit {exit_status})",
+                              expected="the current run to be in progress")
+            if exit_status == "0":
+                return Result(probe, OK, observed="last exit 0 (idle between runs)",
+                              expected="exit 0 from its last run")
+            if _never_ran(exit_status):
+                # `launchctl list` shows "-" in the Status column for a job that
+                # has never run -- a freshly loaded one awaiting its first
+                # invocation. There is no run to have failed, so FAILED would be
+                # a verdict about an event that has not happened. OK would be
+                # worse: it asserts health from no evidence at all.
+                return Result(probe, UNKNOWN,
+                              observed=f"never run (status {exit_status!r})",
+                              expected="a completed run to judge",
+                              remedy=f"wait for its schedule, or launchctl kickstart -k gui/$(id -u)/{label}")
+            return Result(probe, FAILED, observed=f"last run exited {exit_status}",
+                          expected="exit 0 from its last run",
+                          remedy=f"check the job's log, then launchctl kickstart -k gui/$(id -u)/{label}")
+
     return Result(probe, FAILED, observed="not loaded in launchctl", expected="the job to be loaded",
                   remedy=f"launchctl load ~/Library/LaunchAgents/{label}.plist")
 
@@ -551,17 +753,44 @@ def probe_opa_policy(now: float, marker: str, url: str) -> Result | None:
 # ── run / render ──────────────────────────────────────────────────────────────
 
 
+# No longer anyone's default: discovery is (LIA-136), and this hardcoded pair is
+# how five of seven jobs went unwatched while one failed nightly. Kept as the
+# historical list the suppression test names, not as a fallback -- a discovery
+# failure reports UNKNOWN rather than quietly reverting to these two.
 DEFAULT_SERVICE_LABELS = ("com.deus", "com.deus.warden-opa")
 
 
 def run_probes(now: float, log_path: Path, window_sec: float,
                opa_marker: str, opa_url: str,
-               service_labels: tuple[str, ...] = DEFAULT_SERVICE_LABELS) -> list[Result]:
+               service_labels: tuple[str, ...] | None = None) -> list[Result]:
     demand = read_demand(log_path, window_sec, now)
     results = [probe_optimizer(now), probe_ingest(now, demand), probe_memory(now)]
     # `com.deus` is the label actually loaded. A `com.deus-v2.plist` also exists
     # on some installs but is not the running job — probing it reports a
-    # confident FAILED about a service nobody runs.
+    # confident FAILED about a service nobody runs. `_deus_service_labels`
+    # filters iterdir() entries on the literal `com.deus.` prefix, so that
+    # decoy cannot match. It deliberately does NOT glob -- see the note on
+    # _deus_service_labels for why glob() cannot be used here.
+    if service_labels is None:
+        # No explicit --service-labels: discover, so a newly installed job is
+        # covered without anyone remembering to edit a tuple (LIA-136). The
+        # sentinel is None rather than a value equal to DEFAULT_SERVICE_LABELS,
+        # so a caller who deliberately passes exactly the default list still
+        # suppresses discovery.
+        discovered = _deus_service_labels()
+        if discovered is None:
+            # Cannot enumerate: probe coverage is unknown, not merely default.
+            # Falling back to the short list here would let the cockpit report
+            # OK while an undiscovered job fails — the original blind spot.
+            results.append(Result(
+                "service.discovery", UNKNOWN,
+                observed="cannot enumerate ~/Library/LaunchAgents",
+                expected="the LaunchAgents directory to be readable",
+                remedy="check permissions on ~/Library/LaunchAgents",
+            ))
+            service_labels = ()
+        else:
+            service_labels = discovered
     for label in service_labels:
         service = probe_service(label, now)
         if service is not None:
@@ -648,8 +877,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--window-hours", type=float, default=24.0)
     ap.add_argument("--opa-marker", default="package deus.wardens")
     ap.add_argument("--opa-url", default="http://127.0.0.1:8181/v1/policies")
-    ap.add_argument("--service-labels", default=",".join(DEFAULT_SERVICE_LABELS),
-                    help="comma-separated launchd labels to probe")
+    # default=None, NOT the joined default list: run_probes distinguishes
+    # "no override given" (discover) from an explicit choice, and a caller who
+    # deliberately passes exactly the default string must still suppress
+    # discovery. A value-equal sentinel cannot tell those apart.
+    ap.add_argument("--service-labels", default=None,
+                    help="comma-separated launchd labels to probe "
+                         "(default: discover every installed com.deus job)")
     args = ap.parse_args(argv)
 
     if args.brief:
@@ -674,7 +908,8 @@ def main(argv: list[str] | None = None) -> int:
     now = time.time()
     results = run_probes(now, args.log, args.window_hours * 3600,
                          args.opa_marker, args.opa_url,
-                         tuple(args.service_labels.split(",")))
+                         tuple(args.service_labels.split(","))
+                         if args.service_labels is not None else None)
     try:
         previous = json.loads(ARTIFACT_JSON.read_text())
     except (OSError, ValueError):

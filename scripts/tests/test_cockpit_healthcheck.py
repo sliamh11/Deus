@@ -449,3 +449,377 @@ def test_brief_never_probes(tmp_path, monkeypatch):
     monkeypatch.setattr(cock.urllib.request, "urlopen", forbidden)
 
     assert cock.main(["--brief"]) == cock.EXIT_OK
+
+
+# ── launchd job kinds (LIA-136) ───────────────────────────────────────────────
+#
+# The bug these guard: `com.deus.maintenance` exited 1 nightly for weeks while
+# the cockpit said nothing, because it was not in the probed set AND because the
+# only verdict rule was "is there a PID" -- meaningless for a job that is
+# supposed to finish. Both halves must stay fixed; either alone reintroduces a
+# false report, in opposite directions.
+
+
+def _plist(tmp_path, monkeypatch, label, spec):
+    """Install a fake LaunchAgents plist and point Path.home() at it."""
+    import plistlib
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True, exist_ok=True)
+    with (agents / f"{label}.plist").open("wb") as fh:
+        plistlib.dump(spec, fh)
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path))
+    return agents
+
+
+def _launchctl(monkeypatch, rows):
+    """Fake `launchctl list` output: rows of (pid, exit_status, label)."""
+    body = "PID\tStatus\tLabel\n" + "".join(f"{p}\t{s}\t{lbl}\n" for p, s, lbl in rows)
+    monkeypatch.setattr(cock.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cock.subprocess, "run",
+        lambda *a, **k: type("P", (), {"stdout": body, "returncode": 0})(),
+    )
+
+
+@pytest.mark.parametrize("spec,expected", [
+    ({"KeepAlive": True, "RunAtLoad": True}, cock.RESIDENT),
+    ({"KeepAlive": {"SuccessfulExit": False}}, None),  # dict KeepAlive: unclassifiable by design
+    ({"StartCalendarInterval": {"Hour": 4}}, cock.SCHEDULED),
+    ({"StartInterval": 1800, "RunAtLoad": True}, cock.SCHEDULED),
+    ({"RunAtLoad": True}, cock.RUN_ONCE),
+    ({"WatchPaths": ["/tmp/x"]}, None),
+    ({"KeepAlive": False, "RunAtLoad": True}, cock.RUN_ONCE),
+])
+def test_launch_agent_kind_classification(tmp_path, monkeypatch, spec, expected):
+    """KeepAlive is the discriminator, NOT RunAtLoad -- RunAtLoad appears in
+    every bucket. A WatchPaths-only job matches nothing and must return None so
+    the caller reports UNKNOWN instead of guessing."""
+    _plist(tmp_path, monkeypatch, "com.deus.x", spec)
+    assert cock._launch_agent_kind("com.deus.x") == expected
+
+
+def test_scheduled_job_idle_between_runs_is_not_a_failure(tmp_path, monkeypatch):
+    """The regression that would make this checker unusable: a scheduled job
+    that finished cleanly has no PID, exactly like a dead daemon."""
+    _plist(tmp_path, monkeypatch, "com.deus.sched", {"StartCalendarInterval": {"Hour": 4}})
+    _launchctl(monkeypatch, [("-", "0", "com.deus.sched")])
+    assert cock.probe_service("com.deus.sched", NOW).status == cock.OK
+
+
+def test_scheduled_job_nonzero_exit_is_failed(tmp_path, monkeypatch):
+    """The bug that hid: exit status was interpolated into the message but
+    never asserted on."""
+    _plist(tmp_path, monkeypatch, "com.deus.sched", {"StartCalendarInterval": {"Hour": 4}})
+    _launchctl(monkeypatch, [("-", "1", "com.deus.sched")])
+    res = cock.probe_service("com.deus.sched", NOW)
+    assert res.status == cock.FAILED
+    assert "1" in res.observed, "the exit status must be the stated reason"
+
+
+def test_run_once_job_without_pid_is_ok(tmp_path, monkeypatch):
+    """com.deus.ollama-env: RunAtLoad only. A binary daemon/scheduled split
+    called this a daemon and would have failed it every day."""
+    _plist(tmp_path, monkeypatch, "com.deus.once", {"RunAtLoad": True})
+    _launchctl(monkeypatch, [("-", "0", "com.deus.once")])
+    assert cock.probe_service("com.deus.once", NOW).status == cock.OK
+
+
+def test_resident_job_without_pid_is_failed(tmp_path, monkeypatch):
+    """The one case where an absent PID IS the failure. Must not regress."""
+    _plist(tmp_path, monkeypatch, "com.deus.res", {"KeepAlive": True})
+    _launchctl(monkeypatch, [("-", "0", "com.deus.res")])
+    assert cock.probe_service("com.deus.res", NOW).status == cock.FAILED
+
+
+@pytest.mark.parametrize("pid,exit_status,why", [
+    ("-", "0", "stopped after a clean exit"),
+    ("-", "2", "stopped after a nonzero exit"),
+    ("-", "-", "never run"),
+    ("999", "0", "currently running"),
+])
+def test_conditional_keepalive_is_always_unknown(tmp_path, monkeypatch, pid, exit_status, why):
+    """A dict-valued KeepAlive is deliberately unclassifiable, in EVERY state.
+
+    Whether being stopped is correct depends on a predicate this probe cannot
+    evaluate. Three review rounds each produced a different confident rule and
+    each was wrong for a nameable predicate: `SuccessfulExit: true` requires
+    relaunch AFTER a clean exit, so even stopped-with-exit-0 can mean broken.
+
+    No such job exists on this host, so no rule here was ever calibrated. The
+    honest report is UNKNOWN, and this test pins that so nobody reintroduces a
+    guess. Evaluating the predicates is a separate ticket.
+    """
+    _plist(tmp_path, monkeypatch, "com.deus.cond", {"KeepAlive": {"NetworkState": True}})
+    _launchctl(monkeypatch, [(pid, exit_status, "com.deus.cond")])
+    assert cock._launch_agent_kind("com.deus.cond") is None, why
+    assert cock.probe_service("com.deus.cond", NOW).status == cock.UNKNOWN, why
+
+
+def test_unclassifiable_job_is_unknown_not_guessed(tmp_path, monkeypatch):
+    """OK is only ever asserted from positive evidence (module docstring)."""
+    _plist(tmp_path, monkeypatch, "com.deus.odd", {"WatchPaths": ["/tmp/x"]})
+    _launchctl(monkeypatch, [("-", "0", "com.deus.odd")])
+    assert cock.probe_service("com.deus.odd", NOW).status == cock.UNKNOWN
+
+
+def test_discovery_excludes_the_com_deus_v2_decoy(tmp_path, monkeypatch):
+    """A bare `com.deus*` glob matches com.deus-v2.plist, which some installs
+    carry but never run. The literal dot is what excludes it."""
+    for lbl in ("com.deus", "com.deus.maintenance", "com.deus-v2", "com.deusx"):
+        _plist(tmp_path, monkeypatch, lbl, {"RunAtLoad": True})
+    labels = cock._deus_service_labels()
+    assert "com.deus" in labels and "com.deus.maintenance" in labels
+    assert "com.deus-v2" not in labels and "com.deusx" not in labels
+    # Count, not just membership: "com.deus.plist" satisfies the same
+    # startswith/endswith filter as every other job, so a separate insert of the
+    # bare label silently duplicates it. Membership assertions cannot see that,
+    # which is exactly how the duplicate reached review.
+    assert len(labels) == len(set(labels)), f"duplicate labels: {labels}"
+    assert labels.count("com.deus") == 1
+    assert len(labels) == 2, "exactly the two com.deus.* plists installed here"
+
+
+def test_discovery_failure_is_unknown_not_a_silent_fallback(tmp_path, monkeypatch):
+    """A MISSING LaunchAgents directory must be distinguishable from an empty one.
+
+    Uses a real absent directory, not a monkeypatched raise. An earlier version
+    of this test patched Path.glob to throw, which tested a fiction: measured,
+    Path.glob() returns [] for both a missing AND an unreadable directory and
+    raises in neither, so the production code's OSError branch was unreachable
+    and every discovery failure presented as a successful empty result.
+    """
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path))
+    assert not (tmp_path / "Library" / "LaunchAgents").exists()
+    assert cock._deus_service_labels() is None, "missing directory is not an empty one"
+
+
+def test_discovery_failure_on_unreadable_directory(tmp_path, monkeypatch):
+    """Same distinction for a directory that exists but cannot be enumerated."""
+    import os
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.deus.hidden.plist").write_bytes(b"")
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path))
+    os.chmod(agents, 0o000)
+    try:
+        if os.getuid() == 0:  # root ignores the mode; nothing to assert
+            pytest.skip("running as root, permission cannot be enforced")
+        assert cock._deus_service_labels() is None, "unreadable is not empty"
+    finally:
+        os.chmod(agents, 0o755)
+
+
+def test_empty_launchagents_directory_is_not_a_failure(tmp_path, monkeypatch):
+    """The other half: a readable directory with no matching plists is a real
+    observation, and must return () rather than None so no UNKNOWN is raised."""
+    (tmp_path / "Library" / "LaunchAgents").mkdir(parents=True)
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path))
+    assert cock._deus_service_labels() == ()
+
+
+def test_run_probes_reports_unknown_when_discovery_fails(tmp_path, monkeypatch):
+    """End to end: discovery failure must surface as a service.discovery UNKNOWN,
+    never as a silent skip of every launchd probe."""
+    monkeypatch.setattr(cock, "probe_optimizer", lambda n: _res(cock.OK, "opt"))
+    monkeypatch.setattr(cock, "probe_ingest", lambda n, d: _res(cock.OK, "ing"))
+    monkeypatch.setattr(cock, "probe_memory", lambda n: _res(cock.OK, "mem"))
+    monkeypatch.setattr(cock, "probe_opa_policy", lambda *a: None)
+    monkeypatch.setattr(cock, "_deus_service_labels", lambda: None)
+
+    log = tmp_path / "deus.log"
+    log.write_text("")
+    results = cock.run_probes(NOW, log, 3600, "m", "u", None)
+    discovery = [r for r in results if r.probe == "service.discovery"]
+    assert len(discovery) == 1
+    assert discovery[0].status == cock.UNKNOWN
+
+
+def test_running_scheduled_job_with_stale_failed_exit_is_ok(tmp_path, monkeypatch):
+    """launchctl's LastExitStatus holds the PREVIOUS invocation's code until the
+    current one exits. A job that failed once and is now legitimately re-running
+    must not be reported FAILED on the strength of that stale code.
+
+    This gap is what let a real defect through 46 green tests: every existing
+    case had either pid='-' or exit 0, never both a live pid AND a nonzero
+    recorded status.
+    """
+    _plist(tmp_path, monkeypatch, "com.deus.sched", {"StartCalendarInterval": {"Hour": 4}})
+    _launchctl(monkeypatch, [("4242", "1", "com.deus.sched")])
+    res = cock.probe_service("com.deus.sched", NOW)
+    assert res.status == cock.OK, "a running job is not condemned by its previous exit"
+    assert "4242" in res.observed
+
+
+def test_running_run_once_job_with_stale_failed_exit_is_ok(tmp_path, monkeypatch):
+    """Same trap, RUN_ONCE kind."""
+    _plist(tmp_path, monkeypatch, "com.deus.once", {"RunAtLoad": True})
+    _launchctl(monkeypatch, [("4243", "2", "com.deus.once")])
+    assert cock.probe_service("com.deus.once", NOW).status == cock.OK
+
+
+def test_explicit_service_labels_equal_to_the_default_still_suppress_discovery(
+    tmp_path, monkeypatch
+):
+    """A value-equal sentinel could not distinguish 'no override' from 'the
+    caller deliberately asked for exactly the default list'. None can."""
+    _plist(tmp_path, monkeypatch, "com.deus.maintenance", {"RunAtLoad": True})
+    _launchctl(monkeypatch, [("-", "0", "com.deus")])
+    monkeypatch.setattr(cock, "probe_optimizer", lambda n: _res(cock.OK, "opt"))
+    monkeypatch.setattr(cock, "probe_ingest", lambda n, d: _res(cock.OK, "ing"))
+    monkeypatch.setattr(cock, "probe_memory", lambda n: _res(cock.OK, "mem"))
+    monkeypatch.setattr(cock, "probe_opa_policy", lambda *a: None)
+
+    called = []
+    monkeypatch.setattr(cock, "_deus_service_labels", lambda: called.append(1) or ())
+
+    log = tmp_path / "deus.log"
+    log.write_text("")
+    cock.run_probes(NOW, log, 3600, "m", "u", cock.DEFAULT_SERVICE_LABELS)
+    assert not called, "an explicit label list must never trigger discovery"
+
+    cock.run_probes(NOW, log, 3600, "m", "u", None)
+    assert called, "the None sentinel must trigger discovery"
+
+
+def test_never_run_scheduled_job_is_unknown_not_failed(tmp_path, monkeypatch):
+    """`launchctl list` shows "-" in the Status column for a job that has never
+    run -- a freshly loaded one awaiting its first invocation.
+
+    FAILED would be a verdict about an event that has not happened; OK would
+    assert health from no evidence at all. Only a numeric nonzero status is a
+    real failure.
+    """
+    _plist(tmp_path, monkeypatch, "com.deus.fresh", {"StartCalendarInterval": {"Hour": 4}})
+    _launchctl(monkeypatch, [("-", "-", "com.deus.fresh")])
+    res = cock.probe_service("com.deus.fresh", NOW)
+    assert res.status == cock.UNKNOWN
+    assert "never run" in res.observed
+
+
+def test_never_run_run_once_job_is_unknown_not_failed(tmp_path, monkeypatch):
+    _plist(tmp_path, monkeypatch, "com.deus.fresh1", {"RunAtLoad": True})
+    _launchctl(monkeypatch, [("-", "-", "com.deus.fresh1")])
+    assert cock.probe_service("com.deus.fresh1", NOW).status == cock.UNKNOWN
+
+
+def test_negative_exit_status_is_still_a_failure(tmp_path, monkeypatch):
+    """launchd reports signal-terminated jobs as a negative status. That IS a
+    real failed run and must not be swallowed by the never-run check."""
+    _plist(tmp_path, monkeypatch, "com.deus.sig", {"StartCalendarInterval": {"Hour": 4}})
+    _launchctl(monkeypatch, [("-", "-9", "com.deus.sig")])
+    res = cock.probe_service("com.deus.sig", NOW)
+    assert res.status == cock.FAILED
+    assert "-9" in res.observed
+
+
+def test_malformed_plist_does_not_crash_the_healthcheck(tmp_path, monkeypatch):
+    """Measured: plistlib.load() raises xml.parsers.expat.ExpatError on
+    malformed XML, which is NOT a ValueError and escaped the original narrow
+    except tuple. One bad plist would have taken down the whole run.
+    """
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.deus.bad.plist").write_bytes(
+        b"<?xml version='1.0'?><plist><dict><key>a</dict></plist>"
+    )
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path))
+    assert cock._launch_agent_kind("com.deus.bad") is None
+
+    _launchctl(monkeypatch, [("-", "0", "com.deus.bad")])
+    assert cock.probe_service("com.deus.bad", NOW).status == cock.UNKNOWN
+
+
+def test_plist_with_a_non_dict_root_is_unclassifiable(tmp_path, monkeypatch):
+    """A valid plist whose root is an array loads without error, then
+    AttributeErrors on .get(). Also not classifiable."""
+    import plistlib
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.deus.arr.plist").write_bytes(plistlib.dumps(["a", "b"]))
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path))
+    assert cock._launch_agent_kind("com.deus.arr") is None
+
+
+def test_a_single_bad_plist_does_not_stop_the_other_probes(tmp_path, monkeypatch):
+    """The blast-radius guarantee: one unclassifiable job degrades to UNKNOWN
+    while every other job is still probed normally."""
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.deus.bad.plist").write_bytes(b"<?xml version='1.0'?><plist><dict>")
+    import plistlib
+    with (agents / "com.deus.good.plist").open("wb") as fh:
+        plistlib.dump({"StartCalendarInterval": {"Hour": 4}}, fh)
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path))
+    _launchctl(monkeypatch, [("-", "0", "com.deus.bad"), ("-", "0", "com.deus.good")])
+
+    assert cock.probe_service("com.deus.bad", NOW).status == cock.UNKNOWN
+    assert cock.probe_service("com.deus.good", NOW).status == cock.OK
+
+
+def test_resident_never_run_is_failed_not_unknown(tmp_path, monkeypatch):
+    """Deliberately asymmetric with SCHEDULED/RUN_ONCE/CONDITIONAL.
+
+    Those kinds are supposed to finish, so "never run" is an absence of
+    evidence. An unconditional KeepAlive job is NOT supposed to finish: launchd
+    starts it on load and restarts it on exit, so no PID and no completed run is
+    the failure itself. This is the one place never-run means broken, and it was
+    previously an unstated, untested asymmetry.
+    """
+    _plist(tmp_path, monkeypatch, "com.deus.resfresh", {"KeepAlive": True})
+    _launchctl(monkeypatch, [("-", "-", "com.deus.resfresh")])
+    res = cock.probe_service("com.deus.resfresh", NOW)
+    assert res.status == cock.FAILED
+    assert "never started" in res.observed, "the reason must distinguish it from a failed run"
+
+
+def test_empty_keepalive_dict_is_unknown_not_a_guessed_bucket(tmp_path, monkeypatch):
+    """`KeepAlive: {}` is legal but degenerate, and its launchd semantics were
+    not establishable here.
+
+    Two review rounds produced two different guesses (RESIDENT, then
+    RESIDENT_CONDITIONAL), neither with a citation or a calibration case. The
+    honest answer is None -> UNKNOWN: this module asserts OK only from positive
+    evidence, and picking a bucket for an unverified shape is the same
+    confident-verdict-on-the-wrong-proposition defect it exists to remove.
+
+    It must still NOT fall through to the interval/RunAtLoad branches, which is
+    what a truthiness test before the isinstance check would cause -- an empty
+    dict is falsy, so a keep-alive job would be classified as one meant to
+    finish.
+    """
+    _plist(tmp_path, monkeypatch, "com.deus.emptyka",
+           {"KeepAlive": {}, "RunAtLoad": True})
+    assert cock._launch_agent_kind("com.deus.emptyka") is None, \
+        "unverified shape must not be guessed into RUN_ONCE by falsiness"
+
+    _launchctl(monkeypatch, [("-", "0", "com.deus.emptyka")])
+    assert cock.probe_service("com.deus.emptyka", NOW).status == cock.UNKNOWN
+
+
+def test_discovery_ignores_a_directory_named_like_a_plist(tmp_path, monkeypatch):
+    """Filename shape alone is not enough: a directory called
+    com.deus.x.plist would otherwise be discovered and probed as a job."""
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.deus.real.plist").write_bytes(b"")
+    (agents / "com.deus.fake.plist").mkdir()
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path))
+
+    labels = cock._deus_service_labels()
+    assert "com.deus.real" in labels
+    assert "com.deus.fake" not in labels, "a directory is not a job"
+
+
+def test_unclassifiable_plist_is_logged_not_silently_swallowed(tmp_path, monkeypatch, caplog):
+    """UNKNOWN is the right user-facing behaviour, but a future refactor's own
+    AttributeError must not masquerade as 'malformed plist' forever."""
+    import logging
+    agents = tmp_path / "Library" / "LaunchAgents"
+    agents.mkdir(parents=True)
+    (agents / "com.deus.bad2.plist").write_bytes(b"<?xml version='1.0'?><plist><dict>")
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path))
+
+    with caplog.at_level(logging.DEBUG, logger=cock.__name__):
+        assert cock._launch_agent_kind("com.deus.bad2") is None
+    assert any("cannot classify" in r.message for r in caplog.records), \
+        "the exception must leave a diagnostic trace"
