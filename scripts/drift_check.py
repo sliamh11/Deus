@@ -1988,6 +1988,48 @@ def check_coverage(project_root: Path) -> int:
 
 _BENCH_FIXTURE = "scripts/tests/fixtures/memory_tree_queries.jsonl"
 _BENCH_SNAPSHOT = "scripts/tests/fixtures/memory_tree_snapshot.json"
+_BENCH_CANARIES = "scripts/tests/fixtures/memory_tree_canaries.jsonl"
+
+# The fixture is vault + this-repo content, so the scope a Deus session's hook
+# would compute is the right one to score at. Scoring UNSCOPED once per-project
+# memory is indexed measures a configuration no session ever runs in: measured
+# 2026-08-25 on a correctly-tagged copy, 88.3% unscoped versus 95.0% scoped at
+# k=3, against a 90.0% pre-index baseline.
+_BENCH_SCOPE = "deus"
+
+# An `expect_top1` of this sentinel means: abstaining is acceptable AND any
+# global/this-repo answer is acceptable; only a foreign-project node fails.
+_ABSTAIN_OR_GLOBAL = "abstain_or_global"
+
+
+def _hook_top_k(project_root: Path) -> tuple[int, str]:
+    """The depth the hook injects at, plus where that number came from.
+
+    LIA-126: this gate hardcoded ``k=5`` while the hook injects ``TOP_K=3``, so
+    displacement out of the top 3 scored as a hit here (95.0% PASS) while the
+    reader had stopped seeing the answer (88.3% at k=3, same corpus).
+
+    Delegates to ``scripts/_retrieval_depth`` so all THREE sites that carried
+    the wrong depth now derive from one definition. Restating the number in a
+    second place is the defect, not the fix.
+    """
+    try:
+        sys.path.insert(0, str(project_root / "scripts"))
+        from _retrieval_depth import hook_top_k_with_source
+
+        return hook_top_k_with_source()
+    except Exception as exc:
+        # Restating the fallback number here would be the LIA-126 defect all
+        # over again -- a second place holding the same value, drifting the
+        # moment one is updated. Read the module's own constant if we can, and
+        # only if THAT import also fails do we have nothing left to derive from.
+        try:
+            from _retrieval_depth import _FALLBACK_TOP_K
+
+            fallback = _FALLBACK_TOP_K
+        except Exception:
+            fallback = 3
+        return fallback, f"FALLBACK, import failed: {exc}"
 
 _VAULT_SKIP_DIRS = frozenset(
     {"Session-Logs", "Checkpoints", "Atoms", "ARCHIVE", ".git", ".obsidian"}
@@ -2144,6 +2186,7 @@ def check_bench_snapshot(project_root: Path) -> int:
         if line.strip()
     ]
 
+    k, k_source = _hook_top_k(project_root)
     hits = 0
     total = 0
     for item in data:
@@ -2151,7 +2194,7 @@ def check_bench_snapshot(project_root: Path) -> int:
             continue
         total += 1
         try:
-            r = retrieve(db, item["query"], k=5)
+            r = retrieve(db, item["query"], k=k, project_scope=_BENCH_SCOPE)
         except Exception:
             continue
         expected = item.get("expected_paths") or []
@@ -2168,13 +2211,158 @@ def check_bench_snapshot(project_root: Path) -> int:
     recall = hits / total
     passed = recall >= min_recall
     status = "PASS" if passed else "REGRESSION"
-    print(f"Benchmark {status}: retrieval recall = {recall:.1%} ({hits}/{total}), threshold = {min_recall:.1%}")
+    # Name the depth and the scope in the output. A recall number that does not
+    # say which k and which scope produced it is how this drifted (LIA-126).
+    print(
+        f"Benchmark {status}: retrieval recall = {recall:.1%} ({hits}/{total}), "
+        f"threshold = {min_recall:.1%}, k={k} ({k_source}), scope={_BENCH_SCOPE!r}"
+    )
 
     if not passed:
         print(f"\nRecall dropped below {min_recall:.1%}. Investigate before merging.")
         print(f"Snapshot from: {snapshot.get('created', 'unknown')}")
         return 1
     return 0
+
+
+def check_bench_canaries(project_root: Path) -> int:
+    """Assert TOP-1 on identity/policy queries, at the hook's own depth.
+
+    Recall-at-k cannot express the failure that matters: on 2026-08-23
+    ``--bench-snapshot`` reported 95.0% PASS while five of eight identity
+    queries had lost top-1 to a foreign project's memory. This check asserts
+    RANK, treats an abstain as a legitimate answer, and fails on any top-1 that
+    belongs to another project -- the damage signature.
+
+    Goes through ``memory_query.recall()``, the path the hook and the MCP tool
+    both use, not raw ``retrieve()``: ``recall`` applies the procedure intent
+    gate, a path blocklist and session dedup, so scoring ``retrieve`` measures a
+    configuration no session runs in. Asserting at the wrong layer is the same
+    mistake as asserting at the wrong depth.
+    """
+    import json
+
+    # This gate FAILS CLOSED. Its whole purpose is to be the signal that was
+    # missing on 2026-08-23, so "could not run" must never read as "passed":
+    # automation sees only the exit status, and a 0 from an unrunnable gate
+    # disables every canary while looking green. That is the same
+    # success-signal-decoupled-from-effect shape LIA-126 is about, one layer up.
+    fixture = project_root / _BENCH_CANARIES
+    if not fixture.exists():
+        print(f"No canary fixture at {_BENCH_CANARIES} -- cannot verify retrieval. FAILING CLOSED.")
+        return 1
+
+    try:
+        sys.path.insert(0, str(project_root / "scripts"))
+        import memory_query as mq
+    except Exception as exc:
+        print(f"memory_query import failed -- canaries could not run, NOT a pass: {exc!r}")
+        return 1
+
+    # Ask memory_tree where the DB actually is. Hardcoding
+    # ~/.deus/memory_tree.db ignores the DEUS_MEMORY_TREE_DB override, so a
+    # correctly-configured non-default location would fail this preflight and
+    # block on a DB that exists.
+    try:
+        import memory_tree as _mt
+
+        db_path = Path(_mt.DB_PATH)
+    except Exception:
+        db_path = Path("~/.deus/memory_tree.db").expanduser()
+    if not db_path.exists():
+        print(f"No memory_tree.db at {db_path} -- canaries could not run, NOT a pass. FAILING CLOSED.")
+        return 1
+
+    k, k_source = _hook_top_k(project_root)
+    items = [
+        json.loads(line)
+        for line in fixture.read_text().splitlines()
+        if line.strip()
+    ]
+
+    failures: list[str] = []
+    for item in items:
+        query = item["query"]
+        expected = item.get("expect_top1")
+        accepted = {expected, *(item.get("also_accept") or [])} - {None}
+        try:
+            r = mq.recall(
+                query, k=k, source="bench-canary", project_scope=_BENCH_SCOPE
+            )
+        except Exception as exc:
+            failures.append(f"{query!r}: recall raised {exc}")
+            continue
+
+        results = r.get("paths") or []
+        top1 = results[0] if results else None
+
+        if top1 is not None and mt_is_foreign_node(top1):
+            failures.append(
+                f"{query!r}: top-1 is a foreign-project node {top1!r} "
+                "(the 2026-08-23 damage signature)"
+            )
+            continue
+
+        if expected == _ABSTAIN_OR_GLOBAL:
+            # The foreign-node check above is the whole assertion for these.
+            # Freezing today's abstain as permanent would fail the gate on an
+            # IMPROVEMENT: as the global corpus grows, a query that abstains
+            # today can start returning a correct global answer. Observed
+            # exactly that on a correctly-tagged copy, where "what is my output
+            # style contract" went from abstaining to MEMORY_TREE.md.
+            #
+            # ACCEPTED BLIND SPOT: a confidently-WRONG domestic top-1 (not
+            # abstaining, not foreign, just the wrong global file) passes here.
+            # That is the price of not freezing a moving baseline. Tighten
+            # these three to a closed `also_accept` set once the corpus stops
+            # growing; until then the foreign-node assertion is the guard.
+            continue
+        if expected is None:
+            if top1 is not None:
+                failures.append(
+                    f"{query!r}: expected an ABSTAIN, got {top1!r} "
+                    f"(confidence {r.get('confidence', 0):.3f})"
+                )
+        elif top1 not in accepted:
+            failures.append(
+                f"{query!r}: expected top-1 in {sorted(accepted)}, got {top1!r}"
+            )
+
+    total = len(items)
+    if failures:
+        print(f"Canary REGRESSION: {len(failures)}/{total} failed at k={k} ({k_source}), scope={_BENCH_SCOPE!r}")
+        for f in failures:
+            print(f"  {f}")
+        print("\nIdentity/policy retrieval degraded. Investigate before merging.")
+        return 1
+
+    print(f"Canary PASS: {total}/{total} held at k={k} ({k_source}), scope={_BENCH_SCOPE!r}")
+    return 0
+
+
+def mt_is_foreign_node(path: str) -> bool:
+    """True when a node path is qualified to some OTHER project's memory.
+
+    Delegates to ``memory_tree.split_namespaced_path`` rather than substring-
+    matching ``"::"``, so this cannot drift from the real namespace semantics
+    (which also require the path to sit under ``EXTERNAL_NAMESPACE`` and the
+    qualifier to contain no ``/``). A bare ``auto-memory/...`` path is this
+    repo's own population and is NOT foreign; nor is a vault path.
+    """
+    try:
+        import memory_tree as mt
+        from auto_memory_dir import DEUS_PROJECT_ID
+    except Exception:
+        # Last-resort heuristic, reachable only if memory_tree/auto_memory_dir
+        # fail to import inside this gate's own process. It has no
+        # DEUS_PROJECT_ID awareness, so it would call a `deus::`-qualified node
+        # foreign. That errs toward a false RED, which is the correct direction
+        # for a gate, but it is a heuristic and not the real namespace rule.
+        return "::" in path
+    if not path.startswith(mt.EXTERNAL_NAMESPACE):
+        return False
+    project, _rel = mt.split_namespaced_path(path[len(mt.EXTERNAL_NAMESPACE):])
+    return project is not None and project != DEUS_PROJECT_ID
 
 
 if __name__ == "__main__":
@@ -2253,6 +2441,12 @@ if __name__ == "__main__":
         help="Run memory_tree benchmark and compare against stored snapshot (needs Ollama)",
     )
     parser.add_argument(
+        "--bench-canaries",
+        action="store_true",
+        dest="bench_canaries",
+        help="Assert top-1 (or a correct abstain) on identity/policy canaries at the hook's k (needs Ollama)",
+    )
+    parser.add_argument(
         "--backend-strategy",
         action="store_true",
         dest="backend_strategy",
@@ -2309,6 +2503,8 @@ if __name__ == "__main__":
         sys.exit(check_bench_labels(PROJECT_ROOT))
     elif args.bench_snapshot:
         sys.exit(check_bench_snapshot(PROJECT_ROOT))
+    elif args.bench_canaries:
+        sys.exit(check_bench_canaries(PROJECT_ROOT))
     elif args.shadow:
         sys.exit(check_shadow(PROJECT_ROOT))
     elif args.bootstrap_mirror:

@@ -218,3 +218,184 @@ class TestResolveThisRepoDirName:
         result = amd.resolve_this_repo_dir_name()
         assert result == amd._encode_project_dir(this_repo.as_posix())
         assert result != amd._encode_project_dir(str(worktree_git_dir.parent))
+
+
+class TestIsThisRepo:
+    """LIA-125: identity must not depend on the SPELLING used to reach a path.
+
+    On a case-insensitive filesystem `~/Deus` and `~/deus` are one directory
+    (measured: inode 954894 on the host this was written for), and
+    `Path.resolve()` preserves whichever spelling it was given. The previous
+    encoded-string compare therefore classified this repo's own auto-memory as
+    a FOREIGN project whenever the module was reached by the lowercase
+    spelling -- which is the spelling `~/.claude/settings.json` registers the
+    live retrieval hook under, so the failing branch was the default one.
+    """
+
+    def test_case_only_spelling_difference_is_the_same_repo(self, tmp_path, monkeypatch):
+        real = tmp_path / "Repo"
+        real.mkdir()
+        monkeypatch.setattr(amd, "this_repo_root", lambda: real)
+        monkeypatch.setattr(amd, "_unwind_worktree", lambda p: p)
+
+        assert amd.is_this_repo(real) is True
+        # Same directory reached through a symlink under a different name --
+        # stands in for the case-collision, which needs a case-insensitive
+        # filesystem to reproduce and so cannot be created portably in tmp.
+        alias = tmp_path / "repo_alias"
+        alias.symlink_to(real, target_is_directory=True)
+        assert amd.is_this_repo(alias) is True
+
+    def test_a_different_directory_is_not_this_repo(self, tmp_path, monkeypatch):
+        real = tmp_path / "Repo"
+        other = tmp_path / "Other"
+        real.mkdir()
+        other.mkdir()
+        monkeypatch.setattr(amd, "this_repo_root", lambda: real)
+        monkeypatch.setattr(amd, "_unwind_worktree", lambda p: p)
+
+        assert amd.is_this_repo(other) is False
+
+    def test_missing_path_is_not_this_repo_and_does_not_raise(self, tmp_path, monkeypatch):
+        real = tmp_path / "Repo"
+        real.mkdir()
+        monkeypatch.setattr(amd, "this_repo_root", lambda: real)
+        monkeypatch.setattr(amd, "_unwind_worktree", lambda p: p)
+
+        # stat() raises for a nonexistent path; the realpath fallback must
+        # return False rather than propagating OSError.
+        assert amd.is_this_repo(tmp_path / "does-not-exist") is False
+
+    def test_linked_worktree_of_this_repo_is_this_repo(self, monkeypatch):
+        """A session running in a linked worktree must still resolve to the
+        parent repo -- that is the default dev layout here."""
+        this_repo = Path(amd.__file__).resolve().parent.parent
+        monkeypatch.setattr(
+            amd, "_git_output",
+            lambda cmd, cwd: str(this_repo / ".git") if tuple(cmd) == ("rev-parse", "--git-common-dir") else None,
+        )
+        assert amd.is_this_repo(this_repo / ".claude" / "worktrees" / "some-agent") is True
+
+    def test_resolve_project_id_routes_through_is_this_repo(self, monkeypatch):
+        """The whole point of the helper: index-time and retrieval-time cannot
+        drift apart on the identity comparison, because there is only one."""
+        calls: list = []
+
+        def _spy(path):
+            calls.append(path)
+            return True
+
+        monkeypatch.setenv("CLAUDE_PROJECT_DIR", "/anywhere")
+        monkeypatch.setattr(amd, "is_this_repo", _spy)
+        assert amd.resolve_project_id() == amd.DEUS_PROJECT_ID
+        assert calls, "resolve_project_id must consult is_this_repo, not re-derive identity"
+
+
+class TestDecodeProjectDirName:
+    """LIA-123: resolve a ~/.claude/projects/<dirname> basename back to a path.
+
+    The encoding is LOSSY -- `/` and `.` both become `-` -- so it cannot be
+    inverted, and the repo names in the live corpus contain literal dashes
+    (`cyber-olympians-platform`, `quote-builder`). The decoder therefore matches
+    FORWARD: list each directory's real children, encode those, and descend into
+    any whose encoded form is a prefix of the remaining tokens.
+
+    Two earlier designs were measured and rejected -- a dot-aware inverse
+    decoder cannot recover a dot INSIDE a name, and a session-transcript `cwd`
+    registry round-tripped on only 10 of 89 real directories.
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        for rel in (
+            "Users/x/plain",
+            "Users/x/example.com",          # dot INSIDE a name
+            "Users/x/my.app-v2",            # dot AND a literal dash
+            "Users/x/repo/.claude/worktrees/wt-one",  # dotfile segment
+            "Users/x/dash-named-repo",      # literal dashes only
+        ):
+            (tmp_path / rel).mkdir(parents=True)
+        return tmp_path
+
+    def test_plain_name(self, tree):
+        assert amd.decode_project_dir_name("-Users-x-plain", root=str(tree)) == [
+            str((tree / "Users/x/plain").resolve())
+        ]
+
+    def test_dot_inside_a_name(self, tree):
+        """The case that killed the inverse decoder: `example.com` encodes to
+        `example-com`, and no leading-dot heuristic can recover it."""
+        assert amd.decode_project_dir_name("-Users-x-example-com", root=str(tree)) == [
+            str((tree / "Users/x/example.com").resolve())
+        ]
+
+    def test_dot_and_literal_dash_in_one_name(self, tree):
+        assert amd.decode_project_dir_name("-Users-x-my-app-v2", root=str(tree)) == [
+            str((tree / "Users/x/my.app-v2").resolve())
+        ]
+
+    def test_literal_dashes_are_not_split(self, tree):
+        assert amd.decode_project_dir_name(
+            "-Users-x-dash-named-repo", root=str(tree)
+        ) == [str((tree / "Users/x/dash-named-repo").resolve())]
+
+    def test_dotfile_segment_in_a_worktree_path(self, tree):
+        """Claude Code writes `.claude` as `-claude`, so a worktree directory
+        encodes with a doubled dash. It must still resolve -- otherwise a
+        worktree session's project memory is never scoped to its real repo."""
+        assert amd.decode_project_dir_name(
+            "-Users-x-repo--claude-worktrees-wt-one", root=str(tree)
+        ) == [str((tree / "Users/x/repo/.claude/worktrees/wt-one").resolve())]
+
+    def test_unresolvable_returns_empty(self, tree):
+        assert amd.decode_project_dir_name("-Users-x-gone", root=str(tree)) == []
+
+
+class TestCanonicalProjectId:
+    """The index-time tag, computed by the SAME pipeline resolve_project_id()
+    uses at retrieval time, so the two cannot drift (LIA-123's acceptance)."""
+
+    def test_resolvable_project_gets_its_encoded_root(self, tmp_path, monkeypatch):
+        (tmp_path / "Users/x/widget-co").mkdir(parents=True)
+        monkeypatch.setattr(amd, "_unwind_worktree", lambda p: p)
+        monkeypatch.setattr(amd, "is_this_repo", lambda p: False)
+        monkeypatch.setattr(
+            amd, "decode_project_dir_name",
+            lambda name, **kw: [str((tmp_path / "Users/x/widget-co").resolve())],
+        )
+        assert amd.canonical_project_id("-Users-x-widget-co") == amd._encode_project_dir(
+            str((tmp_path / "Users/x/widget-co").resolve())
+        )
+
+    def test_this_repo_gets_the_deus_sentinel(self, monkeypatch):
+        monkeypatch.setattr(amd, "decode_project_dir_name", lambda name, **kw: ["/anywhere"])
+        monkeypatch.setattr(amd, "is_this_repo", lambda p: True)
+        assert amd.canonical_project_id("-anything") == amd.DEUS_PROJECT_ID
+
+    def test_worktree_resolves_to_the_parent_repo_not_the_worktree(self, tmp_path, monkeypatch):
+        repo = tmp_path / "Users/x/repo"
+        worktree = repo / ".claude/worktrees/wt-one"
+        worktree.mkdir(parents=True)
+        monkeypatch.setattr(
+            amd, "decode_project_dir_name", lambda name, **kw: [str(worktree.resolve())]
+        )
+        monkeypatch.setattr(amd, "is_this_repo", lambda p: False)
+        monkeypatch.setattr(
+            amd, "_git_output",
+            lambda cmd, cwd: str(repo / ".git") if tuple(cmd) == ("rev-parse", "--git-common-dir") else None,
+        )
+        assert amd.canonical_project_id("-Users-x-repo--claude-worktrees-wt-one") == (
+            amd._encode_project_dir(str(repo.resolve()))
+        )
+
+    def test_unresolvable_returns_none_so_callers_can_quarantine(self, monkeypatch):
+        """None means "cannot prove an identity". Callers MUST quarantine under
+        the raw dirname rather than substituting NULL -- NULL is the GLOBAL
+        tier, so a stray project's memory would compete in every other
+        project's retrieval, which is the contamination this work removes."""
+        monkeypatch.setattr(amd, "decode_project_dir_name", lambda name, **kw: [])
+        assert amd.canonical_project_id("-gone") is None
+
+    def test_ambiguous_returns_none(self, monkeypatch):
+        monkeypatch.setattr(amd, "decode_project_dir_name", lambda name, **kw: ["/a", "/b"])
+        assert amd.canonical_project_id("-ambiguous") is None

@@ -3027,6 +3027,31 @@ class TestReindexExternalProjectTagging:
         assert row == ("auto-memory/widget-co::feedback_b.md", "widget-co")
 
 
+def _fake_canonical(deus_dir_name: str):
+    """Stand in for auto_memory_dir.canonical_project_id in these tests.
+
+    The real function decodes a `~/.claude/projects/<dirname>` basename against
+    the LIVE filesystem, which a tmp_path fixture's synthetic directory names
+    can never satisfy. These tests are about memory_tree's tagging WIRING, not
+    about the decoder -- the decoder has its own tests in
+    test_auto_memory_dir.py, driven against a real fixture tree via its `root`
+    parameter.
+
+    Returns "deus" for this-repo's directory, the dirname itself for any other
+    plausible project, and None for a name marked unresolvable, so a test can
+    exercise the quarantine branch.
+    """
+
+    def _fake(dir_name: str) -> str | None:
+        if dir_name == deus_dir_name:
+            return mt.DEUS_PROJECT_ID
+        if "unresolvable" in dir_name:
+            return None
+        return dir_name
+
+    return _fake
+
+
 class TestReindexExternalAllProjects:
     """LIA-122/P4: multi-project walk over <projects_root>/*/memory/."""
 
@@ -3065,7 +3090,7 @@ class TestReindexExternalAllProjects:
 
     def test_walks_all_projects_and_tags_deus_bare(self, tmp_db, projects_root, monkeypatch):
         root, deus_dir_name = projects_root
-        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        monkeypatch.setattr(mt, "canonical_project_id", _fake_canonical(deus_dir_name))
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
             counts = mt.reindex_external_all_projects(tmp_db, root)
 
@@ -3078,44 +3103,49 @@ class TestReindexExternalAllProjects:
                 "SELECT path, project FROM nodes WHERE orphaned_at IS NULL"
             ).fetchall()
         )
-        # LIA-123: only the provable this-repo directory is tagged
-        # DEUS_PROJECT_ID in the DB `project` column. widget-co's raw
-        # dirname is NOT a resolve_project_id()-derived identity, so its DB
-        # column is NULL -- the path-namespace qualifier
-        # (`-Users-someone-widget-co::`) is unaffected and stays exactly as
-        # before, since that's what physically locates the file on disk.
+        # LIA-123: every project directory gets a NON-NULL tag. This-repo
+        # gets DEUS_PROJECT_ID; a resolvable project gets the identity
+        # canonical_project_id() computes, which is the SAME value
+        # resolve_project_id() returns at retrieval time. NULL is the GLOBAL
+        # tier and is never used here -- tagging a project's memory NULL would
+        # put it in every OTHER project's retrieval results. The path-namespace
+        # qualifier is a separate value and is unaffected, since that is what
+        # physically locates the file on disk.
         assert rows == {
             ("auto-memory/feedback_a.md", "deus"),
-            ("auto-memory/-Users-someone-widget-co::feedback_b.md", None),
+            (
+                "auto-memory/-Users-someone-widget-co::feedback_b.md",
+                "-Users-someone-widget-co",
+            ),
         }
+        assert all(project is not None for _path, project in rows)
 
-    def test_mistagged_row_self_corrects_to_null_on_rerun(self, tmp_db, projects_root, monkeypatch):
+    def test_mistagged_row_self_corrects_on_rerun(self, tmp_db, projects_root, monkeypatch):
         """LIA-123 upgrade path: a row written by the pre-fix code (DB
-        `project` column = the raw dirname, bypassing resolve_project_id())
-        must self-correct to NULL the next time this directory is reindexed
-        -- no manual migration, no separate backfill command. upsert_node's
+        `project` column left NULL for every foreign directory) must
+        self-correct to its canonical tag the next time this directory is
+        reindexed -- no manual migration, no separate backfill. upsert_node's
         `ON CONFLICT(id) DO UPDATE SET project = excluded.project` already
         fires on every walk regardless of content-hash change, so a plain
         rerun is sufficient."""
         root, deus_dir_name = projects_root
-        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        monkeypatch.setattr(mt, "canonical_project_id", _fake_canonical(deus_dir_name))
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
             mt.reindex_external_all_projects(tmp_db, root)
 
         # Simulate a stale row from the pre-fix version of this function,
-        # which tagged the DB column with the raw dirname instead of NULL.
+        # which left the DB column NULL for every foreign directory. This is
+        # also why a per-file classifier is required rather than a one-time
+        # UPDATE: the next walk overwrites any manual migration.
         node_id = tmp_db.execute(
             "SELECT id FROM nodes WHERE path = ?",
             ("auto-memory/-Users-someone-widget-co::feedback_b.md",),
         ).fetchone()[0]
-        tmp_db.execute(
-            "UPDATE nodes SET project = ? WHERE id = ?",
-            ("-Users-someone-widget-co", node_id),
-        )
+        tmp_db.execute("UPDATE nodes SET project = NULL WHERE id = ?", (node_id,))
         tmp_db.commit()
         assert tmp_db.execute(
             "SELECT project FROM nodes WHERE id = ?", (node_id,)
-        ).fetchone()[0] == "-Users-someone-widget-co"
+        ).fetchone()[0] is None
 
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
             mt.reindex_external_all_projects(tmp_db, root)
@@ -3123,11 +3153,14 @@ class TestReindexExternalAllProjects:
         row = tmp_db.execute(
             "SELECT path, project FROM nodes WHERE id = ?", (node_id,)
         ).fetchone()
-        assert row == ("auto-memory/-Users-someone-widget-co::feedback_b.md", None)
+        assert row == (
+            "auto-memory/-Users-someone-widget-co::feedback_b.md",
+            "-Users-someone-widget-co",
+        )
 
     def test_skips_underscore_prefixed_files(self, tmp_db, projects_root, monkeypatch):
         root, deus_dir_name = projects_root
-        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        monkeypatch.setattr(mt, "canonical_project_id", _fake_canonical(deus_dir_name))
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
             mt.reindex_external_all_projects(tmp_db, root)
         paths = [
@@ -3139,7 +3172,7 @@ class TestReindexExternalAllProjects:
 
     def test_idempotent_rerun(self, tmp_db, projects_root, monkeypatch):
         root, deus_dir_name = projects_root
-        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        monkeypatch.setattr(mt, "canonical_project_id", _fake_canonical(deus_dir_name))
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
             first = mt.reindex_external_all_projects(tmp_db, root)
             second = mt.reindex_external_all_projects(tmp_db, root)
@@ -3151,7 +3184,7 @@ class TestReindexExternalAllProjects:
 
     def test_no_id_writeback_does_not_mutate_source(self, tmp_db, projects_root, monkeypatch):
         root, deus_dir_name = projects_root
-        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        monkeypatch.setattr(mt, "canonical_project_id", _fake_canonical(deus_dir_name))
         widget_file = root / "-Users-someone-widget-co" / "memory" / "feedback_b.md"
         before = widget_file.read_text()
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
@@ -3175,7 +3208,7 @@ class TestReindexExternalAllProjects:
         Fails against the pre-fix behaviour, which minted a fresh id (and
         therefore a fresh row + a forced re-embed) on every run."""
         root, deus_dir_name = projects_root
-        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        monkeypatch.setattr(mt, "canonical_project_id", _fake_canonical(deus_dir_name))
         widget_file = root / "-Users-someone-widget-co" / "memory" / "feedback_b.md"
         assert "id:" not in widget_file.read_text()  # genuinely id-less
 
@@ -3200,7 +3233,7 @@ class TestReindexExternalAllProjects:
 
     def test_include_and_exclude_by_dirname(self, tmp_db, projects_root, monkeypatch):
         root, deus_dir_name = projects_root
-        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        monkeypatch.setattr(mt, "canonical_project_id", _fake_canonical(deus_dir_name))
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
             only_widget = mt.reindex_external_all_projects(
                 tmp_db, root, include={"-Users-someone-widget-co"},
@@ -3221,7 +3254,7 @@ class TestReindexExternalAllProjects:
 
     def test_continues_past_a_failing_project(self, tmp_db, projects_root, monkeypatch):
         root, deus_dir_name = projects_root
-        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        monkeypatch.setattr(mt, "canonical_project_id", _fake_canonical(deus_dir_name))
 
         real_walk = mt._reindex_dir_walk
 
@@ -3247,10 +3280,82 @@ class TestReindexExternalAllProjects:
     def test_cli_all_projects_dispatch(self, tmp_path, projects_root, monkeypatch):
         root, deus_dir_name = projects_root
         monkeypatch.setattr(mt, "DB_PATH", tmp_path / "cli.db")
-        monkeypatch.setattr(mt, "resolve_this_repo_dir_name", lambda: deus_dir_name)
+        monkeypatch.setattr(mt, "canonical_project_id", _fake_canonical(deus_dir_name))
         with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
             rc = mt.main([
                 "reindex-external", "--all-projects",
                 "--projects-root", str(root), "--json",
             ])
         assert rc == mt.SUCCESS
+
+
+class TestClassifyDbProject:
+    """LIA-123: the per-FILE tag, because a per-directory tag is not enough.
+
+    This repo's own auto-memory directory holds two tiers at once: host-global
+    engineering procedures and research notes, plus facts about Deus itself.
+    Tagging the whole directory `deus` hides the global half from every non-Deus
+    session once scoping is on.
+
+    This must run on every upsert, never as a one-time migration: upsert_node's
+    `ON CONFLICT(id) DO UPDATE SET project = excluded.project` means a manual
+    UPDATE is silently reverted by the next reindex.
+    """
+
+    def test_procedures_under_this_repo_are_global(self):
+        assert mt.classify_db_project(
+            Path("procedures/fresh-worktree-off-main.md"), mt.DEUS_PROJECT_ID
+        ) is None
+
+    def test_research_notes_under_this_repo_are_global(self):
+        assert mt.classify_db_project(
+            Path("research_vector_search_data_layout.md"), mt.DEUS_PROJECT_ID
+        ) is None
+
+    def test_other_this_repo_files_stay_deus(self):
+        assert mt.classify_db_project(
+            Path("feedback_deus_messaging_north_star.md"), mt.DEUS_PROJECT_ID
+        ) == mt.DEUS_PROJECT_ID
+
+    def test_a_foreign_projects_procedures_folder_is_not_global(self):
+        """A `procedures/` folder inside another project's memory belongs to
+        THAT project. Only this repo's bare namespace carries the global tier."""
+        assert mt.classify_db_project(
+            Path("procedures/whatever.md"), "-Users-someone-widget-co"
+        ) == "-Users-someone-widget-co"
+
+    def test_quarantined_directory_tag_is_passed_through_untouched(self):
+        assert mt.classify_db_project(
+            Path("research_x.md"), "-Users-someone-gone"
+        ) == "-Users-someone-gone"
+
+    def test_global_tag_survives_a_second_reindex(self, tmp_db, tmp_path):
+        """The durability property the whole per-file design exists for: a
+        rerun must NOT overwrite the global tag back to `deus`."""
+        mem = tmp_path / "auto_memory"
+        (mem / "procedures").mkdir(parents=True)
+        (mem / "procedures" / "some-procedure.md").write_text(
+            "---\nname: P\ndescription: a generic engineering procedure\ntype: procedure\n---\nBody\n"
+        )
+        (mem / "feedback_about_deus.md").write_text(
+            "---\nname: F\ndescription: a fact about this repo\ntype: feedback\n---\nBody\n"
+        )
+
+        def _tags():
+            return dict(
+                tmp_db.execute(
+                    "SELECT path, project FROM nodes WHERE orphaned_at IS NULL"
+                ).fetchall()
+            )
+
+        with patch.object(mt, "embed_text", return_value=[0.1] * mt.EMBED_DIM):
+            mt._reindex_dir_walk(tmp_db, mem, db_project=mt.DEUS_PROJECT_ID)
+            tmp_db.commit()
+            first = _tags()
+            mt._reindex_dir_walk(tmp_db, mem, db_project=mt.DEUS_PROJECT_ID)
+            tmp_db.commit()
+            second = _tags()
+
+        assert first["auto-memory/procedures/some-procedure.md"] is None
+        assert first["auto-memory/feedback_about_deus.md"] == mt.DEUS_PROJECT_ID
+        assert second == first, "a rerun must not revert the per-file classification"

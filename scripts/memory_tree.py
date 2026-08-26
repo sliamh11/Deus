@@ -34,7 +34,10 @@ from _agent_io import is_agent_context, compact_json, select_fields
 from _time import local_now, utc_now  # noqa: E402
 from auto_memory_dir import (  # noqa: E402
     DEUS_PROJECT_ID,
+    canonical_project_id,
+    is_this_repo,
     resolve_auto_memory_dir,
+    resolve_project_id,
     resolve_this_repo_dir_name,
 )
 
@@ -2227,6 +2230,42 @@ def _write_id_to_frontmatter(path: Path, new_id: str) -> None:
     path.write_text(updated, encoding="utf-8")
 
 
+# Bare-namespace subtrees of THIS repo's auto-memory that hold host-global
+# know-how rather than facts about Deus: engineering procedures and research
+# notes. Read the `description:` of all 21 procedure files on disk (2026-08-25)
+# -- every one is generic method (fresh-worktree-off-main,
+# whole-repo-engineering-assessment, dispatch-and-recover-a-long-running-
+# multi-agent-effort) and not one names a Deus internal.
+_GLOBAL_TIER_PREFIXES = ("procedures/",)
+_GLOBAL_TIER_STEMS = ("research_",)
+
+
+def classify_db_project(rel_path: Path, dir_project: str | None) -> str | None:
+    """The `project` tag for ONE file, given its directory's tag.
+
+    LIA-123: a directory-level tag alone is wrong for this repo's own
+    auto-memory, which holds two different tiers in one directory. Procedures
+    and research notes are host-global know-how -- tagging them ``'deus'`` hides
+    them from every non-Deus session once scoping is on, so they belong at
+    ``NULL`` (the global tier). Everything else under this repo stays ``'deus'``.
+
+    This MUST be a per-file classifier consulted on every upsert, not a one-time
+    migration. ``upsert_node`` does ``project = excluded.project`` on conflict,
+    so a manual ``UPDATE`` setting these nodes NULL is silently reverted by the
+    very next reindex, re-hiding every procedure with no error.
+
+    Only applies to the bare (this-repo) namespace. A foreign project's files
+    keep their project's tag whatever they are named -- a `procedures/` folder
+    inside cyber-olympians' memory is that project's, not global.
+    """
+    if dir_project != DEUS_PROJECT_ID:
+        return dir_project
+    rel = rel_path.as_posix()
+    if rel.startswith(_GLOBAL_TIER_PREFIXES) or rel_path.name.startswith(_GLOBAL_TIER_STEMS):
+        return None
+    return dir_project
+
+
 def _index_external_file(
     db: sqlite3.Connection,
     path: Path,
@@ -2436,7 +2475,8 @@ def _reindex_dir_walk(
         walked_paths.add(ns_path)
 
         sub = _index_external_file(
-            db, p, ns_path, skip_embed=skip_embed, db_project=db_project,
+            db, p, ns_path, skip_embed=skip_embed,
+            db_project=classify_db_project(rel_to_ext, db_project),
             no_id_writeback=no_id_writeback,
         )
         for k, v in sub.items():
@@ -2542,9 +2582,15 @@ def reindex_external_all_projects(
     no_id_writeback: bool = False,
     include: set[str] | None = None,
     exclude: set[str] | None = None,
+    report_tags: bool = False,
 ) -> dict[str, Any]:
     """Walk EVERY ``<projects_root>/<dir>/memory/`` and index each as its own
     project (LIA-122/P4).
+
+    ``report_tags`` makes this a DRY RUN: resolve and return the ``project``
+    tag each directory would receive, in ``result["tags"]``, without opening a
+    walk or writing anything. The mapping is the load-bearing decision here, so
+    it must be inspectable before it is applied.
 
     Each on-disk project directory's own basename becomes the ``project``
     PATH-NAMESPACE tag/qualifier — this deliberately does NOT go through
@@ -2598,12 +2644,18 @@ def reindex_external_all_projects(
     if not projects_root.is_dir():
         raise FileNotFoundError(f"projects root not found: {projects_root}")
 
-    _backup_db()
-    this_repo_dir = resolve_this_repo_dir_name()
+    # A dry run must write NOTHING, and _backup_db() writes a timestamped copy
+    # of the whole DB whenever it exists -- so it cannot run before the
+    # report_tags branch returns, or `report-tags` silently litters ~/.deus with
+    # backups every time someone inspects the mapping.
+    if not report_tags:
+        _backup_db()
 
     totals = {"indexed": 0, "embedded": 0, "skipped": 0, "orphaned": 0, "id_written": 0}
     per_project: dict[str, dict[str, int]] = {}
     errors: dict[str, str] = {}
+    quarantined: dict[str, str] = {}
+    tags: dict[str, str] = {}
     seen_real_dirs: set[Path] = set()
 
     for d in sorted(projects_root.iterdir()):
@@ -2622,12 +2674,46 @@ def reindex_external_all_projects(
             errors[dir_name] = f"directory name contains {_PROJECT_NS_SEP!r}, skipped"
             continue
 
-        project = DEUS_PROJECT_ID if dir_name == this_repo_dir else dir_name
+        # LIA-125: identity by filesystem inode, never by encoded-string
+        # compare. `~/Deus` and `~/deus` are ONE directory on a
+        # case-insensitive filesystem and `Path.resolve()` preserves whichever
+        # spelling reached the module, so the old `dir_name == this_repo_dir`
+        # compare misclassified this repo's own auto-memory as FOREIGN under
+        # the lowercase spelling — which is the spelling the live retrieval
+        # hook is registered under.
+        # NB: resolve the dirname to its real repo path FIRST. `d` is the
+        # ~/.claude/projects/<dirname> directory, which is never the repo
+        # itself -- testing identity against `d` would always be False.
+        resolved_id = canonical_project_id(dir_name)
+        this_repo = resolved_id == DEUS_PROJECT_ID
+        project = DEUS_PROJECT_ID if this_repo else dir_name
+
         # LIA-123: the DB `project` column is a SEPARATE value from the
         # path-namespace `project` above — see this function's docstring.
-        # Only the provable this-repo case gets DEUS_PROJECT_ID; every other
-        # directory's raw dirname is unproven and stays NULL.
-        db_project = DEUS_PROJECT_ID if dir_name == this_repo_dir else None
+        # Three outcomes, and the third is the one that matters:
+        #   this repo          -> DEUS_PROJECT_ID
+        #   resolvable project -> the id resolve_project_id() computes at
+        #                         RETRIEVAL time, via one shared function, so
+        #                         index-time and retrieval-time cannot drift
+        #   unresolvable       -> QUARANTINE under the raw dirname
+        # Quarantine, not NULL. NULL is the GLOBAL tier, so tagging a stray
+        # project's memory NULL would put it in every other project's
+        # retrieval results — the exact cross-project contamination this work
+        # removes. A quarantined node matches no live scope, stays reachable
+        # via an explicit project= query, and is reported in `errors` below.
+        db_project = resolved_id
+        if db_project is None:
+            db_project = dir_name
+            quarantined[dir_name] = (
+                "could not resolve to exactly one real directory; "
+                "quarantined under its raw name (not global)"
+            )
+        tags[dir_name] = db_project
+        if report_tags:
+            # Dry run: report the mapping without touching the DB, so the
+            # tag every directory WOULD get is inspectable before any write.
+            continue
+
         try:
             # LIA-122: `memory` can itself be a symlink (this repo's own dir
             # points at ~/.deus/auto-memory) -- resolve before rglob so the
@@ -2662,8 +2748,18 @@ def reindex_external_all_projects(
             totals[k] += v
 
     result: dict[str, Any] = {**totals, "projects_walked": len(per_project), "per_project": per_project}
+    result["tags"] = tags
+    if quarantined:
+        # Surfaced under `errors` deliberately: quarantine must be a VISIBLE
+        # state. A directory silently tagged with a name no scope will ever
+        # match is indistinguishable from one that indexed correctly.
+        errors.update(quarantined)
+        result["quarantined"] = sorted(quarantined)
     if errors:
         result["errors"] = errors
+    if report_tags:
+        result["report_tags"] = True
+        return result
     _emit_audit({"action": "reindex_external_all_projects", "dir": str(projects_root), **totals})
     return result
 
@@ -3725,6 +3821,22 @@ def main(argv: list[str] | None = None) -> int:
     p_query.add_argument("--no-coherence", action="store_true", help="Disable coherence gate on gap abstain")
     p_query.add_argument("--compact", action="store_true", help="Strip verbose fields for token efficiency")
     p_query.add_argument("--select", type=str, default=None, help="Comma-separated field paths to include")
+    p_query.add_argument(
+        "--project-scope", type=str, default=None, metavar="PROJECT",
+        help="Restrict candidates to this project's memory plus the global tier. "
+             "Accepts a project id (e.g. 'deus') or a ~/.claude/projects dirname. "
+             "Default: the current session's project. Use --all-projects for no scope.",
+    )
+    p_query.add_argument(
+        "--all-projects", action="store_true",
+        help="Deliberately query EVERY project's memory unscoped. Overrides --project-scope.",
+    )
+
+    p_report_tags = sub.add_parser(
+        "report-tags",
+        help="Dry run: show the project tag each ~/.claude/projects/*/memory dir would get",
+    )
+    p_report_tags.add_argument("--json", action="store_true")
 
     p_reembed = sub.add_parser("reembed", help="Re-embed a single file")
     p_reembed.add_argument("path", help="Relative path from vault root")
@@ -3870,10 +3982,27 @@ def main(argv: list[str] | None = None) -> int:
         return SUCCESS
 
     if args.cmd == "query":
+        # LIA-123: an on-demand query must be able to scope the same way the
+        # retrieval hook does, and must be able to reach a QUARANTINED project
+        # (one whose directory no longer resolves to a repo) by naming it
+        # explicitly -- that is what makes quarantine recoverable rather than a
+        # slow delete. --all-projects is the deliberate opt-out.
+        if args.all_projects:
+            scope = None
+        elif args.project_scope:
+            scope = args.project_scope
+        else:
+            scope = resolve_project_id()
+
         if args.policy:
+            # `project_scope` must reach BOTH branches. Forwarding it only to
+            # the plain retrieve() left `--policy` silently unscoped, so a
+            # `--project-scope` a caller had explicitly supplied was ignored
+            # and another project's memory could still come back.
             result = retrieve_with_policy(
                 db, args.text, k=args.k,
                 low_threshold=args.low, abstain_threshold=args.abstain,
+                project_scope=scope,
             )
         else:
             concept_list = args.concepts.split(",") if args.concepts else None
@@ -3883,7 +4012,9 @@ def main(argv: list[str] | None = None) -> int:
                 use_fts=not args.no_fts,
                 concepts=concept_list,
                 use_coherence_gate=not args.no_coherence,
+                project_scope=scope,
             )
+            result["project_scope"] = scope or "ALL (unscoped)"
         use_json = args.json or is_agent_context()
         if use_json:
             output = result
@@ -3901,6 +4032,25 @@ def main(argv: list[str] | None = None) -> int:
                 extra = f" policy={','.join(result['policy_trace'])}"
             print(f"— confidence={result['confidence']:.3f} fell_back={result['fell_back']}{extra}")
         return SUCCESS if not result["fell_back"] else ABSTAIN
+
+    if args.cmd == "report-tags":
+        result = reindex_external_all_projects(
+            db, Path("~/.claude/projects").expanduser(), report_tags=True
+        )
+        if args.json or is_agent_context():
+            print(json.dumps(result))
+        else:
+            quarantined = set(result.get("quarantined") or [])
+            for name, tag in sorted(result["tags"].items()):
+                mark = "QUARANTINE" if name in quarantined else "          "
+                print(f"{mark}  {name}  ->  {tag}")
+            if quarantined:
+                print(
+                    f"\n{len(quarantined)} directory(ies) could not be resolved to a repo and are "
+                    "quarantined under their raw name: invisible to every live project scope, "
+                    "still reachable via `query --project-scope <raw-name>`."
+                )
+        return SUCCESS
 
     if args.cmd == "reembed":
         status = reembed_file(vault, args.path, db)

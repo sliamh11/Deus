@@ -1,13 +1,19 @@
 {
   "created": "2026-08-20",
-  "min_retrieval_recall": 0.90,
+  "recalibrated": "2026-08-25",
+  "min_retrieval_recall": 0.88,
+  "scored_at_k": 3,
+  "scored_with_project_scope": "deus",
   "last_measured": {
-    "retrieval_recall": 0.983,
+    "retrieval_recall": 0.9,
     "retrieval_queries": 60,
     "abstain_accuracy": 0.636,
     "abstain_queries": 22,
     "embedding_provider": "ollama",
-    "embedding_model": "embeddinggemma"
+    "embedding_model": "embeddinggemma",
+    "k": 3,
+    "project_scope": "deus",
+    "corpus_nodes": 85
   },
-  "notes": "Regenerated 2026-08-20 after closing step 4 of feedback_memory_placement.md: added 8 canary queries covering the Migrated/*.md pointer layer created by the 2026-07-28 vault migration (fixture grew 74 -> 82 queries, all 8 new ones tagged 'single' and hitting on first try). retrieval_recall (0.983, 59/60) is computed the SAME way check_bench_snapshot() computes it in scripts/drift_check.py -- non-abstain items only, retrieve()+top-5 hit check -- NOT the blended recall_at_k the benchmark() CLI reports (0.72/82, which folds in abstain-tagged items scored as misses per docs/decisions/benchmark-regression-gate.md's rejection of that blended metric). abstain_accuracy/abstain_queries are carried through from benchmark()'s own abstain-threshold-applying calculation (22 abstain-tagged queries across abstain-far/abstain-near/abstain-vocab), which check_bench_snapshot() does not independently recompute. Self-verified: `python3 scripts/drift_check.py --bench-snapshot` passes against this snapshot post-regen."
+  "notes": "RECALIBRATED 2026-08-25 for LIA-126. The gate previously scored k=5 while scripts/memory_retrieval_hook.py injects k=3 (TOP_K), so it was structurally blind to rank-1-through-3 displacement -- the only range in which a reader notices. On 2026-08-23 it reported 95.0% PASS while 5 of 8 identity canaries had lost top-1 to a foreign project's memory. check_bench_snapshot() now derives k from the hook's own TOP_K and passes project_scope, matching what a session actually sees; scored_at_k and scored_with_project_scope are recorded here because a recall number that does not name its depth and scope is how this drifted in the first place. Measured across three corpora at k=3 with scope='deus': live 85-node corpus 90.0% (54/60); the preserved 2026-08-23 post-index 336-node corpus 88.3% (53/60), which the OLD k=5 read scored at 95.0% and passed; and a correctly-tagged 336-node copy 95.0% (57/60). min_retrieval_recall moved 0.90 -> 0.88 because 0.90 was calibrated against the k=5 metric and the live k=3 baseline is exactly 90.0%, i.e. zero headroom -- this is a re-derivation for a changed metric, NOT a relaxation to hide damage, and the separate --bench-canaries gate (which the 2026-08-23 corpus fails 4/8 while live and correctly-tagged both pass 8/8) is what actually guards top-1. RAISE this to 0.93 once per-project indexing lands and the end state measures 95.0%. retrieval_recall is computed the same way check_bench_snapshot() computes it -- non-abstain items only, top-k membership -- NOT the blended recall_at_k the benchmark() CLI reports (see docs/decisions/benchmark-regression-gate.md). abstain_accuracy/abstain_queries are carried forward from the 2026-08-20 benchmark() run and are not recomputed by this gate."
 }

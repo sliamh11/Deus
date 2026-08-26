@@ -140,8 +140,157 @@ def resolve_this_repo_dir_name() -> str:
     under a stray per-worktree project tag on every `--all-projects` run
     launched from a worktree session (LIA-122).
     """
-    this_repo = _unwind_worktree(Path(__file__).resolve().parent.parent)
-    return _encode_project_dir(this_repo.as_posix())
+    return _encode_project_dir(this_repo_root().as_posix())
+
+
+def _same_dir(a: Path, b: Path) -> bool:
+    """True when two paths name the SAME directory on disk.
+
+    Compares ``(st_dev, st_ino)`` rather than strings. LIA-125: on a
+    case-insensitive filesystem (macOS by default) a repo reached as ``~/Repo``
+    and as ``~/repo`` is ONE directory with one inode, and ``Path.resolve()``
+    does NOT normalise case -- it preserves whichever spelling reached the
+    module. ``resolve_this_repo_dir_name()`` therefore encodes a different
+    string depending on how it was imported, while the on-disk projects
+    directory is fixed at whichever spelling created it. An encoded-string
+    compare then silently misclassifies this repo's own auto-memory as a
+    FOREIGN project under the other spelling -- and if that is the spelling the
+    retrieval hook happens to be registered under, the failing branch is the
+    default one rather than the exotic one.
+
+    Inode identity closes the whole class rather than just the case collision:
+    symlinks, bind mounts, and any other path that reaches the same directory
+    by a different name all compare equal. ``~/.deus/auto-memory`` is already
+    reached through a symlink from this repo's project memory directory, so the
+    class is live here, not hypothetical.
+
+    Falls back to a case-folded ``realpath`` compare when ``stat`` raises (a
+    path that does not exist, or is unreadable) -- never to a bare string
+    compare, which is the bug.
+    """
+    try:
+        sa, sb = a.stat(), b.stat()
+        return (sa.st_dev, sa.st_ino) == (sb.st_dev, sb.st_ino)
+    except OSError:
+        return os.path.realpath(a).casefold() == os.path.realpath(b).casefold()
+
+
+def this_repo_root() -> Path:
+    """This repo's root, worktree-unwound. One definition, used by both
+    :func:`is_this_repo` and :func:`resolve_project_id`."""
+    return _unwind_worktree(Path(__file__).resolve().parent.parent)
+
+
+def is_this_repo(path: Path | str) -> bool:
+    """True when ``path`` IS this repo's root, by filesystem identity.
+
+    The single predicate every caller must use instead of comparing encoded
+    directory-name strings. See :func:`_same_dir` for why string comparison is
+    wrong here.
+    """
+    candidate = Path(path).expanduser()
+    return _same_dir(_unwind_worktree(candidate), this_repo_root())
+
+
+def _encode_segment(name: str) -> str:
+    """One path SEGMENT as Claude Code names it inside ``~/.claude/projects``.
+
+    It collapses ``.`` as well as the separators, so ``.claude`` becomes
+    ``-claude`` and ``example.com`` becomes ``example-com``. That extra
+    substitution is what makes the encoding non-invertible, and is the reason
+    :func:`decode_project_dir_name` matches FORWARD instead of guessing at a
+    reverse mapping.
+    """
+    return name.replace("\\", "-").replace("/", "-").replace(".", "-")
+
+
+# A directory with more children than this is not a plausible step on the way
+# to a project root; refuse to scan it rather than stall the walk.
+_DECODE_MAX_CHILDREN = 4096
+
+
+def decode_project_dir_name(
+    dir_name: str, *, root: str = "/", limit: int = 32
+) -> list[str]:
+    """Resolve a ``~/.claude/projects/<dir_name>`` basename back to real paths.
+
+    Returns every existing directory whose encoding equals ``dir_name`` --
+    normally exactly one, empty for a project whose repo has been moved or
+    deleted, and more than one only for a genuine collision.
+
+    LIA-123: the encoding is LOSSY, so it cannot be inverted. ``/`` and ``.``
+    both become ``-``, and repo names in this corpus contain literal dashes
+    (``cyber-olympians-platform``, ``quote-builder``), so
+    ``-Users-x-example-com`` is ambiguous between ``example/com``,
+    ``example-com`` and ``example.com`` on the string alone.
+
+    So do not invert it. At each level, list the directory's REAL children,
+    run each through :func:`_encode_segment`, and descend into any child whose
+    encoded form is a prefix of the remaining token string. The filesystem
+    prunes the search, and the result is exact by construction for every
+    character the encoder collapses -- including ones added later.
+
+    Two earlier approaches were measured and rejected: a dot-aware inverse
+    decoder cannot recover a dot INSIDE a name, and reading ``cwd`` from the
+    directory's session transcripts round-trips on only 10 of 89 directories
+    (a session's recorded cwd is where it ended up, not where it launched).
+    """
+    found: dict[tuple[int, int], str] = {}
+
+    def walk(base: str, rest: str) -> None:
+        if len(found) >= limit:
+            return
+        if rest == "":
+            try:
+                st = os.stat(base)
+            except OSError:
+                return
+            found.setdefault((st.st_dev, st.st_ino), os.path.realpath(base))
+            return
+        try:
+            children = os.listdir(base)
+        except OSError:
+            return
+        if len(children) > _DECODE_MAX_CHILDREN:
+            return
+        for child in children:
+            encoded = _encode_segment(child)
+            if not encoded:
+                continue
+            nxt = os.path.join(base, child)
+            if rest == encoded:
+                walk(nxt, "")
+            elif rest.startswith(encoded + "-"):
+                walk(nxt, rest[len(encoded) + 1:])
+
+    walk(root, dir_name.lstrip("-"))
+    return sorted(found.values())
+
+
+def canonical_project_id(dir_name: str) -> str | None:
+    """The scoping identity for a ``~/.claude/projects/<dir_name>`` directory,
+    computed the SAME way :func:`resolve_project_id` computes it at retrieval
+    time -- decode to a real path, unwind any linked worktree, re-encode.
+
+    Returns ``DEUS_PROJECT_ID`` when the decoded path IS this repo -- checked
+    against the RESOLVED path, never against the projects-directory basename,
+    which is a different directory entirely.
+
+    Returns ``None`` when the directory cannot be resolved to exactly one real
+    path (its repo was moved or deleted, or the name is genuinely ambiguous).
+    Callers must NOT substitute ``NULL`` for that: ``NULL`` is the GLOBAL tier,
+    so an unresolved project's memory would compete in every other project's
+    retrieval. Quarantine under the raw ``dir_name`` instead -- invisible to
+    every live scope, still reachable by asking for that project explicitly,
+    and reported rather than silent.
+    """
+    candidates = decode_project_dir_name(dir_name)
+    if len(candidates) != 1:
+        return None
+    resolved = Path(candidates[0])
+    if is_this_repo(resolved):
+        return DEUS_PROJECT_ID
+    return _encode_project_dir(_unwind_worktree(resolved).as_posix())
 
 
 def resolve_project_id() -> str | None:
@@ -165,10 +314,10 @@ def resolve_project_id() -> str | None:
     root = resolve_project_root()
     if root is None:
         return None
-    this_repo = _unwind_worktree(Path(__file__).resolve().parent.parent)
-    try:
-        if root.resolve(strict=False) == this_repo.resolve(strict=False):
-            return DEUS_PROJECT_ID
-    except OSError:
-        pass
+    # LIA-125: identity by inode, not by resolved-path string -- a case-only
+    # spelling difference (~/deus vs ~/Deus) is the SAME directory here and
+    # must not produce two identities. is_this_repo() owns that comparison so
+    # index-time and retrieval-time can never drift apart on it.
+    if is_this_repo(root):
+        return DEUS_PROJECT_ID
     return _encode_project_dir(root.as_posix())

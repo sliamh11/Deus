@@ -9,6 +9,10 @@ from ..types import CaseResult, RunResult
 from evolution.providers.embeddings import warmup_embedding_provider
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from _retrieval_depth import hook_top_k  # noqa: E402
+
 _MB_PATH = _SCRIPTS_DIR / "memory_benchmark.py"
 
 
@@ -40,8 +44,14 @@ def run_memory(argv: list[str]) -> RunResult:
         elapsed_ms = int((time.monotonic() - t_start) * 1000)
 
         recall = result["recall"]
-        # score = recall@5 if present, else the highest available k
-        score_k = 5 if 5 in recall else max(recall)
+        # LIA-126: headline on the depth the retrieval hook actually injects at.
+        # This used to be `5 if 5 in recall else max(recall)`, which computed
+        # recall@3 and then threw it away -- so the suite's single reported
+        # number described a depth no session ever sees. Falling back to the
+        # LOWEST available k rather than the highest keeps that bias out if the
+        # hook's depth is not among the requested ks.
+        hook_k = hook_top_k()
+        score_k = hook_k if hook_k in recall else min(recall)
         score = recall[score_k]
         n = result["n"]
 

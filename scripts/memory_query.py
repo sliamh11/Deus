@@ -17,6 +17,7 @@ import secrets
 import sys
 import tempfile
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 if sys.platform == "win32":
@@ -28,7 +29,11 @@ if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 
 import memory_tree as mt  # noqa: E402
-from auto_memory_dir import DEUS_PROJECT_ID, resolve_auto_memory_dir  # noqa: E402
+from auto_memory_dir import (  # noqa: E402
+    DEUS_PROJECT_ID,
+    resolve_auto_memory_dir,
+    resolve_this_repo_dir_name,
+)
 from injection_dedup import block_key, load_seen, save_seen  # noqa: E402
 
 LOG_FILE = Path(os.environ.get(
@@ -40,6 +45,23 @@ LOG_FILE = Path(os.environ.get(
 # standards_pack reads. The old default `~/.deus/auto-memory` was a dir that
 # never exists, so recall returned None for every promoted auto-memory node.
 AUTO_MEM_DIR = resolve_auto_memory_dir()
+
+
+@lru_cache(maxsize=1)
+def _deus_auto_memory_dir() -> Path:
+    """THIS REPO's auto-memory directory, independent of the current session.
+
+    ``resolve_auto_memory_dir()`` deliberately follows ``CLAUDE_PROJECT_DIR``,
+    which is right for writing but wrong for READING a bare (unqualified)
+    ``auto-memory/`` node -- those live in Deus's own population no matter which
+    project is asking. Derived from this repo's own encoded dirname so it needs
+    no hardcoded personal path, with ``~/.deus/auto-memory`` as the documented
+    fallback (that is what the projects-dir entry symlinks to).
+    """
+    candidate = Path.home() / ".claude" / "projects" / resolve_this_repo_dir_name() / "memory"
+    if candidate.is_dir():
+        return candidate
+    return Path.home() / ".deus" / "auto-memory"
 
 
 def _external_file_for_path(path: str) -> Path:
@@ -66,6 +88,29 @@ def _external_file_for_path(path: str) -> Path:
         candidate = Path.home() / ".claude" / "projects" / project / "memory" / rel
         if candidate.is_file():
             return candidate
+    # LIA-123: a BARE (unqualified) auto-memory path names THIS REPO's own
+    # population -- the host-global procedures and research notes -- so resolve
+    # it against the DEUS auto-memory dir FIRST, not the current session's.
+    #
+    # Order is load-bearing in both directions:
+    #
+    # * Deus-first fixes the silent-unreadable bug. AUTO_MEM_DIR is the CURRENT
+    #   session's project memory dir; measured from a cyber-olympians session
+    #   before this existed, `auto-memory/procedures/fresh-worktree-off-main.md`
+    #   resolved under that project's dir, `is_file()` False, and
+    #   `_read_node_file` returned None. Every host-global procedure was
+    #   unreadable outside Deus.
+    # * Deus-first also prevents the inverse: if the current project happens to
+    #   hold a file at the SAME relative name, a local-first order would return
+    #   that project's content for a node indexed as global -- cross-project
+    #   content substitution, where the retrieved text silently is not the text
+    #   the node was indexed from.
+    #
+    # AUTO_MEM_DIR remains the fallback so a legacy/local-only bare node still
+    # resolves exactly as before when Deus's copy does not exist.
+    deus_anchored = _deus_auto_memory_dir() / rel
+    if deus_anchored.is_file():
+        return deus_anchored
     return AUTO_MEM_DIR / rel
 
 

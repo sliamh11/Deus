@@ -10,6 +10,10 @@ from ..registry import register
 from ..types import CaseResult, RunResult
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from _retrieval_depth import hook_top_k  # noqa: E402
+
 _MT_PATH = _SCRIPTS_DIR / "memory_tree.py"
 _DEFAULT_DATASET = _SCRIPTS_DIR / "tests" / "fixtures" / "memory_tree_queries.jsonl"
 
@@ -87,7 +91,11 @@ def _score_item_raw(
     expect_abstain = bool(item.get("abstain"))
     case_id = item.get("id", q[:60])
 
-    result = mt.retrieve(db, q)
+    # LIA-126: k must be the depth the retrieval hook actually injects at, not
+    # DEFAULT_TOP_K. Omitting k here scored at 5 while the hook delivers 3, so
+    # this suite carried the same blindness as check_bench_snapshot did -- and
+    # it hid better, because there is no literal `k=5` to grep for.
+    result = mt.retrieve(db, q, k=hook_top_k())
 
     returned = [r["path"] for r in result["results"]]
     fell_back = result["fell_back"]
