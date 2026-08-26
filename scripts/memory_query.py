@@ -114,7 +114,58 @@ def _external_file_for_path(path: str) -> Path:
     return AUTO_MEM_DIR / rel
 
 
-def _read_node_file(path: str) -> str | None:
+def _node_text_from_db(db, path: str) -> str | None:
+    """LIA-137: the DB's own copy of a node's full text, or None.
+
+    Returns None for a row that predates the `content` column, for a row an
+    unmigrated caller upserted without it, and for any DB-level failure --
+    every one of which means "ask the filesystem", never "this node is empty".
+    An empty-string content is treated as absent for the same reason: a node
+    whose file is genuinely empty renders nothing either way, so falling back
+    costs one stat and removes a way to serve blank context from a bad row.
+    """
+    if db is None:
+        return None
+    try:
+        row = db.execute(
+            "SELECT content FROM nodes WHERE path = ? AND orphaned_at IS NULL",
+            (path,),
+        ).fetchone()
+    except Exception:
+        return None
+    if not row:
+        return None
+    text = row[0]
+    # `isinstance` is load-bearing, not defensive noise. A caller can hand us
+    # any object with an .execute() -- a test double, a wrapper, a cursor from
+    # a different schema -- and a non-str truthy value would sail through here
+    # into the injected context, raising deep inside string formatting rather
+    # than at the boundary. Not-text means "the DB cannot answer", which is
+    # what the file fallback exists for.
+    return text if isinstance(text, str) and text else None
+
+
+def _read_node_file(path: str, db_content: dict[str, str] | None = None) -> str | None:
+    """Full node text. Prefers a preloaded DB copy; falls back to disk.
+
+    Takes a MAPPING, never a live connection. `recall()` closes its db in a
+    `finally` before any rendering happens, so a lazy read here would hit a
+    closed connection, be swallowed, and fall back to the filesystem on every
+    single call -- a stored-content feature that never serves stored content,
+    with no error to show for it. Threading the already-read mapping keeps the
+    RENDER PATH connection-free, so there is nothing down here for a later
+    edit to reach for. (`recall()`'s own `db` name does stay bound after its
+    `finally`; nothing operational uses it, and `_RecordingDb`'s
+    `reads_after_close` assertion is what catches a future edit that does.)
+
+    The filesystem fallback is what keeps this safe to deploy before the
+    backfill runs: until `content` is populated, every node resolves exactly
+    as it did before.
+    """
+    if db_content is not None:
+        hit = db_content.get(path)
+        if hit:
+            return hit
     vault = mt.resolve_vault_path()
     if path.startswith(mt.EXTERNAL_NAMESPACE):
         full = _external_file_for_path(path)
@@ -188,6 +239,7 @@ def _format_context(
     *,
     max_context_chars: int | None = None,
     bodies: dict[str, str] | None = None,
+    db_content: dict[str, str] | None = None,
 ) -> str:
     if fell_back or not results:
         return ""
@@ -198,7 +250,7 @@ def _format_context(
         # fall back to reading the file — never silently drop a block the
         # non-dedup path would have rendered.
         content = (bodies.get(r["path"]) if bodies is not None else None) or (
-            _read_node_file(r["path"])
+            _read_node_file(r["path"], db_content)
         )
         if content:
             body_lines.append(f"--- {r['path']} (score: {r['score']:.4f}) ---")
@@ -626,6 +678,10 @@ def recall(
     """
     threshold = abstain_threshold if abstain_threshold is not None else mt.DEFAULT_ABSTAIN_THRESHOLD
 
+    # LIA-137: node text read from the DB while the connection is open, keyed
+    # by path. Declared out here because it is consumed after the try/finally
+    # that closes the connection.
+    _db_content: dict[str, str] = {}
     db = mt.open_db()
     try:
         # LIA-334: procedure nodes are dormant-by-default across EVERY recall()
@@ -648,6 +704,15 @@ def recall(
             # open. Classification itself happens after close(), same as the
             # query-side classify.
             _proc_triggers = _procedure_triggers(db, _proc_ids)
+
+        # LIA-137: read node content HERE, while the connection is still open.
+        # Everything below this try block runs after db.close(). Same
+        # read-while-open discipline as _procedure_triggers directly above.
+        if not raw["fell_back"]:
+            for _r in raw["results"]:
+                _text = _node_text_from_db(db, _r["path"])
+                if _text is not None:
+                    _db_content[_r["path"]] = _text
     finally:
         db.close()
 
@@ -717,7 +782,7 @@ def recall(
         total = len(raw["results"])
         kept = []
         for r in raw["results"]:
-            body = _read_node_file(r["path"])
+            body = _read_node_file(r["path"], _db_content)
             if body:
                 _dedup_bodies[r["path"]] = body
                 if block_key(r["path"], body) in _dedup_seen:
@@ -747,6 +812,7 @@ def recall(
         raw["fell_back"],
         max_context_chars=max_context_chars,
         bodies=_dedup_bodies or None,
+        db_content=_db_content or None,
     )
     paths = [r["path"] for r in raw["results"]] if not raw["fell_back"] else []
 

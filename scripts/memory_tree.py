@@ -6,7 +6,7 @@ plus 1-hop graph expansion via see_also/alias_of edges. Storage is sqlite-vec at
 ~/.deus/memory_tree.db (override via DEUS_MEMORY_TREE_DB). Embeddings reuse the
 evolution provider (Ollama embeddinggemma by default, Gemini fallback).
 
-Subcommands: build | query | reembed | reindex-external | check | scaffold-root | graph | calibrate | benchmark
+Subcommands: build | query | reembed | reindex-external | content-backfill | check | scaffold-root | graph | calibrate | benchmark
 
 See docs/decisions/no-db-deletion.md (soft-delete only) and
 docs/decisions/evolution-db-split.md (separate DB file per subsystem).
@@ -753,6 +753,23 @@ def open_db(db_path: Path = None) -> sqlite3.Connection:
         if "duplicate column" not in str(e).lower():
             raise
     try:
+        # LIA-137: authoritative full node text, frontmatter included, so the
+        # DB stops being a mere index over files. `nodes_fts.body` is NOT a
+        # substitute -- it is frontmatter-stripped, so it discards a large
+        # fraction of the corpus by character count, worst on the
+        # `Migrated/*.md` pointer nodes which are mostly frontmatter. The
+        # measured figures live in LIA-137 and this commit's message; they are
+        # deliberately NOT restated here, because a number with two homes
+        # drifts -- this comment carried a stale copy within one review cycle
+        # of being written. Left NULL by the migration itself:
+        # backfilling here would need to read every file during open_db(),
+        # on a SessionStart-critical path. `content-backfill` does it once,
+        # out of band, and `_read_node_file()` falls back to the file meanwhile.
+        db.execute("ALTER TABLE nodes ADD COLUMN content TEXT DEFAULT NULL")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
+    try:
         db.execute("ALTER TABLE nodes ADD COLUMN project TEXT DEFAULT NULL")
     except sqlite3.OperationalError as e:
         if "duplicate column" not in str(e).lower():
@@ -888,6 +905,7 @@ def upsert_node(
     embedding: list[float] | None,
     content_hash_val: str,
     body_text: str | None = None,
+    full_content: str | None = None,
     atom_kind: str = "knowledge",
     project: str | None = None,
 ) -> None:
@@ -909,8 +927,8 @@ def upsert_node(
     )
     db.execute(
         """
-        INSERT INTO nodes (id, path, title, description, level, type, updated_at, content_hash, atom_kind, project)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO nodes (id, path, title, description, level, type, updated_at, content_hash, content, atom_kind, project)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             path = excluded.path,
             title = excluded.title,
@@ -919,12 +937,19 @@ def upsert_node(
             type = excluded.type,
             updated_at = excluded.updated_at,
             content_hash = excluded.content_hash,
+            -- COALESCE, not `excluded.content`: a caller that does not supply
+            -- full_content must not blank a row that already has it. Every
+            -- upsert path is expected to pass it, but an unmigrated or
+            -- third-party caller would otherwise silently erase content and
+            -- send `_read_node_file()` back to the filesystem for that node.
+            content = COALESCE(excluded.content, nodes.content),
             atom_kind = excluded.atom_kind,
             project = excluded.project,
             orphaned_at = NULL,
             orphan_reason = NULL
         """,
-        (node_id, path, title, description, level, node_type, now, content_hash_val, atom_kind, project),
+        (node_id, path, title, description, level, node_type, now, content_hash_val,
+         full_content, atom_kind, project),
     )
     if embedding is not None and sqlite_vec is not None:
         rowid = _rowid_for(node_id)
@@ -1328,6 +1353,7 @@ def build_tree(
             embedding=vec,
             content_hash_val=ch,
             body_text=_body_from_content(entry["content"]),
+            full_content=entry["content"],
             atom_kind=fm.get("atom_kind", "knowledge"),
         )
         counts["nodes"] += 1
@@ -1502,6 +1528,7 @@ def discover_node(vault: Path, rel_path: str, db: sqlite3.Connection) -> str:
         embedding=vec,
         content_hash_val=ch,
         body_text=_body_from_content(content),
+        full_content=content,
         atom_kind=fm.get("atom_kind", "knowledge"),
     )
     for kind, key in (("child", "children"), ("see_also", "see_also")):
@@ -2371,6 +2398,7 @@ def _index_external_file(
         embedding=vec,
         content_hash_val=ch,
         body_text=_body_from_content(content),
+        full_content=content,
         atom_kind=fm.get("atom_kind", "knowledge"),
         project=db_project,
     )
@@ -3934,6 +3962,16 @@ def main(argv: list[str] | None = None) -> int:
     p_entities = sub.add_parser("backfill-entities", help="Extract entities for all nodes")
     p_entities.add_argument("--json", action="store_true")
 
+    p_content = sub.add_parser(
+        "content-backfill",
+        help="Populate nodes.content from each node's file (LIA-137)",
+    )
+    p_content.add_argument("--dry-run", action="store_true",
+                           help="Report what would change; write nothing")
+    p_content.add_argument("--regenerate", action="store_true",
+                           help="Rewrite content even where already populated")
+    p_content.add_argument("--json", action="store_true")
+
     sub.add_parser("sync-fts-angles", help="Re-inject approach-angle text into FTS5 body")
 
     p_bench = sub.add_parser("benchmark", help="Run benchmark on labeled dataset")
@@ -4261,6 +4299,53 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print(f"Extracted entities for {count} nodes")
         return SUCCESS
+
+    if args.cmd == "content-backfill":
+        # Imported here, not at module scope: memory_query imports memory_tree,
+        # so a top-level import is a cycle. Only this subcommand needs it.
+        import memory_query as _mq
+
+        rows = db.execute(
+            "SELECT id, path, content FROM nodes WHERE orphaned_at IS NULL"
+        ).fetchall()
+        filled = skipped = unreadable = 0
+        missing: list[str] = []
+        for nid, npath, existing in rows:
+            if existing and not args.regenerate:
+                skipped += 1
+                continue
+            # db=None forces the FILESYSTEM read. Passing `db` here would
+            # re-read the column being backfilled and make this a no-op that
+            # reports success -- the exact shape this ticket is about.
+            text = _mq._read_node_file(npath, None)
+            if text is None:
+                unreadable += 1
+                if len(missing) < 20:
+                    missing.append(npath)
+                continue
+            if not args.dry_run:
+                db.execute("UPDATE nodes SET content = ? WHERE id = ?", (text, nid))
+            filled += 1
+        if not args.dry_run:
+            db.commit()
+        result = {
+            "total": len(rows), "filled": filled, "already_populated": skipped,
+            "unreadable": unreadable, "dry_run": bool(args.dry_run),
+            "unreadable_sample": missing,
+        }
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            verb = "would fill" if args.dry_run else "filled"
+            print(f"content-backfill: {verb} {filled}, "
+                  f"{skipped} already populated, {unreadable} unreadable "
+                  f"({len(rows)} live nodes)")
+            for m in missing:
+                print(f"  UNREADABLE {m}")
+        # Unreadable nodes are a real defect surface -- a node whose file is
+        # gone keeps working today only because retrieval silently renders
+        # nothing for it. Exit non-zero so a caller notices.
+        return SUCCESS if unreadable == 0 else 1
 
     if args.cmd == "sync-fts-angles":
         rows = db.execute(

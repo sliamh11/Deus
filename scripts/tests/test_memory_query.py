@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sqlite3
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -1162,3 +1163,96 @@ class TestCLIBounds:
         out = json.loads(capsys.readouterr().out)
         assert out["paths"] == []
         assert out["context"] == ""
+
+
+class _RecordingDb:
+    """A db double that behaves like sqlite after close(): it raises.
+
+    The raise is the whole point of
+    ``test_db_content_survives_connection_close``. A lazy read down in
+    rendering runs AFTER ``recall()``'s ``finally: db.close()``, so a real
+    sqlite connection raises there, the read is swallowed by
+    ``_node_text_from_db``'s except, and the filesystem silently serves every
+    request -- a stored-content feature that never serves stored content.
+    This double makes that failure mode reproducible instead of invisible.
+    """
+
+    def __init__(self, rows: dict[str, object]):
+        self._rows = rows
+        self.closed = False
+        self.reads_after_close = 0
+
+    def execute(self, sql, params=()):
+        if self.closed:
+            self.reads_after_close += 1
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        path = params[0] if params else None
+        outer = self
+
+        class _Cur:
+            def fetchone(self):
+                return (outer._rows[path],) if path in outer._rows else None
+
+        return _Cur()
+
+    def close(self):
+        self.closed = True
+
+
+class TestNodeContentFromDb:
+    """LIA-137: nodes.content is the source of record; disk is the fallback."""
+
+    def _recall_with(self, rows):
+        db = _RecordingDb(rows)
+        with patch.object(mt, "retrieve", return_value=FAKE_RETRIEVE_HIT), \
+             patch.object(mt, "open_db", return_value=db):
+            return mq.recall("what timezone?", source="test"), db
+
+    def test_db_content_wins_over_file(self, fake_vault):
+        # CLAUDE.md on disk says "name: Liam"; the DB says something else.
+        result, _ = self._recall_with({"CLAUDE.md": "FROM_DB_SENTINEL_137"})
+        assert "FROM_DB_SENTINEL_137" in result["context"]
+        assert "name: Liam" not in result["context"]
+
+    def test_db_content_survives_connection_close(self, fake_vault):
+        """The regression the GPT plan-reviewer caught.
+
+        Content must be read while the connection is open. Anything reading
+        lazily during rendering trips ``_RecordingDb`` and fails the sentinel
+        assertion -- which is exactly what the first implementation did,
+        silently, in production.
+        """
+        result, db = self._recall_with({"CLAUDE.md": "FROM_DB_SENTINEL_137"})
+        assert db.closed, "recall() must still close its connection"
+        assert db.reads_after_close == 0, (
+            "node content was read AFTER db.close() -- in production that read "
+            "is swallowed and the DB copy is never served"
+        )
+        assert "FROM_DB_SENTINEL_137" in result["context"]
+
+    def test_missing_row_falls_back_to_file(self, fake_vault):
+        result, _ = self._recall_with({})
+        assert "name: Liam" in result["context"]
+
+    def test_non_string_content_fails_closed_to_file(self, fake_vault):
+        # A corrupted column, or any double handing back a non-str, must not
+        # reach string formatting -- it means "the DB cannot answer".
+        result, _ = self._recall_with({"CLAUDE.md": MagicMock()})
+        assert "name: Liam" in result["context"]
+
+    def test_empty_content_falls_back_to_file(self, fake_vault):
+        result, _ = self._recall_with({"CLAUDE.md": ""})
+        assert "name: Liam" in result["context"]
+
+    def test_db_error_falls_back_to_file(self, fake_vault):
+        class _Boom:
+            def execute(self, *a, **k):
+                raise sqlite3.OperationalError("no such column: content")
+
+            def close(self):
+                pass
+
+        with patch.object(mt, "retrieve", return_value=FAKE_RETRIEVE_HIT), \
+             patch.object(mt, "open_db", return_value=_Boom()):
+            result = mq.recall("what timezone?", source="test")
+        assert "name: Liam" in result["context"]
