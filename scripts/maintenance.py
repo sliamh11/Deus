@@ -149,6 +149,30 @@ def main():
         "compress_sweep", [compress_sweep], dry_run, timeout=600,
     )
 
+    # LIA-135: reap what nothing else owns stopping. The host hit load 50-74 on
+    # 2026-08-25 with no runaway process -- just long-lived things (a Langfuse
+    # stack up 6 days, ten `claude agents` viewers aged 1-25 days) that nobody
+    # was responsible for ending.
+    #
+    # Deliberately asymmetric, and do not "tidy" this into one posture: the
+    # stack half ACTS (docker compose down is reversible, volumes survive),
+    # the process half only REPORTS -- killing is irreversible, and age alone
+    # cannot tell a stale viewer from one a human is watching right now. A
+    # report-only run raises a desktop banner rather than printing into a log
+    # nobody reads, which is the failure this whole ticket is about.
+    #
+    # Passing --kill here would make the nightly job kill processes
+    # unattended on age alone. That needs Liam's explicit sign-off and an idle
+    # signal the reaper does not yet have -- see reap_stale.py's docstring.
+    #
+    # Timeout: the reaper's own internal budget can exceed run_task's 300s
+    # default -- a single stack costs up to 60s (compose ps) + 60s (inspect) +
+    # 300s (down), and more than one stack may be listed. A hard TIMEOUT here
+    # would kill it mid-teardown and report FAILED for a run that was merely
+    # slow, so give it headroom rather than letting the wrapper win the race.
+    reap_stale = str(SCRIPTS_DIR / "maintenance" / "reap_stale.py")
+    results["reap_stale"] = run_task("reap_stale", [reap_stale], dry_run, timeout=900)
+
     # LIA-527 Phase 2: reclaims cc-write-queue job files a crashed/killed detached worker
     # missed. Single-best-effort-no-retry design -- see cc_write_queue_sweep.py's docstring.
     cc_write_queue_sweep = str(SCRIPTS_DIR / "maintenance" / "cc_write_queue_sweep.py")
