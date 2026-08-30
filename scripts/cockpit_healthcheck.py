@@ -52,7 +52,10 @@ import json
 import logging
 import os
 import plistlib
+import re
+import shlex
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
@@ -625,6 +628,539 @@ def probe_memory(now: float) -> Result:
     )
 
 
+# ── hook registration hygiene (LIA-129) ───────────────────────────────────────
+
+#: Settings files whose hooks all merge into one execution set per event.
+#: User scope and project scope are ADDITIVE -- the project copy does NOT
+#: override the user copy, both are INVOKED. Verified by driving three
+#: `claude -p` probes from three unrelated cwds; see
+#: ~/.claude/rules/feedback_hook_scopes_merge_not_override.md.
+#:
+#: WHAT THIS PROBE DETECTS, precisely: a duplicate REGISTRATION, not a duplicate
+#: EXECUTION. The two are not the same, and conflating them would make this
+#: probe wrong about the very case it was written for. A script registered
+#: twice is invoked twice, but it may still SELF-SUPPRESS on the second
+#: invocation -- `memory_retrieval_hook` does exactly that today, its user-scope
+#: registration exiting early when the project defines its own (verified by
+#: driving the guard in both directions: it trips under the Deus project dir and
+#: does not trip elsewhere, which is correct). So the duplicate registration is
+#: real and this probe correctly reports it, while the route runs once.
+#:
+#: That is the whole reason an acknowledgement must NAME a guard and the probe
+#: must VERIFY that guard still exists: "registered twice but guarded" is a
+#: legitimate resting state, and the only thing separating it from "registered
+#: twice and paying twice" is a guard nobody has deleted yet.
+#: All four are OPTIONAL and all four are additive. The `.local.json` variants
+#: are a standard scope, not a curiosity: a hook registered there co-fires with
+#: one in any other scope, so omitting them is a false-negative surface.
+_SETTINGS_FILES = (
+    Path.home() / ".claude" / "settings.json",
+    Path.home() / ".claude" / "settings.local.json",
+    REPO_ROOT / ".claude" / "settings.json",
+    REPO_ROOT / ".claude" / "settings.local.json",
+)
+
+#: Events whose matcher is a regex over the TOOL name. Every other event fires
+#: once per occurrence with no tool dimension, so its matcher is not consulted.
+_TOOL_EVENTS = frozenset({"PreToolUse", "PostToolUse"})
+
+#: Tool names a matcher can select. Only used to decide which registrations
+#: land in the same co-firing set, so it needs to cover the tools in use, not
+#: every tool that exists -- an unlisted tool simply yields no grouping for
+#: itself, never a false duplicate.
+_TOOL_NAMES = (
+    "Bash", "Read", "Write", "Edit", "MultiEdit", "Glob", "Grep", "Task",
+    "Agent", "ExitPlanMode", "NotebookEdit", "WebFetch", "WebSearch",
+    "apply_patch", "TodoWrite", "SlashCommand",
+)
+
+_NO_TOOL = "<no-tool>"
+
+#: Bucket key for a registration whose co-firing set cannot be determined -- a
+#: non-tool event carrying a matcher whose domain is undocumented. Never
+#: compared for duplicates; surfaced as UNKNOWN instead. See _matcher_covers.
+_UNDECIDABLE = "<undecidable>"
+
+#: argv[0] basenames that are an INTERPRETER, not the thing being registered.
+#: Identity must bind to the script, not to whatever runs it: an absolute
+#: interpreter path (a venv pin, e.g. `~/.deus/langfuse/.venv/bin/python x.py`,
+#: which is live on this host) stats successfully at index 0, so a
+#: first-stat-wins resolver binds identity to the INTERPRETER with the script as
+#: an argument. The same script registered elsewhere as `python3 x.py` -- where
+#: the bare name does not stat -- binds to the script itself. Two identities for
+#: one script, and the duplicate goes unreported. Checked by basename only, and
+#: only at argv[0], so a script that merely happens to sit next to a config file
+#: argument is unaffected.
+_INTERPRETERS = frozenset({
+    "python", "python3", "python3.11", "python3.12", "python3.13", "python3.14",
+    "node", "deno", "bun", "ruby", "perl", "bash", "sh", "zsh", "env", "uv", "uvx",
+})
+
+#: Duplicates reviewed and knowingly accepted, keyed by (event, script basename).
+#: Each entry MUST name the guard it relies on, and that guard is verified
+#: present in the target before the acknowledgement is honoured -- an
+#: acknowledgement that merely asserts "the target guards itself" stays green
+#: after someone deletes the guard, which is a suppression outliving its reason.
+#: EMPTY BY DESIGN while LIA-129's guard is parked: the live duplicate reports
+#: DEGRADED, which is a true statement about a real unfixed defect.
+_ACKNOWLEDGED_DUPLICATES: dict[tuple[str, str], dict[str, str]] = {}
+
+
+def _expand_settings_token(token: str, settings_file: Path) -> str:
+    """Resolve a command token relative to the settings file that declared it.
+
+    ``${CLAUDE_PROJECT_DIR}`` is taken from the settings file's OWN location, not
+    from the environment. The environment is wrong here: this runs as a daily
+    scheduled job, which has no ``CLAUDE_PROJECT_DIR``, so the ``:-.`` default
+    would resolve against the job's cwd. Measured -- with the variable unset from
+    an unrelated cwd the project-scope registration did not resolve at all and
+    the sweep reported no duplicate while the duplicate was firing every prompt.
+    A settings file at ``<X>/.claude/settings.json`` states that the project dir
+    is ``<X>``; the process does not.
+    """
+    # A USER-scope file has no project of its own -- `~/.claude/settings.json`'s
+    # grandparent is the home directory, not a project root. A user-scope hook
+    # written with ${CLAUDE_PROJECT_DIR} resolves against whatever project the
+    # session is in, which for this probe is REPO_ROOT. Deriving it from the
+    # file's parent would resolve such a hook to `~/scripts/...` and it would
+    # then fail to match the project-scope registration of the same script --
+    # hiding the very duplicate being looked for.
+    if settings_file.parent == Path.home() / ".claude":
+        project_dir = str(REPO_ROOT)
+    else:
+        project_dir = str(settings_file.parent.parent)
+    token = token.replace("${CLAUDE_PROJECT_DIR:-.}", project_dir)
+    token = token.replace("${CLAUDE_PROJECT_DIR}", project_dir)
+    return os.path.expanduser(token)
+
+
+def _hook_invocation(command: str, settings_file: Path) -> tuple[object, str]:
+    """(identity, label) for one registered hook command.
+
+    Identity is ``((st_dev, st_ino), args)``:
+
+    * **inode, not path.** ``realpath()`` does NOT canonicalise case, so on a
+      case-insensitive filesystem ``~/Deus/x`` and ``~/deus/x`` come back as two
+      different strings for one file -- and that IS the duplicate this probe
+      exists to catch. Measured: string-equal False, st_ino equal True.
+    * **args included.** One dispatcher script is routinely registered many
+      times in a single co-firing set with different subcommands (6x
+      ``warden-shim.sh`` under one PostToolUse matcher here). Keying on the
+      script alone reports all six as duplicates, and a false positive that
+      large is how a detector gets switched off.
+
+    Unresolvable commands fall back to the raw string, marked, so they are
+    counted rather than silently dropped.
+
+    DISCLOSED RESIDUAL - the first regular-file token wins, which is not the same
+    as knowing which token the shell would EXECUTE. A command using a pipe or a
+    redirection (`cat /tmp/in | /path/hook`) can bind identity to the operand
+    rather than the hook. Closing that needs command-aware shell parsing, which
+    is the same over-reach as computing regex intersections and is refused for
+    the same reason: a daily healthcheck should make a narrow claim soundly
+    rather than a broad one badly. No registration on this host uses a pipe,
+    a redirection or a `&&` chain -- all 44 resolve to their real script.
+
+    Returns ``(identity, label, script_path)``. The script path is returned from
+    here rather than re-derived by a second parser: an earlier version had the
+    unwrap-and-expand logic duplicated in two functions, and the interpreter bug
+    above is exactly the kind of fix that would have landed in one copy only,
+    desynchronising duplicate-detection from guard-verification.
+    """
+    unresolved = (f"unresolved:{command}", f"UNRESOLVED {command[:60]}", "")
+
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return unresolved
+
+    # Unwrap one level of `bash -c '<inner>'`. Without this, shlex returns the
+    # whole quoted inner command as a single non-file token: a first version
+    # resolved ZERO of this host's ~14 warden-shim registrations and printed a
+    # clean sweep while blind to most of the corpus.
+    if len(tokens) >= 3 and os.path.basename(tokens[0]) in ("bash", "sh", "zsh") \
+            and tokens[1] == "-c":
+        try:
+            tokens = shlex.split(tokens[2])
+        except ValueError:
+            return unresolved
+
+    expanded = [_expand_settings_token(t, settings_file) for t in tokens]
+    for i, token in enumerate(expanded):
+        # argv[0] naming an interpreter is not the registered thing -- keep
+        # looking for the script it runs. See _INTERPRETERS.
+        if i == 0 and os.path.basename(token) in _INTERPRETERS:
+            continue
+        try:
+            st = os.stat(token)
+        except OSError:
+            continue
+        # Must be a regular FILE. `os.stat` succeeds on directories too, so
+        # `cd /repo && ./hooks/a.sh` would bind identity to `/repo` and count as
+        # resolved -- then fail to match the same script registered directly in
+        # another scope. (An earlier split-out helper used `isfile`; the check
+        # was lost when the two parsers were merged into one. Second time a guard
+        # went missing during a consolidation.)
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        args = tuple(expanded[i + 1:])
+        label = os.path.basename(token)
+        if args:
+            label += " " + " ".join(args)
+        return ((st.st_dev, st.st_ino), args), label, token
+
+    return unresolved
+
+
+#: Characters that make an alternation branch a pattern rather than a name.
+_REGEX_META = set(".^$*+?{}[]\\()|")
+
+
+def _literal_branches(matcher: str) -> set[str]:
+    """Plain tool names named literally anywhere in a matcher.
+
+    Splitting on top-level ``|`` and keeping the metacharacter-free branches is
+    what lets two matchers be compared on a tool NEITHER of them is alone: both
+    ``Bash|mcp__x`` and ``Read|mcp__x`` contribute ``mcp__x``, so the pair is
+    compared on it. Taking the whole matcher text as a witness cannot do that --
+    ``Bash|mcp__x`` does not fullmatch the string ``Read|mcp__x``.
+
+    RESIDUAL, disclosed rather than solved: this finds overlaps witnessed by a
+    LITERAL name. Two matchers overlapping only through pattern regions
+    (``mcp__a.*`` vs ``mcp__.*b``, which both fire on ``mcp__ab``) still miss
+    each other. Deciding that in general is regex intersection, which is not
+    what a daily healthcheck should be doing; every matcher on this host today
+    is an alternation of literals.
+    """
+    return {b for b in matcher.split("|") if b and not (set(b) & _REGEX_META)}
+
+
+def _fully_literal(matcher: str) -> bool:
+    """Is EVERY top-level branch of this matcher a plain tool name?
+
+    Not "has a literal branch". `Bash|mcp__a.*` has one, but its second branch is
+    a pattern that can overlap another matcher's pattern branch on a tool neither
+    names -- `Bash|mcp__a.*` and `Read|mcp__.*b` both fire for `mcp__ab`. Only a
+    matcher whose branches are ALL literal is fully settled by bucketing.
+    """
+    branches = [b for b in matcher.split("|") if b]
+    return bool(branches) and all(not (set(b) & _REGEX_META) for b in branches)
+
+
+def _safe_pattern(matcher: str) -> "re.Pattern[str] | None":
+    """Compile a matcher, or None if it is not a valid regex."""
+    try:
+        return re.compile(matcher)
+    except re.error:
+        return None
+
+
+def _matcher_covers(event: str, matcher: str | None,
+                    extra_tools: "frozenset[str] | set[str]" = frozenset()) -> list[str]:
+    """Tool names this registration co-fires on.
+
+    Grouping by the matcher STRING would be wrong: a matcher is a regex over the
+    tool name, so two registrations whose matchers differ textually but overlap
+    in coverage genuinely fire on the same call. Six such pairs exist on this
+    host today (``Stop`` ``None`` vs ``''`` being the clearest -- identical
+    semantics, different text). Expanding to the tools each one covers compares
+    what actually co-fires and needs no pairwise regex analysis.
+    """
+    if event not in _TOOL_EVENTS:
+        # A non-tool event with NO matcher is unambiguous: everything on that
+        # event co-fires. One bucket.
+        if matcher in (None, ""):
+            return [_NO_TOOL]
+        # A non-tool event WITH a matcher is genuinely undecidable here, and
+        # guessing either way produces a wrong verdict:
+        #   * if such matchers are honoured, two registrations under `startup`
+        #     and `resume` never co-fire -- calling them a duplicate is a false
+        #     positive, and a false positive is how a detector gets switched off
+        #   * if they are ignored, both fire -- calling them clean is a false
+        #     negative, and this probe exists to eliminate exactly that
+        # The matcher domain for these events is not documented (checked against
+        # the official hook-development skill: it specifies the domain for
+        # PreToolUse/PostToolUse only). So the probe declines to decide, per this
+        # module's own rule that a probe which cannot reach a verdict reports
+        # UNKNOWN rather than manufacturing one. No such registration exists on
+        # this host today, so this changes nothing here -- it is a guard for the
+        # config that eventually has one.
+        return [_UNDECIDABLE]
+    universe = list(_TOOL_NAMES) + sorted(extra_tools)
+    if matcher in (None, ""):
+        # Matcher-less means ALL tools -- including any the caller discovered
+        # from other registrations' matchers. Covering only _TOOL_NAMES here is
+        # what let a universal registration and an MCP-scoped one co-fire
+        # without ever sharing a bucket.
+        return universe
+    pattern = _safe_pattern(matcher)
+    if pattern is None:
+        return [_UNDECIDABLE]
+    hits = [t for t in universe if pattern.fullmatch(t)]
+    # A pattern-only matcher (`mcp__.*`) contributes no literal branch and may
+    # match nothing in the universe. Returning [] would bucket the registration
+    # NOWHERE, so even two byte-identical registrations of it would never be
+    # compared and the probe would report OK on a real duplicate. Falling back
+    # to the matcher's own text gives identical patterns a shared witness.
+    # (Regression note: an earlier version had this guard, and it was lost when
+    # the <unmatched> bucket was replaced by universe expansion.)
+    return hits or [f"<pattern:{matcher}>"]
+
+
+def _scope_tag(settings_file: Path) -> str:
+    """A short name a reader can act on.
+
+    NOT ``settings_file.name`` -- every settings file is literally called
+    ``settings.json``, so the finding's source set collapses to one entry and
+    cannot say which two scopes collided, which is the first thing anyone acting
+    on a DEGRADED result wants to know.
+    """
+    if settings_file.parent == Path.home() / ".claude":
+        return "user"
+    return f"project:{settings_file.parent.parent.name}"
+
+
+def _guard_present(script_path: str, guard: str) -> bool:
+    """Is the named guard still in the target script?"""
+    try:
+        return guard in Path(script_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+
+def probe_hook_registrations(now: float) -> Result:
+    """Is any hook script registered more than once in the same co-firing set?
+
+    Nothing else in this repo inspects hook registrations, and a prose rule
+    documenting the hazard did not prevent it -- nobody re-reads a rule while
+    editing a settings file. The check has to be mechanical.
+
+    KNOWN LIMITATION, measured rather than assumed. ``REPO_ROOT`` follows
+    whichever checkout this file lives in, so run from a linked worktree the
+    probe reads THAT worktree's settings, and the project-scope registration
+    resolves to the worktree's own copy of the script -- a different inode from
+    the user-scope target, so no duplicate is reported. That is literally true
+    (they are two files) but under-reports: both still fire, so the cost is
+    doubled anyway. The probe is calibrated for how it actually ships -- the
+    daily launchd job, running from the primary checkout, where both
+    registrations resolve to one inode and the duplicate IS reported. Detecting
+    the two-checkouts-of-one-repo variant needs different reasoning than inode
+    identity and is deliberately out of scope here.
+
+    SECOND KNOWN LIMITATION, same class: the interpreter skip fires only at
+    argv[0], so a wrapper ahead of an absolute-path interpreter
+    (``sudo /venv/bin/python x.py``, ``timeout 5 /venv/bin/python x.py``) shifts
+    the interpreter to index 1 and identity binds to the wrapper. No such
+    registration exists on this host today (calibration: 44 resolved, 0
+    unresolved), so this is disclosed rather than handled.
+    """
+    parsed_files = 0
+    commands = 0
+    resolved = 0
+    read_errors: list[str] = []
+    # (event, tool) -> identity -> [(label, scope, script_path)]
+    buckets: dict[tuple[str, str], dict[object, list[tuple[str, str, str]]]] = {}
+    # Bucketing is a SECOND pass. The tool universe is not knowable until every
+    # matcher has been seen: a matcher naming an MCP or otherwise unlisted tool
+    # contributes that tool to the universe, and a matcher-less registration
+    # (which means "all tools") has to cover it too. Expanding as we go put the
+    # universal registration in the _TOOL_NAMES buckets and the MCP one in a
+    # bucket of its own, so a script registered both ways co-fired on that tool
+    # and was never compared.
+    registrations: list[tuple[str, object, object, str, str, str]] = []
+    event_matchers: dict[str, set[str]] = {}
+    event_extra_tools: dict[str, set[str]] = {}
+    undecidable: list[str] = []
+
+    for settings_file in _SETTINGS_FILES:
+        try:
+            spec = json.loads(settings_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            # An ABSENT optional scope is an empty scope, not a failed read.
+            # Treating it as unreadable would park a perfectly normal install --
+            # one that simply has no settings.local.json -- at UNKNOWN forever,
+            # which is noise, and noise is how a probe gets ignored.
+            continue
+        except OSError as exc:
+            read_errors.append(f"{settings_file}: {type(exc).__name__}")
+            continue
+        except ValueError as exc:
+            read_errors.append(f"{settings_file}: unparseable ({exc})")
+            continue
+        parsed_files += 1
+
+        for event, groups in (spec.get("hooks") or {}).items():
+            if not isinstance(groups, list):
+                continue
+            for group in groups:
+                if not isinstance(group, dict):
+                    continue
+                for hook in group.get("hooks", []) or []:
+                    command = (hook or {}).get("command", "")
+                    if not command:
+                        continue
+                    commands += 1
+                    identity, label, script_path = _hook_invocation(command, settings_file)
+                    if isinstance(identity, tuple):
+                        resolved += 1
+                    matcher = group.get("matcher")
+                    registrations.append(
+                        (event, matcher, identity, label,
+                         _scope_tag(settings_file), script_path))
+                    if event in _TOOL_EVENTS and matcher not in (None, ""):
+                        event_matchers.setdefault(event, set()).add(matcher)
+
+    # Pass 2. Every matcher's literal branches join that event's tool universe,
+    # so registrations naming a tool this probe never heard of are still compared
+    # with each other.
+    for event, matchers in event_matchers.items():
+        extras = set()
+        for m in matchers:
+            extras.update(_literal_branches(m))
+        extras -= set(_TOOL_NAMES)
+        if extras:
+            event_extra_tools[event] = extras
+
+    # SCOPE OF THIS PROBE'S CLAIM, and the reason it is narrow.
+    #
+    # Comparison is by shared bucket key, and the keys are witnesses drawn from a
+    # finite universe of tool NAMES. That is sound for matchers built entirely
+    # from literal names, and unsound for anything else -- a matcher that is a
+    # PATTERN cannot share a witness with a registration expanded over names,
+    # because the two live in different key spaces. Widening the universe was
+    # tried three times and failed three times; it relocates the seam rather than
+    # closing it.
+    #
+    # So a registration whose matcher is not fully literal is NOT compared at
+    # all. It goes to UNKNOWN, named. That removes the whole class by
+    # construction instead of guarding it: the probe makes exactly one claim and
+    # makes it soundly, rather than a broader claim it cannot support.
+    #
+    # Live cost: zero. Every matcher on this host is an alternation of literals.
+    for event, matcher, identity, label, scope, script_path in registrations:
+        if event in _TOOL_EVENTS and matcher not in (None, "") and not _fully_literal(matcher):
+            undecidable.append(
+                f"{event}: matcher {matcher!r} on {label.split(' ', 1)[0]} is not a "
+                f"literal tool name, so its co-firing set cannot be decided here"
+            )
+            continue
+        for tool in _matcher_covers(event, matcher, event_extra_tools.get(event, frozenset())):
+            entry = buckets.setdefault((event, tool), {}).setdefault(identity, [])
+            entry.append((label, scope, script_path))
+
+    if parsed_files == 0:
+        # No settings readable at all: coverage is unknown, not clean. Asserting
+        # OK from an empty sweep is the failure this whole module exists to stop.
+        return Result(
+            "hook_registrations", UNKNOWN,
+            observed="; ".join(read_errors) or "no settings files readable",
+            expected="at least one settings.json parsed",
+            remedy="check ~/.claude/settings.json and .claude/settings.json",
+        )
+
+    findings: list[str] = []
+    stale_acks: list[str] = []
+    honoured_acks: list[str] = []
+    seen: set[tuple[str, object]] = set()
+
+    for (event, tool), by_identity in sorted(buckets.items(), key=lambda kv: str(kv[0])):
+        if tool == _UNDECIDABLE:
+            undecidable.append(
+                f"{event} carries a matcher whose domain is undocumented "
+                f"({sum(len(e) for e in by_identity.values())} registration(s))"
+            )
+            continue
+        for identity, entries in by_identity.items():
+            if len(entries) < 2:
+                continue
+            key = (event, identity)
+            if key in seen:
+                continue
+            seen.add(key)
+            label, _src, script_path = entries[0]
+            basename = label.split(" ", 1)[0]
+            sources = sorted({src for _l, src, _p in entries})
+            ack = _ACKNOWLEDGED_DUPLICATES.get((event, basename))
+            if ack:
+                guard = ack.get("guard", "")
+                if script_path and _guard_present(script_path, guard):
+                    honoured_acks.append(
+                        f"{basename} in {event}: {ack.get('reason', '')} "
+                        f"(guard {guard!r} verified present)"
+                    )
+                else:
+                    stale_acks.append(
+                        f"{basename} in {event}: guard {guard!r} NO LONGER PRESENT "
+                        f"in {script_path or 'unresolved target'}"
+                    )
+                continue
+            findings.append(
+                f"{basename} x{len(entries)} co-firing on {event}, from {', '.join(sources)}"
+            )
+
+    coverage = (
+        f"{parsed_files} file(s), {commands} command(s), {resolved} resolved, "
+        f"{commands - resolved} unresolved"
+    )
+    if read_errors:
+        coverage += f"; unreadable: {'; '.join(read_errors)}"
+
+    if stale_acks:
+        return Result(
+            "hook_registrations", DEGRADED,
+            observed="stale acknowledgement - " + "; ".join(stale_acks),
+            expected="each acknowledged duplicate's named guard still present",
+            remedy="re-review the duplicate, or restore the guard it relies on",
+            detail={"coverage": coverage, "duplicates": findings},
+        )
+    if findings:
+        return Result(
+            "hook_registrations", DEGRADED,
+            observed="duplicate registration: " + "; ".join(findings),
+            expected="each hook script registered once per co-firing set",
+            remedy="register the hook in ONE scope, or add a reviewed acknowledgement naming its guard",
+            detail={"coverage": coverage},
+        )
+    # ONE completeness gate, deliberately covering every way the sweep can be
+    # partial. Three separate defects were filed against this probe in a row --
+    # unreadable scope, undecidable matcher, unresolved command -- each the same
+    # shape: incomplete coverage reported as OK. Anything that narrows what was
+    # actually inspected belongs in this list, not in its own branch, so the
+    # NEXT such input cannot be added while forgetting the verdict.
+    #
+    # Why any of them blocks OK: a duplicate needs TWO registrations to be seen.
+    # Miss either half -- because its file would not parse, its co-firing set is
+    # undecidable, or its command would not resolve (two shell spellings of one
+    # script get different raw-string identities and never match) -- and the
+    # duplicate is invisible. "No duplicates found" is then a statement about
+    # the sweep, not about the config.
+    incomplete: list[str] = list(undecidable)
+    if read_errors:
+        incomplete.append("could not read " + "; ".join(read_errors))
+    if commands - resolved:
+        incomplete.append(f"{commands - resolved} command(s) did not resolve to a script")
+
+    if incomplete:
+        return Result(
+            "hook_registrations", UNKNOWN,
+            observed="incomplete sweep - " + "; ".join(incomplete),
+            expected="every scope readable, every command resolved, every co-firing set determinable",
+            remedy="fix the unreadable settings file, or check the commands that did not resolve",
+            detail={"coverage": coverage},
+        )
+    return Result(
+        "hook_registrations", OK,
+        # Say WHICH claim is being made. A daily reader should not have to infer
+        # the probe's scope from its silence -- "no duplicates" and "no duplicates
+        # among the registrations I can decide" are different statements, and only
+        # the second one is true.
+        observed=f"no duplicate literal-matcher registrations across {coverage}"
+                 + (f"; acknowledged: {'; '.join(honoured_acks)}" if honoured_acks else ""),
+        expected="each hook script registered once per co-firing set",
+        detail={"coverage": coverage},
+    )
+
+
 # ── liveness + loaded config ──────────────────────────────────────────────────
 
 
@@ -773,7 +1309,8 @@ def run_probes(now: float, log_path: Path, window_sec: float,
                opa_marker: str, opa_url: str,
                service_labels: tuple[str, ...] | None = None) -> list[Result]:
     demand = read_demand(log_path, window_sec, now)
-    results = [probe_optimizer(now), probe_ingest(now, demand), probe_memory(now)]
+    results = [probe_optimizer(now), probe_ingest(now, demand), probe_memory(now),
+               probe_hook_registrations(now)]
     # `com.deus` is the label actually loaded. A `com.deus-v2.plist` also exists
     # on some installs but is not the running job — probing it reports a
     # confident FAILED about a service nobody runs. `_deus_service_labels`

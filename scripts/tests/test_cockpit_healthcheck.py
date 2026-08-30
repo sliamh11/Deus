@@ -828,3 +828,704 @@ def test_unclassifiable_plist_is_logged_not_silently_swallowed(tmp_path, monkeyp
         assert cock._launch_agent_kind("com.deus.bad2") is None
     assert any("cannot classify" in r.message for r in caplog.records), \
         "the exception must leave a diagnostic trace"
+
+
+# ── hook registration probe (LIA-129) ─────────────────────────────────────────
+#
+# Calibration discipline for this probe specifically: a detector that has never
+# reported RED is not evidence of absence. Every case below is modelled on a
+# registration shape that exists on this host, and the negative controls are the
+# ones a weaker identity rule would have failed silently.
+
+
+def _settings(path: Path, hooks: dict) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"hooks": hooks}), encoding="utf-8")
+    return path
+
+
+def _script(path: Path, body: str = "#!/bin/sh\nexit 0\n") -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _group(cmds, matcher=None):
+    return [{"matcher": matcher,
+             "hooks": [{"type": "command", "command": c} for c in cmds]}]
+
+
+def test_probe_flags_same_script_registered_in_two_scopes(tmp_path, monkeypatch):
+    """P1: the LIA-129 defect itself -- one script, two settings files, one event."""
+    hook = _script(tmp_path / "scripts" / "memory_retrieval_hook.py")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"UserPromptSubmit": _group([f'python3 "{hook}"'])})
+    proj = _settings(tmp_path / "proj" / ".claude" / "settings.json",
+                     {"UserPromptSubmit": _group([f'python3 "{hook}"'])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user, proj))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "memory_retrieval_hook.py x2" in r.observed
+
+
+def test_probe_flags_byte_identical_repeats_in_one_group(tmp_path, monkeypatch):
+    """P2: bash-command-gate.sh x4 inside a single PreToolUse/Bash group."""
+    gate = _script(tmp_path / "hooks" / "bash-command-gate.sh")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"PreToolUse": _group([str(gate)] * 4, matcher="Bash")})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "bash-command-gate.sh x4" in r.observed
+
+
+def test_probe_does_not_flag_one_script_with_different_args(tmp_path, monkeypatch):
+    """N1 -- the control that forces args into the identity.
+
+    warden-shim.sh is registered six times inside ONE PostToolUse group with six
+    different subcommands. A script-path-only rule reports all six as duplicates,
+    and a false positive that large is how a detector gets switched off.
+    """
+    shim = _script(tmp_path / "hooks" / "warden-shim.sh")
+    subs = ["code-review-invalidator", "threat-model-gate", "path-leak-detector",
+            "verification-invalidator", "cold-memory-injector", "structural-check"]
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"PostToolUse": _group([f'bash -c \'"{shim}" {s}\'' for s in subs],
+                                            matcher="Write|Edit")})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.OK, r.observed
+    assert "6 resolved" in r.detail["coverage"], "the bash -c unwrap must resolve all six"
+
+
+def test_probe_does_not_flag_one_script_across_different_events(tmp_path, monkeypatch):
+    """N2 -- the same script legitimately serves many events and tools."""
+    shim = _script(tmp_path / "hooks" / "warden-shim.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([f'bash -c \'"{shim}" a\''], matcher="Bash"),
+        "PostToolUse": _group([f'bash -c \'"{shim}" b\''], matcher="Write"),
+        "SessionStart": _group([f'bash -c \'"{shim}" c\'']),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    assert cock.probe_hook_registrations(NOW).status == cock.OK
+
+
+def test_probe_does_not_flag_overlapping_matchers_without_shared_identity(tmp_path, monkeypatch):
+    """N3 -- overlapping coverage alone is not a duplicate.
+
+    NOT a control for the grouping strategy: these are two DIFFERENT scripts, so
+    a naive (event, matcher-string) key would pass this too. The real
+    discriminator is the next test, which puts ONE script under two matcher
+    spellings. Kept because it pins the other half of the pair - overlap must not
+    manufacture a duplicate out of unrelated scripts.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    b = _script(tmp_path / "hooks" / "b.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="Bash") + _group([str(b)], matcher="Bash|Grep"),
+        "Stop": _group([str(a)], matcher=None) + _group([str(b)], matcher=""),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    assert cock.probe_hook_registrations(NOW).status == cock.OK
+
+
+def test_probe_flags_overlapping_matchers_that_do_share_identity(tmp_path, monkeypatch):
+    """The positive half of N3: textually different matchers, one script.
+
+    An (event, matcher)-string group key puts these in separate buckets and never
+    compares them. Grouping by what actually co-fires catches it.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="Bash") + _group([str(a)], matcher="Bash|Grep"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "a.sh x2" in r.observed
+
+
+def test_project_dir_comes_from_the_settings_file_not_the_environment(tmp_path, monkeypatch):
+    """The environment case that made an earlier version ship green and blind.
+
+    The daily launchd job has no CLAUDE_PROJECT_DIR, so `${CLAUDE_PROJECT_DIR:-.}`
+    resolved against the job's cwd and the project-scope entry did not resolve at
+    all -- reporting no duplicate while it fired every prompt.
+    """
+    monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    hook = _script(tmp_path / "proj" / "scripts" / "memory_retrieval_hook.py")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"UserPromptSubmit": _group([f'python3 "{hook}"'])})
+    proj = _settings(
+        tmp_path / "proj" / ".claude" / "settings.json",
+        {"UserPromptSubmit": _group(
+            ['bash -c \'python3 "${CLAUDE_PROJECT_DIR:-.}/scripts/memory_retrieval_hook.py"\''])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user, proj))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED, "must still resolve with CLAUDE_PROJECT_DIR unset"
+    assert "0 unresolved" in r.detail["coverage"]
+
+
+def test_identity_is_an_inode_pair_not_a_path_string(tmp_path):
+    """Protects the DESIGN DECISION, not just the behaviour.
+
+    realpath() does not canonicalise case, so on a case-insensitive filesystem a
+    realpath-STRING comparison misses this ticket's headline duplicate while
+    still catching byte-identical ones. Without this assertion someone simplifies
+    the inode call back to realpath, every other test still passes, and the probe
+    goes quietly blind on its primary case.
+    """
+    hook = _script(tmp_path / "scripts" / "h.py")
+    id_a, _, _ = cock._hook_invocation(f'python3 "{hook}"', tmp_path / "a" / "settings.json")
+    id_b, _, _ = cock._hook_invocation(f'python3 "{hook}"', tmp_path / "b" / "settings.json")
+
+    assert id_a == id_b, "one file reached via two settings files must share one identity"
+    assert isinstance(id_a, tuple) and isinstance(id_a[0], tuple) \
+        and all(isinstance(n, int) for n in id_a[0]), \
+        "identity must be ((st_dev, st_ino), args) -- an inode pair, never a path string"
+
+
+def test_unreadable_settings_is_unknown_never_ok(tmp_path, monkeypatch):
+    """An empty sweep must not read as a clean bill -- this module's own rule."""
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (tmp_path / "nope.json",))
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.UNKNOWN
+
+
+def test_an_absent_optional_scope_is_empty_not_unreadable(tmp_path, monkeypatch):
+    """Most installs have no settings.local.json.
+
+    Counting an absent optional scope as a failed read parks a perfectly normal
+    install at UNKNOWN forever, and a probe that is permanently uncertain gets
+    ignored exactly like one that is permanently red.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"SessionStart": _group([str(a)])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES",
+                        (user, tmp_path / "user" / "settings.local.json"))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.OK, r.observed
+
+
+def test_local_settings_scope_is_swept(tmp_path, monkeypatch):
+    """settings.local.json is a standard additive scope.
+
+    A hook registered there co-fires with one in any other scope, so omitting it
+    from the sweep is a false-negative surface, not a gap in coverage reporting.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    main = _settings(tmp_path / "proj" / ".claude" / "settings.json",
+                     {"SessionStart": _group([str(a)])})
+    local = _settings(tmp_path / "proj" / ".claude" / "settings.local.json",
+                      {"SessionStart": _group([str(a)])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (main, local))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "a.sh x2" in r.observed
+
+
+def test_unresolvable_command_blocks_ok_not_merely_counted(tmp_path, monkeypatch):
+    """A command that resolves to nothing narrows what was actually inspected.
+
+    Two shell spellings of one script that the parser cannot resolve get
+    different raw-string identities and never match each other, so the duplicate
+    is invisible. Reporting OK from that sweep is a statement about the sweep,
+    not about the config.
+    """
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"SessionStart": _group(["definitely-not-a-real-binary --x"])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.UNKNOWN, "an unresolved command is incomplete coverage"
+    assert "did not resolve" in r.observed
+    assert "1 unresolved" in r.detail["coverage"]
+
+
+def test_a_real_duplicate_still_outranks_an_unresolved_command(tmp_path, monkeypatch):
+    """Incomplete coverage must not bury an actionable finding."""
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)] * 2, matcher="Bash"),
+        "SessionStart": _group(["definitely-not-a-real-binary --x"]),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "a.sh x2" in r.observed
+
+
+def test_acknowledged_duplicate_is_ok_only_while_its_named_guard_survives(tmp_path, monkeypatch):
+    """The acknowledgement must be a CHECKED claim, not an assertion.
+
+    An entry that merely says 'the target guards itself' stays green after
+    someone deletes that guard -- a suppression outliving its reason, which is
+    the same wrong-proposition failure as a guard testing table existence
+    instead of row count.
+    """
+    hook = _script(tmp_path / "scripts" / "h.py", "x = 1\nhook_once.claim(a, b)\n")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"UserPromptSubmit": _group([f'python3 "{hook}"'])})
+    proj = _settings(tmp_path / "proj" / ".claude" / "settings.json",
+                     {"UserPromptSubmit": _group([f'python3 "{hook}"'])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user, proj))
+    monkeypatch.setattr(cock, "_ACKNOWLEDGED_DUPLICATES", {
+        ("UserPromptSubmit", "h.py"): {"guard": "hook_once.claim", "reason": "guarded"},
+    })
+
+    assert cock.probe_hook_registrations(NOW).status == cock.OK
+
+    hook.write_text("x = 1\n", encoding="utf-8")   # guard deleted
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "stale acknowledgement" in r.observed
+    assert "duplicate registration" not in r.observed, \
+        "a stale acknowledgement must be distinguishable from a fresh duplicate"
+
+
+def test_acknowledgement_list_ships_empty_so_the_live_duplicate_reports_red():
+    """LIA-129's guard is PARKED, so nothing is acknowledged yet and the probe
+    must ship reporting the real defect rather than a pre-silenced green."""
+    assert cock._ACKNOWLEDGED_DUPLICATES == {}
+
+
+def test_matcher_on_a_non_tool_event_is_unknown_never_ok(tmp_path, monkeypatch):
+    """The undecidable case must not be answered by guessing.
+
+    The matcher domain for non-tool events is undocumented, and the two possible
+    behaviours have OPPOSITE failure modes: if such matchers are honoured,
+    calling `startup` and `resume` a duplicate is a false positive; if they are
+    ignored, calling them clean is a false negative. UNKNOWN is the honest
+    verdict, and this module's own rule says UNKNOWN is never OK.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "SessionStart": _group([str(a)], matcher="startup")
+                        + _group([str(a)], matcher="resume"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.UNKNOWN
+    assert "matcher whose domain is undocumented" in r.observed
+
+
+def test_one_unreadable_scope_prevents_ok_even_when_the_other_parses(tmp_path, monkeypatch):
+    """A partial sweep cannot clear the thing it did not read.
+
+    Scopes are ADDITIVE, so the file that failed to parse may hold the second
+    half of the very duplicate being looked for. Reporting OK from one of two
+    scopes is absence-of-evidence read as evidence-of-absence.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"SessionStart": _group([str(a)])})
+    broken = tmp_path / "proj" / ".claude" / "settings.json"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("{ this is not json", encoding="utf-8")
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user, broken))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.UNKNOWN, "one parsed scope is not a clean bill"
+    assert "could not read" in r.observed
+
+
+def test_a_real_duplicate_still_outranks_an_unreadable_scope(tmp_path, monkeypatch):
+    """An actionable finding must not be hidden behind incomplete coverage."""
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"PreToolUse": _group([str(a)] * 2, matcher="Bash")})
+    broken = tmp_path / "proj" / ".claude" / "settings.json"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("{ nope", encoding="utf-8")
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user, broken))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "a.sh x2" in r.observed
+
+
+def test_a_real_duplicate_still_outranks_an_undecidable_matcher(tmp_path, monkeypatch):
+    """An actionable finding must not be hidden behind 'I could not tell'."""
+    a = _script(tmp_path / "hooks" / "a.sh")
+    b = _script(tmp_path / "hooks" / "b.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "SessionStart": _group([str(a)], matcher="startup"),
+        "PreToolUse": _group([str(b)] * 2, matcher="Bash"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "b.sh x2" in r.observed
+
+
+def test_absent_and_empty_matchers_are_the_same_matcher(tmp_path, monkeypatch):
+    """None and '' both mean 'all' -- they must not read as two different
+    matchers, or a real duplicate spelled both ways goes unreported."""
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"Stop": _group([str(a)], matcher=None) + _group([str(a)], matcher="")})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "a.sh x2" in r.observed
+
+
+def test_identity_binds_to_the_script_not_an_absolute_interpreter(tmp_path):
+    """A venv-pinned interpreter must not become the identity.
+
+    `/abs/venv/bin/python x.py` stats successfully at argv[0], so a
+    first-stat-wins resolver binds identity to the INTERPRETER with the script as
+    an argument, while `python3 x.py` elsewhere binds to the script. Same script,
+    two identities, duplicate unreported. This shape is live on this host (the
+    langfuse Stop hook), so it is a real false negative, not a hypothetical.
+    """
+    venv_python = _script(tmp_path / "venv" / "bin" / "python")
+    hook = _script(tmp_path / "scripts" / "live_hook.py")
+    settings = tmp_path / "s" / "settings.json"
+
+    via_abs, label_abs, path_abs = cock._hook_invocation(f'{venv_python} {hook}', settings)
+    via_bare, _, path_bare = cock._hook_invocation(f'python3 {hook}', settings)
+
+    assert via_abs == via_bare, \
+        "an absolute interpreter path must resolve to the same identity as a bare one"
+    assert label_abs == "live_hook.py", f"label bound to the interpreter: {label_abs}"
+    assert path_abs == path_bare == str(hook)
+
+
+def test_absolute_interpreter_duplicate_is_flagged_end_to_end(tmp_path, monkeypatch):
+    """The above, driven through the probe: one script, two interpreter spellings."""
+    venv_python = _script(tmp_path / "venv" / "bin" / "python")
+    hook = _script(tmp_path / "scripts" / "live_hook.py")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"Stop": _group([f'{venv_python} {hook}'])})
+    proj = _settings(tmp_path / "proj" / ".claude" / "settings.json",
+                     {"Stop": _group([f'python3 {hook}'])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user, proj))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "live_hook.py x2" in r.observed
+
+
+def test_a_directory_is_never_mistaken_for_the_script(tmp_path, monkeypatch):
+    """`cd /repo && ./hooks/a.sh` must bind to a.sh, not to /repo.
+
+    os.stat succeeds on directories, so a stat-only check binds identity to the
+    directory AND counts the command as resolved - then the same script
+    registered directly in another scope does not match and the duplicate reads
+    as clean.
+    """
+    repo = tmp_path / "repo"
+    a = _script(repo / "hooks" / "a.sh")
+    settings = tmp_path / "s" / "settings.json"
+
+    ident, label, path = cock._hook_invocation(f'bash -c \'cd {repo} && {a}\'', settings)
+    assert label.startswith("a.sh"), label
+    assert path == str(a)
+
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"SessionStart": _group([f'bash -c \'cd {repo} && {a}\''])})
+    proj = _settings(tmp_path / "proj" / ".claude" / "settings.json",
+                     {"SessionStart": _group([str(a)])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user, proj))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED, r.observed
+    assert "a.sh x2" in r.observed
+    del ident
+
+
+def test_a_script_argument_is_not_mistaken_for_the_script(tmp_path):
+    """The interpreter skip is argv[0]-and-basename only.
+
+    A registered script that takes an existing file as an argument must still
+    bind to the script, not to its argument.
+    """
+    gate = _script(tmp_path / "hooks" / "gate.sh")
+    conf = _script(tmp_path / "hooks" / "conf.json", "{}\n")
+    ident, label, path = cock._hook_invocation(f'{gate} {conf}', tmp_path / "s" / "settings.json")
+
+    assert label.startswith("gate.sh"), label
+    assert path == str(gate)
+    del ident
+
+
+def test_matcher_matching_no_known_tool_is_still_compared(tmp_path, monkeypatch):
+    """The blind spot that made registrations vanish entirely.
+
+    A matcher selecting nothing in _TOOL_NAMES (an MCP tool name, say) used to
+    yield an empty coverage list, so the registration was never bucketed at
+    all -- two duplicates of it both disappeared while the coverage counters
+    still read complete. Bucketing under the matcher's own text keeps them
+    comparable.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"PreToolUse": _group([str(a)] * 2,
+                                           matcher="mcp__deus-memory__memory_recall")})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED, "an unlisted tool must not make duplicates invisible"
+    assert "a.sh x2" in r.observed
+
+
+def test_universal_matcher_co_fires_with_an_unlisted_tool_matcher(tmp_path, monkeypatch):
+    """The false negative that forced bucketing into a second pass.
+
+    A matcher-less PreToolUse registration means ALL tools -- including an MCP
+    tool this probe has never heard of. Expanding it over only _TOOL_NAMES put
+    it in different buckets from the MCP-scoped registration of the same script,
+    so the two co-fired on that tool and were never compared.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher=None)
+                      + _group([str(a)], matcher="mcp__deus-memory__memory_recall"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED, r.observed
+    assert "a.sh x2" in r.observed
+
+
+def test_a_pattern_matcher_beside_a_literal_one_is_unknown(tmp_path, monkeypatch):
+    """`mcp__.*` and `mcp__foo__bar` do co-fire - and the probe declines to say so.
+
+    Deciding that is regex intersection. The honest verdict is UNKNOWN naming the
+    pattern, not OK and not a guessed DEGRADED. The literal half is still bucketed
+    normally; only the pattern registration is set aside.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="mcp__.*")
+                      + _group([str(a)], matcher="mcp__foo__bar"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.UNKNOWN, r.observed
+    assert "mcp__.*" in r.observed
+
+
+def test_matchers_overlapping_only_on_a_shared_alternation_branch(tmp_path, monkeypatch):
+    """`Bash|mcp__x` and `Read|mcp__x` both fire for mcp__x, so they co-fire.
+
+    Neither matcher alone names mcp__x as its whole text, and taking the matcher
+    text as the witness cannot compare them - `Bash|mcp__x` does not fullmatch
+    the string `Read|mcp__x`. Splitting on top-level `|` and keeping literal
+    branches gives both a shared witness.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="Bash|mcp__x")
+                      + _group([str(a)], matcher="Read|mcp__x"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED, r.observed
+    assert "a.sh x2" in r.observed
+
+
+def test_disjoint_alternations_sharing_no_branch_are_not_a_duplicate(tmp_path, monkeypatch):
+    """The negative half: no shared branch, no overlap, no finding."""
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="Bash|mcp__x")
+                      + _group([str(a)], matcher="Read|mcp__y"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    assert cock.probe_hook_registrations(NOW).status == cock.OK
+
+
+def test_pattern_only_matchers_are_not_compared_they_are_unknown(tmp_path, monkeypatch):
+    """A pattern matcher is outside this probe's claim, so it reports UNKNOWN.
+
+    Three defects came from trying to compare pattern matchers by shared bucket
+    key: a PATTERN witness cannot be shared with a registration expanded over
+    NAMES, because the two live in different key spaces. Widening the witness
+    universe relocated the seam each time instead of closing it. The probe now
+    compares literal matchers only and says so.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="mcp__.*")
+                      + _group([str(a)], matcher="mcp__.*"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.UNKNOWN, r.observed
+    assert "not a literal tool name" in r.observed
+
+
+def test_universal_and_pattern_matcher_is_unknown_not_ok(tmp_path, monkeypatch):
+    """The third expansion-family defect, removed by construction rather than patched.
+
+    A matcher-less registration expands over tool NAMES; `mcp__.*` cannot produce
+    a name witness. They co-fire on every matching MCP tool and previously shared
+    no bucket, so the probe reported OK on a real duplicate.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher=None)
+                      + _group([str(a)], matcher="mcp__.*"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.UNKNOWN, r.observed
+    assert r.status != cock.OK
+
+
+def test_undecidable_pattern_overlap_is_unknown_never_ok(tmp_path, monkeypatch):
+    """`mcp__a.*` and `mcp__.*b` both fire for `mcp__ab` and share no literal.
+
+    Deciding that is regex intersection, which a daily healthcheck should not
+    attempt - but reporting OK because the overlap could not be computed is
+    absence-of-evidence read as evidence-of-absence, the exact failure class this
+    probe exists to remove. A docstring disclosure was tried first and is not
+    enough: it tells a maintainer, while the verdict tells the person acting on
+    the output.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="mcp__a.*")
+                      + _group([str(a)], matcher="mcp__.*b"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.UNKNOWN, r.observed
+    assert "cannot be decided" in r.observed
+
+
+def test_a_literal_branch_does_not_make_a_matcher_decidable(tmp_path, monkeypatch):
+    """`Bash|mcp__a.*` and `Read|mcp__.*b` each HAVE a literal branch, and both
+    still fire for `mcp__ab`.
+
+    Testing "has a literal branch" instead of "every branch is literal" skips the
+    UNKNOWN path and reports OK on an in-contract duplicate.
+    """
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="Bash|mcp__a.*")
+                      + _group([str(a)], matcher="Read|mcp__.*b"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.UNKNOWN, r.observed
+    assert "cannot be decided" in r.observed
+
+
+def test_user_scope_project_dir_resolves_to_the_repo_not_the_home_dir(tmp_path, monkeypatch):
+    """A user-scope hook using ${CLAUDE_PROJECT_DIR} means the ACTIVE project.
+
+    Deriving it from the settings file's own parent gives `~` for
+    `~/.claude/settings.json`, so such a hook resolves to `~/scripts/...`, fails
+    to match the project-scope registration of the same script, and hides the
+    duplicate being looked for.
+    """
+    home = tmp_path / "home"
+    repo = tmp_path / "repo"
+    hook = _script(repo / "scripts" / "h.py")
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: home))
+    monkeypatch.setattr(cock, "REPO_ROOT", repo)
+
+    user = _settings(home / ".claude" / "settings.json", {"UserPromptSubmit": _group(
+        ['bash -c \'python3 "${CLAUDE_PROJECT_DIR}/scripts/h.py"\''])})
+    proj = _settings(repo / ".claude" / "settings.json",
+                     {"UserPromptSubmit": _group([f'python3 "{hook}"'])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user, proj))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED, r.observed
+    assert "h.py x2" in r.observed
+    assert "0 unresolved" in r.detail["coverage"]
+
+
+def test_fully_literal_predicate(tmp_path):
+    """The predicate itself, since one wrong reading of it shipped a false OK."""
+    assert cock._fully_literal("Bash")
+    assert cock._fully_literal("Bash|Grep|Write")
+    assert not cock._fully_literal("Bash|mcp__a.*")
+    assert not cock._fully_literal("mcp__.*")
+    assert not cock._fully_literal("")
+
+
+def test_literal_matchers_do_not_trigger_the_undecidable_path(tmp_path, monkeypatch):
+    """The negative control: every matcher on this host is a literal alternation,
+    so the new UNKNOWN path must cost nothing in practice."""
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="Bash|Grep")
+                      + _group([str(a)], matcher="Read|Write"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    assert cock.probe_hook_registrations(NOW).status == cock.OK
+
+
+def test_no_matcher_ever_expands_to_zero_buckets(tmp_path):
+    """The structural invariant behind the test above.
+
+    Any matcher landing in no bucket is invisible to duplicate detection, so the
+    expansion must never return an empty list - whatever the matcher looks like.
+    """
+    for matcher in (None, "", "Bash", "mcp__.*", "Bash|mcp__x", "^$", "(((", "zzz_unknown"):
+        for event in ("PreToolUse", "SessionStart"):
+            covers = cock._matcher_covers(event, matcher, frozenset())
+            assert covers, f"{event} / {matcher!r} expanded to no buckets"
+
+
+def test_unrelated_unlisted_tools_are_not_a_duplicate(tmp_path, monkeypatch):
+    """The negative half: two different MCP tools never co-fire."""
+    a = _script(tmp_path / "hooks" / "a.sh")
+    user = _settings(tmp_path / "user" / "settings.json", {
+        "PreToolUse": _group([str(a)], matcher="mcp__alpha__one")
+                      + _group([str(a)], matcher="mcp__beta__two"),
+    })
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user,))
+
+    assert cock.probe_hook_registrations(NOW).status == cock.OK
+
+
+def test_finding_names_which_scopes_collided(tmp_path, monkeypatch):
+    """Every settings file is literally named settings.json, so a basename-keyed
+    source set collapses to one entry and cannot say which scopes collided --
+    the first thing a reader needs in order to act."""
+    hook = _script(tmp_path / "scripts" / "h.py")
+    user = _settings(tmp_path / "user" / "settings.json",
+                     {"UserPromptSubmit": _group([f'python3 "{hook}"'])})
+    proj = _settings(tmp_path / "myproj" / ".claude" / "settings.json",
+                     {"UserPromptSubmit": _group([f'python3 "{hook}"'])})
+    monkeypatch.setattr(cock, "_SETTINGS_FILES", (user, proj))
+    monkeypatch.setattr(cock.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
+
+    r = cock.probe_hook_registrations(NOW)
+    assert r.status == cock.DEGRADED
+    assert "project:myproj" in r.observed, r.observed
+    assert r.observed.count("settings.json") == 0, \
+        "sources must name scopes, not a filename every scope shares"
