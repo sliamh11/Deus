@@ -35,10 +35,20 @@ from ..registry import register
 from ..types import CaseResult, RunResult
 
 _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+from _retrieval_depth import hook_top_k  # noqa: E402
+from _retrieval_scope import bench_project_scope  # noqa: E402
+
 _MT_PATH = _SCRIPTS_DIR / "memory_tree.py"
 _DEFAULT_DATASET = _SCRIPTS_DIR / "bench" / "tests" / "fixtures" / "context_sufficiency_universal.jsonl"
 _DEFAULT_AUTO_LOAD = ["CLAUDE.md"]
-_DEFAULT_RETRIEVAL_K = 3
+# LIA-126's FOURTH site, and the one that hid best. This literal happened to
+# equal the hook's depth, which is exactly why nobody looked: it was only ever a
+# post-hoc SLICE. `mt.retrieve(db, query)` below took DEFAULT_TOP_K = 5 by
+# omission, so the number here never reached retrieval and `--retrieval-k` was
+# inert. Derived now, not restated -- the depth has ONE definition.
+_DEFAULT_RETRIEVAL_K = hook_top_k()
 
 
 def _resolve_vault() -> Path:
@@ -81,7 +91,11 @@ def _read_auto_load(vault: Path, filenames: list[str], aux_files: list[Path]) ->
 
 
 def _retrieve_context(mt: Any, db: Any, vault: Path, query: str, k: int) -> str:
-    result = mt.retrieve(db, query)
+    # LIA-138 / LIA-126: `k` reaches RETRIEVAL now, not just the slice below.
+    # Retrieving at 5 and slicing to 3 is not the same as retrieving at 3 --
+    # abstain, the score-gap gate and see-also expansion all read k -- and it
+    # meant `--retrieval-k` had no effect on anything that mattered.
+    result = mt.retrieve(db, query, k=k, project_scope=bench_project_scope())
     results = result.get("results", [])[:k]
     chunks = []
     for r in results:

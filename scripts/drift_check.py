@@ -1986,6 +1986,21 @@ def check_coverage(project_root: Path) -> int:
 
 # ── Benchmark label validation ────────────────────────────────────────────────
 
+def _bench_project_scope() -> str:
+    """The shared bench scope, imported rather than restated (LIA-138).
+
+    Kept as a function with its own `sys.path` insert for the same reason
+    `_hook_top_k` below is: this module is run both as a script and imported
+    from a repo root, so it cannot rely on `scripts/` already being importable.
+    A failure here must NOT silently yield an unscoped read, so the fallback
+    lives in `_retrieval_scope` where it is labelled, not here.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _retrieval_scope import bench_project_scope
+
+    return bench_project_scope()
+
+
 _BENCH_FIXTURE = "scripts/tests/fixtures/memory_tree_queries.jsonl"
 _BENCH_SNAPSHOT = "scripts/tests/fixtures/memory_tree_snapshot.json"
 _BENCH_CANARIES = "scripts/tests/fixtures/memory_tree_canaries.jsonl"
@@ -1995,7 +2010,12 @@ _BENCH_CANARIES = "scripts/tests/fixtures/memory_tree_canaries.jsonl"
 # memory is indexed measures a configuration no session ever runs in: measured
 # 2026-08-25 on a correctly-tagged copy, 88.3% unscoped versus 95.0% scoped at
 # k=3, against a 90.0% pre-index baseline.
-_BENCH_SCOPE = "deus"
+#
+# LIA-138: derived, not restated. This literal was the only place the bench
+# scope existed, so the two suites that also needed it had nowhere to get it
+# from and took the unscoped default instead. `scripts/_retrieval_scope` is now
+# the one definition, exactly as `_retrieval_depth` is for k.
+_BENCH_SCOPE = _bench_project_scope()
 
 # An `expect_top1` of this sentinel means: abstaining is acceptable AND any
 # global/this-repo answer is acceptable; only a foreign-project node fails.

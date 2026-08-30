@@ -76,7 +76,7 @@ class TestCalibrate:
             [{"query": f"real_q{i}", "expected_path": "doc_a"} for i in range(5)] +
             [{"query": f"ood_q{i}", "abstain": True} for i in range(5)]
         )
-        result = mt.calibrate(tmp_db, labeled)
+        result = mt.calibrate(tmp_db, labeled, project_scope=None)
         assert result["ok"] is True
         assert result["samples"] == 5
         assert result["ood_samples"] == 5
@@ -87,7 +87,7 @@ class TestCalibrate:
         scores = {f"real_q{i}": (s, "doc_a") for i, s in enumerate([0.80, 0.75, 0.70])}
         monkeypatch.setattr(mt, "retrieve", _mock_retrieve_factory(scores))
         labeled = [{"query": f"real_q{i}", "expected_path": "doc_a"} for i in range(3)]
-        result = mt.calibrate(tmp_db, labeled)
+        result = mt.calibrate(tmp_db, labeled, project_scope=None)
         assert result["ok"] is True
         assert result["abstain_threshold"] == mt.DEFAULT_ABSTAIN_THRESHOLD
         assert result["ood_samples"] == 0
@@ -105,14 +105,14 @@ class TestCalibrate:
             [{"query": f"real_q{i}", "expected_path": "doc_a"} for i in range(3)] +
             [{"query": f"ood_q{i}", "abstain": True} for i in range(3)]
         )
-        result = mt.calibrate(tmp_db, labeled)
+        result = mt.calibrate(tmp_db, labeled, project_scope=None)
         # LOW should NOT be 0.70 — only 1 sample at that threshold.
         # Either it stays at default (no level meets min_samples + precision)
         # or it falls to a lower level where ≥3 samples exist.
         assert result["low_threshold"] != 0.70
 
     def test_empty_dataset_returns_not_ok(self, tmp_db):
-        result = mt.calibrate(tmp_db, [])
+        result = mt.calibrate(tmp_db, [], project_scope=None)
         assert result["ok"] is False
         assert "no samples" in result["reason"]
 
@@ -120,7 +120,7 @@ class TestCalibrate:
         scores = {f"ood_q{i}": (s, "doc_a") for i, s in enumerate([0.2, 0.15])}
         monkeypatch.setattr(mt, "retrieve", _mock_retrieve_factory(scores))
         labeled = [{"query": f"ood_q{i}", "abstain": True} for i in range(2)]
-        result = mt.calibrate(tmp_db, labeled)
+        result = mt.calibrate(tmp_db, labeled, project_scope=None)
         assert result["ok"] is False
 
     def test_calibration_row_persisted_to_db(self, tmp_db, monkeypatch):
@@ -133,7 +133,7 @@ class TestCalibrate:
             [{"query": f"real_q{i}", "expected_path": "doc_a"} for i in range(4)] +
             [{"query": f"ood_q{i}", "abstain": True} for i in range(2)]
         )
-        mt.calibrate(tmp_db, labeled)
+        mt.calibrate(tmp_db, labeled, project_scope=None)
         rows = tmp_db.execute(
             "SELECT low_threshold, abstain_threshold, sample_count, notes FROM calibration"
         ).fetchall()
@@ -155,7 +155,7 @@ class TestCalibrate:
             [{"query": f"real_low{i+1 if i else ''}", "expected_path": "doc_a"} for i in range(3)] +
             [{"query": "ood_high", "abstain": True}]
         )
-        result = mt.calibrate(tmp_db, labeled)
+        result = mt.calibrate(tmp_db, labeled, project_scope=None)
         # Whatever the math, abstain must stay in [0, 0.9].
         assert 0.0 <= result["abstain_threshold"] <= 0.9
 
@@ -170,7 +170,7 @@ class TestCalibrate:
             [{"query": f"real_q{i}", "expected_path": "doc_a"} for i in range(3)] +
             [{"query": "weird_no_label"}]  # no expected_path, no abstain
         )
-        result = mt.calibrate(tmp_db, labeled)
+        result = mt.calibrate(tmp_db, labeled, project_scope=None)
         assert result["ok"] is True
         assert result["samples"] == 3  # weird_no_label not counted
 
@@ -217,7 +217,7 @@ class TestBenchmarkAblation:
         dataset = [
             {"query": "q1", "expected_path": "doc_a", "tag": "single"},
         ]
-        report = mt.benchmark_ablation(tmp_db, dataset, k=3)
+        report = mt.benchmark_ablation(tmp_db, dataset, k=3, project_scope=None)
         assert set(report.keys()) == {
             "V0_flat_only", "V1_flat_abstain", "V2_flat_seealso",
             "V3_no_coherence", "V4_full",
@@ -237,7 +237,7 @@ class TestBenchmarkAblation:
         dataset = [
             {"query": "q1", "abstain": True, "tag": "abstain-far"},
         ]
-        report = mt.benchmark_ablation(tmp_db, dataset)
+        report = mt.benchmark_ablation(tmp_db, dataset, project_scope=None)
         assert report["V0_flat_only"]["abstain_accuracy"] == 0.0
         assert report["V2_flat_seealso"]["abstain_accuracy"] == 0.0
         assert report["V1_flat_abstain"]["abstain_accuracy"] == 1.0
@@ -255,7 +255,7 @@ class TestBenchmarkAblation:
             tmp_db,
             [{"query": "q", "expected_path": "doc_a", "tag": "single"}],
             low_threshold=0.42, abstain_threshold=0.21,
-        )
+         project_scope=None)
         for c in captured:
             assert c["low"] == 0.42
             assert c["abstain"] == 0.21
@@ -274,7 +274,7 @@ class TestBenchmarkLOO:
             [{"query": f"r{i}", "expected_path": "doc_a"} for i in range(5)] +
             [{"query": f"o{i}", "abstain": True} for i in range(3)]
         )
-        report = mt.benchmark_loo(tmp_db, dataset, k=3)
+        report = mt.benchmark_loo(tmp_db, dataset, k=3, project_scope=None)
         assert report["n"] == 8
         assert report["non_abstain_evaluated"] == 5
 
@@ -292,21 +292,21 @@ class TestBenchmarkLOO:
             [{"query": f"r{i}", "expected_path": "doc_a"} for i in range(5)] +
             [{"query": f"o{i}", "abstain": True} for i in range(3)]
         )
-        report = mt.benchmark_loo(tmp_db, dataset, k=3)
+        report = mt.benchmark_loo(tmp_db, dataset, k=3, project_scope=None)
         assert "low_threshold_fit_stddev" in report
         assert "abstain_threshold_fit_stddev" in report
         # Stddev computed (≥ 0).
         assert report["low_threshold_fit_stddev"] >= 0.0
 
     def test_loo_handles_empty_dataset(self, tmp_db):
-        report = mt.benchmark_loo(tmp_db, [], k=3)
+        report = mt.benchmark_loo(tmp_db, [], k=3, project_scope=None)
         assert "error" in report
 
     def test_loo_handles_all_abstain_dataset(self, tmp_db, monkeypatch):
         scores = {f"o{i}": (s, "doc_x") for i, s in enumerate([0.2, 0.15, 0.1])}
         monkeypatch.setattr(mt, "retrieve", _mock_retrieve_factory(scores))
         dataset = [{"query": f"o{i}", "abstain": True} for i in range(3)]
-        report = mt.benchmark_loo(tmp_db, dataset, k=3)
+        report = mt.benchmark_loo(tmp_db, dataset, k=3, project_scope=None)
         # No real samples → no folds with valid fits → recall is None.
         assert report["non_abstain_evaluated"] == 0
 
@@ -321,7 +321,7 @@ class TestBenchmarkLOO:
             [{"query": f"r{i}", "expected_path": "doc_a"} for i in range(4)] +
             [{"query": f"o{i}", "abstain": True} for i in range(2)]
         )
-        report = mt.benchmark_loo(tmp_db, dataset, k=3)
+        report = mt.benchmark_loo(tmp_db, dataset, k=3, project_scope=None)
         assert report["non_abstain_evaluated"] == 4
         assert report["recall_at_k_loo"] is not None
 
@@ -396,7 +396,7 @@ class TestBenchmarkPerTag:
             {"query": "m1", "expected_path": "doc_b", "tag": "multi"},
             {"query": "x1", "expected_path": "doc_c", "tag": "cross-branch"},
         ]
-        report = mt.benchmark(tmp_db, dataset, k=3)
+        report = mt.benchmark(tmp_db, dataset, k=3, project_scope=None)
         assert report["by_tag"]["single"]["n"] == 2
         assert report["by_tag"]["multi"]["n"] == 1
         assert report["by_tag"]["cross-branch"]["n"] == 1
@@ -413,7 +413,7 @@ class TestBenchmarkPerTag:
             {"query": "s_hit", "expected_path": "doc_a", "tag": "single"},
             {"query": "s_miss", "expected_path": "doc_a", "tag": "single"},
         ]
-        report = mt.benchmark(tmp_db, dataset, k=3)
+        report = mt.benchmark(tmp_db, dataset, k=3, project_scope=None)
         assert report["by_tag"]["single"]["recall_at_k"] == 0.5
         assert report["by_tag"]["single"]["mrr_at_k"] == 0.5
 
@@ -437,7 +437,7 @@ class TestBenchmarkPerTag:
             {"query": "ood_far", "abstain": True, "tag": "abstain-far"},
             {"query": "ood_near", "abstain": True, "tag": "abstain-near"},
         ]
-        report = mt.benchmark(tmp_db, dataset, k=3)
+        report = mt.benchmark(tmp_db, dataset, k=3, project_scope=None)
         assert report["by_tag"]["abstain-far"]["abstain_accuracy"] == 1.0
         assert report["by_tag"]["abstain-near"]["abstain_accuracy"] == 0.0
 
@@ -452,14 +452,14 @@ class TestBenchmarkPerTag:
             {"query": "wrong_high", "expected_path": "doc_a", "tag": "single"},
             {"query": "wrong_low", "expected_path": "doc_a", "tag": "single"},
         ]
-        report = mt.benchmark(tmp_db, dataset, k=3, wrong_confident_score=0.65)
+        report = mt.benchmark(tmp_db, dataset, k=3, wrong_confident_score=0.65, project_scope=None)
         assert report["wrong_confident_rate"] == 0.5  # 1 of 2 (only wrong_high)
 
     def test_latency_p50_p95_computed(self, tmp_db, monkeypatch):
         scores = {f"q{i}": (0.5, "doc_a") for i in range(20)}
         monkeypatch.setattr(mt, "retrieve", _mock_retrieve_factory(scores))
         dataset = [{"query": f"q{i}", "expected_path": "doc_a", "tag": "single"} for i in range(20)]
-        report = mt.benchmark(tmp_db, dataset, k=3)
+        report = mt.benchmark(tmp_db, dataset, k=3, project_scope=None)
         assert report["latency_p50_ms"] >= 0
         assert report["latency_p95_ms"] >= report["latency_p50_ms"]
 
@@ -499,10 +499,10 @@ class TestRetrieveAblation:
     def test_use_see_also_false_skips_expansion(self, populated_db):
         result_with = mt.retrieve(populated_db, "household roommates", k=5,
                                   low_threshold=0.0, abstain_threshold=0.0,
-                                  use_see_also=True, use_abstain=False)
+                                  use_see_also=True, use_abstain=False, project_scope=None)
         result_without = mt.retrieve(populated_db, "household roommates", k=5,
                                      low_threshold=0.0, abstain_threshold=0.0,
-                                     use_see_also=False, use_abstain=False)
+                                     use_see_also=False, use_abstain=False, project_scope=None)
         # Both return results. With expansion, trace should mention "expanded";
         # without, it should not.
         with_trace = " ".join(result_with["trace"])
@@ -514,7 +514,7 @@ class TestRetrieveAblation:
         # Even on garbage queries, with_abstain=False should never fall back.
         result = mt.retrieve(populated_db, "xyzzy plugh frobnitz", k=5,
                              low_threshold=0.99, abstain_threshold=0.99,
-                             use_see_also=False, use_abstain=False)
+                             use_see_also=False, use_abstain=False, project_scope=None)
         assert result["fell_back"] is False
         assert len(result["results"]) > 0  # at least some result returned
 
@@ -524,7 +524,7 @@ class TestRetrieveAblation:
             for ab in (True, False):
                 result = mt.retrieve(populated_db, "household", k=3,
                                      low_threshold=0.5, abstain_threshold=0.3,
-                                     use_see_also=sa, use_abstain=ab)
+                                     use_see_also=sa, use_abstain=ab, project_scope=None)
                 # Result has the expected keys regardless of toggle state.
                 assert "results" in result
                 assert "confidence" in result
@@ -1059,7 +1059,7 @@ class TestRetrieveWithPolicy:
         monkeypatch.setattr(mt, "retrieve", self._stub({
             "q": {"confidence": 0.70, "paths": ["a.md", "b.md", "c.md", "d.md"], "fell_back": False},
         }))
-        out = mt.retrieve_with_policy(tmp_db, "q", low_threshold=0.55)
+        out = mt.retrieve_with_policy(tmp_db, "q", low_threshold=0.55, project_scope=None)
         assert out["fell_back"] is False
         assert len(out["results"]) == mt.POLICY_K_HIGH_CONF
         assert f"k={mt.POLICY_K_HIGH_CONF}" in out["policy_trace"]
@@ -1071,7 +1071,7 @@ class TestRetrieveWithPolicy:
                 "confidence": 0.40, "paths": ["a.md", "b.md", "c.md", "d.md", "e.md"], "fell_back": False,
             },
         }))
-        out = mt.retrieve_with_policy(tmp_db, "what about my roommates", low_threshold=0.55)
+        out = mt.retrieve_with_policy(tmp_db, "what about my roommates", low_threshold=0.55, project_scope=None)
         assert out["fell_back"] is False
         assert len(out["results"]) == mt.POLICY_K_LOW_CONF
         assert any(p.startswith("k=") for p in out["policy_trace"])
@@ -1081,7 +1081,7 @@ class TestRetrieveWithPolicy:
         monkeypatch.setattr(mt, "retrieve", self._stub({
             "what was my salary": {"confidence": 0.40, "paths": ["noise.md"], "fell_back": False},
         }))
-        out = mt.retrieve_with_policy(tmp_db, "what was my salary", low_threshold=0.55)
+        out = mt.retrieve_with_policy(tmp_db, "what was my salary", low_threshold=0.55, project_scope=None)
         assert out["fell_back"] is True
         assert out["results"] == []
         assert "abstain:low_conf_no_trigger" in out["policy_trace"]
@@ -1101,7 +1101,7 @@ class TestRetrieveWithPolicy:
                 }
             return {"results": [], "confidence": 0.0, "fell_back": True, "trace": []}
         monkeypatch.setattr(mt, "retrieve", _fake)
-        out = mt.retrieve_with_policy(tmp_db, "directors whose work I rate highly")
+        out = mt.retrieve_with_policy(tmp_db, "directors whose work I rate highly", project_scope=None)
         assert out["fell_back"] is False
         assert out["results"][0]["path"] == "Persona/taste/movies.md"
         assert "retry:directors" in out["policy_trace"]
@@ -1114,7 +1114,7 @@ class TestRetrieveWithPolicy:
             calls.append(query)
             return {"results": [], "confidence": 0.1, "fell_back": True, "trace": []}
         monkeypatch.setattr(mt, "retrieve", _fake)
-        out = mt.retrieve_with_policy(tmp_db, "random unrelated question")
+        out = mt.retrieve_with_policy(tmp_db, "random unrelated question", project_scope=None)
         assert out["fell_back"] is True
         assert "abstain:fell_back" in out["policy_trace"]
         assert calls == ["random unrelated question"]  # no retry
@@ -1136,7 +1136,7 @@ class TestRetrieveWithPolicy:
                 }
             return {"results": [], "confidence": 0.0, "fell_back": True, "trace": []}
         monkeypatch.setattr(mt, "retrieve", _fake)
-        out = mt.retrieve_with_policy(tmp_db, "home stuff", low_threshold=0.55)
+        out = mt.retrieve_with_policy(tmp_db, "home stuff", low_threshold=0.55, project_scope=None)
         paths = [r["path"] for r in out["results"]]
         assert "Persona/life/household.md" in paths
         assert "Persona/work-style/communication.md" in paths

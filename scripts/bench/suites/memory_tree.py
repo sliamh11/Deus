@@ -13,6 +13,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 from _retrieval_depth import hook_top_k  # noqa: E402
+from _retrieval_scope import bench_project_scope  # noqa: E402
 
 _MT_PATH = _SCRIPTS_DIR / "memory_tree.py"
 _DEFAULT_DATASET = _SCRIPTS_DIR / "tests" / "fixtures" / "memory_tree_queries.jsonl"
@@ -54,7 +55,13 @@ def _score_item_policy(
     expect_abstain = bool(item.get("abstain"))
     case_id = item.get("id", q[:60])
 
-    result = mt.retrieve_with_policy(db, q)
+    # LIA-138: scope must reach BOTH scoring paths. The `--policy` branch was
+    # the same omission as the raw branch below, and it hid the same way.
+    # `k` for the same reason as the raw branch. It is not inert here even
+    # though this path caps K adaptively: `effective_k = min(effective_k, k)`
+    # only when `k < POLICY_K_LOW_CONF`, so omitting k (taking DEFAULT_TOP_K=5)
+    # skips that clamp entirely and scores deeper than the hook reads.
+    result = mt.retrieve_with_policy(db, q, k=hook_top_k(), project_scope=bench_project_scope())
 
     returned = [r["path"] for r in result["results"]]
     fell_back = result["fell_back"]
@@ -95,7 +102,10 @@ def _score_item_raw(
     # DEFAULT_TOP_K. Omitting k here scored at 5 while the hook delivers 3, so
     # this suite carried the same blindness as check_bench_snapshot did -- and
     # it hid better, because there is no literal `k=5` to grep for.
-    result = mt.retrieve(db, q, k=hook_top_k())
+    # LIA-138: and the SCOPE must be the one the reader retrieves under. Scoring
+    # unscoped made this suite report 0.817 on a corpus that reads 0.866 scoped
+    # -- a regression on an improvement, on the same DB and the same 82 queries.
+    result = mt.retrieve(db, q, k=hook_top_k(), project_scope=bench_project_scope())
 
     returned = [r["path"] for r in result["results"]]
     fell_back = result["fell_back"]

@@ -107,6 +107,44 @@ DEFAULT_LOW_THRESHOLD = float(os.environ.get("DEUS_TREE_LOW", str(_DEFAULTS["low
 DEFAULT_ABSTAIN_THRESHOLD = float(os.environ.get("DEUS_TREE_ABSTAIN", str(_DEFAULTS["abstain"])))
 DEFAULT_TOP_K = 5
 NEIGHBOR_HOPS = 1
+
+
+class _ScopeUnset:
+    """Sentinel for a ``project_scope`` never supplied by the caller (LIA-138).
+
+    ``project_scope`` used to default to ``None``, which READS as a decision and
+    was in practice an omission. Four non-test callers took that default and
+    every one of them was a MEASUREMENT surface, so the numbers gating this
+    system described a path no live session takes. Same DB, same 82 queries, on
+    the migrated 373-node corpus: unscoped 0.817 (67/82), scoped 0.866 (71/82).
+    The suite would have reported a regression on an improvement.
+
+    A default that is wrong for most callers cannot be fixed by fixing the
+    callers -- the next one inherits it. So the argument is required, and
+    ``None`` stays available as an EXPLICIT "every project, deliberately".
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return "<project_scope not supplied>"
+
+
+_SCOPE_UNSET = _ScopeUnset()
+
+_SCOPE_REQUIRED_MSG = (
+    "{func}() requires an explicit `project_scope` (LIA-138). Pass the scope the "
+    "reader actually retrieves under. `project_scope=None` is still available "
+    "and means EVERY project, unscoped, deliberately. Benchmarks and gates "
+    "should pass `_retrieval_scope.bench_project_scope()`."
+)
+
+
+def _require_scope(func_name: str, project_scope: Any) -> str | None:
+    """Reject the sentinel; pass any real value through, explicit None included."""
+    if isinstance(project_scope, _ScopeUnset):
+        raise TypeError(_SCOPE_REQUIRED_MSG.format(func=func_name))
+    return project_scope
+
+
 # Cap on the size of MEMORY_TREE.md (the navigation root of the vault).
 # Enforced by the `check` CLI verifier only — overrun reports a check failure,
 # it does not truncate at runtime. Different system from
@@ -1566,7 +1604,7 @@ def retrieve(
     use_coherence_gate: bool = DEFAULT_USE_COHERENCE_GATE,
     min_entity_overlap: int = DEFAULT_MIN_ENTITY_OVERLAP,
     exclude_kinds: set[str] | None = None,
-    project_scope: str | None = None,
+    project_scope: "str | None | _ScopeUnset" = _SCOPE_UNSET,
 ) -> dict[str, Any]:
     """4-phase retrieval: flat cosine → FTS5 BM25 → graph expansion → abstain.
 
@@ -1580,11 +1618,16 @@ def retrieve(
     removing it after scoring just loses the abstain too). A node with
     `project IS NULL` (every vault node, plus any node never tagged) stays
     visible under every scope. `project_scope=None` runs the EXACT SAME SQL
-    as before this parameter existed — no behavior change for any existing
-    caller that doesn't pass it.
+    as before this parameter existed — the unscoped read, chosen deliberately.
+
+    `project_scope` is REQUIRED (LIA-138). It has no working default: omitting
+    it raises `TypeError` rather than silently selecting the unscoped path.
+    Four measurement surfaces took the old `None` default and therefore graded
+    a path production never takes — see `_ScopeUnset` for the measured cost.
 
     Returns {results: [{id, path, score, route}], confidence, fell_back, trace}.
     """
+    project_scope = _require_scope("retrieve", project_scope)
     qv = query_vec if query_vec is not None else embed_text(query)
 
     # Phase 1: flat cosine over all active nodes (optionally project-scoped).
@@ -1821,7 +1864,7 @@ def retrieve_with_policy(
     k: int = DEFAULT_TOP_K,
     low_threshold: float = DEFAULT_LOW_THRESHOLD,
     abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
-    project_scope: str | None = None,
+    project_scope: "str | None | _ScopeUnset" = _SCOPE_UNSET,
 ) -> dict[str, Any]:
     """Retrieval with persona-trigger gating, focused retries, supplementary
     hints, and adaptive K. Ported from ~/deus-memory-evo exp_0006 (round 1
@@ -1843,8 +1886,11 @@ def retrieve_with_policy(
 
     `project_scope` (P3) is forwarded unchanged to every internal
     :func:`retrieve` call (primary, focused retry, supplementary hints) —
-    None preserves today's unscoped behavior exactly.
+    an explicit None is the unscoped read. It is REQUIRED here for the same
+    reason it is on :func:`retrieve` (LIA-138): this function is a boundary too,
+    and a default here would re-open the hole one layer up.
     """
+    project_scope = _require_scope("retrieve_with_policy", project_scope)
     has_trigger, trigger_words = _query_persona_triggers(query)
     policy_trace: list[str] = []
 
@@ -3049,7 +3095,12 @@ def render_graph(db: sqlite3.Connection, highlight: str | None = None) -> str:
 
 # ── Calibrate ─────────────────────────────────────────────────────────────────
 
-def calibrate(db: sqlite3.Connection, labeled: list[dict[str, Any]]) -> dict[str, Any]:
+def calibrate(
+    db: sqlite3.Connection,
+    labeled: list[dict[str, Any]],
+    *,
+    project_scope: "str | None | _ScopeUnset" = _SCOPE_UNSET,
+) -> dict[str, Any]:
     """Fit LOW/ABSTAIN thresholds from a labeled dataset.
 
     Inputs: labeled = [{query, expected_path, ...}, ..., {query, abstain: true}].
@@ -3058,12 +3109,18 @@ def calibrate(db: sqlite3.Connection, labeled: list[dict[str, Any]]) -> dict[str
     where precision (top-hit = expected_path) hits 0.9 with a minimum sample
     population. Separating the two fits avoids the single-sample fluke that
     pins LOW too strictly at high thresholds.
+
+    `project_scope` is REQUIRED (LIA-138), and it matters more here than
+    anywhere else in this file: a threshold fitted on one score distribution
+    and then applied to another is wrong in a way no test asserts. Fitting
+    unscoped and reading scoped is exactly that mismatch.
     """
+    project_scope = _require_scope("calibrate", project_scope)
     real_samples: list[tuple[float, bool]] = []
     ood_scores: list[float] = []
     for item in labeled:
         q = item["query"]
-        result = retrieve(db, q, k=3, abstain_threshold=0.0)
+        result = retrieve(db, q, k=3, abstain_threshold=0.0, project_scope=project_scope)
         confidence = float(result.get("confidence", 0.0))
         if item.get("abstain"):
             ood_scores.append(confidence)
@@ -3138,13 +3195,21 @@ def calibrate_sweep(
     k: int = 5,
     min_recall: float = 0.70,
     exclude_kinds: set[str] | None = None,
+    project_scope: "str | None | _ScopeUnset" = _SCOPE_UNSET,
 ) -> dict[str, Any]:
     """Grid search for optimal thresholds using Pareto selection.
 
     Per benchmark-regression-gate.md §3, recall and abstain_accuracy are
     kept separate — never blended into a single score. The sweep finds
     combos where recall >= min_recall, then ranks by abstain_accuracy.
+
+    `project_scope` is REQUIRED (LIA-138) and forwarded to every `benchmark()`
+    combo. This function reaches `retrieve()` INDIRECTLY, through `benchmark()`,
+    which is why the ticket's direct-caller audit did not list it: an audit of
+    who calls the boundary structurally cannot see a caller that arrives via an
+    intermediary. Requiring the argument at the boundary is what surfaces it.
     """
+    project_scope = _require_scope("calibrate_sweep", project_scope)
     import itertools
 
     # Pre-cache query embeddings so Ollama isn't called per-combo.
@@ -3186,7 +3251,7 @@ def calibrate_sweep(
                           gap_threshold=gap_t, use_fts=True,
                           coverage_threshold=cov_t, content_cap=cap_t,
                           use_coherence_gate=True, min_entity_overlap=eo_t,
-                          exclude_kinds=exclude_kinds)
+                          exclude_kinds=exclude_kinds, project_scope=project_scope)
 
             results.append({
                 "abstain_threshold": abstain_t,
@@ -3248,6 +3313,7 @@ def benchmark(
     use_coherence_gate: bool = DEFAULT_USE_COHERENCE_GATE,
     min_entity_overlap: int = DEFAULT_MIN_ENTITY_OVERLAP,
     exclude_kinds: set[str] | None = None,
+    project_scope: "str | None | _ScopeUnset" = _SCOPE_UNSET,
 ) -> dict[str, Any]:
     """Run dataset queries, compute recall@k, MRR@k, per-tag breakdown, latency.
 
@@ -3256,7 +3322,13 @@ def benchmark(
     abstain-far vs abstain-near depending on item tag. Threshold + ablation
     params flow through to retrieve() so the same dataset can be re-scored
     under different configurations.
+
+    `project_scope` is REQUIRED (LIA-138) and reported in the returned `config`
+    block, so a recall number can never be read without the scope that produced
+    it. It is also the scope every indirect caller (`calibrate_sweep`,
+    `benchmark_ablation`) is forced to supply.
     """
+    project_scope = _require_scope("benchmark", project_scope)
     import time as _time
 
     n = len(dataset)
@@ -3296,6 +3368,7 @@ def benchmark(
             use_coherence_gate=use_coherence_gate,
             min_entity_overlap=min_entity_overlap,
             exclude_kinds=exclude_kinds,
+            project_scope=project_scope,
         )
         latencies.append(_time.monotonic() - t0)
 
@@ -3354,6 +3427,9 @@ def benchmark(
             "use_fts": use_fts,
             "use_coherence_gate": use_coherence_gate,
             "min_entity_overlap": min_entity_overlap,
+            # LIA-138: a recall number that does not say which SCOPE produced it
+            # is how this drifted, exactly as with `k` under LIA-126.
+            "project_scope": project_scope,
         },
     }
 
@@ -3365,6 +3441,7 @@ def benchmark_ablation(
     k: int = 5,
     low_threshold: float = DEFAULT_LOW_THRESHOLD,
     abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
+    project_scope: "str | None | _ScopeUnset" = _SCOPE_UNSET,
 ) -> dict[str, Any]:
     """Run the same dataset under five variants so we can read the marginal
     value of each retrieval phase:
@@ -3374,7 +3451,13 @@ def benchmark_ablation(
         V2  — flat + see_also only
         V3  — full minus coherence gate
         V4  — full with coherence gate (current production)
+
+    `project_scope` is REQUIRED (LIA-138). Like `calibrate_sweep`, this function
+    reaches `retrieve()` only through `benchmark()`, so a direct-caller audit
+    misses it. The variants must all be scored under ONE scope or the marginal
+    value of each phase is measured against a moving corpus.
     """
+    project_scope = _require_scope("benchmark_ablation", project_scope)
     # (name, use_see_also, use_abstain, use_coherence_gate)
     variants = [
         ("V0_flat_only", False, False, False),
@@ -3393,6 +3476,7 @@ def benchmark_ablation(
             use_see_also=use_sa,
             use_abstain=use_ab,
             use_coherence_gate=use_cg,
+            project_scope=project_scope,
         )
     return out
 
@@ -3406,6 +3490,7 @@ def benchmark_tiered(
     low_threshold: float = DEFAULT_LOW_THRESHOLD,
     abstain_threshold: float = DEFAULT_ABSTAIN_THRESHOLD,
     gap_threshold: float = DEFAULT_SCORE_GAP_THRESHOLD,
+    project_scope: "str | None | _ScopeUnset" = _SCOPE_UNSET,
 ) -> dict[str, Any]:
     """Supplementary coverage metric for the tiered atom system.
 
@@ -3429,7 +3514,13 @@ def benchmark_tiered(
     - tier1_token_cost: token_estimate of the standards pack text (from DB descriptions)
     - tier2_token_cost_avg: average token cost per knowledge retrieval
     - baseline_recall: recall on ALL non-abstain queries with no exclusion
+
+    `project_scope` is REQUIRED (LIA-138) and reaches all three internal
+    `retrieve()` calls (tier-2, abstain, baseline). Scoping only some of them
+    would make tier2_recall and baseline_recall incomparable, which is the
+    single number this function exists to produce.
     """
+    project_scope = _require_scope("benchmark_tiered", project_scope)
     n = len(dataset)
     if n == 0:
         return {"error": "empty dataset"}
@@ -3478,6 +3569,7 @@ def benchmark_tiered(
             abstain_threshold=abstain_threshold,
             gap_threshold=gap_threshold,
             exclude_kinds={"standard"},
+            project_scope=project_scope,
         )
         returned_paths = [r["path"] for r in result["results"]]
         if any(p in returned_paths for p in expected):
@@ -3499,6 +3591,7 @@ def benchmark_tiered(
             low_threshold=low_threshold,
             abstain_threshold=abstain_threshold,
             gap_threshold=gap_threshold,
+            project_scope=project_scope,
         )
         if result["fell_back"]:
             abstain_correct += 1
@@ -3519,6 +3612,7 @@ def benchmark_tiered(
             low_threshold=low_threshold,
             abstain_threshold=abstain_threshold,
             gap_threshold=gap_threshold,
+            project_scope=project_scope,
         )
         returned_paths = [r["path"] for r in result["results"]]
         if any(p in returned_paths for p in expected):
@@ -3554,6 +3648,7 @@ def benchmark_loo(
     dataset: list[dict[str, Any]],
     *,
     k: int = 5,
+    project_scope: "str | None | _ScopeUnset" = _SCOPE_UNSET,
 ) -> dict[str, Any]:
     """Leave-one-out CV with precomputed retrieval cache.
 
@@ -3565,7 +3660,12 @@ def benchmark_loo(
 
     Thresholds never see the item they're scoring — the honest generalization
     estimate. O(N × sweep_size) instead of O(N²) retrievals.
+
+    `project_scope` is REQUIRED (LIA-138). The whole point of this function is
+    an honest estimate, and a threshold generalised from one scope's score
+    distribution does not transfer to another's.
     """
+    project_scope = _require_scope("benchmark_loo", project_scope)
     n = len(dataset)
     if n == 0:
         return {"error": "empty dataset"}
@@ -3574,7 +3674,7 @@ def benchmark_loo(
     # full results regardless of confidence (we'll apply thresholds in-loop).
     cache: list[dict[str, Any]] = []
     for item in dataset:
-        r = retrieve(db, item["query"], k=k, abstain_threshold=0.0)
+        r = retrieve(db, item["query"], k=k, abstain_threshold=0.0, project_scope=project_scope)
         expected = item.get("expected_paths") or ([item["expected_path"]] if item.get("expected_path") else [])
         returned = [res["path"] for res in r["results"]]
         hit = any(p in returned for p in expected) if expected else False
@@ -3811,6 +3911,52 @@ def backfill_approach_angles(
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+def _add_scope_args(parser: argparse.ArgumentParser) -> None:
+    """Attach `--project-scope` / `--all-projects` to a subcommand (LIA-138).
+
+    ONE definition, attached to every subcommand that reaches `retrieve()`.
+    `query` had these flags; `calibrate`, `calibrate-sweep`, `benchmark` and
+    `benchmark-tiered` had none at all, which is why every one of them scored
+    the unscoped path with no way to say otherwise.
+
+    `--all-projects` is not decoration. `project_scope` is now required with no
+    working default, so an EXPLICIT unscoped path has to exist somewhere -- and
+    unscoped is what the live hook still runs while `DEUS_PROJECT_SCOPE` is off.
+    Without this flag there would be no surface left that can measure it.
+
+    Note the name is reused from `reindex-external --all-projects`, where it
+    means something unrelated (walk every project directory to index it).
+    Subparser namespaces are independent so there is no conflict, but a reader
+    comparing `--help` output across subcommands should not be surprised.
+    """
+    parser.add_argument(
+        "--project-scope", type=str, default=None, metavar="PROJECT",
+        help="Restrict candidates to this project's memory plus the global tier. "
+             "Accepts a project id (e.g. 'deus') or a ~/.claude/projects dirname. "
+             "Default: the current session's project. Use --all-projects for no scope.",
+    )
+    parser.add_argument(
+        "--all-projects", action="store_true",
+        help="Deliberately query EVERY project's memory unscoped. Overrides --project-scope.",
+    )
+
+
+def _resolve_scope_from_args(args: argparse.Namespace) -> str | None:
+    """The ONE rule turning scope flags into a `project_scope` value (LIA-138).
+
+    LIA-123: an on-demand query must be able to scope the way the retrieval hook
+    does, and must be able to reach a QUARANTINED project (one whose directory
+    no longer resolves to a repo) by naming it explicitly -- that is what makes
+    quarantine recoverable rather than a slow delete. `--all-projects` is the
+    deliberate opt-out.
+    """
+    if getattr(args, "all_projects", False):
+        return None
+    if getattr(args, "project_scope", None):
+        return args.project_scope
+    return resolve_project_id()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="memory_tree", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -3849,16 +3995,7 @@ def main(argv: list[str] | None = None) -> int:
     p_query.add_argument("--no-coherence", action="store_true", help="Disable coherence gate on gap abstain")
     p_query.add_argument("--compact", action="store_true", help="Strip verbose fields for token efficiency")
     p_query.add_argument("--select", type=str, default=None, help="Comma-separated field paths to include")
-    p_query.add_argument(
-        "--project-scope", type=str, default=None, metavar="PROJECT",
-        help="Restrict candidates to this project's memory plus the global tier. "
-             "Accepts a project id (e.g. 'deus') or a ~/.claude/projects dirname. "
-             "Default: the current session's project. Use --all-projects for no scope.",
-    )
-    p_query.add_argument(
-        "--all-projects", action="store_true",
-        help="Deliberately query EVERY project's memory unscoped. Overrides --project-scope.",
-    )
+    _add_scope_args(p_query)
 
     p_report_tags = sub.add_parser(
         "report-tags",
@@ -3884,10 +4021,12 @@ def main(argv: list[str] | None = None) -> int:
 
     p_calib = sub.add_parser("calibrate", help="Fit thresholds from labeled data")
     p_calib.add_argument("labeled_jsonl", help="Path to labeled dataset (JSONL)")
+    _add_scope_args(p_calib)
 
     p_sweep = sub.add_parser("calibrate-sweep", help="Grid search for optimal thresholds")
     p_sweep.add_argument("dataset_jsonl", help="Path to JSONL benchmark dataset")
     p_sweep.add_argument("--json", action="store_true")
+    _add_scope_args(p_sweep)
 
     p_scaffold = sub.add_parser(
         "scaffold-root",
@@ -3983,6 +4122,7 @@ def main(argv: list[str] | None = None) -> int:
     p_bench.add_argument("--ablation", action="store_true", help="Run V0/V1/V2/V3/V4 variants side by side")
     p_bench.add_argument("--loo", action="store_true", help="Leave-one-out CV (honest generalization estimate)")
     p_bench.add_argument("--no-fts", action="store_true", help="Disable FTS5 hybrid search")
+    _add_scope_args(p_bench)
 
     p_bench_t = sub.add_parser("benchmark-tiered", help="Run tiered coverage benchmark")
     p_bench_t.add_argument("dataset_jsonl", help="Path to JSONL methodology-probes dataset")
@@ -3994,6 +4134,7 @@ def main(argv: list[str] | None = None) -> int:
     p_bench_t.add_argument("--json", action="store_true")
     p_bench_t.add_argument("--low", type=float, default=DEFAULT_LOW_THRESHOLD)
     p_bench_t.add_argument("--abstain", type=float, default=DEFAULT_ABSTAIN_THRESHOLD)
+    _add_scope_args(p_bench_t)
 
     args = parser.parse_args(argv)
     db = open_db()
@@ -4020,17 +4161,9 @@ def main(argv: list[str] | None = None) -> int:
         return SUCCESS
 
     if args.cmd == "query":
-        # LIA-123: an on-demand query must be able to scope the same way the
-        # retrieval hook does, and must be able to reach a QUARANTINED project
-        # (one whose directory no longer resolves to a repo) by naming it
-        # explicitly -- that is what makes quarantine recoverable rather than a
-        # slow delete. --all-projects is the deliberate opt-out.
-        if args.all_projects:
-            scope = None
-        elif args.project_scope:
-            scope = args.project_scope
-        else:
-            scope = resolve_project_id()
+        # LIA-138: the resolution rule itself lives in _resolve_scope_from_args
+        # so `query` and the four bench subcommands cannot drift apart on it.
+        scope = _resolve_scope_from_args(args)
 
         if args.policy:
             # `project_scope` must reach BOTH branches. Forwarding it only to
@@ -4374,12 +4507,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "calibrate":
         data = [json.loads(l) for l in Path(args.labeled_jsonl).read_text().splitlines() if l.strip()]
-        print(json.dumps(calibrate(db, data), indent=2))
+        print(json.dumps(calibrate(db, data, project_scope=_resolve_scope_from_args(args)), indent=2))
         return SUCCESS
 
     if args.cmd == "calibrate-sweep":
         data = [json.loads(l) for l in Path(args.dataset_jsonl).read_text().splitlines() if l.strip()]
-        result = calibrate_sweep(db, data)
+        result = calibrate_sweep(db, data, project_scope=_resolve_scope_from_args(args))
         if args.json:
             print(json.dumps(result, indent=2))
         else:
@@ -4396,12 +4529,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "benchmark":
         data = [json.loads(l) for l in Path(args.dataset_jsonl).read_text().splitlines() if l.strip()]
+        scope = _resolve_scope_from_args(args)
         if args.ablation:
-            report = benchmark_ablation(db, data, k=args.k, low_threshold=args.low, abstain_threshold=args.abstain)
+            report = benchmark_ablation(db, data, k=args.k, low_threshold=args.low,
+                                        abstain_threshold=args.abstain, project_scope=scope)
         elif args.loo:
-            report = benchmark_loo(db, data, k=args.k)
+            report = benchmark_loo(db, data, k=args.k, project_scope=scope)
         else:
-            report = benchmark(db, data, k=args.k, low_threshold=args.low, abstain_threshold=args.abstain, use_fts=not args.no_fts)
+            report = benchmark(db, data, k=args.k, low_threshold=args.low, abstain_threshold=args.abstain,
+                               use_fts=not args.no_fts, project_scope=scope)
         print(json.dumps(report, indent=2))
         return SUCCESS
 
@@ -4417,6 +4553,7 @@ def main(argv: list[str] | None = None) -> int:
             k=args.k,
             low_threshold=args.low,
             abstain_threshold=args.abstain,
+            project_scope=_resolve_scope_from_args(args),
         )
         if args.json:
             print(json.dumps(report, indent=2))

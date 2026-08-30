@@ -616,7 +616,7 @@ class TestFrontmatterId:
 class TestRetrieve:
     def test_query_finds_best_leaf(self, tmp_db, fake_vault, stub_embed):
         mt.build_tree(fake_vault, tmp_db)
-        result = mt.retrieve(tmp_db, "shani omer household roommates", k=3)
+        result = mt.retrieve(tmp_db, "shani omer household roommates", k=3, project_scope=None)
         assert result["results"]
         assert result["results"][0]["path"] == "Persona/life/household.md"
 
@@ -626,7 +626,7 @@ class TestRetrieve:
         result = mt.retrieve(
             tmp_db, "watch movies with roommates",
             k=5, low_threshold=0.0, abstain_threshold=0.0,
-        )
+         project_scope=None)
         paths = [r["path"] for r in result["results"]]
         assert "Persona/life/household.md" in paths
         assert "Persona/taste/movies.md" in paths
@@ -634,14 +634,14 @@ class TestRetrieve:
     def test_query_abstains_on_low_confidence(self, tmp_db, fake_vault, stub_embed):
         mt.build_tree(fake_vault, tmp_db)
         # Force a high abstain threshold — nothing clears it.
-        result = mt.retrieve(tmp_db, "random unrelated query xyzzy", abstain_threshold=0.99)
+        result = mt.retrieve(tmp_db, "random unrelated query xyzzy", abstain_threshold=0.99, project_scope=None)
         assert result["fell_back"] is True
         assert result["results"] == []
 
     def test_query_logs_to_db_and_file(self, tmp_db, fake_vault, stub_embed, tmp_path, monkeypatch):
         monkeypatch.setattr(mt, "_LOG_PATH", tmp_path / "queries.jsonl")
         mt.build_tree(fake_vault, tmp_db)
-        mt.retrieve(tmp_db, "household", k=1)
+        mt.retrieve(tmp_db, "household", k=1, project_scope=None)
         db_rows = tmp_db.execute("SELECT query FROM queries_log").fetchall()
         assert len(db_rows) == 1
         assert (tmp_path / "queries.jsonl").exists()
@@ -758,7 +758,7 @@ class TestBenchmark:
                 "abstain": True,
             },
         ]
-        report = mt.benchmark(tmp_db, dataset, k=3)
+        report = mt.benchmark(tmp_db, dataset, k=3, project_scope=None)
         assert report["n"] == 3
         assert 0.0 <= report["recall_at_k"] <= 1.0
         assert report["latency_p50_ms"] >= 0
@@ -1158,7 +1158,7 @@ class TestScoreGapAbstain:
             query_vec=query_vec,
             abstain_threshold=0.01,
             low_threshold=0.55,
-        )
+         project_scope=None)
         assert result["fell_back"] is True
         gap_traces = [t for t in result["trace"] if "abstain" in t]
         assert len(gap_traces) > 0
@@ -1189,7 +1189,7 @@ class TestScoreGapAbstain:
             query_vec=query_vec,
             abstain_threshold=0.30,
             low_threshold=0.55,
-        )
+         project_scope=None)
         assert result["fell_back"] is False
         assert result["results"][0]["path"] == "auto-memory/spike.md"
 
@@ -1229,7 +1229,7 @@ class TestCoherenceGate:
             abstain_threshold=0.01, low_threshold=0.55,
             gap_threshold=0.99, use_coherence_gate=True, min_entity_overlap=2,
             use_fts=False,
-        )
+         project_scope=None)
         assert result["fell_back"] is False
         trace = " ".join(result["trace"])
         assert "coherence:entities=" in trace
@@ -1259,7 +1259,7 @@ class TestCoherenceGate:
             tmp_db, "random unrelated", k=5, query_vec=query_vec,
             abstain_threshold=0.01, low_threshold=0.55,
             gap_threshold=0.99, use_coherence_gate=True, min_entity_overlap=2,
-        )
+         project_scope=None)
         assert result["fell_back"] is True
         trace = " ".join(result["trace"])
         assert "coherence:none" in trace
@@ -1289,7 +1289,7 @@ class TestCoherenceGate:
             tmp_db, "edge test", k=5, query_vec=query_vec,
             abstain_threshold=0.01, low_threshold=0.55,
             gap_threshold=0.99, use_coherence_gate=True, min_entity_overlap=2,
-        )
+         project_scope=None)
         assert result["fell_back"] is False
         trace = " ".join(result["trace"])
         assert "coherence:edge" in trace
@@ -1322,7 +1322,7 @@ class TestCoherenceGate:
             tmp_db, "deus models", k=5, query_vec=query_vec,
             abstain_threshold=0.01, low_threshold=0.55,
             gap_threshold=0.99, use_coherence_gate=False, use_fts=True,
-        )
+         project_scope=None)
         assert result["fell_back"] is False
         trace = " ".join(result["trace"])
         assert "rrf_agree:keep" in trace
@@ -1433,11 +1433,11 @@ class TestHybridRetrieve:
         result_hybrid = mt.retrieve(
             tmp_db, "what is my name", k=5,
             use_abstain=False, use_fts=True,
-        )
+         project_scope=None)
         result_vector = mt.retrieve(
             tmp_db, "what is my name", k=5,
             use_abstain=False, use_fts=False,
-        )
+         project_scope=None)
         hybrid_paths = [r["path"] for r in result_hybrid["results"]]
         assert "auto-memory/user_profile.md" in hybrid_paths[:2], \
             f"Hybrid should rank user_profile in top 2, got {hybrid_paths}"
@@ -1449,7 +1449,7 @@ class TestHybridRetrieve:
         result = mt.retrieve(
             tmp_db, "anything", k=5,
             use_abstain=False, use_fts=False,
-        )
+         project_scope=None)
         assert any("fts_off" in t for t in result["trace"])
 
     def test_fts_promotes_keyword_match(self, tmp_db, stub_embed):
@@ -1474,11 +1474,11 @@ class TestHybridRetrieve:
         result_hybrid = mt.retrieve(
             tmp_db, "trading IBKR stocks", k=5,
             use_abstain=False, use_fts=True,
-        )
+         project_scope=None)
         result_vector = mt.retrieve(
             tmp_db, "trading IBKR stocks", k=5,
             use_abstain=False, use_fts=False,
-        )
+         project_scope=None)
         h_paths = [r["path"] for r in result_hybrid["results"]]
         v_paths = [r["path"] for r in result_vector["results"]]
         assert len(h_paths) >= 2
@@ -1511,11 +1511,11 @@ class TestConceptExpansion:
         result_no_concepts = mt.retrieve(
             tmp_db, "what about the data layout", k=5,
             use_abstain=False, use_fts=True, concepts=None,
-        )
+         project_scope=None)
         result_with_concepts = mt.retrieve(
             tmp_db, "what about the data layout", k=5,
             use_abstain=False, use_fts=True, concepts=["SIMD", "vector", "optimization"],
-        )
+         project_scope=None)
 
         with_paths = [r["path"] for r in result_with_concepts["results"]]
         assert "auto-memory/simd_research.md" in with_paths[:2], \
@@ -1534,7 +1534,7 @@ class TestConceptExpansion:
             tmp_db, "test", k=3,
             use_abstain=False, use_fts=True,
             concepts=["alpha", "beta"],
-        )
+         project_scope=None)
         assert any("concepts=2" in t for t in result["trace"]), \
             f"Trace should contain concepts count, got {result['trace']}"
 
@@ -1550,11 +1550,11 @@ class TestConceptExpansion:
         r1 = mt.retrieve(
             tmp_db, "baseline test", k=3,
             use_abstain=False, use_fts=True, concepts=None,
-        )
+         project_scope=None)
         r2 = mt.retrieve(
             tmp_db, "baseline test", k=3,
             use_abstain=False, use_fts=True,
-        )
+         project_scope=None)
         assert r1["results"] == r2["results"]
         assert r1["confidence"] == r2["confidence"]
 
@@ -1582,7 +1582,7 @@ class TestConceptExpansion:
             tmp_db, prompt, k=3,
             use_abstain=False, use_fts=True,
             concepts=["extra", "concept", "terms"],
-        )
+         project_scope=None)
         assert len(calls) == 1
         assert calls[0] == prompt, \
             f"embed_text should receive original prompt, got {calls[0]}"
@@ -1623,7 +1623,7 @@ class TestApproachAngles:
         result = mt.retrieve(
             tmp_db, "anything", k=5,
             use_abstain=False, use_approach_angles=False,
-        )
+         project_scope=None)
         assert not any("approach_max" in t for t in result["trace"]), \
             f"Should not have approach trace when off, got {result['trace']}"
 
@@ -1639,7 +1639,7 @@ class TestApproachAngles:
         result = mt.retrieve(
             tmp_db, "anything", k=5,
             use_abstain=False, use_approach_angles=True,
-        )
+         project_scope=None)
         assert any("approach_empty" in t for t in result["trace"]), \
             f"Should have approach_empty trace, got {result['trace']}"
 
@@ -1667,7 +1667,7 @@ class TestApproachAngles:
         result = mt.retrieve(
             tmp_db, "What should I order for dinner tonight", k=5,
             use_abstain=False, use_approach_angles=True, use_fts=False,
-        )
+         project_scope=None)
         paths = [r["path"] for r in result["results"]]
         assert paths[0] == "Persona/food.md", \
             f"Approach-angle boosted node should rank first, got {paths}"
@@ -1690,7 +1690,7 @@ class TestApproachAngles:
         result = mt.retrieve(
             tmp_db, "Exact match query for testing max", k=5,
             use_abstain=False, use_approach_angles=True, use_fts=False,
-        )
+         project_scope=None)
         top = result["results"][0]
         assert top["path"] == "auto-memory/max.md"
         assert top["score"] > 0.5, "Max approach score should be high (exact match)"
@@ -1710,11 +1710,11 @@ class TestApproachAngles:
         result_no_angles = mt.retrieve(
             tmp_db, "Rescue query that exactly matches user prompt", k=5,
             use_abstain=True, use_approach_angles=False, use_fts=False,
-        )
+         project_scope=None)
         result_with_angles = mt.retrieve(
             tmp_db, "Rescue query that exactly matches user prompt", k=5,
             use_abstain=True, use_approach_angles=True, use_fts=False,
-        )
+         project_scope=None)
         assert result_no_angles["fell_back"] or len(result_no_angles["results"]) == 0 or \
             result_no_angles["confidence"] < result_with_angles["confidence"], \
             "Approach angles should improve confidence vs content-only"
@@ -1779,7 +1779,7 @@ class TestCoverageGate:
         result = mt.retrieve(
             tmp_db, "what car do I drive", k=5,
             use_abstain=True, use_approach_angles=True, use_fts=False,
-        )
+         project_scope=None)
         has_coverage = any("abstain:coverage" in t for t in result["trace"])
         assert has_coverage, f"Expected coverage abstain, got trace: {result['trace']}"
         assert result["fell_back"]
@@ -1796,7 +1796,7 @@ class TestCoverageGate:
         result = mt.retrieve(
             tmp_db, "who are my roommates", k=5,
             use_abstain=True, use_approach_angles=True, use_fts=False,
-        )
+         project_scope=None)
         has_coverage = any("abstain:coverage" in t for t in result["trace"])
         assert not has_coverage, f"Should not coverage-abstain when angle matches, got trace: {result['trace']}"
 
@@ -1813,7 +1813,7 @@ class TestCoverageGate:
         result = mt.retrieve(
             tmp_db, "what car do I drive", k=5,
             use_abstain=True, use_approach_angles=True, use_fts=False,
-        )
+         project_scope=None)
         has_coverage = any("abstain:coverage" in t for t in result["trace"])
         assert not has_coverage, f"Coverage gate should not fire when no angles exist, got trace: {result['trace']}"
 
@@ -1891,7 +1891,7 @@ class TestConvexBlend:
         result_max = mt.retrieve(
             tmp_db, "Exact match query for testing blend", k=5,
             use_abstain=False, use_approach_angles=True, use_fts=False,
-        )
+         project_scope=None)
         top = result_max["results"][0]
         assert top["path"] == "Persona/blend.md"
         content_score = mt.cosine(
@@ -1926,11 +1926,11 @@ class TestConvexBlend:
         result_off = mt.retrieve(
             tmp_db, "High confidence exact match query", k=5,
             use_abstain=False, use_approach_angles=False, use_fts=False,
-        )
+         project_scope=None)
         result_on = mt.retrieve(
             tmp_db, "High confidence exact match query", k=5,
             use_abstain=False, use_approach_angles=True, use_fts=False,
-        )
+         project_scope=None)
         assert result_on["results"][0]["score"] >= result_off["results"][0]["score"], \
             f"Blend should never penalize: on={result_on['results'][0]['score']:.3f} off={result_off['results'][0]['score']:.3f}"
 
@@ -1985,7 +1985,7 @@ class TestBenchmarkTiered:
             "auto-memory/feedback_one_concern.md",
             "auto-memory/feedback_security_audit.md",
         }
-        report = mt.benchmark_tiered(tmp_db, dataset, standards, k=3)
+        report = mt.benchmark_tiered(tmp_db, dataset, standards, k=3, project_scope=None)
 
         expected_keys = {
             "tier1_coverage",
@@ -2017,7 +2017,7 @@ class TestBenchmarkTiered:
             "auto-memory/feedback_one_concern.md",
             "auto-memory/feedback_security_audit.md",
         }
-        report = mt.benchmark_tiered(tmp_db, dataset, standards, k=3)
+        report = mt.benchmark_tiered(tmp_db, dataset, standards, k=3, project_scope=None)
         assert report["tier1_coverage"] == 1.0, \
             f"Expected tier1_coverage=1.0 when all methodology paths in standards, got {report['tier1_coverage']}"
 
@@ -2027,11 +2027,11 @@ class TestBenchmarkTiered:
         dataset = self._make_dataset()
         # Only one of two methodology expected_paths is in standards.
         standards = {"auto-memory/feedback_one_concern.md"}
-        report = mt.benchmark_tiered(tmp_db, dataset, standards, k=3)
+        report = mt.benchmark_tiered(tmp_db, dataset, standards, k=3, project_scope=None)
         assert report["tier1_coverage"] == 0.5
 
     def test_empty_dataset_returns_error(self, tmp_db):
-        report = mt.benchmark_tiered(tmp_db, [], set())
+        report = mt.benchmark_tiered(tmp_db, [], set(), project_scope=None)
         assert "error" in report
 
 
@@ -2086,7 +2086,7 @@ class TestAtomKind:
             tmp_db, "cooking preferences", k=10,
             use_abstain=False, use_fts=False, use_approach_angles=False,
             exclude_kinds={"standard"},
-        )
+         project_scope=None)
         returned_ids = {r["id"] for r in result["results"]}
         assert "ek_know" in returned_ids
         assert "ek_std" not in returned_ids
@@ -2142,7 +2142,7 @@ class TestAtomKind:
             use_fts=False,
             use_approach_angles=False,
             exclude_kinds={"standard"},
-        )
+         project_scope=None)
         returned_ids = {r["id"] for r in result["results"]}
         assert "seek_meth" in returned_ids, (
             "methodology seed should pass the cosine filter and surface"
@@ -2782,7 +2782,7 @@ class TestCalibrateSweepCache:
                 {"query": "background career history", "expected_path": "Persona/life/background.md"},
                 {"query": "totally unrelated nonsense", "abstain": True},
             ]
-            result = sim.calibrate_sweep(db, dataset, k=3)
+            result = sim.calibrate_sweep(db, dataset, k=3, project_scope=None)
 
             assert result["total_combos"] == 3  # 1*1*1*1 floats x 3 entity-overlap
             unique_queries = {item["query"] for item in dataset}
@@ -2921,14 +2921,34 @@ class TestProjectScopedRetrieve:
         tmp_db.commit()
         return tmp_db
 
-    def test_project_scope_none_matches_unscoped_call(self, scoped_db):
+    def test_explicit_none_reads_every_project(self, scoped_db):
+        """LIA-138: an EXPLICIT None still means "every project, deliberately".
+
+        This test used to compare an explicit `None` against an OMITTED
+        argument, proving the two agreed. That proposition no longer exists:
+        omission raises now (see `_require_scope`), so keeping the comparison
+        would have left two byte-identical calls asserting `X == X` -- a
+        tautology wearing the name of a regression guard.
+
+        What still needs guarding is that unscoped remains REACHABLE, because
+        it is what the live hook runs while DEUS_PROJECT_SCOPE is off.
+        """
         explicit_none = mt.retrieve(scoped_db, "onboarding", k=10, use_abstain=False, project_scope=None)
-        no_arg = mt.retrieve(scoped_db, "onboarding", k=10, use_abstain=False)
-        assert sorted(r["path"] for r in explicit_none["results"]) == \
-            sorted(r["path"] for r in no_arg["results"])
-        assert {r["path"] for r in no_arg["results"]} == {
+        assert {r["path"] for r in explicit_none["results"]} == {
             "Persona/INDEX.md", "auto-memory/feedback_deus.md", "auto-memory/other-proj::feedback_x.md",
         }
+
+    def test_omitting_the_scope_raises_rather_than_reading_every_project(self, scoped_db):
+        """The half the old test could not express: silence is no longer a vote.
+
+        The omission below is DELIBERATE and IS the assertion. Do not "fix" it
+        by adding `project_scope=` -- a mechanical rewrite over these call sites
+        did precisely that once and turned this test green-forever, which is the
+        same way the test it replaced became a tautology. Caught by an A/B run
+        against the base, not by review.
+        """
+        with pytest.raises(TypeError, match="project_scope"):
+            mt.retrieve(scoped_db, "onboarding", k=10, use_abstain=False)
 
     def test_project_scope_excludes_foreign_project(self, scoped_db):
         result = mt.retrieve(scoped_db, "onboarding", k=10, use_abstain=False, project_scope="deus")

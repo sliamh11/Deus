@@ -10,6 +10,14 @@ import pytest
 
 from scripts.bench.types import RunResult
 
+# LIA-138: `scripts/` on the path so the shared depth/scope definitions are
+# importable here. The point of asserting against them rather than against
+# literals is that a test restating the number is the same defect as a suite
+# restating it.
+_SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -209,6 +217,50 @@ class TestPolicyDispatch:
 
         assert mt.retrieve.called
         assert not mt.retrieve_with_policy.called
+
+    def test_raw_branch_passes_the_hooks_depth_and_the_bench_scope(self, tmp_path, monkeypatch):
+        """LIA-138: prove the scope REACHES retrieve(), not just that we wrote it.
+
+        The ticket's own acceptance criterion is that the suite's score moves
+        when scope is wired, "if it does not move, the scope is not reaching
+        retrieve()". That check needs a live embedding backend and a populated
+        DB. This is the same proposition asserted deterministically: the values
+        the suite hands to the boundary, read off the call itself.
+        """
+        from _retrieval_depth import hook_top_k
+        from _retrieval_scope import bench_project_scope
+
+        mt = _make_mt_mock(
+            policy_outcomes={},
+            raw_outcomes={"who do I live with": {"results": [], "fell_back": True, "confidence": 0.1}},
+        )
+        _inject_mt(monkeypatch, mt)
+        dataset_path = _write_dataset(tmp_path, _FIXTURE_ITEMS[:1])
+
+        from scripts.bench.suites.memory_tree import run_memory_tree
+        run_memory_tree(["--no-policy", "--dataset", str(dataset_path)])
+
+        _, kwargs = mt.retrieve.call_args
+        assert kwargs["k"] == hook_top_k(), "suite scores at a depth the hook does not inject at"
+        assert kwargs["project_scope"] == bench_project_scope(), (
+            "suite scores a project scope the reader never retrieves under"
+        )
+
+    def test_policy_branch_passes_the_hooks_depth_and_the_bench_scope(self, tmp_path, monkeypatch):
+        """The `--policy` branch had the identical omission and hid the same way."""
+        from _retrieval_depth import hook_top_k
+        from _retrieval_scope import bench_project_scope
+
+        mt = _make_mt_mock({"who do I live with": {"results": [], "fell_back": True, "confidence": 0.1}})
+        _inject_mt(monkeypatch, mt)
+        dataset_path = _write_dataset(tmp_path, _FIXTURE_ITEMS[:1])
+
+        from scripts.bench.suites.memory_tree import run_memory_tree
+        run_memory_tree(["--policy", "--dataset", str(dataset_path)])
+
+        _, kwargs = mt.retrieve_with_policy.call_args
+        assert kwargs["k"] == hook_top_k()
+        assert kwargs["project_scope"] == bench_project_scope()
 
     def test_policy_flag_stored_in_meta(self, tmp_path, monkeypatch):
         mt = _make_mt_mock({"who do I live with": {"results": [], "fell_back": True, "confidence": 0.1},

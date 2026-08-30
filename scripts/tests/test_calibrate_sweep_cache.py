@@ -119,7 +119,7 @@ def test_calibrate_sweep_reuses_query_cache_under_cli_identity(tmp_path, monkeyp
         distinct = len({d["query"] for d in dataset})
 
         calls["n"] = 0  # count only sweep-time embeds (build embeds already warmed)
-        result = cli.calibrate_sweep(db, dataset)
+        result = cli.calibrate_sweep(db, dataset, project_scope=None)
     finally:
         db.close()
         sys.modules.pop(name, None)
