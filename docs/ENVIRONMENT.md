@@ -96,7 +96,7 @@ and are reported at startup rather than stopped — remove them manually if stal
 | `LLAMA_CPP_GEN_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the evolution-loop generative provider (Reflexion, principle extraction) |
 | `LLAMA_CPP_JUDGE_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for the evolution-loop judge provider |
 | `LLAMA_CPP_EMBED_MODEL` | (falls back to `LLAMA_CPP_MODEL`) | Per-surface override for embeddings (reserved; embedding swap is ADR-gated per Phase 4) |
-| `EMBEDDING_PROVIDER` | `auto` | Embedding backend: `auto`, `gemini`, or `ollama` |
+| `EMBEDDING_PROVIDER` | `auto` | Embedding backend: `auto`, `gemini`, or `ollama`. `auto` resolves to Ollama and **never** falls back to Gemini — cross-model auto-fallback is forbidden by [embedding-model-selection.md](decisions/embedding-model-selection.md) gate 5, since both emit 768-dim vectors in different spaces and nothing records which produced a given node. `gemini` is an explicit opt-in requiring a one-time full re-embed |
 | `DEUS_ATOM_PROVIDER` | `auto` | Atom-extraction backend: `auto` (Ollama first, Gemini fallback), `ollama`, or `gemini`. `auto` lets `--extract`/`--add` run without a Gemini key when Ollama is up |
 | `DEUS_OLLAMA_ATOM_MODEL` | `gemma4:e4b` | Ollama model used for atom extraction (auto/ollama) |
 

@@ -80,11 +80,17 @@ data flows to Google's Gemini API:
 - **Where**: `scripts/memory_indexer.py` → `evolution/providers/embeddings.py`.
 - **When**: On startup and after vault edits (PostToolUse hook).
 - **Controls**:
-  - **Default provider is Ollama (local)**. Gemini embeddings are only used
-    when `EMBEDDING_PROVIDER=gemini` or when Ollama is unreachable and
-    `EMBEDDING_PROVIDER=auto` (the default with Ollama installed).
-  - Keep Ollama running (`ollama serve`) to stay fully local.
-  - Set `EMBEDDING_PROVIDER=ollama` to force local and never fall back.
+  - **Default provider is Ollama (local), with no network fallback.** Gemini
+    embeddings are used ONLY when `EMBEDDING_PROVIDER=gemini` is set
+    explicitly. Under the default `auto`, an unreachable or unresponsive Ollama
+    raises rather than sending vault content to Gemini.
+  - This is stronger than it used to be: `auto` previously fell back to Gemini
+    when a `/api/tags` probe failed, so vault content could egress without
+    anyone opting in. That path is gone — see
+    [embedding-model-selection.md](../decisions/embedding-model-selection.md)
+    gate 5, which forbids cross-model auto-fallback (the two providers emit
+    768-dim vectors in different spaces, and no per-node provider is recorded).
+  - Keep Ollama running (`ollama serve`) so embeddings succeed locally.
 
 ---
 
@@ -193,7 +199,7 @@ data flows to Google's Gemini API:
 | Interaction scores (judge) | Gemini | `EVOLUTION_ENABLED=0` or `EVOLUTION_SKIP_GROUPS` |
 | Reflexion lessons | Gemini | `EVOLUTION_ENABLED=0` |
 | Domain classification | Gemini | `EVOLUTION_ENABLED=0` |
-| Vault embeddings | Gemini (fallback only) | Keep Ollama running or `EMBEDDING_PROVIDER=ollama` |
+| Vault embeddings | Gemini (explicit opt-in only; never automatic) | Leave `EMBEDDING_PROVIDER` unset/`auto` — the default never leaves the host |
 | Voice audio | OpenAI Whisper | Run `/use-local-whisper` |
 | Calendar events | Google Calendar | Remove `add-gcal` skill |
 | Issue summaries | Linear | Remove `add-linear` skill |

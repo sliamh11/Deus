@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,47 +29,45 @@ class TestDefaults:
         from evolution.providers.embeddings import OLLAMA_EMBED_MODEL
         assert OLLAMA_EMBED_MODEL == "embeddinggemma"
 
-    def test_auto_prefers_ollama_when_available(self):
+    def test_auto_resolves_to_ollama(self):
         from evolution.providers.embeddings import (
             OllamaEmbeddingProvider,
             get_embedding_provider,
         )
         with patch.dict("os.environ", {"EMBEDDING_PROVIDER": "auto"}, clear=False):
+            _reset_provider()
+            provider = get_embedding_provider()
+            assert isinstance(provider, OllamaEmbeddingProvider)
+
+    def test_auto_never_falls_back_to_gemini_even_with_a_key(self):
+        """Regression for the auto->Gemini fallback (embedding-model-selection.md gate 5).
+
+        `auto` must resolve to the model that produced the stored vectors, no
+        matter what else the environment offers. Gemini and EmbeddingGemma are
+        both 768-dim but occupy different vector spaces, and no per-node
+        provider is recorded, so a fallback corrupts the corpus silently and
+        unattributably.
+
+        The environment here is the one that used to trigger the fallback: a key
+        present, OLLAMA_HOST unset, and Gemini fully constructible. Patching
+        GeminiEmbeddingProvider to explode makes the assertion discriminating —
+        the test fails loudly if anything ever routes `auto` back to Gemini,
+        rather than quietly returning the wrong provider type.
+        """
+        from evolution.providers.embeddings import (
+            OllamaEmbeddingProvider,
+            get_embedding_provider,
+        )
+        env = {"EMBEDDING_PROVIDER": "auto", "GEMINI_API_KEY": "test-key"}
+        with patch.dict("os.environ", env, clear=False):
+            os.environ.pop("OLLAMA_HOST", None)
             with patch(
-                "evolution.providers.embeddings._is_ollama_available", return_value=True
+                "evolution.providers.embeddings.GeminiEmbeddingProvider",
+                side_effect=AssertionError("auto must never construct Gemini"),
             ):
                 _reset_provider()
                 provider = get_embedding_provider()
                 assert isinstance(provider, OllamaEmbeddingProvider)
-
-    def test_auto_falls_back_to_gemini_when_ollama_unavailable(self):
-        from evolution.providers.embeddings import (
-            GeminiEmbeddingProvider,
-            get_embedding_provider,
-        )
-        with patch.dict("os.environ", {"EMBEDDING_PROVIDER": "auto"}, clear=False):
-            with patch(
-                "evolution.providers.embeddings._is_ollama_available", return_value=False
-            ):
-                mock_client = MagicMock()
-                with patch("google.genai.Client", return_value=mock_client):
-                    _reset_provider()
-                    provider = get_embedding_provider()
-                    assert isinstance(provider, GeminiEmbeddingProvider)
-
-    def test_auto_raises_when_nothing_available(self):
-        with patch.dict("os.environ", {"EMBEDDING_PROVIDER": "auto"}, clear=False):
-            with patch(
-                "evolution.providers.embeddings._is_ollama_available", return_value=False
-            ):
-                with patch(
-                    "evolution.providers.embeddings.GeminiEmbeddingProvider",
-                    side_effect=RuntimeError("no key"),
-                ):
-                    _reset_provider()
-                    with pytest.raises(RuntimeError, match="No embedding provider"):
-                        from evolution.providers.embeddings import get_embedding_provider
-                        get_embedding_provider()
 
     def test_explicit_ollama_backend(self):
         from evolution.providers.embeddings import (

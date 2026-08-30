@@ -4,7 +4,10 @@
 Design: the tree is a human/agent-readable map; retrieval is flat-over-all-nodes
 plus 1-hop graph expansion via see_also/alias_of edges. Storage is sqlite-vec at
 ~/.deus/memory_tree.db (override via DEUS_MEMORY_TREE_DB). Embeddings reuse the
-evolution provider (Ollama embeddinggemma by default, Gemini fallback).
+evolution provider — always Ollama embeddinggemma unless EMBEDDING_PROVIDER is
+explicitly set to gemini; there is no automatic fallback between the two, since
+they share a dimension but not a vector space (embedding-model-selection.md
+gate 5).
 
 Subcommands: build | query | reembed | reindex-external | content-backfill | check | scaffold-root | graph | calibrate | benchmark
 
@@ -86,16 +89,17 @@ def tree_automation_enabled() -> bool:
 # cosine scores (~0.55-0.73 in-domain, ~0.45-0.53 OOD) vs Ollama embeddinggemma
 # (~0.30-0.66 in-domain, ~0.25-0.39 OOD). Env vars always override.
 _EMBED_PROVIDER = os.environ.get("EMBEDDING_PROVIDER", "auto").lower()
-# bool() guard: the `and os.environ.get("GEMINI_API_KEY")` arm evaluates to the
-# key string (truthy str) or None (when unset) rather than a real bool, which
-# can leak the API key into anything that serializes _IS_GEMINI or compares it
-# with `is True`. Coerce to a plain bool.
-_IS_GEMINI = bool(
-    _EMBED_PROVIDER == "gemini" or (
-        _EMBED_PROVIDER == "auto" and not os.environ.get("OLLAMA_HOST")
-        and os.environ.get("GEMINI_API_KEY")
-    )
-)
+# Gemini is EXPLICIT-ONLY, matching provider routing in
+# evolution/providers/embeddings.py: 'auto' resolves to Ollama and never to
+# Gemini (embedding-model-selection.md gate 5, "never auto-fallback across
+# models"). This used to additionally infer Gemini from `auto` + a present
+# GEMINI_API_KEY + an unset OLLAMA_HOST — which selected the GEMINI THRESHOLD
+# calibration below while the embeddings themselves were still produced by
+# Ollama on any host that merely happened to have a key in the environment.
+# Ollama's in-domain scores run ~0.30-0.66 against Gemini's ~0.55-0.73, so an
+# abstain threshold of 0.54 applied to Ollama vectors abstains on nearly
+# everything. Keep this expression in step with the routing it mirrors.
+_IS_GEMINI = _EMBED_PROVIDER == "gemini"
 
 _THRESHOLD_DEFAULTS = {
     "gemini": {"low": 0.55, "abstain": 0.54, "gap": 0.02},

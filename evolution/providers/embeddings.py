@@ -3,7 +3,16 @@ Pluggable embedding provider.
 
 Default: Ollama with EmbeddingGemma (local, ~7x faster than Gemini API).
 Override via EMBEDDING_PROVIDER env var: 'gemini', 'ollama', or 'auto'.
-'auto' (default) tries Ollama first, falls back to Gemini if unavailable.
+
+'auto' (the default) resolves to Ollama ALWAYS — it never falls back to Gemini.
+Per `docs/decisions/embedding-model-selection.md` gate 5 ("Never auto-fallback
+across models"), `auto` may only resolve to the model that produced the stored
+vectors. Gemini and EmbeddingGemma both emit 768-dim vectors but occupy
+DIFFERENT vector spaces, and the memory tree records no per-node provider — so a
+silent fallback writes vectors that are permanently indistinguishable from, and
+not comparable with, the ones already stored. Selecting Gemini is therefore an
+explicit act (`EMBEDDING_PROVIDER=gemini`) that the ADR pairs with a one-time
+full re-embed.
 
 Long-running workloads: the Ollama provider supports batch embedding
 (`embed_batch`) and reuses a persistent HTTP connection. Both matter when
@@ -19,7 +28,6 @@ import threading
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from abc import ABC, abstractmethod
 
 from ..config import EMBED_DIM, EMBED_MODELS, load_api_key
@@ -196,6 +204,32 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
                         )
                         time.sleep(delay)
             else:
+                # Exhausted. Say what to do about it before re-raising: `auto`
+                # no longer silently switches to Gemini, so a host with no
+                # working Ollama now fails here, and the socket error alone
+                # does not hint at the deliberate escape hatch. Log, do not
+                # wrap — callers catch the concrete socket/HTTP exception.
+                #
+                # Reaches a reader on the BATCH paths (tree build, reindex,
+                # drift_check, benchmarks). It does NOT reach the per-prompt
+                # retrieval hook: exhausting 3 attempts costs 63s at
+                # OLLAMA_EMBED_TIMEOUT=20 and ~183s at the 60s default, and the
+                # hook's harness budget is 30s — so that process is killed long
+                # before this line runs. Fixing that means fewer attempts on the
+                # hook path specifically, not a shorter global timeout: 28 of
+                # 7133 historical embeds on this host legitimately exceeded 8s
+                # and succeeded, so a short global cap converts real successes
+                # into failures. Tracked separately, deliberately not here.
+                logger.error(
+                    "Ollama embed failed after %d attempts against %s. Embeddings "
+                    "do NOT fall back to Gemini automatically (that would mix two "
+                    "vector spaces in one index). Start Ollama, or set "
+                    "EMBEDDING_PROVIDER=gemini deliberately — which requires a full "
+                    "re-embed of stored vectors. Last error: %s",
+                    self._MAX_ATTEMPTS,
+                    f"{self._scheme}://{self._host}:{self._port}",
+                    last_exc,
+                )
                 raise last_exc  # type: ignore[misc]
             out.extend(self._normalize_vec(v) for v in vecs)
         return out
@@ -211,15 +245,6 @@ class OllamaEmbeddingProvider(EmbeddingProvider):
         self.embed("warmup")
 
 
-def _is_ollama_available() -> bool:
-    try:
-        req = urllib.request.Request(f"{OLLAMA_HOST.rstrip('/')}/api/tags")
-        with urllib.request.urlopen(req, timeout=2):
-            return True
-    except Exception:
-        return False
-
-
 _provider: EmbeddingProvider | None = None
 
 
@@ -233,18 +258,14 @@ def get_embedding_provider() -> EmbeddingProvider:
 
     if backend == "gemini":
         _provider = GeminiEmbeddingProvider()
-    elif backend == "ollama":
+    elif backend in ("ollama", "auto"):
+        # 'auto' collapses to Ollama rather than probing for it. The old
+        # `/api/tags` probe reported "available" during the exact GPU-starvation
+        # outage it existed to detect (it lists model files from disk and never
+        # reaches a runner), and the Gemini fallback behind it would have been
+        # worse than the outage anyway. Module docstring has the reasoning;
+        # embedding-model-selection.md gate 5 is the governing decision.
         _provider = OllamaEmbeddingProvider()
-    elif backend == "auto":
-        if _is_ollama_available():
-            _provider = OllamaEmbeddingProvider()
-        else:
-            try:
-                _provider = GeminiEmbeddingProvider()
-            except Exception:
-                raise RuntimeError(
-                    "No embedding provider available. Start Ollama or set GEMINI_API_KEY."
-                )
     else:
         raise ValueError(
             f"Unknown EMBEDDING_PROVIDER={backend!r}. Supported: auto, gemini, ollama"

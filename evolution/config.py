@@ -10,8 +10,10 @@ services:
   - Gemini API (via GEMINI_API_KEY): full interaction prompts + responses for
     scoring (judge), corrective lesson generation (reflexion), and optionally
     domain classification. Truncated to JUDGE_MAX_PROMPT/RESPONSE_CHARS each.
-  - Gemini API: vault/memory file chunks for semantic embeddings, UNLESS
-    Ollama is running and EMBEDDING_PROVIDER != 'gemini'.
+  - Gemini API: vault/memory file chunks for semantic embeddings, ONLY when
+    EMBEDDING_PROVIDER is explicitly set to 'gemini'. There is no implicit
+    fallback: the default ('auto') always embeds locally via Ollama, and fails
+    rather than reaching for the network if Ollama cannot serve.
   - OpenAI (via the local `codex` CLI, ChatGPT/Codex subscription auth — no
     OPENAI_API_KEY), judge scoring ONLY, and ONLY when
     EVOLUTION_OPENAI_JUDGE_ENABLED is explicitly set (opt-in, never
@@ -20,8 +22,9 @@ services:
 
 To keep all processing local:
   - Set EVOLUTION_ENABLED=0  (disables judge + reflexion + domain LLM fallback)
-  - Keep Ollama running with an embedding model (handles vault embeddings)
-  - Or set EMBEDDING_PROVIDER=ollama  (forces local embeddings)
+  - Keep Ollama running with an embedding model (handles vault embeddings;
+    embeddings are already local-only unless EMBEDDING_PROVIDER=gemini is set
+    explicitly, so no extra opt-out is needed for them)
 
 See docs/security/data-flows.md for the full audit.
 """

@@ -424,11 +424,18 @@ def optimize_and_save(
 
 
 def _detect_provider() -> str:
+    """Which provider actually produced this run's embeddings, for artifact tags.
+
+    Must mirror `evolution.providers.embeddings.get_embedding_provider()`: only
+    an explicit EMBEDDING_PROVIDER=gemini yields Gemini, because 'auto' resolves
+    to Ollama unconditionally (embedding-model-selection.md gate 5).
+
+    This used to infer Gemini from 'auto' + a present GEMINI_API_KEY. That never
+    selected a provider — it only named one — so the drift was invisible: a run
+    on a host that merely had a key in its environment would file its artifact
+    under `memory_retrieval_gemini` while every embed call went to Ollama,
+    quietly attributing one model's scores to another.
+    """
     import os
     provider = os.environ.get("EMBEDDING_PROVIDER", "auto").lower()
-    if provider in ("gemini", "ollama"):
-        return provider
-    if provider == "auto":
-        if not os.environ.get("OLLAMA_HOST") and os.environ.get("GEMINI_API_KEY"):
-            return "gemini"
-    return "ollama"
+    return "gemini" if provider == "gemini" else "ollama"

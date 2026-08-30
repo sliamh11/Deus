@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -2615,21 +2616,42 @@ class TestProviderDetection:
     which could leak the key into anything serializing the flag."""
 
     def _eval(self, **env):
-        """Re-evaluate the module-level _IS_GEMINI expression under given env."""
+        """Re-evaluate the module-level _IS_GEMINI expression under given env.
+
+        This is a MIRROR of memory_tree.py's expression, not the expression
+        itself (the real one runs once at import against the live env). The
+        mirror is kept honest by test_mirror_matches_live_module below — if the
+        module changes and this does not, that test fails.
+        """
         provider = env.get("EMBEDDING_PROVIDER", "auto").lower()
-        return bool(
-            provider == "gemini" or (
-                provider == "auto" and not env.get("OLLAMA_HOST")
-                and env.get("GEMINI_API_KEY")
-            )
-        )
+        return provider == "gemini"
 
     def test_module_flag_is_bool(self):
         # Whatever the live env, the module constant must be a real bool.
         assert isinstance(mt._IS_GEMINI, bool)
 
-    def test_auto_with_gemini_key_no_ollama_is_true(self):
-        assert self._eval(EMBEDDING_PROVIDER="auto", GEMINI_API_KEY="secret") is True
+    def test_mirror_matches_live_module(self):
+        """The mirror above must agree with the real constant under the live env.
+
+        Guards against this class drifting from memory_tree.py, which is exactly
+        how the auto->Gemini inference survived after the routing dropped it.
+        """
+        live_env = {
+            k: v for k, v in os.environ.items()
+            if k in ("EMBEDDING_PROVIDER", "OLLAMA_HOST", "GEMINI_API_KEY")
+        }
+        assert self._eval(**live_env) is mt._IS_GEMINI
+
+    def test_auto_with_gemini_key_is_false(self):
+        """auto NEVER means Gemini, whatever else the environment offers.
+
+        Previously true, and wrong: it selected the Gemini THRESHOLD calibration
+        (abstain 0.54, tuned for Gemini's ~0.55-0.73 in-domain scores) while the
+        vectors were still Ollama's ~0.30-0.66 — abstaining on nearly every
+        query, on any host that merely had a key in its environment.
+        See embedding-model-selection.md gate 5.
+        """
+        assert self._eval(EMBEDDING_PROVIDER="auto", GEMINI_API_KEY="secret") is False
 
     def test_auto_without_gemini_key_is_false_not_none(self):
         result = self._eval(EMBEDDING_PROVIDER="auto")
@@ -2637,7 +2659,6 @@ class TestProviderDetection:
         assert result is not None
 
     def test_auto_with_ollama_host_is_false(self):
-        # Ollama present → not Gemini, even with a key set.
         assert self._eval(
             EMBEDDING_PROVIDER="auto", OLLAMA_HOST="http://x", GEMINI_API_KEY="k"
         ) is False
