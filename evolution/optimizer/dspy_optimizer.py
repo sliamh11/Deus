@@ -23,7 +23,15 @@ from .artifacts import get_active, save_artifact
 from .modules import MODULE_REGISTRY, _require_dspy
 
 
-def _setup_dspy(model: str = JUDGE_MODEL) -> None:
+def _setup_dspy(model: str = JUDGE_MODEL) -> "dspy.LM":
+    """Configure DSPy's default LM and RETURN it.
+
+    The return value is load-bearing, not a convenience: `dspy.GEPA.__init__`
+    asserts `reflection_lm is not None or instruction_proposer is not None`, so
+    the caller needs a concrete LM handle to pass GEPA. Reading
+    `dspy.settings.lm` back at the call site would also work, but it hides that
+    dependency from the signature and from tests.
+    """
     _require_dspy()
     import dspy
     import os
@@ -39,7 +47,7 @@ def _setup_dspy(model: str = JUDGE_MODEL) -> None:
                 think=False,
             )
             dspy.configure(lm=lm)
-            return
+            return lm
     except KeyError:
         pass
     # Fallback: Gemini
@@ -47,6 +55,7 @@ def _setup_dspy(model: str = JUDGE_MODEL) -> None:
     model_id = model.replace("models/", "")
     lm = dspy.LM(f"gemini/{model_id}", api_key=load_api_key())
     dspy.configure(lm=lm)
+    return lm
 
 
 def _build_examples(module: str, interactions: list[dict]) -> list:
@@ -127,9 +136,31 @@ def _make_judge_metric(judge, module: str):
     runtime judge instead of the old length heuristic.
 
     The judge is captured once via closure and reused across every GEPA metric
-    call, so a candidate is never charged a fresh judge construction. Returns
-    {"score": float, "feedback": str} per the GEPAFeedbackMetric protocol.
+    call, so a candidate is never charged a fresh judge construction.
+
+    Returns a `dspy.Prediction(score: float, feedback: str)` per the
+    `GEPAFeedbackMetric` protocol, which accepts `float | ScoreWithFeedback` and
+    NOT a plain dict.
+
+    Deliberately `dspy.Prediction`, not `ScoreWithFeedback`, though the protocol
+    annotation names the latter. Three reasons, measured against dspy 3.3.1:
+    dspy's own `GEPAFeedbackMetric.__call__` docstring instructs metric authors
+    to "return dspy.Prediction(score: float, feedback: str)"; `ScoreWithFeedback`
+    appears ONLY in type annotations and its own class definition, with ZERO
+    `isinstance(..., ScoreWithFeedback)` checks anywhere in the library, so the
+    subtype is never enforced at runtime; and it lives at
+    `dspy.teleprompt.gepa.gepa_utils`, an internal path, where `dspy.Prediction`
+    is public API. A GPT review round flagged this as a defect on the theory that
+    an isinstance check would reject the base class -- there is no such check.
+    Re-check this if a future dspy starts enforcing the subtype.
+
+    `dspy` is imported here rather than at module scope so the
+    name is bound inside `metric`'s closure — without it every call raises
+    `NameError` into the `except` below and reports a real judge score as a
+    generic "metric error", which is the exact disguise LIA-580 removed.
     """
+    import dspy
+
     prompt_field, context_field, response_field = _MODULE_IO.get(
         module, ("query", "context", "answer")
     )
@@ -151,15 +182,22 @@ def _make_judge_metric(judge, module: str):
                 # generic "metric error: TypeError" — a real judge fault
                 # disguised as a plumbing bug, on the metric backing the
                 # ship-if-better gate. LIA-580.
-                return {"score": 0.0, "feedback": "judge schema error — required dimension missing, scored 0.0"}
+                return dspy.Prediction(
+                    score=0.0,
+                    feedback="judge schema error — required dimension missing, scored 0.0",
+                )
             if getattr(result, "is_parse_error", False):
-                return {"score": 0.0, "feedback": "judge parse error — scored 0.0"}
-            return {"score": float(result.score), "feedback": result.rationale or ""}
+                return dspy.Prediction(
+                    score=0.0, feedback="judge parse error — scored 0.0"
+                )
+            return dspy.Prediction(
+                score=float(result.score), feedback=result.rationale or ""
+            )
         except Exception as exc:
-            return {
-                "score": 0.0,
-                "feedback": f"metric error: {type(exc).__name__}: {exc}",
-            }
+            return dspy.Prediction(
+                score=0.0,
+                feedback=f"metric error: {type(exc).__name__}: {exc}",
+            )
 
     return metric
 
@@ -279,7 +317,7 @@ def optimize(
         )
         return None
 
-    _setup_dspy(model)
+    lm = _setup_dspy(model)
 
     # Build examples
     examples = _build_examples(module, scored)
@@ -307,10 +345,16 @@ def optimize(
     if baseline is None:
         baseline = 0.5  # empty holdout — neutral prior; gate stays conservative
 
+    # `reflection_lm` is REQUIRED, not optional: dspy.GEPA.__init__ asserts
+    # `reflection_lm is not None or instruction_proposer is not None`, so
+    # omitting it raises AssertionError at construction and optimize() never
+    # runs. Reuse the LM _setup_dspy already selected (Ollama preferred, Gemini
+    # fallback) so there is one provider decision, not two.
     teleprompter = dspy.GEPA(
         metric=metric,
         auto="light",
         track_stats=True,
+        reflection_lm=lm,
     )
     optimized = teleprompter.compile(
         program,

@@ -152,7 +152,15 @@ jobs:
         # never built in tests); required so test_memory_indexer_contradiction_commit
         # can import the module. See that test's module docstring. (sqlite-vec is
         # already installed in the "Install pytest" step above.)
-        run: python3 -m pip install google-genai
+        #
+        # dspy is REQUIRED here, not optional. _make_judge_metric imports it
+        # unconditionally as of the optimizer's activation, and the pre-existing
+        # metric/scorer tests call that helper with no importorskip guard --
+        # measured without it: 7 failed, 7 passed, 9 skipped. Guarding those
+        # tests instead of installing the dep would be worse: the newly
+        # activated arm would then have ZERO CI coverage, which is how this
+        # subsystem sat dead from 2026-03 to 2026-08 in the first place.
+        run: python3 -m pip install google-genai 'dspy>=3.2.0,<4'
 
       - name: Memory indexer NER tests
         # Fast (~0.05s). sqlite-vec + google-genai are both installed by now.

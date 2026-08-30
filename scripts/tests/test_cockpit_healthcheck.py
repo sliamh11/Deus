@@ -41,7 +41,9 @@ def _evolution_db(path: Path, interactions=(), health=()):
 
 
 def test_optimizer_is_failed_when_dspy_is_unimportable(monkeypatch):
-    """Today's real state, and the ticket's acceptance criterion."""
+    """No longer the real state — dspy is a hard requirement as of the arm's
+    activation — but still the correct verdict for an interpreter that lacks it,
+    which is exactly what a misconfigured EVOLUTION_PYTHON produces."""
     monkeypatch.setattr(cock.subprocess, "run", lambda *a, **k: type(
         "P", (), {"returncode": 1, "stdout": "", "stderr": "No module named 'dspy'"})())
 
@@ -54,9 +56,12 @@ def test_optimizer_is_failed_when_dspy_is_unimportable(monkeypatch):
 def test_importable_dspy_alone_does_not_make_the_optimizer_ok(monkeypatch, tmp_path):
     """The co-gate finding: importability is a precondition, not a capability.
 
-    Two blockers are live in the real source (GEPA without reflection_lm; the
-    metric returning a dict). If merely installing dspy flipped this to OK, the
-    cockpit would manufacture the false-green it exists to prevent.
+    The two blockers this originally guarded (GEPA built without reflection_lm;
+    the metric returning a dict) are now fixed, which makes this test MORE
+    load-bearing, not less: with no known blocker left to point at, "dspy
+    imports" is the only remaining signal, and it still is not evidence that a
+    run ever completed. `known_open_blockers` is now an empty list, so assert on
+    the key's presence rather than its contents.
     """
     monkeypatch.setattr(cock.subprocess, "run", lambda *a, **k: type(
         "P", (), {"returncode": 0, "stdout": "3.1.3", "stderr": ""})())

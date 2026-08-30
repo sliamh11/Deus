@@ -310,11 +310,16 @@ def probe_optimizer(now: float) -> Result:
 
     OK requires positive evidence of a completed run that postdates the code it
     would be vindicating. Absence of known blockers is not evidence: enumerating
-    blockers is how LIA-556 shipped three separate silent paths, and two are
-    live right now (GEPA constructed without reflection_lm,
-    dspy_optimizer.py:303; the judge metric returning a dict rather than a
-    dspy.Prediction, :149-152). A future blocker nobody has listed lands in the
-    UNKNOWN branch rather than green.
+    blockers is how LIA-556 shipped three separate silent paths.
+
+    The two blockers this docstring used to name -- GEPA constructed without
+    reflection_lm, and the judge metric returning a dict rather than a
+    dspy.Prediction -- are both fixed, so no blocker is currently KNOWN and
+    `known_open_blockers` is an empty list. That makes this probe MORE
+    important, not less: with nothing left to point at, "dspy imports" is the
+    only remaining signal and it still says nothing about whether a run ever
+    completed. A future blocker nobody has listed lands in the UNKNOWN branch
+    rather than green, which is the whole point.
     """
     py = _resolved_python()
     try:
@@ -350,10 +355,14 @@ def probe_optimizer(now: float) -> Result:
             expected="a completed optimize run newer than the optimizer sources",
             remedy="run the optimizer once and confirm it completes",
             detail={
-                "known_open_blockers": [
-                    "dspy_optimizer.py:303 constructs GEPA without reflection_lm",
-                    "dspy_optimizer.py:149-152 metric returns dict, not dspy.Prediction",
-                ],
+                # Both previously-listed blockers (GEPA built without
+                # reflection_lm; the metric returning a dict rather than a
+                # dspy.Prediction) were fixed when the arm was activated. Keeping
+                # them here would send the next reader after defects that are
+                # gone. The list is empty because no blocker is currently KNOWN —
+                # which is exactly why this stays UNKNOWN rather than OK: an
+                # unlisted blocker is what this branch exists to catch.
+                "known_open_blockers": [],
             },
         )
 
