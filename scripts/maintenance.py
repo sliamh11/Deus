@@ -134,6 +134,16 @@ def main():
         "rotate_query_log", [rotate_qlog], dry_run
     )
 
+    # LIA-128: the SQLite half of the same query log. rotate_query_log above bounds
+    # the JSONL twin; this bounds the `queries_log` table, which had grown to 98% of
+    # memory_tree.db by size. Runs WITHOUT --vacuum: steady-state trims free a handful
+    # of pages that SQLite reuses, so a nightly VACUUM would rewrite the whole file for
+    # nothing. The one-off VACUUM after the first large trim is run by hand.
+    prune_qlog = str(SCRIPTS_DIR / "maintenance" / "prune_queries_log.py")
+    results["prune_queries_log"] = run_task(
+        "prune_queries_log", [prune_qlog], dry_run
+    )
+
     # run_task prepends the Python interpreter, so this (like every sibling
     # maintenance script) runs as `python3 credential_probe.py` and stays 644.
     cred_probe = str(SCRIPTS_DIR / "maintenance" / "credential_probe.py")

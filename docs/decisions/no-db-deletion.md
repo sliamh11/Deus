@@ -4,6 +4,8 @@
 **Date:** 2026-04-13
 **Amended:** 2026-07-15 — Rule 6 clarified to permit per-row deletes from derived
 index tables outside `--rebuild` (motivated by LIA-368/LIA-370).
+**Amended:** 2026-08-26 — Rule 9 added: bounded-retention telemetry tables may
+hard-delete AFTER off-DB archival, scoped to `queries_log` only (LIA-128).
 **Scope:** All database operations across the entire codebase
 
 ## Context
@@ -39,8 +41,15 @@ Root cause: the codebase treated "repopulate" as "delete then recreate" when it 
 
 8. **Vault files are separate.** This ADR applies strictly to database operations. Vault files (atoms, session logs, memory files) are git-versioned and follow different rules — file operations like archive-and-delete (memory_gc) or in-place update (atom frontmatter) are acceptable because git provides the audit trail.
 
+9. **Bounded-retention telemetry tables may hard-delete rows AFTER archiving them off-DB.** `queries_log` (`~/.deus/memory_tree.db`) is telemetry, not memory content, and has no production reader — `git grep -na "FROM queries_log"` returns only two test assertions (`scripts/tests/test_memory_tree_phase3.py`, `scripts/tests/test_memory_tree.py`), neither of which depends on history; `calibrate()`/`calibrate_sweep()` take a caller-supplied labeled dataset and call `retrieve()` live. Its durable record is the JSONL twin written by the same `_log_query()` call, which `scripts/maintenance/rotate_query_log.py` already rotates into 365-day gzip archives — that script's own docstring calls the SQLite table a "secondary copy". A retention prune may therefore hard-delete rows, but **only after** every doomed row has been written to a gzip archive AND that archive has been re-read and verified, with a failed or short archive aborting the run before any `DELETE` executes. This is the same audit-trail substitution Rule 8 already accepts for vault files, where git rather than a soft-delete column carries the history.
+
+   Soft-delete cannot satisfy this case. The entire purpose is reclaiming file bytes, and a soft-deleted row still occupies its pages — Rule 1's mechanism is structurally unable to fix the problem it would be applied to. Measured 2026-08-26: `queries_log` held 914,159 rows / 164 MB of a 172 MB database whose actual memory content is 378 nodes.
+
+   **Scope: `queries_log` only.** Extending this to any other table requires a further amendment. Primary content tables (`entries`, `chunks`, `atoms`, `nodes`) remain strictly soft-delete under Rule 1.
+
 ## Consequences
 
 - Database size grows over time with orphaned rows. This is acceptable — SQLite handles millions of rows efficiently, and storage is cheap compared to data loss.
 - All SELECT queries on `entries` must include `AND orphaned_at IS NULL` (or explicitly opt out for audit/admin queries).
 - Future: add periodic `--purge-orphans --older-than 90d` command for optional cleanup of very old orphaned entries, gated behind `--confirm`.
+- Bounded telemetry tables under Rule 9 no longer grow without limit. Their history moves to gzip archives under `~/.deus/archive/` and stays recoverable there for `--archive-keep-days` (default 365), so "not in the DB" no longer means "gone".
