@@ -3,7 +3,7 @@ governs:
   - .claude/hooks/
   - scripts/codex_warden_hooks.py
   - .claude/settings.json
-last_verified: "2026-08-23" # auto-bump @1787492705
+last_verified: "2026-08-30" # auto-bump @1788090954
 test_tasks:
   - "Add a PreToolUse gate that blocks a write when the pending content matches a pattern"
   - "Change which tools an existing warden gate fires on"
