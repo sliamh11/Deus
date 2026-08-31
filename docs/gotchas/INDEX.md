@@ -7,7 +7,7 @@ Each section heading still exists in that core file as a stub pointing here, so 
 | File | Read it when | Rules |
 |------|--------------|------:|
 | [`admin-merge.md`](admin-merge.md) | you are running `gh pr merge --admin --delete-branch` | 4 |
-| [`ci-verification.md`](ci-verification.md) | you are waiting on CI, reading PR checks, or gating a merge on green — which is every PR, not only deployment work | 9 |
+| [`ci-verification.md`](ci-verification.md) | you are waiting on CI, reading PR checks, or gating a merge on green — which is every PR, not only deployment work | 11 |
 | [`cross-repo-worktrees.md`](cross-repo-worktrees.md) | you are working in any repo other than this session's launch repo | 9 |
 | [`deploy-state.md`](deploy-state.md) | you are deploying, restarting a daemon, or about to trust a live test against local infra | 3 |
 | [`markdown-docs.md`](markdown-docs.md) | you are authoring a long markdown doc or an ADR | 2 |
