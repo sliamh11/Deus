@@ -23,6 +23,32 @@ Then point dsh at the patch:
 dsh --profile headless --patch integrations/dsh/generated/deus-dsh.patch.yml --dump-config
 ```
 
+### Seed pi-ai subscription grants
+
+The shipped `llm-pi-ai` adapter can use and refresh the OAuth grant shapes
+already held by Claude Code and Codex. Seed either or both into dsh's private
+credential store with:
+
+```sh
+python3 integrations/dsh/seed_pi_ai_oauth.py --dry-run
+python3 integrations/dsh/seed_pi_ai_oauth.py
+
+# Or seed only one provider:
+python3 integrations/dsh/seed_pi_ai_oauth.py --provider anthropic
+python3 integrations/dsh/seed_pi_ai_oauth.py --provider openai-codex
+```
+
+The helper reads `~/.claude/.credentials.json` and `~/.codex/auth.json`, merges
+`llm-pi-ai/anthropic` and/or `llm-pi-ai/openai-codex` records into
+`~/.dsh/.credentials.yaml`, and backs up an existing destination before an
+atomic mode-`0600` write. It never prints credential values and never modifies
+the source files. PyYAML is required (`python3 -m pip install pyyaml`).
+
+This deliberately uses pi-ai's provider implementation. It does not copy
+jcode's raw request implementation, freeze a client version, or add request
+fingerprint/header spoofing. Subscription providers can restrict where their
+grants may be used; review the applicable provider terms before seeding them.
+
 Output lands in `generated/`, which is **gitignored**: it is built from the
 host's own configuration and embeds personal hook commands, MCP server rows
 (Linear workspaces, Outlook, Asana) and warden bodies. Only the generator and
@@ -128,6 +154,12 @@ fatal defect once.
    is transcribed from source and graded against a control, but it is not the
    real engine. The totals vary with the tree (see the table above); the
    assertion that matters is **0 dead**, which `--check` enforces.
+
+The OAuth seeder has a separate secret-free unit suite:
+
+```sh
+python3 integrations/dsh/test_seed_pi_ai_oauth.py
+```
 
 ### What has NOT been verified
 
