@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -73,6 +74,14 @@ MODEL_TIERS = {"opus", "sonnet", "haiku"}
 
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n?", re.DOTALL)
 
+# Claude Code's `if:` handler field has no dsh bridge equivalent. This host's
+# four conditioned Bash rows all call one consolidated gate that parses and
+# filters the pending command itself. Running that same gate four times is both
+# redundant and user-visible (four identical approval reasons), so those rows
+# collapse to one. Do not generalise this to arbitrary conditioned hooks: only
+# handlers explicitly known to self-filter are safe to run unconditionally.
+SELF_FILTERING_IF_COMMANDS = {"bash-command-gate.sh"}
+
 
 # --------------------------------------------------------------------------
 # readers
@@ -107,6 +116,66 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return fields, text[match.end():]
 
 
+def command_basename(command: str) -> str:
+    """Return the executable basename from a shell command, or an empty name."""
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return ""
+    return Path(words[0]).name if words else ""
+
+
+def normalize_if_handlers(handlers: list[dict]) -> tuple[list[dict], list[str]]:
+    """Collapse duplicate conditioned calls to a known self-filtering gate.
+
+    Unknown conditioned handlers remain present and are reported as a loss:
+    silently deleting one would be worse than the bridge's current degraded
+    behaviour, while running an arbitrary conditioned command once for every
+    tool could widen side effects.
+    """
+    eligible: dict[str, list[dict]] = {}
+    for handler in handlers:
+        command = handler.get("command")
+        if (
+            "if" in handler
+            and isinstance(command, str)
+            and command_basename(command) in SELF_FILTERING_IF_COMMANDS
+        ):
+            eligible.setdefault(command, []).append(handler)
+
+    normalized: list[dict] = []
+    report: list[str] = []
+    emitted: set[str] = set()
+    for handler in handlers:
+        command = handler.get("command")
+        duplicates = eligible.get(command, []) if isinstance(command, str) else []
+        if len(duplicates) > 1:
+            if command in emitted:
+                continue
+            emitted.add(command)
+            collapsed = dict(duplicates[0])
+            collapsed.pop("if", None)
+            timeouts = [one.get("timeout") for one in duplicates]
+            numeric = [value for value in timeouts if isinstance(value, (int, float))]
+            if numeric:
+                collapsed["timeout"] = max(numeric)
+            normalized.append(collapsed)
+            conditions = ", ".join(repr(one["if"]) for one in duplicates)
+            report.append(
+                f"DEDUP conditioned self-filtering hook {command!r}: "
+                f"{len(duplicates)} ignored `if:` rows -> 1 ({conditions})"
+            )
+            continue
+
+        normalized.append(dict(handler))
+        if "if" in handler:
+            report.append(
+                f"LOSS  conditioned hook {command!r}: dsh ignores `if: {handler['if']}`; "
+                "handler remains unconditional"
+            )
+    return normalized, report
+
+
 # --------------------------------------------------------------------------
 # emitters -- each is pure: inputs in, rows out, no shared mutable state
 # --------------------------------------------------------------------------
@@ -131,7 +200,8 @@ def emit_hooks(user: dict, project: dict) -> tuple[dict, list[str]]:
                 continue
 
             for group in groups:
-                handlers = group.get("hooks", [])
+                handlers, condition_report = normalize_if_handlers(group.get("hooks", []))
+                report.extend(f"        - {line}" for line in condition_report)
                 if not handlers:
                     continue
 
@@ -160,6 +230,7 @@ def emit_hooks(user: dict, project: dict) -> tuple[dict, list[str]]:
                     continue
 
                 new_group = dict(group)
+                new_group["hooks"] = handlers
                 if original is not None:
                     new_group["matcher"] = translated
                 merged.setdefault(event, []).append(new_group)

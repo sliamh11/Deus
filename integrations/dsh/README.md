@@ -117,7 +117,7 @@ reports each one instead of resolving it quietly.
 
 | Source | dsh row | Count on this host |
 |---|---|---|
-| Both `settings.json` scopes' `hooks` | `dsh-hooks-claude-code` | 1 row, 41-42 handlers |
+| Both `settings.json` scopes' `hooks` | `dsh-hooks-claude-code` | 1 row, 38-39 effective handlers |
 | `~/.claude.json` `mcpServers` | `dsh-mcp-client` | 10 rows (all stdio) |
 | `~/.claude/skills/` | `dsh-skill-filesystem` | 1 row, 84 skills |
 | `~/.claude/agents/*.md` | `dsh-tool-subagent` | 33 rows |
@@ -161,16 +161,14 @@ The OAuth seeder has a separate secret-free unit suite:
 python3 integrations/dsh/test_seed_pi_ai_oauth.py
 ```
 
-### What has NOT been verified
+### Live hook verification
 
-**No hook has ever been observed firing during a live dsh turn.** dsh ships only
-`llm-deepseek` and `llm-pi-ai`, and boot stops at `MISSING_CREDENTIAL` before
-any model request is made. Everything above establishes that the generated
-config is correct, loadable and accepted by dsh — **not** that a `PreToolUse`
-gate blocks a real tool call, nor that injected context reaches a model.
-
-Closing that gap needs working credentials, then a turn that provokes a gated
-tool and a check that the gate denied it.
+Verified on 2026-08-31 with API-key environment variables unset and the seeded
+pi-ai Anthropic grant: a real `claude-opus-4-5` turn requested
+`rm /private/tmp/dsh-hook-probe-do-not-create`. The session log recorded the
+`PreToolUse` hook outcomes, dsh requested approval, and the tool returned
+`requires approval, but no approval channel is available`; the command never
+executed. This closes the previous bridge-firing gap.
 
 ## Known gaps
 
@@ -185,13 +183,17 @@ These are accepted and named, not oversights.
 - **`updatedInput` is not honoured** on `PreToolUse` (logged and warned). dsh
   seals tool arguments before policy runs, because history, audit and UI all
   read them.
-- **4 handlers use `if:`**, which the bridge does not honour. They run
-  unconditionally.
-- **21 skills set `disable-model-invocation: true`**, which dsh ignores. Those
-  skills become model-invocable rather than reserved for explicit `/` invocation.
+- **Claude Code `if:` is not a bridge feature.** This host's four conditioned
+  rows call the same consolidated gate, which already parses and filters the
+  pending Bash command itself; the generator therefore collapses them to one
+  self-filtering invocation. Any other conditioned handler is left intact and
+  reported as a capability loss rather than silently widened.
+- **`disable-model-invocation` is preserved.** dsh's filesystem loader parses
+  the key, excludes those skills from model-facing catalogs/loaders, and keeps
+  explicit `/name` invocation as their only entry point.
 - **MCP resources and prompts are not bridged** — tools only.
-- **Per-agent `hooks:` blocks have no dsh equivalent.** Three wardens
-  (`code-explorer`, `general`, `keystone`) carry one; the generator reports each
+- **Per-agent `hooks:` blocks have no dsh equivalent.** Two wardens
+  (`code-explorer`, `general`) carry one; the generator reports each
   as a capability loss.
 - **`MultiEdit` and `apply_patch` have no real counterpart.** They are widened
   onto `str_replace_editor`, which is reported on every run.
