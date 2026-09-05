@@ -1394,6 +1394,7 @@ sys.exit(1)
     # the CLI prioritizes the env var over the credentials file.
     [[ "$OSTYPE" == darwin* ]] && launchctl kickstart -k "gui/$(id -u)/com.deus" 2>/dev/null
 
+    # >>> cockpit-staleness
     # Cockpit verdict (LIA-552). Reads the one-line cache the daily healthcheck
     # writes — no interpreter start, no DB, no network, so there is nothing that
     # can hang and no timeout to enforce (neither `timeout` nor `gtimeout` ships
@@ -1408,8 +1409,7 @@ sys.exit(1)
     _cockpit_line="${DEUS_HOME:-$HOME/.deus}/cockpit_health.line"
     _cockpit_max_age=129600
     if [ -r "$_cockpit_line" ]; then
-      # BSD stat (macOS) vs GNU stat (Linux) take different flags.
-      _cockpit_mtime=$(stat -f %m "$_cockpit_line" 2>/dev/null || stat -c %Y "$_cockpit_line" 2>/dev/null)
+      _cockpit_mtime=$(_file_mtime "$_cockpit_line")
       _cockpit_age=$(( $(date +%s) - ${_cockpit_mtime:-0} ))
       _cockpit_verdict=$(head -n 1 "$_cockpit_line" 2>/dev/null)
       if [ -z "$_cockpit_mtime" ]; then
@@ -1428,6 +1428,8 @@ sys.exit(1)
       printf '  cockpit: no healthcheck result on record\n'
     fi
     unset _cockpit_line _cockpit_max_age _cockpit_mtime _cockpit_age _cockpit_verdict
+    # <<< cockpit-staleness
+    # The `fi` below closes the PRINT_IDENTITY branch above, not this block.
     fi
     # Launch claude with bypass mode; fall back to normal mode if user declines
     launch_claude() {
