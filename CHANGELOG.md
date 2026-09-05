@@ -4,6 +4,16 @@ All notable changes to Deus will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.29.2](https://github.com/sliamh11/Deus/compare/v1.29.1...v1.29.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* **deus-cmd:** route the cockpit staleness check through _file_mtime ([#1296](https://github.com/sliamh11/Deus/issues/1296)) ([2f24c38](https://github.com/sliamh11/Deus/commit/2f24c38a2ae42d3161492f0729975b286452f4b4))
+* **evolution:** count schema errors against the judge composite ranking ([#1266](https://github.com/sliamh11/Deus/issues/1266)) ([6b1a2b0](https://github.com/sliamh11/Deus/commit/6b1a2b02d7a5696e30995b297bed19384cec6e2d))
+* **evolution:** record a skipped principles extraction as a skip, not STATUS_OK ([#1262](https://github.com/sliamh11/Deus/issues/1262)) ([954a7d3](https://github.com/sliamh11/Deus/commit/954a7d34ecd26e09d7a5196b9d94859ff2f1bcbe))
+* **patterns:** stop the last_verified auto-bump destroying human annotations ([#1268](https://github.com/sliamh11/Deus/issues/1268)) ([9e0bad6](https://github.com/sliamh11/Deus/commit/9e0bad6e799b0499d2439048776c41c5c36adc5e))
+
 ## [1.29.1](https://github.com/sliamh11/Deus/compare/v1.29.0...v1.29.1) (2026-08-20)
 
 
