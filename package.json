@@ -47,7 +47,7 @@
     "cron-parser": "^5.6.2",
     "google-auth-library": "^11.0.2",
     "googleapis": "^173.0.0",
-    "minimatch": "^10.2.5",
+    "minimatch": "^11.0.9",
     "pino": "^10.3.1",
     "pino-pretty": "^13.0.0",
     "sharp": "^0.35.3",
@@ -66,7 +66,7 @@
     "@vitest/coverage-v8": "^4.1.10",
     "@whiskeysockets/baileys": "^7.0.0-rc14",
     "dotenv-cli": "^11.0.0",
-    "eslint": "^10.8.0",
+    "eslint": "^10.15.0",
     "eslint-config-prettier": "^10.1.8",
     "fast-check": "^4.9.0",
     "husky": "^9.1.7",
@@ -78,7 +78,7 @@
     "truecourse": "0.7.2",
     "tsx": "^4.23.1",
     "typescript": "^6.0.2",
-    "typescript-eslint": "^8.65.0",
+    "typescript-eslint": "^8.74.0",
     "vitest": "^4.1.9"
   },
   "lint-staged": {
